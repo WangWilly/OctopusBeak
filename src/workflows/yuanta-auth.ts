@@ -12,6 +12,10 @@ import {
   YUANTA_DIALOG_OWNER_ENV,
   yuantaHostDialogOwner,
 } from "../lib/automation/yuanta-captcha.ts";
+import {
+  assembleStableSourceLoginScope,
+  deriveSourceConnectionIdentityKey,
+} from "../ledger/canonical/source-connection-identity.ts";
 
 export const YUANTA_ENTRY_URL = "https://ebank.yuantabank.com.tw/nib/ibanc.jsp";
 const YUANTA_BANK_ORIGIN = new URL(YUANTA_ENTRY_URL).origin;
@@ -28,6 +32,47 @@ export type YuantaCredentials = {
   yuanta_account?: string;
   yuanta_password?: string;
 };
+
+function yuantaStableLoginFields(credentials: YuantaCredentials) {
+  return [
+    { name: "yuanta_user_id", value: credentials.yuanta_user_id },
+    { name: "yuanta_account", value: credentials.yuanta_account },
+  ] as const;
+}
+
+/**
+ * Return the stable, non-secret login scope shared by every Yuanta product
+ * workflow.  Passwords, OTPs, solver state and browser sessions are
+ * deliberately excluded: they describe an authentication attempt, not the
+ * bank authorization identity.
+ *
+ * The canonical loan identity helper consumes this exact scope string.  Keep
+ * the delimiter stable so a domestic-deposit workflow and a loan workflow
+ * derive the same source-connection key from the same login identity.
+ */
+export function yuantaSourceConnectionScope(
+  credentials: YuantaCredentials,
+): string {
+  return assembleStableSourceLoginScope(
+    yuantaStableLoginFields(credentials),
+    "throw",
+  )!;
+}
+
+/** Derive the same product-independent key used by Yuanta deposit and loan. */
+export function deriveYuantaSourceConnectionKey(
+  credentials: YuantaCredentials,
+): string | undefined {
+  const scope = assembleStableSourceLoginScope(
+    yuantaStableLoginFields(credentials),
+    "undefined",
+  );
+  if (!scope) return undefined;
+  return deriveSourceConnectionIdentityKey(
+    "yuanta",
+    scope,
+  );
+}
 
 export type YuantaBankDialogCategory =
   | "captcha-rejected"

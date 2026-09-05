@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { LineBankTransactionSourceEnvelope } from "../../workflows/linebank-statements.ts";
 import {
@@ -56,7 +57,10 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCathayCanonicalFinancialQuery,
+  createCanonicalSourceStore,
+  queryCanonicalSourceCurrent,
 } from "./canonical-source-store.ts";
+import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 
 assert.equal(
   LINEBANK_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -2200,7 +2204,8 @@ const zeroV13 = validateLineBankHumanAttestedV13Capture({
 assert.equal(zeroV13.status, "admissible");
 assert.equal(zeroV13.capture?.records.length, 0);
 
-const v13Store = createDomesticDepositStore(":memory:");
+const v13Directory = await mkdtemp(join(tmpdir(), "linebank-v13-main-"));
+const v13Store = createDomesticDepositStore(join(v13Directory, "canonical.sqlite"));
 await assert.rejects(
   () =>
     commitCanonicalLineBankFinancialCapture(v13Store, {
@@ -2227,6 +2232,89 @@ const v13Repeat = await commitCanonicalLineBankFinancialCapture(
 assert.equal(v13Repeat.transactionCount, 2);
 assert.equal(queryCurrent(v13Store).transactions?.length, 2);
 assert.equal(queryCurrent(v13Store).provenanceCount, 2);
+
+// Before the v13 centralization, the compact payload included capture-local
+// provenance.captureId. Existing immutable rows can therefore differ from a
+// current recapture only by that field; the source occurrence remains stable.
+const lineLegacySourceStore = createCanonicalSourceStore(":memory:");
+try {
+  const lineAdmission = createCanonicalSourceCaptureAdmission(
+    lineLegacySourceStore,
+  );
+  const lineSourceRequest = (
+    captureId: string,
+    legacyCaptureProvenance: boolean,
+  ) => ({
+    captureId,
+    integrationNamespace: "linebank",
+    sourceConnectionKey: "sha256:linebank-v13-check-connection",
+    identityEpoch: "sha256:linebank-v13-check-epoch",
+    stream: "domestic-deposit",
+    recordKind: "linebank-domestic-deposit-financial-v13",
+    routeKey: "linebank/domestic-deposit/human-attested-v13",
+    contractVersion: "human-attested-v13",
+    subjectDigest: admittedV13.capture!.accountKey,
+    observedAt: "2026-07-08T00:00:00.000Z",
+    scope: {
+      startDate: "2026-07-01",
+      endDate: "2026-07-31",
+      dateFormat: "YYYY-MM-DD" as const,
+      kind: "bounded-range" as const,
+      completeness: "complete-range" as const,
+      ruleVersion: "linebank/domestic-deposit/human-attested-v13",
+    },
+    pages: admittedV13.capture!.pages.map((page) => ({
+      pageOrdinal: page.pageNbr - 1,
+      responseCode: "200" as const,
+      terminal: page.pageNbr === admittedV13.capture!.pageCount,
+      rowCount: page.txCnt,
+      metadata: { pageNbr: page.pageNbr, rowCount: page.txCnt },
+    })),
+    records: admittedV13.capture!.records.map((record) => {
+      const compact = {
+        sourceOccurrenceKey: record.sourceOccurrenceKey,
+        baseOccurrenceKey: record.baseOccurrenceKey,
+        sourceChangeFingerprint: record.sourceChangeFingerprint,
+        accountKey: admittedV13.capture!.accountKey,
+        sourceConnection: admittedV13.capture!.sourceConnection,
+        stream: admittedV13.capture!.stream,
+        contractVersion: admittedV13.capture!.contractVersion,
+        identityEpoch: admittedV13.capture!.identityEpoch,
+        sourceSequence: record.sourceSequence,
+        occurrenceCounter: record.occurrenceCounter,
+        sourceSequenceKey: record.sourceOccurrenceKey,
+        sourceTime: record.sourceTime,
+        direction: record.direction,
+        sourceDirectionCode: record.sourceDirectionCode,
+        amount: record.amount,
+        balanceAfter: record.balanceAfter,
+        currency: record.currency,
+        cancellation: "N",
+        cancellationFlags: record.cancellationFlags,
+        provenance: {
+          ...(legacyCaptureProvenance ? { captureId } : {}),
+          matchingRuleVersion: "occurrence-v1",
+        },
+      };
+      return {
+        occurrenceKey: record.sourceOccurrenceKey,
+        collisionKey: record.baseOccurrenceKey,
+        providerKey: record.sourceOccurrenceKey,
+        contentHash: record.sourceChangeFingerprint,
+        compact,
+        compactJson: JSON.stringify(compact),
+      };
+    }),
+  });
+  await lineAdmission.admit(lineSourceRequest("line-v13-legacy", true));
+  await lineAdmission.admit(lineSourceRequest("line-v13-current", false));
+  const lineCurrent = queryCanonicalSourceCurrent(lineLegacySourceStore);
+  assert.equal(lineCurrent.records.length, 2);
+  assert.equal(lineCurrent.observations.length, 4);
+  assert.equal(lineCurrent.provenanceCount, 2);
+} finally {
+  lineLegacySourceStore.close();
+}
 const knowledgeOnlyV13 = queryHistorical(v13Store, {
   knowledgeAt: v13Commit.commitSequence,
 });
@@ -2522,14 +2610,18 @@ assert.equal(lateFailure.status, "admissible");
 const commitsBeforeLateFailure = v13Store.db
   .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
   .get()?.count;
-v13Store.db.exec(`CREATE TRIGGER inject_v13_late_failure
+const lateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+lateFailureSchemaDb.exec(`CREATE TRIGGER inject_v13_late_failure
   BEFORE UPDATE ON source_sync_states
   BEGIN SELECT RAISE(ABORT, 'injected late v13 failure'); END`);
+lateFailureSchemaDb.close();
 await assert.rejects(
   () => commitCanonicalLineBankFinancialCapture(v13Store, lateFailure.capture!),
   /injected late v13 failure/i,
 );
-v13Store.db.exec("DROP TRIGGER inject_v13_late_failure");
+const cleanupLateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+cleanupLateFailureSchemaDb.exec("DROP TRIGGER inject_v13_late_failure");
+cleanupLateFailureSchemaDb.close();
 assert.equal(
   v13Store.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
     ?.count,
@@ -2737,3 +2829,4 @@ try {
   await rm(mixedV13Directory, { recursive: true, force: true });
 }
 v13Store.close();
+await rm(v13Directory, { recursive: true, force: true });

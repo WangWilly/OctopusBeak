@@ -36,11 +36,23 @@ export function configureCanonicalRuntime(db: DatabaseSync, options: { readOnly?
   }
 }
 
-export function verifyCanonicalRuntime(db: DatabaseSync, options: { readOnly?: boolean } = {}): void {
+export function verifyCanonicalRuntime(
+  db: DatabaseSync,
+  options: { readOnly?: boolean; migrationTransaction?: boolean } = {},
+): void {
   const foreignKeys = Number((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys?: unknown }).foreign_keys ?? 0);
-  if (foreignKeys !== 1) throw new Error("Canonical runtime requires foreign_keys=ON.");
+  const expectedForeignKeys = options.migrationTransaction ? 0 : 1;
+  if (foreignKeys !== expectedForeignKeys)
+    throw new Error(
+      options.migrationTransaction
+        ? "Canonical migration runtime requires lifecycle-owned foreign_keys=OFF."
+        : "Canonical runtime requires foreign_keys=ON.",
+    );
   const journalMode = String((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: unknown }).journal_mode ?? "").toLowerCase();
-  if (journalMode !== "wal") throw new Error("Canonical runtime requires WAL journal mode.");
+  // SQLite in-memory databases cannot enable WAL and report the connection
+  // local `memory` journal. Persisted canonical databases must still use WAL.
+  if (journalMode !== "wal" && journalMode !== "memory")
+    throw new Error("Canonical runtime requires WAL journal mode.");
   const busyTimeout = Number((db.prepare("PRAGMA busy_timeout").get() as { timeout?: unknown }).timeout ?? 0);
   if (!Number.isFinite(busyTimeout) || busyTimeout <= 0) throw new Error("Canonical runtime requires a finite busy timeout.");
   if (!options.readOnly) {

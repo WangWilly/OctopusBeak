@@ -452,21 +452,13 @@ for (const key of Reflect.ownKeys(syntheticFinancialCapture)) {
 await assert.rejects(
   () =>
     commitCanonicalFinancialDepositCapture(
-      {
-        db: syntheticFinancialStore.db,
-        databasePath: syntheticFinancialStore.databasePath,
-        commitClock: () => syntheticFinancialStore.sourceStore.commitClock(),
-      },
+      syntheticFinancialStore.sourceStore,
       forgedSyntheticCapture,
     ),
   /runtime-validated|admission seam/i,
 );
 const syntheticFinancialCommit = await commitCanonicalFinancialDepositCapture(
-  {
-    db: syntheticFinancialStore.db,
-    databasePath: syntheticFinancialStore.databasePath,
-    commitClock: () => syntheticFinancialStore.sourceStore.commitClock(),
-  },
+  syntheticFinancialStore.sourceStore,
   syntheticFinancialCapture,
 );
 assert.equal(syntheticFinancialCommit.status, "canonical-live");

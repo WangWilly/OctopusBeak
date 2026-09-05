@@ -2,10 +2,19 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
+  ensureFubonCreditCardSchema,
+  validateFubonCreditCardSchema,
+} from "./fubon-credit-card-schema.ts";
+export {
+  ensureFubonCreditCardSchema,
+  validateFubonCreditCardSchema,
+} from "./fubon-credit-card-schema.ts";
+import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   isFubonCreditCardHumanAttestedAccountKey,
@@ -1007,181 +1016,6 @@ export type FubonCreditCardWriterStore = Pick<
   readonly beforeFubonCreditExtensionCommit?: (db: DatabaseSync) => void;
 };
 
-export function ensureFubonCreditCardSchema(db: DatabaseSync): void {
-  db.exec(`
-CREATE TABLE IF NOT EXISTS fubon_credit_instrument_details (
-  instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
-  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  instrument_key TEXT NOT NULL,
-  card_mask TEXT CHECK(
-    card_mask IS NULL OR
-    (length(card_mask) = 8 AND substr(card_mask, 1, 4) = '****' AND
-      substr(card_mask, 5) GLOB '[0-9][0-9][0-9][0-9]')
-  ),
-  role TEXT NOT NULL CHECK(role IN ('primary','supplementary','virtual','replacement')),
-  lifecycle TEXT,
-  UNIQUE(account_id, instrument_key)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_account_identity_details (
-  account_id BLOB PRIMARY KEY REFERENCES financial_accounts(account_id),
-  identity_method TEXT NOT NULL CHECK(identity_method IN ('human-attested','pan-hmac')),
-  pan_fingerprint TEXT,
-  pan_last4 TEXT CHECK(pan_last4 IS NULL OR pan_last4 GLOB '[0-9][0-9][0-9][0-9]'),
-  pan_fingerprint_key_version TEXT,
-  CHECK(
-    (identity_method = 'pan-hmac' AND pan_fingerprint IS NOT NULL AND pan_last4 IS NOT NULL AND pan_fingerprint_key_version IS NOT NULL)
-    OR
-    (identity_method = 'human-attested' AND pan_fingerprint IS NULL AND pan_last4 IS NULL AND pan_fingerprint_key_version IS NULL)
-  )
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_instrument_role_evidence (
-  instrument_id BLOB NOT NULL REFERENCES fubon_credit_instrument_details(instrument_id),
-  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-  PRIMARY KEY(instrument_id, capture_id, source_record_id)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_transaction_details (
-  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
-  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-  instrument_id BLOB NOT NULL REFERENCES fubon_credit_instrument_details(instrument_id),
-  billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
-  statement_key TEXT,
-  PRIMARY KEY(revision_id, source_record_id)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_details (
-  statement_id BLOB PRIMARY KEY CHECK(length(statement_id) = 16),
-  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  statement_key TEXT NOT NULL,
-  UNIQUE(account_id, statement_key)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_revision_details (
-  statement_revision_id BLOB PRIMARY KEY CHECK(length(statement_revision_id) = 16),
-  statement_id BLOB NOT NULL REFERENCES fubon_credit_statement_details(statement_id),
-  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-  revision_key TEXT NOT NULL,
-  revision_number INTEGER NOT NULL,
-  cycle_start TEXT NOT NULL, cycle_end TEXT NOT NULL,
-  issue_date TEXT NOT NULL, due_date TEXT NOT NULL,
-  currency TEXT NOT NULL, balance_coefficient TEXT NOT NULL,
-  balance_scale INTEGER NOT NULL, minimum_coefficient TEXT, minimum_scale INTEGER,
-  evidence_source_record_key TEXT NOT NULL,
-  UNIQUE(statement_id, revision_key)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_membership_details (
-  statement_revision_id BLOB NOT NULL REFERENCES fubon_credit_statement_revision_details(statement_revision_id),
-  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-  transaction_revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
-  source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-  PRIMARY KEY(statement_revision_id, transaction_id)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_statement_summary_evidence (
-  statement_revision_id BLOB NOT NULL REFERENCES fubon_credit_statement_revision_details(statement_revision_id),
-  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
-  evidence_key TEXT NOT NULL,
-  evidence_source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
-  PRIMARY KEY(statement_revision_id, capture_id),
-  UNIQUE(account_id, capture_id, evidence_key)
-);
-CREATE TABLE IF NOT EXISTS fubon_credit_relation_details (
-  relation_id BLOB PRIMARY KEY CHECK(length(relation_id) = 16),
-  account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
-  relation_kind TEXT NOT NULL,
-  from_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-  to_transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
-  evidence_source_record_key TEXT NOT NULL,
-  UNIQUE(account_id, relation_kind, from_transaction_id, to_transaction_id)
-);
-  `);
-
-  const instrumentColumns = db.prepare(
-    "PRAGMA table_info(fubon_credit_instrument_details)",
-  ).all() as Array<{ name?: string }>;
-  if (!instrumentColumns.some((column) => column.name === "card_mask")) {
-    db.exec(
-      "ALTER TABLE fubon_credit_instrument_details ADD COLUMN card_mask TEXT",
-    );
-  }
-
-  // Databases created before statement Source Record lineage was added have
-  // valid summary rows but no evidence_source_record_id.  Keep those rows
-  // intact and leave the new lineage column nullable for the legacy rows; the
-  // replacement trigger below rejects any new row without a real Source
-  // Record, so the compatibility exception cannot be used for new writes.
-  const summaryColumns = db.prepare(
-    "PRAGMA table_info(fubon_credit_statement_summary_evidence)",
-  ).all() as Array<{ name?: string }>;
-  if (!summaryColumns.some((column) => column.name === "evidence_source_record_id")) {
-    db.exec(
-      "ALTER TABLE fubon_credit_statement_summary_evidence " +
-      "ADD COLUMN evidence_source_record_id BLOB REFERENCES source_records(source_record_id)",
-    );
-  }
-
-  // CREATE TRIGGER IF NOT EXISTS would preserve the pre-lineage trigger on a
-  // reused database. Drop and recreate both guards so upgrades are idempotent
-  // and always enforce the current scope contract.
-  db.exec(`
-DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
-DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
-CREATE TRIGGER fubon_credit_role_evidence_scope_guard
-BEFORE INSERT ON fubon_credit_instrument_role_evidence
-WHEN NOT EXISTS (
-  SELECT 1 FROM source_record_scopes scoped
-  JOIN source_records source_record
-    ON source_record.source_record_id = scoped.source_record_id
-  JOIN fubon_credit_instrument_details instrument
-    ON instrument.instrument_id = NEW.instrument_id
-  WHERE scoped.source_record_id = NEW.source_record_id
-    AND scoped.capture_id = NEW.capture_id
-    AND scoped.account_id = NEW.account_id
-    AND instrument.account_id = NEW.account_id
-    AND json_extract(source_record.payload_json, '$.instrumentKey') = instrument.instrument_key
-    AND (
-      (instrument.card_mask IS NULL AND
-        json_extract(source_record.payload_json, '$.cardMask') IS NULL)
-      OR
-      (instrument.card_mask IS NOT NULL AND
-        json_extract(source_record.payload_json, '$.cardMask') = instrument.card_mask)
-    )
-)
-BEGIN
-  SELECT RAISE(ABORT, 'Fubon instrument role evidence crosses capture, account, or instrument scope (or has an inconsistent card mask)');
-END;
-CREATE TRIGGER fubon_credit_summary_evidence_scope_guard
-BEFORE INSERT ON fubon_credit_statement_summary_evidence
-WHEN NEW.evidence_source_record_id IS NULL OR NOT EXISTS (
-  SELECT 1 FROM capture_scopes scoped
-  JOIN fubon_credit_statement_revision_details revision
-    ON revision.statement_revision_id = NEW.statement_revision_id
-  JOIN fubon_credit_statement_details statement
-    ON statement.statement_id = revision.statement_id
-  JOIN source_record_scopes evidence_scope
-    ON evidence_scope.source_record_id = NEW.evidence_source_record_id
-  JOIN source_records evidence_record
-    ON evidence_record.source_record_id = evidence_scope.source_record_id
-  JOIN source_subjects evidence_subject
-    ON evidence_subject.source_subject_id = evidence_record.source_subject_id
-  WHERE scoped.capture_id = NEW.capture_id
-    AND scoped.account_id = NEW.account_id
-    AND statement.account_id = NEW.account_id
-    AND evidence_scope.capture_id = NEW.capture_id
-    AND evidence_scope.account_id = NEW.account_id
-    AND evidence_record.record_kind = 'fubon-credit-card-statement-summary'
-    AND evidence_record.occurrence_key = NEW.evidence_key
-    AND evidence_subject.source_connection_id = scoped.source_connection_id
-    AND evidence_subject.identity_epoch_id = scoped.identity_epoch_id
-    AND json_extract(evidence_record.payload_json, '$.statementKey') = statement.statement_key
-)
-BEGIN
-  SELECT RAISE(ABORT, 'Fubon statement summary evidence crosses capture or account scope');
-END;
-  `);
-}
-
 function canonicalId(): Buffer {
   return randomBytes(16);
 }
@@ -1320,16 +1154,43 @@ function fubonCanonicalSpineCapture(
     authority: capture.authorityRoute,
     periods: capture.scope.completeness.billedPeriods,
   });
+  const nonTransactionRecords = capture.statements.map((statement) => {
+    const compactJson = JSON.stringify({
+      statementKey: statement.statementKey,
+      cycleStart: statement.cycleStart,
+      cycleEnd: statement.cycleEnd,
+      issueDate: statement.issueDate,
+      dueDate: statement.dueDate,
+      currency: statement.currency,
+      balance: statement.balance,
+      minimumPayment: statement.minimumPayment,
+    });
+    return {
+      recordType: "statement-evidence" as const,
+      recordKind: "fubon-credit-card-statement-summary",
+      occurrenceKey: statement.evidence.sourceRecordKey,
+      collisionKey: statement.evidence.sourceRecordKey,
+      providerKey: "human-attested:no-provider-key",
+      contentHash: opaqueFubonSpineToken(
+        "fubon-credit-statement-summary-v2",
+        compactJson,
+      ),
+      sequenceLexeme: `statement-summary:${statement.statementKey}`,
+      compactJson,
+      description: null,
+    };
+  });
   return admitCanonicalFinancialDepositCapture({
     captureId: capture.captureId,
     authorityRoute: capture.authorityRoute,
     contractVersion: capture.contractVersion,
     identity: {
       integrationNamespace: "fubon",
-      sourceConnectionKey: opaqueFubonSpineToken(
-        "fubon-credit-connection-v2",
-        capture.identity.sourceConnectionKey,
-      ),
+      // The caller already supplies the stable, product-independent Source
+      // Connection identity. Keep product-specific domain separation on the
+      // credit-card account/epoch fields below, but never fork the shared
+      // connection key at this persistence seam.
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
       identityEpochKey: opaqueFubonSpineToken(
         "fubon-credit-epoch-v2",
         capture.identity.identityEpochKey,
@@ -1391,6 +1252,7 @@ function fubonCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    nonTransactionRecords,
   });
 }
 
@@ -1478,67 +1340,32 @@ function persistFubonCanonicalExtensions(
       ).get(scope.capture_id, statement.evidence.sourceRecordKey) as
         | { source_record_id?: Uint8Array }
         | undefined;
-      const sourceRecordId = existingRecord?.source_record_id ?? canonicalId();
-      if (!existingRecord) {
-        const payload = JSON.stringify({
-          statementKey: statement.statementKey,
-          revisionKey: statement.revisionKey,
-          cycleStart: statement.cycleStart,
-          cycleEnd: statement.cycleEnd,
-          issueDate: statement.issueDate,
-          dueDate: statement.dueDate,
-          currency: statement.currency,
-          balance: statement.balance,
-          minimumPayment: statement.minimumPayment,
-        });
-        db.prepare(
-          `INSERT INTO source_records(
-            source_record_id, capture_id, source_subject_id, commit_id,
-            record_kind, sequence_lexeme, provider_key, content_hash,
-            occurrence_key, collision_key, description, payload_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          sourceRecordId,
-          scope.capture_id,
-          scope.source_subject_id,
-          scope.commit_id,
-          "fubon-credit-card-statement-summary",
-          `statement-summary:${statement.statementKey}`,
-          "human-attested:no-provider-key",
-          opaqueFubonSpineToken("fubon-credit-statement-summary-v2", payload),
-          statement.evidence.sourceRecordKey,
-          statement.evidence.sourceRecordKey,
-          null,
-          payload,
-        );
-        db.prepare(
-          `INSERT INTO source_record_scopes(
-            source_record_id, scope_id, capture_id, account_id,
-            source_subject_id, sequence_lexeme, occurrence_key, commit_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          sourceRecordId,
-          scope.scope_id,
-          scope.capture_id,
-          scope.account_id,
-          scope.source_subject_id,
-          `statement-summary:${statement.statementKey}`,
-          statement.evidence.sourceRecordKey,
-          scope.commit_id,
-        );
-      }
+      if (!existingRecord?.source_record_id)
+        throw new Error("Fubon statement source evidence is missing from admission.");
+      const sourceRecordId = existingRecord.source_record_id;
       statementEvidenceSourceRecord.set(statement.evidence.sourceRecordKey, sourceRecordId);
     }
     const sharedTransactions = new Map<
       string,
       { transactionId: Uint8Array; revisionId: Uint8Array; sourceRecordId: Uint8Array }
     >();
+    const currentTransactions = new Set(
+      createCanonicalProjectionRuntime(db)
+        .read({
+          kind: "current",
+          families: ["transactions"],
+          scope: { accountIds: [Buffer.from(scope.account_id).toString("hex")] },
+        })
+        .families.transactions.map(
+          (projected) => `${projected.transactionId}:${projected.revisionId}`,
+        ),
+    );
     for (const transaction of capture.transactions) {
       const row = db.prepare(
         `SELECT financial_transaction.transaction_id, current_row.revision_id,
                 source_record.source_record_id
          FROM financial_transactions financial_transaction
-         JOIN current_transactions current_row
+         JOIN transaction_revisions current_row
            ON current_row.transaction_id = financial_transaction.transaction_id
          JOIN source_records source_record
            ON source_record.capture_id = ? AND source_record.occurrence_key = ?
@@ -1554,6 +1381,12 @@ function persistFubonCanonicalExtensions(
         | undefined;
       if (!row?.transaction_id || !row.revision_id || !row.source_record_id)
         throw new Error("Fubon shared canonical transaction is missing.");
+      if (
+        !currentTransactions.has(
+          `${Buffer.from(row.transaction_id).toString("hex")}:${Buffer.from(row.revision_id).toString("hex")}`,
+        )
+      )
+        throw new Error("Fubon shared canonical transaction is not current.");
       sharedTransactions.set(transaction.sourceRecordKey, {
         transactionId: row.transaction_id,
         revisionId: row.revision_id,

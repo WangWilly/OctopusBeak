@@ -18,11 +18,10 @@ import {
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
-  admitCanonicalSourceEvidence,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
@@ -338,14 +337,11 @@ try {
   }
   await assert.rejects(
     () =>
-      commitCanonicalSourceEvidence(
-        store,
-        admitCanonicalSourceEvidence({
+      createCanonicalSourceCaptureAdmission(store).admit({
           ...sourceEvidence,
           captureId: "hncb-capture-conflict",
           records: [{ ...record, occurrenceKey: digest("b") }],
         }),
-      ),
     /collision|conflict|overwrite/i,
   );
   assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);

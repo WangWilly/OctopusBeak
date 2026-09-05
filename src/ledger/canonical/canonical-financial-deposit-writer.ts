@@ -1,8 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
-import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
+import {
+  createCanonicalProjectionRuntime,
+} from "./canonical-projection-runtime.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionRequest,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+  type CanonicalSourceCaptureAdmissionTransactionResult,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 
 export type FinancialDepositAmount = {
   coefficient: string;
@@ -72,6 +81,28 @@ export type CanonicalFinancialDepositRecord = {
   conversionEvidence?: CanonicalFinancialDepositConversionEvidence | null;
 };
 
+/** Source evidence that is not a monetary transaction. Holding observations
+ * and credit-card statement evidence never enter generic transaction tables. */
+export type CanonicalFinancialNonTransactionRecord = {
+  recordType: "holding-observation" | "statement-evidence";
+  recordKind?: string;
+  occurrenceKey: string;
+  collisionKey: string;
+  providerKey: string;
+  contentHash: string;
+  sequenceLexeme: string;
+  compactJson: string;
+  description?: string | null;
+};
+
+function isNonTransactionRecord(
+  record:
+    | CanonicalFinancialDepositRecord
+    | CanonicalFinancialNonTransactionRecord,
+): record is CanonicalFinancialNonTransactionRecord {
+  return "recordType" in record;
+}
+
 export type CanonicalFinancialDepositCapture = {
   captureId: string;
   authorityRoute: string;
@@ -123,6 +154,7 @@ export type CanonicalFinancialDepositCapture = {
   };
   pages: readonly CanonicalFinancialDepositPage[];
   records: readonly CanonicalFinancialDepositRecord[];
+  nonTransactionRecords?: readonly CanonicalFinancialNonTransactionRecord[];
 };
 
 // Admission is intentionally held out-of-band. A copied object, even one
@@ -140,6 +172,18 @@ export type CanonicalFinancialDepositWriterStore = {
   readonly databasePath: string;
   readonly commitClock: () => number;
 };
+
+/**
+ * The writer type is kept narrow for adapter compatibility, but the runtime
+ * seam is deliberately stricter than its structural TypeScript shape.  A
+ * provider must pass the lifecycle-created CanonicalSourceStore; wrapping its
+ * database in a look-alike object is not a production adapter.
+ */
+function requireValidatedFinancialWriterStore(
+  store: CanonicalFinancialDepositWriterStore,
+): void {
+  assertValidatedCanonicalDatabase(store.db);
+}
 
 export type CanonicalFinancialDepositCommitResult = {
   status: "canonical-live";
@@ -177,11 +221,17 @@ function validateDate(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
     throw new Error(`${label} must be YYYY-MM-DD.`);
   const parsed = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== value
+  )
     throw new Error(`${label} must be a valid calendar date.`);
 }
 
-function validateAmount(value: unknown, label: string): asserts value is FinancialDepositAmount {
+function validateAmount(
+  value: unknown,
+  label: string,
+): asserts value is FinancialDepositAmount {
   if (
     value === null ||
     typeof value !== "object" ||
@@ -192,10 +242,15 @@ function validateAmount(value: unknown, label: string): asserts value is Financi
     !Number.isSafeInteger(value.scale) ||
     Number(value.scale) < 0
   )
-    throw new Error(`${label} must be an exact non-negative coefficient/scale amount.`);
+    throw new Error(
+      `${label} must be an exact non-negative coefficient/scale amount.`,
+    );
 }
 
-function validateCurrency(value: unknown, label: string): asserts value is string {
+function validateCurrency(
+  value: unknown,
+  label: string,
+): asserts value is string {
   if (
     typeof value !== "string" ||
     !/^[A-Z]{3}$/.test(value) ||
@@ -216,27 +271,54 @@ function validateSourceTime(
     throw new Error("Financial record source time is invalid.");
   if (value.timeZone !== "Asia/Taipei")
     throw new Error("Financial record time zone must be Asia/Taipei.");
-  if (value.precision !== "date" && value.precision !== "minute" && value.precision !== "second")
+  if (
+    value.precision !== "date" &&
+    value.precision !== "minute" &&
+    value.precision !== "second"
+  )
     throw new Error("Financial record time precision is invalid.");
-  if (value.timeOrigin !== "source_reported" && value.timeOrigin !== "defaulted_local_midnight")
+  if (
+    value.timeOrigin !== "source_reported" &&
+    value.timeOrigin !== "defaulted_local_midnight"
+  )
     throw new Error("Financial record time origin is invalid.");
-  if (value.precision !== "date" && value.timeOrigin === "defaulted_local_midnight")
+  if (
+    value.precision !== "date" &&
+    value.timeOrigin === "defaulted_local_midnight"
+  )
     throw new Error("Only date precision may default to local midnight.");
-  if (value.precision === "date" && value.timeOrigin !== "defaulted_local_midnight")
-    throw new Error("Date precision must use the defaulted local midnight time origin.");
-  const expectedEpoch = Date.parse(`${value.localDate}T${value.localTime}+08:00`);
-  if (!Number.isSafeInteger(value.epochMilliseconds) || value.epochMilliseconds !== expectedEpoch)
-    throw new Error("Financial record source instant does not match its local time evidence.");
+  if (
+    value.precision === "date" &&
+    value.timeOrigin !== "defaulted_local_midnight"
+  )
+    throw new Error(
+      "Date precision must use the defaulted local midnight time origin.",
+    );
+  const expectedEpoch = Date.parse(
+    `${value.localDate}T${value.localTime}+08:00`,
+  );
+  if (
+    !Number.isSafeInteger(value.epochMilliseconds) ||
+    value.epochMilliseconds !== expectedEpoch
+  )
+    throw new Error(
+      "Financial record source instant does not match its local time evidence.",
+    );
   if (record.effectiveOn !== value.localDate)
-    throw new Error("Financial record effective date does not match source time.");
-  if (record.transactionDateTimeLocal !== `${value.localDate}T${value.localTime}`)
-    throw new Error("Financial record local timestamp does not match source time.");
+    throw new Error(
+      "Financial record effective date does not match source time.",
+    );
+  if (
+    record.transactionDateTimeLocal !== `${value.localDate}T${value.localTime}`
+  )
+    throw new Error(
+      "Financial record local timestamp does not match source time.",
+    );
 }
 
 function validateCapture(capture: CanonicalFinancialDepositCapture): void {
-  const isForeignCurrencyCapture = capture.authorityRoute.includes(
-    "/foreign-currency/",
-  );
+  const isForeignCurrencyCapture =
+    capture.authorityRoute.includes("/foreign-currency/");
   const isFubonCreditCardCapture =
     capture.authorityRoute === "fubon/credit-card/human-attested-v1" ||
     capture.authorityRoute === "fubon/credit-card/human-attested-v2";
@@ -268,7 +350,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   if (!capture.identity.accountType.trim())
     throw new Error("Financial account type is required.");
   if (capture.identity.currency === "MULTI")
-    throw new Error("Financial account currency cannot use the MULTI sentinel.");
+    throw new Error(
+      "Financial account currency cannot use the MULTI sentinel.",
+    );
   const routeRules: Record<
     string,
     {
@@ -294,6 +378,108 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       absenceAuthorityOnlyWhenEmpty?: boolean;
     }
   > = {
+    "yuanta-fund/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-fund/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "yuanta-fund/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-fund",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "yuanta-fund/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta-trade/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-trade/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "yuanta-trade/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-trade",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "yuanta-trade/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "maicoin/investment/canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "maicoin/investment/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-complete-investment-snapshot",
+      completenessRuleVersion: "maicoin/investment/canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "maicoin",
+      stream: "investment",
+      recordKind: "investment-source-record",
+      accountType: "investment",
+      contractVersion: "maicoin/investment/canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta-fund/investment/margin-credit-canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-fund/investment/margin-credit-canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-independent-margin-balance",
+      completenessRuleVersion:
+        "yuanta-fund/investment/margin-credit-canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-fund",
+      stream: "investment-margin",
+      recordKind: "investment-margin-credit",
+      accountType: "credit",
+      contractVersion: "yuanta-fund/investment/margin-credit-canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta-trade/investment/margin-credit-canonical-v1": {
+      postingOrigin: "provider_booked_history",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta-trade/investment/margin-credit-canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis: "source-reported-independent-margin-balance",
+      completenessRuleVersion:
+        "yuanta-trade/investment/margin-credit-canonical-v1",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta-trade",
+      stream: "investment-margin",
+      recordKind: "investment-margin-credit",
+      accountType: "credit",
+      contractVersion: "yuanta-trade/investment/margin-credit-canonical-v1",
+      requireProviderGuaranteedFalse: true,
+    },
     "cathay/domestic-deposit/v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "query-status-success-with-accounting-date",
@@ -311,6 +497,63 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       postingBasis: "statement-posted-history",
       ruleVersion: "fubon/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
+    },
+    "fubon/loan/canonical-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "fubon/loan/canonical-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.fubon",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "fubon",
+      stream: "loan",
+      recordKind: "fubon-loan-transaction",
+      accountType: "loan",
+      contractVersion: "loan/canonical/v1.fubon",
+      requireProviderGuaranteedFalse: true,
+    },
+    "fubon/loan/canonical-v2": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "fubon/loan/canonical-v2",
+      effectiveTimeBasis: "source-reported",
+      currency: "TWD",
+      postingStatus: "posted",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "fubon",
+      stream: "loan",
+      recordKind: "fubon-loan-transaction",
+      accountType: "loan",
+      contractVersion: "loan/canonical/v2.fubon",
+      requireProviderGuaranteedFalse: true,
+    },
+    "fubon/loan/counterpart-deposit-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "fubon/loan/counterpart-deposit-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/counterpart/v1.fubon",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "fubon",
+      stream: "domestic-deposit",
+      recordKind: "fubon-loan-counterpart-deposit",
+      accountType: "depository",
+      contractVersion: "loan/counterpart/v1.fubon",
+      requireProviderGuaranteedFalse: true,
     },
     "fubon/credit-card/human-attested-v1": {
       postingOrigin: "human-attested",
@@ -456,6 +699,44 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       stream: "domestic-deposit",
       recordKind: "yuanta-domestic-deposit",
       contractVersion: "human-attested-v1",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta/loan/canonical-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/loan/canonical-v1",
+      effectiveTimeBasis: "source-reported",
+      currency: "TWD",
+      postingStatus: "posted",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "loan",
+      recordKind: "yuanta-loan-transaction",
+      accountType: "loan",
+      contractVersion: "loan/canonical/v1.yuanta",
+      requireProviderGuaranteedFalse: true,
+    },
+    "yuanta/loan/counterpart-deposit-v1": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "yuanta/loan/counterpart-deposit-v1",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/counterpart/v1.yuanta",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "yuanta",
+      stream: "domestic-deposit",
+      recordKind: "yuanta-loan-counterpart-deposit",
+      accountType: "depository",
+      contractVersion: "loan/counterpart/v1.yuanta",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/domestic-deposit/human-attested-v2": {
@@ -636,7 +917,8 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       mismatches.push("completeness basis");
     if (
       routeRule.completenessRuleVersion !== undefined &&
-      capture.scope.completenessRuleVersion !== routeRule.completenessRuleVersion
+      capture.scope.completenessRuleVersion !==
+        routeRule.completenessRuleVersion
     )
       mismatches.push("completeness rule version");
     if (routeRule.absenceAuthority !== undefined) {
@@ -683,11 +965,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         `Financial capture does not match the ${capture.authorityRoute} route profile: ${mismatches.join(", ")}.`,
       );
   }
-  if (
-    isForeignCurrencyCapture &&
-    capture.identity.accountType !== "depository"
-  )
-    throw new Error("Foreign-currency deposit account type must be depository.");
+  if (isForeignCurrencyCapture && capture.identity.accountType !== "depository")
+    throw new Error(
+      "Foreign-currency deposit account type must be depository.",
+    );
   if (
     capture.scope.withdrawalPolicy !== undefined &&
     capture.scope.withdrawalPolicy !== "allow-inference" &&
@@ -703,7 +984,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     if (page.pageOrdinal < 0 || page.pageOrdinal >= capture.scope.pageCount)
       throw new Error("Capture page ordinal is invalid.");
     if (isForeignCurrencyCapture && page.pageOrdinal !== pageIndex)
-      throw new Error("Foreign capture page ordinals must be contiguous from zero.");
+      throw new Error(
+        "Foreign capture page ordinals must be contiguous from zero.",
+      );
     if (isHumanAttestedCreditCardCapture && page.pageOrdinal !== pageIndex)
       throw new Error(
         "Human-attested credit-card grid ordinals must be contiguous from zero.",
@@ -714,16 +997,22 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     if (page.terminal) {
       terminalPageCount += 1;
       if (isForeignCurrencyCapture && pageIndex !== capture.pages.length - 1)
-        throw new Error("Foreign capture cannot contain pages after its terminal page.");
+        throw new Error(
+          "Foreign capture cannot contain pages after its terminal page.",
+        );
     }
   }
   if (
     isForeignCurrencyCapture &&
     (terminalPageCount !== 1 || !capture.pages.at(-1)?.terminal)
   )
-    throw new Error("Foreign complete-range capture requires exactly one final terminal page.");
+    throw new Error(
+      "Foreign complete-range capture requires exactly one final terminal page.",
+    );
   if (isForeignCurrencyCapture && capturedRowCount !== capture.records.length)
-    throw new Error("Foreign capture page row count does not match admitted records.");
+    throw new Error(
+      "Foreign capture page row count does not match admitted records.",
+    );
   if (
     isFubonCreditCardCapture &&
     (capture.pages.length !== 7 ||
@@ -751,6 +1040,26 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     throw new Error(
       "Yuanta credit-card capture requires seven terminal grids with matching row counts.",
     );
+  const nonTransactionRecords = capture.nonTransactionRecords ?? [];
+  if (nonTransactionRecords.length > 0) {
+    if (
+      capture.identity.stream !== "investment" &&
+      !nonTransactionRecords.every(
+        (record) => record.recordType === "statement-evidence",
+      )
+    )
+      throw new Error(
+        "Non-transaction source records are only supported for investment captures.",
+      );
+    if (capture.scope.withdrawalPolicy !== "never-infer")
+      throw new Error(
+        "Non-transaction source records require a never-infer capture scope.",
+      );
+    if (isForeignCurrencyCapture)
+      throw new Error(
+        "Non-transaction source records are not supported by this financial route.",
+      );
+  }
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
@@ -776,7 +1085,9 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
     } else {
       validateOpaque(record.providerKey, "Provider key");
       if (record.humanAttestedOccurrenceKey !== undefined)
-        throw new Error("Human-attested occurrence identity is only valid for its exact route.");
+        throw new Error(
+          "Human-attested occurrence identity is only valid for its exact route.",
+        );
     }
     validateOpaque(record.contentHash, "Content hash");
     if (occurrences.has(record.occurrenceKey))
@@ -796,13 +1107,17 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       validateAmount(record.balanceAfter, "Financial balance amount");
     validateCurrency(record.currency, "Financial transaction currency");
     if (record.direction !== "inflow" && record.direction !== "outflow")
-      throw new Error("Financial transaction direction must be inflow or outflow.");
+      throw new Error(
+        "Financial transaction direction must be inflow or outflow.",
+      );
     if (isForeignCurrencyCapture) {
       const expectedContentHash = `sha256:${createHash("sha256")
         .update(record.compactJson)
         .digest("base64url")}`;
       if (record.contentHash !== expectedContentHash)
-        throw new Error("Foreign financial content hash does not match its compact source payload.");
+        throw new Error(
+          "Foreign financial content hash does not match its compact source payload.",
+        );
       let compact: Record<string, unknown>;
       try {
         compact = JSON.parse(record.compactJson) as Record<string, unknown>;
@@ -813,9 +1128,12 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         compact.direction !== record.direction ||
         compact.currency !== record.currency ||
         JSON.stringify(compact.amount) !== JSON.stringify(record.amount) ||
-        JSON.stringify(compact.balanceAfter) !== JSON.stringify(record.balanceAfter)
+        JSON.stringify(compact.balanceAfter) !==
+          JSON.stringify(record.balanceAfter)
       )
-        throw new Error("Foreign compact source payload does not match canonical financial facts.");
+        throw new Error(
+          "Foreign compact source payload does not match canonical financial facts.",
+        );
       validateSourceTime(record.sourceTime, record);
     }
     if (capture.semantics.requireBalance && record.balanceAfter === null)
@@ -827,15 +1145,25 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       if (conversion.originalAmount !== null)
         validateAmount(conversion.originalAmount, "Conversion original amount");
       if (conversion.originalCurrency !== null)
-        validateCurrency(conversion.originalCurrency, "Conversion original currency");
-      if ((conversion.originalAmount === null) !== (conversion.originalCurrency === null))
-        throw new Error("Conversion original amount and currency must be present together.");
+        validateCurrency(
+          conversion.originalCurrency,
+          "Conversion original currency",
+        );
+      if (
+        (conversion.originalAmount === null) !==
+        (conversion.originalCurrency === null)
+      )
+        throw new Error(
+          "Conversion original amount and currency must be present together.",
+        );
       if (conversion.feeAmount != null)
         validateAmount(conversion.feeAmount, "Conversion fee amount");
       if (conversion.feeCurrency != null)
         validateCurrency(conversion.feeCurrency, "Conversion fee currency");
       if ((conversion.feeAmount == null) !== (conversion.feeCurrency == null))
-        throw new Error("Conversion fee amount and currency must be present together.");
+        throw new Error(
+          "Conversion fee amount and currency must be present together.",
+        );
       for (const [label, candidate] of [
         ["source-reported", conversion.sourceReportedRate],
         ["implied", conversion.impliedRate],
@@ -843,7 +1171,10 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
         if (!candidate) continue;
         validateAmount(candidate.amount, `${label} rate amount`);
         validateCurrency(candidate.baseCurrency, `${label} rate base currency`);
-        validateCurrency(candidate.quoteCurrency, `${label} rate quote currency`);
+        validateCurrency(
+          candidate.quoteCurrency,
+          `${label} rate quote currency`,
+        );
         if (candidate.observedOn != null)
           validateDate(candidate.observedOn, `${label} rate date`);
       }
@@ -854,15 +1185,38 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
       )
         throw new Error("Conversion comparison is invalid.");
       if (
-        conversion.bookedAmount.coefficient !==
-          record.amount.coefficient ||
+        conversion.bookedAmount.coefficient !== record.amount.coefficient ||
         conversion.bookedAmount.scale !== record.amount.scale ||
         conversion.bookedCurrency !== record.currency
       )
         throw new Error(
           "Conversion evidence booked amount must match the canonical transaction.",
-        );
+      );
     }
+  }
+  for (const record of nonTransactionRecords) {
+    if (
+      record.recordType !== "holding-observation" &&
+      record.recordType !== "statement-evidence"
+    )
+      throw new Error("Non-transaction source record kind is unsupported.");
+    validateOpaque(record.occurrenceKey, "Occurrence key");
+    validateOpaque(record.collisionKey, "Collision key");
+    if (record.providerKey !== "human-attested:no-provider-key")
+      validateOpaque(record.providerKey, "Provider key");
+    validateOpaque(record.contentHash, "Content hash");
+    if (occurrences.has(record.occurrenceKey))
+      throw new CanonicalFinancialDepositConflictError(
+        "Duplicate source occurrence in one capture.",
+      );
+    if (collisions.has(record.collisionKey))
+      throw new CanonicalFinancialDepositConflictError(
+        "Duplicate source collision identity in one capture.",
+      );
+    occurrences.add(record.occurrenceKey);
+    collisions.add(record.collisionKey);
+    validateText(record.sequenceLexeme, "Financial source sequence");
+    validateText(record.compactJson, "Financial compact source payload");
   }
 }
 
@@ -879,8 +1233,11 @@ export function admitCanonicalFinancialDepositCapture(
     Object.freeze(record.sourceTime);
     Object.freeze(record);
   }
+  for (const record of capture.nonTransactionRecords ?? []) Object.freeze(record);
   Object.freeze(capture.pages);
   Object.freeze(capture.records);
+  if (capture.nonTransactionRecords)
+    Object.freeze(capture.nonTransactionRecords);
   Object.freeze(capture.identity);
   Object.freeze(capture.scope);
   Object.freeze(capture.semantics);
@@ -941,10 +1298,88 @@ function latestLifecycle(
   return row?.event_kind ?? null;
 }
 
+function compactSourcePayload(value: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Financial compact source payload must be valid JSON.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("Financial compact source payload must be an object.");
+  return parsed as Record<string, unknown>;
+}
+
+function sourceAdmissionRequestFromFinancialCapture(
+  capture: CanonicalFinancialDepositCapture,
+): CanonicalSourceCaptureAdmissionRequest {
+  const records = [
+    ...capture.records,
+    ...(capture.nonTransactionRecords ?? []).filter(
+      (record) => record.recordType === "holding-observation",
+    ),
+  ].map((record) => ({
+    occurrenceKey: record.occurrenceKey,
+    collisionKey: record.collisionKey,
+    providerKey: record.providerKey,
+    contentHash: record.contentHash,
+    compact: compactSourcePayload(record.compactJson),
+    sequenceLexeme: record.sequenceLexeme,
+    description: record.description ?? null,
+    compactJson: record.compactJson,
+  }));
+  return {
+    captureId: capture.captureId,
+    integrationNamespace: capture.identity.integrationNamespace,
+    sourceConnectionKey: capture.identity.sourceConnectionKey,
+    identityEpoch: capture.identity.identityEpochKey,
+    stream: capture.identity.stream,
+    recordKind: capture.identity.recordKind,
+    routeKey: capture.authorityRoute,
+    contractVersion: capture.contractVersion,
+    subjectDigest: capture.identity.subjectDigest,
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      dateFormat: "YYYY-MM-DD",
+      kind: capture.scope.scopeKind,
+      completeness: capture.scope.completeness,
+      ruleVersion: capture.scope.completenessRuleVersion,
+      completenessBasis: capture.scope.completenessBasis,
+      contractFingerprint: capture.scope.contractFingerprint,
+      preflightFingerprint: capture.scope.preflightFingerprint,
+      pageTerminalPolicy: capture.pages.every((page) => page.terminal)
+        ? "each"
+        : "last",
+      absenceAuthority:
+        capture.scope.absenceAuthority === null
+          ? undefined
+          : (capture.scope.absenceAuthority as
+              | "comparable-complete-range"
+              | "provider-explicit-no-data"),
+      accountNo: capture.identity.accountNo,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: page.responseCode as "200",
+      rowCount: page.rowCount,
+      terminal: page.terminal,
+      metadata: compactSourcePayload(page.metadataJson),
+      responseDigest: page.responseDigest,
+      proofKind: page.proofKind,
+      contractFingerprint: page.contractFingerprint,
+      preflightFingerprint: page.preflightFingerprint,
+      metadataJson: page.metadataJson,
+    })),
+    records,
+  };
+}
+
 function commitOnce(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
-  managesTransaction = true,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
 ): CanonicalFinancialDepositCommitResult {
   if (!hasValidatedBrand(capture))
     throw new CanonicalFinancialDepositConflictError(
@@ -952,181 +1387,41 @@ function commitOnce(
     );
   validateCapture(capture);
   const db = store.db;
-  if (managesTransaction) db.exec("BEGIN IMMEDIATE");
   try {
-    if (
-      db
-        .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
-        .get(capture.captureId)
-    )
-      throw new CanonicalFinancialDepositConflictError(
-        "Capture overwrite is forbidden.",
-      );
-
-    const commitId = id();
-    const commitSequence = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? 1,
+    const additionalRecords = (capture.nonTransactionRecords ?? [])
+      .filter((record) => record.recordType === "statement-evidence")
+      .map(
+      (record) => ({
+        occurrenceKey: record.occurrenceKey,
+        collisionKey: record.collisionKey,
+        providerKey: record.providerKey,
+        contentHash: record.contentHash,
+        compact: compactSourcePayload(record.compactJson),
+        sequenceLexeme: record.sequenceLexeme,
+        description: record.description ?? null,
+        compactJson: record.compactJson,
+        recordKind: record.recordKind,
+      }),
     );
-    const previousKnowledge = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(recorded_at_utc_us), -1) AS value FROM canonical_commits",
-          )
-          .get() as { value?: number }
-      ).value ?? -1,
+    const sourceContext = capability.admit(
+      sourceAdmissionRequestFromFinancialCapture(capture),
+      additionalRecords,
     );
-    const clockValue = store.commitClock();
-    if (!Number.isSafeInteger(clockValue) || clockValue < 0)
-      throw new Error("Canonical admission clock returned invalid UTC micros.");
-    db.prepare(
-      `INSERT INTO canonical_commits(
-        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-      ) VALUES (?, ?, ?, ?, 'source_capture')`,
-    ).run(
+    const {
+      receipt: sourceReceipt,
+      captureId,
+      scopeId,
       commitId,
-      commitSequence,
-      Math.max(clockValue, previousKnowledge + 1),
-      capture.authorityRoute,
-    );
-    db.prepare(
-      `INSERT INTO source_authority_routes(
-        authority_route, integration_namespace, stream, contract_version, created_commit_id
-      ) VALUES (?, ?, ?, ?, ?) ON CONFLICT(authority_route) DO NOTHING`,
-    ).run(
-      capture.authorityRoute,
-      capture.identity.integrationNamespace,
-      capture.identity.stream,
-      capture.contractVersion,
-      commitId,
-    );
-
-    const existingConnection = db
-      .prepare(
-        `SELECT source_connection_id FROM source_connections
-         WHERE integration_namespace = ? AND source_connection_key = ?`,
-      )
-      .get(
-        capture.identity.integrationNamespace,
-        capture.identity.sourceConnectionKey,
-      ) as { source_connection_id?: unknown } | undefined;
-    const connectionId = existingConnection
-      ? (existingConnection.source_connection_id as Uint8Array)
-      : id();
-    if (!existingConnection)
-      db.prepare(
-        `INSERT INTO source_connections(
-          source_connection_id, integration_namespace, source_connection_key, created_commit_id
-        ) VALUES (?, ?, ?, ?)`,
-      ).run(
-        connectionId,
-        capture.identity.integrationNamespace,
-        capture.identity.sourceConnectionKey,
-        commitId,
-      );
-
-    const existingEpoch = db
-      .prepare(
-        `SELECT identity_epoch_id FROM identity_epochs
-         WHERE source_connection_id = ? AND epoch_key = ?`,
-      )
-      .get(connectionId, capture.identity.identityEpochKey) as
-      { identity_epoch_id?: unknown } | undefined;
-    const epochId = existingEpoch
-      ? (existingEpoch.identity_epoch_id as Uint8Array)
-      : id();
-    if (!existingEpoch)
-      db.prepare(
-        `INSERT INTO identity_epochs(
-          identity_epoch_id, source_connection_id, epoch_key, created_commit_id
-        ) VALUES (?, ?, ?, ?)`,
-      ).run(epochId, connectionId, capture.identity.identityEpochKey, commitId);
-    db.prepare(
-      `INSERT INTO source_route_bindings(
-        authority_route, source_connection_id, created_commit_id
-      ) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
-    ).run(capture.authorityRoute, connectionId, commitId);
-
-    const existingSubject = db
-      .prepare(
-        `SELECT source_subject_id FROM source_subjects
-         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ?
-           AND record_kind = ? AND subject_digest = ?`,
-      )
-      .get(
-        connectionId,
-        epochId,
-        capture.identity.stream,
-        capture.identity.recordKind,
-        capture.identity.subjectDigest,
-      ) as { source_subject_id?: unknown } | undefined;
-    const subjectId = existingSubject
-      ? (existingSubject.source_subject_id as Uint8Array)
-      : id();
-    if (!existingSubject)
-      db.prepare(
-        `INSERT INTO source_subjects(
-          source_subject_id, source_connection_id, identity_epoch_id, stream,
-          record_kind, subject_digest, created_commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        subjectId,
-        connectionId,
-        epochId,
-        capture.identity.stream,
-        capture.identity.recordKind,
-        capture.identity.subjectDigest,
-        commitId,
-      );
-
-    for (const record of capture.records) {
-      const collisions = db
-        .prepare(
-          `SELECT occurrence_key FROM source_records
-           WHERE source_subject_id = ? AND collision_key = ?`,
-        )
-        .all(subjectId, record.collisionKey) as Array<{
-        occurrence_key?: unknown;
-      }>;
-      if (
-        collisions.some(
-          (row) => String(row.occurrence_key) !== record.occurrenceKey,
-        )
-      )
-        throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence collision is forbidden.",
-        );
-      const prior = db
-        .prepare(
-          `SELECT provider_key, content_hash FROM source_records
-           WHERE source_subject_id = ? AND occurrence_key = ?`,
-        )
-        .all(subjectId, record.occurrenceKey) as Array<{
-        provider_key?: unknown;
-        content_hash?: unknown;
-      }>;
-      if (
-        capture.authorityRoute !== "fubon/credit-card/human-attested-v1" &&
-        prior.some((row) => String(row.provider_key) !== record.providerKey)
-      )
-        throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence provider identity overwrite is forbidden.",
-        );
-      if (
-        !capture.authorityRoute.includes("/foreign-currency/") &&
-        prior.some((row) => String(row.content_hash) !== record.contentHash)
-      )
-        throw new CanonicalFinancialDepositConflictError(
-          "Source occurrence content overwrite is forbidden.",
-        );
-    }
-
+      sourceConnectionId: connectionId,
+      identityEpochId: epochId,
+      sourceSubjectId: subjectId,
+      sourceRecordIds,
+    } = sourceContext;
+    const commitSequence = sourceReceipt.knowledgePoint;
+    const sourceRecords = [
+      ...capture.records,
+      ...(capture.nonTransactionRecords ?? []),
+    ];
     const existingAccount = db
       .prepare(
         `SELECT account_id, currency, account_type FROM financial_accounts
@@ -1140,9 +1435,8 @@ function commitOnce(
       ) as
       | { account_id?: unknown; currency?: unknown; account_type?: unknown }
       | undefined;
-    const isForeignCurrencyRoute = capture.authorityRoute.includes(
-      "/foreign-currency/",
-    );
+    const isForeignCurrencyRoute =
+      capture.authorityRoute.includes("/foreign-currency/");
     if (
       existingAccount &&
       (existingAccount.account_type !== capture.identity.accountType ||
@@ -1171,128 +1465,19 @@ function commitOnce(
         capture.identity.currency,
         commitId,
       );
-
-    const captureId = id();
-    const scopeId = id();
-    db.prepare(
-      `INSERT INTO source_captures(
-        capture_id, capture_key, source_connection_id, identity_epoch_id,
-        authority_route, source_subject_id, stream, record_kind, account_no,
-        observed_at, scope_start, scope_end, completeness, completeness_basis,
-        completeness_rule_version, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      captureId,
-      capture.captureId,
-      connectionId,
-      epochId,
-      capture.authorityRoute,
-      subjectId,
-      capture.identity.stream,
-      capture.identity.recordKind,
-      capture.identity.accountNo,
-      capture.observedAt,
-      capture.scope.startDate,
-      capture.scope.endDate,
-      capture.scope.completeness,
-      capture.scope.completenessBasis,
-      capture.scope.completenessRuleVersion,
-      commitId,
-    );
-    db.prepare(
-      `INSERT INTO capture_scopes(
-        scope_id, capture_id, source_connection_id, identity_epoch_id, account_id,
-        source_subject_id, account_no, stream, scope_start, scope_end, scope_kind,
-        completeness, completeness_basis, completeness_rule_version,
-        absence_authority, contract_fingerprint, preflight_fingerprint,
-        page_count, terminal, commit_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      scopeId,
-      captureId,
-      connectionId,
-      epochId,
+    capability.linkFinancialAccount({
       accountId,
-      subjectId,
-      capture.identity.accountNo,
-      capture.identity.stream,
-      capture.scope.startDate,
-      capture.scope.endDate,
-      capture.scope.scopeKind,
-      capture.scope.completeness,
-      capture.scope.completenessBasis,
-      capture.scope.completenessRuleVersion,
-      capture.scope.absenceAuthority,
-      capture.scope.contractFingerprint,
-      capture.scope.preflightFingerprint,
-      capture.scope.pageCount,
-      capture.pages.at(-1)?.terminal ? 1 : 0,
-      commitId,
-    );
-    for (const page of capture.pages)
-      db.prepare(
-        `INSERT INTO capture_scope_pages(
-          scope_page_id, scope_id, page_ordinal, response_code, terminal,
-          row_count, response_digest, proof_kind, contract_fingerprint,
-          preflight_fingerprint, metadata_json, commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        id(),
-        scopeId,
-        page.pageOrdinal,
-        page.responseCode,
-        page.terminal ? 1 : 0,
-        page.rowCount,
-        page.responseDigest,
-        page.proofKind,
-        page.contractFingerprint,
-        page.preflightFingerprint,
-        page.metadataJson,
-        commitId,
-      );
+      scopeId,
+      sourceRecordIds,
+    });
 
     const seen = new Set<string>();
-    for (const record of capture.records) {
-      seen.add(record.occurrenceKey);
-      const sourceRecordId = id();
-      db.prepare(
-        `INSERT INTO source_records(
-          source_record_id, capture_id, source_subject_id, commit_id, record_kind,
-          sequence_lexeme, provider_key, content_hash, occurrence_key,
-          collision_key, description, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        sourceRecordId,
-        captureId,
-        subjectId,
-        commitId,
-        capture.identity.recordKind,
-        record.sequenceLexeme,
-        record.providerKey,
-        record.contentHash,
-        record.occurrenceKey,
-        record.collisionKey,
-        record.description ?? null,
-        record.compactJson,
-      );
-      db.prepare(
-        `INSERT INTO source_record_scopes(
-          source_record_id, scope_id, capture_id, account_id, source_subject_id,
-          sequence_lexeme, occurrence_key, commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        sourceRecordId,
-        scopeId,
-        captureId,
-        accountId,
-        subjectId,
-        record.sequenceLexeme,
-        record.occurrenceKey,
-        commitId,
-      );
-      db.prepare(
-        "INSERT INTO source_record_provenance(source_record_id, capture_id, commit_id) VALUES (?, ?, ?)",
-      ).run(sourceRecordId, captureId, commitId);
+    for (const [sourceRecordIndex, record] of sourceRecords.entries()) {
+      if (!isNonTransactionRecord(record)) seen.add(record.occurrenceKey);
+      const sourceRecordId = sourceRecordIds[sourceRecordIndex];
+      if (!sourceRecordId)
+        throw new Error("Canonical source admission record identity is missing.");
+      if (isNonTransactionRecord(record)) continue;
 
       const existingTransaction = db
         .prepare(
@@ -1318,12 +1503,13 @@ function commitOnce(
            ORDER BY revision.revision_number DESC LIMIT 1`,
         )
         .get(transactionId) as
-        {
-          revision_id?: unknown;
-          commit_id?: unknown;
-          revision_number?: unknown;
-          content_hash?: unknown;
-        } | undefined;
+        | {
+            revision_id?: unknown;
+            commit_id?: unknown;
+            revision_number?: unknown;
+            content_hash?: unknown;
+          }
+        | undefined;
       let revisionId: Uint8Array;
       let assertionId: Uint8Array;
       if (
@@ -1336,8 +1522,7 @@ function commitOnce(
               "SELECT assertion_id FROM assertions WHERE origin = 'source' AND revision_id = ?",
             )
             .get(existingRevision.revision_id as Uint8Array) as
-            | { assertion_id?: unknown }
-            | undefined;
+            { assertion_id?: unknown } | undefined;
           if (!priorAssertion)
             throw new Error("Canonical source assertion is missing.");
           insertLifecycle(db, {
@@ -1422,7 +1607,7 @@ function commitOnce(
               implied_rate_coefficient, implied_rate_scale, implied_rate_base_currency,
               implied_rate_quote_currency, implied_rate_date, comparison,
               fee_amount_coefficient, fee_amount_scale, fee_currency, evidence_origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             id(),
             transactionId,
@@ -1475,17 +1660,6 @@ function commitOnce(
           commitId,
           kind: "observed",
         });
-        db.prepare(
-          `INSERT INTO current_transactions(
-            transaction_id, revision_id, commit_id, projection_commit_id,
-            revision_commit_id
-          ) VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(transaction_id) DO UPDATE SET
-            revision_id = excluded.revision_id,
-            commit_id = excluded.commit_id,
-            projection_commit_id = excluded.projection_commit_id,
-            revision_commit_id = excluded.revision_commit_id`,
-        ).run(transactionId, revisionId, commitId, commitId, commitId);
       } else {
         revisionId = existingRevision.revision_id as Uint8Array;
         const assertion = db
@@ -1505,23 +1679,6 @@ function commitOnce(
             commitId,
             kind: "restored",
           });
-          db.prepare(
-            `INSERT INTO current_transactions(
-              transaction_id, revision_id, commit_id, projection_commit_id,
-              revision_commit_id
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(transaction_id) DO UPDATE SET
-              revision_id = excluded.revision_id,
-              commit_id = excluded.commit_id,
-              projection_commit_id = excluded.projection_commit_id,
-              revision_commit_id = excluded.revision_commit_id`,
-          ).run(
-            transactionId,
-            revisionId,
-            commitId,
-            commitId,
-            existingRevision.commit_id as Uint8Array,
-          );
         }
       }
       db.prepare(
@@ -1538,9 +1695,9 @@ function commitOnce(
          JOIN financial_transactions transaction_row
            ON transaction_row.transaction_id = assertion.transaction_id
          JOIN transaction_revisions revision ON revision.revision_id = assertion.revision_id
-         JOIN current_transactions current_row
-           ON current_row.transaction_id = transaction_row.transaction_id
-          AND current_row.revision_id = revision.revision_id
+         JOIN assertions current_assertion
+           ON current_assertion.revision_id = revision.revision_id
+          AND current_assertion.origin = 'source'
          JOIN assertion_provenance provenance
            ON provenance.assertion_id = assertion.assertion_id
          JOIN source_record_scopes record_scope
@@ -1558,7 +1715,16 @@ function commitOnce(
            AND prior_scope.completeness_rule_version = ?
            AND prior_scope.contract_fingerprint = ?
            AND prior_scope.preflight_fingerprint = ?
-           AND prior_capture.authority_route = ?`,
+           AND prior_capture.authority_route = ?
+           AND COALESCE((
+             SELECT lifecycle.event_kind
+             FROM assertion_transitions lifecycle
+             JOIN canonical_commits lifecycle_commit
+               ON lifecycle_commit.commit_id = lifecycle.commit_id
+             WHERE lifecycle.assertion_id = current_assertion.assertion_id
+             ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
+             LIMIT 1
+           ), 'observed') <> 'withdrawn'`,
         )
         .all(
           accountId,
@@ -1589,9 +1755,6 @@ function commitOnce(
           commitId,
           kind: "withdrawn",
         });
-        db.prepare(
-          "DELETE FROM current_transactions WHERE transaction_id = ? AND revision_id = ?",
-        ).run(row.transaction_id as Uint8Array, row.revision_id as Uint8Array);
       }
     }
 
@@ -1613,11 +1776,10 @@ function commitOnce(
       captureId,
       commitId,
     );
-    syncCanonicalProjectionFromCompatibility(db, commitId);
-    db.prepare(
-      `INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?)
-       ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id`,
-    ).run(commitId);
+    createCanonicalProjectionRuntime(db).applyCommit({
+      commitId,
+      kind: "source_capture",
+    });
     const provenanceCount =
       capture.records.length === 0
         ? 0
@@ -1641,7 +1803,6 @@ function commitOnce(
                 .get(accountId, captureId) as { count?: number }
             ).count ?? 0,
           );
-    if (managesTransaction) db.exec("COMMIT");
     return {
       status: "canonical-live",
       canonicalAdmission: "admitted",
@@ -1651,12 +1812,6 @@ function commitOnce(
       provenanceCount,
     };
   } catch (error) {
-    if (managesTransaction)
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        /* preserve original failure */
-      }
     throw error;
   }
 }
@@ -1665,8 +1820,10 @@ export async function commitCanonicalFinancialDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
 ): Promise<CanonicalFinancialDepositCommitResult> {
-  return withCanonicalWriterQueue(store.databasePath, () =>
-    commitOnce(store, capture),
+  requireValidatedFinancialWriterStore(store);
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as CanonicalSourceStore,
+    (capability) => commitOnce(store, capture, capability),
   );
 }
 
@@ -1680,31 +1837,24 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
     results: readonly CanonicalFinancialDepositCommitResult[],
   ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
+  requireValidatedFinancialWriterStore(store);
   if (captures.length === 0)
     throw new Error("Financial deposit capture batch cannot be empty.");
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as CanonicalSourceStore,
+    (capability) => {
     for (const capture of captures) {
       if (!hasValidatedBrand(capture))
         throw new CanonicalFinancialDepositConflictError(
           "Financial deposit batch contains a capture outside the runtime-validated seam.",
         );
-      validateCapture(capture);
+        validateCapture(capture);
     }
-    store.db.exec("BEGIN IMMEDIATE");
-    try {
-      const results = captures.map((capture) =>
-        commitOnce(store, capture, false),
-      );
-      beforeCommit?.(store.db, results);
-      store.db.exec("COMMIT");
-      return results;
-    } catch (error) {
-      try {
-        store.db.exec("ROLLBACK");
-      } catch {
-        /* preserve original failure */
-      }
-      throw error;
-    }
-  });
+    const results = captures.map((capture) =>
+      commitOnce(store, capture, capability),
+    );
+    beforeCommit?.(store.db, results);
+    return results;
+    },
+  );
 }

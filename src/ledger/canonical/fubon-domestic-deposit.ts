@@ -13,12 +13,18 @@ import {
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  admitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidence,
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import {
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import {
+  requireSourceConnectionIdentity,
+  validateSourceConnectionIdentity,
+} from "./source-connection-identity.ts";
 import {
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
   ensureFubonHumanAttestationEvents,
@@ -616,11 +622,11 @@ function hardSourceOnlyRowDiagnostics(
       const direction = outflow ? "outflow" : inflow ? "inflow" : null;
       if (!direction) continue;
       const contentHash = opaqueToken(
-        "fubon-observed-composite-content-v1",
-        ...cells.map(normalizedSourceCell),
+        "fubon-observed-composite-content-v2",
+        ...normalizedOccurrenceIdentityCells(cells),
       );
       const fence = opaqueToken(
-        "fubon-observed-composite-fence-v1",
+        "fubon-observed-composite-fence-v2",
         identity.subjectDigest,
         getFubonHumanAttestedV1Manifest().attestationId,
         getFubonHumanAttestedV1Manifest().evidenceVersion,
@@ -750,6 +756,10 @@ export function createFubonDomesticDepositSourceEvidence(
     | FubonDomesticDepositValidatedEvidence
     | FubonDomesticDepositSourceOnlyEvidence,
   captureId: string,
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>,
 ): CanonicalSourceEvidence {
   if (
     !isAdmittedFubonDomesticDepositCaptureEvidence(capture) &&
@@ -759,10 +769,16 @@ export function createFubonDomesticDepositSourceEvidence(
   if (typeof captureId !== "string" || captureId.trim() === "")
     throw new Error("Fubon source evidence capture ID is required.");
 
+  const stableSourceIdentity = requireSourceConnectionIdentity(
+    "fubon",
+    "Fubon source evidence",
+    sourceIdentity,
+  );
   const manifest = getFubonHumanAttestedV1Manifest();
   const identity = deriveFubonDomesticDepositAccountIdentity(
     capture.account,
     manifest,
+    stableSourceIdentity.sourceConnectionKey,
   );
   const subjectDigest = identity.subjectDigest;
   const sourceConnectionKey = identity.sourceConnectionKey;
@@ -852,13 +868,21 @@ export async function commitFubonDomesticDepositSourceEvidence(
     | FubonDomesticDepositValidatedEvidence
     | FubonDomesticDepositSourceOnlyEvidence,
   captureId: string,
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createFubonDomesticDepositSourceEvidence(capture, captureId),
-    ),
+  const evidence = createFubonDomesticDepositSourceEvidence(
+    capture,
+    captureId,
+    sourceIdentity,
   );
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export const FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
@@ -886,7 +910,7 @@ export const FUBON_DOMESTIC_DEPOSIT_EFFECTIVE_TIME_BASIS =
   "transaction-time" as const;
 export const FUBON_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
 export const FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION =
-  "fubon/domestic-deposit/observed-composite-v1" as const;
+  "fubon/domestic-deposit/observed-composite-v2" as const;
 export const FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS =
   "human-attested-requested-range-all-pages" as const;
 export const FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY =
@@ -975,6 +999,15 @@ export type FubonDomesticDepositFinancialAdmissionInput = {
   captureId: string;
   semantics?: FubonDomesticDepositFinancialSemantics;
   humanAttestation?: FubonHumanAttestedV1Manifest;
+  /**
+   * Stable login identity supplied by the workflow.  It is deliberately
+   * separate from the human-attested account/epoch identity: a login can
+   * select more than one account, while an attestation can advance its epoch.
+   * Both fields are mandatory for financial admission. A legacy manifest
+   * identity is provenance only and cannot select a Source Connection.
+   */
+  sourceConnectionScope?: string;
+  sourceConnectionKey?: string;
 };
 
 export type FubonDomesticDepositFinancialAdmissionDiagnostic =
@@ -1021,6 +1054,9 @@ export type FubonDomesticDepositFinancialAdmissionDiagnostic =
   | "amount-column-conflict"
   | "amount-sign-invalid"
   | "scope-invalid"
+  | "source-connection-scope-invalid"
+  | "source-connection-key-invalid"
+  | "source-connection-key-mismatch"
   | "row-status-unresolved";
 
 export type FubonDomesticDepositFinancialAdmissionResult = {
@@ -1072,6 +1108,26 @@ function opaqueToken(...parts: string[]): `sha256:${string}` {
 
 function validOpaque(value: string): value is `sha256:${string}` {
   return /^sha256:[A-Za-z0-9_-]+$/.test(value);
+}
+
+type FubonSourceConnectionResolution = {
+  sourceConnectionKey: `sha256:${string}` | null;
+  diagnostics: FubonDomesticDepositFinancialAdmissionDiagnostic[];
+};
+
+/**
+ * Resolve the workflow's stable login identity without coupling it to the
+ * attested account selector or its identity epoch. Financial admission has no
+ * manifest-derived fallback; legacy identity is source/provenance only.
+ */
+function resolveFubonSourceConnection(
+  input: FubonDomesticDepositFinancialAdmissionInput,
+): FubonSourceConnectionResolution {
+  const validated = validateSourceConnectionIdentity("fubon", input);
+  return {
+    sourceConnectionKey: validated.sourceConnectionKey,
+    diagnostics: [...validated.defects],
+  };
 }
 
 function exactAmount(
@@ -1143,28 +1199,35 @@ export type FubonDomesticDepositAccountIdentity = {
 /**
  * Derive stable, privacy-safe identity keys from one selector option. The
  * selector value is never persisted as an account number; multiple options
- * therefore remain distinct subjects without leaking the raw value.
+ * therefore remain distinct subjects without leaking the raw value. Omitting
+ * sourceConnectionKey preserves a legacy compatibility calculation only;
+ * source and financial admission always supply a validated workflow key and
+ * never persist the compatibility result.
  */
 export function deriveFubonDomesticDepositAccountIdentity(
   account: FubonDomesticDepositCaptureEvidence["account"],
   manifest: FubonHumanAttestedV1Manifest = getFubonHumanAttestedV1Manifest(),
+  sourceConnectionKey?: `sha256:${string}`,
 ): FubonDomesticDepositAccountIdentity {
   const subjectDigest = sourceAccountDigest(account);
   return {
     accountNo: subjectDigest,
-    sourceConnectionKey: opaqueToken(
-      "fubon-source-connection-v2",
-      "fubon",
-      FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-      manifest.attestationId,
-      manifest.evidenceVersion,
-    ),
+    sourceConnectionKey:
+      sourceConnectionKey ??
+      opaqueToken(
+        "fubon-source-connection-v2",
+        "fubon",
+        FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+        manifest.attestationId,
+        manifest.evidenceVersion,
+      ),
     identityEpochKey: opaqueToken(
       "fubon-source-epoch-v2",
       FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
       manifest.attestationId,
       manifest.evidenceVersion,
       manifest.status,
+      FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION,
     ),
     subjectDigest,
   };
@@ -1199,6 +1262,17 @@ function hasSharedAccountMarker(
 
 function normalizedSourceCell(value: string): string {
   return clean(value).replace(/\s+/g, " ");
+}
+
+function normalizedOccurrenceIdentityCells(
+  cells: readonly string[],
+): readonly string[] {
+  // The provider's note cell can change when the same transaction is returned
+  // through two overlapping query windows. It remains available to structural
+  // evidence hashing and workflow relation extraction, but is excluded from
+  // occurrence identity. The first six cells are the stable booked tuple:
+  // date, time, summary, outflow, inflow, and balance.
+  return cells.slice(0, 6).map(normalizedSourceCell);
 }
 
 function hasValidatedEvidence(
@@ -1287,11 +1361,21 @@ function normalizeFubonDomesticDepositFinancialCapture(
     };
   }
 
+  const attestedManifest = isFubonHumanAttestedV1Manifest(attestation)
+    ? attestation
+    : FUBON_HUMAN_ATTESTED_V1_MANIFEST;
+  const sourceConnection = resolveFubonSourceConnection(input);
+  diagnostics.push(...sourceConnection.diagnostics);
+  if (!sourceConnection.sourceConnectionKey)
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: [...new Set(diagnostics)],
+    };
   const identity = deriveFubonDomesticDepositAccountIdentity(
     input.capture.account,
-    isFubonHumanAttestedV1Manifest(attestation)
-      ? attestation
-      : FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+    attestedManifest,
+    sourceConnection.sourceConnectionKey,
   );
   if (
     semantics.account.accountNo !== identity.accountNo ||
@@ -1441,11 +1525,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
     if (!time) diagnostics.push("source-time-invalid");
     if (!amount || !balanceAfter || !time || !direction) continue;
     const contentHash = opaqueToken(
-      "fubon-observed-composite-content-v1",
-      ...cells.map(normalizedSourceCell),
+      "fubon-observed-composite-content-v2",
+      ...normalizedOccurrenceIdentityCells(cells),
     );
     const fence = opaqueToken(
-      "fubon-observed-composite-fence-v1",
+      "fubon-observed-composite-fence-v2",
       identity.subjectDigest,
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
       FUBON_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
@@ -1458,7 +1542,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       String(balanceAfter.scale),
     );
     const occurrenceKey = opaqueToken(
-      "fubon-observed-composite-occurrence-v1",
+      "fubon-observed-composite-occurrence-v2",
       fence,
       contentHash,
     );

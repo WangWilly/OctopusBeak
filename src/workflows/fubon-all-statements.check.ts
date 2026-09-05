@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  deriveFubonSourceConnectionKey,
+  fubonStableLoginScope,
+} from "./fubon-source-connection.ts";
 
 const source = await readFile(
   new URL("./fubon-all-statements.ts", import.meta.url),
@@ -18,6 +22,7 @@ assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(source, /deriveFubonCanonicalHumanAttestation/);
 assert.match(source, /FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY/);
 assert.match(source, /panFingerprintKey/);
+assert.doesNotMatch(source, /RepaymentRouteInventory/);
 assert.doesNotMatch(source, /fubon_card_identity_fingerprint_key/);
 assert.match(
   source,
@@ -69,14 +74,38 @@ const page = {
   on: () => calls.push("dialog-listener"),
 };
 const ctx = { page, session: "fubon-session" };
-const statements = { files: ["deposit.csv"] };
+const admittedEvidence = {
+  account: { valueDigest: "sha256:admitted" },
+  pages: [],
+};
+const sourceOnlyEvidence = {
+  account: { valueDigest: "sha256:source-only" },
+  pages: [],
+};
+const statements = {
+  files: ["deposit.csv"],
+  evidence: [admittedEvidence, sourceOnlyEvidence],
+  admissions: [
+    {
+      status: "financial-admitted",
+      accountValueDigest: "sha256:admitted",
+    },
+    {
+      status: "source-only",
+      accountValueDigest: "sha256:source-only",
+    },
+  ],
+};
 const creditCards = { files: ["credit-card.csv"] };
 const loans = { files: ["loan.csv"] };
 let observedCanonicalDir: string | undefined;
 let observedFinancialDir: string | undefined;
+let observedDepositSourceConnectionKey: string | undefined;
+let observedLoanSourceConnectionKey: string | undefined;
+let observedDepositSourceConnectionScope: string | undefined;
+let observedLoanSourceConnectionScope: string | undefined;
 let observedPanFingerprintKey:
-  | { secret: string; keyVersion?: string }
-  | undefined;
+  { secret: string; keyVersion?: string } | undefined;
 let observedCreditCardInput: Record<string, unknown> | undefined;
 let output: unknown;
 try {
@@ -121,11 +150,15 @@ try {
         options?: {
           canonicalLedgerDir?: string;
           canonicalFinancialLedgerDir?: string;
+          sourceConnectionKey?: string;
+          sourceConnectionScope?: string;
         },
       ) => {
         assert.equal(actualPage, page);
         observedCanonicalDir = options?.canonicalLedgerDir;
         observedFinancialDir = options?.canonicalFinancialLedgerDir;
+        observedDepositSourceConnectionKey = options?.sourceConnectionKey;
+        observedDepositSourceConnectionScope = options?.sourceConnectionScope;
         calls.push("deposit");
         return statements;
       },
@@ -142,8 +175,17 @@ try {
         calls.push("credit-card");
         return creditCards;
       },
-      runFubonLoanStatements: async (actualPage: unknown) => {
+      runFubonLoanStatements: async (
+        actualPage: unknown,
+        _input: unknown,
+        options?: {
+          sourceConnectionKey?: string;
+          sourceConnectionScope?: string;
+        },
+      ) => {
         assert.equal(actualPage, page);
+        observedLoanSourceConnectionKey = options?.sourceConnectionKey;
+        observedLoanSourceConnectionScope = options?.sourceConnectionScope;
         calls.push("loan");
         return loans;
       },
@@ -171,6 +213,40 @@ try {
 
 assert.equal(observedCanonicalDir, "/tmp/fubon-all-statements-source-check");
 assert.equal(observedFinancialDir, "/tmp/fubon-all-statements-financial-check");
+assert.equal(
+  observedDepositSourceConnectionKey,
+  observedLoanSourceConnectionKey,
+  "deposit and loan runs must receive the same stable Source Connection key",
+);
+assert.equal(
+  observedDepositSourceConnectionScope,
+  observedLoanSourceConnectionScope,
+  "deposit and loan runs must receive the same stable login scope",
+);
+assert.equal(
+  observedDepositSourceConnectionKey,
+  module.deriveFubonSourceConnectionKey({
+    fubon_user_id: "id",
+    fubon_account: "account",
+  }),
+);
+assert.equal(
+  observedDepositSourceConnectionKey,
+  module.deriveFubonSourceConnectionKey({
+    fubon_user_id: " ID ",
+    fubon_account: " ACCOUNT ",
+    fubon_password: "rotated",
+  }),
+  "password rotation and formatting must not change Source Connection identity",
+);
+assert.notEqual(
+  observedDepositSourceConnectionKey,
+  module.deriveFubonSourceConnectionKey({
+    fubon_user_id: "other-id",
+    fubon_account: "account",
+  }),
+  "changing the provider login identity must start a new Source Connection",
+);
 assert.deepEqual(observedPanFingerprintKey, {
   secret: "synthetic-managed-secret",
 });
@@ -178,6 +254,13 @@ assert.ok(observedCreditCardInput);
 const derivedIdentity = module.deriveFubonCanonicalHumanAttestation(
   { fubon_user_id: " id ", fubon_account: " account " },
   "synthetic-managed-secret",
+);
+assert.equal(
+  (observedCreditCardInput?.canonicalHumanAttestation as
+    | { sourceConnectionKey?: string }
+    | undefined)?.sourceConnectionKey,
+  observedDepositSourceConnectionKey,
+  "credit-card, deposit, and loan runs must receive one Source Connection key",
 );
 assert.deepEqual(
   derivedIdentity,
@@ -214,16 +297,21 @@ assert.notEqual(
 assert.equal(
   derivedIdentity?.sourceConnectionKey,
   module.deriveFubonCanonicalHumanAttestation(
-    { fubon_user_id: " ID ", fubon_account: " ACCOUNT ", fubon_password: "rotated" },
+    {
+      fubon_user_id: " ID ",
+      fubon_account: " ACCOUNT ",
+      fubon_password: "rotated",
+    },
     "synthetic-managed-secret",
   )?.sourceConnectionKey,
 );
-assert.notEqual(
+assert.equal(
   derivedIdentity?.sourceConnectionKey,
   module.deriveFubonCanonicalHumanAttestation(
     { fubon_user_id: "id", fubon_account: "account" },
     "different-managed-secret",
   )?.sourceConnectionKey,
+  "managed-secret rotation must not change Source Connection identity",
 );
 assert.notEqual(
   derivedIdentity?.humanAttestedAccountKey,
@@ -239,7 +327,7 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(
   JSON.stringify(output),
-  /synthetic-managed-secret|"id"|"account"/iu,
+  /synthetic-managed-secret|"fubon_user_id"|"fubon_account"|"fubon_password"/iu,
   "combined workflow output must not expose login details or the managed secret",
 );
 
@@ -280,7 +368,15 @@ for (const selection of ["", "deposit,unknown"]) {
   try {
     await runFubonAllStatements(
       ctx,
-      { credentials: {}, statements: {}, creditCards: {}, loans: {} },
+      {
+        credentials: {
+          fubon_user_id: "source-only-id",
+          fubon_account: "source-only-account",
+        },
+        statements: {},
+        creditCards: {},
+        loans: {},
+      },
       {
         signInFubon: async () => selectedCalls.push("login"),
         keepBrowserWindowOutOfForeground: async () => {},
@@ -299,6 +395,8 @@ for (const selection of ["", "deposit,unknown"]) {
           options?: {
             canonicalLedgerDir?: string;
             canonicalFinancialLedgerDir?: string;
+            sourceConnectionKey?: string;
+            sourceConnectionScope?: string;
           },
         ) => {
           sourceOnlyOptions = options;
@@ -331,6 +429,14 @@ for (const selection of ["", "deposit,unknown"]) {
   }
   assert.deepEqual(sourceOnlyOptions, {
     canonicalLedgerDir: DEFAULT_LEDGER_DIR,
+    sourceConnectionScope: fubonStableLoginScope({
+      fubon_user_id: "source-only-id",
+      fubon_account: "source-only-account",
+    }),
+    sourceConnectionKey: deriveFubonSourceConnectionKey({
+      fubon_user_id: "source-only-id",
+      fubon_account: "source-only-account",
+    }),
   });
   assert.deepEqual(selectedCalls, [
     "login",

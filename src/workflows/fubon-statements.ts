@@ -42,8 +42,19 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  persistCounterpartyAccountEvidence,
+  resolveLoanRepaymentRelations,
+  type TransactionCounterpartyAccountEvidenceInput,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
+import {
+  deriveFubonSourceConnectionKey,
+  fubonStableLoginScope,
+} from "./fubon-source-connection.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -52,6 +63,8 @@ const depositQueryPath = "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces";
 export const FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
   "capture-evidence-v2" as const;
 export const FUBON_DEPOSIT_TELEMETRY_VERSION = "deposit-telemetry-v1" as const;
+export const FUBON_LOAN_PAYMENT_ACCOUNT_EVIDENCE_CONTRACT_VERSION =
+  "fubon/deposit-loan-payment-account/v1" as const;
 
 type BrowserScope = Page | Frame;
 
@@ -309,6 +322,11 @@ export type FubonStatementsRunDependencies = Partial<{
   canonicalLedgerDir: string;
   /** Explicit opt-in path for the limited human-attested financial writer. */
   canonicalFinancialLedgerDir: string;
+  /** Stable login-derived Source Connection identity shared with loan runs. */
+  sourceConnectionKey: string;
+  /** Raw, non-secret stable login scope used by the canonical adapter. */
+  sourceConnectionScope: string;
+  resolveLoanRepaymentRelations: typeof resolveLoanRepaymentRelations;
 }>;
 
 export type ParsedDepositStatementPage = {
@@ -463,6 +481,95 @@ export type FubonDepositStatementEvidence = {
   };
 };
 
+type FubonFinancialCaptureForCounterpartyEvidence = {
+  captureId: string;
+  identity: {
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+  };
+  records: readonly {
+    occurrenceKey: string;
+    compactJson: string;
+  }[];
+};
+
+function fullUnmaskedFubonLoanAccountFromPaymentNote(
+  value: string,
+): string | null {
+  const source = cleanText(value);
+  if (!source || /[*xX•]/u.test(source)) return null;
+  const normalized = source.replace(/[\s-]/gu, "");
+  // Live Fubon observations expose a 14-digit loan account at the start of
+  // 附註, followed either by a branch label or by a six-digit provider suffix.
+  // Both shapes retain the complete loan account; no masked or arbitrary
+  // substring is admitted as exact evidence.
+  const match = normalized.match(/^(\d{14})(?:\d{6}|[\p{Script=Han}]{2,12})$/u);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Versioned live rule confirmed against Fubon's domestic-deposit page:
+ * provider summary "放款繳款" plus an unmasked full account in 附註 is an
+ * exact repayment-destination assertion.  Date/amount are corroboration for
+ * allocation, never a substitute for this account evidence.
+ */
+export function buildFubonLoanPaymentAccountEvidence(
+  capture: FubonDepositStatementEvidence,
+  financialCapture: FubonFinancialCaptureForCounterpartyEvidence,
+): TransactionCounterpartyAccountEvidenceInput[] {
+  const records = new Map<string, string>();
+  for (const record of financialCapture.records) {
+    try {
+      const compact = JSON.parse(record.compactJson) as {
+        pageOrdinal?: unknown;
+        rowOrdinal?: unknown;
+      };
+      if (
+        Number.isSafeInteger(compact.pageOrdinal) &&
+        Number.isSafeInteger(compact.rowOrdinal)
+      ) {
+        records.set(
+          `${compact.pageOrdinal}:${compact.rowOrdinal}`,
+          record.occurrenceKey,
+        );
+      }
+    } catch {
+      // The canonical admission owns compact-record validation. An unrelated
+      // legacy record simply cannot support this provider-specific assertion.
+    }
+  }
+
+  const evidence: TransactionCounterpartyAccountEvidenceInput[] = [];
+  for (const page of capture.pages) {
+    for (const row of page.rows) {
+      if (cleanText(row.cells[2]) !== "放款繳款") continue;
+      const accountValue = fullUnmaskedFubonLoanAccountFromPaymentNote(
+        row.cells[6],
+      );
+      if (!accountValue) continue;
+      const sourceRecordKey = records.get(`${page.pageOrdinal}:${row.rowOrdinal}`);
+      if (!sourceRecordKey)
+        throw new Error(
+          "Fubon loan-payment evidence row has no unique canonical source record.",
+        );
+      evidence.push({
+        captureId: financialCapture.captureId,
+        sourceRecordKey,
+        sourceConnectionKey: financialCapture.identity.sourceConnectionKey,
+        identityEpochKey: financialCapture.identity.identityEpochKey,
+        accountValue,
+        role: "beneficiary",
+        purpose: "loan_repayment",
+        scope: "loan_contract",
+        evidenceKind: "transaction-counterparty-account",
+        sourceField: "附註",
+        contractVersion: FUBON_LOAN_PAYMENT_ACCOUNT_EVIDENCE_CONTRACT_VERSION,
+      });
+    }
+  }
+  return evidence;
+}
+
 export type FubonDepositStatementOutputEvidence = {
   evidenceVersion: typeof FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
   source: "fubon";
@@ -511,6 +618,18 @@ function digestEvidenceValue(value: string): `sha256:${string}` {
 
 function digestTelemetryValue(value: string): `sha256:${string}` {
   return digestEvidenceValue(value);
+}
+
+/**
+ * Keep a compatibility fallback for standalone legacy callers that do not
+ * provide a login identity. Normal workflow runs pass the stable key and
+ * scope through the canonical admission input below.
+ */
+function deriveFubonDepositSourceConnectionKey(
+  capture: FubonDomesticDepositValidatedEvidence,
+): string {
+  return deriveFubonDomesticDepositAccountIdentity(capture.account)
+    .sourceConnectionKey;
 }
 
 function safeTelemetryFieldName(value: string): string | null {
@@ -746,8 +865,13 @@ export function buildFubonDepositStatementEvidence(
 
 function buildFubonHumanAttestedFinancialSemantics(
   capture: FubonDomesticDepositValidatedEvidence,
+  sourceConnectionKey?: string,
 ) {
-  const identity = deriveFubonDomesticDepositAccountIdentity(capture.account);
+  const identity = deriveFubonDomesticDepositAccountIdentity(
+    capture.account,
+    undefined,
+    sourceConnectionKey as `sha256:${string}` | undefined,
+  );
   return {
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
@@ -1950,6 +2074,8 @@ export async function runFubonStatements(
       'fubon-statements normalized output currently supports downloadFormat="EXCEL" only.',
     );
   }
+  const { sourceConnectionScope, sourceConnectionKey } =
+    requireSourceConnectionIdentity("fubon", "Fubon deposit", overrides);
 
   const openTransactionDetail =
     overrides.openTransactionDetailForAccountIndex ??
@@ -1983,6 +2109,13 @@ export async function runFubonStatements(
       }
     : null;
   const financialUsesSourceStore = financialStore === sourceStore;
+  const resolveRelations =
+    overrides.resolveLoanRepaymentRelations ?? resolveLoanRepaymentRelations;
+  const stableSourceConnectionKey = sourceConnectionKey;
+  const stableSourceIdentity = {
+    sourceConnectionScope,
+    sourceConnectionKey: stableSourceConnectionKey,
+  } as const;
 
   try {
     await openTransactionDetail(page, 0);
@@ -2044,14 +2177,20 @@ export async function runFubonStatements(
             sourceStore,
             capture,
             `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+            stableSourceIdentity,
           );
           continue;
         }
         const financialInput = {
           capture,
           captureId: `fubon-financial-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-          semantics: buildFubonHumanAttestedFinancialSemantics(capture),
+          semantics: buildFubonHumanAttestedFinancialSemantics(
+            capture,
+            stableSourceConnectionKey,
+          ),
           humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+          sourceConnectionScope,
+          sourceConnectionKey: stableSourceConnectionKey,
         };
         // Run the semantic classifier even when no financial writer was
         // configured.  The explicit-ledger boundary changes the destination,
@@ -2068,6 +2207,7 @@ export async function runFubonStatements(
               sourceStore,
               capture,
               `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+              stableSourceIdentity,
             );
             throw new Error(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
@@ -2080,6 +2220,7 @@ export async function runFubonStatements(
             sourceStore,
             capture,
             `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+            stableSourceIdentity,
           );
           continue;
         }
@@ -2088,6 +2229,7 @@ export async function runFubonStatements(
             sourceStore,
             capture,
             `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+            stableSourceIdentity,
           );
           continue;
         }
@@ -2098,11 +2240,36 @@ export async function runFubonStatements(
             financialWriter,
             financialInput,
           );
+          const financialCapture = financialAdmission.capture;
+          if (!financialCapture)
+            throw new Error(
+              "Fubon domestic deposit admission lost its canonical capture.",
+            );
+          for (const counterpartyEvidence of
+            buildFubonLoanPaymentAccountEvidence(capture, financialCapture)) {
+            await persistCounterpartyAccountEvidence(
+              financialStore!,
+              counterpartyEvidence,
+            );
+          }
+          // Relation resolution is deliberately downstream of a successful,
+          // complete financial capture. It reads retained history, so a
+          // standalone deposit run can resolve against an earlier loan run;
+          // failed or partial captures never withdraw existing support.
+          await resolveLoanRelationsAfterCapture(financialWriter, resolveRelations, {
+              sourceConnectionKey:
+                stableSourceConnectionKey ??
+                deriveFubonDepositSourceConnectionKey(capture),
+              integrationNamespace: "fubon",
+              observedAt: capture.observedAt,
+              failureEvent: "fubon-deposit-relation-resolution-failed",
+            });
           if (!financialUsesSourceStore) {
             await commitFubonDomesticDepositSourceEvidence(
               sourceStore,
               capture,
               `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+              stableSourceIdentity,
             );
           }
         } catch (error) {
@@ -2112,6 +2279,7 @@ export async function runFubonStatements(
             sourceStore,
             capture,
             `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+            stableSourceIdentity,
           );
           throw error;
         }
@@ -2164,6 +2332,12 @@ export default workflow("fubonStatements", {
   handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
     const input = rawInput as Input;
     const { page, session } = ctx;
+    const sourceConnectionScope = fubonStableLoginScope(input.credentials);
+    if (!sourceConnectionScope) {
+      throw new Error(
+        "Missing stable Fubon login identity for Source Connection.",
+      );
+    }
 
     await signInFubon(page, session, input.credentials);
     const configuredSourceLedgerDir =
@@ -2181,6 +2355,8 @@ export default workflow("fubonStatements", {
       ...(explicitFinancialLedgerDir
         ? { canonicalFinancialLedgerDir: explicitFinancialLedgerDir }
         : {}),
+      sourceConnectionScope,
+      sourceConnectionKey: deriveFubonSourceConnectionKey(input.credentials)!,
     });
   },
 });

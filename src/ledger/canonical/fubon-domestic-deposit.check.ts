@@ -20,10 +20,10 @@ import {
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
-  admitFubonDomesticDepositFinancialCapture,
-  commitCanonicalFubonDomesticDepositCapture,
-  commitFubonDomesticDepositSourceEvidence,
-  createFubonDomesticDepositSourceEvidence,
+  admitFubonDomesticDepositFinancialCapture as admitFubonDomesticDepositFinancialCaptureCore,
+  commitCanonicalFubonDomesticDepositCapture as commitCanonicalFubonDomesticDepositCaptureCore,
+  commitFubonDomesticDepositSourceEvidence as commitFubonDomesticDepositSourceEvidenceCore,
+  createFubonDomesticDepositSourceEvidence as createFubonDomesticDepositSourceEvidenceCore,
   deriveFubonDomesticDepositAccountIdentity,
   classifyFubonDomesticDepositRow,
   isFubonHumanAttestedV1Manifest,
@@ -34,14 +34,78 @@ import {
   type FubonDomesticDepositCaptureEvidence,
   type FubonDomesticDepositFinancialSemantics,
 } from "./fubon-domestic-deposit.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
+import {
+  LOAN_CONTRACT_FIXTURES,
+  admitCanonicalLoanCapture,
+  canonicalLoanSourceIdentity,
+  commitCanonicalLoanCapture,
+} from "./loan-financial.ts";
+import { resolveLoanRepaymentRelations } from "./loan-repayment-relations.ts";
 import {
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
 } from "./canonical-source-store.ts";
-import { admitCanonicalFinancialDepositCapture } from "./canonical-financial-deposit-writer.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildFubonDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
+
+const stableFubonConnectionScope = "FUBON-USER-001\u0000FUBON-LOGIN-001";
+const stableFubonConnectionKey = deriveSourceConnectionIdentityKey(
+  "fubon",
+  stableFubonConnectionScope,
+);
+
+function admitFubonDomesticDepositFinancialCapture(
+  input: Parameters<typeof admitFubonDomesticDepositFinancialCaptureCore>[0],
+) {
+  return admitFubonDomesticDepositFinancialCaptureCore({
+    sourceConnectionScope: stableFubonConnectionScope,
+    sourceConnectionKey: stableFubonConnectionKey,
+    ...input,
+  });
+}
+
+function commitCanonicalFubonDomesticDepositCapture(
+  store: Parameters<typeof commitCanonicalFubonDomesticDepositCaptureCore>[0],
+  input: Parameters<typeof commitCanonicalFubonDomesticDepositCaptureCore>[1],
+) {
+  return commitCanonicalFubonDomesticDepositCaptureCore(store, {
+    sourceConnectionScope: stableFubonConnectionScope,
+    sourceConnectionKey: stableFubonConnectionKey,
+    ...input,
+  });
+}
+
+function createFubonDomesticDepositSourceEvidence(
+  capture: Parameters<typeof createFubonDomesticDepositSourceEvidenceCore>[0],
+  captureId: string,
+) {
+  return createFubonDomesticDepositSourceEvidenceCore(capture, captureId, {
+    sourceConnectionScope: stableFubonConnectionScope,
+    sourceConnectionKey: stableFubonConnectionKey,
+  });
+}
+
+function commitFubonDomesticDepositSourceEvidence(
+  store: Parameters<typeof commitFubonDomesticDepositSourceEvidenceCore>[0],
+  capture: Parameters<typeof commitFubonDomesticDepositSourceEvidenceCore>[1],
+  captureId: string,
+) {
+  return commitFubonDomesticDepositSourceEvidenceCore(
+    store,
+    capture,
+    captureId,
+    {
+      sourceConnectionScope: stableFubonConnectionScope,
+      sourceConnectionKey: stableFubonConnectionKey,
+    },
+  );
+}
 
 assert.equal(
   FUBON_DOMESTIC_DEPOSIT_CONTRACT.authority,
@@ -121,7 +185,11 @@ function semanticsFor(
   capture: FubonDomesticDepositCaptureEvidence,
   patch: Record<string, unknown> = {},
 ): FubonDomesticDepositFinancialSemantics {
-  const identity = deriveFubonDomesticDepositAccountIdentity(capture.account);
+  const identity = deriveFubonDomesticDepositAccountIdentity(
+    capture.account,
+    FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+    stableFubonConnectionKey,
+  );
   return {
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
@@ -169,6 +237,25 @@ function semanticsFor(
 
 const firstCapture = admittedCapture();
 const firstSemantics = semanticsFor(firstCapture);
+const missingFubonLoginIdentity =
+  admitFubonDomesticDepositFinancialCaptureCore({
+    capture: firstCapture,
+    captureId: "fubon-manifest-only-must-not-admit",
+    semantics: firstSemantics,
+    humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+  });
+assert.equal(missingFubonLoginIdentity.status, "blocked");
+assert.equal(missingFubonLoginIdentity.capture, null);
+assert.ok(
+  missingFubonLoginIdentity.diagnostics.includes(
+    "source-connection-scope-invalid",
+  ),
+);
+assert.ok(
+  missingFubonLoginIdentity.diagnostics.includes(
+    "source-connection-key-invalid",
+  ),
+);
 const firstAdmission = admitFubonDomesticDepositFinancialCapture({
   capture: firstCapture,
   captureId: "fubon-human-attested-first",
@@ -186,6 +273,121 @@ assert.equal(
 assert.equal(
   JSON.stringify(firstAdmission.capture).includes("****0001"),
   false,
+);
+
+// The provider can render a different non-empty note for the same transaction
+// when that transaction is observed through two overlapping query windows.
+// Notes remain evidence for repayment-relation rules, but they are not stable
+// enough to participate in the transaction occurrence identity.
+const noteDriftCaptureRaw = captureFor("ACCOUNT-TWD-001", "****0001 (012)", {
+  pages: firstCapture.pages.map((page) => ({
+    ...page,
+    rows: page.rows.map((row) => ({
+      ...row,
+      cells: [
+        row.cells[0],
+        row.cells[1],
+        row.cells[2],
+        row.cells[3],
+        row.cells[4],
+        row.cells[5],
+        "SYNTHETIC WINDOW-DEPENDENT NOTE",
+      ] as typeof row.cells,
+    })),
+  })),
+});
+const noteDriftCaptureAdmission =
+  admitFubonDomesticDepositCaptureEvidence(noteDriftCaptureRaw);
+assert.equal(noteDriftCaptureAdmission.status, "admissible");
+assert.ok(noteDriftCaptureAdmission.capture);
+const noteDriftFinancialAdmission = admitFubonDomesticDepositFinancialCapture({
+  capture: noteDriftCaptureAdmission.capture,
+  captureId: "fubon-human-attested-note-drift",
+  semantics: semanticsFor(noteDriftCaptureAdmission.capture),
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(noteDriftFinancialAdmission.status, "admitted");
+assert.ok(noteDriftFinancialAdmission.capture);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.collisionKey,
+  firstAdmission.capture.records[0]?.collisionKey,
+);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.contentHash,
+  firstAdmission.capture.records[0]?.contentHash,
+);
+assert.equal(
+  noteDriftFinancialAdmission.capture.records[0]?.occurrenceKey,
+  firstAdmission.capture.records[0]?.occurrenceKey,
+);
+
+// A workflow-supplied stable login identity is the connection fence shared by
+// deposit and loan products. It replaces the attestation-manifest key in the
+// persisted financial identity, while account and attestation epoch checks
+// remain strict.
+const stableFubonSemantics = semanticsFor(firstCapture, {
+  account: {
+    ...firstSemantics.account,
+    sourceConnectionKey: stableFubonConnectionKey,
+  },
+});
+const stableFubonAdmission = admitFubonDomesticDepositFinancialCapture({
+  capture: firstCapture,
+  captureId: "fubon-stable-source-connection",
+  semantics: stableFubonSemantics,
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+  sourceConnectionScope: stableFubonConnectionScope,
+  sourceConnectionKey: stableFubonConnectionKey,
+});
+assert.equal(stableFubonAdmission.status, "admitted");
+assert.equal(
+  stableFubonAdmission.capture?.identity.sourceConnectionKey,
+  stableFubonConnectionKey,
+);
+assert.equal(
+  canonicalLoanSourceIdentity("fubon", stableFubonConnectionScope, "LOAN-001")
+    .sourceConnectionKey,
+  stableFubonConnectionKey,
+);
+assert.notEqual(
+  stableFubonConnectionKey,
+  deriveSourceConnectionIdentityKey("fubon", "FUBON-USER-002\u0000FUBON-LOGIN-001"),
+);
+assert.notEqual(
+  stableFubonConnectionKey,
+  deriveSourceConnectionIdentityKey("yuanta", stableFubonConnectionScope),
+);
+const mismatchedFubonEpoch = admitFubonDomesticDepositFinancialCapture({
+  capture: firstCapture,
+  captureId: "fubon-stable-source-connection-wrong-epoch",
+  semantics: semanticsFor(firstCapture, {
+    account: {
+      ...stableFubonSemantics.account,
+      identityEpochKey: "sha256:fubon-wrong-epoch",
+    },
+  }),
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+  sourceConnectionScope: stableFubonConnectionScope,
+  sourceConnectionKey: stableFubonConnectionKey,
+});
+assert.equal(mismatchedFubonEpoch.status, "blocked");
+assert.ok(mismatchedFubonEpoch.diagnostics.includes("account-identity-mismatch"));
+const mismatchedFubonConnection = admitFubonDomesticDepositFinancialCapture({
+  capture: firstCapture,
+  captureId: "fubon-stable-source-connection-mismatch",
+  semantics: stableFubonSemantics,
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+  sourceConnectionScope: stableFubonConnectionScope,
+  sourceConnectionKey: deriveSourceConnectionIdentityKey(
+    "fubon",
+    "FUBON-USER-002\u0000FUBON-LOGIN-001",
+  ),
+});
+assert.equal(mismatchedFubonConnection.status, "blocked");
+assert.ok(
+  mismatchedFubonConnection.diagnostics.includes(
+    "source-connection-key-mismatch",
+  ),
 );
 
 // The live Fubon table repeats the transaction date in the transaction-time
@@ -641,6 +843,98 @@ assert.equal(
   false,
 );
 
+for (const sourceIdentity of [
+  {},
+  {
+    sourceConnectionScope: stableFubonConnectionScope,
+    sourceConnectionKey: deriveSourceConnectionIdentityKey(
+      "fubon",
+      `${stableFubonConnectionScope}-OTHER`,
+    ),
+  },
+]) {
+  assert.throws(
+    () =>
+      createFubonDomesticDepositSourceEvidenceCore(
+        firstCapture,
+        "fubon-source-identity-rejected",
+        sourceIdentity,
+      ),
+    /stable caller-supplied|same login/u,
+  );
+  const rejectedStore = createCanonicalSourceStore(":memory:");
+  try {
+    await assert.rejects(
+      () =>
+        commitFubonDomesticDepositSourceEvidenceCore(
+          rejectedStore,
+          firstCapture,
+          "fubon-source-identity-rejected",
+          sourceIdentity,
+        ),
+      /stable caller-supplied|same login/u,
+    );
+    assert.equal(
+      rejectedStore.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
+        ?.count,
+      0,
+    );
+  } finally {
+    rejectedStore.close();
+  }
+}
+
+const fubonSourceThenFinancialStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitFubonDomesticDepositSourceEvidence(
+    fubonSourceThenFinancialStore,
+    firstCapture,
+    "fubon-stable-source-first",
+  );
+  await commitCanonicalFubonDomesticDepositCapture(
+    {
+      db: fubonSourceThenFinancialStore.db,
+      databasePath: fubonSourceThenFinancialStore.databasePath,
+      commitClock: () => fubonSourceThenFinancialStore.commitClock(),
+    },
+    {
+      capture: firstCapture,
+      captureId: "fubon-stable-financial-recollection",
+      semantics: firstSemantics,
+      humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+    },
+  );
+  assert.equal(
+    fubonSourceThenFinancialStore.db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM source_connections WHERE integration_namespace = 'fubon'",
+      )
+      .get()?.count,
+    1,
+  );
+  const fubonPartitions = fubonSourceThenFinancialStore.db
+      .prepare(
+        `SELECT COUNT(*) AS captures,
+                COUNT(DISTINCT source_connection_id) AS partitions,
+                COUNT(DISTINCT capture_key) AS capture_keys
+           FROM source_captures`,
+      )
+      .get() as { captures: number; partitions: number; capture_keys: number };
+  assert.equal(fubonPartitions.captures, 2);
+  assert.equal(fubonPartitions.partitions, 1);
+  assert.equal(fubonPartitions.capture_keys, 2);
+  const fubonLineage = fubonSourceThenFinancialStore.db
+    .prepare(
+      `SELECT COUNT(*) AS rows,
+              COUNT(DISTINCT hex(source_record_id) || ':' || hex(capture_id)) AS unique_rows
+         FROM source_record_provenance`,
+    )
+    .get() as { rows: number; unique_rows: number };
+  assert.equal(fubonLineage.rows, fubonLineage.unique_rows);
+} finally {
+  fubonSourceThenFinancialStore.close();
+}
+
 const ledgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "fubon-human-attested-v1-"),
 );
@@ -692,6 +986,33 @@ try {
         .get("fubon-domestic-deposit")?.count,
       2,
     );
+    assert.equal(
+      store.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      1,
+    );
+
+    // The Fubon occurrence fence intentionally excludes pagination position.
+    // A recollection through an overlapping query window may therefore carry
+    // the same source content hash with different page/row ordinals. Keep the
+    // immutable Capture while admitting the stable occurrence again.
+    const fubonOrdinalDrift = admitCanonicalFinancialDepositCapture({
+      ...firstAdmission.capture!,
+      captureId: "fubon-human-attested-ordinal-drift",
+      records: firstAdmission.capture!.records.map((record) => {
+        const compact = JSON.parse(record.compactJson) as Record<string, unknown>;
+        return {
+          ...record,
+          compactJson: JSON.stringify({
+            ...compact,
+            pageOrdinal: 9,
+            rowOrdinal: 35,
+          }),
+        };
+      }),
+    });
+    await commitCanonicalFinancialDepositCapture(writer, fubonOrdinalDrift);
     assert.equal(
       store.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
@@ -789,6 +1110,111 @@ try {
         occurrenceKey: current.records[0]!.occurrenceKey,
       }),
     );
+
+    // The adapter and the loan writer must expose one connection fence for
+    // the same stable login, even though their attested account epochs are
+    // product-specific. Exercise the resolver against both persisted sides.
+    const stableRelationStore = createCanonicalSourceStore(":memory:");
+    try {
+      const stableRelationCapture = admittedCapture(
+        "ACCOUNT-TWD-RELATION",
+        "****0042 (012)",
+        {
+          pages: firstCapture.pages.map((page) => ({
+            ...page,
+            rows: page.rows.map((row) => ({
+              ...row,
+              cells: [
+                row.cells[0],
+                row.cells[1],
+                row.cells[2],
+                "100",
+                "",
+                row.cells[5],
+                row.cells[6],
+              ] as typeof row.cells,
+            })),
+          })),
+        },
+      );
+      const stableRelationBaseSemantics = semanticsFor(stableRelationCapture);
+      const stableRelationSemantics = semanticsFor(stableRelationCapture, {
+        account: {
+          ...stableRelationBaseSemantics.account,
+          sourceConnectionKey: stableFubonConnectionKey,
+        },
+      });
+      const stableRelationAdmission =
+        admitFubonDomesticDepositFinancialCapture({
+          capture: stableRelationCapture,
+          captureId: "fubon-stable-source-connection-deposit",
+          semantics: stableRelationSemantics,
+          humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+          sourceConnectionScope: stableFubonConnectionScope,
+          sourceConnectionKey: stableFubonConnectionKey,
+        });
+      assert.equal(stableRelationAdmission.status, "admitted");
+      const stableInput = {
+        capture: stableRelationCapture,
+        captureId: "fubon-stable-source-connection-commit",
+        semantics: stableRelationSemantics,
+        humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+        sourceConnectionScope: stableFubonConnectionScope,
+        sourceConnectionKey: stableFubonConnectionKey,
+      };
+      const stableCommit = await commitCanonicalFubonDomesticDepositCapture(
+        stableRelationStore,
+        stableInput,
+      );
+      assert.equal(stableCommit.status, "canonical-live");
+      assert.equal(
+        (
+          stableRelationStore.db
+            .prepare(
+              "SELECT source_connection_key FROM source_connections WHERE integration_namespace = ?",
+            )
+            .get("fubon") as { source_connection_key?: string }
+        ).source_connection_key,
+        stableFubonConnectionKey,
+      );
+
+      const stableLoanInput = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+      stableLoanInput.captureId = "fubon-stable-source-connection-loan";
+      stableLoanInput.identity.sourceConnectionKey = stableFubonConnectionKey;
+      stableLoanInput.relations = [];
+      stableLoanInput.counterpartTransactions = [];
+      stableLoanInput.relationCoverage = "not-asserted";
+      const stableLoan = admitCanonicalLoanCapture(stableLoanInput);
+      assert.equal(stableLoan.identity.sourceConnectionKey, stableFubonConnectionKey);
+      await commitCanonicalLoanCapture(stableRelationStore, stableLoan);
+      const stableLoanPayment = stableLoan.records.find(
+        (record) => record.eventKind === "payment",
+      );
+      assert.ok(stableLoanPayment);
+      const stableRelation = await resolveLoanRepaymentRelations(
+        stableRelationStore,
+        {
+          sourceConnectionKey: stableFubonConnectionKey,
+          integrationNamespace: "fubon",
+          explicitLinks: [
+            {
+              fromCaptureId: stableInput.captureId,
+              fromSourceRecordKey:
+                stableRelationAdmission.capture!.records[0]!.occurrenceKey,
+              toCaptureId: stableLoan.captureId,
+              toSourceRecordKey: stableLoanPayment.sourceRecordKey,
+              relationId: "fubon-stable-source-connection-relation",
+              contractVersion: "fubon/loan-repayment-link/v1",
+              evidenceSourceRecordKey:
+                stableRelationAdmission.capture!.records[0]!.occurrenceKey,
+            },
+          ],
+        },
+      );
+      assert.equal(stableRelation.exactRelationIds.length, 1);
+    } finally {
+      stableRelationStore.close();
+    }
 
     revokeFubonHumanAttestedV1(
       "2026-08-22T00:00:00.000Z",

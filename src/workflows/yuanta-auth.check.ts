@@ -12,8 +12,16 @@ const {
   yuantaBankDialogFailureMessage,
   yuantaBankDialogState,
   yuantaPostSubmitDialogOwner,
+  yuantaSourceConnectionScope,
+  deriveYuantaSourceConnectionKey,
 } = await import(
   "./yuanta-auth.ts",
+);
+const { deriveSourceConnectionIdentityKey } = await import(
+  "../ledger/canonical/source-connection-identity.ts"
+);
+const { canonicalLoanSourceIdentity } = await import(
+  "../ledger/canonical/loan-financial.ts"
 );
 import {
   YUANTA_DIALOG_OWNER_ENV,
@@ -284,6 +292,82 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
     width: 150,
     height: 50,
   });
+});
+
+test("Yuanta product workflows derive one stable source connection from one login identity", () => {
+  const credentials = {
+    yuanta_user_id: " user-001 ",
+    yuanta_account: " main-account ",
+    yuanta_password: "password-one",
+  };
+  const scope = yuantaSourceConnectionScope(credentials);
+  assert.equal(scope, "USER-001\u0000MAIN-ACCOUNT");
+
+  const sameLoginAfterPasswordRotation = yuantaSourceConnectionScope({
+    ...credentials,
+    yuanta_password: "password-two",
+  });
+  assert.equal(sameLoginAfterPasswordRotation, scope);
+  assert.equal(
+    deriveSourceConnectionIdentityKey("yuanta", scope),
+    deriveSourceConnectionIdentityKey("yuanta", sameLoginAfterPasswordRotation),
+  );
+  assert.equal(
+    deriveYuantaSourceConnectionKey(credentials),
+    deriveSourceConnectionIdentityKey("yuanta", scope),
+    "Yuanta product workflows must use the shared canonical source key",
+  );
+  assert.equal(
+    canonicalLoanSourceIdentity("yuanta", scope, "loan-001")
+      .sourceConnectionKey,
+    deriveSourceConnectionIdentityKey("yuanta", scope),
+  );
+
+  const otherLoginScope = yuantaSourceConnectionScope({
+    ...credentials,
+    yuanta_user_id: "other-user",
+  });
+  assert.notEqual(
+    deriveSourceConnectionIdentityKey("yuanta", scope),
+    deriveSourceConnectionIdentityKey("yuanta", otherLoginScope),
+  );
+
+  // Session, solver, OTP and query-range values are intentionally not
+  // accepted by this helper, so changing those runtime details cannot create
+  // another source connection key.
+  assert.equal(
+    yuantaSourceConnectionScope({
+      ...credentials,
+      yuanta_password: "password-one",
+    }),
+    scope,
+  );
+  assert.equal(
+    deriveYuantaSourceConnectionKey({
+      ...credentials,
+      yuanta_password: "rotated-password",
+    }),
+    deriveYuantaSourceConnectionKey(credentials),
+    "password changes must not change Source Connection identity",
+  );
+  assert.equal(
+    deriveYuantaSourceConnectionKey({
+      yuanta_user_id: credentials.yuanta_user_id,
+      yuanta_account: credentials.yuanta_account,
+    }),
+    deriveYuantaSourceConnectionKey(credentials),
+    "session/query details are not part of the Source Connection input",
+  );
+});
+
+test("Yuanta stable login scope owns one shared field definition", async () => {
+  const authSource = await readFile(
+    new URL("./yuanta-auth.ts", import.meta.url),
+    "utf8",
+  );
+  assert.equal(authSource.match(/name: "yuanta_user_id"/gu)?.length, 1);
+  assert.equal(authSource.match(/name: "yuanta_account"/gu)?.length, 1);
+  assert.match(authSource, /yuantaStableLoginFields\(credentials\)/u);
 });
 
 // This regression must run through Libretto's actual TSX loader. The regular

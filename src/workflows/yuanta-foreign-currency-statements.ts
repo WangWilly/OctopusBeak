@@ -1,11 +1,15 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
+import {
+  parseFragment,
+  type DefaultTreeAdapterTypes,
+} from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
@@ -21,6 +25,11 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  deriveYuantaForeignSettlementLinkageKey,
+  resolveCanonicalInvestmentFundingRelations,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+} from "../ledger/canonical/investment-funding-relations.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -144,6 +153,1357 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Result-page contract for the Yuanta foreign-currency statement endpoint.
+ *
+ * The provider has changed the markup around this control before. Keep the
+ * contract structural and versioned: the timestamp result marker, a nearby
+ * non-empty statement table, and one explicit CSV link must all be present.
+ * Raw result markup is never emitted by the workflow.
+ */
+export const YUANTA_FOREIGN_RESULT_RULE_VERSION =
+  "yuanta-foreign-result-v2" as const;
+
+export type YuantaForeignCurrencyResultState =
+  | "download-ready"
+  | "provider-no-data"
+  | "provider-error"
+  | "pending";
+
+export type YuantaForeignCurrencyResultClassification = {
+  state: YuantaForeignCurrencyResultState;
+  hasResult: boolean;
+  csvControlCount: number;
+  controlKinds: readonly YuantaForeignCurrencyControlKind[];
+  noticeKinds: readonly ("provider-no-data" | "provider-error")[];
+};
+
+type YuantaForeignCurrencyControlKind =
+  | "link"
+  | "button"
+  | "form"
+  | "input"
+  | "role-button";
+
+const diagnosticTagCategories = [
+  "a",
+  "article",
+  "aside",
+  "button",
+  "div",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "iframe",
+  "input",
+  "label",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "option",
+  "output",
+  "p",
+  "section",
+  "select",
+  "span",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "ul",
+  "other",
+] as const;
+
+type YuantaForeignCurrencyDiagnosticTagCategory =
+  (typeof diagnosticTagCategories)[number];
+
+const diagnosticControlTypes = [
+  "link",
+  "button",
+  "form",
+  "role-button",
+  "input:button",
+  "input:checkbox",
+  "input:file",
+  "input:hidden",
+  "input:image",
+  "input:radio",
+  "input:reset",
+  "input:submit",
+  "input:text",
+  "input:other",
+] as const;
+
+type YuantaForeignCurrencyDiagnosticControlType =
+  (typeof diagnosticControlTypes)[number];
+
+type YuantaForeignCurrencyResultDiagnostic = {
+  containerTag: YuantaForeignCurrencyDiagnosticTagCategory;
+  containerType: "id" | "class" | "data" | "unknown";
+  descendantTagCounts: Readonly<
+    Record<YuantaForeignCurrencyDiagnosticTagCategory, number>
+  >;
+  controlKindCounts: Readonly<Record<YuantaForeignCurrencyControlKind, number>>;
+  controlTypeCounts: Readonly<
+    Record<YuantaForeignCurrencyDiagnosticControlType, number>
+  >;
+  tableCount: number;
+  headerCount: number;
+  dataRowCountBucket: "0" | "1" | "2-10" | "11+";
+  formCount: number;
+  formActionKinds: readonly ("none" | "csv" | "statement" | "other")[];
+  visibility: "visible" | "hidden" | "unknown";
+  disabledControlCount: number;
+  knownLabelIds: readonly string[];
+  textLengthBucket: "0" | "1-32" | "33-128" | "129-512" | "513+";
+  textHash: string;
+};
+
+type YuantaForeignCurrencyResultDiagnosticOverflowBucket =
+  | "0"
+  | "1-10"
+  | "11-50"
+  | "51+";
+
+type YuantaForeignCurrencyResultDiagnostics = {
+  resultContainers: readonly YuantaForeignCurrencyResultDiagnostic[];
+  resultContainerOverflowCount: number;
+  resultContainerOverflowBucket: YuantaForeignCurrencyResultDiagnosticOverflowBucket;
+};
+
+const MAX_RESULT_CONTAINER_DIAGNOSTICS = 32;
+
+type HtmlNode = DefaultTreeAdapterTypes.Node;
+type HtmlElement = DefaultTreeAdapterTypes.Element;
+
+function isHtmlElement(node: HtmlNode): node is HtmlElement {
+  return "tagName" in node;
+}
+
+function htmlAttribute(element: HtmlElement, name: string): string {
+  return (
+    element.attrs.find((attribute) => attribute.name === name.toLowerCase())
+      ?.value ?? ""
+  );
+}
+
+function hasHtmlAttribute(element: HtmlElement, name: string): boolean {
+  return element.attrs.some(
+    (attribute) => attribute.name === name.toLowerCase(),
+  );
+}
+
+function htmlNodeText(node: HtmlNode): string {
+  if ("value" in node) return node.value;
+  if (!("childNodes" in node)) return "";
+  return node.childNodes.map(htmlNodeText).join(" ");
+}
+
+function htmlDescendants(node: HtmlNode): HtmlElement[] {
+  if (!("childNodes" in node)) return [];
+  return node.childNodes.flatMap((child) =>
+    isHtmlElement(child)
+      ? [child, ...htmlDescendants(child)]
+      : htmlDescendants(child),
+  );
+}
+
+type HtmlElementContext = {
+  element: HtmlElement;
+  parent: HtmlElement | null;
+  ancestors: readonly HtmlElement[];
+  depth: number;
+};
+
+function htmlElementContexts(
+  node: HtmlNode,
+  parent: HtmlElement | null = null,
+  ancestors: readonly HtmlElement[] = [],
+  depth = 0,
+): HtmlElementContext[] {
+  if (!("childNodes" in node)) return [];
+  return node.childNodes.flatMap((child) => {
+    if (!isHtmlElement(child)) return [];
+    const context: HtmlElementContext = {
+      element: child,
+      parent,
+      ancestors,
+      depth,
+    };
+    return [
+      context,
+      ...htmlElementContexts(child, child, [...ancestors, child], depth + 1),
+    ];
+  });
+}
+
+function parseHtmlElementContexts(html: string): HtmlElementContext[] {
+  try {
+    return htmlElementContexts(parseFragment(html));
+  } catch {
+    return [];
+  }
+}
+
+function parseHtmlFragment(html: string): HtmlElement[] {
+  try {
+    return htmlDescendants(parseFragment(html));
+  } catch {
+    return [];
+  }
+}
+
+function htmlControlTag(
+  element: HtmlElement,
+): YuantaForeignCurrencyControlKind | null {
+  if (element.tagName === "a") return "link";
+  if (element.tagName === "button") return "button";
+  if (element.tagName === "form") return "form";
+  if (element.tagName === "input") return "input";
+  if (htmlAttribute(element, "role").toLowerCase() === "button") {
+    return "role-button";
+  }
+  return null;
+}
+
+function htmlControlEvidence(element: HtmlElement): string {
+  const attrs = element.attrs.flatMap((attribute) => [
+    attribute.name,
+    attribute.value,
+  ]);
+  return [htmlNodeText(element), ...attrs].join(" ");
+}
+
+function normalizedProviderLabel(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s\u3000]+/gu, "")
+    .replace(/[：:()[\]{}<>「」『』"'`.,，。/\\_\-]+/gu, "");
+}
+
+function isCsvDownloadLabel(value: string): boolean {
+  const normalized = normalizedProviderLabel(value);
+  const hasCsv = /csv/u.test(normalized);
+  const hasDownloadVerb = /下載|download|匯出|export|輸出/u.test(normalized);
+  return hasCsv && hasDownloadVerb;
+}
+
+type YuantaForeignCurrencyControlCandidate = {
+  tagName: string;
+  type: string;
+  disabled: boolean;
+  evidence: string;
+};
+
+function isYuantaForeignCurrencyCsvControlCandidate(
+  candidate: YuantaForeignCurrencyControlCandidate,
+): boolean {
+  if (
+    candidate.tagName === "input" &&
+    candidate.type &&
+    !["submit", "button", "image"].includes(candidate.type)
+  ) {
+    return false;
+  }
+  return !candidate.disabled && isCsvDownloadLabel(candidate.evidence);
+}
+
+function isYuantaForeignCurrencyCsvControlElement(
+  element: HtmlElement,
+): boolean {
+  if (!htmlControlTag(element)) return false;
+  return isYuantaForeignCurrencyCsvControlCandidate({
+    tagName: element.tagName,
+    type: htmlAttribute(element, "type").toLowerCase(),
+    disabled:
+      hasHtmlAttribute(element, "disabled") ||
+      htmlAttribute(element, "aria-disabled").toLowerCase() === "true",
+    evidence: htmlControlEvidence(element),
+  });
+}
+
+function isExplicitYuantaForeignCurrencyCsvLinkElement(
+  element: HtmlElement,
+): boolean {
+  if (element.tagName !== "a") return false;
+  if (
+    hasHtmlAttribute(element, "disabled") ||
+    htmlAttribute(element, "aria-disabled").toLowerCase() === "true"
+  ) {
+    return false;
+  }
+  const labelEvidence = [
+    htmlNodeText(element),
+    htmlAttribute(element, "aria-label"),
+    htmlAttribute(element, "title"),
+    htmlAttribute(element, "data-action"),
+    htmlAttribute(element, "data-command"),
+    htmlAttribute(element, "download"),
+  ].join(" ");
+  return isCsvDownloadLabel(labelEvidence);
+}
+
+const diagnosticControlKinds = [
+  "link",
+  "button",
+  "form",
+  "input",
+  "role-button",
+] as const satisfies readonly YuantaForeignCurrencyControlKind[];
+
+const diagnosticTagCategorySet = new Set<string>(diagnosticTagCategories);
+
+function diagnosticTagCategory(
+  tagName: string,
+): YuantaForeignCurrencyDiagnosticTagCategory {
+  return diagnosticTagCategorySet.has(tagName)
+    ? (tagName as YuantaForeignCurrencyDiagnosticTagCategory)
+    : "other";
+}
+
+function zeroDiagnosticCounts<const Key extends string>(
+  keys: readonly Key[],
+): Record<Key, number> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as Record<Key, number>;
+}
+
+function resultDiagnosticLengthBucket(
+  length: number,
+): "0" | "1-32" | "33-128" | "129-512" | "513+" {
+  if (length === 0) return "0";
+  if (length <= 32) return "1-32";
+  if (length <= 128) return "33-128";
+  if (length <= 512) return "129-512";
+  return "513+";
+}
+
+function resultDiagnosticRowBucket(
+  count: number,
+): "0" | "1" | "2-10" | "11+" {
+  if (count === 0) return "0";
+  if (count === 1) return "1";
+  if (count <= 10) return "2-10";
+  return "11+";
+}
+
+function resultDiagnosticVisibility(
+  element: HtmlElement,
+): "visible" | "hidden" | "unknown" {
+  const ariaHidden = htmlAttribute(element, "aria-hidden")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase();
+  const normalizedStyle = htmlAttribute(element, "style")
+    .normalize("NFKC")
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)/gu, "")
+    .toLowerCase();
+  if (
+    hasHtmlAttribute(element, "hidden") ||
+    ariaHidden === "true" ||
+    /(?:display\s*:\s*none|visibility\s*:\s*hidden)/u.test(normalizedStyle)
+  ) {
+    return "hidden";
+  }
+  return "unknown";
+}
+
+function diagnosticControlType(
+  element: HtmlElement,
+  kind: YuantaForeignCurrencyControlKind,
+): YuantaForeignCurrencyDiagnosticControlType {
+  if (kind === "role-button") return "role-button";
+  if (element.tagName !== "input") {
+    return kind === "input" ? "input:other" : kind;
+  }
+  const type = htmlAttribute(element, "type").toLowerCase();
+  const inputTypes = [
+    "button",
+    "checkbox",
+    "file",
+    "hidden",
+    "image",
+    "radio",
+    "reset",
+    "submit",
+    "text",
+  ] as const;
+  return inputTypes.includes(type as (typeof inputTypes)[number])
+    ? (`input:${type}` as YuantaForeignCurrencyDiagnosticControlType)
+    : "input:other";
+}
+
+function diagnosticFormActionKind(
+  form: HtmlElement,
+): "none" | "csv" | "statement" | "other" {
+  const action = normalizedProviderLabel(htmlAttribute(form, "action"));
+  if (!action) return "none";
+  if (/csv|download|export|匯出|下載/u.test(action)) return "csv";
+  if (/fx|foreign|transaction|statement|detail|交易|明細/u.test(action)) {
+    return "statement";
+  }
+  return "other";
+}
+
+function diagnosticContainerType(
+  result: HtmlElement,
+): "id" | "class" | "data" | "unknown" {
+  if (htmlAttribute(result, "id")) return "id";
+  if (htmlAttribute(result, "class")) return "class";
+  if (
+    hasHtmlAttribute(result, "data-result-container") ||
+    hasHtmlAttribute(result, "data-result")
+  ) {
+    return "data";
+  }
+  return "unknown";
+}
+
+function diagnosticKnownLabelIds(elements: readonly HtmlElement[]): string[] {
+  const ids = new Set<string>();
+  for (const element of elements) {
+    const attributes = element.attrs.map((attribute) =>
+      normalizedProviderLabel(attribute.value),
+    );
+    const value = attributes.join(" ");
+    if (
+      /(?:csv.*(?:下載|download|匯出|export)|(?:下載|download|匯出|export).*csv)/u.test(
+        value,
+      )
+    ) {
+      ids.add("csv-download");
+    }
+    if (/result|結果/u.test(value)) ids.add("result");
+    if (/foreign|currency|外幣|fx/u.test(value)) ids.add("foreign-currency");
+    if (/transaction|statement|detail|交易|明細/u.test(value)) {
+      ids.add("transaction");
+    }
+    if (/error|failed|failure|錯誤|失敗/u.test(value)) {
+      ids.add("provider-error");
+    }
+    if (
+      /nodata|norecords|notransactions|noresult|empty|查無|無資料/u.test(value)
+    ) {
+      ids.add("provider-no-data");
+    }
+  }
+  return [...ids].sort();
+}
+
+function diagnoseYuantaForeignCurrencyResultElement(
+  result: HtmlElement,
+  visibility?: "visible" | "hidden" | "unknown",
+): YuantaForeignCurrencyResultDiagnostic {
+  const descendants = htmlDescendants(result);
+  const controls = descendants
+    .map((element) => ({ element, kind: htmlControlTag(element) }))
+    .filter(
+      (
+        control,
+      ): control is {
+        element: HtmlElement;
+        kind: YuantaForeignCurrencyControlKind;
+      } => control.kind !== null,
+    );
+  const descendantTagCounts = zeroDiagnosticCounts(diagnosticTagCategories);
+  for (const element of descendants) {
+    descendantTagCounts[diagnosticTagCategory(element.tagName)] += 1;
+  }
+  const controlKindCounts = zeroDiagnosticCounts(diagnosticControlKinds);
+  const controlTypeCounts = zeroDiagnosticCounts(diagnosticControlTypes);
+  for (const control of controls) {
+    controlKindCounts[control.kind] += 1;
+    const type = diagnosticControlType(control.element, control.kind);
+    controlTypeCounts[type] += 1;
+  }
+  const rows = descendants.filter((element) => element.tagName === "tr");
+  const headerCount = descendants.filter((element) => element.tagName === "th").length;
+  const dataRowCount = rows.filter(
+    (row) => !htmlDescendants(row).some((element) => element.tagName === "th"),
+  ).length;
+  const forms = descendants.filter((element) => element.tagName === "form");
+  const normalizedText = normalizedProviderLabel(htmlNodeText(result));
+  return {
+    containerTag: diagnosticTagCategory(result.tagName),
+    containerType: diagnosticContainerType(result),
+    descendantTagCounts,
+    controlKindCounts,
+    controlTypeCounts,
+    tableCount: descendants.filter((element) => element.tagName === "table").length,
+    headerCount,
+    dataRowCountBucket: resultDiagnosticRowBucket(dataRowCount),
+    formCount: forms.length,
+    formActionKinds: [...new Set(forms.map(diagnosticFormActionKind))].sort(),
+    visibility: visibility ?? resultDiagnosticVisibility(result),
+    disabledControlCount: controls.filter(
+      ({ element }) =>
+        hasHtmlAttribute(element, "disabled") ||
+        htmlAttribute(element, "aria-disabled").toLowerCase() === "true",
+    ).length,
+    knownLabelIds: diagnosticKnownLabelIds([result, ...descendants]),
+    textLengthBucket: resultDiagnosticLengthBucket(normalizedText.length),
+    textHash: createHash("sha256")
+      .update(normalizedText)
+      .digest("hex")
+      .slice(0, 16),
+  };
+}
+
+function resultDiagnosticOverflowBucket(
+  count: number,
+): YuantaForeignCurrencyResultDiagnosticOverflowBucket {
+  if (count === 0) return "0";
+  if (count <= 10) return "1-10";
+  if (count <= 50) return "11-50";
+  return "51+";
+}
+
+function capYuantaForeignCurrencyResultDiagnostics(
+  diagnostics: readonly YuantaForeignCurrencyResultDiagnostic[],
+  existingOverflowCount = 0,
+): YuantaForeignCurrencyResultDiagnostics {
+  const overflowCount =
+    existingOverflowCount +
+    Math.max(0, diagnostics.length - MAX_RESULT_CONTAINER_DIAGNOSTICS);
+  return {
+    resultContainers: diagnostics.slice(0, MAX_RESULT_CONTAINER_DIAGNOSTICS),
+    resultContainerOverflowCount: overflowCount,
+    resultContainerOverflowBucket: resultDiagnosticOverflowBucket(overflowCount),
+  };
+}
+
+/**
+ * Return only structural, bounded diagnostics for recognized result
+ * containers. It deliberately omits all raw provider text and cell values.
+ */
+export function diagnoseYuantaForeignCurrencyResultMarkup(
+  html: string,
+  visibility?: "visible" | "hidden" | "unknown",
+): YuantaForeignCurrencyResultDiagnostics {
+  const diagnostics = parseHtmlFragment(html)
+    .filter(isResultContainer)
+    .map((result) => diagnoseYuantaForeignCurrencyResultElement(result, visibility));
+  return capYuantaForeignCurrencyResultDiagnostics(diagnostics);
+}
+
+/**
+ * True when a link/button/form/input contains provider-controlled evidence
+ * that it submits or starts a CSV export. The source text is only inspected
+ * in memory; callers must not log it.
+ */
+export function isYuantaForeignCurrencyCsvControl(controlHtml: string): boolean {
+  return parseHtmlFragment(controlHtml).some(
+    isYuantaForeignCurrencyCsvControlElement,
+  );
+}
+
+function isResultContainer(element: HtmlElement): boolean {
+  const id = htmlAttribute(element, "id").toLowerCase();
+  const classTokens = htmlAttribute(element, "class")
+    .split(/\s+/u)
+    .map((value) => value.toLowerCase());
+  return (
+    id === "resultdiv" ||
+    id === "result" ||
+    id === "resultcontainer" ||
+    id === "resultarea" ||
+    classTokens.some((value) =>
+      [
+        "result",
+        "resultdiv",
+        "resultcontainer",
+        "result-area",
+        "result-container",
+      ].includes(value),
+    ) ||
+    hasHtmlAttribute(element, "data-result-container") ||
+    hasHtmlAttribute(element, "data-result")
+  );
+}
+
+type YuantaForeignCurrencyTableMatch = {
+  tableIndex: number;
+  linkIndex: number;
+  associationKey: string;
+};
+
+type YuantaForeignCurrencyCsvLinkIdentity = {
+  text: string;
+  className: string;
+  href: string;
+  ariaLabel: string;
+  title: string;
+  onclick: string;
+  dataAction: string;
+  dataCommand: string;
+  download: string;
+};
+
+function isWithinRecognizedResult(context: HtmlElementContext): boolean {
+  return (
+    isResultContainer(context.element) ||
+    context.ancestors.some(isResultContainer)
+  );
+}
+
+function tableDataRowCount(table: HtmlElement): number {
+  return htmlDescendants(table)
+    .filter((element) => element.tagName === "tr")
+    .filter(
+      (row) =>
+        !htmlDescendants(row).some((element) => element.tagName === "th") &&
+        htmlDescendants(row).some((element) => element.tagName === "td"),
+    ).length;
+}
+
+function isYuantaForeignCurrencyProviderTable(table: HtmlElement): boolean {
+  const descendants = htmlDescendants(table);
+  const headerCount = descendants.filter(
+    (element) => element.tagName === "th",
+  ).length;
+  return headerCount > 0 && tableDataRowCount(table) > 0;
+}
+
+function isYuantaForeignCurrencyTimestampResult(
+  result: HtmlElement,
+): boolean {
+  const directChildren = result.childNodes.filter(isHtmlElement);
+  if (directChildren.length !== 2) return false;
+  const heading = normalizedProviderLabel(htmlNodeText(directChildren[0]!));
+  const timestamp = normalizedProviderLabel(htmlNodeText(directChildren[1]!));
+  return (
+    directChildren[0]!.tagName === "h2" &&
+    directChildren[1]!.tagName === "p" &&
+    /查詢結果|queryresult|result/u.test(heading) &&
+    /查詢時間|查詢日期|querytime|querydate/u.test(timestamp)
+  );
+}
+
+function nearestCommonElementAncestor(
+  left: HtmlElementContext,
+  right: HtmlElementContext,
+): HtmlElement | null {
+  const rightAncestors = new Set(right.ancestors);
+  for (const ancestor of [...left.ancestors].reverse()) {
+    if (ancestor.tagName === "body" || ancestor.tagName === "html") continue;
+    if (rightAncestors.has(ancestor)) return ancestor;
+  }
+  return null;
+}
+
+function structuralElementIdentity(element: HtmlElement): string {
+  const classTokens = htmlAttribute(element, "class")
+    .split(/\s+/u)
+    .filter(Boolean)
+    .sort()
+    .join(".");
+  return [
+    element.tagName,
+    htmlAttribute(element, "id"),
+    classTokens,
+    htmlAttribute(element, "role"),
+    hasHtmlAttribute(element, "data-result-container") ? "data-result" : "",
+    hasHtmlAttribute(element, "data-result") ? "data-result-marker" : "",
+  ].join("|");
+}
+
+function structuralPathFromAncestor(
+  context: HtmlElementContext,
+  ancestor: HtmlElement,
+): string | null {
+  const ancestorIndex = context.ancestors.indexOf(ancestor);
+  if (ancestorIndex < 0) return null;
+
+  const nodes = [...context.ancestors.slice(ancestorIndex + 1), context.element];
+  return nodes.map(structuralElementIdentity).join("/");
+}
+
+function yuantaForeignCurrencyAssociationKey(
+  tableContext: HtmlElementContext,
+  linkContext: HtmlElementContext,
+  ancestor: HtmlElement,
+): string | null {
+  const tablePath = structuralPathFromAncestor(tableContext, ancestor);
+  const linkPath = structuralPathFromAncestor(linkContext, ancestor);
+  if (!tablePath || !linkPath) return null;
+  return [
+    "yuanta-foreign-csv-association-v1",
+    structuralElementIdentity(ancestor),
+    tablePath,
+    linkPath,
+  ].join("|");
+}
+
+function isContainedBy(
+  context: HtmlElementContext,
+  ancestor: HtmlElement,
+): boolean {
+  return context.element === ancestor || context.ancestors.includes(ancestor);
+}
+
+function findYuantaForeignCurrencyTableMatches(
+  html: string,
+): {
+  hasTimestampResult: boolean;
+  matches: readonly YuantaForeignCurrencyTableMatch[];
+} {
+  const contexts = parseHtmlElementContexts(html);
+  const resultContexts = contexts.filter(
+    (context) =>
+      isResultContainer(context.element) &&
+      isYuantaForeignCurrencyTimestampResult(context.element),
+  );
+  if (resultContexts.length === 0) {
+    return { hasTimestampResult: false, matches: [] };
+  }
+
+  const allTableContexts = contexts.filter(
+    (context) => context.element.tagName === "table",
+  );
+  const tableContexts = allTableContexts.filter(
+    (context) =>
+      !isWithinRecognizedResult(context) &&
+      isYuantaForeignCurrencyProviderTable(context.element),
+  );
+  const anchorContexts = contexts.filter(
+    (context) =>
+      !isWithinRecognizedResult(context) &&
+      isExplicitYuantaForeignCurrencyCsvLinkElement(context.element),
+  );
+  const matches: YuantaForeignCurrencyTableMatch[] = [];
+  for (const linkContext of anchorContexts) {
+    const ancestorCandidates = tableContexts.filter((tableContext) => {
+      const ancestor = nearestCommonElementAncestor(linkContext, tableContext);
+      if (!ancestor) return false;
+      const localTables = tableContexts.filter((candidate) =>
+        isContainedBy(candidate, ancestor),
+      );
+      const localLinks = anchorContexts.filter((candidate) =>
+        isContainedBy(candidate, ancestor),
+      );
+      return localTables.length === 1 && localLinks.length === 1;
+    });
+    if (ancestorCandidates.length !== 1) continue;
+    const tableContext = ancestorCandidates[0]!;
+    const ancestor = nearestCommonElementAncestor(linkContext, tableContext);
+    if (!ancestor) continue;
+    const associationKey = yuantaForeignCurrencyAssociationKey(
+      tableContext,
+      linkContext,
+      ancestor,
+    );
+    if (!associationKey) continue;
+    matches.push({
+      tableIndex: allTableContexts.indexOf(tableContext),
+      linkIndex: contexts.filter((context) => context.element.tagName === "a").indexOf(linkContext),
+      associationKey,
+    });
+  }
+  return { hasTimestampResult: true, matches };
+}
+
+function cssAttributeValue(value: string): string {
+  return value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"');
+}
+
+function stableYuantaForeignCurrencyCsvLinkSelector(
+  identity: YuantaForeignCurrencyCsvLinkIdentity,
+): string | null {
+  const attributes = [
+    ["class", identity.className],
+    ["href", identity.href],
+    ["aria-label", identity.ariaLabel],
+    ["title", identity.title],
+    ["onclick", identity.onclick],
+    ["data-action", identity.dataAction],
+    ["data-command", identity.dataCommand],
+    ["download", identity.download],
+  ].filter(([, value]) => value.length > 0);
+  if (attributes.length > 0) {
+    return `a${attributes
+      .map(([name, value]) => `[${name}="${cssAttributeValue(value)}"]`)
+      .join("")}`;
+  }
+  return null;
+}
+
+function isSameYuantaForeignCurrencyCsvLinkIdentity(
+  left: YuantaForeignCurrencyCsvLinkIdentity,
+  right: YuantaForeignCurrencyCsvLinkIdentity,
+): boolean {
+  return (
+    left.text === right.text &&
+    left.className === right.className &&
+    left.href === right.href &&
+    left.ariaLabel === right.ariaLabel &&
+    left.title === right.title &&
+    left.onclick === right.onclick &&
+    left.dataAction === right.dataAction &&
+    left.dataCommand === right.dataCommand &&
+    left.download === right.download
+  );
+}
+
+function providerNoticeKinds(
+  result: HtmlElement,
+): readonly ("provider-no-data" | "provider-error")[] {
+  const notices = [result, ...htmlDescendants(result)].filter(
+    isYuantaForeignCurrencyProviderNoticeElement,
+  );
+  const kinds = new Set<"provider-no-data" | "provider-error">();
+  for (const notice of notices) {
+    // A result/message wrapper around a transaction table is not itself a
+    // provider notice. Inspect only structured notices that cannot contain
+    // transaction rows, so a transaction description containing "error" does
+    // not turn a valid download into an error state.
+    if (htmlDescendants(notice).some(isTableElement)) continue;
+
+    const state = normalizedProviderLabel(
+      [
+        htmlAttribute(notice, "data-result-state"),
+        htmlAttribute(notice, "data-state"),
+        htmlAttribute(notice, "data-status"),
+      ].join(" "),
+    );
+    const text = normalizedProviderLabel(htmlNodeText(notice));
+    if (
+      /(?:查無(?:交易|資料|紀錄)|無(?:可用)?(?:交易|資料|紀錄)|沒有(?:交易|資料|紀錄)|nodata|norecords|notransactions|noresult|emptyresult)/u.test(
+        `${state}${text}`,
+      )
+    ) {
+      kinds.add("provider-no-data");
+    }
+    if (
+      /(?:查詢失敗|系統(?:錯誤|異常|忙碌)|請稍後再試|error|failed|failure|unavailable)/u.test(
+        `${state}${text}`,
+      )
+    ) {
+      kinds.add("provider-error");
+    }
+  }
+  return [...kinds];
+}
+
+function isTableElement(element: HtmlElement): boolean {
+  return ["table", "thead", "tbody", "tfoot", "tr", "td", "th"].includes(
+    element.tagName,
+  );
+}
+
+function isYuantaForeignCurrencyProviderNoticeElement(
+  element: HtmlElement,
+): boolean {
+  if (isTableElement(element)) return false;
+  const role = htmlAttribute(element, "role").toLowerCase();
+  if (role === "alert" || role === "status") return true;
+
+  const marker = [
+    htmlAttribute(element, "id"),
+    htmlAttribute(element, "class"),
+    htmlAttribute(element, "aria-live"),
+    htmlAttribute(element, "data-result-state"),
+    htmlAttribute(element, "data-state"),
+    htmlAttribute(element, "data-status"),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return /(?:^|[\s_-])(?:notice|message|alert|warning|error|failure|empty|no[-_]?data|result[-_](?:message|status|error|empty))(?:$|[\s_-])/u.test(
+    marker,
+  );
+}
+
+function classifyYuantaForeignCurrencyResultElement(
+  result: HtmlElement,
+): YuantaForeignCurrencyResultClassification {
+  const csvControls = htmlDescendants(result).filter(
+    isYuantaForeignCurrencyCsvControlElement,
+  );
+  const controlKinds = [
+    ...new Set(
+      csvControls
+        .map((element) => htmlControlTag(element))
+        .filter(
+          (value): value is YuantaForeignCurrencyControlKind => value !== null,
+        ),
+    ),
+  ];
+  const noticeKinds = providerNoticeKinds(result);
+  const state: YuantaForeignCurrencyResultState =
+    csvControls.length > 0
+      ? "download-ready"
+      : noticeKinds.includes("provider-error")
+        ? "provider-error"
+        : noticeKinds.includes("provider-no-data")
+          ? "provider-no-data"
+          : "pending";
+  return {
+    state,
+    hasResult: true,
+    csvControlCount: csvControls.length,
+    controlKinds,
+    noticeKinds,
+  };
+}
+
+function combineYuantaForeignCurrencyResultClassifications(
+  classifications: readonly YuantaForeignCurrencyResultClassification[],
+): YuantaForeignCurrencyResultClassification {
+  const ready = classifications.find(
+    (classification) => classification.state === "download-ready",
+  );
+  const noticeKinds = [
+    ...new Set(classifications.flatMap((classification) => classification.noticeKinds)),
+  ];
+  const controlKinds = [
+    ...new Set(classifications.flatMap((classification) => classification.controlKinds)),
+  ];
+  if (ready) {
+    return {
+      state: "download-ready",
+      hasResult: true,
+      csvControlCount: ready.csvControlCount,
+      controlKinds,
+      noticeKinds,
+    };
+  }
+
+  const state = classifications.some(
+    (classification) => classification.state === "provider-error",
+  )
+    ? "provider-error"
+    : classifications.some(
+        (classification) => classification.state === "provider-no-data",
+      )
+      ? "provider-no-data"
+      : "pending";
+  return {
+    state,
+    hasResult: classifications.some((classification) => classification.hasResult),
+    csvControlCount: 0,
+    controlKinds,
+    noticeKinds,
+  };
+}
+
+/**
+ * Classify a sanitized result-page HTML snapshot. Multiple recognized result
+ * containers are possible while a provider replaces an old query result; a
+ * ready container wins over stale pending/error containers.
+ */
+export function classifyYuantaForeignCurrencyResultMarkup(
+  html: string,
+): YuantaForeignCurrencyResultClassification {
+  const classifications = parseHtmlFragment(html)
+    .filter(isResultContainer)
+    .map(classifyYuantaForeignCurrencyResultElement);
+  return combineYuantaForeignCurrencyResultClassifications(classifications);
+}
+
+const yuantaForeignResultSelectors = [
+  "#resultdiv",
+  "#resultDiv",
+  "#result",
+  "#resultContainer",
+  "#resultArea",
+  '[data-result-container]',
+  '[data-result]',
+  ".resultdiv",
+  ".resultDiv",
+  ".result",
+  ".result-container",
+  ".result-area",
+] as const;
+
+const yuantaForeignResultSelector = yuantaForeignResultSelectors.join(",");
+
+export type YuantaForeignCurrencyFrameRouteCategory =
+  | "fxtransactiondetails"
+  | "login"
+  | "menu"
+  | "other";
+
+type YuantaForeignResultObservation = {
+  framePath: YuantaForeignCurrencyFrameRouteCategory;
+  framePathHash: string;
+  resultPresent: boolean;
+  state: YuantaForeignCurrencyResultState;
+  csvControlCount: number;
+  controlKinds: readonly YuantaForeignCurrencyControlKind[];
+  noticeKinds: readonly ("provider-no-data" | "provider-error")[];
+  resultContainers: readonly YuantaForeignCurrencyResultDiagnostic[];
+  resultContainerOverflowCount: number;
+  resultContainerOverflowBucket: YuantaForeignCurrencyResultDiagnosticOverflowBucket;
+};
+
+const yuantaForeignFramePathHashDomain =
+  "yuanta-foreign-result-frame-path-v1\0";
+
+export function classifyYuantaForeignCurrencyFrameRoute(
+  pathname: string,
+): YuantaForeignCurrencyFrameRouteCategory {
+  const segments = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+  if (segments.includes("fxtransactiondetails")) return "fxtransactiondetails";
+  if (
+    segments.some((segment) =>
+      ["login", "loginpage", "signin", "signon"].includes(segment),
+    )
+  ) {
+    return "login";
+  }
+  if (
+    segments.some((segment) =>
+      ["menu", "mainmenu", "functionoverview", "overview"].includes(segment),
+    )
+  ) {
+    return "menu";
+  }
+  return "other";
+}
+
+function hashYuantaForeignFramePath(pathname: string): string {
+  return createHash("sha256")
+    .update(yuantaForeignFramePathHashDomain)
+    .update(pathname)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function frameRouteObservation(scope: BrowserScope): {
+  framePath: YuantaForeignCurrencyFrameRouteCategory;
+  framePathHash: string;
+} {
+  try {
+    const pathname = new URL(scope.url()).pathname;
+    return {
+      framePath: classifyYuantaForeignCurrencyFrameRoute(pathname),
+      framePathHash: hashYuantaForeignFramePath(pathname),
+    };
+  } catch {
+    return {
+      framePath: "other",
+      framePathHash: hashYuantaForeignFramePath(""),
+    };
+  }
+}
+
+async function findYuantaForeignCurrencyResults(
+  scope: BrowserScope,
+): Promise<Locator[]> {
+  const results = scope.locator(yuantaForeignResultSelector);
+  const count = await results.count().catch(() => 0);
+  return Array.from({ length: count }, (_, index) => results.nth(index));
+}
+
+async function hasVisibleYuantaForeignCurrencyTimestampResult(
+  results: readonly Locator[],
+): Promise<boolean> {
+  for (const result of results) {
+    if (!(await result.isVisible().catch(() => false))) continue;
+    const markup = await result
+      .evaluate((element) => element.outerHTML)
+      .catch(() => "");
+    if (
+      parseHtmlFragment(markup).some(
+        (element) =>
+          isResultContainer(element) &&
+          isYuantaForeignCurrencyTimestampResult(element),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function logYuantaForeignCurrencyResultObservation(
+  observations: readonly YuantaForeignResultObservation[],
+): void {
+  const serializedObservation = JSON.stringify({
+    ruleVersion: YUANTA_FOREIGN_RESULT_RULE_VERSION,
+    framesExamined: observations.length,
+    observations,
+  });
+  console.log(
+    "yuanta-foreign-currency-result-observation",
+    serializedObservation,
+  );
+}
+
+async function readYuantaForeignCurrencyFrameMarkup(
+  scope: BrowserScope,
+): Promise<string> {
+  const body = scope.locator("body").first();
+  if ((await body.count().catch(() => 0)) > 0) {
+    return body.evaluate((element) => element.outerHTML).catch(() => "");
+  }
+  const html = scope.locator("html").first();
+  if ((await html.count().catch(() => 0)) > 0) {
+    return html.evaluate((element) => element.outerHTML).catch(() => "");
+  }
+  return "";
+}
+
+async function readYuantaForeignCurrencyCsvLinkIdentity(
+  link: Locator,
+): Promise<YuantaForeignCurrencyCsvLinkIdentity | null> {
+  return link
+    .evaluate((element) => ({
+      text: element.textContent ?? "",
+      className: element.getAttribute("class") ?? "",
+      href: element.getAttribute("href") ?? "",
+      ariaLabel: element.getAttribute("aria-label") ?? "",
+      title: element.getAttribute("title") ?? "",
+      onclick: element.getAttribute("onclick") ?? "",
+      dataAction: element.getAttribute("data-action") ?? "",
+      dataCommand: element.getAttribute("data-command") ?? "",
+      download: element.getAttribute("download") ?? "",
+    }))
+    .catch(() => null);
+}
+
+async function stableYuantaForeignCurrencyCsvLink(
+  scope: BrowserScope,
+  link: Locator,
+): Promise<Locator | null> {
+  const identity = await readYuantaForeignCurrencyCsvLinkIdentity(link);
+  if (!identity) return null;
+  const selector = stableYuantaForeignCurrencyCsvLinkSelector(identity);
+  if (!selector) return null;
+  const stable = scope.locator(selector);
+  if ((await stable.count().catch(() => 0)) !== 1) return null;
+  if (!(await stable.isVisible().catch(() => false))) return null;
+  const stableIdentity = await readYuantaForeignCurrencyCsvLinkIdentity(stable);
+  if (
+    !stableIdentity ||
+    !isSameYuantaForeignCurrencyCsvLinkIdentity(identity, stableIdentity)
+  ) {
+    return null;
+  }
+  return stable;
+}
+
+async function findYuantaForeignCurrencyCsvLinkForFrame(
+  scope: BrowserScope,
+  markup: string,
+): Promise<YuantaForeignCurrencyCsvFrameTarget | null> {
+  const match = findYuantaForeignCurrencyTableMatches(markup);
+  if (!match.hasTimestampResult || match.matches.length !== 1) return null;
+
+  const target = match.matches[0]!;
+  const tables = scope.locator("table");
+  const links = scope.locator("a");
+  if (
+    (await tables.count().catch(() => 0)) <= target.tableIndex ||
+    (await links.count().catch(() => 0)) <= target.linkIndex
+  ) {
+    return null;
+  }
+  const table = tables.nth(target.tableIndex);
+  if (!(await table.isVisible().catch(() => false))) return null;
+  const link = links.nth(target.linkIndex);
+  if (!(await link.isVisible().catch(() => false))) return null;
+  const stable = await stableYuantaForeignCurrencyCsvLink(scope, link);
+  if (!stable) return null;
+  return {
+    control: stable,
+    associationKey: target.associationKey,
+  };
+}
+
+type YuantaForeignCurrencyCsvFrameTarget = {
+  control: Locator;
+  associationKey: string;
+};
+
+type YuantaForeignCurrencyCsvControlTarget = {
+  scope: BrowserScope;
+  control: Locator;
+  refresh: () => Promise<Locator | null>;
+};
+
+async function refreshYuantaForeignCurrencyCsvControl(
+  scope: BrowserScope,
+  control: Locator,
+  associationKey: string,
+): Promise<Locator | null> {
+  if (frameRouteObservation(scope).framePath !== "fxtransactiondetails") {
+    return null;
+  }
+  const results = await findYuantaForeignCurrencyResults(scope);
+  if (!(await hasVisibleYuantaForeignCurrencyTimestampResult(results))) {
+    return null;
+  }
+  const markup = await readYuantaForeignCurrencyFrameMarkup(scope);
+  if (!markup) return null;
+  const refreshed = await findYuantaForeignCurrencyCsvLinkForFrame(
+    scope,
+    markup,
+  );
+  if (!refreshed || refreshed.associationKey !== associationKey) return null;
+  const currentIdentity = await readYuantaForeignCurrencyCsvLinkIdentity(
+    refreshed.control,
+  );
+  const previousIdentity = await readYuantaForeignCurrencyCsvLinkIdentity(
+    control,
+  );
+  if (
+    !currentIdentity ||
+    !previousIdentity ||
+    !isSameYuantaForeignCurrencyCsvLinkIdentity(
+      currentIdentity,
+      previousIdentity,
+    )
+  ) {
+    return null;
+  }
+  return refreshed.control;
+}
+
+/**
+ * Wait for a provider result state before looking for a download control.
+ * Frames are enumerated on every poll because Yuanta can replace or nest the
+ * result frame after submitting the query.
+ */
+export async function findYuantaForeignCurrencyCsvDownloadControl(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<YuantaForeignCurrencyCsvControlTarget> {
+  const deadline = Date.now() + timeoutMs;
+  let lastObservations: YuantaForeignResultObservation[] = [];
+
+  while (Date.now() < deadline) {
+    const observations: YuantaForeignResultObservation[] = [];
+    let providerError = false;
+    let providerNoData = false;
+    let readyResultFound = false;
+
+    for (const scope of [page, ...page.frames()]) {
+      const frameRoute = frameRouteObservation(scope);
+      const results = await findYuantaForeignCurrencyResults(scope);
+      if (results.length === 0) {
+        observations.push({
+          ...frameRoute,
+          resultPresent: false,
+          state: "pending",
+          csvControlCount: 0,
+          controlKinds: [],
+          noticeKinds: [],
+          resultContainers: [],
+          resultContainerOverflowCount: 0,
+          resultContainerOverflowBucket: "0",
+        });
+        continue;
+      }
+
+      const resultClassifications: Array<{
+        result: Locator;
+        classification: YuantaForeignCurrencyResultClassification;
+        diagnostics: YuantaForeignCurrencyResultDiagnostics;
+      }> = [];
+      for (const result of results) {
+        const markup = await result
+          .evaluate((element) => element.outerHTML)
+          .catch(() => "");
+        const visible = await result.isVisible().catch(() => null);
+        const visibility =
+          visible === null ? "unknown" : visible ? "visible" : "hidden";
+        resultClassifications.push({
+          result,
+          classification: classifyYuantaForeignCurrencyResultMarkup(markup),
+          diagnostics: diagnoseYuantaForeignCurrencyResultMarkup(
+            markup,
+            visibility,
+          ),
+        });
+      }
+      const classification = combineYuantaForeignCurrencyResultClassifications(
+        resultClassifications.map(({ classification: resultState }) => resultState),
+      );
+      observations.push({
+        ...frameRoute,
+        resultPresent: classification.hasResult,
+        state: classification.state,
+        csvControlCount: classification.csvControlCount,
+        controlKinds: classification.controlKinds,
+        noticeKinds: classification.noticeKinds,
+        ...capYuantaForeignCurrencyResultDiagnostics(
+          resultClassifications.flatMap(
+            ({ diagnostics }) => diagnostics.resultContainers,
+          ),
+          resultClassifications.reduce(
+            (overflowCount, { diagnostics }) =>
+              overflowCount + diagnostics.resultContainerOverflowCount,
+            0,
+          ),
+        ),
+      });
+
+      if (classification.state === "download-ready") {
+        readyResultFound = true;
+      }
+      if (frameRoute.framePath === "fxtransactiondetails") {
+        const frameMarkup = await readYuantaForeignCurrencyFrameMarkup(scope);
+        if (
+          frameMarkup &&
+          (await hasVisibleYuantaForeignCurrencyTimestampResult(results))
+        ) {
+          const control = await findYuantaForeignCurrencyCsvLinkForFrame(
+            scope,
+            frameMarkup,
+          );
+          if (control) {
+            return {
+              scope,
+              control: control.control,
+              refresh: () =>
+                refreshYuantaForeignCurrencyCsvControl(
+                  scope,
+                  control.control,
+                  control.associationKey,
+                ),
+            };
+          }
+        }
+        if (classification.state !== "download-ready") {
+          providerError ||= classification.state === "provider-error";
+          providerNoData ||= classification.state === "provider-no-data";
+        }
+      }
+    }
+
+    lastObservations = observations;
+    if (!readyResultFound && providerError) {
+      logYuantaForeignCurrencyResultObservation(observations);
+      throw new Error(
+        "YuanTa foreign-currency provider returned an explicit result error.",
+      );
+    }
+    if (!readyResultFound && providerNoData) {
+      logYuantaForeignCurrencyResultObservation(observations);
+      throw new StatementComponentAbsentError(
+        "YuanTa foreign-currency provider returned no transaction data.",
+      );
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0)
+      await page.waitForTimeout(Math.min(250, remainingMs));
+  }
+
+  logYuantaForeignCurrencyResultObservation(lastObservations);
+  throw new Error(
+    "Could not find YuanTa foreign-currency CSV download link in any frame.",
+  );
 }
 
 function toAsciiDigits(value: string): string {
@@ -666,23 +2026,84 @@ export async function readYuantaForeignCurrencyOptions(
 }
 
 async function waitForCsvDownloadLink(page: Page): Promise<void> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("a.order_2.m_color_check")
-        .filter({ hasText: "下載CSV檔" }),
-    "YuanTa foreign-currency CSV download link",
+  await findYuantaForeignCurrencyCsvDownloadControl(page);
+}
+
+const YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS = 3;
+
+/**
+ * Re-validate the complete result/table/link fence for each native click.
+ * Yuanta re-renders this page while scrolling, so an actionability wait on a
+ * previously resolved locator can outlive the element it was meant to click.
+ * A failed native click is the only retryable action; once click() returns,
+ * waiting for its download avoids issuing a second provider request.
+ */
+export async function clickYuantaForeignCurrencyCsvDownloadControl(
+  page: Page,
+  timeoutMs = 60_000,
+): Promise<Download> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  for (
+    let attempt = 0;
+    attempt < YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+
+    let target: YuantaForeignCurrencyCsvControlTarget;
+    try {
+      target = await findYuantaForeignCurrencyCsvDownloadControl(
+        page,
+        remainingMs,
+      );
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+
+    const control = await target.refresh().catch((error: unknown) => {
+      lastError = error;
+      return null;
+    });
+    if (!control) {
+      lastError ??= new Error(
+        "YuanTa foreign-currency CSV download control changed before click.",
+      );
+      continue;
+    }
+
+    const actionTimeoutMs = Math.max(1, Math.min(60_000, deadline - Date.now()));
+    const downloadPromise = page.waitForEvent("download", {
+      timeout: actionTimeoutMs,
+    });
+    try {
+      await control.evaluate((element) => {
+        const clickable = element as HTMLElement;
+        if (typeof clickable.click !== "function") {
+          throw new Error("YuanTa CSV control is not a clickable HTMLElement.");
+        }
+        clickable.click();
+      });
+    } catch (error) {
+      lastError = error;
+      // The failed attempt did not issue a click. Consume a later timeout
+      // rejection so the abandoned wait cannot become an unhandled promise.
+      void downloadPromise.catch(() => undefined);
+      continue;
+    }
+
+    // Do not retry after click() returns: a delayed download must not cause a
+    // duplicate provider request.
+    return await downloadPromise;
+  }
+
+  throw new Error(
+    `Could not safely click YuanTa foreign-currency CSV download control after ${YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS} attempts.`,
+    { cause: lastError },
   );
-  await scope
-    .locator("#resultdiv")
-    .waitFor({ state: "visible", timeout: 60_000 });
-  await scope
-    .locator("a.order_2.m_color_check")
-    .filter({ hasText: "下載CSV檔" })
-    .first()
-    .waitFor({ state: "visible", timeout: 60_000 });
-  await page.waitForTimeout(1_000);
 }
 
 async function queryAccountCurrency(
@@ -711,25 +2132,7 @@ async function downloadTransactionRows(
   currencyLabel: string,
   currencyValue: string,
 ): Promise<{ filename: string; rows: ForeignCurrencyTransactionRow[] }> {
-  const scope = await findScopeWithLocator(
-    page,
-    (candidate) =>
-      candidate
-        .locator("a.order_2.m_color_check")
-        .filter({ hasText: "下載CSV檔" }),
-    "YuanTa foreign-currency CSV download link",
-  );
-
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  const link = scope
-    .locator("a.order_2.m_color_check")
-    .filter({ hasText: "下載CSV檔" })
-    .first();
-  await link.waitFor({ state: "visible", timeout: 60_000 });
-  await link.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(500);
-  await link.click();
-  const download = await downloadPromise;
+  const download = await clickYuantaForeignCurrencyCsvDownloadControl(page);
 
   const filename = download.suggestedFilename();
   const content = await readBig5DownloadAsUtf8(download);
@@ -809,6 +2212,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
   observedAt = new Date().toISOString(),
   captureOccurrenceId = "",
   zeroResultAuthority?: "provider-explicit-no-data",
+  settlementLoginIdentity = "",
 ): ForeignCurrencyDepositCaptureInput {
   if (
     rows.length === 0 &&
@@ -895,6 +2299,14 @@ export function buildYuantaForeignCurrencyCaptureInput(
             "$1-$2-$3",
           ),
           transactionInfo: values[9] ?? "",
+          settlementLinkageKey: settlementLoginIdentity.trim()
+            ? deriveYuantaForeignSettlementLinkageKey(
+                settlementLoginIdentity,
+                rowCurrency,
+              )
+            : "",
+          settlementLinkageContractVersion:
+            YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
           reportedRate: normalizedReportedRate,
         },
       };
@@ -906,7 +2318,9 @@ export async function commitYuantaForeignCurrencyCapture(
   store: ForeignCurrencyDepositCommitStore,
   input: ForeignCurrencyDepositCaptureInput,
 ) {
-  return commitForeignCurrencyDepositCaptureBatch(store, [input]);
+  const results = await commitForeignCurrencyDepositCaptureBatch(store, [input]);
+  await resolveCanonicalInvestmentFundingRelations(store);
+  return results;
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
@@ -1004,9 +2418,11 @@ export default workflow("yuantaForeignCurrencyStatements", {
             new Date().toISOString(),
             captureOccurrenceId,
             zeroResultAuthority,
+            credentials.yuanta_user_id ?? "",
           );
         });
         await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
+        await resolveCanonicalInvestmentFundingRelations(financialStore);
       } finally {
         financialStore.close();
       }
