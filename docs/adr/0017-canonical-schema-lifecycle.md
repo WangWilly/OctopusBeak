@@ -23,6 +23,15 @@ financial rows and source lineage, and support compatibility repairs already
 required by the canonical schema. A failed upgrade must leave the original
 database retryable and must never fall back to a second store.
 
+### v21 evolution note
+
+Issue #139 adds a forward v20→v21 migration for the published transaction
+taxonomy, producer registry, authority routes, and typed enrichment tables.
+The package in `transaction-taxonomy.ts` remains the sole definition source;
+the lifecycle owns its physical tables, seed, immutable guards, and startup
+validation. The v20 schema and migration meanings remain historical and are
+not rewritten.
+
 ## Decision
 
 ### 1. The lifecycle owns physical schema only

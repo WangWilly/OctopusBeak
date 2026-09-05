@@ -229,7 +229,10 @@ export async function commitCathayAutomaticEnrichmentFromDescriptions(
     routeId: undefined,
     ruleLineage: options.ruleLineage?.trim() || DEFAULT_RULE_LINEAGE,
     observedAt: options.observedAt,
-    declaredFields: ["kind", "category", "counterparty_role", "counterparty_display"],
+    declaredSubjects: transactions.map((transaction) => ({
+      transactionId: transaction.transactionId,
+      fields: ["kind", "category", "counterparty_role", "counterparty_display"] as const,
+    })),
     outputs: transactions.flatMap(outputsForTransaction),
   });
 }

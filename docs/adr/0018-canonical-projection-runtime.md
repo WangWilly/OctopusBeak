@@ -25,6 +25,15 @@ query-time reconstructions from immutable facts and assertion lifecycle at
 explicit financial-time and knowledge-time cutoffs; a retired generation is
 not historical financial authority.
 
+### v21 evolution note
+
+The v20 boundary remains the historical schema decision. The forward v21
+taxonomy migration adds `transaction-enrichment` as a closed Runtime family:
+Current reads use the active generation, while Historical reads select
+immutable assertion, route, and transaction revision history at explicit dual
+cutoffs. Query facades consume that Runtime family rather than rebuilding its
+selection rules.
+
 ## Decision
 
 ### 1. One runtime projection authority
