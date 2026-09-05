@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ensureCanonicalCreditCardSchema,
   persistCanonicalCreditCardExtensions,
+  persistCanonicalCreditCardExtensionsForIsolatedSetup,
   type CanonicalCreditCardPersistenceCapture,
 } from "./canonical-credit-card-persistence.ts";
 
@@ -120,6 +121,20 @@ function addSharedCapture(
         revisionId, transactionId, sourceRecordId,
       );
   });
+  const suffix = captureKey.slice(captureKey.lastIndexOf("-") + 1);
+  const statementRecordId = blob(55 + ordinal);
+  db.prepare(`INSERT INTO source_records VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+  )`).run(
+    statementRecordId, captureId, blob(4), blob(5),
+    "esun-credit-card-statement-summary", `statement-summary:statement-1`,
+    "human-attested:no-provider-key", `sha256:summary-${suffix}`,
+    `summary-${suffix}`, `summary-${suffix}`, null, "{}",
+  );
+  db.prepare("INSERT INTO source_record_scopes VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+    statementRecordId, blob(20 + ordinal), captureId, blob(2), blob(4),
+    `statement-summary:statement-1`, `summary-${suffix}`, blob(5),
+  );
 }
 
 function capture(
@@ -189,7 +204,7 @@ test("persists neutral credit-card authority and shared-ID provenance", () => {
     { occurrence: "row-a-1", sourceKey: "source-1" },
     { occurrence: "row-a-2", sourceKey: "source-2" },
   ]);
-  persistCanonicalCreditCardExtensions(db, [capture("capture-a")]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [capture("capture-a")]);
 
   assert.equal(count(db, "canonical_credit_card_account_identities"), 1);
   assert.equal(count(db, "canonical_credit_card_instruments"), 1);
@@ -217,7 +232,7 @@ test("repeated capture adds provenance without rewriting authority", () => {
     { occurrence: "row-a-1", sourceKey: "source-1" },
     { occurrence: "row-a-2", sourceKey: "source-2" },
   ]);
-  persistCanonicalCreditCardExtensions(db, [capture("capture-a")]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [capture("capture-a")]);
   addSharedCapture(db, 1, "capture-b", [
     { occurrence: "row-b-1", sourceKey: "source-1" },
     { occurrence: "row-b-2", sourceKey: "source-2" },
@@ -225,7 +240,7 @@ test("repeated capture adds provenance without rewriting authority", () => {
   const repeated = capture("capture-b", "b");
   repeated.statements = [];
   repeated.relations = [];
-  persistCanonicalCreditCardExtensions(db, [repeated]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [repeated]);
   assert.equal(count(db, "canonical_credit_card_instruments"), 1);
   assert.equal(count(db, "canonical_credit_card_instrument_evidence"), 2);
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 4);
@@ -239,8 +254,8 @@ test("replaying the same capture is idempotent for lifecycle evidence", () => {
     { occurrence: "row-a-2", sourceKey: "source-2" },
   ]);
   const replayed = capture("capture-a");
-  persistCanonicalCreditCardExtensions(db, [replayed]);
-  persistCanonicalCreditCardExtensions(db, [replayed]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [replayed]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [replayed]);
 
   assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 2);
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
@@ -254,7 +269,7 @@ test("replaying the same capture is idempotent for lifecycle evidence", () => {
       : transaction,
   );
   assert.throws(
-    () => persistCanonicalCreditCardExtensions(db, [conflicting]),
+    () => persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [conflicting]),
     /lifecycle observation key.*changed evidence/i,
   );
   assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 2);
@@ -267,7 +282,7 @@ test("billing lifecycle appends status evidence without changing the transaction
     { occurrence: "row-a-1", sourceKey: "source-1" },
     { occurrence: "row-a-2", sourceKey: "source-2" },
   ]);
-  persistCanonicalCreditCardExtensions(db, [capture("capture-a")]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [capture("capture-a")]);
 
   addSharedCapture(db, 1, "capture-b", [
     { occurrence: "row-b-1", sourceKey: "source-1" },
@@ -280,7 +295,7 @@ test("billing lifecycle appends status evidence without changing the transaction
       : transaction,
   );
   transitioned.statements = [];
-  persistCanonicalCreditCardExtensions(db, [transitioned]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [transitioned]);
 
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
   assert.equal(count(db, "canonical_credit_card_transaction_lifecycle"), 4);
@@ -306,7 +321,7 @@ test("immutable revision reuse fails and rolls the callback savepoint back", () 
     { occurrence: "row-a-1", sourceKey: "source-1" },
     { occurrence: "row-a-2", sourceKey: "source-2" },
   ]);
-  persistCanonicalCreditCardExtensions(db, [capture("capture-a")]);
+  persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [capture("capture-a")]);
   addSharedCapture(db, 1, "capture-b", [
     { occurrence: "row-b-1", sourceKey: "source-1" },
     { occurrence: "row-b-2", sourceKey: "source-2" },
@@ -316,14 +331,14 @@ test("immutable revision reuse fails and rolls the callback savepoint back", () 
   changed.statements[0]!.revisionKey = "revision-a";
   changed.statements[0]!.balance.coefficient = "9999";
   assert.throws(
-    () => persistCanonicalCreditCardExtensions(db, [changed]),
+    () => persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [changed]),
     /revision key.*changed/i,
   );
   assert.equal(count(db, "canonical_credit_card_instrument_evidence"), beforeEvidence);
   assert.equal(count(db, "canonical_credit_card_transaction_details"), 2);
   assert.equal(
     (db.prepare("SELECT COUNT(*) AS n FROM source_records WHERE occurrence_key = 'summary-b'").get() as { n: number }).n,
-    0,
+    1,
   );
   assert.equal(
     (db.prepare("SELECT balance_coefficient AS value FROM canonical_credit_card_statement_revisions").get() as { value: string }).value,
@@ -341,7 +356,7 @@ test("raw PAN is rejected before extension data can be stored", () => {
   const unsafe = capture("capture-a") as CanonicalCreditCardPersistenceCapture & { rawPan: string };
   unsafe.rawPan = "4111111111111111";
   assert.throws(
-    () => persistCanonicalCreditCardExtensions(db, [unsafe]),
+    () => persistCanonicalCreditCardExtensionsForIsolatedSetup(db, [unsafe]),
     /raw PAN/i,
   );
   assert.equal(count(db, "canonical_credit_card_account_identities"), 0);
@@ -351,4 +366,16 @@ test("raw PAN is rejected before extension data can be stored", () => {
     0,
   );
   db.close();
+});
+
+test("production credit-card persistence rejects a raw DatabaseSync adapter", () => {
+  const raw = new DatabaseSync(":memory:");
+  try {
+    assert.throws(
+      () => persistCanonicalCreditCardExtensions(raw, []),
+      /canonical database capability|lifecycle/i,
+    );
+  } finally {
+    raw.close();
+  }
 });

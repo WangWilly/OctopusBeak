@@ -13,10 +13,12 @@ import {
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  admitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidence,
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import {
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
@@ -37,6 +39,10 @@ import {
   type YuantaHumanAttestedV2Manifest,
   type YuantaHumanAttestedManifest,
 } from "./yuanta-human-attestation.ts";
+import {
+  requireSourceConnectionIdentity,
+  validateSourceConnectionIdentity,
+} from "./source-connection-identity.ts";
 
 export const YUANTA_DOMESTIC_DEPOSIT_CONTRACT = {
   source: "yuanta",
@@ -587,6 +593,10 @@ export function createYuantaDomesticDepositTelemetryManifest(
 export function createYuantaDomesticDepositSourceEvidence(
   capture: YuantaDomesticDepositValidatedEvidence,
   captureId: string,
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>,
 ): CanonicalSourceEvidence {
   if (!isAdmittedYuantaDomesticDepositCaptureEvidence(capture))
     throw new Error("Yuanta source evidence requires structural admission.");
@@ -596,7 +606,16 @@ export function createYuantaDomesticDepositSourceEvidence(
     throw new Error(
       "Yuanta source evidence requires a terminal CSV download for the requested range.",
     );
-  const identity = deriveYuantaDomesticDepositAccountIdentity(capture.account);
+  const stableSourceIdentity = requireSourceConnectionIdentity(
+    "yuanta",
+    "Yuanta source evidence",
+    sourceIdentity,
+  );
+  const identity = deriveYuantaDomesticDepositAccountIdentity(
+    capture.account,
+    getYuantaHumanAttestedV2Manifest(),
+    stableSourceIdentity.sourceConnectionKey,
+  );
   const startDate = sourceDate(capture.queryRange.startDate);
   const endDate = sourceDate(capture.queryRange.endDate);
   const pageRows = capture.downloads.map((download, pageOrdinal) => ({
@@ -691,13 +710,21 @@ export async function commitYuantaDomesticDepositSourceEvidence(
   store: CanonicalSourceStore,
   capture: YuantaDomesticDepositValidatedEvidence,
   captureId: string,
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(
-      createYuantaDomesticDepositSourceEvidence(capture, captureId),
-    ),
+  const evidence = createYuantaDomesticDepositSourceEvidence(
+    capture,
+    captureId,
+    sourceIdentity,
   );
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export const YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
@@ -736,34 +763,61 @@ export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RULE_VERSION =
 
 export type YuantaDomesticDepositAccountIdentity = {
   accountNo: string;
-  sourceConnectionKey: string;
+  sourceConnectionKey: `sha256:${string}`;
   identityEpochKey: string;
   subjectDigest: string;
 };
 
-function sourceAccountDigest(accountValue: string): string {
+export function deriveYuantaDomesticDepositAccountKey(
+  accountValue: string,
+): string {
   return yuantaDigest("yuanta-account-selector-v1", accountValue);
+}
+
+type YuantaSourceConnectionResolution = {
+  sourceConnectionKey: `sha256:${string}` | null;
+  diagnostics: string[];
+};
+
+/**
+ * Resolve a stable workflow login identity without mixing in the selected
+ * account or human-attestation epoch. Financial admission has no
+ * manifest-derived fallback.
+ */
+function resolveYuantaSourceConnection(
+  input: YuantaDomesticDepositFinancialAdmissionInput,
+): YuantaSourceConnectionResolution {
+  const validated = validateSourceConnectionIdentity("yuanta", input);
+  return {
+    sourceConnectionKey: validated.sourceConnectionKey,
+    diagnostics: [...validated.defects],
+  };
 }
 
 /**
  * The selector value is reduced to a local domain digest. The display label,
  * dates, filenames, and row content never participate in account identity.
+ * Omitting sourceConnectionKey is a non-persistable compatibility calculation:
+ * every source or financial admission path supplies the validated workflow key.
  */
 export function deriveYuantaDomesticDepositAccountIdentity(
   account: YuantaDomesticDepositCaptureEvidence["account"],
   manifest: YuantaHumanAttestedManifest = getYuantaHumanAttestedV2Manifest(),
+  sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositAccountIdentity {
   const v2 =
     manifest.authorityRoute === YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE;
-  const subjectDigest = sourceAccountDigest(account.value);
+  const subjectDigest = deriveYuantaDomesticDepositAccountKey(account.value);
   return {
     accountNo: subjectDigest,
-    sourceConnectionKey: yuantaDigest(
-      v2 ? "yuanta-source-connection-v2" : "yuanta-source-connection-v1",
-      "yuanta",
-      manifest.attestationId,
-      manifest.evidenceVersion,
-    ),
+    sourceConnectionKey:
+      sourceConnectionKey ??
+      yuantaDigest(
+        v2 ? "yuanta-source-connection-v2" : "yuanta-source-connection-v1",
+        "yuanta",
+        manifest.attestationId,
+        manifest.evidenceVersion,
+      ),
     identityEpochKey: v2
       ? yuantaHumanAttestedV2IdentityEpochKey(
           manifest as YuantaHumanAttestedV2Manifest,
@@ -822,10 +876,12 @@ export type YuantaDomesticDepositFinancialSemantics = {
 export function buildYuantaHumanAttestedFinancialSemantics(
   capture: YuantaDomesticDepositCaptureEvidence,
   manifest: YuantaHumanAttestedV2Manifest = getYuantaHumanAttestedV2Manifest(),
+  sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositFinancialSemantics {
   const identity = deriveYuantaDomesticDepositAccountIdentity(
     capture.account,
     manifest,
+    sourceConnectionKey,
   );
   return {
     evidenceVersion: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -877,6 +933,13 @@ export type YuantaDomesticDepositFinancialAdmissionInput = {
   captureId: string;
   humanAttestation?: YuantaHumanAttestedV2Manifest;
   semantics?: YuantaDomesticDepositFinancialSemantics;
+  /**
+   * Stable login identity supplied by the workflow. It is independent of
+   * account attestation and its identity epoch. Both fields are mandatory for
+   * financial admission; manifest identity remains provenance only.
+   */
+  sourceConnectionScope?: string;
+  sourceConnectionKey?: string;
 };
 export type YuantaDomesticDepositFinancialAdmissionResult = {
   status: "admitted" | "blocked";
@@ -1127,8 +1190,13 @@ function financialRecord(
 function expectedSemantics(
   capture: YuantaDomesticDepositValidatedEvidence,
   manifest: YuantaHumanAttestedV2Manifest,
+  sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositFinancialSemantics {
-  return buildYuantaHumanAttestedFinancialSemantics(capture, manifest);
+  return buildYuantaHumanAttestedFinancialSemantics(
+    capture,
+    manifest,
+    sourceConnectionKey,
+  );
 }
 
 function financialDiagnosticsFor(
@@ -1159,11 +1227,21 @@ function financialDiagnosticsFor(
     return { diagnostics: [...new Set(diagnostics)], semantics: null };
 
   const currentManifest = manifest ?? getYuantaHumanAttestedV2Manifest();
+  const sourceConnection = resolveYuantaSourceConnection(input);
+  diagnostics.push(...sourceConnection.diagnostics);
+  if (!sourceConnection.sourceConnectionKey)
+    return { diagnostics: [...new Set(diagnostics)], semantics: null };
   const semantics =
-    input.semantics ?? expectedSemantics(input.capture, currentManifest);
+    input.semantics ??
+    expectedSemantics(
+      input.capture,
+      currentManifest,
+      sourceConnection.sourceConnectionKey,
+    );
   const identity = deriveYuantaDomesticDepositAccountIdentity(
     input.capture.account,
     currentManifest,
+    sourceConnection.sourceConnectionKey,
   );
   if (
     semantics.account.accountNo !== identity.accountNo ||

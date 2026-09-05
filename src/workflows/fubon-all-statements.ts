@@ -30,6 +30,12 @@ import {
 import { runSelectedStatements } from "./run-selected-statements.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+import {
+  deriveFubonSourceConnectionKey,
+  fubonStableLoginScope,
+} from "./fubon-source-connection.ts";
+
+export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
 const inputSchema = z.object({
   statements: fubonStatementsInputSchema.default(() =>
@@ -65,21 +71,6 @@ type Input = z.infer<typeof inputSchema> & {
 const FUBON_CREDIT_CARD_IDENTITY_EPOCH =
   "fubon-credit-card-human-attested-v2" as const;
 
-function normalizedFubonLoginPart(value: string | undefined): string {
-  return (value ?? "")
-    .normalize("NFKC")
-    .trim()
-    .replace(/\s+/gu, " ")
-    .toUpperCase();
-}
-
-function fubonLoginScope(credentials: FubonCredentials): readonly [string, string] | null {
-  const userId = normalizedFubonLoginPart(credentials.fubon_user_id);
-  const account = normalizedFubonLoginPart(credentials.fubon_account);
-  if (!userId || !account) return null;
-  return [userId, account];
-}
-
 function hmacFubonIdentity(secret: string, value: unknown): string {
   return createHmac("sha256", secret)
     .update(JSON.stringify(value))
@@ -88,33 +79,31 @@ function hmacFubonIdentity(secret: string, value: unknown): string {
 
 /**
  * Derive the source connection and portfolio attestation in memory from the
- * device-owned managed secret and the stable Fubon login scope (user ID plus
- * online-banking code; password rotation must not create a new account). The
- * login values and managed secret are never returned, logged, or persisted. The
- * managed secret is intentionally part of both HMACs: moving the encrypted
- * credentials file with the same secret preserves identity, while a fresh
- * device secret deliberately starts a new portable source scope.
+ * stable Fubon login scope (user ID plus online-banking code; password
+ * rotation must not create a new account). The source connection is the
+ * product-independent canonical key and never depends on the device-owned
+ * managed secret. The managed secret remains only for the separate
+ * human-attested portfolio key. Login values and the secret are never
+ * returned, logged, or persisted.
  */
 export function deriveFubonCanonicalHumanAttestation(
   credentials: FubonCredentials,
   managedSecret: string,
-): {
-  sourceConnectionKey: string;
-  identityEpochKey: typeof FUBON_CREDIT_CARD_IDENTITY_EPOCH;
-  humanAttestedAccountKey: string;
-} | undefined {
+):
+  | {
+      sourceConnectionKey: string;
+      identityEpochKey: typeof FUBON_CREDIT_CARD_IDENTITY_EPOCH;
+      humanAttestedAccountKey: string;
+    }
+  | undefined {
   const secret = managedSecret.trim();
-  const scope = fubonLoginScope(credentials);
-  if (!secret || !scope) return undefined;
-  const scopeDigest = hmacFubonIdentity(secret, [
-    "fubon-login-scope-v2",
-    ...scope,
-  ]);
-  const sourceConnectionKey = `fubon_connection_${scopeDigest}`;
+  const scope = fubonStableLoginScope(credentials);
+  const sourceConnectionKey = deriveFubonSourceConnectionKey(credentials);
+  if (!secret || !scope || !sourceConnectionKey) return undefined;
   const humanAttestedAccountKey = `portfolio_${hmacFubonIdentity(secret, [
     "fubon-primary-cardholder-portfolio-v2",
     sourceConnectionKey,
-    ...scope,
+    ...scope.split("\u0000"),
   ])}`;
   return {
     sourceConnectionKey,
@@ -124,7 +113,8 @@ export function deriveFubonCanonicalHumanAttestation(
 }
 
 function optionalFubonManagedSecret(): string | undefined {
-  const secret = process.env[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+  const secret =
+    process.env[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
   return secret || undefined;
 }
 
@@ -299,6 +289,12 @@ export async function runFubonAllStatements(
     BANK_STATEMENT_CAPABILITIES.fubon,
   );
   const ledgerOverrides = resolveFubonLedgerOverrides();
+  const sourceConnectionScope = fubonStableLoginScope(input.credentials);
+  const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
+  if (!sourceConnectionScope || !sourceConnectionKey)
+    throw new Error(
+      "Fubon all-statements requires a stable login identity for its Source Connection.",
+    );
   const managedSecret = optionalFubonManagedSecret();
   const canonicalHumanAttestation = managedSecret
     ? deriveFubonCanonicalHumanAttestation(input.credentials, managedSecret)
@@ -318,7 +314,11 @@ export async function runFubonAllStatements(
         typeId: "deposit",
         run: () =>
           runSectionOutOfForeground(page, "statements", () =>
-            runFubonStatements(page, input.statements, ledgerOverrides),
+            runFubonStatements(page, input.statements, {
+              ...ledgerOverrides,
+              sourceConnectionScope,
+              sourceConnectionKey,
+            }),
           ),
       },
       {
@@ -342,7 +342,11 @@ export async function runFubonAllStatements(
         typeId: "loan",
         run: () =>
           runSectionOutOfForeground(page, "loans", () =>
-            runFubonLoanStatements(page, input.loans),
+            runFubonLoanStatements(page, input.loans, {
+              ...ledgerOverrides,
+              sourceConnectionScope,
+              sourceConnectionKey,
+            }),
           ),
       },
     ]);

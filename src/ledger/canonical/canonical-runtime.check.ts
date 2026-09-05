@@ -14,9 +14,14 @@ import {
   commitCathayUserAssertion,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
-  rebuildCathayCanonicalProjection,
 } from "./cathay-domestic-deposit.ts";
 import { CanonicalBusyRetryExhaustedError } from "./canonical-runtime.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+
+const rebuildCathayCanonicalProjection = (
+  ledgerDir: string,
+  options = {},
+) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 
 const ledgerDir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-runtime-"));
 try {
@@ -1212,6 +1217,9 @@ for (const [label, corrupt] of [
       INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
         SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
       DROP TABLE projection_generation_provenance_legacy;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
     const writer = openCanonicalDatabase(dir);
@@ -1279,6 +1287,9 @@ for (const [label, corrupt] of [
       INSERT INTO projection_generation_provenance(event_id, generation_id, event_kind, event_source, commit_id)
         SELECT event_id, generation_id, event_kind, event_source, commit_id FROM projection_generation_provenance_legacy;
       DROP TABLE projection_generation_provenance_legacy;
+      DELETE FROM canonical_contract_purge_commits;
+      DELETE FROM canonical_contract_purges;
+      DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
     const writer = openCanonicalDatabase(dir);

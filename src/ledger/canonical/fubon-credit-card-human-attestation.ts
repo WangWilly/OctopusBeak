@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 /**
  * The first Fubon credit-card contract is deliberately human-attested.  The
@@ -331,6 +335,10 @@ function tableColumns(db: DatabaseSync): Set<string> {
 export function ensureFubonCreditCardHumanAttestationEvents(
   db: DatabaseSync,
 ): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/fubon-credit-card-events/v1");
+    return;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS fubon_credit_card_attestation_events (
       event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),

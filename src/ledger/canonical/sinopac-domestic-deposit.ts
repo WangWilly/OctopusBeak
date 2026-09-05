@@ -5,11 +5,12 @@ import {
 } from "./advertised-domestic-deposit-preflight.ts";
 import { createHash } from "node:crypto";
 import {
-  admitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidenceBatch,
-  commitCanonicalSourceEvidence,
+  canonicalSourceAdmissionCommitResult,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import {
   type CanonicalSourceCommitResult,
-  type CanonicalSourceEvidence,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
@@ -711,10 +712,12 @@ export async function commitSinopacStatementSourceEvidence(
   capture: SinopacStatementValidatedCapture,
   captureId: string,
 ): Promise<CanonicalSourceCommitResult> {
-  return commitCanonicalSourceEvidence(
-    store,
-    admitCanonicalSourceEvidence(sourceEvidenceForCapture(capture, captureId)),
-  );
+  const evidence = sourceEvidenceForCapture(capture, captureId);
+  return createCanonicalSourceCaptureAdmission(store)
+    .admit(evidence)
+    .then((admitted) =>
+      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
+    );
 }
 
 export async function commitSinopacStatementSourceEvidenceBatch(
@@ -725,123 +728,17 @@ export async function commitSinopacStatementSourceEvidenceBatch(
   if (captures.length === 0)
     throw new Error("SinoPac source batch cannot be empty.");
   const evidences = captures.map((capture, index) =>
-    admitCanonicalSourceEvidence(
-      sourceEvidenceForCapture(capture, `${captureId}-${index}`),
+    sourceEvidenceForCapture(capture, `${captureId}-${index}`),
+  );
+  const receipts = await createCanonicalSourceCaptureAdmission(store).admitBatch(
+    evidences,
+  );
+  return receipts.map((receipt, index) =>
+    canonicalSourceAdmissionCommitResult(
+      receipt,
+      evidences[index]!.records.length,
     ),
   );
-  const captureKeys = new Set<string>();
-  const plannedOccurrences = new Map<
-    string,
-    CanonicalSourceEvidence["records"][number]
-  >();
-  for (const evidence of evidences) {
-    if (captureKeys.has(evidence.captureId))
-      throw new Error("SinoPac source batch capture overwrite is forbidden.");
-    captureKeys.add(evidence.captureId);
-    const route = store.db
-      .prepare(
-        "SELECT integration_namespace, stream, contract_version FROM source_authority_routes WHERE authority_route = ?",
-      )
-      .get(evidence.routeKey) as Record<string, unknown> | undefined;
-    if (
-      route &&
-      (String(route.integration_namespace) !== evidence.integrationNamespace ||
-        String(route.stream) !== evidence.stream ||
-        String(route.contract_version) !== evidence.contractVersion)
-    )
-      throw new Error("SinoPac authority route contract drifted.");
-    if (
-      store.db
-        .prepare("SELECT 1 FROM source_captures WHERE capture_key = ?")
-        .get(evidence.captureId)
-    )
-      throw new Error("SinoPac source capture overwrite is forbidden.");
-    for (const record of evidence.records) {
-      const occurrenceIdentity = [
-        evidence.integrationNamespace,
-        evidence.sourceConnectionKey,
-        evidence.identityEpoch,
-        evidence.stream,
-        evidence.recordKind,
-        evidence.subjectDigest,
-        record.occurrenceKey,
-      ].join("\u0000");
-      const planned = plannedOccurrences.get(occurrenceIdentity);
-      if (
-        planned &&
-        (planned.providerKey !== record.providerKey ||
-          planned.contentHash !== record.contentHash ||
-          stableSourceJson(planned.compact) !==
-            stableSourceJson(record.compact))
-      )
-        throw new Error(
-          "SinoPac source occurrence conflict; overwrite is forbidden.",
-        );
-      plannedOccurrences.set(occurrenceIdentity, record);
-      if (record.collisionKey !== undefined) {
-        const collisions = store.db
-          .prepare(
-            `SELECT record.occurrence_key FROM source_records record
-             JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
-             JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
-             JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
-             WHERE connection.integration_namespace = ? AND connection.source_connection_key = ?
-               AND epoch.epoch_key = ? AND subject.stream = ? AND subject.record_kind = ?
-               AND subject.subject_digest = ? AND record.collision_key = ?`,
-          )
-          .all(
-            evidence.integrationNamespace,
-            evidence.sourceConnectionKey,
-            evidence.identityEpoch,
-            evidence.stream,
-            evidence.recordKind,
-            evidence.subjectDigest,
-            record.collisionKey,
-          ) as Array<{ occurrence_key?: unknown }>;
-        if (
-          collisions.some(
-            (existing) =>
-              String(existing.occurrence_key) !== record.occurrenceKey,
-          )
-        )
-          throw new Error(
-            "SinoPac source collision key maps to another occurrence; overwrite is forbidden.",
-          );
-      }
-      const existing = store.db
-        .prepare(
-          `SELECT record.provider_key, record.content_hash, record.payload_json
-           FROM source_records record
-           JOIN source_subjects subject ON subject.source_subject_id = record.source_subject_id
-           JOIN source_connections connection ON connection.source_connection_id = subject.source_connection_id
-           JOIN identity_epochs epoch ON epoch.identity_epoch_id = subject.identity_epoch_id
-           WHERE connection.integration_namespace = ? AND connection.source_connection_key = ?
-             AND epoch.epoch_key = ? AND subject.stream = ? AND subject.record_kind = ?
-             AND subject.subject_digest = ? AND record.occurrence_key = ?`,
-        )
-        .all(
-          evidence.integrationNamespace,
-          evidence.sourceConnectionKey,
-          evidence.identityEpoch,
-          evidence.stream,
-          evidence.recordKind,
-          evidence.subjectDigest,
-          record.occurrenceKey,
-        ) as Array<Record<string, unknown>>;
-      if (
-        existing.some(
-          (row) =>
-            String(row.provider_key) !== record.providerKey ||
-            String(row.content_hash) !== record.contentHash ||
-            String(row.payload_json) !== stableSourceJson(record.compact),
-        )
-      )
-        throw new Error(
-          "SinoPac source occurrence conflict; overwrite is forbidden.",
-        );
-    }
-  }
-  return commitCanonicalSourceEvidenceBatch(store, evidences);
 }
 
 export type SinopacDomesticDepositFinancialAdmissionInput = {

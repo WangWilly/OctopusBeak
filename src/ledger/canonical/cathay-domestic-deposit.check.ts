@@ -16,13 +16,18 @@ import {
   commitCathayDerivedImportRun,
   runCathayDerivedImportRun,
   commitCathayUserAssertion,
-  rebuildCathayCanonicalProjection,
   canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
   openCanonicalDatabase,
   parseExactDecimalLexeme,
   type CathayStagedCapturePage,
 } from "./cathay-domestic-deposit.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+
+const rebuildCathayCanonicalProjection = (
+  ledgerDir: string,
+  options = {},
+) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 import { createCathayCanonicalFinancialQuery as createBoundaryCanonicalQuery } from "../../lib/shared-ledger/server/financial-query.ts";
 
 const syncPage = (
@@ -842,6 +847,7 @@ try {
       Buffer.from(sourceAssertion.source_record_id!),
       highRevision,
     );
+    sourceIdentityAfter.close();
     const sourceLineage = await query.lineage({
       kind: "lineage",
       subject: {
@@ -1065,10 +1071,12 @@ try {
     syncInput([syncPage(), syncPage(secondAccount, secondRaw)]),
   );
   const v4Seed = openCanonicalDatabase(populatedV4ScopeMigrationDir);
-  v4Seed.exec(
-    "UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
-  );
   v4Seed.close();
+  const v4SeedRaw = new DatabaseSync(canonicalSqlitePath(populatedV4ScopeMigrationDir));
+  v4SeedRaw.exec(
+    "PRAGMA foreign_keys = OFF; UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
+  );
+  v4SeedRaw.close();
   const migratedV4Writer = openCanonicalDatabase(populatedV4ScopeMigrationDir);
   migratedV4Writer.close();
   const migratedV4 = openCanonicalDatabase(populatedV4ScopeMigrationDir, {
@@ -1126,10 +1134,14 @@ try {
   const provenanceOnlyV4Seed = openCanonicalDatabase(
     provenanceOnlyV4MigrationDir,
   );
-  provenanceOnlyV4Seed.exec(
-    "DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
-  );
   provenanceOnlyV4Seed.close();
+  const provenanceOnlyV4SeedRaw = new DatabaseSync(
+    canonicalSqlitePath(provenanceOnlyV4MigrationDir),
+  );
+  provenanceOnlyV4SeedRaw.exec(
+    "PRAGMA foreign_keys = OFF; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
+  );
+  provenanceOnlyV4SeedRaw.close();
   const provenanceOnlyV4Writer = openCanonicalDatabase(
     provenanceOnlyV4MigrationDir,
   );
@@ -1193,10 +1205,14 @@ try {
     { ...syncInput(), observedAt: "2026-08-19T00:00:00+08:00" },
   );
   const restorationV4Seed = openCanonicalDatabase(restorationV4MigrationDir);
-  restorationV4Seed.exec(
-    "UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM schema_migrations WHERE version = 5; PRAGMA user_version = 4;",
-  );
   restorationV4Seed.close();
+  const restorationV4SeedRaw = new DatabaseSync(
+    canonicalSqlitePath(restorationV4MigrationDir),
+  );
+  restorationV4SeedRaw.exec(
+    "PRAGMA foreign_keys = OFF; UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
+  );
+  restorationV4SeedRaw.close();
   assert.throws(
     () =>
       openCanonicalDatabase(restorationV4MigrationDir, {
@@ -1423,6 +1439,37 @@ try {
     historicalWithdrawn.transactions[0]?.assertionSupportState,
     "withdrawn",
   );
+  const projectionRuntime = createCanonicalProjectionRuntime(
+    canonicalSqlitePath(lifecycleDir),
+  );
+  const projectionScope = {
+    sourceConnectionKey: "synthetic-sync-connection",
+  } as const;
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: withdrawn.commitSequence,
+      },
+    }).families.transactions.length,
+    0,
+    "Runtime historical facts exclude assertions withdrawn at the Knowledge Point",
+  );
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: first.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
+  );
   const restored = await commitCathayDomesticDepositSync(lifecycleDir, {
     ...syncInput(),
     observedAt: "2026-08-19T00:00:00+08:00",
@@ -1476,6 +1523,18 @@ try {
       })
     ).transactions[0]?.assertionSupportState,
     "supported",
+  );
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: restored.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
   );
   const restoredLineage = await withdrawnQuery.lineage({
     kind: "lineage",
@@ -1545,6 +1604,19 @@ try {
   } finally {
     changedDb.close();
   }
+  assert.equal(
+    projectionRuntime.read({
+      kind: "historical",
+      families: ["transactions"],
+      scope: projectionScope,
+      cutoff: {
+        financialAt: "2026-12-31",
+        knowledgeAt: changed.commitSequence,
+      },
+    }).families.transactions.length,
+    3,
+    "Runtime selects the replacement fact and excludes its superseded assertion",
+  );
 } finally {
   await rm(lifecycleDir, { recursive: true, force: true });
 }
@@ -3012,8 +3084,10 @@ const newerSchemaDir = await mkdtemp(
 );
 try {
   const schemaDb = openCanonicalDatabase(newerSchemaDir);
-  schemaDb.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION + 1}`);
   schemaDb.close();
+  const schemaDbRaw = new DatabaseSync(canonicalSqlitePath(newerSchemaDir));
+  schemaDbRaw.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION + 1}`);
+  schemaDbRaw.close();
   assert.throws(
     () => openCanonicalDatabase(newerSchemaDir),
     /newer than supported/,
@@ -3042,7 +3116,7 @@ for (const version of [1, 2] as const) {
         migrated
           .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
           .get()?.count,
-        8,
+        CANONICAL_SCHEMA_VERSION,
         `v${version} migration history`,
       );
       assert.equal(
@@ -3144,9 +3218,9 @@ for (const version of [1, 2] as const) {
   }
 }
 
-// A v1 migration must commit its exact v2 shape before v2->v3 begins. A
-// deliberately broken sync relation forces the second migration to roll back;
-// the v2 metadata and columns must remain, and a repaired relation must retry.
+// All pending migrations share one outer transaction. A deliberately broken
+// sync relation therefore rolls the v1->v2 attempt back to the original v1
+// shape; repairing the relation then permits the complete chain to retry.
 const v1RollbackDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-migration-v1-rollback-"),
 );
@@ -3164,13 +3238,13 @@ try {
   try {
     assert.equal(
       Number(afterV1Failure.prepare("PRAGMA user_version").get()?.user_version),
-      2,
+      1,
     );
     assert.equal(
       afterV1Failure
         .prepare("SELECT 1 FROM schema_migrations WHERE version = 2")
         .get()?.["1"],
-      1,
+      undefined,
     );
     assert.equal(
       afterV1Failure
@@ -3279,7 +3353,7 @@ try {
     "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;",
   );
   v3Seed.exec(
-    "DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3;",
+    "PRAGMA foreign_keys = OFF; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0); PRAGMA user_version = 3; PRAGMA foreign_keys = ON;",
   );
   v3Seed.close();
   const migratedV3 = openCanonicalDatabase(v3MigrationDir);
@@ -3297,7 +3371,7 @@ try {
       migratedV3
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get()?.count,
-      5,
+      CANONICAL_SCHEMA_VERSION,
     );
     assert.equal(
       migratedV3
@@ -3321,7 +3395,7 @@ try {
     );
     const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
     downgrade.exec(
-      "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM schema_migrations WHERE version IN (4, 5); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable;",
+      "PRAGMA foreign_keys = OFF; DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable; PRAGMA foreign_keys = ON;",
     );
     downgrade.close();
     assert.throws(

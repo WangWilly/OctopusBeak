@@ -122,6 +122,7 @@ try {
           .get() as { value?: number }
       ).value,
     );
+    financial.close();
     const financialQuery = createDomesticDepositStore(
       canonicalSqlitePath(join(root, "financial")),
     );

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import {
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
@@ -9,6 +10,7 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
 } from "./yuanta-domestic-deposit.ts";
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "./yuanta-human-attestation.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./esun-credit-card-human-attestation.ts";
 import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
 import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "./yuanta-credit-card-human-attestation.ts";
@@ -89,6 +91,13 @@ const evidence = {
   },
 };
 
+const yuantaWriterTestSourceConnectionScope =
+  "YUANTA-WRITER-TEST-USER\u0000YUANTA-WRITER-TEST-ACCOUNT";
+const yuantaWriterTestSourceConnectionKey = deriveSourceConnectionIdentityKey(
+  "yuanta",
+  yuantaWriterTestSourceConnectionScope,
+);
+
 const structural = admitYuantaDomesticDepositCaptureEvidence(evidence);
 assert.equal(structural.status, "admissible");
 assert.ok(structural.capture);
@@ -96,6 +105,8 @@ const admission = admitYuantaDomesticDepositFinancialCapture({
   capture: structural.capture,
   captureId: "yuanta-writer-route-positive",
   humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+  sourceConnectionScope: yuantaWriterTestSourceConnectionScope,
+  sourceConnectionKey: yuantaWriterTestSourceConnectionKey,
 });
 assert.equal(admission.status, "admitted");
 const admittedCapture = admission.capture;
@@ -104,6 +115,24 @@ assert.equal(
   admittedCapture.authorityRoute,
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
 );
+
+const rawWriterDb = new DatabaseSync(":memory:");
+try {
+  await assert.rejects(
+    () =>
+      commitCanonicalFinancialDepositCapture(
+        {
+          db: rawWriterDb,
+          databasePath: ":memory:",
+          commitClock: () => Date.now() * 1_000,
+        },
+        admittedCapture,
+      ),
+    /canonical database capability|lifecycle/i,
+  );
+} finally {
+  rawWriterDb.close();
+}
 
 // The credit-card worker uses the shared writer as its final admission seam.
 // Keep this route-level probe here so a new Fubon contract cannot compile in

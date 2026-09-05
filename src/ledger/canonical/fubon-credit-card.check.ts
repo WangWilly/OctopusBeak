@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -32,6 +33,8 @@ import {
 
 const FUBON_CREDIT_CARD_CONTRACT_VERSION =
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion;
+const CALLER_SOURCE_CONNECTION_KEY =
+  "sha256:fubon-credit-card-caller-source-connection" as const;
 
 const completeness = {
   billedPeriods: ["period-1", "period-2", "period-3", "period-4", "period-5", "period-6"],
@@ -118,7 +121,7 @@ function capture(
   overrides: Partial<FubonCreditCardCaptureInput> = {},
 ): FubonCreditCardCaptureInput {
   const identity = overrides.identity ?? {
-    sourceConnectionKey: "connection-a",
+    sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
     identityEpochKey: "epoch-1",
     humanAttestedAccountKey: "portfolio-a",
   };
@@ -392,9 +395,13 @@ test("one portfolio account persists multiple card instruments with display-safe
 });
 
 test("instrument mask column is added idempotently to a legacy extension table", () => {
-  const store = createCanonicalSourceStore(":memory:");
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-instrument-"));
+  const databasePath = join(directory, "canonical.sqlite");
+  const initial = createCanonicalSourceStore(databasePath);
+  initial.close();
+  const legacy = new DatabaseSync(databasePath);
   try {
-    store.db.exec(`
+    legacy.exec(`
       DROP TABLE IF EXISTS fubon_credit_instrument_details;
       CREATE TABLE fubon_credit_instrument_details (
         instrument_id BLOB PRIMARY KEY CHECK(length(instrument_id) = 16),
@@ -405,6 +412,11 @@ test("instrument mask column is added idempotently to a legacy extension table",
         UNIQUE(account_id, instrument_key)
       );
     `);
+  } finally {
+    legacy.close();
+  }
+  const store = createCanonicalSourceStore(databasePath);
+  try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
     const columns = store.db.prepare(
@@ -469,7 +481,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   assert.equal(
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: pan,
       },
@@ -477,7 +489,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
     ),
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: "4111111111111111",
       },
@@ -487,7 +499,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   assert.notEqual(
     buildFubonCreditCardAccountIdentityKey(
       {
-        sourceConnectionKey: "connection-a",
+        sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
         identityEpochKey: "epoch-1",
         fullPan: "4012888888881881",
       },
@@ -505,7 +517,7 @@ test("full PAN identity is normalized, keyed, and never retained in admitted cap
   );
 
   const panIdentity = {
-    sourceConnectionKey: "connection-a",
+    sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
     identityEpochKey: "epoch-1",
     fullPan: pan,
   };
@@ -1135,6 +1147,18 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     );
     assert.equal(first.transactionCount, 2);
     assert.equal(repeated.transactionCount, 2);
+    assert.deepEqual(
+      store.db
+        .prepare(
+          `SELECT source_connection_key
+             FROM source_connections
+            WHERE integration_namespace = 'fubon'`,
+        )
+        .all()
+        .map((row) => (row as { source_connection_key?: string }).source_connection_key),
+      [CALLER_SOURCE_CONNECTION_KEY],
+      "Fubon credit-card captures must reuse the caller Source Connection key",
+    );
 
     const secondAccount = await commitFubonCreditCardCapture(
       store,
@@ -1142,7 +1166,7 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
         capture({
           captureId: "capture-c",
           identity: {
-            sourceConnectionKey: "connection-a",
+            sourceConnectionKey: CALLER_SOURCE_CONNECTION_KEY,
             identityEpochKey: "epoch-1",
             humanAttestedAccountKey: "portfolio-b",
           },
@@ -1287,9 +1311,13 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
 });
 
 test("idempotently migrates legacy statement evidence lineage without losing rows", async () => {
-  const store = createCanonicalSourceStore(":memory:");
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-summary-"));
+  const databasePath = join(directory, "canonical.sqlite");
+  const initial = createCanonicalSourceStore(databasePath);
+  initial.close();
+  const legacy = new DatabaseSync(databasePath);
   try {
-    store.db.exec(`
+    legacy.exec(`
 CREATE TABLE fubon_credit_statement_summary_evidence (
   statement_revision_id BLOB NOT NULL,
   account_id BLOB NOT NULL,
@@ -1308,7 +1336,12 @@ BEGIN
   SELECT RAISE(ABORT, 'stale legacy summary evidence trigger');
 END;
     `);
+  } finally {
+    legacy.close();
+  }
 
+  const store = createCanonicalSourceStore(databasePath);
+  try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
     const columns = store.db.prepare(

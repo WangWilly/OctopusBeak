@@ -1361,6 +1361,14 @@ assert.notDeepEqual(
     "synthetic-managed-secret",
   ),
 );
+assert.equal(
+  identity?.sourceConnectionKey,
+  deriveYuantaCanonicalHumanAttestation(
+    { yuanta_user_id: "user-001", yuanta_account: "main-account" },
+    "different-managed-secret",
+  )?.sourceConnectionKey,
+  "managed-secret rotation must not change Source Connection identity",
+);
 assert.notDeepEqual(
   identity,
   deriveYuantaCanonicalHumanAttestation(

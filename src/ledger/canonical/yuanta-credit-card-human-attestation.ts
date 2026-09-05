@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   if (value === null || typeof value !== "object" || seen.has(value)) return value;
@@ -227,6 +231,10 @@ function tableExists(db: DatabaseSync): boolean {
 export function ensureYuantaCreditCardHumanAttestationEvents(
   db: DatabaseSync,
 ): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/yuanta-credit-card-events/v1");
+    return;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS yuanta_credit_card_attestation_events (
       event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),

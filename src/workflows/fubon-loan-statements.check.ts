@@ -3,6 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import { createServer } from "vite";
+import {
+  FUBON_LOAN_PAGINATION_FIXTURES_V1,
+  FUBON_LOAN_PAGINATION_FIXTURES_V2,
+} from "./fubon-loan-statements.fixtures.ts";
+
+const { persistFubonLoanCapture } =
+  await import("../ledger/canonical/fubon-loan.ts");
+const { runFubonLoanStatements } = await import("./fubon-loan-statements.ts");
+const { FUBON_LOAN_CONTRACT_VERSION } =
+  await import("../ledger/canonical/loan-financial.ts");
 
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
@@ -19,10 +29,53 @@ assert.doesNotMatch(
 );
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
+assert.doesNotMatch(source, /pageCount:\s*1/);
+assert.match(source, /relationCoverage:\s*["']not-asserted["']/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonLoanStatements"),
 );
-assert.doesNotMatch(runSource, /catch \(error\)/);
+assert.match(
+  runSource,
+  /resolveLoanRepaymentRelations|resolveRelations/,
+  "a successful complete loan capture must trigger the independent relation resolver",
+);
+assert.match(
+  runSource,
+  /fubon-loan-relation-resolution-failed/,
+  "relation resolution failures must not withdraw a committed capture",
+);
+assert.doesNotMatch(
+  source,
+  /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
+  "date+amount loan payment candidates must not be emitted or stored",
+);
+assert.match(
+  source,
+  /FUBON_LOAN_TERMINAL_RULE_VERSION\s*=\s*["']fubon-loan-terminal-v2["']/u,
+  "the live-verified static result terminal rule must be versioned",
+);
+const loanCommitMarker = runSource.indexOf("await persist(store");
+const loanResolverMarker = runSource.indexOf(
+  "await resolveLoanRelationsAfterCapture(store",
+);
+assert.ok(
+  loanCommitMarker >= 0 && loanResolverMarker > loanCommitMarker,
+  "loan relation resolution must happen after the canonical capture commit",
+);
+assert.match(source, /resolveLoanRelationsAfterCapture/u);
+
+test("Fubon exported loan run fails closed without caller Source Connection identity", async () => {
+  await assert.rejects(
+    () =>
+      runFubonLoanStatements(
+        {} as Page,
+        { downloadFormat: "EXCEL" } as Parameters<
+          typeof runFubonLoanStatements
+        >[1],
+      ),
+    /stable caller-supplied Source Connection scope and key/u,
+  );
+});
 
 type FakeLocator = Locator & {
   selector: string;
@@ -267,6 +320,75 @@ const navigateToLoanStatementsPage = module.navigateToLoanStatementsPage as (
   page: Page,
   options?: LoanNavigationOptions,
 ) => Promise<unknown>;
+const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
+  rows: readonly string[][],
+) => string[][];
+const parseFubonLoanPaginationSignal =
+  module.parseFubonLoanPaginationSignal as (html: string) => unknown;
+const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
+  pages: ReadonlyArray<{
+    accountType: string;
+    branchName: string;
+    currency: string;
+    rows: string[][];
+    pageOrdinal: number;
+    pagination: {
+      nextPage: string | null;
+      pageFieldName: string | null;
+      terminal: boolean;
+      evidence: "next-page" | "terminal-no-next" | null;
+    };
+  }>,
+  account: { label: string; value: string },
+  input: {
+    loanAccountLabels: string[];
+    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
+    quickMonths: "1" | "3" | "6";
+    downloadFormat: "EXCEL";
+    dateRange: { startDate: string; endDate: string };
+  },
+) => {
+  completeness: { pageCount: number; terminal: true } | null;
+  pages: ReadonlyArray<{
+    pageOrdinal: number;
+    terminal: boolean;
+    rowCount: number;
+  }>;
+  rows: string[][];
+};
+const extractFubonLoanAccountEvidence =
+  module.extractFubonLoanAccountEvidence as (
+    optionValue: string,
+    optionLabel: string,
+  ) => string | null;
+
+test("extracts only a complete unmasked Fubon loan selector account", () => {
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "01234567890123 (學貸-留貸)",
+    ),
+    "01234567890123",
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence("01234567890123", "masked"),
+    null,
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "**********0123 (學貸-留貸)",
+    ),
+    null,
+  );
+  assert.equal(
+    extractFubonLoanAccountEvidence(
+      "opaque-provider-option",
+      "01234567890123 arbitrary suffix",
+    ),
+    null,
+  );
+});
 
 test("uses an already-rendered loan form without navigation or goto", async () => {
   const scope = fakeScope("txnFrame");
@@ -384,6 +506,195 @@ test("aborts a stuck navigation action before probing the replaced frame", async
   assert.equal(landing.aborts, 2);
 });
 
+test("fails closed when a Fubon result contains an unexpected non-header row", () => {
+  assert.throws(
+    () => parseFubonLoanStatementRows([new Array(7).fill("unexpected")]),
+    /unexpected Fubon loan result row/i,
+  );
+});
+
+test("Fubon pagination derives terminal/page evidence from provider controls", () => {
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.activePage,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "form1:opaque_DataGrid:dataGridCurrentPage",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.activePageWithoutExplicitAriaState,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "form1:opaque_DataGrid:dataGridCurrentPage",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.terminalPage,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V1.ambiguousTable,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    },
+  );
+  for (const fixture of [
+    FUBON_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOnly,
+    FUBON_LOAN_PAGINATION_FIXTURES_V1.unrelatedPagerOutsideResult,
+  ]) {
+    assert.deepEqual(parseFubonLoanPaginationSignal(fixture), {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    });
+  }
+});
+
+test("Fubon live-verified provider result shape is a versioned terminal signal", () => {
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    },
+  );
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithoutRows,
+    ),
+    {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    },
+  );
+  for (const fixture of [
+    FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithoutCurrentPageField,
+    FUBON_LOAN_PAGINATION_FIXTURES_V2.unrelatedTable,
+  ]) {
+    assert.deepEqual(parseFubonLoanPaginationSignal(fixture), {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    });
+  }
+  assert.deepEqual(
+    parseFubonLoanPaginationSignal(
+      FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultWithActiveNext,
+    ),
+    {
+      nextPage: "2",
+      pageFieldName: "resultGrid:dataGridCurrentPage",
+      terminal: false,
+      evidence: "next-page",
+    },
+  );
+});
+
+test("Fubon multi-page traversal preserves page ordinals and terminal evidence", () => {
+  const parsed = assembleFubonLoanStatement(
+    [
+      {
+        accountType: "房屋貸款",
+        branchName: "sanitized-branch",
+        currency: "TWD",
+        rows: [
+          [
+            "2026/01/05",
+            "LOAN-DISBURSEMENT",
+            "100000.00",
+            "1.50",
+            "2026/01/05",
+            "2026/01/31",
+            "100000.00",
+            "",
+          ],
+        ],
+        pageOrdinal: 0,
+        pagination: {
+          nextPage: "2",
+          pageFieldName: "resultGrid:dataGridCurrentPage",
+          terminal: false,
+          evidence: "next-page",
+        },
+      },
+      {
+        accountType: "房屋貸款",
+        branchName: "sanitized-branch",
+        currency: "TWD",
+        rows: [
+          [
+            "2026/01/31",
+            "LOAN-PAYMENT",
+            "12500.00",
+            "1.50",
+            "2026/01/31",
+            "2026/02/28",
+            "87500.00",
+            "",
+          ],
+        ],
+        pageOrdinal: 1,
+        pagination: {
+          nextPage: null,
+          pageFieldName: null,
+          terminal: true,
+          evidence: "terminal-no-next",
+        },
+      },
+    ],
+    { label: "masked-loan", value: "opaque-loan" },
+    {
+      loanAccountLabels: [],
+      queryItems: ["TRANSACTION_DETAIL_QUERY"],
+      quickMonths: "6",
+      downloadFormat: "EXCEL",
+      dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+    },
+  );
+
+  assert.equal(parsed.completeness?.pageCount, 2);
+  assert.deepEqual(
+    parsed.pages.map((page) => [
+      page.pageOrdinal,
+      page.rowCount,
+      page.terminal,
+    ]),
+    [
+      [0, 1, false],
+      [1, 1, true],
+    ],
+  );
+  assert.equal(parsed.rows.length, 2);
+});
+
 test("bounds a frame probe that never resolves and fails closed", async () => {
   const header = fakeScope("frame1");
   const landing = fakeScope("txnFrame");
@@ -405,6 +716,64 @@ test("bounds a frame probe that never resolves and fails closed", async () => {
     new Error("Could not navigate to the loan statement page."),
   );
   assert.ok(landing.probeAborts > 0);
+});
+
+test("commits one canonical capture for a parsed Fubon loan result", async () => {
+  let commitCount = 0;
+  const admittedCaptures: unknown[] = [];
+  await persistFubonLoanCapture(
+    null as never,
+    {
+      accountValue: "fubon-option-test",
+      sourceConnectionScope: "fubon-connection-test",
+      observedAt: "2026-02-01T00:00:00.000Z",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      scope: {
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+        pageCount: 1,
+        terminal: true,
+      },
+      pages: [
+        {
+          pageOrdinal: 0,
+          responseCode: "200",
+          terminal: true,
+          rowCount: 1,
+          proofKind: "source-declared-terminal-range",
+        },
+      ],
+      relationCoverage: "not-asserted",
+      counterpartTransactions: [],
+      relations: [],
+      rows: [
+        {
+          transactionDate: "2026/01/05",
+          transactionContent: "LOAN-DISBURSEMENT",
+          transactionAmount: "100000.00",
+          balanceAfterTransaction: "100000.00",
+        },
+      ],
+    },
+    {
+      commit: async (_store, admitted) => {
+        commitCount += 1;
+        admittedCaptures.push(admitted);
+        return {} as never;
+      },
+    },
+  );
+
+  assert.equal(commitCount, 1);
+  assert.equal(admittedCaptures.length, 1);
+  assert.equal(
+    (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
+    "not-asserted",
+  );
 });
 
 test("emits non-sensitive bounded navigation stage telemetry", async () => {

@@ -1145,16 +1145,40 @@ function yuantaCanonicalSpineCapture(
     contractVersion: capture.contractVersion,
     periods: capture.scope.completeness.billedPeriods,
   });
+  const nonTransactionRecords = capture.statements.map((statement) => {
+    const compactJson = JSON.stringify({
+      statementKey: statement.statementKey,
+      cycleStart: statement.cycleStart,
+      cycleEnd: statement.cycleEnd,
+      issueDate: statement.issueDate,
+      dueDate: statement.dueDate,
+      currency: statement.currency,
+      balance: statement.balance,
+      minimumPayment: statement.minimumPayment,
+    });
+    return {
+      recordType: "statement-evidence" as const,
+      recordKind: "yuanta-credit-card-statement-summary",
+      occurrenceKey: statement.evidence.sourceRecordKey,
+      collisionKey: statement.evidence.sourceRecordKey,
+      providerKey: "human-attested:no-provider-key",
+      contentHash: `sha256:${createHash("sha256").update(compactJson).digest("hex")}`,
+      sequenceLexeme: `statement-summary:${statement.statementKey}`,
+      compactJson,
+      description: null,
+    };
+  });
   return admitCanonicalFinancialDepositCapture({
     captureId: capture.captureId,
     authorityRoute: capture.authorityRoute,
     contractVersion: capture.contractVersion,
     identity: {
       integrationNamespace: "yuanta",
-      sourceConnectionKey: opaqueYuantaSpineToken(
-        "yuanta-credit-connection-v2",
-        capture.identity.sourceConnectionKey,
-      ),
+      // The caller already supplies the stable, product-independent Source
+      // Connection identity. Keep product-specific domain separation on the
+      // credit-card account/epoch fields below, but never fork the shared
+      // connection key at this persistence seam.
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
       identityEpochKey: opaqueYuantaSpineToken(
         "yuanta-credit-epoch-v2",
         capture.identity.identityEpochKey,
@@ -1214,6 +1238,7 @@ function yuantaCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    nonTransactionRecords,
   });
 }
 

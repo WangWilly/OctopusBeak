@@ -11,16 +11,24 @@ import {
   YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_ROUTE,
   YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RECORD_KIND,
   YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_RULE_VERSION,
-  admitYuantaDomesticDepositFinancialCapture,
+  admitYuantaDomesticDepositFinancialCapture as admitYuantaDomesticDepositFinancialCaptureCore,
   buildYuantaHumanAttestedFinancialSemantics,
-  commitCanonicalYuantaDomesticDepositCapture,
+  commitCanonicalYuantaDomesticDepositCapture as commitCanonicalYuantaDomesticDepositCaptureCore,
   deriveYuantaDomesticDepositAccountIdentity,
   admitYuantaDomesticDepositCaptureEvidence,
-  createYuantaDomesticDepositSourceEvidence,
-  commitYuantaDomesticDepositSourceEvidence,
+  createYuantaDomesticDepositSourceEvidence as createYuantaDomesticDepositSourceEvidenceCore,
+  commitYuantaDomesticDepositSourceEvidence as commitYuantaDomesticDepositSourceEvidenceCore,
   createYuantaDomesticDepositTelemetryManifest,
   preflightYuantaDomesticDeposit,
 } from "./yuanta-domestic-deposit.ts";
+import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
+import {
+  LOAN_CONTRACT_FIXTURES,
+  admitCanonicalLoanCapture,
+  canonicalLoanSourceIdentity,
+  commitCanonicalLoanCapture,
+} from "./loan-financial.ts";
+import { resolveLoanRepaymentRelations } from "./loan-repayment-relations.ts";
 import {
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   YUANTA_HUMAN_ATTESTED_V1_MANIFEST,
@@ -30,15 +38,71 @@ import {
   yuantaHumanAttestedV2IdentityEpochKey,
   yuantaHumanAttestedIdentityEpochKey,
 } from "./yuanta-human-attestation.ts";
+import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
-  admitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidence,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceLineage,
 } from "./canonical-source-store.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildYuantaDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
 import { recordInitialYuantaHumanAttestationIfMissing } from "./yuanta-human-attestation.ts";
+
+const stableYuantaConnectionScope = "YUANTA-USER-001\u0000YUANTA-LOGIN-001";
+const stableYuantaConnectionKey = deriveSourceConnectionIdentityKey(
+  "yuanta",
+  stableYuantaConnectionScope,
+);
+
+function admitYuantaDomesticDepositFinancialCapture(
+  input: Parameters<typeof admitYuantaDomesticDepositFinancialCaptureCore>[0],
+) {
+  return admitYuantaDomesticDepositFinancialCaptureCore({
+    sourceConnectionScope: stableYuantaConnectionScope,
+    sourceConnectionKey: stableYuantaConnectionKey,
+    ...input,
+  });
+}
+
+function commitCanonicalYuantaDomesticDepositCapture(
+  store: Parameters<typeof commitCanonicalYuantaDomesticDepositCaptureCore>[0],
+  input: Parameters<typeof commitCanonicalYuantaDomesticDepositCaptureCore>[1],
+) {
+  return commitCanonicalYuantaDomesticDepositCaptureCore(store, {
+    sourceConnectionScope: stableYuantaConnectionScope,
+    sourceConnectionKey: stableYuantaConnectionKey,
+    ...input,
+  });
+}
+
+function createYuantaDomesticDepositSourceEvidence(
+  capture: Parameters<typeof createYuantaDomesticDepositSourceEvidenceCore>[0],
+  captureId: string,
+) {
+  return createYuantaDomesticDepositSourceEvidenceCore(capture, captureId, {
+    sourceConnectionScope: stableYuantaConnectionScope,
+    sourceConnectionKey: stableYuantaConnectionKey,
+  });
+}
+
+function commitYuantaDomesticDepositSourceEvidence(
+  store: Parameters<typeof commitYuantaDomesticDepositSourceEvidenceCore>[0],
+  capture: Parameters<typeof commitYuantaDomesticDepositSourceEvidenceCore>[1],
+  captureId: string,
+) {
+  return commitYuantaDomesticDepositSourceEvidenceCore(
+    store,
+    capture,
+    captureId,
+    {
+      sourceConnectionScope: stableYuantaConnectionScope,
+      sourceConnectionKey: stableYuantaConnectionKey,
+    },
+  );
+}
 
 assert.equal(
   YUANTA_DOMESTIC_DEPOSIT_CONTRACT.authority,
@@ -206,6 +270,8 @@ assert.equal(
 );
 const semantics = buildYuantaHumanAttestedFinancialSemantics(
   financialAdmitted.capture,
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+  stableYuantaConnectionKey,
 );
 assert.equal(
   semantics.account.currency,
@@ -216,6 +282,25 @@ assert.equal(
   YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
 );
 assert.equal(semantics.occurrence.providerGuaranteed, false);
+const missingYuantaLoginIdentity =
+  admitYuantaDomesticDepositFinancialCaptureCore({
+    capture: financialAdmitted.capture,
+    captureId: "yuanta-manifest-only-must-not-admit",
+    humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+    semantics,
+  });
+assert.equal(missingYuantaLoginIdentity.status, "blocked");
+assert.equal(missingYuantaLoginIdentity.capture, null);
+assert.ok(
+  missingYuantaLoginIdentity.diagnostics.includes(
+    "source-connection-scope-invalid",
+  ),
+);
+assert.ok(
+  missingYuantaLoginIdentity.diagnostics.includes(
+    "source-connection-key-invalid",
+  ),
+);
 const admittedFinancial = admitYuantaDomesticDepositFinancialCapture({
   capture: financialAdmitted.capture,
   captureId: "yuanta-financial-positive",
@@ -242,6 +327,135 @@ assert.doesNotMatch(
   admittedFinancial.capture.records[0]?.compactJson ?? "",
   /123456|SYNTHETIC DESCRIPTION|SYNTHETIC NOTE/,
 );
+
+// The Yuanta CSV row's page and row positions are transport evidence. A
+// repeated source occurrence can shift when the provider inserts or removes a
+// row before it, while the observed financial content and occurrence fence
+// remain unchanged. Keep both immutable captures and one current source row.
+const yuantaOrdinalStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitCanonicalFinancialDepositCapture(
+    yuantaOrdinalStore,
+    admittedFinancial.capture,
+  );
+  const yuantaOrdinalDrift = admitCanonicalFinancialDepositCapture({
+    ...admittedFinancial.capture,
+    captureId: "yuanta-financial-ordinal-drift",
+    records: admittedFinancial.capture.records.map((record) => {
+      const compact = JSON.parse(record.compactJson) as Record<string, unknown>;
+      return {
+        ...record,
+        compactJson: JSON.stringify({
+          ...compact,
+          pageOrdinal: 4,
+          rowOrdinal: 9,
+        }),
+      };
+    }),
+  });
+  await commitCanonicalFinancialDepositCapture(
+    yuantaOrdinalStore,
+    yuantaOrdinalDrift,
+  );
+  const yuantaOrdinalCurrent = queryCanonicalSourceCurrent(yuantaOrdinalStore);
+  assert.equal(yuantaOrdinalCurrent.records.length, 1);
+  assert.equal(yuantaOrdinalCurrent.observations.length, 2);
+  assert.equal(yuantaOrdinalCurrent.provenanceCount, 2);
+} finally {
+  yuantaOrdinalStore.close();
+}
+
+for (const sourceIdentity of [
+  {},
+  {
+    sourceConnectionScope: stableYuantaConnectionScope,
+    sourceConnectionKey: deriveSourceConnectionIdentityKey(
+      "yuanta",
+      `${stableYuantaConnectionScope}-OTHER`,
+    ),
+  },
+]) {
+  assert.throws(
+    () =>
+      createYuantaDomesticDepositSourceEvidenceCore(
+        financialAdmitted.capture!,
+        "yuanta-source-identity-rejected",
+        sourceIdentity,
+      ),
+    /stable caller-supplied|same login/u,
+  );
+  const rejectedStore = createCanonicalSourceStore(":memory:");
+  try {
+    await assert.rejects(
+      () =>
+        commitYuantaDomesticDepositSourceEvidenceCore(
+          rejectedStore,
+          financialAdmitted.capture!,
+          "yuanta-source-identity-rejected",
+          sourceIdentity,
+        ),
+      /stable caller-supplied|same login/u,
+    );
+    assert.equal(
+      rejectedStore.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
+        ?.count,
+      0,
+    );
+  } finally {
+    rejectedStore.close();
+  }
+}
+
+const yuantaSourceThenFinancialStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitYuantaDomesticDepositSourceEvidence(
+    yuantaSourceThenFinancialStore,
+    financialAdmitted.capture,
+    "yuanta-stable-source-first",
+  );
+  await commitCanonicalYuantaDomesticDepositCapture(
+    {
+      db: yuantaSourceThenFinancialStore.db,
+      databasePath: yuantaSourceThenFinancialStore.databasePath,
+      commitClock: () => yuantaSourceThenFinancialStore.commitClock(),
+    },
+    {
+      capture: financialAdmitted.capture,
+      captureId: "yuanta-stable-financial-recollection",
+      humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+      semantics,
+    },
+  );
+  assert.equal(
+    yuantaSourceThenFinancialStore.db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM source_connections WHERE integration_namespace = 'yuanta'",
+      )
+      .get()?.count,
+    1,
+  );
+  const yuantaPartitions = yuantaSourceThenFinancialStore.db
+      .prepare(
+        `SELECT COUNT(*) AS captures,
+                COUNT(DISTINCT source_connection_id) AS partitions,
+                COUNT(DISTINCT capture_key) AS capture_keys
+           FROM source_captures`,
+      )
+      .get() as { captures: number; partitions: number; capture_keys: number };
+  assert.equal(yuantaPartitions.captures, 2);
+  assert.equal(yuantaPartitions.partitions, 1);
+  assert.equal(yuantaPartitions.capture_keys, 2);
+  const yuantaLineage = yuantaSourceThenFinancialStore.db
+    .prepare(
+      `SELECT COUNT(*) AS rows,
+              COUNT(DISTINCT hex(source_record_id) || ':' || hex(capture_id)) AS unique_rows
+         FROM source_record_provenance`,
+    )
+    .get() as { rows: number; unique_rows: number };
+  assert.equal(yuantaLineage.rows, yuantaLineage.unique_rows);
+} finally {
+  yuantaSourceThenFinancialStore.close();
+}
 
 const reformattedFinancialCapture = admitYuantaDomesticDepositCaptureEvidence({
   ...financialCaptureEvidence,
@@ -779,10 +993,7 @@ try {
       amountShape: "conflict",
     },
   }));
-  await commitCanonicalSourceEvidence(
-    sourceStore,
-    admitCanonicalSourceEvidence(legacyEvidence),
-  );
+  await createCanonicalSourceCaptureAdmission(sourceStore).admit(legacyEvidence);
   await commitYuantaDomesticDepositSourceEvidence(
     sourceStore,
     financialAdmitted.capture,
@@ -855,4 +1066,173 @@ try {
   assert.equal(liveReadiness.providerGuaranteed, false);
 } finally {
   readinessStore.close();
+}
+
+// A workflow-supplied stable login identity is shared by Yuanta's deposit and
+// loan products. It must survive canonical admission while the selected
+// account and human-attested epoch remain independently validated.
+const stableYuantaManifest = getYuantaHumanAttestedV2Manifest();
+const stableYuantaRelationCapture = admitYuantaDomesticDepositCaptureEvidence({
+  ...financialCaptureEvidence,
+  account: {
+    value: "SYNTHETIC-YUANTA-RELATION-ACCOUNT",
+    label: "臺幣活期存款 RELATION",
+  },
+  downloads: financialCaptureEvidence.downloads.map((download) => ({
+    ...download,
+    rows: download.rows.map((row) => ({
+      ...row,
+      values: [
+        row.values[0],
+        row.values[1],
+        row.values[2],
+        row.values[3],
+        row.values[4],
+        row.values[5],
+        "100",
+        "",
+        row.values[8],
+        row.values[9],
+        row.values[10],
+      ],
+    })),
+  })),
+});
+assert.equal(stableYuantaRelationCapture.status, "admissible");
+assert.ok(stableYuantaRelationCapture.capture);
+const stableYuantaRelationSemantics =
+  buildYuantaHumanAttestedFinancialSemantics(
+    stableYuantaRelationCapture.capture,
+    stableYuantaManifest,
+    stableYuantaConnectionKey,
+  );
+const stableYuantaAdmission = admitYuantaDomesticDepositFinancialCapture({
+  capture: stableYuantaRelationCapture.capture,
+  captureId: "yuanta-stable-source-connection",
+  humanAttestation: stableYuantaManifest,
+  semantics: stableYuantaRelationSemantics,
+  sourceConnectionScope: stableYuantaConnectionScope,
+  sourceConnectionKey: stableYuantaConnectionKey,
+});
+assert.equal(
+  stableYuantaAdmission.status,
+  "admitted",
+  stableYuantaAdmission.diagnostics.join(","),
+);
+assert.equal(
+  stableYuantaAdmission.capture?.identity.sourceConnectionKey,
+  stableYuantaConnectionKey,
+);
+assert.equal(
+  canonicalLoanSourceIdentity("yuanta", stableYuantaConnectionScope, "LOAN-001")
+    .sourceConnectionKey,
+  stableYuantaConnectionKey,
+);
+assert.notEqual(
+  stableYuantaConnectionKey,
+  deriveSourceConnectionIdentityKey(
+    "yuanta",
+    "YUANTA-USER-002\u0000YUANTA-LOGIN-001",
+  ),
+);
+assert.notEqual(
+  stableYuantaConnectionKey,
+  deriveSourceConnectionIdentityKey("fubon", stableYuantaConnectionScope),
+);
+const mismatchedYuantaEpoch = admitYuantaDomesticDepositFinancialCapture({
+  capture: stableYuantaRelationCapture.capture,
+  captureId: "yuanta-stable-source-connection-wrong-epoch",
+  humanAttestation: stableYuantaManifest,
+  semantics: {
+    ...stableYuantaRelationSemantics,
+    account: {
+      ...stableYuantaRelationSemantics.account,
+      identityEpochKey: "sha256:yuanta-wrong-epoch",
+    },
+  },
+  sourceConnectionScope: stableYuantaConnectionScope,
+  sourceConnectionKey: stableYuantaConnectionKey,
+});
+assert.equal(mismatchedYuantaEpoch.status, "blocked");
+assert.ok(mismatchedYuantaEpoch.diagnostics.includes("account-identity-mismatch"));
+const mismatchedYuantaConnection = admitYuantaDomesticDepositFinancialCapture({
+  capture: stableYuantaRelationCapture.capture,
+  captureId: "yuanta-stable-source-connection-mismatch",
+  humanAttestation: stableYuantaManifest,
+  semantics: stableYuantaRelationSemantics,
+  sourceConnectionScope: stableYuantaConnectionScope,
+  sourceConnectionKey: deriveSourceConnectionIdentityKey(
+    "yuanta",
+    "YUANTA-USER-002\u0000YUANTA-LOGIN-001",
+  ),
+});
+assert.equal(mismatchedYuantaConnection.status, "blocked");
+assert.ok(
+  mismatchedYuantaConnection.diagnostics.includes(
+    "source-connection-key-mismatch",
+  ),
+);
+
+const stableYuantaRelationStore = createCanonicalSourceStore(":memory:");
+try {
+  const stableInput = {
+    capture: stableYuantaRelationCapture.capture,
+    captureId: "yuanta-stable-source-connection-commit",
+    humanAttestation: stableYuantaManifest,
+    semantics: stableYuantaRelationSemantics,
+    sourceConnectionScope: stableYuantaConnectionScope,
+    sourceConnectionKey: stableYuantaConnectionKey,
+  };
+  const committed = await commitCanonicalYuantaDomesticDepositCapture(
+    stableYuantaRelationStore,
+    stableInput,
+  );
+  assert.equal(committed.status, "canonical-live");
+  assert.equal(
+    (
+      stableYuantaRelationStore.db
+        .prepare(
+          "SELECT source_connection_key FROM source_connections WHERE integration_namespace = ?",
+        )
+        .get("yuanta") as { source_connection_key?: string }
+    ).source_connection_key,
+    stableYuantaConnectionKey,
+  );
+
+  const stableLoanInput = structuredClone(LOAN_CONTRACT_FIXTURES.yuanta);
+  stableLoanInput.captureId = "yuanta-stable-source-connection-loan";
+  stableLoanInput.identity.sourceConnectionKey = stableYuantaConnectionKey;
+  stableLoanInput.relations = [];
+  stableLoanInput.counterpartTransactions = [];
+  stableLoanInput.relationCoverage = "not-asserted";
+  const stableLoan = admitCanonicalLoanCapture(stableLoanInput);
+  assert.equal(stableLoan.identity.sourceConnectionKey, stableYuantaConnectionKey);
+  await commitCanonicalLoanCapture(stableYuantaRelationStore, stableLoan);
+  const stableLoanPayment = stableLoan.records.find(
+    (record) => record.eventKind === "payment",
+  );
+  assert.ok(stableLoanPayment);
+  const stableRelation = await resolveLoanRepaymentRelations(
+    stableYuantaRelationStore,
+    {
+      sourceConnectionKey: stableYuantaConnectionKey,
+      integrationNamespace: "yuanta",
+      explicitLinks: [
+        {
+          fromCaptureId: stableInput.captureId,
+          fromSourceRecordKey:
+            stableYuantaAdmission.capture!.records[0]!.occurrenceKey,
+          toCaptureId: stableLoan.captureId,
+          toSourceRecordKey: stableLoanPayment.sourceRecordKey,
+          relationId: "yuanta-stable-source-connection-relation",
+          contractVersion: "yuanta/loan-repayment-link/v1",
+          evidenceSourceRecordKey:
+            stableYuantaAdmission.capture!.records[0]!.occurrenceKey,
+        },
+      ],
+    },
+  );
+  assert.equal(stableRelation.exactRelationIds.length, 1);
+} finally {
+  stableYuantaRelationStore.close();
 }

@@ -1,16 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import {
-  admitCanonicalSourceEvidence,
-  commitCanonicalSourceEvidence,
+  createCanonicalSourceCaptureAdmission,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import {
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
-  type CanonicalSourceEvidence,
   type CanonicalSourceObservation,
 } from "./canonical-source-store.ts";
-import { syncCanonicalProjectionFromCompatibility } from "./canonical-source-store.ts";
 import type { LineBankHumanAttestedV13Capture } from "./linebank-domestic-deposit.ts";
 import {
   admitCanonicalFinancialDepositCapture,
@@ -753,6 +753,10 @@ function domesticRecordFromObservation(
   const compact = observation.compact as unknown as DomesticDepositSourceRecord;
   return {
     ...cloneRecord(compact),
+    provenance: {
+      ...compact.provenance,
+      captureId: observation.captureId,
+    },
     recordId: observation.recordId,
     captureId: observation.captureId,
     commitSequence: observation.commitSequence,
@@ -834,10 +838,13 @@ export async function commitCanonicalDomesticDeposit(
       ),
     ),
   );
-  const committed = await commitCanonicalSourceEvidence(
-    store.sourceStore,
-    admitCanonicalSourceEvidence(domesticCaptureEvidence(capture)),
-  );
+  const evidence = domesticCaptureEvidence(capture);
+  const admitted = await createCanonicalSourceCaptureAdmission(store.sourceStore)
+    .admit(evidence);
+  const committed = {
+    commitSequence: admitted.knowledgePoint,
+    provenanceCount: evidence.records.length,
+  };
   const repeatRecordCount = capture.records.filter((record) =>
     before.has(domesticRecordIdentity(record)),
   ).length;
@@ -922,7 +929,6 @@ function v13CompactRecord(
     cancellation: "N",
     cancellationFlags: record.cancellationFlags,
     provenance: {
-      captureId: capture.captureId,
       matchingRuleVersion: "occurrence-v1",
     },
   });
@@ -1047,11 +1053,7 @@ export async function commitCanonicalLineBankFinancialCapture(
 ): Promise<LineBankFinancialCommitResult> {
   ensureOpen(store);
   return commitCanonicalFinancialDepositCapture(
-    {
-      db: store.db,
-      databasePath: store.databasePath,
-      commitClock: () => store.sourceStore.commitClock(),
-    },
+    store.sourceStore,
     normalizeLineBankFinancialCapture(capture),
   );
 }
@@ -1063,11 +1065,7 @@ export async function commitCanonicalLineBankFinancialCaptureBatch(
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
   ensureOpen(store);
   return commitCanonicalFinancialDepositCaptureBatch(
-    {
-      db: store.db,
-      databasePath: store.databasePath,
-      commitClock: () => store.sourceStore.commitClock(),
-    },
+    store.sourceStore,
     captures.map(normalizeLineBankFinancialCapture),
   );
 }

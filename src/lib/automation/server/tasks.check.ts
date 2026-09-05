@@ -3,9 +3,20 @@ import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_MANAGED_SECRET_KEYS,
   AUTOMATION_NON_SECRET_KEYS,
+  AUTOMATION_TASKS,
   enabledAutomationTasks,
   taskById,
 } from "./tasks.ts";
+
+assert.deepEqual(
+  AUTOMATION_TASKS.filter((task) =>
+    [task.id, task.label, task.script, ...task.command].some((value) =>
+      /diagnostic/iu.test(value),
+    ),
+  ).map((task) => task.id),
+  [],
+  "production automation tasks must not expose development diagnostics",
+);
 
 const task = taskById("exchange-rates");
 

@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import {
+  isValidatedCanonicalDatabase,
+  runCanonicalSchemaRepair,
+} from "./canonical-schema-lifecycle.ts";
 
 /**
  * E.SUN's credit-card page exposes a portfolio view and masked card keys, but
@@ -231,6 +235,10 @@ function tableColumns(db: DatabaseSync): Set<string> {
 export function ensureEsunCreditCardHumanAttestationEvents(
   db: DatabaseSync,
 ): void {
+  if (isValidatedCanonicalDatabase(db)) {
+    runCanonicalSchemaRepair(db, "canonical/attestation/esun-credit-card-events/v1");
+    return;
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS esun_credit_card_attestation_events (
       event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),

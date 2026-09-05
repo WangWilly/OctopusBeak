@@ -3,6 +3,26 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
+import type { DatabaseSync } from "node:sqlite";
+
+import type {
+  LoanRepaymentRelationResolutionRequest,
+  LoanRepaymentRelationResolutionResult,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repayment-relations.ts";
+import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
+
+const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
+const stableConnectionKey = deriveSourceConnectionIdentityKey(
+  "yuanta",
+  stableConnectionScope,
+);
+const stableConnectionIdentity = {
+  sourceConnectionScope: stableConnectionScope,
+  sourceConnectionKey: stableConnectionKey,
+  observedAt: () => "2026-08-21T11:04:05+08:00",
+};
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -19,8 +39,47 @@ const {
   readYuantaDepositAccountOptions,
   runYuantaStatements,
   statementRowsFromDownloadedCsv,
+  yuantaLoanAccountEvidenceFromTransactionNote,
   yuantaObservedAt,
 } = await import("./yuanta-statements.ts");
+
+assert.deepEqual(
+  yuantaLoanAccountEvidenceFromTransactionNote("0012345678901234", 7),
+  {
+    rowOrdinal: 7,
+    accountValue: "0012345678901234",
+    normalizedAccountValue: "12345678901234",
+    role: "beneficiary",
+    purpose: "loan_repayment",
+    scope: "loan_contract",
+    evidenceKind: "transaction-counterparty-account",
+    sourceField: "備註",
+    contractVersion: "yuanta/transaction-note-loan-account-leading-00/v1",
+  },
+);
+for (const value of [
+  "12345678901234",
+  "001234567890123",
+  "00123456789012345",
+  "00******901234",
+  "用途 0012345678901234",
+]) {
+  assert.equal(yuantaLoanAccountEvidenceFromTransactionNote(value, 0), null);
+}
+
+await assert.rejects(
+  () =>
+    runYuantaStatements(
+      {} as never,
+      {
+        dateRange: "one_month",
+        accountFilters: [],
+        replaceActiveSession: true,
+        telemetry: false,
+      },
+    ),
+  /stable caller-supplied Source Connection scope and key/u,
+);
 const {
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
@@ -76,7 +135,7 @@ const source = readFileSync(
 
 assert.match(
   source,
-  /import \{\s*authenticateYuantaBank as sharedAuthenticateYuantaBank,\s*dismissYuantaBankNotice,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
+  /import \{\s*authenticateYuantaBank as sharedAuthenticateYuantaBank,\s*dismissYuantaBankNotice,\s*yuantaSourceConnectionScope,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
 );
 assert.match(source, /await sharedAuthenticateYuantaBank\(/);
 assert.match(
@@ -173,6 +232,35 @@ assert.deepEqual(boundedRange, {
   startDate: "2026-08-15",
   endDate: "2026-08-21",
 });
+assert.deepEqual(
+  deriveYuantaDomesticDepositQueryRange(
+    "one_month",
+    "2026-09-02T00:00:00+08:00",
+  ),
+  {
+    dateRange: "one_month",
+    startDate: "2026-08-02",
+    endDate: "2026-09-02",
+  },
+);
+assert.deepEqual(
+  deriveYuantaDomesticDepositQueryRange(
+    "three_months",
+    "2026-09-02T00:00:00+08:00",
+  ),
+  {
+    dateRange: "three_months",
+    startDate: "2026-06-02",
+    endDate: "2026-09-02",
+  },
+);
+assert.equal(
+  deriveYuantaDomesticDepositQueryRange(
+    "one_month",
+    "2026-03-31T00:00:00+08:00",
+  ).startDate,
+  "2026-02-28",
+);
 
 const csv = [
   '"帳號","帳務日期","交易日期","交易時間","交易說明","支出金額","存入金額","帳面餘額","票據號碼","備註"',
@@ -234,6 +322,19 @@ const workflowDownload = {
     terminal: true,
     rows: [{ rowOrdinal: 0, values: workflowValues }],
   },
+  counterpartyAccountEvidence: [
+    YUANTA_RELATION_EVIDENCE_FIXTURES_V1.exactCounterpartyAccount,
+  ],
+};
+const maskedWorkflowDownload = {
+  ...workflowDownload,
+  source: {
+    ...workflowDownload.source,
+    contentDigest: "sha256:yuanta-masked-content" as `sha256:${string}`,
+  },
+  counterpartyAccountEvidence: [
+    YUANTA_RELATION_EVIDENCE_FIXTURES_V1.maskedCounterpartyAccount,
+  ],
 };
 const secondWorkflowAccount = {
   value: "YUANTA-ACCOUNT-002",
@@ -285,6 +386,7 @@ try {
       telemetry: true,
     },
     {
+      ...stableConnectionIdentity,
       canonicalLedgerDir: sourceOnlyDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
@@ -341,6 +443,33 @@ const financialSourceDir = await mkdtemp(
 const financialLedgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-ledger-workflow-"),
 );
+const relationRequests: LoanRepaymentRelationResolutionRequest[] = [];
+const relationEvidenceCounts: number[] = [];
+const resolveYuantaRelations = async (
+  store: { db: DatabaseSync; databasePath?: string },
+  request: LoanRepaymentRelationResolutionRequest,
+): Promise<LoanRepaymentRelationResolutionResult> => {
+  relationRequests.push(request);
+  relationEvidenceCounts.push(
+    Number(
+      (
+        store.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM transaction_counterparty_account_evidence",
+          )
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+  );
+  return {
+    status: "canonical-live",
+    outcome: "no-admission",
+    resolutionId: null,
+    exactRelationIds: [],
+    settlementGroupIds: [],
+    reason: "no-evidence-backed-admission",
+  };
+};
 try {
   const financialOutput = await runYuantaStatements(
     {} as never,
@@ -351,15 +480,30 @@ try {
       telemetry: false,
     },
     {
+      observedAt: stableConnectionIdentity.observedAt,
       canonicalLedgerDir: financialSourceDir,
       canonicalFinancialLedgerDir: financialLedgerDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
       downloadStatementRows: async () => workflowDownload,
       writeBankTransactionsFile: writeWorkflowFile as never,
+      sourceConnectionScope: stableConnectionScope,
+      sourceConnectionKey: stableConnectionKey,
+      resolveRelations: resolveYuantaRelations,
     },
   );
   assert.equal(financialOutput.admissions[0]?.status, "financial-admitted");
+  assert.equal(relationRequests.length, 1);
+  assert.equal(relationRequests[0]?.integrationNamespace, "yuanta");
+  assert.equal(relationRequests[0]?.sourceConnectionKey, stableConnectionKey);
+  assert.deepEqual(relationRequests[0]?.requiredCoverage, { complete: true });
+  assert.equal("explicitLinks" in relationRequests[0]!, false);
+  assert.deepEqual(relationEvidenceCounts, [1]);
+  assert.equal(financialOutput.relationResolution?.outcome, "no-admission");
+  assert.equal(
+    financialOutput.relationResolution?.reason,
+    "no-evidence-backed-admission",
+  );
   const financialStore = createCanonicalSourceStore(
     join(financialLedgerDir, "canonical.sqlite"),
   );
@@ -375,6 +519,16 @@ try {
         .prepare("SELECT COUNT(*) AS count FROM source_captures")
         .get()?.count,
       1,
+    );
+    const evidence = queryCounterpartyAccountEvidence(financialStore);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0]?.sourceValue, " 9988-7766 ");
+    assert.equal(evidence[0]?.normalizedValue, "99887766");
+    assert.equal(evidence[0]?.purpose, "loan_repayment");
+    assert.equal(evidence[0]?.scope, "shared_collection");
+    assert.equal(
+      evidence[0]?.sourceField,
+      "provider-detail-counterparty-account",
     );
     const financialCurrent = queryCanonicalSourceCurrent(financialStore);
     assert.equal(financialCurrent.records.length, 1);
@@ -401,6 +555,56 @@ try {
   await rm(financialLedgerDir, { recursive: true, force: true });
 }
 
+const maskedSourceDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-source-workflow-"),
+);
+const maskedLedgerDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-ledger-workflow-"),
+);
+try {
+  await assert.rejects(
+    () =>
+      runYuantaStatements(
+        {} as never,
+        {
+          dateRange: "one_month",
+          accountFilters: [],
+          replaceActiveSession: true,
+          telemetry: false,
+        },
+        {
+          ...stableConnectionIdentity,
+          canonicalLedgerDir: maskedSourceDir,
+          canonicalFinancialLedgerDir: maskedLedgerDir,
+          readDepositAccountOptions: async () => [workflowAccount],
+          queryAccount: async () => undefined,
+          downloadStatementRows: async () => maskedWorkflowDownload,
+          writeBankTransactionsFile: writeWorkflowFile as never,
+        },
+      ),
+    /masked counterparty account/i,
+  );
+  const maskedStore = createCanonicalSourceStore(
+    join(maskedLedgerDir, "canonical.sqlite"),
+  );
+  try {
+    // Financial capture admission is append-only; rejecting masked evidence
+    // must not silently admit an exact account or erase the capture.
+    assert.equal(
+      maskedStore.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      1,
+    );
+    assert.equal(queryCounterpartyAccountEvidence(maskedStore).length, 0);
+  } finally {
+    maskedStore.close();
+  }
+} finally {
+  await rm(maskedSourceDir, { recursive: true, force: true });
+  await rm(maskedLedgerDir, { recursive: true, force: true });
+}
+
 const multiAccountDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "yuanta-multi-account-workflow-"),
 );
@@ -414,6 +618,7 @@ try {
       telemetry: false,
     },
     {
+      ...stableConnectionIdentity,
       canonicalLedgerDir: multiAccountDir,
       readDepositAccountOptions: async () => [
         workflowAccount,
@@ -489,6 +694,7 @@ try {
           telemetry: true,
         },
         {
+          ...stableConnectionIdentity,
           canonicalLedgerDir: cancellationDir,
           canonicalFinancialLedgerDir: cancellationDir,
           readDepositAccountOptions: async () => [workflowAccount],
@@ -550,6 +756,7 @@ try {
       telemetry: false,
     },
     {
+      ...stableConnectionIdentity,
       canonicalLedgerDir: emptyDir,
       canonicalFinancialLedgerDir: emptyDir,
       readDepositAccountOptions: async () => [workflowAccount],

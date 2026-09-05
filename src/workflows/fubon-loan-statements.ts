@@ -4,6 +4,31 @@ import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import {
+  FUBON_LOAN_CONTRACT_VERSION,
+  createCanonicalLoanStore,
+  type LoanCapturePage,
+  type LoanSourceCompletenessEvidence,
+} from "../ledger/canonical/loan-financial.ts";
+import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
+import {
+  buildFubonLoanCapture,
+  persistFubonLoanCapture,
+  type FubonLoanCaptureBuildInput,
+  type FubonLoanStatementRow,
+} from "../ledger/canonical/fubon-loan.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  persistCounterpartyAccountEvidence,
+  resolveLoanRepaymentRelations,
+  type ExplicitLoanTransactionLink,
+} from "../ledger/canonical/loan-repayment-relations.ts";
+import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
+import {
+  deriveFubonSourceConnectionKey,
+  fubonStableLoginScope,
+} from "./fubon-source-connection.ts";
+import {
   activateControlWithoutPointer,
   fillInputWithoutPointer,
   selectOptionWithoutPointer,
@@ -133,18 +158,79 @@ export {
 export type FubonLoanStatementsInput = z.infer<typeof inputSchema>;
 export type FubonLoanStatementsOutput = z.infer<typeof outputSchema>;
 
+export type FubonLoanStatementsRunDependencies = Partial<{
+  canonicalLedgerDir: string;
+  canonicalFinancialLedgerDir: string;
+  sourceConnectionScope: string;
+  sourceConnectionKey: string;
+  explicitRelationLinks: readonly ExplicitLoanTransactionLink[];
+  observedAt: () => string;
+  createLoanStore: typeof createCanonicalLoanStore;
+  resolveLoanRepaymentRelations: typeof resolveLoanRepaymentRelations;
+  persistLoanCapture: (
+    store: ReturnType<typeof createCanonicalLoanStore>,
+    input: FubonLoanCaptureBuildInput,
+  ) => ReturnType<typeof persistFubonLoanCapture>;
+}>;
+
 type LoanPeriod = FubonLoanStatementsOutput["period"];
 
 let lastTimestamp = 0;
 
+const FUBON_LOAN_MAX_PAGES = 10_000;
+export const FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION =
+  "fubon/loan-account-as-repayment-destination/v1" as const;
+
+function fullUnmaskedFubonLoanAccount(value: string): string | null {
+  const source = cleanText(value);
+  if (!source || /[*xX•]/u.test(source)) return null;
+  if (!/^\d[\d\s-]*\d$/u.test(source)) return null;
+  const normalized = source.replace(/[\s-]/gu, "");
+  return /^\d{10,16}$/u.test(normalized) ? normalized : null;
+}
+
+/**
+ * The live selector uses an opaque option value while its visible label owns
+ * the full 14-digit loan account followed by a parenthesized loan type. Keep
+ * identity on the opaque option value, but retain the exact visible account
+ * as repayment evidence when (and only when) that verified shape is present.
+ */
+export function extractFubonLoanAccountEvidence(
+  _optionValue: string,
+  optionLabel: string,
+): string | null {
+  const label = cleanText(optionLabel);
+  if (!label || /[*xX•]/u.test(label)) return null;
+  return label.match(/^(\d{14})\s*[（(][^()（）]+[）)]$/u)?.[1] ?? null;
+}
+
+export type FubonLoanPaginationSignal = {
+  nextPage: string | null;
+  pageFieldName: string | null;
+  terminal: boolean;
+  evidence: "next-page" | "terminal-no-next" | null;
+};
+
+type ParsedFubonLoanPage = {
+  accountType: string;
+  branchName: string;
+  currency: string;
+  rows: string[][];
+  pageOrdinal: number;
+  pagination: FubonLoanPaginationSignal;
+};
+
 type ParsedLoanStatement = {
   loanAccount: string;
   loanAccountId: string;
+  sourceAccountValue: string;
   queryPeriod: string;
   branchName: string;
   accountType: string;
   currency: string;
   rows: string[][];
+  completeness: LoanSourceCompletenessEvidence | null;
+  pages: readonly LoanCapturePage[];
 };
 
 const loanHeaders = [
@@ -176,6 +262,408 @@ function cleanText(value: string | null | undefined): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripHtml(value: string): string {
+  return cleanText(value.replace(/<[^>]*>/gu, " "));
+}
+
+function htmlAttribute(openingTag: string, name: string): string {
+  const match = [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu,
+    ),
+  ].find((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
+}
+
+function isDisabledHtmlControl(openingTag: string): boolean {
+  return (
+    hasHtmlBooleanAttribute(openingTag, "disabled") ||
+    htmlAttribute(openingTag, "aria-disabled").trim().toLowerCase() ===
+      "true" ||
+    hasHtmlClassToken(openingTag, "disabled")
+  );
+}
+
+function hasHtmlBooleanAttribute(openingTag: string, name: string): boolean {
+  return [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gu,
+    ),
+  ].some((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+}
+
+function hasHtmlClassToken(openingTag: string, token: string): boolean {
+  return htmlAttribute(openingTag, "class")
+    .split(/\s+/u)
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function hasHtmlClassOrIdToken(openingTag: string, token: string): boolean {
+  return [htmlAttribute(openingTag, "class"), htmlAttribute(openingTag, "id")]
+    .flatMap((value) => value.split(/\s+/u))
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function extractBalancedHtmlElement(
+  html: string,
+  openingStart: number,
+  openingTag: string,
+): string {
+  const tagName = openingTag.match(/^<([a-z][\w:-]*)\b/iu)?.[1];
+  if (!tagName || /\/>$/u.test(openingTag)) return openingTag;
+  const tokens = [
+    ...html
+      .slice(openingStart)
+      .matchAll(new RegExp("<\\/?" + tagName + "\\b[^>]*>", "giu")),
+  ];
+  let depth = 0;
+  for (const token of tokens) {
+    const value = token[0];
+    if (/^<\//u.test(value)) {
+      depth -= 1;
+      if (depth === 0) {
+        const end = (token.index ?? 0) + value.length;
+        return html.slice(openingStart, openingStart + end);
+      }
+    } else if (!/\/>$/u.test(value)) {
+      depth += 1;
+    }
+  }
+  return html.slice(openingStart);
+}
+
+function fubonLoanResultContext(html: string): {
+  markup: string;
+  gridPrefix: string;
+  rowCount: number;
+  pageSize: number | null;
+  currentPageFieldCount: number;
+  pageSizeControlPresent: boolean;
+  providerResultTable: boolean;
+} | null {
+  for (const match of html.matchAll(/<(?:table|tbody)\b[^>]*>/giu)) {
+    const opening = match[0];
+    const tableId = htmlAttribute(opening, "id");
+    const table = extractBalancedHtmlElement(html, match.index ?? 0, opening);
+    const rows = [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu)];
+    const exactHeaderRowIndex = rows.findIndex((row) => {
+      const headers = [
+        ...(row[1] ?? "").matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/giu),
+      ].map((cell) => stripHtml(cell[1] ?? "").replace(/\s+/gu, ""));
+      return (
+        headers.length === loanHeaders.length &&
+        headers.every(
+          (header, index) =>
+            header === loanHeaders[index]?.replace(/\s+/gu, ""),
+        )
+      );
+    });
+    const providerResultTable =
+      hasHtmlClassToken(opening, "tb1") &&
+      hasHtmlClassToken(opening, "queryResult");
+    const providerHeaderRowIndex = providerResultTable
+      ? rows.findIndex(
+          (row) =>
+            [...(row[1] ?? "").matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/giu)]
+              .length === loanHeaders.length,
+        )
+      : -1;
+    const headerRowIndex =
+      exactHeaderRowIndex >= 0 ? exactHeaderRowIndex : providerHeaderRowIndex;
+    if (headerRowIndex < 0) continue;
+    const explicitGridPrefix =
+      tableId.match(/^(.*?)_DataGridBody(?:\b|_)/iu)?.[1] ?? "";
+    const currentPageFields = [...html.matchAll(/<(?:input|select)\b[^>]*>/giu)]
+      .flatMap((control) => [
+        htmlAttribute(control[0], "name"),
+        htmlAttribute(control[0], "id"),
+      ])
+      .filter((value) => /(?:\b|:|_)dataGridCurrentPage$/iu.test(value));
+    const inferredPageField = currentPageFields
+      .map((value) => ({
+        value,
+        prefix: value.replace(/(?::|_)dataGridCurrentPage$/iu, ""),
+      }))
+      .sort((left, right) => {
+        const shared = (value: string) => {
+          let index = 0;
+          while (index < value.length && value[index] === tableId[index])
+            index += 1;
+          return index;
+        };
+        return shared(right.prefix) - shared(left.prefix);
+      })[0];
+    const gridPrefix = explicitGridPrefix || inferredPageField?.prefix || "";
+    if (!gridPrefix) continue;
+    const fieldPattern = gridPrefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const pageSizeControl =
+      [
+        ...html.matchAll(/<input\b[^>]*>|<select\b[^>]*>[\s\S]*?<\/select>/giu),
+      ].find((control) => {
+        const opening =
+          control[0].match(/^<(?:input|select)\b[^>]*>/iu)?.[0] ?? "";
+        const idOrName = `${htmlAttribute(opening, "id")} ${htmlAttribute(opening, "name")}`;
+        return new RegExp(
+          `${fieldPattern}(?::|_)dataGridCurrentPageSize\\b`,
+          "u",
+        ).test(idOrName);
+      })?.[0] ?? "";
+    const pageSizeOpening =
+      pageSizeControl.match(/^<(?:input|select)\b[^>]*>/iu)?.[0] ?? "";
+    const selectedOption = [
+      ...pageSizeControl.matchAll(/<option\b[^>]*>/giu),
+    ].find((option) => hasHtmlBooleanAttribute(option[0], "selected"))?.[0];
+    const rawPageSize =
+      htmlAttribute(pageSizeOpening, "value") ||
+      (selectedOption ? htmlAttribute(selectedOption, "value") : "");
+    const pageSize = /^\d+$/u.test(rawPageSize) ? Number(rawPageSize) : null;
+    const formStart = html.lastIndexOf("<form", match.index ?? 0);
+    const formOpening =
+      formStart >= 0
+        ? html.slice(formStart).match(/^<form\b[^>]*>/iu)?.[0]
+        : undefined;
+    const markup = formOpening
+      ? extractBalancedHtmlElement(html, formStart, formOpening)
+      : html;
+    return {
+      markup,
+      gridPrefix,
+      rowCount: Math.max(0, rows.length - headerRowIndex - 1),
+      pageSize:
+        Number.isSafeInteger(pageSize) && pageSize! > 0 ? pageSize : null,
+      currentPageFieldCount: currentPageFields.length,
+      pageSizeControlPresent: pageSizeControl.length > 0,
+      providerResultTable,
+    };
+  }
+  return null;
+}
+
+/**
+ * v2 is the live-verified terminal shape for the Fubon loan result page:
+ * the provider result table has real rows and a current-page field, but the
+ * provider omits page-size, pager, and next-page controls. This is deliberately
+ * narrower than treating every response without a next link as complete.
+ */
+const FUBON_LOAN_TERMINAL_RULE_VERSION = "fubon-loan-terminal-v2";
+
+function logFubonLoanPaginationObservation(observation: {
+  resultContext: boolean;
+  rowCount?: number;
+  pageSize?: number | null;
+  currentPageFieldCount?: number;
+  pageSizeControlPresent?: boolean;
+  providerResultTable?: boolean;
+  nextControlCount?: number;
+  activeNextControlCount?: number;
+  disabledNextControlCount?: number;
+  providerPager?: boolean;
+  explicitNoNext?: boolean;
+  nextPage?: number | null;
+  terminal?: boolean;
+  evidence?: FubonLoanPaginationSignal["evidence"];
+}): void {
+  console.log("fubon-loan-pagination-observation", {
+    ruleVersion: FUBON_LOAN_TERMINAL_RULE_VERSION,
+    ...observation,
+  });
+}
+
+/**
+ * Fubon statement pages expose pagination through the same JS postback
+ * control used by the deposit workflow (`setDataGridCurrentPage`).  A loan
+ * response is complete only when that provider signal either supplies the
+ * next page request or exposes the current-page state with no active next
+ * control.  An unrelated result table, an absent marker, or a malformed
+ * next-page action remains ambiguous and fails closed.
+ */
+export function parseFubonLoanPaginationSignal(
+  html: string,
+): FubonLoanPaginationSignal {
+  const context = fubonLoanResultContext(html);
+  if (!context) {
+    logFubonLoanPaginationObservation({ resultContext: false });
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    };
+  }
+  const fieldPattern = context.gridPrefix.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  );
+  const pageFieldPattern = new RegExp(
+    `^${fieldPattern}(?::|_)dataGridCurrentPage$`,
+    "u",
+  );
+  const links = [...context.markup.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu)].map(
+    (match) => {
+      const markup = match[0];
+      const opening = markup.match(/^<a\b[^>]*>/iu)?.[0] ?? "";
+      return {
+        opening,
+        text: stripHtml(markup),
+        onclick: htmlAttribute(opening, "onclick"),
+      };
+    },
+  );
+  const nextLinks = links.filter((link) =>
+    /^(?:下一頁|下頁)$/u.test(link.text),
+  );
+  const activeNext = nextLinks.find(
+    (link) =>
+      !isDisabledHtmlControl(link.opening) &&
+      /setDataGridCurrentPage/iu.test(link.onclick),
+  );
+  if (activeNext) {
+    const nextMatch = activeNext.onclick.match(
+      /setDataGridCurrentPage\([^,]+,\s*(\d+),\s*["']([^"']+)["']/iu,
+    );
+    if (nextMatch?.[1] && nextMatch[2] && pageFieldPattern.test(nextMatch[2])) {
+      logFubonLoanPaginationObservation({
+        resultContext: true,
+        rowCount: context.rowCount,
+        pageSize: context.pageSize,
+        currentPageFieldCount: context.currentPageFieldCount,
+        pageSizeControlPresent: context.pageSizeControlPresent,
+        providerResultTable: context.providerResultTable,
+        nextControlCount: nextLinks.length,
+        activeNextControlCount: 1,
+        disabledNextControlCount: nextLinks.filter((link) =>
+          isDisabledHtmlControl(link.opening),
+        ).length,
+        nextPage: Number(nextMatch[1]),
+        terminal: false,
+        evidence: "next-page",
+      });
+      return {
+        nextPage: nextMatch[1],
+        pageFieldName: nextMatch[2],
+        terminal: false,
+        evidence: "next-page",
+      };
+    }
+    logFubonLoanPaginationObservation({
+      resultContext: true,
+      rowCount: context.rowCount,
+      pageSize: context.pageSize,
+      currentPageFieldCount: context.currentPageFieldCount,
+      pageSizeControlPresent: context.pageSizeControlPresent,
+      providerResultTable: context.providerResultTable,
+      nextControlCount: nextLinks.length,
+      activeNextControlCount: 0,
+      disabledNextControlCount: nextLinks.filter((link) =>
+        isDisabledHtmlControl(link.opening),
+      ).length,
+      terminal: false,
+      evidence: null,
+    });
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: false,
+      evidence: null,
+    };
+  }
+
+  const hasCurrentPageField = [
+    ...context.markup.matchAll(/<(?:input|select)\b[^>]*>/giu),
+  ].some((control) =>
+    [htmlAttribute(control[0], "id"), htmlAttribute(control[0], "name")].some(
+      (value) => pageFieldPattern.test(value),
+    ),
+  );
+  // The live provider renders its current-page control outside the form that
+  // contains the result table. `fubonLoanResultContext` intentionally counts
+  // those controls from the complete response, but the scoped markup above is
+  // still the signal used by the generic/legacy terminal branches.
+  const hasGlobalCurrentPageField = context.currentPageFieldCount > 0;
+  const hasProviderPager = [
+    ...context.markup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu),
+  ].some((match) => {
+    const tagName = match[1]?.toLowerCase();
+    return (
+      tagName !== undefined &&
+      /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
+      (hasHtmlClassOrIdToken(match[0], "pager") ||
+        hasHtmlClassOrIdToken(match[0], "pagination"))
+    );
+  });
+  const hasExplicitNoNext =
+    /(?:data-(?:has-)?next|data-next-page|data-next)\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
+      context.markup,
+    );
+  const hasDisabledNext = nextLinks.some((link) =>
+    isDisabledHtmlControl(link.opening),
+  );
+  const hasProviderStaticResultTerminal =
+    context.providerResultTable &&
+    hasGlobalCurrentPageField &&
+    context.rowCount > 0 &&
+    !context.pageSizeControlPresent &&
+    nextLinks.length === 0 &&
+    !hasProviderPager &&
+    !hasExplicitNoNext;
+  const hasLegacyTerminalEvidence =
+    hasCurrentPageField &&
+    (hasDisabledNext ||
+      hasExplicitNoNext ||
+      (hasProviderPager && nextLinks.length === 0) ||
+      (context.pageSize !== null && context.rowCount < context.pageSize));
+  if (hasLegacyTerminalEvidence || hasProviderStaticResultTerminal) {
+    logFubonLoanPaginationObservation({
+      resultContext: true,
+      rowCount: context.rowCount,
+      pageSize: context.pageSize,
+      currentPageFieldCount: context.currentPageFieldCount,
+      pageSizeControlPresent: context.pageSizeControlPresent,
+      providerResultTable: context.providerResultTable,
+      nextControlCount: nextLinks.length,
+      activeNextControlCount: 0,
+      disabledNextControlCount: nextLinks.filter((link) =>
+        isDisabledHtmlControl(link.opening),
+      ).length,
+      providerPager: hasProviderPager,
+      explicitNoNext: hasExplicitNoNext,
+      terminal: true,
+      evidence: "terminal-no-next",
+    });
+    return {
+      nextPage: null,
+      pageFieldName: null,
+      terminal: true,
+      evidence: "terminal-no-next",
+    };
+  }
+
+  logFubonLoanPaginationObservation({
+    resultContext: true,
+    rowCount: context.rowCount,
+    pageSize: context.pageSize,
+    currentPageFieldCount: context.currentPageFieldCount,
+    pageSizeControlPresent: context.pageSizeControlPresent,
+    providerResultTable: context.providerResultTable,
+    nextControlCount: nextLinks.length,
+    activeNextControlCount: 0,
+    disabledNextControlCount: nextLinks.filter((link) =>
+      isDisabledHtmlControl(link.opening),
+    ).length,
+    providerPager: hasProviderPager,
+    explicitNoNext: hasExplicitNoNext,
+    terminal: false,
+    evidence: null,
+  });
+
+  return {
+    nextPage: null,
+    pageFieldName: null,
+    terminal: false,
+    evidence: null,
+  };
 }
 
 function digitsOnly(value: string): string {
@@ -220,6 +708,24 @@ function loanRowSortTime(row: string[]): number | null {
     Number(match[3]),
   );
   return Number.isFinite(time) ? time : null;
+}
+
+/** Validate the provider's tabular result before any row is admitted. Empty
+ * layout rows are harmless; every non-empty result row must be the exact
+ * eight-column source shape and start with a source transaction date. */
+export function parseFubonLoanStatementRows(
+  sourceRows: readonly string[][],
+): string[][] {
+  return sourceRows.flatMap((sourceRow) => {
+    const row = sourceRow.map((value) => cleanText(value));
+    if (row.every((value) => value.length === 0)) return [];
+    if (
+      row.length !== loanHeaders.length ||
+      !/^\d{4}\/\d{2}\/\d{2}$/.test(row[0] ?? "")
+    )
+      throw new Error("Unexpected Fubon loan result row.");
+    return [row];
+  });
 }
 
 function compareLoanRowsByTransactionDateDesc(
@@ -645,8 +1151,19 @@ function addMonthsClamped(date: Date, months: number): Date {
 }
 
 function loanQueryPeriod(input: FubonLoanStatementsInput): string {
+  const { startDate, endDate } = canonicalLoanDateRange(input);
+  return `${startDate.replaceAll("-", "/")}~${endDate.replaceAll("-", "/")}`;
+}
+
+function canonicalLoanDateRange(input: FubonLoanStatementsInput): {
+  startDate: string;
+  endDate: string;
+} {
   if (input.dateRange) {
-    return `${input.dateRange.startDate}~${input.dateRange.endDate}`;
+    return {
+      startDate: input.dateRange.startDate.replaceAll("/", "-"),
+      endDate: input.dateRange.endDate.replaceAll("/", "-"),
+    };
   }
 
   const today = new Date();
@@ -656,7 +1173,10 @@ function loanQueryPeriod(input: FubonLoanStatementsInput): string {
     today.getDate(),
   );
   const startDate = addMonthsClamped(endDate, -Number(input.quickMonths));
-  return `${formatDate(startDate)}~${formatDate(endDate)}`;
+  return {
+    startDate: formatDate(startDate).replaceAll("/", "-"),
+    endDate: formatDate(endDate).replaceAll("/", "-"),
+  };
 }
 
 async function readLoanAccountOptions(
@@ -777,9 +1297,8 @@ async function configureLoanQuery(
 async function parseLoanStatementHtml(
   page: Page,
   html: string,
-  fallbackLoanAccount: string,
-  input: FubonLoanStatementsInput,
-): Promise<ParsedLoanStatement> {
+  pageOrdinal: number,
+): Promise<ParsedFubonLoanPage> {
   const parsed = (await page.evaluate(
     ({ html: sourceHtml, headers }) => {
       const clean = (value: string | null | undefined) =>
@@ -812,8 +1331,17 @@ async function parseLoanStatementHtml(
       );
       const rows = tableRows
         .slice(headerRowIndex + 1)
-        .map((row) => headers.map((_, index) => clean(row[index])))
-        .filter((row) => /^\d{4}\/\d{2}\/\d{2}$/.test(row[0]));
+        .map((row) => {
+          const normalized = row.map((value) => clean(value));
+          if (normalized.every((value) => value.length === 0)) return [];
+          if (
+            normalized.length !== headers.length ||
+            !/^\d{4}\/\d{2}\/\d{2}$/.test(normalized[0] ?? "")
+          )
+            throw new Error("Unexpected Fubon loan result row.");
+          return [normalized];
+        })
+        .flat();
       const metadataRows = Array.from(doc.querySelectorAll("table"))
         .map((table) =>
           Array.from(table.querySelectorAll("tr")).map((row) => cellsFor(row)),
@@ -846,14 +1374,14 @@ async function parseLoanStatementHtml(
     rows: string[][];
   };
 
+  const pagination = parseFubonLoanPaginationSignal(html);
   return {
-    loanAccount: fallbackLoanAccount,
-    loanAccountId: loanAccountIdFor(fallbackLoanAccount, fallbackLoanAccount),
-    queryPeriod: loanQueryPeriod(input),
-    branchName: parsed.branchName,
     accountType: parsed.accountType,
+    branchName: parsed.branchName,
     currency: parsed.currency,
     rows: parsed.rows,
+    pageOrdinal,
+    pagination,
   };
 }
 
@@ -869,14 +1397,106 @@ async function fetchLoanQueryHtml(page: Page): Promise<string> {
   return html;
 }
 
+export function assembleFubonLoanStatement(
+  pages: readonly ParsedFubonLoanPage[],
+  account: LoanAccountOption,
+  input: FubonLoanStatementsInput,
+): ParsedLoanStatement {
+  const firstPage = pages[0];
+  if (!firstPage)
+    throw new Error("Fubon loan query returned no response page.");
+  const terminalPage = pages.at(-1);
+  const complete =
+    terminalPage?.pagination.terminal === true &&
+    terminalPage.pagination.evidence === "terminal-no-next" &&
+    pages.every((page, index) =>
+      index === pages.length - 1
+        ? page.pagination.terminal
+        : page.pagination.evidence === "next-page" && !page.pagination.terminal,
+    );
+  return {
+    loanAccount: account.label,
+    loanAccountId: loanAccountIdFor(account.label, account.label),
+    sourceAccountValue: account.value,
+    queryPeriod: loanQueryPeriod(input),
+    branchName: firstPage.branchName,
+    accountType: firstPage.accountType,
+    currency: firstPage.currency,
+    rows: pages.flatMap((page) => page.rows),
+    completeness: complete
+      ? {
+          pageCount: pages.length,
+          terminal: true,
+          proofKind: "source-declared-terminal-range",
+        }
+      : null,
+    pages: pages.map((page) => ({
+      pageOrdinal: page.pageOrdinal,
+      responseCode: "200",
+      terminal: page.pagination.terminal,
+      rowCount: page.rows.length,
+      proofKind: "source-declared-terminal-range",
+    })),
+  };
+}
+
+async function fetchFubonLoanStatementPages(
+  page: Page,
+  firstHtml: string,
+  account: LoanAccountOption,
+  input: FubonLoanStatementsInput,
+): Promise<ParsedLoanStatement> {
+  const pages: ParsedFubonLoanPage[] = [];
+  const requests = new Set<string>();
+  let html = firstHtml;
+
+  while (true) {
+    if (pages.length >= FUBON_LOAN_MAX_PAGES)
+      throw new Error("Fubon loan pagination exceeded the safe page limit.");
+    const parsed = await parseLoanStatementHtml(page, html, pages.length);
+    pages.push(parsed);
+    if (!parsed.pagination.nextPage) break;
+    if (!parsed.pagination.pageFieldName)
+      throw new Error(
+        "Fubon loan pagination control is missing its page field.",
+      );
+    const requestKey = `${parsed.pagination.pageFieldName}\u0000${parsed.pagination.nextPage}`;
+    if (requests.has(requestKey))
+      throw new Error("Fubon loan pagination repeated a page request.");
+    requests.add(requestKey);
+
+    const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
+    html = await fetchFormPostbackHtml(
+      scope.locator("form").first(),
+      undefined,
+      { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
+    );
+    await replaceDocumentHtml(scope, html);
+    await findScopeWithLocator(page, loanResultTable, "loan result table");
+  }
+
+  return assembleFubonLoanStatement(pages, account, input);
+}
+
 async function writeLoanStatementFiles(
   page: Page,
   html: string,
-  loanAccount: string,
+  account: LoanAccountOption,
   queryItem: z.infer<typeof queryItemSchema>,
   input: FubonLoanStatementsInput,
-): Promise<FubonLoanStatementsOutput["downloads"][number]> {
-  const parsed = await parseLoanStatementHtml(page, html, loanAccount, input);
+): Promise<{
+  download: FubonLoanStatementsOutput["downloads"][number];
+  parsed: ParsedLoanStatement;
+}> {
+  const parsed = await fetchFubonLoanStatementPages(page, html, account, input);
+  if (
+    !parsed.completeness ||
+    parsed.pages.length !== parsed.completeness.pageCount
+  ) {
+    throw new Error(
+      "Fubon loan result lacks explicit complete terminal page evidence.",
+    );
+  }
 
   const downloadsDir = join(
     process.cwd(),
@@ -912,27 +1532,31 @@ async function writeLoanStatementFiles(
   const jsonStat = await stat(jsonPath);
 
   return {
-    loanAccountId: parsed.loanAccountId,
-    loanAccount: parsed.loanAccount,
-    queryItem,
-    queryPeriod: parsed.queryPeriod,
-    branchName: parsed.branchName,
-    accountType: parsed.accountType,
-    currency: parsed.currency,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
+    download: {
+      loanAccountId: parsed.loanAccountId,
+      loanAccount: parsed.loanAccount,
+      queryItem,
+      queryPeriod: parsed.queryPeriod,
+      branchName: parsed.branchName,
+      accountType: parsed.accountType,
+      currency: parsed.currency,
+      baseName,
+      csvFilename,
+      csvPath,
+      csvBytes: csvStat.size,
+      jsonFilename,
+      jsonPath,
+      jsonBytes: jsonStat.size,
+      rowCount: rows.length,
+    },
+    parsed,
   };
 }
 
 export async function runFubonLoanStatements(
   page: Page,
   input: FubonLoanStatementsInput,
+  overrides: FubonLoanStatementsRunDependencies = {},
 ): Promise<FubonLoanStatementsOutput> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
@@ -940,31 +1564,66 @@ export async function runFubonLoanStatements(
     );
   }
 
-  let scope = await openLoanStatementsPage(page);
-  const loanAccounts = await readLoanAccountOptions(
-    scope,
-    input.loanAccountLabels,
+  const {
+    sourceConnectionScope,
+    sourceConnectionKey: relationSourceConnectionKey,
+  } = requireSourceConnectionIdentity("fubon", "Fubon loan", overrides);
+  const ledgerDir =
+    overrides.canonicalFinancialLedgerDir ??
+    overrides.canonicalLedgerDir ??
+    DEFAULT_LEDGER_DIR;
+  const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
+    canonicalSqlitePath(ledgerDir),
   );
-  const queryItems = requestedQueryItems(input);
-  const explicitQueryItems = hasExplicitQueryItems(input);
-  const period = describeLoanPeriod(input);
+  const persist = overrides.persistLoanCapture ?? persistFubonLoanCapture;
+  const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
+  const resolveRelations =
+    overrides.resolveLoanRepaymentRelations ?? resolveLoanRepaymentRelations;
 
-  const downloads: FubonLoanStatementsOutput["downloads"] = [];
-  const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
-
-  for (const account of loanAccounts) {
-    scope = await selectLoanAccount(page, account);
-    const availableQueryItems = await readAvailableLoanQueryItems(scope);
-    const accountQueryItems = queryItems.filter((queryItem) =>
-      availableQueryItems.includes(queryItem),
+  try {
+    let scope = await openLoanStatementsPage(page);
+    const loanAccounts = await readLoanAccountOptions(
+      scope,
+      input.loanAccountLabels,
     );
-    const unavailableQueryItems = queryItems.filter(
-      (queryItem) => !availableQueryItems.includes(queryItem),
-    );
+    const queryItems = requestedQueryItems(input);
+    const explicitQueryItems = hasExplicitQueryItems(input);
+    const period = describeLoanPeriod(input);
+    const dateRange = canonicalLoanDateRange(input);
 
-    if (explicitQueryItems) {
-      for (const queryItem of unavailableQueryItems) {
-        const reason = `Loan query item is not available for this account: ${queryItem}`;
+    const downloads: FubonLoanStatementsOutput["downloads"] = [];
+    const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
+
+    for (const account of loanAccounts) {
+      scope = await selectLoanAccount(page, account);
+      const availableQueryItems = await readAvailableLoanQueryItems(scope);
+      const accountQueryItems = queryItems.filter((queryItem) =>
+        availableQueryItems.includes(queryItem),
+      );
+      const unavailableQueryItems = queryItems.filter(
+        (queryItem) => !availableQueryItems.includes(queryItem),
+      );
+
+      if (explicitQueryItems) {
+        for (const queryItem of unavailableQueryItems) {
+          const reason = `Loan query item is not available for this account: ${queryItem}`;
+          console.warn("loan-query-skipped", {
+            loanAccount: account.label,
+            queryItem,
+            reason,
+          });
+          skippedAccounts.push({
+            loanAccount: account.label,
+            queryItem,
+            reason,
+          });
+        }
+      }
+
+      if (accountQueryItems.length === 0) {
+        const queryItem = queryItems[0];
+        const reason =
+          "No requested loan query items are available for this account.";
         console.warn("loan-query-skipped", {
           loanAccount: account.label,
           queryItem,
@@ -975,54 +1634,115 @@ export async function runFubonLoanStatements(
           queryItem,
           reason,
         });
+        continue;
+      }
+
+      for (const queryItem of accountQueryItems) {
+        scope = await configureLoanQuery(page, input, queryItem);
+        const html = await fetchLoanQueryHtml(page);
+        const written = await writeLoanStatementFiles(
+          page,
+          html,
+          account,
+          queryItem,
+          input,
+        );
+        const completeness = written.parsed.completeness;
+        if (
+          !completeness ||
+          written.parsed.pages.length !== completeness.pageCount
+        ) {
+          throw new Error(
+            "Fubon loan result lacks explicit complete terminal page evidence.",
+          );
+        }
+        const captureInput: FubonLoanCaptureBuildInput = {
+          accountValue: written.parsed.sourceAccountValue,
+          sourceConnectionScope,
+          observedAt: observedAt(),
+          startDate: dateRange.startDate,
+          endDate: dateRange.endDate,
+          scope: {
+            startDate: dateRange.startDate,
+            endDate: dateRange.endDate,
+            completeness: "complete-range",
+            completenessBasis: "source-declared-terminal-range",
+            completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+            pageCount: completeness.pageCount,
+            terminal: completeness.terminal,
+          },
+          pages: written.parsed.pages,
+          // The provider exposes no source-linked deposit-side transaction in
+          // this statement response. An empty linkage list is deliberately
+          // not a relation assertion; the independent resolver below can use
+          // account or transaction evidence captured by another page.
+          relationCoverage: "not-asserted",
+          counterpartTransactions: [],
+          relations: [],
+          rows: written.parsed.rows.map<FubonLoanStatementRow>((row) => ({
+            transactionDate: row[0] ?? "",
+            transactionContent: row[1] ?? "",
+            transactionAmount: row[2] ?? "",
+            balanceAfterTransaction: row[6] ?? "",
+          })),
+        };
+        const capture = buildFubonLoanCapture(captureInput);
+        await persist(store, captureInput);
+        const repaymentAccount = extractFubonLoanAccountEvidence(
+          written.parsed.sourceAccountValue,
+          written.parsed.loanAccount,
+        );
+        const provenanceRecord = capture.records[0];
+        if (repaymentAccount && provenanceRecord) {
+          await persistCounterpartyAccountEvidence(store, {
+            captureId: capture.captureId,
+            sourceRecordKey: provenanceRecord.sourceRecordKey,
+            sourceConnectionKey: capture.identity.sourceConnectionKey,
+            identityEpochKey: capture.identity.identityEpochKey,
+            accountValue: repaymentAccount,
+            role: "beneficiary",
+            purpose: "loan_repayment",
+            scope: "loan_contract",
+            evidenceKind: "repayment-mandate",
+            sourceField: "loan-account-selector",
+            contractVersion: FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION,
+            effectiveStartDate: capture.scope.startDate,
+            effectiveEndDate: capture.scope.endDate,
+            accountKey: capture.identity.accountKey,
+          });
+        }
+        // Resolve only after the complete loan capture has committed. This
+        // keeps an incomplete/failed page from withdrawing prior relations,
+        // and lets a standalone loan capture resolve against an earlier
+        // standalone deposit capture in the same Source Connection.
+        await resolveLoanRelationsAfterCapture(store, resolveRelations, {
+            sourceConnectionKey: relationSourceConnectionKey,
+            integrationNamespace: "fubon",
+            observedAt: observedAt(),
+            failureEvent: "fubon-loan-relation-resolution-failed",
+            explicitLinks: overrides.explicitRelationLinks,
+          });
+        downloads.push(written.download);
       }
     }
 
-    if (accountQueryItems.length === 0) {
-      const queryItem = queryItems[0];
-      const reason =
-        "No requested loan query items are available for this account.";
-      console.warn("loan-query-skipped", {
-        loanAccount: account.label,
-        queryItem,
-        reason,
-      });
-      skippedAccounts.push({
-        loanAccount: account.label,
-        queryItem,
-        reason,
-      });
-      continue;
-    }
-
-    for (const queryItem of accountQueryItems) {
-      scope = await configureLoanQuery(page, input, queryItem);
-      const html = await fetchLoanQueryHtml(page);
-      const download = await writeLoanStatementFiles(
-        page,
-        html,
-        account.label,
-        queryItem,
-        input,
+    if (downloads.length === 0 && skippedAccounts.length > 0) {
+      throw new StatementComponentAbsentError(
+        `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
       );
-      downloads.push(download);
     }
-  }
 
-  if (downloads.length === 0 && skippedAccounts.length > 0) {
-    throw new StatementComponentAbsentError(
-      `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
-    );
+    return {
+      queryItems,
+      period,
+      downloadFormat: input.downloadFormat,
+      count: downloads.length,
+      downloads,
+      skippedAccounts,
+    };
+  } finally {
+    store.close();
   }
-
-  return {
-    queryItems,
-    period,
-    downloadFormat: input.downloadFormat,
-    count: downloads.length,
-    downloads,
-    skippedAccounts,
-  };
 }
 
 export default workflow("fubonLoanStatements", {
@@ -1042,6 +1762,25 @@ export default workflow("fubonLoanStatements", {
     };
     await openLoanLoginForm(page);
     await completeFubonHumanLogin(page, session, values);
-    return await runFubonLoanStatements(page, input);
+    const sourceLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+      process.env.LEDGER_DIR ??
+      DEFAULT_LEDGER_DIR;
+    const financialLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR ??
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+      sourceLedgerDir;
+    return await runFubonLoanStatements(page, input, {
+      canonicalLedgerDir: sourceLedgerDir,
+      canonicalFinancialLedgerDir: financialLedgerDir,
+      sourceConnectionScope: fubonStableLoginScope({
+        fubon_user_id: values.userId,
+        fubon_account: values.account,
+      })!,
+      sourceConnectionKey: deriveFubonSourceConnectionKey({
+        fubon_user_id: values.userId,
+        fubon_account: values.account,
+      })!,
+    });
   },
 });
