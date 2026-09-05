@@ -195,7 +195,7 @@ test("admission stores the unique candidate winner and treats ties or threshold 
       sourceConnectionKey: winnerState.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage: "test/candidate-winner",
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: winnerState.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(winnerState, "cash.deposit", "test/candidate-winner", {
         candidates: [
           { value: "cash.deposit", confidenceBasisPoints: 8_000 },
@@ -216,7 +216,7 @@ test("admission stores the unique candidate winner and treats ties or threshold 
       sourceConnectionKey: tieState.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage: "test/candidate-tie",
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: tieState.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(tieState, "cash.deposit", "test/candidate-tie", {
         candidates: [
           { value: "cash.deposit", confidenceBasisPoints: 9_000 },
@@ -237,7 +237,7 @@ test("admission stores the unique candidate winner and treats ties or threshold 
       sourceConnectionKey: boundaryState.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage: "test/threshold-boundary",
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: boundaryState.transactionId, fields: ["kind"] }],
       outputs: [{
         ...derivedOutput(boundaryState, "cash.deposit", "test/threshold-boundary"),
         confidenceBasisPoints: 7_500,
@@ -251,6 +251,95 @@ test("admission stores the unique candidate winner and treats ties or threshold 
   }
 });
 
+test("complete runs require one explicit result for every declared subject field", async () => {
+  const state = await createFixtureState();
+  try {
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/complete-scope",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind", "category"] }],
+        outputs: [derivedOutput(state, "cash.deposit", "test/complete-scope")],
+      }),
+      /missing a declared subject\/field/u,
+    );
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    try {
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 1);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM current_transaction_enrichment"), 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("effective Kind and Category admission is atomic, including winner and unsupported cases", async () => {
+  const winnerState = await createFixtureState();
+  try {
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(winnerState.directory, {
+        sourceConnectionKey: winnerState.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/effective-pair",
+        declaredSubjects: [{ transactionId: winnerState.transactionId, fields: ["kind", "category"] }],
+        outputs: [
+          {
+            ...derivedOutput(winnerState, "purchase", "test/effective-pair", {
+              candidates: [
+                { value: "purchase", confidenceBasisPoints: 8_000 },
+                { value: "transfer.internal", confidenceBasisPoints: 9_000 },
+              ],
+            }),
+          },
+          typedDerivedOutput(winnerState, "category", "dining", "test/effective-pair"),
+        ],
+      }),
+      /incompatible with Kind transfer\.internal/u,
+    );
+    const db = openCanonicalDatabase(winnerState.directory, { readOnly: true });
+    try {
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await discard(winnerState.directory);
+  }
+
+  const unsupportedState = await createFixtureState();
+  try {
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(unsupportedState.directory, {
+        sourceConnectionKey: unsupportedState.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/unsupported-pair",
+        declaredSubjects: [{ transactionId: unsupportedState.transactionId, fields: ["kind", "category"] }],
+        outputs: [
+          {
+            ...derivedOutput(unsupportedState, "cash.deposit", "test/unsupported-pair"),
+            state: "unsupported",
+            value: null,
+          },
+          typedDerivedOutput(unsupportedState, "category", "dining", "test/unsupported-pair"),
+        ],
+      }),
+      /category cannot be captured without a transaction Kind/u,
+    );
+    const db = openCanonicalDatabase(unsupportedState.directory, { readOnly: true });
+    try {
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await discard(unsupportedState.directory);
+  }
+});
+
 test("Source admission rejects forged or non-retained Cathay taxonomy fields and rolls back", async () => {
   const state = await createFixtureState();
   try {
@@ -259,7 +348,7 @@ test("Source admission rejects forged or non-retained Cathay taxonomy fields and
         sourceConnectionKey: state.sourceConnectionKey,
         stream: "domestic-deposit",
         ruleLineage: "test/forged-source",
-        declaredFields: ["kind"],
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
         outputs: [{
           transactionId: state.transactionId,
           field: "kind",
@@ -289,6 +378,104 @@ test("Source admission rejects forged or non-retained Cathay taxonomy fields and
   }
 });
 
+test("Derived description evidence must retain the same transaction's source record", async () => {
+  const state = await createFixtureState();
+  try {
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    let otherSourceRecordId: string;
+    try {
+      const row = db.prepare(`
+        SELECT revision.source_record_id
+          FROM financial_transactions transaction_row
+          JOIN current_transactions current_row ON current_row.transaction_id = transaction_row.transaction_id
+          JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+         ORDER BY transaction_row.source_sequence
+         LIMIT 1 OFFSET 1
+      `).get() as { source_record_id?: unknown };
+      otherSourceRecordId = idToString(blob(row.source_record_id));
+    } finally {
+      db.close();
+    }
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/wrong-derived-record",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
+        outputs: [derivedOutput(state, "cash.deposit", "test/wrong-derived-record", {
+          sourceRecordId: otherSourceRecordId,
+        })],
+      }),
+      /outside the transaction's declared source scope/u,
+    );
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/missing-derived-record",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
+        outputs: [derivedOutput(state, "cash.deposit", "test/missing-derived-record", {
+          sourceRecordId: undefined,
+        })],
+      }),
+      /requires retained source record provenance/u,
+    );
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("published producer metadata cannot be mutated and is checked on reopen", async () => {
+  const state = await createFixtureState();
+  try {
+    const db = openCanonicalDatabase(state.directory);
+    try {
+      assert.throws(
+        () => db.prepare(`
+          UPDATE enrichment_producer_versions
+             SET confidence_threshold_basis_points = 10000
+        `).run(),
+        /immutable/u,
+      );
+    } finally {
+      db.close();
+    }
+    const reopened = openCanonicalDatabase(state.directory, { readOnly: true });
+    reopened.close();
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("a supported role creates a lifecycle-visible participation without a reference", async () => {
+  const state = await createFixtureState();
+  try {
+    const committed = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/reference-free-role",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_role"] }],
+      outputs: [typedDerivedOutput(state, "counterparty_role", "merchant", "test/reference-free-role")],
+    });
+    const query = createCanonicalEnrichmentQuery(state.directory);
+    const current = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(current.counterparties.length, 1);
+    assert.equal(current.counterparties[0]?.taxonomyCode, "merchant");
+    assert.equal(current.counterparties[0]?.producerId, "cathay/domestic-deposit/automatic-enrichment");
+    assert.equal(current.counterparties[0]?.observedName, null);
+    assert.equal(current.counterparties[0]?.observedReference, null);
+    const historical = query.historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: committed.commitSequence,
+    }).transactions[0]!;
+    assert.equal(historical.counterparties.length, 1);
+    assert.equal(historical.counterparties[0]?.taxonomyCode, "merchant");
+  } finally {
+    await discard(state.directory);
+  }
+});
+
 test("missing and overlapping authority routes fail admission before a commit", async () => {
   const missing = await createFixtureState();
   try {
@@ -303,7 +490,7 @@ test("missing and overlapping authority routes fail admission before a commit", 
         sourceConnectionKey: missing.sourceConnectionKey,
         stream: "domestic-deposit",
         ruleLineage: "test/missing-route",
-        declaredFields: ["kind"],
+        declaredSubjects: [{ transactionId: missing.transactionId, fields: ["kind"] }],
         outputs: [derivedOutput(missing, "cash.deposit", "test/missing-route")],
       }),
       /No automatic enrichment authority route/u,
@@ -330,7 +517,7 @@ test("missing and overlapping authority routes fail admission before a commit", 
         sourceConnectionKey: overlap.sourceConnectionKey,
         stream: "domestic-deposit",
         ruleLineage: "test/overlap-route",
-        declaredFields: ["kind"],
+        declaredSubjects: [{ transactionId: overlap.transactionId, fields: ["kind"] }],
         outputs: [derivedOutput(overlap, "cash.deposit", "test/overlap-route")],
       }),
       /overlap/u,
@@ -347,7 +534,7 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
       sourceConnectionKey: compatible.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage: "test/typed-values",
-      declaredFields: ["kind", "category", "counterparty_role", "counterparty_display"],
+      declaredSubjects: [{ transactionId: compatible.transactionId, fields: ["kind", "category", "counterparty_role", "counterparty_display"] }],
       outputs: [
         typedDerivedOutput(compatible, "kind", "purchase", "test/typed-values"),
         typedDerivedOutput(compatible, "category", "dining", "test/typed-values"),
@@ -397,7 +584,7 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
         sourceConnectionKey: incompatible.sourceConnectionKey,
         stream: "domestic-deposit",
         ruleLineage: "test/incompatible-category",
-        declaredFields: ["kind", "category"],
+        declaredSubjects: [{ transactionId: incompatible.transactionId, fields: ["kind", "category"] }],
         outputs: [
           typedDerivedOutput(incompatible, "kind", "transfer.internal", "test/incompatible-category"),
           typedDerivedOutput(incompatible, "category", "dining", "test/incompatible-category"),
@@ -428,7 +615,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
       sourceConnectionKey: state.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage,
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(state, "cash.deposit", ruleLineage)],
     });
     const before = createCanonicalEnrichmentQuery(state.directory).current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
@@ -441,7 +628,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
       sourceConnectionKey: state.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage,
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
       outputs: [{
         ...derivedOutput(state, "cash.deposit", ruleLineage),
         state: "unsupported",
@@ -479,7 +666,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
           ruleLineage,
           status,
           complete: false,
-          declaredFields: ["kind"],
+          declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
           outputs: [derivedOutput(state, "cash.deposit", ruleLineage)],
         }),
         /complete successful enrichment run/u,
@@ -499,7 +686,7 @@ test("historical enrichment respects transaction creation, corrected financial d
       sourceConnectionKey: state.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage: "test/historical-cutoffs",
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(state, "cash.deposit", "test/historical-cutoffs")],
     });
     const notYetCreated = createCanonicalEnrichmentQuery(state.directory).historical({
@@ -567,7 +754,7 @@ test("a route revision selects the new assertion while historical knowledge poin
       sourceConnectionKey: state.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage,
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(state, "cash.deposit", ruleLineage)],
     });
     const oldRouteId = "cathay/domestic-deposit/automatic-enrichment/v1/kind";
@@ -590,7 +777,7 @@ test("a route revision selects the new assertion while historical knowledge poin
       sourceConnectionKey: state.sourceConnectionKey,
       stream: "domestic-deposit",
       ruleLineage,
-      declaredFields: ["kind"],
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
       outputs: [derivedOutput(state, "transfer.internal", ruleLineage)],
     });
     const current = createCanonicalEnrichmentQuery(state.directory).current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;

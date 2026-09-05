@@ -82,6 +82,11 @@ export type CanonicalEnrichmentRunInput = Readonly<{
   /** Failed or partial runs are diagnostics and must not alter assertions. */
   status?: "complete" | "partial" | "failed";
   /** Every declared subject/field must have one matching authority route. */
+  declaredSubjects?: readonly Readonly<{
+    transactionId: string;
+    fields: readonly EnrichmentField[];
+  }>[];
+  /** @deprecated Use declaredSubjects to declare the subject scope explicitly. */
   declaredFields?: readonly EnrichmentField[];
   fields?: readonly EnrichmentField[];
   outputs: readonly CanonicalEnrichmentOutput[];
@@ -104,6 +109,29 @@ type RouteRow = DbRow & {
   producer_version: string;
   origin_policy: string;
 };
+
+type DeclaredSubject = Readonly<{
+  transactionId: string;
+  id: CanonicalId;
+  fields: readonly EnrichmentField[];
+}>;
+
+type AdmittedOutput = Readonly<{
+  output: CanonicalEnrichmentOutput;
+  transactionId: string;
+  id: CanonicalId;
+  field: EnrichmentField;
+  route: RouteRow;
+  origin: CanonicalEnrichmentOrigin;
+  evidenceKind: string;
+  sourceRecordId: CanonicalId | null;
+  effective: Readonly<{
+    state: CanonicalEnrichmentOutputState;
+    value: string | null;
+    confidence: number | null;
+  }>;
+  retainedSourceValue: string | null;
+}>;
 
 function sqliteValue(value: unknown): SQLInputValue {
   return value === undefined ? null : value as SQLInputValue;
@@ -129,6 +157,34 @@ function canonicalField(value: unknown): EnrichmentField {
   const field = typeof value === "string" ? FIELD_ALIASES[value] : undefined;
   if (!field) throw new Error(`Unsupported automatic enrichment field: ${String(value)}.`);
   return field;
+}
+
+function normalizedCanonicalId(value: string): string {
+  return value.replaceAll("-", "").toLowerCase();
+}
+
+function declaredSubjectScope(
+  input: CanonicalEnrichmentRunInput,
+): DeclaredSubject[] {
+  if (!Array.isArray(input.declaredSubjects) || input.declaredSubjects.length === 0)
+    throw new Error("A complete enrichment run requires an explicit declared subject scope.");
+  const seenSubjects = new Set<string>();
+  return input.declaredSubjects.map((rawSubject) => {
+    if (!rawSubject || typeof rawSubject !== "object")
+      throw new Error("Every declared enrichment subject must be an object.");
+    const id = canonicalId(rawSubject.transactionId, "Declared transaction ID");
+    const transactionId = idToString(id);
+    const key = normalizedCanonicalId(transactionId);
+    if (seenSubjects.has(key))
+      throw new Error(`Automatic enrichment declares transaction ${transactionId} more than once.`);
+    seenSubjects.add(key);
+    if (!Array.isArray(rawSubject.fields) || rawSubject.fields.length === 0)
+      throw new Error(`Automatic enrichment subject ${transactionId} must declare at least one field.`);
+    const fields = rawSubject.fields.map(canonicalField);
+    if (new Set(fields).size !== fields.length)
+      throw new Error(`Automatic enrichment subject ${transactionId} declares a field more than once.`);
+    return { transactionId, id, fields };
+  });
 }
 
 function canonicalId(value: string | Uint8Array, label: string): CanonicalId {
@@ -227,8 +283,8 @@ function effectiveOutput(
   if (output.tie === true)
     return { state: "unsupported", value: null, confidence: null };
 
-  let value = outputValue(output);
-  let confidence = confidenceBasisPoints(output);
+  let value: string | null = null;
+  let confidence: number | null = null;
   if (candidates.length > 0) {
     const scored: Candidate[] = candidates.map((candidate) => {
       if (typeof candidate.value !== "string" || candidate.value.trim() === "")
@@ -247,6 +303,9 @@ function effectiveOutput(
     // winner, never a lower caller supplied candidate.
     value = winner.value;
     confidence = winner.confidence;
+  } else {
+    value = outputValue(output);
+    confidence = confidenceBasisPoints(output);
   }
 
   // The package threshold is an exclusive lower bound: a Derived result must
@@ -352,23 +411,56 @@ function currentKindCode(db: DatabaseSync, transactionId: CanonicalId): string |
   return row?.taxonomyCode ?? row?.value ?? null;
 }
 
+function currentCategoryCode(db: DatabaseSync, transactionId: CanonicalId): string | null {
+  const row = currentEnrichmentRows(db, transactionId).find(
+    (candidate) => candidate.fieldName === "category",
+  );
+  return row?.taxonomyCode ?? row?.value ?? null;
+}
+
+function validateRetainedEvidenceLineage(
+  db: DatabaseSync,
+  transactionId: CanonicalId,
+  sourceRecordId: CanonicalId,
+  account: DbRow,
+): void {
+  const linked = db.prepare(`
+    SELECT 1
+      FROM transaction_revisions revision
+      JOIN source_records source_record
+        ON source_record.source_record_id = revision.source_record_id
+      JOIN source_captures capture
+        ON capture.capture_id = source_record.capture_id
+     WHERE revision.transaction_id = ?
+       AND revision.source_record_id = ?
+       AND capture.source_connection_id = ?
+       AND capture.identity_epoch_id = ?
+       AND capture.stream = ?
+  `).get(
+    transactionId,
+    sourceRecordId,
+    sqliteValue(account.source_connection_id),
+    sqliteValue(account.identity_epoch_id),
+    String(account.stream),
+  );
+  if (!linked)
+    throw new Error("Enrichment source evidence is outside the transaction's declared source scope.");
+}
+
 function validateSourceEvidence(
   db: DatabaseSync,
   transactionId: CanonicalId,
   output: CanonicalEnrichmentOutput,
   sourceRecordId: CanonicalId | null,
   value: string,
+  account: DbRow,
 ): string {
   const sourceField = outputSourceField(output);
   if (!sourceFieldAllowed(canonicalField(output.field), sourceField))
     throw new Error("Source enrichment must retain a contract-defined explicit source field; free text, merchant, MCC, and combined evidence are Derived.");
   if (!sourceRecordId)
     throw new Error("Source enrichment requires the retained source record provenance.");
-  const linked = db.prepare(`
-    SELECT 1 FROM transaction_revisions revision
-    WHERE revision.transaction_id = ? AND revision.source_record_id = ?
-  `).get(transactionId, sourceRecordId);
-  if (!linked) throw new Error("Source enrichment source record is outside the transaction lineage.");
+  validateRetainedEvidenceLineage(db, transactionId, sourceRecordId, account);
 
   const source = db.prepare(
     "SELECT payload_json FROM source_records WHERE source_record_id = ?",
@@ -443,30 +535,56 @@ function commitAutomaticEnrichmentRunOnce(
     inTransaction = true;
     const commitSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as { value?: unknown }).value ?? 0) + 1;
     const commitId = uuidV7();
-    const declaredFields = [...(rawInput.declaredFields ?? rawInput.fields ?? [])].map(canonicalField);
-    const outputs = rawInput.outputs.map((output) => ({ ...output, field: canonicalField(output.field) }));
-    const duplicateKeys = new Set<string>();
-    for (const output of outputs) {
-      const key = `${output.transactionId}:${output.field}`;
-      if (duplicateKeys.has(key)) throw new Error(`Automatic enrichment emits more than one output for ${key}.`);
-      duplicateKeys.add(key);
+    const declaredSubjects = declaredSubjectScope(rawInput);
+    const expectedOutputKeys = new Set<string>();
+    const allFields = new Set<EnrichmentField>();
+    for (const subject of declaredSubjects) {
+      for (const field of subject.fields) {
+        expectedOutputKeys.add(`${normalizedCanonicalId(subject.transactionId)}:${field}`);
+        allFields.add(field);
+      }
     }
-    const allFields = new Set<EnrichmentField>([...declaredFields, ...outputs.map((output) => output.field)]);
-    if (allFields.size === 0) throw new Error("At least one automatic enrichment subject/field must be declared.");
-    const subjects = new Map<string, { id: CanonicalId; account: DbRow }>();
+    const outputs = rawInput.outputs.map((output) => ({
+      ...output,
+      field: canonicalField(output.field),
+      transactionId: idToString(canonicalId(output.transactionId, "Transaction ID")),
+    }));
+    const outputKeys = new Set<string>();
     for (const output of outputs) {
-      const id = canonicalId(output.transactionId, "Transaction ID");
-      if (!subjects.has(output.transactionId)) subjects.set(output.transactionId, { id, account: accountForTransaction(db, id) });
+      const key = `${normalizedCanonicalId(output.transactionId)}:${output.field}`;
+      if (!expectedOutputKeys.has(key))
+        throw new Error(`Automatic enrichment emitted an undeclared subject/field ${key}.`);
+      if (outputKeys.has(key))
+        throw new Error(`Automatic enrichment emits more than one output for ${key}.`);
+      outputKeys.add(key);
     }
-    if (subjects.size === 0) throw new Error("At least one automatic enrichment subject is required.");
+    if (outputKeys.size !== expectedOutputKeys.size)
+      throw new Error("Automatic enrichment complete scope is missing a declared subject/field output.");
+    const subjects = new Map<string, { id: CanonicalId; account: DbRow; fields: readonly EnrichmentField[] }>();
+    for (const declared of declaredSubjects)
+      subjects.set(normalizedCanonicalId(declared.transactionId), {
+        id: declared.id,
+        account: accountForTransaction(db, declared.id),
+        fields: declared.fields,
+      });
     const firstAccount = [...subjects.values()][0]!.account;
     const integrationNamespace = String(firstAccount.integration_namespace);
     const stream = rawInput.stream?.trim() || String(firstAccount.stream);
+    const sourceConnectionId = firstAccount.source_connection_id;
+    const identityEpochId = firstAccount.identity_epoch_id;
     if (rawInput.sourceConnectionKey && rawInput.sourceConnectionKey !== firstAccount.source_connection_key)
       throw new Error("Automatic enrichment source connection scope does not match the transaction.");
     for (const subject of subjects.values()) {
       if (subject.account.integration_namespace !== integrationNamespace || subject.account.stream !== stream)
         throw new Error("Automatic enrichment crossed a source integration or stream boundary.");
+      if (!(sourceConnectionId instanceof Uint8Array) ||
+          !(subject.account.source_connection_id instanceof Uint8Array) ||
+          !Buffer.from(sourceConnectionId).equals(Buffer.from(subject.account.source_connection_id)))
+        throw new Error("Automatic enrichment crossed a source connection boundary.");
+      if (!(identityEpochId instanceof Uint8Array) ||
+          !(subject.account.identity_epoch_id instanceof Uint8Array) ||
+          !Buffer.from(identityEpochId).equals(Buffer.from(subject.account.identity_epoch_id)))
+        throw new Error("Automatic enrichment crossed an identity epoch boundary.");
       if (rawInput.sourceConnectionKey && subject.account.source_connection_key !== rawInput.sourceConnectionKey)
         throw new Error("Automatic enrichment crossed a source connection boundary.");
       if (rawInput.identityEpoch && subject.account.identity_epoch_id instanceof Uint8Array) {
@@ -479,14 +597,81 @@ function commitAutomaticEnrichmentRunOnce(
       const routes = matchingRoutes(db, field, integrationNamespace, stream, commitSequence, rawInput.routeId);
       routeByField.set(field, routes[0]!);
     }
-    for (const field of declaredFields)
+    for (const field of allFields)
       if (!routeByField.has(field)) throw new Error(`No automatic enrichment authority route is declared for ${field}.`);
+    const producer = db.prepare(
+      `SELECT confidence_threshold_basis_points
+         FROM enrichment_producer_versions
+        WHERE producer_id = ? AND producer_version = ?`,
+    ).get(producerId, producerVersion) as { confidence_threshold_basis_points?: unknown } | undefined;
+    if (!producer) throw new Error(`Producer version ${producerId}@${producerVersion} is not declared.`);
+    const threshold = Number(producer.confidence_threshold_basis_points ?? 0);
+    const admittedOutputs: AdmittedOutput[] = [];
+    for (const output of outputs) {
+      const transactionKey = normalizedCanonicalId(output.transactionId);
+      const subject = subjects.get(transactionKey);
+      if (!subject) throw new Error(`Automatic enrichment targets an undeclared transaction ${output.transactionId}.`);
+      const route = routeByField.get(output.field)!;
+      const origin = output.origin ?? "derived";
+      if (origin === "source" && route.origin_policy === "derived")
+        throw new Error(`Route ${route.route_id} does not allow Source output.`);
+      if (origin === "derived" && route.origin_policy === "source")
+        throw new Error(`Route ${route.route_id} does not allow Derived output.`);
+      const evidenceKind = outputEvidenceKind(output);
+      const sourceRecordId = outputSourceRecordId(output);
+      if (sourceRecordId)
+        validateRetainedEvidenceLineage(db, subject.id, sourceRecordId, subject.account);
+      const effective = effectiveOutput(output, threshold);
+      const value = effective.value;
+      if (effective.state === "supported" && origin === "derived" &&
+          producerId === CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID &&
+          evidenceKind === "description" && !sourceRecordId)
+        throw new Error("Cathay description-derived enrichment requires retained source record provenance.");
+      let retainedSourceValue: string | null = null;
+      if (effective.state === "supported" && value !== null && origin === "source")
+        retainedSourceValue = validateSourceEvidence(db, subject.id, output, sourceRecordId, value, subject.account);
+      if (effective.state === "supported" && value !== null)
+        validateOutputCompatibility(db, output, origin, value, evidenceKind, producerId, producerVersion);
+      admittedOutputs.push({
+        output,
+        transactionId: output.transactionId,
+        id: subject.id,
+        field: output.field,
+        route,
+        origin,
+        evidenceKind,
+        sourceRecordId,
+        effective,
+        retainedSourceValue,
+      });
+    }
+    const admittedByKey = new Map(
+      admittedOutputs.map((admitted) => [
+        `${normalizedCanonicalId(admitted.transactionId)}:${admitted.field}`,
+        admitted,
+      ]),
+    );
+    for (const subject of declaredSubjects) {
+      const subjectKey = normalizedCanonicalId(subject.transactionId);
+      const kindOutput = admittedByKey.get(`${subjectKey}:kind`);
+      const categoryOutput = admittedByKey.get(`${subjectKey}:category`);
+      const kindValue = subject.fields.includes("kind")
+        ? kindOutput?.effective.state === "supported" ? kindOutput.effective.value : null
+        : currentKindCode(db, subject.id);
+      const categoryValue = subject.fields.includes("category")
+        ? categoryOutput?.effective.state === "supported" ? categoryOutput.effective.value : null
+        : currentCategoryCode(db, subject.id);
+      if (categoryValue && !kindValue)
+        throw new Error("A category cannot be captured without a transaction Kind.");
+      if (kindValue && categoryValue && !isCategoryApplicable(categoryValue, kindValue))
+        throw new Error(`Category ${categoryValue} is incompatible with Kind ${kindValue}.`);
+    }
     db.prepare(
       "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, 'derived_import')",
     ).run(commitId, commitSequence, currentUtcMicros(), `automatic/${producerId}/${producerVersion}`);
     const runId = uuidV7();
     const origins = new Set<CanonicalEnrichmentOrigin>();
-    for (const output of outputs) origins.add(output.origin ?? "derived");
+    for (const admitted of admittedOutputs) origins.add(admitted.origin);
     db.prepare(`
       INSERT INTO enrichment_runs(run_id, source_connection_id, identity_epoch_id, stream,
         producer_id, producer_version, origin, rule_lineage, observed_at, commit_id, status, complete_scope)
@@ -535,29 +720,16 @@ function commitAutomaticEnrichmentRunOnce(
         assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id)
       VALUES (?, ?, NULL, ?, NULL, ?)
     `);
-    for (const output of outputs) {
-      const subject = subjects.get(output.transactionId)!;
-      const route = routeByField.get(output.field)!;
-      const origin = output.origin ?? "derived";
-      if (origin === "source" && route.origin_policy === "derived") throw new Error(`Route ${route.route_id} does not allow Source output.`);
-      if (origin === "derived" && route.origin_policy === "source") throw new Error(`Route ${route.route_id} does not allow Derived output.`);
-      const evidenceKind = outputEvidenceKind(output);
-      const sourceRecordId = outputSourceRecordId(output);
-      const producer = db.prepare("SELECT confidence_threshold_basis_points FROM enrichment_producer_versions WHERE producer_id = ? AND producer_version = ?").get(producerId, producerVersion) as { confidence_threshold_basis_points?: unknown } | undefined;
-      if (!producer) throw new Error(`Producer version ${producerId}@${producerVersion} is not declared.`);
-      const threshold = Number(producer.confidence_threshold_basis_points ?? 0);
-      const effective = effectiveOutput(output, threshold);
+    for (const admitted of admittedOutputs) {
+      const output = admitted.output;
+      const subject = subjects.get(normalizedCanonicalId(admitted.transactionId))!;
+      const route = admitted.route;
+      const origin = admitted.origin;
+      const evidenceKind = admitted.evidenceKind;
+      const sourceRecordId = admitted.sourceRecordId;
+      const effective = admitted.effective;
       const value = effective.value;
-      let retainedSourceValue: string | null = null;
-      if (effective.state === "supported" && value !== null && origin === "source")
-        retainedSourceValue = validateSourceEvidence(db, subject.id, output, sourceRecordId, value);
-      if (effective.state === "supported" && value !== null) validateOutputCompatibility(db, output, origin, value, evidenceKind, producerId, producerVersion);
-      if (effective.state === "supported" && output.field === "category") {
-        const kindOutput = outputs.find((candidate) => candidate.transactionId === output.transactionId && candidate.field === "kind");
-        const kindValue = kindOutput && kindOutput.state !== "unsupported" && kindOutput.value ? kindOutput.value : currentKindCode(db, subject.id);
-        if (!kindValue) throw new Error("A category cannot be captured without a transaction Kind.");
-        if (!isCategoryApplicable(value!, kindValue)) throw new Error(`Category ${value} is incompatible with Kind ${kindValue}.`);
-      }
+      const retainedSourceValue = admitted.retainedSourceValue;
       const provenance = {
         taxonomyId: TRANSACTION_TAXONOMY_ID,
         taxonomyVersion: TRANSACTION_TAXONOMY_VERSION,
@@ -619,17 +791,24 @@ function commitAutomaticEnrichmentRunOnce(
       if (!sameRouteAndValue)
         insertTransition.run(uuidV7(), assertionId, subject.id, output.field, runId, commitId, "observed");
       assertionIds.push(idToString(assertionId));
-      if (output.field === "counterparty_role" && output.counterparty) {
+      if (output.field === "counterparty_role") {
         const identity = output.counterparty;
-        const referenceId = uuidV7();
-        db.prepare(`INSERT INTO counterparty_references(reference_id, producer_namespace, producer_entity_key, display_name, legal_name, created_commit_id)
-          VALUES (?, ?, ?, ?, ?, ?)
-          ON CONFLICT(producer_namespace, producer_entity_key) DO UPDATE SET display_name = COALESCE(excluded.display_name, display_name), legal_name = COALESCE(excluded.legal_name, legal_name)`)
-          .run(referenceId, requireText(identity.producerNamespace, "Counterparty producer namespace"), requireText(identity.producerEntityKey, "Counterparty entity key"), identity.displayName ?? null, identity.legalName ?? null, commitId);
-        const persistedReference = db.prepare("SELECT reference_id FROM counterparty_references WHERE producer_namespace = ? AND producer_entity_key = ?").get(identity.producerNamespace, identity.producerEntityKey) as { reference_id?: unknown };
+        let referenceId: SQLInputValue = null;
+        let observedName: string | null = null;
+        let observedReference: string | null = null;
+        if (identity) {
+          db.prepare(`INSERT INTO counterparty_references(reference_id, producer_namespace, producer_entity_key, display_name, legal_name, created_commit_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(producer_namespace, producer_entity_key) DO UPDATE SET display_name = COALESCE(excluded.display_name, display_name), legal_name = COALESCE(excluded.legal_name, legal_name)`)
+            .run(uuidV7(), requireText(identity.producerNamespace, "Counterparty producer namespace"), requireText(identity.producerEntityKey, "Counterparty entity key"), identity.displayName ?? null, identity.legalName ?? null, commitId);
+          const persistedReference = db.prepare("SELECT reference_id FROM counterparty_references WHERE producer_namespace = ? AND producer_entity_key = ?").get(identity.producerNamespace, identity.producerEntityKey) as { reference_id?: unknown };
+          referenceId = sqliteValue(persistedReference.reference_id);
+          observedName = identity.displayName ?? null;
+          observedReference = identity.producerEntityKey;
+        }
         db.prepare(`INSERT INTO counterparty_participations(participation_id, transaction_id, assertion_id, reference_id, role_code, origin, observed_name, observed_reference, route_id, provenance_json, commit_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(uuidV7(), subject.id, assertionId, sqliteValue(persistedReference.reference_id), value, origin, identity.displayName ?? null, identity.producerEntityKey, route.route_id, JSON.stringify(provenance), commitId);
+          .run(uuidV7(), subject.id, assertionId, referenceId, value, origin, observedName, observedReference, route.route_id, JSON.stringify(provenance), commitId);
       }
     }
     createCanonicalProjectionRuntime(db).applyCommit({ commitId, kind: "derived_import" });
@@ -859,67 +1038,6 @@ function currentTransactionRows(
   });
 }
 
-/**
- * Select the financial transaction membership at a knowledge/financial dual
- * cutoff. This mirrors the canonical Runtime's historical transaction
- * selector and intentionally never depends on the current projection table.
- */
-function historicalTransactionRows(
-  db: DatabaseSync,
-  request: CanonicalEnrichmentQueryRequest,
-  knowledgeAt: number,
-): DbRow[] {
-  const financialAt = request.financialAt ?? "9999-12-31";
-  const scope = queryParametersForScope(request, "transaction_row", "account");
-  return db.prepare(`
-    SELECT transaction_row.transaction_id, revision.effective_on,
-           connection.integration_namespace, connection.source_connection_key,
-           account.stream
-      FROM financial_transactions transaction_row
-      JOIN financial_accounts account ON account.account_id = transaction_row.account_id
-      JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
-      JOIN transaction_revisions revision
-        ON revision.transaction_id = transaction_row.transaction_id
-      JOIN canonical_commits revision_commit
-        ON revision_commit.commit_id = revision.commit_id
-     WHERE revision_commit.commit_sequence <= ?
-       AND revision.effective_on <= ?
-       AND ${scope.clauses.join(" AND ")}
-       AND EXISTS (
-         SELECT 1
-           FROM assertions source_assertion
-          WHERE source_assertion.revision_id = revision.revision_id
-            AND source_assertion.origin = 'source'
-            AND COALESCE((
-              SELECT source_event.event_kind
-                FROM assertion_transitions source_event
-                JOIN canonical_commits source_event_commit
-                  ON source_event_commit.commit_id = source_event.commit_id
-               WHERE source_event.assertion_id = source_assertion.assertion_id
-                 AND source_event_commit.commit_sequence <= ?
-               ORDER BY source_event_commit.commit_sequence DESC, source_event.rowid DESC
-               LIMIT 1
-            ), 'observed') NOT IN ('withdrawn', 'superseded')
-       )
-       AND NOT EXISTS (
-         SELECT 1
-           FROM transaction_revisions newer
-           JOIN canonical_commits newer_commit
-             ON newer_commit.commit_id = newer.commit_id
-          WHERE newer.transaction_id = revision.transaction_id
-            AND newer_commit.commit_sequence <= ?
-            AND newer_commit.commit_sequence > revision_commit.commit_sequence
-       )
-     ORDER BY transaction_row.source_sequence, transaction_row.transaction_id
-  `).all(
-    knowledgeAt,
-    financialAt,
-    ...scope.parameters,
-    knowledgeAt,
-    knowledgeAt,
-  ) as DbRow[];
-}
-
 function transactionRows(
   db: DatabaseSync,
   request: CanonicalEnrichmentQueryRequest,
@@ -929,7 +1047,34 @@ function transactionRows(
   requireBoundedScope(request);
   if (mode === "current" || knowledgeAt === undefined)
     return currentTransactionRows(db, request);
-  return historicalTransactionRows(db, request, knowledgeAt);
+  if (!request.financialAt)
+    throw new Error("Historical enrichment queries require a financial date cutoff.");
+  const scope = {
+    ...(request.sourceConnectionKey ? { sourceConnectionKey: request.sourceConnectionKey } : {}),
+    ...(request.transactionIds ? { transactionIds: request.transactionIds } : {}),
+  };
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind: "historical",
+    families: ["transactions"],
+    scope,
+    cutoff: { financialAt: request.financialAt, knowledgeAt },
+  });
+  const streamIds = request.stream
+    ? new Set(
+      (db.prepare(`
+        SELECT transaction_row.transaction_id
+          FROM financial_transactions transaction_row
+          JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+         WHERE account.stream = ?
+      `).all(request.stream) as Array<Record<string, unknown>>)
+        .map((row) => idToString(blob(row.transaction_id))),
+    )
+    : null;
+  return projection.families.transactions.flatMap((row) => {
+    const transactionId = idToString(canonicalStoredId(row.transactionId, "Transaction ID"));
+    if (streamIds && !streamIds.has(transactionId)) return [];
+    return [{ transaction_id: canonicalStoredId(transactionId, "Transaction ID"), effective_on: row.effectiveOn }];
+  });
 }
 
 function currentTransaction(
@@ -1022,44 +1167,19 @@ function currentTransaction(
   };
 }
 
-function historicalRows(
+function historicalTransaction(
   db: DatabaseSync,
   transactionId: Uint8Array,
   cutoff: number,
-): DbRow[] {
-  return db.prepare(`
-    SELECT assertion.assertion_id, assertion.transaction_id, assertion.field_name,
-           assertion.value_text, assertion.origin, assertion.producer_id,
-           run.producer_version, output.route_id, output.provenance_json,
-           typed.taxonomy_id, typed.taxonomy_version, typed.taxonomy_dimension,
-           typed.taxonomy_code
-      FROM assertions assertion
-      JOIN enrichment_run_outputs output
-        ON output.assertion_id = assertion.assertion_id
-       AND output.output_state = 'supported'
-      JOIN canonical_commits output_commit ON output_commit.commit_id = output.commit_id
-      JOIN enrichment_runs run ON run.run_id = output.run_id
-      JOIN automatic_enrichment_authority_routes route ON route.route_id = output.route_id
-      LEFT JOIN enrichment_taxonomy_assertion_values typed ON typed.assertion_id = assertion.assertion_id
-      JOIN financial_transactions transaction_row ON transaction_row.transaction_id = assertion.transaction_id
-      JOIN financial_accounts account ON account.account_id = transaction_row.account_id
-      JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
-     WHERE assertion.transaction_id = ?
-       AND (SELECT commit_sequence FROM canonical_commits WHERE commit_id = assertion.created_commit_id) <= ?
-       AND output_commit.commit_sequence <= ?
-       AND route.valid_from_commit_sequence <= ?
-       AND (route.valid_to_commit_sequence IS NULL OR ? < route.valid_to_commit_sequence)
-       AND (route.scope_kind = 'global' OR (route.scope_kind = 'source_stream' AND route.scope_key = connection.integration_namespace || '/' || account.stream))
-       AND COALESCE((SELECT event_kind FROM assertion_transitions event JOIN canonical_commits c ON c.commit_id = event.commit_id WHERE event.assertion_id = assertion.assertion_id AND c.commit_sequence <= ? ORDER BY c.commit_sequence DESC, event.event_id DESC LIMIT 1), 'observed') NOT IN ('withdrawn','superseded')
-     ORDER BY output_commit.commit_sequence DESC, assertion.assertion_id DESC
-  `).all(transactionId, cutoff, cutoff, cutoff, cutoff, cutoff) as DbRow[];
-}
-
-function historicalTransaction(db: DatabaseSync, transactionId: Uint8Array, cutoff: number): CanonicalEnrichmentTransaction {
-  const rows = historicalRows(db, transactionId, cutoff);
-  const byField = new Map<string, DbRow>();
-  for (const row of rows) if (!byField.has(String(row.field_name))) byField.set(String(row.field_name), row);
-  const selectedRoleAssertion = byField.get("counterparty_role")?.assertion_id;
+  enrichmentRows: readonly CanonicalProjectionTransactionEnrichment[],
+): CanonicalEnrichmentTransaction {
+  const transactionKey = idToString(transactionId).replaceAll("-", "").toLowerCase();
+  const selectedRows = enrichmentRows.filter(
+    (row) => row.transactionId.replaceAll("-", "").toLowerCase() === transactionKey,
+  );
+  const byField = new Map<string, CanonicalProjectionTransactionEnrichment>();
+  for (const row of selectedRows) if (!byField.has(row.fieldName)) byField.set(row.fieldName, row);
+  const selectedRoleAssertion = byField.get("counterparty_role")?.assertionId;
   const counterparties = selectedRoleAssertion
     ? db.prepare(`
         WITH candidates AS (
@@ -1112,13 +1232,22 @@ function historicalTransaction(db: DatabaseSync, transactionId: Uint8Array, cuto
                taxonomyId, taxonomyVersion, taxonomyDimension, taxonomyCode,
                producerId, producerVersion
           FROM candidates WHERE rank = 1
-      `).all(transactionId, sqliteValue(selectedRoleAssertion), cutoff, cutoff, cutoff, cutoff, cutoff) as DbRow[]
+      `).all(transactionId, canonicalStoredId(selectedRoleAssertion, "Role assertion ID"), cutoff, cutoff, cutoff, cutoff, cutoff) as DbRow[]
     : [];
   return {
     transactionId: idToString(transactionId),
-    kind: resultFromRow(byField.get("kind")),
-    category: resultFromRow(byField.get("category")),
-    display: resultFromRow(byField.get("counterparty_display")),
+    kind: resultFromRuntimeRow(
+      byField.get("kind"),
+      outputProvenance(db, byField.get("kind")?.assertionId),
+    ),
+    category: resultFromRuntimeRow(
+      byField.get("category"),
+      outputProvenance(db, byField.get("category")?.assertionId),
+    ),
+    display: resultFromRuntimeRow(
+      byField.get("counterparty_display"),
+      outputProvenance(db, byField.get("counterparty_display")?.assertionId),
+    ),
     counterparties: counterparties.map((row) => ({
       role: String(row.role), observedName: row.observedName === null ? null : String(row.observedName), observedReference: row.observedReference === null ? null : String(row.observedReference), producerNamespace: row.producerNamespace === null ? null : String(row.producerNamespace), producerEntityKey: row.producerEntityKey === null ? null : String(row.producerEntityKey), origin: String(row.origin), routeId: String(row.routeId), assertionId: idToString(blob(row.assertionId)), taxonomyId: String(row.taxonomyId ?? TRANSACTION_TAXONOMY_ID), taxonomyVersion: String(row.taxonomyVersion ?? TRANSACTION_TAXONOMY_VERSION), taxonomyDimension: row.taxonomyDimension === null || row.taxonomyDimension === undefined ? null : String(row.taxonomyDimension), taxonomyCode: row.taxonomyCode === null || row.taxonomyCode === undefined ? String(row.role) : String(row.taxonomyCode), producerId: String(row.producerId ?? ""), producerVersion: String(row.producerVersion ?? ""), provenance: parseProvenance(row.provenanceJson),
     })),
@@ -1234,6 +1363,23 @@ function queryCurrent(db: DatabaseSync, request: CanonicalEnrichmentQueryRequest
   return { kind: "current", knowledgePoint, financialAt: request.financialAt ?? null, transactions: rows.map((row) => currentTransaction(db, blob(row.transaction_id))) };
 }
 
+function readHistoricalProjection(
+  db: DatabaseSync,
+  request: CanonicalEnrichmentQueryRequest,
+  knowledgeAt: number,
+) {
+  const scope = {
+    ...(request.sourceConnectionKey ? { sourceConnectionKey: request.sourceConnectionKey } : {}),
+    ...(request.transactionIds ? { transactionIds: request.transactionIds } : {}),
+  };
+  return createCanonicalProjectionRuntime(db).read({
+    kind: "historical",
+    families: ["transactions", "transaction-enrichment"],
+    scope,
+    cutoff: { financialAt: request.financialAt!, knowledgeAt },
+  });
+}
+
 function queryHistorical(db: DatabaseSync, request: CanonicalEnrichmentQueryRequest): CanonicalEnrichmentQueryResult {
   requireBoundedScope(request);
   if (!request.financialAt || !/^\d{4}-\d{2}-\d{2}$/u.test(request.financialAt))
@@ -1245,7 +1391,19 @@ function queryHistorical(db: DatabaseSync, request: CanonicalEnrichmentQueryRequ
   if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0 || knowledgeAt > latest)
     throw new Error("Historical enrichment knowledge cutoff is invalid.");
   const rows = transactionRows(db, request, "historical", knowledgeAt);
-  return { kind: "historical", knowledgePoint: knowledgeAt, financialAt: request.financialAt, transactions: rows.map((row) => historicalTransaction(db, blob(row.transaction_id), knowledgeAt)) };
+  const projection = readHistoricalProjection(db, request, knowledgeAt);
+  const enrichmentRows = projection.families["transaction-enrichment"];
+  return {
+    kind: "historical",
+    knowledgePoint: knowledgeAt,
+    financialAt: request.financialAt,
+    transactions: rows.map((row) => historicalTransaction(
+      db,
+      blob(row.transaction_id),
+      knowledgeAt,
+      enrichmentRows,
+    )),
+  };
 }
 
 export function createCanonicalEnrichmentQuery(ledgerDir: string) {
@@ -1267,13 +1425,17 @@ export function createCanonicalEnrichmentQuery(ledgerDir: string) {
           ? request
           : { ...request, financialAt: request.financialAt ?? "9999-12-31" };
         const rows = transactionRows(db, boundedRequest, "lineage", knowledgeAt);
+        const historicalProjection = request.knowledgeAt === undefined && request.financialAt === undefined
+          ? null
+          : readHistoricalProjection(db, boundedRequest, knowledgeAt);
+        const enrichmentRows = historicalProjection?.families["transaction-enrichment"] ?? [];
         return {
           kind: "lineage",
           knowledgePoint: knowledgeAt,
           financialAt: request.financialAt ?? null,
           transactions: rows.map((row) => request.knowledgeAt === undefined && request.financialAt === undefined
             ? currentTransaction(db, blob(row.transaction_id))
-            : historicalTransaction(db, blob(row.transaction_id), knowledgeAt)),
+            : historicalTransaction(db, blob(row.transaction_id), knowledgeAt, enrichmentRows)),
           lineage: lineageRows(db, boundedRequest, knowledgeAt),
         };
       });

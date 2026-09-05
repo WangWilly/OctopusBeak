@@ -22,6 +22,7 @@ import {
   commitCanonicalInvestmentCapture,
   createCanonicalInvestmentStore,
 } from "./investment-financial.ts";
+import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 
 const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
@@ -29,6 +30,7 @@ const token = (label: string) =>
 const ALL_PROJECTION_FAMILIES = [
   "transactions",
   "transaction-fields",
+  "transaction-enrichment",
   "loan-accounts",
   "loan-balances",
   "loan-relations",
@@ -500,6 +502,54 @@ test("historical reads require dual cutoffs and never use retired generations", 
       cutoff: { financialAt: "2025-01-01", knowledgeAt: 1 },
     });
     assert.equal(earlier.families.transactions?.length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("transaction enrichment is a Runtime family at current and historical cutoffs", async () => {
+  const { directory, runtime, scope } = await fixture();
+  try {
+    const db = openCanonicalDatabase(directory, { readOnly: true });
+    let captureSequence: number;
+    try {
+      captureSequence = Number((db.prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits").get() as { value?: unknown }).value);
+    } finally {
+      db.close();
+    }
+    const before = runtime.read({
+      kind: "historical",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { financialAt: "2026-12-31", knowledgeAt: captureSequence },
+    });
+    assert.equal(before.families["transaction-enrichment"].length, 0);
+    const committed = await commitCathayAutomaticEnrichmentFromDescriptions(directory);
+    const historical = runtime.read({
+      kind: "historical",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { financialAt: "2026-12-31", knowledgeAt: committed.commitSequence },
+    });
+    const enrichment = historical.families["transaction-enrichment"];
+    assert.equal(enrichment.length, 3);
+    assert.deepEqual(enrichment.map((row) => [row.fieldName, row.taxonomyId, row.taxonomyVersion, row.taxonomyCode]), [
+      ["kind", "transaction-taxonomy", "v1", "cash.deposit"],
+      ["kind", "transaction-taxonomy", "v1", "transfer.internal"],
+      ["kind", "transaction-taxonomy", "v1", "payment.credit_card"],
+    ]);
+    assert.equal(enrichment.every((row) => row.projectionCommitSequence === committed.commitSequence), true);
+    const current = runtime.read({ kind: "current", families: ["transaction-enrichment"], scope });
+    assert.deepEqual(
+      current.families["transaction-enrichment"].map((row) => [row.transactionId, row.fieldName, row.taxonomyCode]),
+      enrichment.map((row) => [row.transactionId, row.fieldName, row.taxonomyCode]),
+    );
+    assert.equal(runtime.read({
+      kind: "historical",
+      families: ["transaction-enrichment"],
+      scope,
+      cutoff: { financialAt: "2026-12-31", knowledgeAt: captureSequence },
+    }).families["transaction-enrichment"].length, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
