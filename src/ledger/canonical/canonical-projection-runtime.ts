@@ -941,45 +941,26 @@ function readFamily(
             AND EXISTS (
               SELECT 1
                 FROM assertions source_assertion
-                JOIN assertion_transitions source_event
-                  ON source_event.assertion_id = source_assertion.assertion_id
-                JOIN canonical_commits source_event_commit
-                  ON source_event_commit.commit_id = source_event.commit_id
                WHERE source_assertion.revision_id = revision.revision_id
                  AND source_assertion.origin = 'source'
-                 AND source_event_commit.commit_sequence <= ?
-                 AND source_event.event_kind <> 'withdrawn'
-                 AND (
-                   source_event.event_kind <> 'superseded'
-                   OR NOT EXISTS (
-                     SELECT 1
-                       FROM transaction_revisions superseding_revision
-                       JOIN canonical_commits superseding_commit
-                         ON superseding_commit.commit_id = superseding_revision.commit_id
-                      WHERE superseding_revision.transaction_id = revision.transaction_id
-                        AND superseding_commit.commit_sequence >= source_event_commit.commit_sequence
-                        AND superseding_commit.commit_sequence <= ?
-                        AND (? IS NULL OR superseding_revision.effective_on <= ?)
-                   )
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1
-                     FROM assertion_transitions newer_source_event
-                     JOIN canonical_commits newer_source_commit
-                       ON newer_source_commit.commit_id = newer_source_event.commit_id
-                    WHERE newer_source_event.assertion_id = source_event.assertion_id
-                      AND newer_source_commit.commit_sequence <= ?
-                      AND (newer_source_commit.commit_sequence > source_event_commit.commit_sequence
-                           OR (newer_source_commit.commit_sequence = source_event_commit.commit_sequence
-                               AND newer_source_event.rowid > source_event.rowid))
-                 )
+                 AND (SELECT commit_sequence FROM canonical_commits
+                       WHERE commit_id = source_assertion.created_commit_id) <= ?
+                 AND COALESCE((
+                   SELECT source_event.event_kind
+                     FROM assertion_transitions source_event
+                     JOIN canonical_commits source_event_commit
+                       ON source_event_commit.commit_id = source_event.commit_id
+                    WHERE source_event.assertion_id = source_assertion.assertion_id
+                      AND source_event_commit.commit_sequence <= ?
+                    ORDER BY source_event_commit.commit_sequence DESC, source_event.rowid DESC
+                    LIMIT 1
+                 ), 'observed') NOT IN ('withdrawn', 'superseded')
             )
             AND NOT EXISTS (
               SELECT 1 FROM transaction_revisions newer
               JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
               WHERE newer.transaction_id = revision.transaction_id
                 AND newer_commit.commit_sequence <= ?
-                AND (? IS NULL OR newer.effective_on <= ?)
                 AND newer_commit.commit_sequence > revision_commit.commit_sequence
             )
           ORDER BY revision.effective_on, transaction_row.transaction_id`,
@@ -994,12 +975,6 @@ function readFamily(
         financialAt,
         knowledgeAt,
         knowledgeAt,
-        financialAt,
-        financialAt,
-        knowledgeAt,
-        knowledgeAt,
-        financialAt,
-        financialAt,
       );
     }
     case "transaction-fields": {
@@ -1118,34 +1093,168 @@ function readFamily(
       );
     }
     case "transaction-enrichment": {
-      if (request.kind !== "current")
-        throw new Error(
-          "Historical transaction enrichment must be resolved from assertion lineage, not the current projection.",
+      if (request.kind === "current") {
+        if (generation === null) return [];
+        return rows(
+          db,
+          `SELECT current_row.transaction_id, current_row.field_name,
+                  current_row.assertion_id, current_row.value_text,
+                  current_row.origin, current_row.producer_id,
+                  current_row.producer_version, current_row.route_id,
+                  current_row.taxonomy_id, current_row.taxonomy_version,
+                  current_row.taxonomy_dimension, current_row.taxonomy_code,
+                  current_row.projection_commit_id,
+                  projection_commit.commit_sequence AS projection_commit_sequence
+             FROM current_transaction_enrichment current_row
+             JOIN canonical_commits projection_commit
+               ON projection_commit.commit_id = current_row.projection_commit_id
+             JOIN financial_transactions transaction_row
+               ON transaction_row.transaction_id = current_row.transaction_id
+             JOIN financial_accounts account
+               ON account.account_id = transaction_row.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE 1 = 1 ${scopedFilter("account")}${transactionFilter("current_row")}
+            ORDER BY current_row.transaction_id, current_row.field_name`,
+          ...scopedParameters(),
+          ...transactionParameters(),
         );
-      if (generation === null) return [];
+      }
       return rows(
         db,
-        `SELECT current_row.transaction_id, current_row.field_name,
-                current_row.assertion_id, current_row.value_text,
-                current_row.origin, current_row.producer_id,
-                current_row.producer_version, current_row.route_id,
-                current_row.taxonomy_id, current_row.taxonomy_version,
-                current_row.taxonomy_dimension, current_row.taxonomy_code,
-                current_row.projection_commit_id,
-                projection_commit.commit_sequence AS projection_commit_sequence
-           FROM current_transaction_enrichment current_row
-           JOIN canonical_commits projection_commit
-             ON projection_commit.commit_id = current_row.projection_commit_id
-           JOIN financial_transactions transaction_row
-             ON transaction_row.transaction_id = current_row.transaction_id
-           JOIN financial_accounts account
-             ON account.account_id = transaction_row.account_id
-           JOIN source_connections connection_scope
-             ON connection_scope.source_connection_id = account.source_connection_id
-          WHERE 1 = 1 ${scopedFilter("account")}${transactionFilter("current_row")}
-          ORDER BY current_row.transaction_id, current_row.field_name`,
+        `WITH eligible_transactions AS (
+           SELECT revision.transaction_id, revision.revision_id,
+                  revision.effective_on,
+                  account.account_id,
+                  connection_scope.integration_namespace,
+                  connection_scope.source_connection_key,
+                  account.stream,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY revision.transaction_id
+                    ORDER BY revision_commit.commit_sequence DESC, revision.rowid DESC
+                  ) AS selection_rank
+             FROM transaction_revisions revision
+             JOIN canonical_commits revision_commit
+               ON revision_commit.commit_id = revision.commit_id
+             JOIN financial_transactions transaction_row
+               ON transaction_row.transaction_id = revision.transaction_id
+             JOIN financial_accounts account
+               ON account.account_id = transaction_row.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE revision_commit.commit_sequence <= ?
+              AND revision.effective_on <= ?
+              AND (? IS NULL OR revision.effective_on >= ?)
+              AND (? IS NULL OR revision.effective_on <= ?)
+              ${scopedFilter("account")}${transactionFilter("revision")}
+              AND EXISTS (
+                SELECT 1
+                  FROM assertions source_assertion
+                 WHERE source_assertion.revision_id = revision.revision_id
+                   AND source_assertion.origin = 'source'
+                   AND (SELECT commit_sequence FROM canonical_commits
+                         WHERE commit_id = source_assertion.created_commit_id) <= ?
+                   AND COALESCE((
+                     SELECT source_event.event_kind
+                       FROM assertion_transitions source_event
+                       JOIN canonical_commits source_event_commit
+                         ON source_event_commit.commit_id = source_event.commit_id
+                      WHERE source_event.assertion_id = source_assertion.assertion_id
+                        AND source_event_commit.commit_sequence <= ?
+                      ORDER BY source_event_commit.commit_sequence DESC, source_event.rowid DESC
+                      LIMIT 1
+                   ), 'observed') NOT IN ('withdrawn', 'superseded')
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM transaction_revisions newer
+                  JOIN canonical_commits newer_commit
+                    ON newer_commit.commit_id = newer.commit_id
+                 WHERE newer.transaction_id = revision.transaction_id
+                   AND newer_commit.commit_sequence <= ?
+                   AND newer_commit.commit_sequence > revision_commit.commit_sequence
+              )
+         ), output_candidates AS (
+           SELECT assertion.transaction_id, assertion.field_name,
+                  assertion.assertion_id, assertion.value_text,
+                  assertion.origin, run.producer_id,
+                  run.producer_version, output.route_id,
+                  typed.taxonomy_id, typed.taxonomy_version,
+                  typed.taxonomy_dimension, typed.taxonomy_code,
+                  output.commit_id AS projection_commit_id,
+                  output_commit.commit_sequence AS projection_commit_sequence,
+                  output.provenance_json,
+                  output.rowid AS output_rowid,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY output.assertion_id
+                    ORDER BY output_commit.commit_sequence DESC, output.rowid DESC
+                  ) AS output_rank
+             FROM assertions assertion
+             JOIN enrichment_run_outputs output
+               ON output.assertion_id = assertion.assertion_id
+              AND output.output_state = 'supported'
+             JOIN canonical_commits output_commit
+               ON output_commit.commit_id = output.commit_id
+             JOIN enrichment_runs run ON run.run_id = output.run_id
+             JOIN automatic_enrichment_authority_routes route
+               ON route.route_id = output.route_id
+             JOIN eligible_transactions eligible
+               ON eligible.transaction_id = assertion.transaction_id
+              AND eligible.selection_rank = 1
+             LEFT JOIN enrichment_taxonomy_assertion_values typed
+               ON typed.assertion_id = assertion.assertion_id
+            WHERE (SELECT commit_sequence FROM canonical_commits
+                    WHERE commit_id = assertion.created_commit_id) <= ?
+              AND output_commit.commit_sequence <= ?
+              AND route.valid_from_commit_sequence <= ?
+              AND (route.valid_to_commit_sequence IS NULL OR ? < route.valid_to_commit_sequence)
+              AND (route.scope_kind = 'global' OR
+                   (route.scope_kind = 'source_stream' AND
+                    route.scope_key = eligible.integration_namespace || '/' || eligible.stream))
+         ), field_candidates AS (
+           SELECT candidate.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY candidate.transaction_id, candidate.field_name
+                    ORDER BY candidate.projection_commit_sequence DESC,
+                             candidate.output_rowid DESC
+                  ) AS field_rank
+             FROM output_candidates candidate
+            WHERE candidate.output_rank = 1
+              AND COALESCE((
+                SELECT event.event_kind
+                  FROM assertion_transitions event
+                  JOIN canonical_commits event_commit
+                    ON event_commit.commit_id = event.commit_id
+                 WHERE event.assertion_id = candidate.assertion_id
+                   AND event_commit.commit_sequence <= ?
+                 ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+                 LIMIT 1
+              ), 'observed') NOT IN ('withdrawn', 'superseded')
+         )
+         SELECT transaction_id, field_name, assertion_id, value_text,
+                origin, producer_id, producer_version, route_id,
+                taxonomy_id, taxonomy_version, taxonomy_dimension,
+                taxonomy_code, projection_commit_id,
+                projection_commit_sequence
+           FROM field_candidates
+          WHERE field_rank = 1
+          ORDER BY transaction_id, field_name`,
+        knowledgeAt,
+        financialAt,
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
         ...scopedParameters(),
         ...transactionParameters(),
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
       );
     }
     case "loan-accounts":

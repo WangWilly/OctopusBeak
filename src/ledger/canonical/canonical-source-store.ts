@@ -3579,6 +3579,40 @@ export function queryCanonicalSourceLineage(
 
 // The typed taxonomy/enrichment writer and query are shared by every provider;
 // retain this module as the stable canonical import surface.
-export * from "./transaction-taxonomy.ts";
+// Keep the repository package visible to source-store consumers without
+// exporting lifecycle-owned physical schema or seed helpers through this
+// provider facade.
+export {
+  CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+  CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+  CATHAY_AUTOMATIC_ENRICHMENT_ROUTE_SCOPE,
+  CANONICAL_TAXONOMY_PACKAGE,
+  COUNTERPARTY_ROLES,
+  PERSONAL_CATEGORIES,
+  TRANSACTION_KINDS,
+  TRANSACTION_TAXONOMY_ID,
+  TRANSACTION_TAXONOMY_LOCALES,
+  TRANSACTION_TAXONOMY_PACKAGE_V1,
+  TRANSACTION_TAXONOMY_VERSION,
+  assertValidTaxonomyPackage,
+  isCategoryApplicable,
+  isTaxonomyCode,
+  producerAllowsOutput,
+  taxonomyDefinitionsForField,
+  taxonomyDimensionForField,
+  taxonomyPackageHash,
+  validateTaxonomyPackage,
+} from "./transaction-taxonomy.ts";
+export type {
+  AutomaticEnrichmentRouteDefinition,
+  EnrichmentField,
+  ProducerCompatibility,
+  TaxonomyApplicability,
+  TaxonomyDefinition,
+  TaxonomyDimension,
+  TaxonomyFixture,
+  TaxonomyOrigin,
+  TransactionTaxonomyPackage,
+} from "./transaction-taxonomy.ts";
 export * from "./canonical-enrichment.ts";
 export * from "./cathay-automatic-enrichment.ts";
