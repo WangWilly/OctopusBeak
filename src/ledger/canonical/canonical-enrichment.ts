@@ -935,12 +935,33 @@ function resultFromRuntimeRow(
   };
 }
 
-function outputProvenance(db: DatabaseSync, assertionId: unknown): Readonly<Record<string, unknown>> {
+function outputProvenance(
+  db: DatabaseSync,
+  assertionId: unknown,
+  knowledgeAt?: number,
+): Readonly<Record<string, unknown>> {
   const parameter =
     typeof assertionId === "string"
       ? canonicalStoredId(assertionId, "Assertion ID")
       : sqliteValue(assertionId);
-  const row = db.prepare(`SELECT provenance_json FROM enrichment_run_outputs WHERE assertion_id = ? ORDER BY rowid DESC LIMIT 1`).get(parameter) as { provenance_json?: unknown } | undefined;
+  const row = knowledgeAt === undefined
+    ? db.prepare(`
+        SELECT provenance_json
+          FROM enrichment_run_outputs
+         WHERE assertion_id = ?
+         ORDER BY rowid DESC
+         LIMIT 1
+      `).get(parameter) as { provenance_json?: unknown } | undefined
+    : db.prepare(`
+        SELECT output.provenance_json
+          FROM enrichment_run_outputs output
+          JOIN canonical_commits output_commit
+            ON output_commit.commit_id = output.commit_id
+         WHERE output.assertion_id = ?
+           AND output_commit.commit_sequence <= ?
+         ORDER BY output_commit.commit_sequence DESC, output.rowid DESC
+         LIMIT 1
+      `).get(parameter, knowledgeAt) as { provenance_json?: unknown } | undefined;
   return parseProvenance(row?.provenance_json);
 }
 
@@ -1238,15 +1259,15 @@ function historicalTransaction(
     transactionId: idToString(transactionId),
     kind: resultFromRuntimeRow(
       byField.get("kind"),
-      outputProvenance(db, byField.get("kind")?.assertionId),
+      outputProvenance(db, byField.get("kind")?.assertionId, cutoff),
     ),
     category: resultFromRuntimeRow(
       byField.get("category"),
-      outputProvenance(db, byField.get("category")?.assertionId),
+      outputProvenance(db, byField.get("category")?.assertionId, cutoff),
     ),
     display: resultFromRuntimeRow(
       byField.get("counterparty_display"),
-      outputProvenance(db, byField.get("counterparty_display")?.assertionId),
+      outputProvenance(db, byField.get("counterparty_display")?.assertionId, cutoff),
     ),
     counterparties: counterparties.map((row) => ({
       role: String(row.role), observedName: row.observedName === null ? null : String(row.observedName), observedReference: row.observedReference === null ? null : String(row.observedReference), producerNamespace: row.producerNamespace === null ? null : String(row.producerNamespace), producerEntityKey: row.producerEntityKey === null ? null : String(row.producerEntityKey), origin: String(row.origin), routeId: String(row.routeId), assertionId: idToString(blob(row.assertionId)), taxonomyId: String(row.taxonomyId ?? TRANSACTION_TAXONOMY_ID), taxonomyVersion: String(row.taxonomyVersion ?? TRANSACTION_TAXONOMY_VERSION), taxonomyDimension: row.taxonomyDimension === null || row.taxonomyDimension === undefined ? null : String(row.taxonomyDimension), taxonomyCode: row.taxonomyCode === null || row.taxonomyCode === undefined ? String(row.role) : String(row.taxonomyCode), producerId: String(row.producerId ?? ""), producerVersion: String(row.producerVersion ?? ""), provenance: parseProvenance(row.provenanceJson),
