@@ -99,6 +99,33 @@ type NormalizedComponent = Readonly<{
   }> | null;
 }>;
 
+const CATEGORIZATION_INPUT_KEYS = new Set([
+  "transactionId",
+  "subject",
+  "mode",
+  "categoryCode",
+  "category",
+  "allocation",
+  "components",
+  "userId",
+  "observedAt",
+]);
+const ALLOCATION_COMPONENT_KEYS = new Set([
+  "categoryCode",
+  "amount",
+  "coefficient",
+  "scale",
+  "currency",
+  "conversion",
+]);
+const CONVERSION_INPUT_KEYS = new Set([
+  "fromCurrency",
+  "toCurrency",
+  "convertedAmount",
+  "evidenceKind",
+  "evidenceId",
+]);
+
 function requireText(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(label + " is required.");
@@ -210,13 +237,31 @@ function normalizeComponent(
 ): NormalizedComponent {
   if (!raw || typeof raw !== "object")
     throw new Error("Allocation component is invalid.");
+  for (const key of Object.keys(raw as object))
+    if (!ALLOCATION_COMPONENT_KEYS.has(key))
+      throw new Error(`Allocation component contains an unknown field: ${key}.`);
   const categoryCode = requireText(raw.categoryCode, "Allocation category");
   const fallback = raw as unknown as Record<string, unknown>;
+  const scalarAmountKeys = ["coefficient", "scale", "currency"] as const;
+  const hasScalarAmount = scalarAmountKeys.some(
+    (key) => fallback[key] !== undefined,
+  );
+  if (fallback.amount !== undefined && hasScalarAmount)
+    throw new Error("Allocation amount aliases conflict.");
+  if (fallback.amount === undefined && !hasScalarAmount)
+    throw new Error("Allocation amount is required.");
+  if (
+    fallback.amount === undefined &&
+    scalarAmountKeys.some((key) => fallback[key] === undefined)
+  )
+    throw new Error("Allocation amount aliases are incomplete.");
   const amount = amountValue(raw.amount, "Allocation amount", fallback);
   const conversionRaw =
     raw.conversion && typeof raw.conversion === "object"
       ? raw.conversion
       : null;
+  if (raw.conversion !== undefined && conversionRaw === null)
+    throw new Error("Allocation conversion is invalid.");
   if (!conversionRaw) {
     if (amount.currency !== bookedCurrency)
       throw new Error(
@@ -231,6 +276,9 @@ function normalizeComponent(
       conversion: null,
     };
   }
+  for (const key of Object.keys(conversionRaw as object))
+    if (!CONVERSION_INPUT_KEYS.has(key))
+      throw new Error(`Conversion evidence contains an unknown field: ${key}.`);
   const fromCurrency = currency(
     conversionRaw.fromCurrency,
     "Conversion fromCurrency",
@@ -335,27 +383,48 @@ function currentTransaction(
   db: DatabaseSync,
   transactionId: CanonicalId,
 ): Record<string, unknown> {
-  const row = db
+  const transactionKey = Buffer.from(transactionId).toString("hex");
+  const snapshot = createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment"],
+    scope: { transactionIds: [transactionKey] },
+  });
+  const transaction = snapshot.families.transactions.find(
+    (row) => row.transactionId === transactionKey,
+  );
+  if (!transaction)
+    throw new Error("Categorization targets an unknown current transaction.");
+  const kind = snapshot.families["transaction-enrichment"].find(
+    (row) =>
+      row.transactionId === transactionKey && row.fieldName === "kind",
+  );
+  const revisionId = Buffer.from(transaction.revisionId, "hex");
+  const immutable = db
     .prepare(
-      "SELECT current_row.revision_id, revision.amount_coefficient, revision.amount_scale, " +
-        "revision.currency, revision.effective_on, revision.direction, revision.posting_status, " +
-        "revision.economic_status, revision.administrative_state, " +
-        "kind.taxonomy_code AS kind_code " +
-        "FROM current_transactions current_row " +
-        "JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id " +
-        "LEFT JOIN current_transaction_enrichment kind " +
-        "ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind' " +
-        "WHERE current_row.transaction_id = ?",
+      `SELECT revision_id, amount_coefficient, amount_scale, currency,
+              effective_on, direction, posting_status, economic_status,
+              administrative_state
+         FROM transaction_revisions
+        WHERE transaction_id = ? AND revision_id = ?`,
     )
-    .get(transactionId) as Record<string, unknown> | undefined;
-  if (!row) throw new Error("Categorization targets an unknown current transaction.");
-  return row;
+    .get(transactionId, revisionId) as Record<string, unknown> | undefined;
+  if (!immutable)
+    throw new Error("Categorization selected revision is not an immutable admission fact.");
+  return { ...immutable, kind_code: kind?.taxonomyCode ?? null };
 }
 
 function categoryCodeInput(
   input: CanonicalUserCategorizationInput,
 ): string | null | undefined {
-  return input.categoryCode !== undefined ? input.categoryCode : input.category;
+  const hasCode = input.categoryCode !== undefined;
+  const hasAlias = input.category !== undefined;
+  if (hasCode && hasAlias) {
+    const left = input.categoryCode;
+    const right = input.category;
+    if (left !== right)
+      throw new Error("Categorization category aliases conflict.");
+  }
+  return hasCode ? input.categoryCode : input.category;
 }
 
 function validateObservedAt(value: string | undefined): void {
@@ -390,16 +459,38 @@ function normalizeAction(
   categoryCode: string | null;
   components: readonly NormalizedComponent[];
 } {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Categorization input is invalid.");
+  for (const key of Object.keys(input as object))
+    if (!CATEGORIZATION_INPUT_KEYS.has(key))
+      throw new Error(`Categorization input contains an unknown field: ${key}.`);
   const category = categoryCodeInput(input);
-  const allocation = input.allocation ?? input.components;
+  const hasAllocationAlias = input.allocation !== undefined;
+  const hasComponentsAlias = input.components !== undefined;
+  if (hasAllocationAlias && hasComponentsAlias)
+    throw new Error("Categorization allocation aliases conflict.");
+  const allocation = hasAllocationAlias ? input.allocation : input.components;
   const hasAllocation = allocation !== undefined;
   if (hasAllocation && !Array.isArray(allocation))
     throw new Error("Categorization allocation must be an array.");
-  if (input.mode === "clear" || category === null) {
-    if (hasAllocation && allocation.length !== 0)
+  if (input.mode === "clear") {
+    if (category !== undefined && category !== null)
+      throw new Error("Clear categorization cannot include a category.");
+    if (hasAllocation)
       throw new Error("Clear categorization cannot include allocation components.");
     return { mode: "clear", categoryCode: null, components: [] };
   }
+  if (category === null) {
+    if (input.mode !== undefined)
+      throw new Error("Categorization mode conflicts with a null category.");
+    if (hasAllocation)
+      throw new Error("Clearing categorization cannot include allocation components.");
+    return { mode: "clear", categoryCode: null, components: [] };
+  }
+  if (input.mode === "single" && hasAllocation)
+    throw new Error("Single categorization cannot include allocation components.");
+  if (input.mode === "allocated" && category !== undefined)
+    throw new Error("Allocated categorization cannot include one category.");
   if (hasAllocation || input.mode === "allocated") {
     if (category !== undefined)
       throw new Error("Allocated categorization cannot include one category.");
@@ -440,32 +531,115 @@ function validateAllocation(
     throw new Error("Category allocation does not exactly reconcile to booked amount.");
 }
 
+function equalRatio(
+  leftNumerator: Decimal,
+  leftDenominator: Decimal,
+  rightNumerator: Decimal,
+  rightDenominator: Decimal,
+): boolean {
+  const leftScale = leftNumerator.scale + rightDenominator.scale;
+  const rightScale = rightNumerator.scale + leftDenominator.scale;
+  const left =
+    leftNumerator.coefficient * rightDenominator.coefficient *
+    10n ** BigInt(Math.max(0, rightScale - leftScale));
+  const right =
+    rightNumerator.coefficient * leftDenominator.coefficient *
+    10n ** BigInt(Math.max(0, leftScale - rightScale));
+  return left === right;
+}
+
 function validateConversionEvidence(
   db: DatabaseSync,
   transactionId: CanonicalId,
+  transaction: Record<string, unknown>,
   components: readonly NormalizedComponent[],
-): void {
+): ReadonlyMap<string, CanonicalId> {
+  const conversionIds = new Map<string, CanonicalId>();
+  const revisionId = transaction.revision_id;
+  if (!(revisionId instanceof Uint8Array))
+    throw new Error("Categorization current revision evidence is missing.");
+  const booked = exactFromRow(transaction, "amount_coefficient", "amount_scale");
+  const bookedCurrency = currency(transaction.currency, "Booked currency");
+  const revision = db
+    .prepare(
+      `SELECT revision.capture_id, revision.source_record_id,
+              conversion.conversion_id, conversion.source_record_id AS conversion_source_record_id,
+              conversion.capture_id AS conversion_capture_id,
+              conversion.revision_id AS conversion_revision_id,
+              conversion.original_amount_coefficient, conversion.original_amount_scale,
+              conversion.original_currency, conversion.booked_amount_coefficient,
+              conversion.booked_amount_scale, conversion.booked_currency,
+              conversion.comparison
+         FROM transaction_revisions revision
+         LEFT JOIN transaction_conversion_evidence conversion
+           ON conversion.transaction_id = revision.transaction_id
+          AND conversion.revision_id = revision.revision_id
+        WHERE revision.transaction_id = ? AND revision.revision_id = ?`,
+    )
+    .get(transactionId, revisionId) as Record<string, unknown> | undefined;
+  if (!revision)
+    throw new Error("Categorization current revision evidence is missing.");
   for (const component of components) {
     const conversion = component.conversion;
     if (!conversion) continue;
     const evidenceId = requireId(conversion.id, "Conversion evidence ID");
-    const retained =
-      conversion.kind === "source_record"
-        ? db
-            .prepare(
-              "SELECT 1 FROM transaction_revisions WHERE transaction_id = ? AND source_record_id = ?",
-            )
-            .get(transactionId, evidenceId)
-        : db
-            .prepare(
-              "SELECT 1 FROM transaction_revisions WHERE transaction_id = ? AND revision_id = ?",
-            )
-            .get(transactionId, evidenceId);
-    if (!retained)
+    const matchingEvidence =
+      revision.conversion_id instanceof Uint8Array &&
+      ((conversion.kind === "source_record" &&
+        revision.conversion_source_record_id instanceof Uint8Array &&
+        Buffer.from(revision.conversion_source_record_id).equals(evidenceId)) ||
+        (conversion.kind === "transaction_revision" &&
+          revision.conversion_revision_id instanceof Uint8Array &&
+          Buffer.from(revision.conversion_revision_id).equals(revisionId)))
+        ? revision
+        : null;
+    if (!matchingEvidence)
       throw new Error(
-        "Conversion evidence must reference a retained revision or source record for the transaction.",
+        "Conversion evidence must reference a typed fact for the current transaction revision.",
       );
+    if (
+      !(revision.capture_id instanceof Uint8Array) ||
+      !(revision.conversion_capture_id instanceof Uint8Array) ||
+      !Buffer.from(revision.capture_id).equals(revision.conversion_capture_id)
+    )
+      throw new Error("Conversion evidence is not bound to the current capture.");
+    if (revision.original_amount_coefficient === null || revision.original_amount_scale === null)
+      throw new Error("Conversion evidence does not prove the original amount.");
+    const original = exactFromRow(
+      revision,
+      "original_amount_coefficient",
+      "original_amount_scale",
+    );
+    const originalCurrency = currency(
+      revision.original_currency,
+      "Conversion evidence original currency",
+    );
+    const evidenceBooked = exactFromRow(
+      revision,
+      "booked_amount_coefficient",
+      "booked_amount_scale",
+    );
+    const evidenceBookedCurrency = currency(
+      revision.booked_currency,
+      "Conversion evidence booked currency",
+    );
+    if (
+      !equalDecimal(evidenceBooked, booked) ||
+      evidenceBookedCurrency !== bookedCurrency ||
+      originalCurrency !== component.amountCurrency ||
+      evidenceBookedCurrency !== component.bookedCurrency ||
+      revision.comparison === "conflicted"
+    )
+      throw new Error("Conversion evidence does not prove the current booked conversion.");
+    if (
+      !equalRatio(component.amount, original, component.booked, evidenceBooked)
+    )
+      throw new Error(
+        "Allocation conversion must exactly cross-multiply against the retained conversion evidence.",
+      );
+    conversionIds.set(component.categoryCode, blob(revision.conversion_id));
   }
+  return conversionIds;
 }
 
 function insertUserAssertion(
@@ -476,6 +650,7 @@ function insertUserAssertion(
     userId: string;
     action: ReturnType<typeof normalizeAction>;
     transaction: Record<string, unknown>;
+    conversionIds: ReadonlyMap<string, CanonicalId>;
     prior: readonly {
       assertion_id: Uint8Array;
       producer_id: string;
@@ -561,8 +736,8 @@ function insertUserAssertion(
     "INSERT INTO category_allocation_components(" +
       "allocation_set_id, component_ordinal, taxonomy_id, taxonomy_version, taxonomy_dimension, category_code, " +
       "amount_coefficient, amount_scale, amount_currency, booked_coefficient, booked_scale, booked_currency, " +
-      "conversion_evidence_kind, conversion_evidence_id, conversion_from_currency, conversion_to_currency, conversion_evidence_json) " +
-      "VALUES (?, ?, ?, ?, 'category', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "conversion_evidence_kind, conversion_evidence_id, conversion_from_currency, conversion_to_currency, conversion_evidence_json, conversion_id) " +
+      "VALUES (?, ?, ?, ?, 'category', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   values.action.components.forEach((component, index) => {
     const amount = storedDecimal(component.amount);
@@ -584,6 +759,9 @@ function insertUserAssertion(
       component.conversion?.fromCurrency ?? null,
       component.conversion?.toCurrency ?? null,
       component.conversion?.json ?? null,
+      component.conversion
+        ? values.conversionIds.get(component.categoryCode) ?? null
+        : null,
     );
   });
   db.prepare(
@@ -618,9 +796,15 @@ function commitCanonicalUserCategorizationOnce(
     const booked = exactFromRow(transaction, "amount_coefficient", "amount_scale");
     const bookedCurrency = currency(transaction.currency, "Booked currency");
     const action = normalizeAction(input, bookedCurrency, transaction.kind_code);
+    let conversionIds: ReadonlyMap<string, CanonicalId> = new Map();
     if (action.mode === "allocated") {
       validateAllocation(action.components, booked, bookedCurrency);
-      validateConversionEvidence(db, transactionId, action.components);
+      conversionIds = validateConversionEvidence(
+        db,
+        transactionId,
+        transaction,
+        action.components,
+      );
     }
     const prior = latestUserCategoryAssertions(db, transactionId);
     if (action.mode === "clear" && !prior.length)
@@ -646,6 +830,7 @@ function commitCanonicalUserCategorizationOnce(
       userId,
       action,
       transaction,
+      conversionIds,
       prior,
     });
     createCanonicalProjectionRuntime(db).applyCommit({
@@ -720,6 +905,12 @@ export type CanonicalSpendingExactTotal = Readonly<{
 
 export type CanonicalSpendingCategoryComponent = Readonly<{
   categoryCode: string;
+  origin: "user";
+  assertionId: string;
+  provenance: Readonly<{
+    projectionCommitId: string | null;
+    projectionCommitSequence: number;
+  }>;
   taxonomyId: string;
   taxonomyVersion: string;
   coefficient: string;
@@ -793,6 +984,56 @@ export type CanonicalSpendingReport = Readonly<{
   }>;
   totalStatus: "complete" | "incomplete";
 }>;
+
+export type CanonicalSpendingLineageEvent = Readonly<{
+  eventId: string;
+  eventKind: string;
+  commitId: string;
+  commitSequence: number;
+  userId: string | null;
+}>;
+
+export type CanonicalSpendingLineageProvenance = Readonly<{
+  sourceRecordId: string | null;
+  runId: string | null;
+  enrichmentRunId: string | null;
+  coordinateId: string | null;
+  commitId: string;
+  commitSequence: number;
+}>;
+
+export type CanonicalSpendingLineageAssertion = Readonly<{
+  assertionId: string;
+  origin: "source" | "derived" | "user";
+  producerId: string;
+  ruleLineage: string;
+  value: string | null;
+  lifecycle: "selected" | "withdrawn" | "superseded" | "observed";
+  taxonomyId: string | null;
+  taxonomyVersion: string | null;
+  categoryCode: string | null;
+  events: readonly CanonicalSpendingLineageEvent[];
+  provenance: readonly CanonicalSpendingLineageProvenance[];
+}>;
+
+export type CanonicalSpendingLineageEntry = Readonly<{
+  transactionId: string;
+  revisionId: string;
+  selectedAssertionId: string | null;
+  selectedOrigin: "source" | "derived" | "user" | null;
+  selectedTaxonomyId: string | null;
+  selectedTaxonomyVersion: string | null;
+  selectedCategoryCode: string | null;
+  assertions: readonly CanonicalSpendingLineageAssertion[];
+}>;
+
+export type CanonicalSpendingLineageResult = Readonly<
+  Omit<CanonicalSpendingReport, "kind"> & {
+    kind: "lineage";
+    report: CanonicalSpendingReport;
+    lineage: readonly CanonicalSpendingLineageEntry[];
+  }
+>;
 
 const EXCLUDED_KIND_PREFIXES = [
   "transfer",
@@ -918,6 +1159,12 @@ function selectedUserCategorization(
     total = addDecimal(total, componentAmount);
     components.push({
       categoryCode: row.categoryCode,
+      origin: row.origin,
+      assertionId: row.assertionId,
+      provenance: {
+        projectionCommitId: row.projectionCommitId,
+        projectionCommitSequence: row.projectionCommitSequence,
+      },
       taxonomyId: row.taxonomyId,
       taxonomyVersion: row.taxonomyVersion,
       coefficient: storedDecimal(componentAmount).coefficient,
@@ -1263,10 +1510,149 @@ function spendingSnapshot(
   return reportForSnapshot(projection as RuntimeSpendingSnapshot);
 }
 
+function lineageId(value: unknown): string | null {
+  return value instanceof Uint8Array ? idToString(blob(value)) : null;
+}
+
+function spendingLineage(
+  db: DatabaseSync,
+  report: CanonicalSpendingReport,
+): CanonicalSpendingLineageResult {
+  const entries = report.transactions.map((transaction) => {
+    const transactionId = Buffer.from(
+      transaction.transactionId.replaceAll("-", ""),
+      "hex",
+    );
+    const assertionRows = db
+      .prepare(
+        `SELECT assertion_id, origin, producer_id, rule_lineage, value_text
+           FROM assertions
+          WHERE transaction_id = ? AND field_name = 'category'
+            AND (SELECT commit_sequence FROM canonical_commits
+                  WHERE commit_id = assertions.created_commit_id) <= ?
+          ORDER BY assertion_id`,
+      )
+      .all(transactionId, report.knowledgePoint) as Array<Record<string, unknown>>;
+    const assertions = assertionRows.map((assertion) => {
+      const assertionId = blob(assertion.assertion_id);
+      const events = db
+        .prepare(
+          `SELECT event.event_id, event.event_kind, event.user_id,
+                  event.commit_id, commit_row.commit_sequence
+             FROM assertion_transitions event
+             JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+            WHERE event.assertion_id = ? AND commit_row.commit_sequence <= ?
+            ORDER BY commit_row.commit_sequence, event.rowid`,
+        )
+        .all(assertionId, report.knowledgePoint) as Array<Record<string, unknown>>;
+      const provenance = db
+        .prepare(
+          `SELECT provenance.source_record_id, provenance.run_id,
+                  provenance.enrichment_run_id, provenance.coordinate_id,
+                  provenance.commit_id, commit_row.commit_sequence
+             FROM assertion_provenance provenance
+             JOIN canonical_commits commit_row ON commit_row.commit_id = provenance.commit_id
+            WHERE provenance.assertion_id = ? AND commit_row.commit_sequence <= ?
+            ORDER BY commit_row.commit_sequence, provenance.commit_id`,
+        )
+        .all(assertionId, report.knowledgePoint) as Array<Record<string, unknown>>;
+      const latest = events.at(-1);
+      const typed = db
+        .prepare(
+          `SELECT value.taxonomy_id, value.taxonomy_version,
+                  value.category_code, value.mode
+             FROM transaction_categorization_values value
+            WHERE value.assertion_id = ? AND value.transaction_id = ?`,
+        )
+        .get(assertionId, transactionId) as Record<string, unknown> | undefined;
+      const automatic = db
+        .prepare(
+          `SELECT typed.taxonomy_id, typed.taxonomy_version,
+                  typed.taxonomy_code AS category_code
+             FROM enrichment_taxonomy_assertion_values typed
+            WHERE typed.assertion_id = ? AND typed.field_name = 'category'`,
+        )
+        .get(assertionId) as Record<string, unknown> | undefined;
+      return {
+        assertionId: idToString(assertionId),
+        origin: String(assertion.origin) as "source" | "derived" | "user",
+        producerId: String(assertion.producer_id),
+        ruleLineage: String(assertion.rule_lineage),
+        value: assertion.value_text == null ? null : String(assertion.value_text),
+        lifecycle: (latest?.event_kind
+          ? String(latest.event_kind)
+          : "observed") as "selected" | "withdrawn" | "superseded" | "observed",
+        taxonomyId:
+          typed?.taxonomy_id == null
+            ? automatic?.taxonomy_id == null
+              ? null
+              : String(automatic.taxonomy_id)
+            : String(typed.taxonomy_id),
+        taxonomyVersion:
+          typed?.taxonomy_version == null
+            ? automatic?.taxonomy_version == null
+              ? null
+              : String(automatic.taxonomy_version)
+            : String(typed.taxonomy_version),
+        categoryCode:
+          typed?.category_code == null
+            ? automatic?.category_code == null
+              ? assertion.value_text == null
+                ? null
+                : String(assertion.value_text)
+              : String(automatic.category_code)
+            : String(typed.category_code),
+        events: events.map((event) => ({
+          eventId: idToString(blob(event.event_id)),
+          eventKind: String(event.event_kind),
+          commitId: idToString(blob(event.commit_id)),
+          commitSequence: Number(event.commit_sequence),
+          userId: event.user_id == null ? null : String(event.user_id),
+        })),
+        provenance: provenance.map((row) => ({
+          sourceRecordId: lineageId(row.source_record_id),
+          runId: lineageId(row.run_id),
+          enrichmentRunId: lineageId(row.enrichment_run_id),
+          coordinateId: lineageId(row.coordinate_id),
+          commitId: idToString(blob(row.commit_id)),
+          commitSequence: Number(row.commit_sequence),
+        })),
+      } satisfies CanonicalSpendingLineageAssertion;
+    });
+    const selectedAssertionId = transaction.categorization.assertionId
+      ?.replaceAll("-", "")
+      .toLowerCase();
+    const selected = assertions.find(
+      (assertion) =>
+        assertion.assertionId.replaceAll("-", "").toLowerCase() ===
+        selectedAssertionId,
+    );
+    return {
+      transactionId: transaction.transactionId,
+      revisionId: transaction.revisionId,
+      selectedAssertionId: selected?.assertionId ?? null,
+      selectedOrigin: selected?.origin ?? null,
+      selectedTaxonomyId:
+        selected?.taxonomyId ?? transaction.categorization.taxonomyId ?? null,
+      selectedTaxonomyVersion:
+        selected?.taxonomyVersion ?? transaction.categorization.taxonomyVersion ?? null,
+      selectedCategoryCode:
+        selected?.categoryCode ?? transaction.categorization.categoryCode ?? null,
+      assertions,
+    } satisfies CanonicalSpendingLineageEntry;
+  });
+  return {
+    ...report,
+    kind: "lineage",
+    report,
+    lineage: entries,
+  };
+}
+
 export interface CanonicalSpendingQuery {
   current(request?: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
   historical(request: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
-  lineage(request?: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
+  lineage(request?: CanonicalSpendingQueryRequest): CanonicalSpendingLineageResult;
 }
 
 export function createCanonicalSpendingQuery(
@@ -1296,12 +1682,15 @@ export function createCanonicalSpendingQuery(
               financialAt: request.financialAt ?? "9999-12-31",
             };
       return run((db) =>
-        spendingSnapshot(
+        spendingLineage(
           db,
-          request.knowledgeAt === undefined
-            ? { ...bounded, financialAt: "9999-12-31" }
-            : bounded,
-          request.knowledgeAt === undefined ? "current" : "historical",
+          spendingSnapshot(
+            db,
+            request.knowledgeAt === undefined
+              ? { ...bounded, financialAt: "9999-12-31" }
+              : bounded,
+            request.knowledgeAt === undefined ? "current" : "historical",
+          ),
         ),
       );
     },
