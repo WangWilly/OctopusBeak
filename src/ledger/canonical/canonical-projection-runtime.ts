@@ -656,6 +656,7 @@ function refreshTransactionProjection(
          JOIN current_transactions current_transaction
            ON current_transaction.transaction_id = assertion.transaction_id
         WHERE assertion.field_name IN ('display_name', 'note')
+          AND NOT (assertion.field_name = 'note' AND assertion.rule_lineage = 'user/tag/v1')
           AND assertion.origin IN ('derived', 'user')
           AND event_commit.commit_sequence <= ?
           AND event.event_kind NOT IN ('withdrawn', 'superseded')
@@ -803,6 +804,20 @@ function applyCommitInTransaction(
   const targetSequence = Number(target?.commit_sequence);
   if (!Number.isSafeInteger(targetSequence))
     throw new Error("Canonical projection commit sequence is invalid.");
+  // Tag identity/label/status revisions are canonical knowledge commits, but
+  // they intentionally have no Assertion lifecycle row and no financial
+  // projection impact. Keep their current display/tag accelerators inside
+  // this Runtime seam without advancing the financial generation to a point
+  // that cannot carry routine projection evidence.
+  if (
+    kind === "user_assertion" &&
+    !db
+      .prepare("SELECT 1 FROM assertion_transitions WHERE commit_id = ? LIMIT 1")
+      .get(token.commitId)
+  ) {
+    refreshCanonicalEnrichmentProjection(db, token.commitId, targetSequence);
+    return;
+  }
   if (impact === "loan-and-investment") {
     const active = activeGenerationState(db);
     if (targetSequence <= active.cutoffCommitSequence) return;
@@ -1082,6 +1097,7 @@ function readFamily(
              JOIN canonical_commits field_commit
                ON field_commit.commit_id = event.commit_id
             WHERE assertion.field_name IN ('display_name', 'note')
+              AND NOT (assertion.field_name = 'note' AND assertion.rule_lineage = 'user/tag/v1')
               AND assertion.origin IN ('derived', 'user')
               AND field_commit.commit_sequence <= ?
               AND event.event_kind NOT IN ('withdrawn', 'superseded')

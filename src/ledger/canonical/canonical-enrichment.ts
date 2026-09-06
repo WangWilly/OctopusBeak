@@ -35,6 +35,39 @@ import {
   type CanonicalProjectionTransactionCategorization,
   type CanonicalProjectionTransaction,
 } from "./canonical-projection-runtime.ts";
+import {
+  readCanonicalTransactionTags,
+  readCanonicalUserCounterpartyDisplays,
+  type CanonicalTransactionTagView,
+  type CanonicalUserCounterpartyDisplay,
+} from "./canonical-display-tags.ts";
+
+export {
+  applyCanonicalTransactionTag,
+  archiveCanonicalTransactionTag,
+  commitCanonicalCounterpartyAlias,
+  commitCanonicalCounterpartyDisplay,
+  commitCanonicalTag,
+  commitCanonicalTransactionTag,
+  commitCanonicalTransactionDisplay,
+  commitCanonicalUserCounterpartyDisplay,
+  commitCanonicalUserTag,
+  createCanonicalTransactionTag,
+  normalizeCanonicalTagLabel,
+  readCanonicalTransactionTags,
+  removeCanonicalTransactionTag,
+  renameCanonicalTransactionTag,
+  CANONICAL_TAG_LABEL_NORMALIZATION_VERSION,
+} from "./canonical-display-tags.ts";
+export type {
+  CanonicalCounterpartyDisplayInput,
+  CanonicalCounterpartyDisplayResult,
+  CanonicalTransactionTagAction,
+  CanonicalTransactionTagInput,
+  CanonicalTransactionTagResult,
+  CanonicalTransactionTagView,
+  CanonicalUserCounterpartyDisplay,
+} from "./canonical-display-tags.ts";
 
 export type CanonicalEnrichmentOrigin = Exclude<TaxonomyOrigin, "user">;
 type CanonicalEffectiveOrigin = CanonicalEnrichmentOrigin | "user";
@@ -58,6 +91,23 @@ export type CanonicalCounterpartyIdentity = Readonly<{
   legalName?: string | null;
 }>;
 
+export type CanonicalCounterpartySourceClassification = Readonly<{
+  scheme: string;
+  code: string;
+}>;
+
+/** One producer-declared participation inside a grouped role output. */
+export type CanonicalCounterpartyParticipationOutput = Readonly<{
+  /** Stable producer-owned key used only for deterministic tie handling. */
+  participationKey?: string;
+  role: string;
+  observedName?: string | null;
+  observedReference?: string | null;
+  counterparty?: CanonicalCounterpartyIdentity;
+  sourceClassification?: CanonicalCounterpartySourceClassification;
+  evidence?: CanonicalEnrichmentEvidence;
+}>;
+
 export type CanonicalEnrichmentOutput = Readonly<{
   transactionId: string;
   field: EnrichmentField;
@@ -69,6 +119,11 @@ export type CanonicalEnrichmentOutput = Readonly<{
   tie?: boolean;
   evidence?: CanonicalEnrichmentEvidence;
   counterparty?: CanonicalCounterpartyIdentity;
+  /**
+   * Counterparty roles are one declared field with a complete grouped output.
+   * The group is expanded into independent typed Assertions atomically.
+   */
+  participations?: readonly CanonicalCounterpartyParticipationOutput[];
 }>;
 
 export type CanonicalEnrichmentRunInput = Readonly<{
@@ -134,6 +189,7 @@ type AdmittedOutput = Readonly<{
     confidence: number | null;
   }>;
   retainedSourceValue: string | null;
+  participations: readonly CanonicalCounterpartyParticipationOutput[];
 }>;
 
 function sqliteValue(value: unknown): SQLInputValue {
@@ -217,7 +273,7 @@ function confidenceBasisPoints(output: CanonicalEnrichmentOutput): number | null
 }
 
 function outputEvidenceKind(output: CanonicalEnrichmentOutput): string {
-  const kind = output.evidence?.kind;
+  const kind = output.evidence?.kind ?? output.participations?.[0]?.evidence?.kind;
   if (typeof kind !== "string" || kind.trim() === "")
     throw new Error(`Enrichment ${output.field} output requires an evidence kind.`);
   return kind.trim();
@@ -244,9 +300,197 @@ function sourceFieldAllowed(field: EnrichmentField, sourceField: string | null):
 
 function outputValue(output: CanonicalEnrichmentOutput): string | null {
   if (output.state === "unsupported") return null;
+  if (output.field === "counterparty_role" && output.participations?.length) {
+    const first = output.participations[0];
+    if (!first || typeof first.role !== "string" || first.role.trim() === "")
+      throw new Error("Counterparty participation role is required.");
+    return first.role.trim();
+  }
   if (output.value === null || output.value === undefined || output.value.trim() === "")
     throw new Error(`Supported enrichment ${output.field} output requires a value.`);
   return output.value.trim();
+}
+
+function normalizedParticipationKey(
+  participation: CanonicalCounterpartyParticipationOutput,
+  index: number,
+): string {
+  const provided = participation.participationKey?.trim();
+  if (provided) return provided;
+  const reference = participation.counterparty?.producerNamespace &&
+      participation.counterparty.producerEntityKey
+    ? `${participation.counterparty.producerNamespace}:${participation.counterparty.producerEntityKey}`
+    : "unreferenced";
+  return `${participation.role.trim()}:${reference}:${index + 1}`;
+}
+
+function groupedParticipations(
+  output: CanonicalEnrichmentOutput,
+): readonly CanonicalCounterpartyParticipationOutput[] {
+  if (output.field !== "counterparty_role") return [];
+  const values = output.participations;
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || (values.length === 0 && output.state !== "unsupported"))
+    throw new Error("Counterparty participation group cannot be empty.");
+  const seen = new Set<string>();
+  const normalized = values.map((raw, index) => {
+    if (!raw || typeof raw !== "object")
+      throw new Error("Counterparty participation must be an object.");
+    const role = requireText(raw.role, "Counterparty participation role");
+    const key = normalizedParticipationKey({ ...raw, role }, index);
+    if (seen.has(key))
+      throw new Error(`Counterparty participation key ${key} is duplicated.`);
+    seen.add(key);
+    return {
+      ...raw,
+      role,
+      participationKey: key,
+      ...(raw.observedName === undefined ? {} : { observedName: raw.observedName === null ? null : requireText(raw.observedName, "Observed counterparty name") }),
+      ...(raw.observedReference === undefined ? {} : { observedReference: raw.observedReference === null ? null : requireText(raw.observedReference, "Observed counterparty reference") }),
+    };
+  });
+  const declaredValue = output.value?.trim();
+  if (declaredValue && normalized[0] && declaredValue !== normalized[0].role)
+    throw new Error("Counterparty role output value must match the first grouped participation role.");
+  return normalized;
+}
+
+function counterpartyIdentity(
+  value: CanonicalCounterpartyIdentity | undefined,
+): { producerNamespace: string; producerEntityKey: string; displayName: string | null; legalName: string | null } | null {
+  if (!value) return null;
+  return {
+    producerNamespace: requireText(value.producerNamespace, "Counterparty producer namespace"),
+    producerEntityKey: requireText(value.producerEntityKey, "Counterparty entity key"),
+    displayName: value.displayName === undefined || value.displayName === null
+      ? null
+      : requireText(value.displayName, "Counterparty display name"),
+    legalName: value.legalName === undefined || value.legalName === null
+      ? null
+      : requireText(value.legalName, "Counterparty legal name"),
+  };
+}
+
+function ensureCounterpartyReference(
+  db: DatabaseSync,
+  identity: CanonicalCounterpartyIdentity | undefined,
+  commitId: CanonicalId,
+  producerId: string,
+  producerVersion: string,
+  provenance: Readonly<Record<string, unknown>>,
+): Uint8Array | null {
+  const normalized = counterpartyIdentity(identity);
+  if (!normalized) return null;
+  // Reference identity is exact and producer-scoped. The display/legal names
+  // are knowledge-time revisions; the identity row is never updated in place.
+  db.prepare(`
+    INSERT OR IGNORE INTO counterparty_references(
+      reference_id, producer_namespace, producer_entity_key,
+      display_name, legal_name, created_commit_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    uuidV7(),
+    normalized.producerNamespace,
+    normalized.producerEntityKey,
+    normalized.displayName,
+    normalized.legalName,
+    commitId,
+  );
+  const row = db.prepare(`
+    SELECT reference_id
+      FROM counterparty_references
+     WHERE producer_namespace = ? AND producer_entity_key = ?
+  `).get(normalized.producerNamespace, normalized.producerEntityKey) as { reference_id?: unknown } | undefined;
+  if (!row?.reference_id) throw new Error("Counterparty reference could not be admitted.");
+  const referenceId = blob(row.reference_id);
+  const otherProducer = db.prepare(`
+    SELECT 1
+      FROM counterparty_reference_revisions
+     WHERE reference_id = ?
+       AND producer_id <> ?
+       AND producer_id <> 'legacy/counterparty'
+     LIMIT 1
+  `).get(referenceId, producerId);
+  if (otherProducer)
+    throw new Error("Counterparty producer namespace is already bound to another producer.");
+  // A revision is retained even when its names are absent. This binds the
+  // trusted producer namespace at first observation and makes a null name a
+  // knowledge-time fact rather than an instruction to consult mutable state.
+  db.prepare(`
+    INSERT OR IGNORE INTO counterparty_reference_revisions(
+      reference_revision_id, reference_id, display_name, legal_name,
+      producer_id, producer_version, provenance_json, created_commit_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    uuidV7(),
+    referenceId,
+    normalized.displayName,
+    normalized.legalName,
+    producerId,
+    producerVersion,
+    JSON.stringify(provenance),
+    commitId,
+  );
+  return referenceId;
+}
+
+function participationPayloadMatches(
+  db: DatabaseSync,
+  transactionId: CanonicalId,
+  assertionId: CanonicalId,
+  expected: readonly CanonicalCounterpartyParticipationOutput[],
+): boolean {
+  const actual = db.prepare(`
+    SELECT participation.participation_key AS participationKey,
+           participation.role_code AS role,
+           participation.observed_name AS observedName,
+           participation.observed_reference AS observedReference,
+           participation.source_classification_scheme AS sourceClassificationScheme,
+           participation.source_classification_code AS sourceClassificationCode,
+           reference.producer_namespace AS producerNamespace,
+           reference.producer_entity_key AS producerEntityKey
+      FROM counterparty_participations participation
+      LEFT JOIN counterparty_references reference
+        ON reference.reference_id = participation.reference_id
+     WHERE participation.transaction_id = ? AND participation.assertion_id = ?
+     ORDER BY participation.participation_key, participation.participation_id
+  `).all(transactionId, assertionId) as DbRow[];
+  const expectedSignature = expected.map((participation) => JSON.stringify({
+    key: participation.participationKey ?? "",
+    role: participation.role,
+    observedName: participation.observedName ?? null,
+    observedReference: participation.observedReference ?? null,
+    scheme: participation.sourceClassification?.scheme ?? null,
+    code: participation.sourceClassification?.code ?? null,
+    namespace: participation.counterparty?.producerNamespace ?? null,
+    entityKey: participation.counterparty?.producerEntityKey ?? null,
+  })).sort();
+  const actualSignature = actual.map((row) => JSON.stringify({
+    key: String(row.participationKey ?? ""),
+    role: String(row.role),
+    observedName: row.observedName ?? null,
+    observedReference: row.observedReference ?? null,
+    scheme: row.sourceClassificationScheme ?? null,
+    code: row.sourceClassificationCode ?? null,
+    namespace: row.producerNamespace ?? null,
+    entityKey: row.producerEntityKey ?? null,
+  })).sort();
+  return JSON.stringify(actualSignature) === JSON.stringify(expectedSignature);
+}
+
+function outputParticipations(
+  output: CanonicalEnrichmentOutput,
+  value: string | null,
+): readonly CanonicalCounterpartyParticipationOutput[] {
+  if (output.participations?.length) return output.participations;
+  if (output.field !== "counterparty_role" || value === null) return [];
+  return [{
+    participationKey: `${value}:legacy`,
+    role: value,
+    observedName: output.counterparty?.displayName ?? null,
+    observedReference: output.counterparty?.producerEntityKey ?? null,
+    counterparty: output.counterparty,
+  }];
 }
 
 type Candidate = Readonly<{
@@ -551,6 +795,9 @@ function commitAutomaticEnrichmentRunOnce(
       ...output,
       field: canonicalField(output.field),
       transactionId: idToString(canonicalId(output.transactionId, "Transaction ID")),
+      participations: output.field === "counterparty_role"
+        ? groupedParticipations(output)
+        : undefined,
     }));
     const outputKeys = new Set<string>();
     for (const output of outputs) {
@@ -620,12 +867,23 @@ function commitAutomaticEnrichmentRunOnce(
         throw new Error(`Route ${route.route_id} does not allow Source output.`);
       if (origin === "derived" && route.origin_policy === "source")
         throw new Error(`Route ${route.route_id} does not allow Derived output.`);
+      // The run-scope normalization above already validated and copied the
+      // grouped payload. Re-validating an intentionally empty legacy/absent
+      // role would turn it into a false admission error.
+      const participations = output.participations ?? groupedParticipations(output);
       const evidenceKind = outputEvidenceKind(output);
       const sourceRecordId = outputSourceRecordId(output);
       if (sourceRecordId)
         validateRetainedEvidenceLineage(db, subject.id, sourceRecordId, subject.account);
       const effective = effectiveOutput(output, threshold);
       const value = effective.value;
+      if (
+        effective.state === "supported" &&
+        output.field === "counterparty_role" &&
+        participations.length > 0 &&
+        value !== participations[0]!.role
+      )
+        throw new Error("Counterparty role winner must match the first grouped participation role.");
       if (effective.state === "supported" && origin === "derived" &&
           producerId === CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID &&
           evidenceKind === "description" && !sourceRecordId)
@@ -635,6 +893,23 @@ function commitAutomaticEnrichmentRunOnce(
         retainedSourceValue = validateSourceEvidence(db, subject.id, output, sourceRecordId, value, subject.account);
       if (effective.state === "supported" && value !== null)
         validateOutputCompatibility(db, output, origin, value, evidenceKind, producerId, producerVersion);
+      if (effective.state === "supported" && output.field === "counterparty_role" && participations.length > 0) {
+        for (const participation of participations) {
+          const participationEvidenceKind = participation.evidence?.kind?.trim() || evidenceKind;
+          if (!isTaxonomyCode("counterparty_role", participation.role) ||
+              !producerAllowsOutput(producerId, producerVersion, origin, "counterparty_role", participation.role, participationEvidenceKind))
+            throw new Error(`Producer ${producerId}@${producerVersion} emitted an undeclared counterparty role ${participation.role}.`);
+          const declared = db.prepare(`
+            SELECT 1 FROM taxonomy_producer_compatibility
+             WHERE producer_id = ? AND producer_version = ? AND origin = ?
+               AND field_name = 'counterparty_role'
+               AND (output_code IS NULL OR output_code = ?)
+               AND EXISTS (SELECT 1 FROM json_each(evidence_kinds_json) WHERE value = ?)
+          `).get(producerId, producerVersion, origin, participation.role, participationEvidenceKind);
+          if (!declared)
+            throw new Error(`Producer output counterparty_role:${participation.role} is not declared in the persisted taxonomy package.`);
+        }
+      }
       admittedOutputs.push({
         output,
         transactionId: output.transactionId,
@@ -646,6 +921,7 @@ function commitAutomaticEnrichmentRunOnce(
         sourceRecordId,
         effective,
         retainedSourceValue,
+        participations,
       });
     }
     const admittedByKey = new Map(
@@ -746,6 +1022,23 @@ function commitAutomaticEnrichmentRunOnce(
         contractVersion: output.evidence?.contractVersion ?? null,
         confidenceBasisPoints: effective.confidence,
         ruleLineage,
+        ...(admitted.participations.length > 0
+          ? {
+              participations: admitted.participations.map((participation) => ({
+                participationKey: participation.participationKey,
+                role: participation.role,
+                observedName: participation.observedName ?? null,
+                observedReference: participation.observedReference ?? null,
+                sourceClassification: participation.sourceClassification ?? null,
+                counterparty: participation.counterparty
+                  ? {
+                      producerNamespace: participation.counterparty.producerNamespace,
+                      producerEntityKey: participation.counterparty.producerEntityKey,
+                    }
+                  : null,
+              })),
+            }
+          : {}),
       };
       const outputId = uuidV7();
       insertOutput.run(
@@ -777,13 +1070,27 @@ function commitAutomaticEnrichmentRunOnce(
         continue;
       }
       let assertionId: CanonicalId;
-      const sameRouteAndValue = prior && priorActive && String(prior.value_text) === value && String(prior.route_id ?? "") === route.route_id;
+      const sameParticipationPayload = output.field !== "counterparty_role" || !prior
+        ? true
+        : participationPayloadMatches(
+            db,
+            subject.id,
+            blob(prior.assertion_id),
+            outputParticipations(output, value),
+          );
+      const sameRouteAndValue = prior && priorActive && String(prior.value_text) === value && String(prior.route_id ?? "") === route.route_id && sameParticipationPayload;
       if (sameRouteAndValue) {
         assertionId = blob(prior.assertion_id);
       } else {
         assertionId = uuidV7();
-        if (prior && priorActive && String(prior.route_id ?? "") === route.route_id)
-          insertTransition.run(uuidV7(), blob(prior.assertion_id), subject.id, output.field, runId, commitId, "superseded");
+        if (prior && priorActive && String(prior.route_id ?? "") === route.route_id) {
+          // The v23 transition guard requires the run output to point at the
+          // assertion being superseded before that lifecycle event is written.
+          // It is repointed to the replacement assertion immediately below.
+          const priorId = blob(prior.assertion_id);
+          updateOutputAssertion.run(priorId, outputId);
+          insertTransition.run(uuidV7(), priorId, subject.id, output.field, runId, commitId, "superseded");
+        }
         insertAssertion.run(assertionId, subject.id, output.field, origin, producerId, ruleLineage, value, commitId);
         const dimension = taxonomyDimensionForField(output.field);
         if (dimension)
@@ -795,23 +1102,79 @@ function commitAutomaticEnrichmentRunOnce(
         insertTransition.run(uuidV7(), assertionId, subject.id, output.field, runId, commitId, "observed");
       assertionIds.push(idToString(assertionId));
       if (output.field === "counterparty_role") {
-        const identity = output.counterparty;
-        let referenceId: SQLInputValue = null;
-        let observedName: string | null = null;
-        let observedReference: string | null = null;
-        if (identity) {
-          db.prepare(`INSERT INTO counterparty_references(reference_id, producer_namespace, producer_entity_key, display_name, legal_name, created_commit_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(producer_namespace, producer_entity_key) DO UPDATE SET display_name = COALESCE(excluded.display_name, display_name), legal_name = COALESCE(excluded.legal_name, legal_name)`)
-            .run(uuidV7(), requireText(identity.producerNamespace, "Counterparty producer namespace"), requireText(identity.producerEntityKey, "Counterparty entity key"), identity.displayName ?? null, identity.legalName ?? null, commitId);
-          const persistedReference = db.prepare("SELECT reference_id FROM counterparty_references WHERE producer_namespace = ? AND producer_entity_key = ?").get(identity.producerNamespace, identity.producerEntityKey) as { reference_id?: unknown };
-          referenceId = sqliteValue(persistedReference.reference_id);
-          observedName = identity.displayName ?? null;
-          observedReference = identity.producerEntityKey;
+        const participations = outputParticipations(output, value);
+        for (const participation of participations) {
+          const classification = participation.sourceClassification;
+          if ((classification?.scheme === undefined) !== (classification?.code === undefined))
+            throw new Error("Counterparty source classification requires both scheme and code.");
+          const participationProvenance = {
+            ...provenance,
+            participationKey: participation.participationKey,
+            participationRole: participation.role,
+            ...(participation.evidence?.kind
+              ? { participationEvidenceKind: participation.evidence.kind }
+              : {}),
+          };
+          const referenceId = ensureCounterpartyReference(
+            db,
+            participation.counterparty,
+            commitId,
+            producerId,
+            producerVersion,
+            participationProvenance,
+          );
+          if (sameRouteAndValue) continue;
+          db.prepare(`
+            INSERT INTO counterparty_participations(
+              participation_id, transaction_id, assertion_id, reference_id,
+              role_code, origin, observed_name, observed_reference,
+              source_classification_scheme, source_classification_code,
+              participation_key, producer_id, producer_version,
+              route_id, provenance_json, commit_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            uuidV7(),
+            subject.id,
+            assertionId,
+            sqliteValue(referenceId),
+            participation.role,
+            origin,
+            participation.observedName ?? participation.counterparty?.displayName ?? null,
+            participation.observedReference ?? participation.counterparty?.producerEntityKey ?? null,
+            classification?.scheme ?? null,
+            classification?.code ?? null,
+            participation.participationKey ?? "",
+            producerId,
+            producerVersion,
+            route.route_id,
+            JSON.stringify(participationProvenance),
+            commitId,
+          );
         }
-        db.prepare(`INSERT INTO counterparty_participations(participation_id, transaction_id, assertion_id, reference_id, role_code, origin, observed_name, observed_reference, route_id, provenance_json, commit_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(uuidV7(), subject.id, assertionId, referenceId, value, origin, observedName, observedReference, route.route_id, JSON.stringify(provenance), commitId);
+      }
+      if (output.field === "counterparty_display") {
+        const referenceId = ensureCounterpartyReference(
+          db,
+          output.counterparty,
+          commitId,
+          producerId,
+          producerVersion,
+          provenance,
+        );
+        db.prepare(`
+          INSERT OR IGNORE INTO counterparty_display_assertion_values(
+            assertion_id, transaction_id, origin, display_kind, reference_id,
+            participation_key, label, created_commit_id)
+          VALUES (?, ?, ?, 'automatic', ?, ?, ?, ?)
+        `).run(
+          assertionId,
+          subject.id,
+          origin,
+          sqliteValue(referenceId),
+          null,
+          value,
+          commitId,
+        );
       }
     }
     createCanonicalProjectionRuntime(db).applyCommit({ commitId, kind: "derived_import" });
@@ -855,10 +1218,13 @@ export type CanonicalEnrichmentFieldResult = Readonly<{
   taxonomyId: string;
   taxonomyVersion: string;
   taxonomyDimension: string | null;
-  origin: CanonicalEnrichmentOrigin;
+  origin: CanonicalEffectiveOrigin;
   route: Readonly<{ id: string; producerId: string; producerVersion: string }>;
   assertionId: string;
   provenance: Readonly<Record<string, unknown>>;
+  displayKind?: "automatic" | "override" | "reference_alias";
+  referenceId?: string | null;
+  participationKey?: string | null;
 }> | Readonly<{ status: "absent" }>;
 
 export type CanonicalEnrichmentCategoryComponent = Readonly<{
@@ -919,6 +1285,7 @@ export type CanonicalEnrichmentTransaction = Readonly<{
   category: CanonicalEnrichmentCategoryResult;
   counterparties: readonly Readonly<Record<string, unknown>>[];
   display: CanonicalEnrichmentFieldResult;
+  tags: readonly CanonicalTransactionTagView[];
 }>;
 
 export type CanonicalEnrichmentQueryResult = Readonly<{
@@ -1215,6 +1582,199 @@ function requireBoundedScope(request: CanonicalEnrichmentQueryRequest): void {
     throw new Error("Canonical enrichment queries require a source connection or explicit transaction IDs.");
 }
 
+const COUNTERPARTY_ROLE_ORDER: Readonly<Record<string, number>> = {
+  merchant: 10,
+  marketplace: 20,
+  payment_platform: 30,
+  financial_institution: 40,
+  income_source: 50,
+  government: 60,
+  person: 70,
+};
+
+function counterpartyRoleRank(role: unknown): number {
+  const normalized = String(role ?? "");
+  return COUNTERPARTY_ROLE_ORDER[normalized] ?? 1_000;
+}
+
+/**
+ * Read every active participation in the selected typed role assertion. The
+ * participation key is producer-owned and is only a deterministic tie-break;
+ * producer namespace/entity key remains the sole reference identity.
+ */
+function selectedCounterpartyRows(
+  db: DatabaseSync,
+  transactionId: Uint8Array,
+  assertionId: Uint8Array | string,
+  cutoff: number,
+  current = false,
+): DbRow[] {
+  const assertionParameter = typeof assertionId === "string"
+    ? canonicalStoredId(assertionId, "Role assertion ID")
+    : assertionId;
+  const participationTable = current
+    ? "current_counterparty_participations"
+    : "counterparty_participations";
+  const participationCommitColumn = current
+    ? "participation.projection_commit_id"
+    : "participation.commit_id";
+  const rows = db.prepare(`
+    SELECT participation.participation_id AS participationId,
+           participation.participation_key AS participationKey,
+           participation.role_code AS role,
+           participation.observed_name AS observedName,
+           participation.observed_reference AS observedReference,
+           participation.source_classification_scheme AS sourceClassificationScheme,
+           participation.source_classification_code AS sourceClassificationCode,
+           participation.origin,
+           participation.route_id AS routeId,
+           participation.assertion_id AS assertionId,
+           participation.producer_id AS producerId,
+           participation.producer_version AS producerVersion,
+           participation.provenance_json AS provenanceJson,
+           reference.reference_id AS referenceId,
+           reference.producer_namespace AS producerNamespace,
+           reference.producer_entity_key AS producerEntityKey,
+           CASE WHEN reference.reference_id IS NULL THEN NULL
+                WHEN EXISTS (SELECT 1
+                               FROM counterparty_reference_revisions revision
+                               JOIN canonical_commits revision_commit
+                                 ON revision_commit.commit_id = revision.created_commit_id
+                              WHERE revision.reference_id = reference.reference_id
+                                AND revision_commit.commit_sequence <= ?) THEN
+                  (SELECT revision.display_name
+                     FROM counterparty_reference_revisions revision
+                     JOIN canonical_commits revision_commit
+                       ON revision_commit.commit_id = revision.created_commit_id
+                    WHERE revision.reference_id = reference.reference_id
+                      AND revision_commit.commit_sequence <= ?
+                    ORDER BY revision_commit.commit_sequence DESC, revision.rowid DESC
+                    LIMIT 1)
+                ELSE reference.display_name
+           END AS referenceDisplayName,
+           CASE WHEN reference.reference_id IS NULL THEN NULL
+                WHEN EXISTS (SELECT 1
+                               FROM counterparty_reference_revisions revision
+                               JOIN canonical_commits revision_commit
+                                 ON revision_commit.commit_id = revision.created_commit_id
+                              WHERE revision.reference_id = reference.reference_id
+                                AND revision_commit.commit_sequence <= ?) THEN
+                  (SELECT revision.legal_name
+                     FROM counterparty_reference_revisions revision
+                     JOIN canonical_commits revision_commit
+                       ON revision_commit.commit_id = revision.created_commit_id
+                    WHERE revision.reference_id = reference.reference_id
+                      AND revision_commit.commit_sequence <= ?
+                    ORDER BY revision_commit.commit_sequence DESC, revision.rowid DESC
+                    LIMIT 1)
+                ELSE reference.legal_name
+           END AS referenceLegalName,
+           typed.taxonomy_id AS taxonomyId,
+           typed.taxonomy_version AS taxonomyVersion,
+           typed.taxonomy_dimension AS taxonomyDimension,
+           /* A grouped assertion carries one declared field value, while
+            * each retained participation has its own typed role. */
+           participation.role_code AS taxonomyCode
+      FROM ${participationTable} participation
+      JOIN assertions role_assertion
+        ON role_assertion.assertion_id = participation.assertion_id
+       AND role_assertion.transaction_id = participation.transaction_id
+       AND role_assertion.field_name = 'counterparty_role'
+      LEFT JOIN counterparty_references reference
+        ON reference.reference_id = participation.reference_id
+      LEFT JOIN enrichment_taxonomy_assertion_values typed
+        ON typed.assertion_id = participation.assertion_id
+       AND typed.field_name = 'counterparty_role'
+     WHERE participation.transaction_id = ?
+       AND participation.assertion_id = ?
+       AND (SELECT commit_sequence FROM canonical_commits
+              WHERE commit_id = ${participationCommitColumn}) <= ?
+       AND (SELECT commit_sequence FROM canonical_commits
+              WHERE commit_id = role_assertion.created_commit_id) <= ?
+       AND COALESCE((SELECT event_kind
+                       FROM assertion_transitions event
+                       JOIN canonical_commits event_commit
+                         ON event_commit.commit_id = event.commit_id
+                      WHERE event.assertion_id = role_assertion.assertion_id
+                        AND event_commit.commit_sequence <= ?
+                      ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+                      LIMIT 1), 'observed') NOT IN ('withdrawn','superseded')
+     ORDER BY participation.role_code, participation.participation_key,
+              participation.participation_id
+  `).all(cutoff, cutoff, cutoff, cutoff, transactionId, assertionParameter, cutoff, cutoff, cutoff) as DbRow[];
+  return rows.sort((left, right) => {
+    const role = counterpartyRoleRank(left.role) - counterpartyRoleRank(right.role);
+    if (role !== 0) return role;
+    const key = String(left.participationKey ?? "").localeCompare(String(right.participationKey ?? ""));
+    if (key !== 0) return key;
+    return Buffer.from(blob(left.participationId)).compare(Buffer.from(blob(right.participationId)));
+  });
+}
+
+function userDisplayResult(
+  row: CanonicalUserCounterpartyDisplay,
+): CanonicalEnrichmentFieldResult {
+  return {
+    status: "supported",
+    value: row.label,
+    taxonomyId: TRANSACTION_TAXONOMY_ID,
+    taxonomyVersion: TRANSACTION_TAXONOMY_VERSION,
+    taxonomyDimension: null,
+    origin: "user",
+    route: {
+      id: "user/counterparty-display/v1",
+      producerId: row.userId,
+      producerVersion: "v1",
+    },
+    assertionId: row.assertionId,
+    provenance: {
+      kind: "user-counterparty-display",
+      displayKind: row.displayKind,
+      referenceId: row.referenceId,
+      participationKey: row.participationKey,
+      userId: row.userId,
+      commitSequence: row.commitSequence,
+    },
+    displayKind: row.displayKind,
+    referenceId: row.referenceId,
+    participationKey: row.participationKey,
+  };
+}
+
+function selectedCounterpartyDisplay(
+  db: DatabaseSync,
+  transactionId: Uint8Array,
+  cutoff: number,
+  counterparties: readonly DbRow[],
+  automatic: CanonicalProjectionTransactionEnrichment | undefined,
+): CanonicalEnrichmentFieldResult {
+  const userDisplays = [...readCanonicalUserCounterpartyDisplays(db, transactionId, cutoff)]
+    .sort((left, right) => right.commitSequence - left.commitSequence || left.assertionId.localeCompare(right.assertionId));
+  const override = userDisplays.find((row) => row.displayKind === "override");
+  if (override) return userDisplayResult(override);
+  const selected = counterparties[0];
+  const selectedReferenceId = selected?.referenceId instanceof Uint8Array
+    ? idToString(blob(selected.referenceId))
+    : selected?.referenceId === null || selected?.referenceId === undefined
+      ? null
+      : idToString(blob(selected.referenceId));
+  if (selectedReferenceId) {
+    const alias = userDisplays.find(
+      (row) => row.displayKind === "reference_alias" && row.referenceId === selectedReferenceId,
+    );
+    if (alias) return userDisplayResult(alias);
+  }
+  if (automatic) {
+    const result = resultFromRuntimeRow(
+      automatic,
+      outputProvenance(db, automatic.assertionId, cutoff),
+    );
+    if (result.status === "supported")
+      return { ...result, displayKind: "automatic", referenceId: selectedReferenceId };
+  }
+  return { status: "absent" };
+}
+
 function latestKnowledgePoint(db: DatabaseSync): number {
   return Number(
     (db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as { value?: unknown }).value ?? 0,
@@ -1362,53 +1922,10 @@ function currentTransaction(
     enrichmentRows.map((row) => [row.fieldName, row]),
   );
   const roleAssertion = byField.get("counterparty_role");
-  const counterparts = roleAssertion ? db.prepare(`
-    SELECT participation.role_code AS role, participation.observed_name AS observedName,
-           participation.observed_reference AS observedReference,
-           reference.producer_namespace AS producerNamespace,
-           reference.producer_entity_key AS producerEntityKey,
-           participation.origin, participation.route_id AS routeId,
-           participation.assertion_id AS assertionId,
-           participation.provenance_json AS provenanceJson,
-           typed.taxonomy_id AS taxonomyId,
-           typed.taxonomy_version AS taxonomyVersion,
-           typed.taxonomy_dimension AS taxonomyDimension,
-           typed.taxonomy_code AS taxonomyCode,
-           run.producer_id AS producerId,
-           run.producer_version AS producerVersion
-      FROM counterparty_participations participation
-      LEFT JOIN counterparty_references reference ON reference.reference_id = participation.reference_id
-      LEFT JOIN enrichment_taxonomy_assertion_values typed
-        ON typed.assertion_id = participation.assertion_id
-      JOIN enrichment_run_outputs output
-        ON output.assertion_id = participation.assertion_id
-       AND output.output_state = 'supported'
-       AND output.rowid = (
-         SELECT newer_output.rowid
-           FROM enrichment_run_outputs newer_output
-          WHERE newer_output.assertion_id = participation.assertion_id
-            AND newer_output.output_state = 'supported'
-          ORDER BY newer_output.rowid DESC
-          LIMIT 1
-       )
-      LEFT JOIN enrichment_runs run ON run.run_id = output.run_id
-     WHERE participation.transaction_id = ?
-       AND participation.assertion_id = ?
-       AND NOT EXISTS (
-         SELECT 1
-           FROM counterparty_participations newer_participation
-           JOIN canonical_commits newer_commit
-             ON newer_commit.commit_id = newer_participation.commit_id
-           JOIN canonical_commits current_commit
-             ON current_commit.commit_id = participation.commit_id
-          WHERE newer_participation.transaction_id = participation.transaction_id
-            AND newer_participation.assertion_id = participation.assertion_id
-            AND (newer_commit.commit_sequence > current_commit.commit_sequence
-              OR (newer_commit.commit_sequence = current_commit.commit_sequence
-                  AND newer_participation.rowid > participation.rowid))
-       )
-     ORDER BY participation.commit_id DESC, participation.rowid DESC
-  `).all(transactionId, canonicalStoredId(roleAssertion.assertionId, "Role assertion ID")) as DbRow[] : [];
+  const cutoff = latestKnowledgePoint(db);
+  const counterparts = roleAssertion
+      ? selectedCounterpartyRows(db, transactionId, roleAssertion.assertionId, cutoff, true)
+    : [];
   return {
     transactionId: idToString(transactionId),
     kind: resultFromRuntimeRow(
@@ -1422,16 +1939,25 @@ function currentTransaction(
       categorizationRows,
       db,
     ),
-    display: resultFromRuntimeRow(
+    display: selectedCounterpartyDisplay(
+      db,
+      transactionId,
+      cutoff,
+      counterparts,
       byField.get("counterparty_display"),
-      outputProvenance(db, byField.get("counterparty_display")?.assertionId),
     ),
     counterparties: counterparts.map((row) => ({
+      participationKey: String(row.participationKey ?? ""),
       role: String(row.role),
       observedName: row.observedName === null ? null : String(row.observedName),
       observedReference: row.observedReference === null ? null : String(row.observedReference),
+      sourceClassificationScheme: row.sourceClassificationScheme === null || row.sourceClassificationScheme === undefined ? null : String(row.sourceClassificationScheme),
+      sourceClassificationCode: row.sourceClassificationCode === null || row.sourceClassificationCode === undefined ? null : String(row.sourceClassificationCode),
       producerNamespace: row.producerNamespace === null ? null : String(row.producerNamespace),
       producerEntityKey: row.producerEntityKey === null ? null : String(row.producerEntityKey),
+      referenceId: row.referenceId === null || row.referenceId === undefined ? null : idToString(blob(row.referenceId)),
+      referenceDisplayName: row.referenceDisplayName === null || row.referenceDisplayName === undefined ? null : String(row.referenceDisplayName),
+      referenceLegalName: row.referenceLegalName === null || row.referenceLegalName === undefined ? null : String(row.referenceLegalName),
       origin: String(row.origin),
       routeId: String(row.routeId),
       assertionId: idToString(blob(row.assertionId)),
@@ -1443,6 +1969,7 @@ function currentTransaction(
       producerVersion: String(row.producerVersion ?? ""),
       provenance: parseProvenance(row.provenanceJson),
     })),
+    tags: readCanonicalTransactionTags(db, transactionId, cutoff, true),
   };
 }
 
@@ -1462,58 +1989,7 @@ function historicalTransaction(
   for (const row of selectedRows) if (!byField.has(row.fieldName)) byField.set(row.fieldName, row);
   const selectedRoleAssertion = byField.get("counterparty_role")?.assertionId;
   const counterparties = selectedRoleAssertion
-    ? db.prepare(`
-        WITH candidates AS (
-          SELECT participation.role_code AS role, participation.observed_name AS observedName,
-                 participation.observed_reference AS observedReference,
-                 reference.producer_namespace AS producerNamespace,
-                 reference.producer_entity_key AS producerEntityKey,
-                 participation.origin, participation.route_id AS routeId,
-                 participation.assertion_id AS assertionId,
-                 participation.provenance_json AS provenanceJson,
-                 typed.taxonomy_id AS taxonomyId,
-                 typed.taxonomy_version AS taxonomyVersion,
-                 typed.taxonomy_dimension AS taxonomyDimension,
-                 typed.taxonomy_code AS taxonomyCode,
-                 run.producer_id AS producerId,
-                 run.producer_version AS producerVersion,
-                 participation.rowid AS participationRowId,
-                 ROW_NUMBER() OVER (PARTITION BY participation.assertion_id
-                                    ORDER BY commit_row.commit_sequence DESC, participation.rowid DESC) AS rank
-            FROM counterparty_participations participation
-            JOIN assertions role_assertion
-              ON role_assertion.assertion_id = participation.assertion_id
-             AND role_assertion.field_name = 'counterparty_role'
-            JOIN enrichment_run_outputs output
-              ON output.assertion_id = role_assertion.assertion_id
-             AND output.output_state = 'supported'
-            JOIN enrichment_runs run ON run.run_id = output.run_id
-            JOIN canonical_commits output_commit ON output_commit.commit_id = output.commit_id
-            JOIN automatic_enrichment_authority_routes route ON route.route_id = output.route_id
-            JOIN canonical_commits commit_row ON commit_row.commit_id = participation.commit_id
-            LEFT JOIN enrichment_taxonomy_assertion_values typed
-              ON typed.assertion_id = role_assertion.assertion_id
-            LEFT JOIN counterparty_references reference
-              ON reference.reference_id = participation.reference_id
-           WHERE participation.transaction_id = ?
-             AND participation.assertion_id = ?
-             AND output_commit.commit_sequence <= ?
-             AND commit_row.commit_sequence <= ?
-             AND route.valid_from_commit_sequence <= ?
-             AND (route.valid_to_commit_sequence IS NULL OR ? < route.valid_to_commit_sequence)
-             AND COALESCE((SELECT event_kind FROM assertion_transitions event
-                            JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
-                           WHERE event.assertion_id = role_assertion.assertion_id
-                             AND event_commit.commit_sequence <= ?
-                           ORDER BY event_commit.commit_sequence DESC, event.rowid DESC LIMIT 1), 'observed')
-                 NOT IN ('withdrawn','superseded')
-        )
-        SELECT role, observedName, observedReference, producerNamespace,
-               producerEntityKey, origin, routeId, assertionId, provenanceJson,
-               taxonomyId, taxonomyVersion, taxonomyDimension, taxonomyCode,
-               producerId, producerVersion
-          FROM candidates WHERE rank = 1
-      `).all(transactionId, canonicalStoredId(selectedRoleAssertion, "Role assertion ID"), cutoff, cutoff, cutoff, cutoff, cutoff) as DbRow[]
+    ? selectedCounterpartyRows(db, transactionId, selectedRoleAssertion, cutoff)
     : [];
   return {
     transactionId: idToString(transactionId),
@@ -1529,13 +2005,17 @@ function historicalTransaction(
       db,
       cutoff,
     ),
-    display: resultFromRuntimeRow(
+    display: selectedCounterpartyDisplay(
+      db,
+      transactionId,
+      cutoff,
+      counterparties,
       byField.get("counterparty_display"),
-      outputProvenance(db, byField.get("counterparty_display")?.assertionId, cutoff),
     ),
     counterparties: counterparties.map((row) => ({
-      role: String(row.role), observedName: row.observedName === null ? null : String(row.observedName), observedReference: row.observedReference === null ? null : String(row.observedReference), producerNamespace: row.producerNamespace === null ? null : String(row.producerNamespace), producerEntityKey: row.producerEntityKey === null ? null : String(row.producerEntityKey), origin: String(row.origin), routeId: String(row.routeId), assertionId: idToString(blob(row.assertionId)), taxonomyId: String(row.taxonomyId ?? TRANSACTION_TAXONOMY_ID), taxonomyVersion: String(row.taxonomyVersion ?? TRANSACTION_TAXONOMY_VERSION), taxonomyDimension: row.taxonomyDimension === null || row.taxonomyDimension === undefined ? null : String(row.taxonomyDimension), taxonomyCode: row.taxonomyCode === null || row.taxonomyCode === undefined ? String(row.role) : String(row.taxonomyCode), producerId: String(row.producerId ?? ""), producerVersion: String(row.producerVersion ?? ""), provenance: parseProvenance(row.provenanceJson),
+      participationKey: String(row.participationKey ?? ""), role: String(row.role), observedName: row.observedName === null ? null : String(row.observedName), observedReference: row.observedReference === null ? null : String(row.observedReference), sourceClassificationScheme: row.sourceClassificationScheme === null || row.sourceClassificationScheme === undefined ? null : String(row.sourceClassificationScheme), sourceClassificationCode: row.sourceClassificationCode === null || row.sourceClassificationCode === undefined ? null : String(row.sourceClassificationCode), producerNamespace: row.producerNamespace === null ? null : String(row.producerNamespace), producerEntityKey: row.producerEntityKey === null ? null : String(row.producerEntityKey), referenceId: row.referenceId === null || row.referenceId === undefined ? null : idToString(blob(row.referenceId)), referenceDisplayName: row.referenceDisplayName === null || row.referenceDisplayName === undefined ? null : String(row.referenceDisplayName), referenceLegalName: row.referenceLegalName === null || row.referenceLegalName === undefined ? null : String(row.referenceLegalName), origin: String(row.origin), routeId: String(row.routeId), assertionId: idToString(blob(row.assertionId)), taxonomyId: String(row.taxonomyId ?? TRANSACTION_TAXONOMY_ID), taxonomyVersion: String(row.taxonomyVersion ?? TRANSACTION_TAXONOMY_VERSION), taxonomyDimension: row.taxonomyDimension === null || row.taxonomyDimension === undefined ? null : String(row.taxonomyDimension), taxonomyCode: row.taxonomyCode === null || row.taxonomyCode === undefined ? String(row.role) : String(row.taxonomyCode), producerId: String(row.producerId ?? ""), producerVersion: String(row.producerVersion ?? ""), provenance: parseProvenance(row.provenanceJson),
     })),
+    tags: readCanonicalTransactionTags(db, transactionId, cutoff),
   };
 }
 
