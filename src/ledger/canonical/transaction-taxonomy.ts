@@ -12,8 +12,36 @@ export const TRANSACTION_TAXONOMY_LOCALES = ["en", "zh-Hant"] as const;
 export const CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID =
   "cathay/domestic-deposit/automatic-enrichment" as const;
 export const CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION = "v1" as const;
+export const CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION =
+  "cathay/domestic-deposit/v1" as const;
 export const CATHAY_AUTOMATIC_ENRICHMENT_ROUTE_SCOPE =
   "cathay/domestic-deposit" as const;
+/**
+ * Grouped counterparty output is a v23 extension contract.  It is kept
+ * separate from the published Cathay v1 producer compatibility package so a
+ * legacy single-role assertion keeps its original meaning.
+ */
+export const CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION =
+  "cathay/domestic-deposit/counterparty-group/v1" as const;
+export const CATHAY_GROUPED_COUNTERPARTY_ROLE_CODES = [
+  "merchant",
+  "marketplace",
+  "payment_platform",
+  "financial_institution",
+] as const;
+/** Read-only bridge for grouped rows written by the unreleased v22 facade. */
+export const CATHAY_LEGACY_GROUPED_COUNTERPARTY_SOURCE_ROLE_CODES = [
+  "merchant",
+  "marketplace",
+  "payment_platform",
+  "financial_institution",
+  "income_source",
+  "government",
+  "person",
+] as const;
+export const CATHAY_LEGACY_GROUPED_COUNTERPARTY_DERIVED_ROLE_CODES = [
+  "merchant",
+] as const;
 
 export type TaxonomyDimension = "kind" | "category" | "counterparty_role";
 export type TaxonomyOrigin = "source" | "derived" | "user";

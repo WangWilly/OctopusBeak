@@ -21,6 +21,7 @@ import {
 } from "./canonical-enrichment.ts";
 import { commitCanonicalAutomaticEnrichmentRun } from "./canonical-enrichment.ts";
 import { blob, idToString, uuidV7 } from "./canonical-schema-implementation.ts";
+import { CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION } from "./transaction-taxonomy.ts";
 
 type Fixture = Readonly<{
   directory: string;
@@ -199,6 +200,418 @@ test("display precedence and reference names remain knowledge-time facts", async
     assert.equal(current.counterparties[0]?.referenceDisplayName, "Cafe v2");
     assert.ok(second.commitSequence > first.commitSequence);
     assert.ok(alias.commitSequence < override.commitSequence);
+  } finally {
+    await dispose(state.directory);
+  }
+});
+
+test("grouped roles keep member taxonomy and bind automatic displays to the selected member", async () => {
+  const state = await fixture();
+  try {
+    const evidence = {
+      kind: "description",
+      sourceRecordId: state.sourceRecordId,
+      sourceValue: "Synthetic Cathay deposit description",
+      contractVersion: CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+    } as const;
+    await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-member-role",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind", "counterparty_role"] }],
+      outputs: [
+        {
+          transactionId: state.transactionId,
+          field: "kind",
+          origin: "derived",
+          value: "purchase",
+          confidenceBasisPoints: 9_000,
+          evidence,
+        },
+        {
+          transactionId: state.transactionId,
+          field: "counterparty_role",
+          origin: "derived",
+          value: "merchant",
+          confidenceBasisPoints: 9_000,
+          evidence,
+          participations: [
+            {
+              participationKey: "merchant-1",
+              role: "merchant",
+              observedName: "Merchant",
+              counterparty: {
+                producerNamespace: "grouped-test",
+                producerEntityKey: "merchant-1",
+                displayName: "Merchant",
+              },
+            },
+            {
+              participationKey: "marketplace-1",
+              role: "marketplace",
+              observedName: "Marketplace",
+              counterparty: {
+                producerNamespace: "grouped-test",
+                producerEntityKey: "marketplace-1",
+                displayName: "Marketplace",
+              },
+            },
+            {
+              participationKey: "institution-1",
+              role: "financial_institution",
+              observedName: "Cathay Bank",
+              counterparty: {
+                producerNamespace: "grouped-test",
+                producerEntityKey: "institution-1",
+                displayName: "Cathay Bank",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    try {
+      const members = db.prepare(`
+        SELECT participation.role_code, typed.taxonomy_code
+          FROM counterparty_participations participation
+          JOIN counterparty_participation_taxonomy_values typed
+            ON typed.participation_id = participation.participation_id
+         WHERE participation.transaction_id = ?
+         ORDER BY participation.participation_key
+      `).all(Buffer.from(state.transactionId.replaceAll("-", ""), "hex")) as Array<Record<string, unknown>>;
+      assert.deepEqual(members.map((row) => [row.role_code, row.taxonomy_code]), [
+        ["financial_institution", "financial_institution"],
+        ["marketplace", "marketplace"],
+        ["merchant", "merchant"],
+      ]);
+    } finally {
+      db.close();
+    }
+    const grouped = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(grouped.counterparties.map((row) => row.taxonomyCode), ["merchant", "marketplace", "financial_institution"]);
+    assert.equal(grouped.display.status, "fallback");
+
+    await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-member-display",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_display"] }],
+      outputs: [{
+        transactionId: state.transactionId,
+        field: "counterparty_display",
+        origin: "derived",
+        value: "Selected merchant",
+        participationKey: "merchant-1",
+        counterparty: {
+          producerNamespace: "grouped-test",
+          producerEntityKey: "merchant-1",
+        },
+        confidenceBasisPoints: 9_000,
+        evidence,
+      }],
+    });
+    const selectedResult = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] });
+    const selected = selectedResult.transactions[0]!;
+    assert.equal(selected.display.status, "supported");
+    if (selected.display.status !== "supported") throw new Error("Expected selected member display.");
+    assert.equal(selected.display.value, "Selected merchant");
+    assert.equal(selected.display.participationKey, "merchant-1");
+    assert.equal(selected.display.referenceId, selected.counterparties[0]?.referenceId);
+
+    await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-member-kind-change",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind"] }],
+      outputs: [{
+        transactionId: state.transactionId,
+        field: "kind",
+        origin: "derived",
+        value: "transfer.internal",
+        confidenceBasisPoints: 9_000,
+        evidence,
+      }],
+    });
+    const transfer = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(transfer.counterparties.map((row) => row.taxonomyCode), ["financial_institution", "merchant", "marketplace"]);
+    assert.equal(transfer.display.status, "fallback");
+
+    const beforeMismatch = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).knowledgePoint;
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/grouped-member-mismatch",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_display"] }],
+        outputs: [{
+          transactionId: state.transactionId,
+          field: "counterparty_display",
+          origin: "derived",
+          value: "Wrong member",
+          participationKey: "merchant-1",
+          counterparty: {
+            producerNamespace: "grouped-test",
+            producerEntityKey: "marketplace-1",
+          },
+          confidenceBasisPoints: 9_000,
+          evidence,
+        }],
+      }),
+      /participation binding/u,
+    );
+    assert.equal(createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).knowledgePoint, beforeMismatch);
+    await createCanonicalProjectionRuntime(state.directory).rebuild();
+    const rebuilt = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.equal(rebuilt.display.status, "fallback");
+    if (rebuilt.display.status !== "fallback") throw new Error("Expected source fallback after Kind selection changed.");
+    assert.match(rebuilt.display.value, /^Synthetic Cathay .+ description$/u);
+    assert.deepEqual(rebuilt.counterparties, transfer.counterparties);
+  } finally {
+    await dispose(state.directory);
+  }
+});
+
+test("versioned grouped contracts preserve source and derived role permutations", async () => {
+  const state = await fixture();
+  try {
+    // The source-store fixture has a deliberately small retained payload. Add
+    // the explicit source role field in this isolated fixture to exercise the
+    // source grouped contract without changing the published source parser.
+    const sourceDb = openCanonicalDatabase(state.directory);
+    try {
+      const row = sourceDb.prepare(
+        "SELECT payload_json FROM source_records WHERE source_record_id = ?",
+      ).get(Buffer.from(state.sourceRecordId.replaceAll("-", ""), "hex")) as { payload_json?: unknown };
+      const payload = JSON.parse(String(row.payload_json)) as Record<string, unknown>;
+      payload.counterparty_role = "marketplace";
+      sourceDb.prepare(
+        "UPDATE source_records SET payload_json = ? WHERE source_record_id = ?",
+      ).run(
+        JSON.stringify(payload),
+        Buffer.from(state.sourceRecordId.replaceAll("-", ""), "hex"),
+      );
+    } finally {
+      sourceDb.close();
+    }
+
+    const source = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-source-contract",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_role"] }],
+      outputs: [{
+        transactionId: state.transactionId,
+        field: "counterparty_role",
+        origin: "source",
+        value: "marketplace",
+        evidence: {
+          kind: "explicit-source-field",
+          sourceRecordId: state.sourceRecordId,
+          sourceField: "counterparty_role",
+          sourceValue: "marketplace",
+          contractVersion: CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+        },
+        participations: [
+          {
+            participationKey: "marketplace-source",
+            role: "marketplace",
+            observedName: "Marketplace source",
+            counterparty: {
+              producerNamespace: "source-marketplace",
+              producerEntityKey: "marketplace-1",
+            },
+          },
+          {
+            participationKey: "merchant-source",
+            role: "merchant",
+            observedName: "Merchant source",
+            counterparty: {
+              producerNamespace: "source-merchant",
+              producerEntityKey: "merchant-1",
+            },
+          },
+        ],
+      }],
+    });
+    const sourceCurrent = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(sourceCurrent.counterparties.map((row) => row.taxonomyCode), ["merchant", "marketplace"]);
+    assert.equal(sourceCurrent.counterparties.every((row) => row.origin === "source"), true);
+    const reopenedAfterSource = openCanonicalDatabase(state.directory, { readOnly: true });
+    reopenedAfterSource.close();
+
+    const derived = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-derived-contract",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind", "counterparty_role"] }],
+      outputs: [
+        {
+          transactionId: state.transactionId,
+          field: "kind",
+          origin: "derived",
+          value: "transfer.internal",
+          confidenceBasisPoints: 9_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: state.sourceRecordId,
+            sourceValue: "Synthetic Cathay deposit description",
+            contractVersion: "cathay/domestic-deposit/v1",
+          },
+        },
+        {
+          transactionId: state.transactionId,
+          field: "counterparty_role",
+          origin: "derived",
+          value: "financial_institution",
+          confidenceBasisPoints: 9_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: state.sourceRecordId,
+            sourceValue: "Synthetic Cathay deposit description",
+            contractVersion: CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+          },
+          // The first role is deliberately changed. Selection follows the
+          // bounded Kind policy and therefore remains deterministic for the
+          // same admitted member set.
+          participations: [
+            {
+              participationKey: "institution-derived",
+              role: "financial_institution",
+              observedName: "Institution derived",
+              counterparty: {
+                producerNamespace: "derived-institution",
+                producerEntityKey: "institution-1",
+              },
+            },
+            {
+              participationKey: "marketplace-derived",
+              role: "marketplace",
+              observedName: "Marketplace derived",
+              counterparty: {
+                producerNamespace: "derived-marketplace",
+                producerEntityKey: "marketplace-1",
+              },
+            },
+            {
+              participationKey: "merchant-derived",
+              role: "merchant",
+              observedName: "Merchant derived",
+              counterparty: {
+                producerNamespace: "derived-merchant",
+                producerEntityKey: "merchant-1",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const query = createCanonicalEnrichmentQuery(state.directory);
+    const current = query.current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(current.counterparties.map((row) => row.taxonomyCode), [
+      "financial_institution", "merchant", "marketplace",
+    ]);
+    assert.equal(current.counterparties.every((row) => row.origin === "derived"), true);
+    const historicalSource = query.historical({
+      transactionIds: [state.transactionId],
+      financialAt: "2026-12-31",
+      knowledgeAt: source.commitSequence,
+    }).transactions[0]!;
+    assert.deepEqual(historicalSource.counterparties.map((row) => row.taxonomyCode), ["merchant", "marketplace"]);
+    assert.equal(historicalSource.counterparties.every((row) => row.origin === "source"), true);
+    const lineage = query.lineage({ transactionIds: [state.transactionId], knowledgeAt: derived.commitSequence });
+    const roleLineage = lineage.lineage?.filter((entry) => entry.field === "counterparty_role") ?? [];
+    assert.deepEqual(roleLineage.map((entry) => entry.origin), ["source", "derived"]);
+    assert.equal(roleLineage.every((entry) => Array.isArray(entry.participations) && entry.participations.length >= 2), true);
+
+    const permutation = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/grouped-derived-permutation",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_role"] }],
+      outputs: [{
+        transactionId: state.transactionId,
+        field: "counterparty_role",
+        origin: "derived",
+        value: "merchant",
+        confidenceBasisPoints: 9_000,
+        evidence: {
+          kind: "description",
+          sourceRecordId: state.sourceRecordId,
+          sourceValue: "Synthetic Cathay deposit description",
+          contractVersion: CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+        },
+        // The same supported members are reordered.  The transfer Kind policy
+        // still selects the same role set deterministically.
+        participations: [
+          { participationKey: "merchant-derived", role: "merchant" },
+          { participationKey: "institution-derived", role: "financial_institution" },
+          { participationKey: "marketplace-derived", role: "marketplace" },
+        ],
+      }],
+    });
+    assert.ok(permutation.commitSequence > derived.commitSequence);
+    const reordered = query.current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(reordered.counterparties.map((row) => row.taxonomyCode), current.counterparties.map((row) => row.taxonomyCode));
+
+    const beforeRejected = query.current({ transactionIds: [state.transactionId] }).knowledgePoint;
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/grouped-unsupported-member",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_role"] }],
+        outputs: [{
+          transactionId: state.transactionId,
+          field: "counterparty_role",
+          origin: "derived",
+          value: "merchant",
+          confidenceBasisPoints: 9_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: state.sourceRecordId,
+            sourceValue: "Synthetic Cathay deposit description",
+            contractVersion: CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+          },
+          participations: [
+            { participationKey: "merchant-unsupported", role: "merchant" },
+            { participationKey: "government-unsupported", role: "government" },
+          ],
+        }],
+      }),
+      /undeclared|versioned group contract/u,
+    );
+    assert.equal(query.current({ transactionIds: [state.transactionId] }).knowledgePoint, beforeRejected);
+    await assert.rejects(
+      commitCanonicalAutomaticEnrichmentRun(state.directory, {
+        sourceConnectionKey: state.sourceConnectionKey,
+        stream: "domestic-deposit",
+        ruleLineage: "test/grouped-missing-contract",
+        declaredSubjects: [{ transactionId: state.transactionId, fields: ["counterparty_role"] }],
+        outputs: [{
+          transactionId: state.transactionId,
+          field: "counterparty_role",
+          origin: "derived",
+          value: "merchant",
+          confidenceBasisPoints: 9_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: state.sourceRecordId,
+            sourceValue: "Synthetic Cathay deposit description",
+            contractVersion: "cathay/domestic-deposit/v1",
+          },
+          participations: [
+            { participationKey: "merchant-missing", role: "merchant" },
+            { participationKey: "marketplace-missing", role: "marketplace" },
+          ],
+        }],
+      }),
+      /undeclared|versioned group contract/u,
+    );
+    assert.equal(query.current({ transactionIds: [state.transactionId] }).knowledgePoint, beforeRejected);
+    await createCanonicalProjectionRuntime(state.directory).rebuild();
+    const rebuilt = query.current({ transactionIds: [state.transactionId] }).transactions[0]!;
+    assert.deepEqual(rebuilt.counterparties.map((row) => row.taxonomyCode), current.counterparties.map((row) => row.taxonomyCode));
   } finally {
     await dispose(state.directory);
   }
