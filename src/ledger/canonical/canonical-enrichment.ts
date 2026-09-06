@@ -2662,6 +2662,12 @@ export function createCanonicalEnrichmentQuery(ledgerDir: string) {
     lineage(request: CanonicalEnrichmentQueryRequest = {}): CanonicalEnrichmentQueryResult {
       return run((db) => {
         requireBoundedScope(request);
+        const hasFinancialCutoff = request.financialAt !== undefined;
+        const hasKnowledgeCutoff = request.knowledgeAt !== undefined;
+        if (hasFinancialCutoff !== hasKnowledgeCutoff)
+          throw new Error(
+            "Lineage enrichment queries require both financialAt and knowledgeAt cutoffs.",
+          );
         const latest = latestKnowledgePoint(db);
         const knowledgeAt = request.knowledgeAt ?? latest;
         if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0 || knowledgeAt > latest)
