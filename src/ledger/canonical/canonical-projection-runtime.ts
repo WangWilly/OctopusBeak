@@ -1,10 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { basename, dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { CANONICAL_SQLITE_FILE } from "./canonical-schema-implementation.ts";
-import {
-  openCanonicalDatabase,
-} from "./canonical-database.ts";
+import { CANONICAL_SQLITE_FILE, blob } from "./canonical-schema-implementation.ts";
+import { openCanonicalDatabase } from "./canonical-database.ts";
 import {
   canonicalProjectionRuntimeRebuildInternal,
   canonicalProjectionRuntimeSyncInternal,
@@ -505,6 +503,53 @@ function recordRuntimeKnowledgePoint(
   ).run(eventId, generationId, ordinal, previous, commitId, eventDigest);
 }
 
+function advanceRuntimeKnowledgeOnlyCommit(
+  db: DatabaseSync,
+  commitId: Uint8Array,
+  targetSequence: number,
+): void {
+  const active = activeGenerationState(db);
+  if (targetSequence <= active.cutoffCommitSequence) return;
+  const commits = db
+    .prepare(
+      `SELECT commit_id, commit_kind
+         FROM canonical_commits
+        WHERE commit_sequence > ? AND commit_sequence <= ?
+        ORDER BY commit_sequence`,
+    )
+    .all(active.cutoffCommitSequence, targetSequence) as Array<{
+      commit_id?: unknown;
+      commit_kind?: unknown;
+    }>;
+  for (const commit of commits) {
+    const kind = String(commit.commit_kind);
+    if (kind === "projection_rebuild") continue;
+    if (kind !== "user_assertion")
+      throw new Error(
+        "Canonical knowledge-only commit cannot skip an unapplied financial commit.",
+      );
+    if (
+      db
+        .prepare(
+          "SELECT 1 FROM assertion_transitions WHERE commit_id = ? LIMIT 1",
+        )
+        .get(blob(commit.commit_id))
+    )
+      throw new Error(
+        "Canonical knowledge-only commit cannot skip an unapplied user assertion transition.",
+      );
+    recordRuntimeKnowledgePoint(
+      db,
+      active.generationId,
+      blob(commit.commit_id),
+    );
+  }
+  db.prepare(
+    "UPDATE projection_generations SET build_cutoff_commit_sequence = ? WHERE generation_id = ?",
+  ).run(targetSequence, active.generationId);
+  markCurrentProjectionCommit(db, commitId);
+}
+
 /** Rebuild the loan balance projection for one account in the active generation. */
 function refreshCurrentLoanBalanceProjection(
   db: DatabaseSync,
@@ -816,6 +861,7 @@ function applyCommitInTransaction(
       .get(token.commitId)
   ) {
     refreshCanonicalEnrichmentProjection(db, token.commitId, targetSequence);
+    advanceRuntimeKnowledgeOnlyCommit(db, token.commitId, targetSequence);
     return;
   }
   if (impact === "loan-and-investment") {

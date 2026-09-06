@@ -276,6 +276,20 @@ test("user categorization supersedes and clears atomically to the current automa
     assert.equal(afterClear?.categorization.origin, "derived");
     assert.equal(afterClear?.categorization.categoryCode, "dining");
 
+    assert.throws(
+      () => createCanonicalSpendingQuery(state.directory).lineage({
+        sourceConnectionKey: state.sourceConnectionKey,
+        knowledgeAt: user.commitSequence,
+      }),
+      /both financialAt and knowledgeAt cutoffs/u,
+    );
+    assert.throws(
+      () => createCanonicalSpendingQuery(state.directory).lineage({
+        sourceConnectionKey: state.sourceConnectionKey,
+        financialAt: "2026-12-31",
+      }),
+      /both financialAt and knowledgeAt cutoffs/u,
+    );
     const currentLineage = createCanonicalSpendingQuery(state.directory).lineage({
       sourceConnectionKey: state.sourceConnectionKey,
     });
