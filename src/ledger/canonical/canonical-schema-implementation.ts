@@ -232,24 +232,24 @@ CREATE TRIGGER IF NOT EXISTS counterparty_participations_role_integrity_insert
 BEFORE INSERT ON counterparty_participations
 WHEN NOT EXISTS (
   SELECT 1
-    FROM enrichment_taxonomy_assertion_values typed
-   WHERE typed.assertion_id = NEW.assertion_id
-     AND typed.field_name = 'counterparty_role'
-     AND typed.taxonomy_dimension = 'counterparty_role'
-     AND typed.taxonomy_code = NEW.role_code
+    FROM taxonomy_codes role
+   WHERE role.taxonomy_id = 'transaction-taxonomy'
+     AND role.taxonomy_version = 'v1'
+     AND role.dimension = 'counterparty_role'
+     AND role.code = NEW.role_code
 )
-BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not the typed taxonomy role'); END;
+BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not a typed taxonomy role'); END;
 CREATE TRIGGER IF NOT EXISTS counterparty_participations_role_integrity_update
 BEFORE UPDATE OF assertion_id, role_code ON counterparty_participations
 WHEN NOT EXISTS (
   SELECT 1
-    FROM enrichment_taxonomy_assertion_values typed
-   WHERE typed.assertion_id = NEW.assertion_id
-     AND typed.field_name = 'counterparty_role'
-     AND typed.taxonomy_dimension = 'counterparty_role'
-     AND typed.taxonomy_code = NEW.role_code
+    FROM taxonomy_codes role
+   WHERE role.taxonomy_id = 'transaction-taxonomy'
+     AND role.taxonomy_version = 'v1'
+     AND role.dimension = 'counterparty_role'
+     AND role.code = NEW.role_code
 )
-BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not the typed taxonomy role'); END;
+BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not a typed taxonomy role'); END;
 CREATE TABLE IF NOT EXISTS current_transaction_enrichment (
   transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
   field_name TEXT NOT NULL CHECK(field_name IN ('kind','category','counterparty_role','counterparty_display')),
@@ -462,8 +462,344 @@ CREATE INDEX IF NOT EXISTS idx_projection_generation_transaction_categorizations
   ON projection_generation_transaction_categorizations(generation_id, transaction_id, assertion_id, component_ordinal);
 `;
 
+/**
+ * Issue 141 extends the v22 enrichment boundary with immutable reference
+ * metadata, grouped counterparty participations, and user-owned display/tag
+ * assertions.  The tables deliberately sit beside the existing assertion
+ * spine; they do not create a second event stream or a generic target model.
+ */
+const CANONICAL_DISPLAY_TAG_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS counterparty_reference_revisions (
+  reference_revision_id BLOB PRIMARY KEY CHECK(length(reference_revision_id) = 16),
+  reference_id BLOB NOT NULL REFERENCES counterparty_references(reference_id),
+  display_name TEXT,
+  legal_name TEXT,
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(reference_id, created_commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_reference_revisions_knowledge
+  ON counterparty_reference_revisions(reference_id, created_commit_id, reference_revision_id);
+
+CREATE TABLE IF NOT EXISTS current_counterparty_participations (
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  participation_id BLOB NOT NULL REFERENCES counterparty_participations(participation_id),
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  participation_key TEXT NOT NULL,
+  role_code TEXT NOT NULL,
+  reference_id BLOB REFERENCES counterparty_references(reference_id),
+  observed_name TEXT,
+  observed_reference TEXT,
+  source_classification_scheme TEXT,
+  source_classification_code TEXT,
+  origin TEXT NOT NULL CHECK(origin IN ('source','derived')),
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  route_id TEXT NOT NULL REFERENCES automatic_enrichment_authority_routes(route_id),
+  provenance_json TEXT NOT NULL,
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(transaction_id, participation_id),
+  UNIQUE(transaction_id, participation_key, assertion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_current_counterparty_participations_transaction
+  ON current_counterparty_participations(transaction_id, role_code, participation_key);
+
+CREATE TABLE IF NOT EXISTS counterparty_display_user_values (
+  assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  display_kind TEXT NOT NULL CHECK(display_kind IN ('override','reference_alias')),
+  reference_id BLOB REFERENCES counterparty_references(reference_id),
+  label TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES assertions(assertion_id, transaction_id),
+  CHECK((display_kind = 'override' AND reference_id IS NULL)
+     OR (display_kind = 'reference_alias' AND reference_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_display_user_values_transaction
+  ON counterparty_display_user_values(transaction_id, display_kind, reference_id, created_commit_id);
+
+/* All display assertions, including routed Source/Derived values and
+ * transaction-scoped User overrides/aliases, use one typed value table. */
+CREATE TABLE IF NOT EXISTS counterparty_display_assertion_values (
+  assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  origin TEXT NOT NULL CHECK(origin IN ('source','derived','user')),
+  display_kind TEXT NOT NULL CHECK(display_kind IN ('automatic','override','reference_alias')),
+  reference_id BLOB REFERENCES counterparty_references(reference_id),
+  participation_key TEXT,
+  label TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES assertions(assertion_id, transaction_id),
+  CHECK((display_kind = 'automatic' AND origin IN ('source','derived'))
+     OR (display_kind IN ('override','reference_alias') AND origin = 'user')),
+  CHECK((display_kind = 'automatic')
+     OR (display_kind = 'reference_alias' AND reference_id IS NOT NULL)
+     OR (display_kind = 'override' AND reference_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_display_assertion_values_transaction
+  ON counterparty_display_assertion_values(transaction_id, origin, display_kind, created_commit_id);
+CREATE INDEX IF NOT EXISTS idx_counterparty_display_assertion_values_reference
+  ON counterparty_display_assertion_values(reference_id, created_commit_id, assertion_id);
+
+CREATE TABLE IF NOT EXISTS user_tags (
+  tag_id BLOB PRIMARY KEY CHECK(length(tag_id) = 16),
+  user_id TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+);
+CREATE TABLE IF NOT EXISTS user_tag_label_revisions (
+  label_revision_id BLOB PRIMARY KEY CHECK(length(label_revision_id) = 16),
+  tag_id BLOB NOT NULL REFERENCES user_tags(tag_id),
+  user_id TEXT NOT NULL,
+  display_label TEXT NOT NULL,
+  normalized_label TEXT NOT NULL,
+  lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','archived')),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(tag_id, created_commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_tag_label_revisions_tag
+  ON user_tag_label_revisions(tag_id, created_commit_id, label_revision_id);
+CREATE INDEX IF NOT EXISTS idx_user_tag_label_revisions_user_normalized
+  ON user_tag_label_revisions(user_id, normalized_label, tag_id, created_commit_id);
+/* Lifecycle is a separate immutable revision so an archived label retains
+ * its normalized identity key without mutating an earlier label fact. */
+CREATE TABLE IF NOT EXISTS user_tag_status_revisions (
+  status_revision_id BLOB PRIMARY KEY CHECK(length(status_revision_id) = 16),
+  tag_id BLOB NOT NULL REFERENCES user_tags(tag_id),
+  user_id TEXT NOT NULL,
+  lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','archived')),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(tag_id, created_commit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_tag_status_revisions_tag
+  ON user_tag_status_revisions(tag_id, created_commit_id, status_revision_id);
+CREATE TABLE IF NOT EXISTS transaction_tag_assertion_values (
+  assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  tag_id BLOB NOT NULL REFERENCES user_tags(tag_id),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES assertions(assertion_id, transaction_id),
+  UNIQUE(assertion_id, transaction_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_tag_assertion_values_transaction
+  ON transaction_tag_assertion_values(transaction_id, tag_id, created_commit_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_tag_assertion_values_tag
+  ON transaction_tag_assertion_values(tag_id, transaction_id, created_commit_id);
+CREATE TABLE IF NOT EXISTS current_transaction_tags (
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  tag_id BLOB NOT NULL REFERENCES user_tags(tag_id),
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  user_id TEXT NOT NULL,
+  display_label TEXT NOT NULL,
+  normalized_label TEXT NOT NULL,
+  lifecycle TEXT NOT NULL CHECK(lifecycle = 'active'),
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(transaction_id, tag_id),
+  UNIQUE(transaction_id, tag_id, assertion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_current_transaction_tags_transaction
+  ON current_transaction_tags(transaction_id, tag_id, projection_commit_id);
+
+CREATE TRIGGER IF NOT EXISTS counterparty_reference_identity_no_update
+BEFORE UPDATE OF producer_namespace, producer_entity_key ON counterparty_references
+BEGIN SELECT RAISE(ABORT, 'counterparty reference identity is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_reference_metadata_no_update
+BEFORE UPDATE OF display_name, legal_name ON counterparty_references
+BEGIN SELECT RAISE(ABORT, 'counterparty reference metadata is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_reference_revisions_no_update
+BEFORE UPDATE ON counterparty_reference_revisions
+BEGIN SELECT RAISE(ABORT, 'counterparty reference metadata is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_reference_revisions_no_delete
+BEFORE DELETE ON counterparty_reference_revisions
+BEGIN SELECT RAISE(ABORT, 'counterparty reference metadata cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participations_no_update
+BEFORE UPDATE ON counterparty_participations
+BEGIN SELECT RAISE(ABORT, 'counterparty participations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participations_no_delete
+BEFORE DELETE ON counterparty_participations
+BEGIN SELECT RAISE(ABORT, 'counterparty participations cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_user_values_origin_guard
+BEFORE INSERT ON counterparty_display_user_values
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'counterparty_display'
+     AND assertion.origin = 'user'
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty display value requires a User Assertion'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_user_values_no_update
+BEFORE UPDATE ON counterparty_display_user_values
+BEGIN SELECT RAISE(ABORT, 'counterparty display values are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_user_values_no_delete
+BEFORE DELETE ON counterparty_display_user_values
+BEGIN SELECT RAISE(ABORT, 'counterparty display values cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_assertion_values_origin_guard
+BEFORE INSERT ON counterparty_display_assertion_values
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'counterparty_display'
+     AND assertion.origin = NEW.origin
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty display assertion authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_assertion_values_no_update
+BEFORE UPDATE ON counterparty_display_assertion_values
+BEGIN SELECT RAISE(ABORT, 'counterparty display assertion values are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_assertion_values_no_delete
+BEFORE DELETE ON counterparty_display_assertion_values
+BEGIN SELECT RAISE(ABORT, 'counterparty display assertion values cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_tag_assertion_origin_guard
+BEFORE INSERT ON transaction_tag_assertion_values
+WHEN NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'note'
+     AND assertion.origin = 'user'
+)
+BEGIN SELECT RAISE(ABORT, 'transaction tag requires a User Assertion'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_tag_assertion_values_no_update
+BEFORE UPDATE ON transaction_tag_assertion_values
+BEGIN SELECT RAISE(ABORT, 'transaction tag values are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_tag_assertion_values_no_delete
+BEFORE DELETE ON transaction_tag_assertion_values
+BEGIN SELECT RAISE(ABORT, 'transaction tag values cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS user_tags_no_update
+BEFORE UPDATE ON user_tags
+BEGIN SELECT RAISE(ABORT, 'user tags are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS user_tags_no_delete
+BEFORE DELETE ON user_tags
+BEGIN SELECT RAISE(ABORT, 'user tags cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS user_tag_label_revisions_no_update
+BEFORE UPDATE ON user_tag_label_revisions
+BEGIN SELECT RAISE(ABORT, 'user tag labels are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS user_tag_label_revisions_no_delete
+BEFORE DELETE ON user_tag_label_revisions
+BEGIN SELECT RAISE(ABORT, 'user tag labels cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS user_tag_status_revisions_no_update
+BEFORE UPDATE ON user_tag_status_revisions
+BEGIN SELECT RAISE(ABORT, 'user tag statuses are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS user_tag_status_revisions_no_delete
+BEFORE DELETE ON user_tag_status_revisions
+BEGIN SELECT RAISE(ABORT, 'user tag statuses cannot be deleted'); END;
+`;
+
 function ensureCanonicalCategorizationSchema(db: DatabaseSync): void {
   db.exec(CANONICAL_CATEGORIZATION_SCHEMA_SQL);
+}
+
+function ensureCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
+  // v22's single-role trigger compared every participation to the one
+  // assertion-level taxonomy value. v23 grouped outputs deliberately keep
+  // one typed assertion while retaining several independently typed roles.
+  db.exec(`
+    DROP TRIGGER IF EXISTS counterparty_participations_role_integrity_insert;
+    DROP TRIGGER IF EXISTS counterparty_participations_role_integrity_update;
+  `);
+  db.exec(CANONICAL_DISPLAY_TAG_SCHEMA_SQL);
+}
+
+function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
+  const required: Record<string, readonly string[]> = {
+    counterparty_reference_revisions: [
+      "reference_revision_id", "reference_id", "display_name", "legal_name",
+      "producer_id", "producer_version", "provenance_json", "created_commit_id",
+    ],
+    current_counterparty_participations: [
+      "transaction_id", "participation_id", "assertion_id", "participation_key",
+      "role_code", "reference_id", "observed_name", "observed_reference",
+      "source_classification_scheme", "source_classification_code", "origin",
+      "producer_id", "producer_version", "route_id", "provenance_json",
+      "projection_commit_id",
+    ],
+    counterparty_display_user_values: [
+      "assertion_id", "transaction_id", "display_kind", "reference_id", "label",
+      "created_commit_id",
+    ],
+    counterparty_display_assertion_values: [
+      "assertion_id", "transaction_id", "origin", "display_kind", "reference_id",
+      "participation_key", "label", "created_commit_id",
+    ],
+    user_tags: ["tag_id", "user_id", "created_commit_id"],
+    user_tag_label_revisions: [
+      "label_revision_id", "tag_id", "user_id", "display_label", "normalized_label",
+      "lifecycle", "created_commit_id",
+    ],
+    user_tag_status_revisions: [
+      "status_revision_id", "tag_id", "user_id", "lifecycle", "created_commit_id",
+    ],
+    transaction_tag_assertion_values: [
+      "assertion_id", "transaction_id", "tag_id", "created_commit_id",
+    ],
+    current_transaction_tags: [
+      "transaction_id", "tag_id", "assertion_id", "user_id", "display_label",
+      "normalized_label", "lifecycle", "projection_commit_id",
+    ],
+  };
+  for (const [table, columns] of Object.entries(required)) {
+    if (!tableExists(db, table))
+      throw new Error(`Canonical display/tag table ${table} is missing.`);
+    const actual = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>)
+        .map((column) => String(column.name ?? "")),
+    );
+    for (const column of columns)
+      if (!actual.has(column))
+        throw new Error(`Canonical display/tag column ${table}.${column} is missing.`);
+  }
+  for (const index of [
+    "idx_counterparty_reference_revisions_knowledge",
+    "idx_current_counterparty_participations_transaction",
+    "idx_counterparty_display_user_values_transaction",
+    "idx_counterparty_display_assertion_values_transaction",
+    "idx_counterparty_display_assertion_values_reference",
+    "idx_user_tag_label_revisions_tag",
+    "idx_user_tag_label_revisions_user_normalized",
+    "idx_user_tag_status_revisions_tag",
+    "idx_transaction_tag_assertion_values_transaction",
+    "idx_transaction_tag_assertion_values_tag",
+    "idx_current_transaction_tags_transaction",
+  ]) {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index))
+      throw new Error(`Canonical display/tag index ${index} is missing.`);
+  }
+  for (const trigger of [
+    "counterparty_reference_identity_no_update",
+    "counterparty_reference_metadata_no_update",
+    "counterparty_reference_revisions_no_update",
+    "counterparty_reference_revisions_no_delete",
+    "counterparty_participations_no_update",
+    "counterparty_participations_no_delete",
+    "counterparty_display_user_values_origin_guard",
+    "counterparty_display_assertion_values_origin_guard",
+    "transaction_tag_assertion_origin_guard",
+    "user_tags_no_update",
+    "user_tag_label_revisions_no_update",
+    "user_tag_status_revisions_no_update",
+  ]) {
+    if (!triggerExists(db, trigger))
+      throw new Error(`Canonical display/tag trigger ${trigger} is missing.`);
+  }
+  const malformed = count(
+    db,
+    `SELECT COUNT(*) AS count
+       FROM current_counterparty_participations participation
+      WHERE participation.origin NOT IN ('source','derived')
+         OR NOT EXISTS (
+           SELECT 1 FROM counterparty_participations stored
+            WHERE stored.participation_id = participation.participation_id
+              AND stored.transaction_id = participation.transaction_id
+              AND stored.assertion_id = participation.assertion_id
+         )`,
+  );
+  if (malformed !== 0)
+    throw new Error("Canonical current counterparty participation is malformed.");
 }
 
 function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
@@ -1062,6 +1398,7 @@ export function selectAssertionAsOf(
     FROM assertions a JOIN assertion_transitions e ON e.assertion_id = a.assertion_id
     JOIN canonical_commits c ON c.commit_id = e.commit_id
     WHERE a.transaction_id = ? AND a.field_name = ? AND a.origin = ? AND c.commit_sequence <= ? AND e.event_kind NOT IN ('withdrawn','superseded')
+      AND NOT (a.field_name = 'note' AND a.rule_lineage = 'user/tag/v1')
       AND NOT EXISTS (SELECT 1 FROM assertion_transitions newer JOIN canonical_commits nc ON nc.commit_id = newer.commit_id
         WHERE newer.assertion_id = e.assertion_id AND nc.commit_sequence <= ?
           AND (nc.commit_sequence > c.commit_sequence OR (nc.commit_sequence = c.commit_sequence AND newer.rowid > e.rowid)))
@@ -1140,7 +1477,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 22;
+export const CANONICAL_SCHEMA_VERSION = 23;
 
 type CanonicalId = Buffer;
 
@@ -2271,7 +2608,8 @@ export type CanonicalMigrationFailureInjection =
   | "v6-v7-after-generation-copy"
   | "v6-v7-after-pointer"
   | "v6-v7-after-validation"
-  | "v7-v8-after-source-copy";
+  | "v7-v8-after-source-copy"
+  | "v22-v23-after-display-tags";
 
 export type CanonicalDatabaseOptions = {
   readOnly?: boolean;
@@ -4475,12 +4813,15 @@ function isValidUserAssertionProvenanceEvidence(
           WHERE latest.assertion_id = assertion.assertion_id AND latest_commit.commit_sequence <= provenance_commit.commit_sequence
           ORDER BY latest_commit.commit_sequence DESC, latest.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'
       )
-      AND NOT EXISTS (SELECT 1 FROM assertions newer
-        JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.created_commit_id
-        WHERE newer.origin = 'user' AND newer.transaction_id = assertion.transaction_id
-          AND newer.field_name = assertion.field_name AND newer.producer_id = assertion.producer_id
-          AND newer_commit.commit_sequence <= provenance_commit.commit_sequence
-          AND newer_commit.commit_sequence > created_commit.commit_sequence)
+      AND (
+        assertion.field_name = 'counterparty_display'
+        OR NOT EXISTS (SELECT 1 FROM assertions newer
+          JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.created_commit_id
+          WHERE newer.origin = 'user' AND newer.transaction_id = assertion.transaction_id
+            AND newer.field_name = assertion.field_name AND newer.producer_id = assertion.producer_id
+            AND newer_commit.commit_sequence <= provenance_commit.commit_sequence
+            AND newer_commit.commit_sequence > created_commit.commit_sequence)
+      )
     LIMIT 1`,
       )
       .get(assertionId, commitId),
@@ -8660,6 +9001,133 @@ function migrateV21ToV22(db: DatabaseSync): void {
   db.exec("PRAGMA user_version = 22");
 }
 
+function migrateV22ToV23(
+  db: DatabaseSync,
+  injectMigrationFailure?: CanonicalMigrationFailureInjection,
+): void {
+  // v22 published the enrichment output as one row per transaction/field.
+  // Preserve that contract for ordinary outputs while adding a stable key to
+  // permit one grouped counterparty output to retain several participations.
+  const outputColumns = new Set(
+    (db.prepare("PRAGMA table_info(enrichment_run_outputs)").all() as Array<{ name?: unknown }>)
+      .map((column) => String(column.name ?? "")),
+  );
+  if (!outputColumns.has("participation_key")) {
+    // Keep the v22 table identity intact.  A number of published lifecycle
+    // triggers reference enrichment_run_outputs directly; rebuilding it by
+    // rename/drop would leave those immutable triggers pointing at a vanished
+    // table.  Grouped role output remains one declared subject/field row and
+    // expands to several immutable participation rows below.
+    db.exec(`
+      ALTER TABLE enrichment_run_outputs
+        ADD COLUMN participation_key TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_enrichment_outputs_transaction_participation
+        ON enrichment_run_outputs(transaction_id, field_name, commit_id, participation_key);
+    `);
+  }
+
+  const participationColumns = new Set(
+    (db.prepare("PRAGMA table_info(counterparty_participations)").all() as Array<{ name?: unknown }>)
+      .map((column) => String(column.name ?? "")),
+  );
+  for (const [name, definition] of [
+    ["participation_key", "TEXT NOT NULL DEFAULT ''"],
+    ["source_classification_scheme", "TEXT"],
+    ["source_classification_code", "TEXT"],
+    ["producer_id", "TEXT NOT NULL DEFAULT 'legacy/counterparty'"],
+    ["producer_version", "TEXT NOT NULL DEFAULT 'v1'"],
+  ] as const)
+    if (!participationColumns.has(name))
+      db.exec(`ALTER TABLE counterparty_participations ADD COLUMN ${name} ${definition}`);
+
+  // Existing rows are retained with deterministic opaque keys.  The key is a
+  // tie-breaker only; producer-scoped references remain the sole identity.
+  db.exec(`
+    UPDATE counterparty_participations
+       SET participation_key = lower(hex(participation_id))
+     WHERE participation_key = '';
+    UPDATE counterparty_participations
+       SET producer_id = COALESCE((
+             SELECT run.producer_id
+               FROM enrichment_run_outputs output
+               JOIN enrichment_runs run ON run.run_id = output.run_id
+              WHERE output.assertion_id = counterparty_participations.assertion_id
+              ORDER BY output.rowid DESC LIMIT 1
+           ), producer_id),
+           producer_version = COALESCE((
+             SELECT run.producer_version
+               FROM enrichment_run_outputs output
+               JOIN enrichment_runs run ON run.run_id = output.run_id
+              WHERE output.assertion_id = counterparty_participations.assertion_id
+              ORDER BY output.rowid DESC LIMIT 1
+           ), producer_version);
+  `);
+  ensureCanonicalDisplayAndTagsSchema(db);
+  db.exec(`
+    INSERT OR IGNORE INTO counterparty_reference_revisions(
+      reference_revision_id, reference_id, display_name, legal_name,
+      producer_id, producer_version, provenance_json, created_commit_id)
+    SELECT randomblob(16), reference.reference_id, reference.display_name,
+           reference.legal_name,
+           COALESCE((
+             SELECT participation.producer_id
+               FROM counterparty_participations participation
+               JOIN canonical_commits participation_commit
+                 ON participation_commit.commit_id = participation.commit_id
+              WHERE participation.reference_id = reference.reference_id
+              ORDER BY participation_commit.commit_sequence, participation.rowid
+              LIMIT 1
+           ), 'legacy/counterparty'),
+           COALESCE((
+             SELECT participation.producer_version
+               FROM counterparty_participations participation
+               JOIN canonical_commits participation_commit
+                 ON participation_commit.commit_id = participation.commit_id
+              WHERE participation.reference_id = reference.reference_id
+              ORDER BY participation_commit.commit_sequence, participation.rowid
+              LIMIT 1
+           ), 'v1'), '{}',
+           reference.created_commit_id
+      FROM counterparty_references reference;
+    INSERT OR IGNORE INTO current_counterparty_participations(
+      transaction_id, participation_id, assertion_id, participation_key,
+      role_code, reference_id, observed_name, observed_reference,
+      source_classification_scheme, source_classification_code, origin,
+      producer_id, producer_version, route_id, provenance_json,
+      projection_commit_id)
+    SELECT participation.transaction_id, participation.participation_id,
+           participation.assertion_id, participation.participation_key,
+           participation.role_code, participation.reference_id,
+           participation.observed_name, participation.observed_reference,
+           participation.source_classification_scheme,
+           participation.source_classification_code, participation.origin,
+           participation.producer_id, participation.producer_version,
+           participation.route_id, participation.provenance_json,
+           (SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1)
+      FROM counterparty_participations participation
+      JOIN assertions assertion ON assertion.assertion_id = participation.assertion_id
+       AND assertion.transaction_id = participation.transaction_id
+      JOIN enrichment_run_outputs output ON output.assertion_id = participation.assertion_id
+       AND output.output_state = 'supported'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM assertion_transitions event
+        JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+       WHERE event.assertion_id = participation.assertion_id
+         AND event_commit.commit_sequence >= 0
+       GROUP BY event.assertion_id
+       HAVING MAX(event_commit.commit_sequence) FILTER (WHERE event.event_kind IN ('withdrawn','superseded'))
+              > MAX(event_commit.commit_sequence) FILTER (WHERE event.event_kind IN ('observed','restored'))
+      );
+  `);
+  if (injectMigrationFailure === "v22-v23-after-display-tags")
+    throw new Error("Injected v22-v23 migration failure after display/tag schema.");
+  validateCanonicalDisplayAndTagsSchema(db);
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (23, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 23");
+}
+
 type CanonicalAttestationColumn = {
   readonly name: string;
   readonly definition: string;
@@ -9373,6 +9841,14 @@ export function createCanonicalSchemaLifecyclePlan(
         migrateV21ToV22(db);
       },
     },
+    {
+      id: "canonical/v22-v23/counterparty-display-and-user-tags/v1",
+      fromVersion: 22,
+      toVersion: 23,
+      apply(db) {
+        migrateV22ToV23(db, options.injectMigrationFailure);
+      },
+    },
     ],
   );
   return {
@@ -9678,6 +10154,7 @@ function validateReadOnlyDatabase(
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   if (tableExists(db, "transaction_categorization_values"))
     validateCanonicalCategorizationSchema(db);
+  if (tableExists(db, "user_tags")) validateCanonicalDisplayAndTagsSchema(db);
   // The lifecycle validates the physical audit schema only. Whether a
   // versioned financial/source cleanup has been applied is a data-transition
   // concern checked after a validated handle exists.
@@ -10317,6 +10794,7 @@ export function validateCanonicalDatabaseAfterLifecycle(
   validateForeignCurrencyConversionLifecycleSchema(db);
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   validateCanonicalCategorizationSchema(db);
+  validateCanonicalDisplayAndTagsSchema(db);
   if (hasCanonicalCreditCardExtension(db))
     validateCanonicalCreditCardSchema(db);
   if (hasFubonCreditCardExtension(db)) validateFubonCreditCardSchema(db);
