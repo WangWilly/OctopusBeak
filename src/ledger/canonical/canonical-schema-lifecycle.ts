@@ -658,6 +658,36 @@ function runReadOnlyLifecycleCheck<T>(
   }
 }
 
+function runReadOnlyLifecycleSnapshot<T>(
+  db: DatabaseSync,
+  check: (db: DatabaseSync) => T,
+): T {
+  // A writer may request an on-demand repair from inside its outer
+  // BEGIN IMMEDIATE transaction.  That transaction already provides the
+  // required stable snapshot; do not try to begin or finish a nested SQLite
+  // transaction, and leave its rollback/commit ownership with the caller.
+  if (db.isTransaction) return check(db);
+
+  let readTransaction = false;
+  try {
+    db.exec("BEGIN");
+    readTransaction = true;
+    const result = check(db);
+    db.exec("COMMIT");
+    readTransaction = false;
+    return result;
+  } catch (error) {
+    if (readTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Preserve the lifecycle validation failure if rollback is unavailable.
+      }
+    }
+    throw error;
+  }
+}
+
 function createRepairAuthorizer(
   repair: CanonicalSchemaRepair,
   snapshot: RepairSnapshot,
@@ -1536,9 +1566,17 @@ function validateRetainedSharedLifecycleHandle(
       `Canonical SQLite schema changed while reacquiring its shared lifecycle lease: expected ${plan.currentVersion}, found ${version}.`,
     );
   try {
-    runReadOnlyLifecycleCheck(db, plan.validate);
-    if (databasePath !== ":memory:")
-      verifyCanonicalRuntime(db, { readOnly });
+    // Lifecycle validation spans the immutable write model, generation rows,
+    // and their provenance chain.  A concurrent canonical commit is atomic,
+    // but without one read transaction each validation query can select a
+    // different WAL snapshot and manufacture a transient mixed-generation
+    // failure.  Keep the complete check on one snapshot before handing the
+    // shared handle to its caller.
+    runReadOnlyLifecycleSnapshot(db, (candidate) => {
+      runReadOnlyLifecycleCheck(candidate, plan.validate);
+      if (databasePath !== ":memory:")
+        verifyCanonicalRuntime(candidate, { readOnly });
+    });
   } finally {
     // Read-only lifecycle checks deliberately clear their temporary
     // authorizer. Restore the permanent runtime guard before this helper is
@@ -2803,14 +2841,19 @@ export function openCanonicalSchemaLifecycle(
       // transition. Probe all declared transition predicates while this
       // handle holds a shared lease; only a positive result requires the
       // exclusive schema lease below.
-      runReadOnlyLifecycleCheck(
+      const needsSchemaTransition = runReadOnlyLifecycleSnapshot(
         db,
-        lifecyclePlan.validateBeforeRepairs ?? lifecyclePlan.validate,
-      );
-      const needsSchemaTransition = currentVersionHasSchemaWork(
-        db,
-        lifecyclePlan,
-        { fromVersion, targetVersion: lifecyclePlan.currentVersion },
+        (candidate) => {
+          runReadOnlyLifecycleCheck(
+            candidate,
+            lifecyclePlan.validateBeforeRepairs ?? lifecyclePlan.validate,
+          );
+          return currentVersionHasSchemaWork(
+            candidate,
+            lifecyclePlan,
+            { fromVersion, targetVersion: lifecyclePlan.currentVersion },
+          );
+        },
       );
       if (!needsSchemaTransition) {
         validateSharedHandle();

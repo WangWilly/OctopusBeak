@@ -295,6 +295,38 @@ test("E.SUN commit materializes the shared spine and neutral billed statement ex
   }
 });
 
+test("E.SUN initial attestation repair reuses the writer transaction snapshot", async () => {
+  const directory = mkdtempSync(join("/tmp", "esun-credit-card-repair-snapshot-"));
+  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  let attestationVisibleBeforeExtensionCommit = false;
+  try {
+    const committed = await commitEsunCreditCardCapture(
+      {
+        db: base.db,
+        databasePath: base.databasePath,
+        commitClock: base.commitClock,
+        beforeEsunCreditExtensionCommit: (db) => {
+          attestationVisibleBeforeExtensionCommit =
+            Number(
+              (
+                db
+                  .prepare(
+                    "SELECT COUNT(*) AS value FROM esun_credit_card_attestation_events",
+                  )
+                  .get() as { value?: number }
+              ).value ?? 0,
+            ) === 1;
+        },
+      },
+      buildEsunCanonicalCreditCardCapture(options()),
+    );
+    assert.equal(committed.status, "canonical-live");
+    assert.equal(attestationVisibleBeforeExtensionCommit, true);
+  } finally {
+    base.close();
+  }
+});
+
 test("E.SUN repeated captures retain one account/instrument authority and add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repeat-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
