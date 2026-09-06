@@ -28,6 +28,13 @@ import {
   type CanonicalSourceRecord,
 } from "./canonical-source-evidence.ts";
 import {
+  CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+  CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+  CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION,
+  CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+  CATHAY_GROUPED_COUNTERPARTY_ROLE_CODES,
+  CATHAY_LEGACY_GROUPED_COUNTERPARTY_DERIVED_ROLE_CODES,
+  CATHAY_LEGACY_GROUPED_COUNTERPARTY_SOURCE_ROLE_CODES,
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_LOCALES,
   TRANSACTION_TAXONOMY_PACKAGE_V1,
@@ -469,6 +476,27 @@ CREATE INDEX IF NOT EXISTS idx_projection_generation_transaction_categorizations
  * spine; they do not create a second event stream or a generic target model.
  */
 const CANONICAL_DISPLAY_TAG_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS canonical_grouped_role_contracts (
+  producer_id TEXT NOT NULL,
+  producer_version TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  admission_policy TEXT NOT NULL CHECK(admission_policy IN ('admit','legacy_read')),
+  origin TEXT NOT NULL CHECK(origin IN ('source','derived')),
+  field_name TEXT NOT NULL CHECK(field_name = 'counterparty_role'),
+  evidence_kinds_json TEXT NOT NULL,
+  role_codes_json TEXT NOT NULL,
+  PRIMARY KEY(producer_id, producer_version, contract_version, admission_policy, origin, field_name),
+  FOREIGN KEY(producer_id, producer_version)
+    REFERENCES enrichment_producer_versions(producer_id, producer_version)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_grouped_role_contracts_lookup
+  ON canonical_grouped_role_contracts(producer_id, producer_version, origin, field_name, contract_version, admission_policy);
+CREATE TRIGGER IF NOT EXISTS canonical_grouped_role_contracts_no_update
+BEFORE UPDATE ON canonical_grouped_role_contracts
+BEGIN SELECT RAISE(ABORT, 'grouped role contracts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS canonical_grouped_role_contracts_no_delete
+BEFORE DELETE ON canonical_grouped_role_contracts
+BEGIN SELECT RAISE(ABORT, 'grouped role contracts cannot be deleted'); END;
 CREATE TABLE IF NOT EXISTS counterparty_reference_revisions (
   reference_revision_id BLOB PRIMARY KEY CHECK(length(reference_revision_id) = 16),
   reference_id BLOB NOT NULL REFERENCES counterparty_references(reference_id),
@@ -506,6 +534,39 @@ CREATE TABLE IF NOT EXISTS current_counterparty_participations (
 CREATE INDEX IF NOT EXISTS idx_current_counterparty_participations_transaction
   ON current_counterparty_participations(transaction_id, role_code, participation_key);
 
+/* A grouped counterparty assertion has one field value, but every retained
+ * participation carries its own registered, versioned role fact.  This table
+ * is the member-level typed value; the assertion-level value remains the
+ * declared group subject and is retained for v22 compatibility. */
+CREATE UNIQUE INDEX IF NOT EXISTS idx_counterparty_participations_id_transaction
+  ON counterparty_participations(participation_id, transaction_id);
+CREATE TABLE IF NOT EXISTS counterparty_participation_taxonomy_values (
+  participation_id BLOB PRIMARY KEY REFERENCES counterparty_participations(participation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  role_code TEXT NOT NULL,
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'counterparty_role'),
+  taxonomy_code TEXT NOT NULL,
+  route_id TEXT NOT NULL REFERENCES automatic_enrichment_authority_routes(route_id),
+  run_id BLOB REFERENCES enrichment_runs(run_id),
+  source_record_id BLOB REFERENCES source_records(source_record_id),
+  provenance_json TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(participation_id, transaction_id)
+    REFERENCES counterparty_participations(participation_id, transaction_id),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES assertions(assertion_id, transaction_id),
+  FOREIGN KEY(taxonomy_id, taxonomy_version)
+    REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
+  FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, taxonomy_code)
+    REFERENCES taxonomy_codes(taxonomy_id, taxonomy_version, dimension, code),
+  CHECK(role_code = taxonomy_code)
+);
+CREATE INDEX IF NOT EXISTS idx_counterparty_participation_taxonomy_transaction
+  ON counterparty_participation_taxonomy_values(transaction_id, assertion_id, role_code, participation_id);
+
 CREATE TABLE IF NOT EXISTS counterparty_display_user_values (
   assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
   transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
@@ -529,11 +590,14 @@ CREATE TABLE IF NOT EXISTS counterparty_display_assertion_values (
   origin TEXT NOT NULL CHECK(origin IN ('source','derived','user')),
   display_kind TEXT NOT NULL CHECK(display_kind IN ('automatic','override','reference_alias')),
   reference_id BLOB REFERENCES counterparty_references(reference_id),
+  participation_id BLOB,
   participation_key TEXT,
   label TEXT NOT NULL,
   created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   FOREIGN KEY(assertion_id, transaction_id)
     REFERENCES assertions(assertion_id, transaction_id),
+  FOREIGN KEY(participation_id, transaction_id)
+    REFERENCES counterparty_participations(participation_id, transaction_id),
   CHECK((display_kind = 'automatic' AND origin IN ('source','derived'))
      OR (display_kind IN ('override','reference_alias') AND origin = 'user')),
   CHECK((display_kind = 'automatic')
@@ -544,6 +608,8 @@ CREATE INDEX IF NOT EXISTS idx_counterparty_display_assertion_values_transaction
   ON counterparty_display_assertion_values(transaction_id, origin, display_kind, created_commit_id);
 CREATE INDEX IF NOT EXISTS idx_counterparty_display_assertion_values_reference
   ON counterparty_display_assertion_values(reference_id, created_commit_id, assertion_id);
+CREATE INDEX IF NOT EXISTS idx_counterparty_display_assertion_values_participation
+  ON counterparty_display_assertion_values(transaction_id, participation_id, created_commit_id, assertion_id);
 
 CREATE TABLE IF NOT EXISTS user_tags (
   tag_id BLOB PRIMARY KEY CHECK(length(tag_id) = 16),
@@ -622,6 +688,72 @@ BEGIN SELECT RAISE(ABORT, 'counterparty participations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS counterparty_participations_no_delete
 BEFORE DELETE ON counterparty_participations
 BEGIN SELECT RAISE(ABORT, 'counterparty participations cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participations_role_integrity_insert
+BEFORE INSERT ON counterparty_participations
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM taxonomy_codes role
+   WHERE role.taxonomy_id = 'transaction-taxonomy'
+     AND role.taxonomy_version = 'v1'
+     AND role.dimension = 'counterparty_role'
+     AND role.code = NEW.role_code
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not a typed taxonomy role'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participations_role_integrity_update
+BEFORE UPDATE OF assertion_id, role_code ON counterparty_participations
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM taxonomy_codes role
+   WHERE role.taxonomy_id = 'transaction-taxonomy'
+     AND role.taxonomy_version = 'v1'
+     AND role.dimension = 'counterparty_role'
+     AND role.code = NEW.role_code
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty participation role is not a typed taxonomy role'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participations_authority_guard_insert
+BEFORE INSERT ON counterparty_participations
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM assertions assertion
+    JOIN enrichment_taxonomy_assertion_values typed
+      ON typed.assertion_id = assertion.assertion_id
+     AND typed.field_name = 'counterparty_role'
+    JOIN enrichment_runs run ON run.run_id = typed.run_id
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'counterparty_role'
+     AND assertion.origin = NEW.origin
+     AND typed.route_id = NEW.route_id
+     AND run.producer_id = NEW.producer_id
+     AND run.producer_version = NEW.producer_version
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty participation assertion authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participation_taxonomy_origin_guard
+BEFORE INSERT ON counterparty_participation_taxonomy_values
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM counterparty_participations participation
+    JOIN assertions assertion ON assertion.assertion_id = participation.assertion_id
+   WHERE participation.participation_id = NEW.participation_id
+     AND participation.transaction_id = NEW.transaction_id
+     AND participation.assertion_id = NEW.assertion_id
+     AND participation.role_code = NEW.role_code
+     AND participation.origin = assertion.origin
+     AND participation.route_id = NEW.route_id
+     AND participation.producer_id = (
+       SELECT run.producer_id FROM enrichment_runs run WHERE run.run_id = NEW.run_id
+     )
+     AND participation.producer_version = (
+       SELECT run.producer_version FROM enrichment_runs run WHERE run.run_id = NEW.run_id
+     )
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty participation taxonomy authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participation_taxonomy_no_update
+BEFORE UPDATE ON counterparty_participation_taxonomy_values
+BEGIN SELECT RAISE(ABORT, 'counterparty participation taxonomy values are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_participation_taxonomy_no_delete
+BEFORE DELETE ON counterparty_participation_taxonomy_values
+BEGIN SELECT RAISE(ABORT, 'counterparty participation taxonomy values cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS counterparty_display_user_values_origin_guard
 BEFORE INSERT ON counterparty_display_user_values
 WHEN NOT EXISTS (
@@ -648,6 +780,29 @@ WHEN NOT EXISTS (
      AND assertion.origin = NEW.origin
 )
 BEGIN SELECT RAISE(ABORT, 'counterparty display assertion authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS counterparty_display_assertion_values_binding_guard
+BEFORE INSERT ON counterparty_display_assertion_values
+WHEN NEW.origin IN ('source','derived') AND (
+  (NEW.participation_id IS NULL AND NEW.reference_id IS NOT NULL)
+  OR (NEW.participation_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM counterparty_participations participation
+     WHERE participation.participation_id = NEW.participation_id
+       AND participation.transaction_id = NEW.transaction_id
+  ))
+  OR (NEW.participation_id IS NOT NULL AND NEW.reference_id IS NOT (
+    SELECT participation.reference_id
+      FROM counterparty_participations participation
+     WHERE participation.participation_id = NEW.participation_id
+       AND participation.transaction_id = NEW.transaction_id
+  ))
+  OR (NEW.participation_id IS NOT NULL AND NEW.participation_key IS NOT (
+    SELECT participation.participation_key
+      FROM counterparty_participations participation
+     WHERE participation.participation_id = NEW.participation_id
+       AND participation.transaction_id = NEW.transaction_id
+  ))
+)
+BEGIN SELECT RAISE(ABORT, 'counterparty display participation binding mismatch'); END;
 CREATE TRIGGER IF NOT EXISTS counterparty_display_assertion_values_no_update
 BEFORE UPDATE ON counterparty_display_assertion_values
 BEGIN SELECT RAISE(ABORT, 'counterparty display assertion values are immutable'); END;
@@ -695,18 +850,64 @@ function ensureCanonicalCategorizationSchema(db: DatabaseSync): void {
 }
 
 function ensureCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
-  // v22's single-role trigger compared every participation to the one
-  // assertion-level taxonomy value. v23 grouped outputs deliberately keep
-  // one typed assertion while retaining several independently typed roles.
-  db.exec(`
-    DROP TRIGGER IF EXISTS counterparty_participations_role_integrity_insert;
-    DROP TRIGGER IF EXISTS counterparty_participations_role_integrity_update;
-  `);
+  const displayColumns = new Set(
+    (db.prepare("PRAGMA table_info(counterparty_display_assertion_values)").all() as Array<{ name?: unknown }>)
+      .map((column) => String(column.name ?? "")),
+  );
+  if (displayColumns.size > 0 && !displayColumns.has("participation_id"))
+    db.exec("ALTER TABLE counterparty_display_assertion_values ADD COLUMN participation_id BLOB");
   db.exec(CANONICAL_DISPLAY_TAG_SCHEMA_SQL);
+  const insertContract = db.prepare(`
+    INSERT OR IGNORE INTO canonical_grouped_role_contracts(
+      producer_id, producer_version, contract_version, admission_policy, origin, field_name,
+      evidence_kinds_json, role_codes_json)
+    VALUES (?, ?, ?, ?, ?, 'counterparty_role', ?, ?)
+  `);
+  const roleCodesJson = JSON.stringify(CATHAY_GROUPED_COUNTERPARTY_ROLE_CODES);
+  insertContract.run(
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+    CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+    "admit",
+    "source",
+    JSON.stringify(["explicit-source-field"]),
+    roleCodesJson,
+  );
+  insertContract.run(
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+    CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+    "admit",
+    "derived",
+    JSON.stringify(["description"]),
+    roleCodesJson,
+  );
+  insertContract.run(
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+    CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION,
+    "legacy_read",
+    "source",
+    JSON.stringify(["explicit-source-field"]),
+    JSON.stringify(CATHAY_LEGACY_GROUPED_COUNTERPARTY_SOURCE_ROLE_CODES),
+  );
+  insertContract.run(
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+    CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+    CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION,
+    "legacy_read",
+    "derived",
+    JSON.stringify(["description"]),
+    JSON.stringify(CATHAY_LEGACY_GROUPED_COUNTERPARTY_DERIVED_ROLE_CODES),
+  );
 }
 
 function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
   const required: Record<string, readonly string[]> = {
+    canonical_grouped_role_contracts: [
+      "producer_id", "producer_version", "contract_version", "admission_policy", "origin",
+      "field_name", "evidence_kinds_json", "role_codes_json",
+    ],
     counterparty_reference_revisions: [
       "reference_revision_id", "reference_id", "display_name", "legal_name",
       "producer_id", "producer_version", "provenance_json", "created_commit_id",
@@ -724,7 +925,12 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
     ],
     counterparty_display_assertion_values: [
       "assertion_id", "transaction_id", "origin", "display_kind", "reference_id",
-      "participation_key", "label", "created_commit_id",
+      "participation_id", "participation_key", "label", "created_commit_id",
+    ],
+    counterparty_participation_taxonomy_values: [
+      "participation_id", "transaction_id", "assertion_id", "role_code",
+      "taxonomy_id", "taxonomy_version", "taxonomy_dimension", "taxonomy_code",
+      "route_id", "run_id", "source_record_id", "provenance_json", "created_commit_id",
     ],
     user_tags: ["tag_id", "user_id", "created_commit_id"],
     user_tag_label_revisions: [
@@ -754,11 +960,15 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
         throw new Error(`Canonical display/tag column ${table}.${column} is missing.`);
   }
   for (const index of [
+    "idx_canonical_grouped_role_contracts_lookup",
     "idx_counterparty_reference_revisions_knowledge",
     "idx_current_counterparty_participations_transaction",
     "idx_counterparty_display_user_values_transaction",
     "idx_counterparty_display_assertion_values_transaction",
     "idx_counterparty_display_assertion_values_reference",
+    "idx_counterparty_participations_id_transaction",
+    "idx_counterparty_participation_taxonomy_transaction",
+    "idx_counterparty_display_assertion_values_participation",
     "idx_user_tag_label_revisions_tag",
     "idx_user_tag_label_revisions_user_normalized",
     "idx_user_tag_status_revisions_tag",
@@ -770,14 +980,23 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
       throw new Error(`Canonical display/tag index ${index} is missing.`);
   }
   for (const trigger of [
+    "canonical_grouped_role_contracts_no_update",
+    "canonical_grouped_role_contracts_no_delete",
     "counterparty_reference_identity_no_update",
     "counterparty_reference_metadata_no_update",
     "counterparty_reference_revisions_no_update",
     "counterparty_reference_revisions_no_delete",
     "counterparty_participations_no_update",
     "counterparty_participations_no_delete",
+    "counterparty_participations_role_integrity_insert",
+    "counterparty_participations_role_integrity_update",
+    "counterparty_participations_authority_guard_insert",
+    "counterparty_participation_taxonomy_origin_guard",
+    "counterparty_participation_taxonomy_no_update",
+    "counterparty_participation_taxonomy_no_delete",
     "counterparty_display_user_values_origin_guard",
     "counterparty_display_assertion_values_origin_guard",
+    "counterparty_display_assertion_values_binding_guard",
     "transaction_tag_assertion_origin_guard",
     "user_tags_no_update",
     "user_tag_label_revisions_no_update",
@@ -786,6 +1005,62 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
     if (!triggerExists(db, trigger))
       throw new Error(`Canonical display/tag trigger ${trigger} is missing.`);
   }
+  const expectedGroupedContracts = [
+    [
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+      CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+      "admit",
+      "source",
+      JSON.stringify(["explicit-source-field"]),
+      JSON.stringify(CATHAY_GROUPED_COUNTERPARTY_ROLE_CODES),
+    ],
+    [
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+      CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION,
+      "admit",
+      "derived",
+      JSON.stringify(["description"]),
+      JSON.stringify(CATHAY_GROUPED_COUNTERPARTY_ROLE_CODES),
+    ],
+    [
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+      CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION,
+      "legacy_read",
+      "source",
+      JSON.stringify(["explicit-source-field"]),
+      JSON.stringify(CATHAY_LEGACY_GROUPED_COUNTERPARTY_SOURCE_ROLE_CODES),
+    ],
+    [
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+      CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+      CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION,
+      "legacy_read",
+      "derived",
+      JSON.stringify(["description"]),
+      JSON.stringify(CATHAY_LEGACY_GROUPED_COUNTERPARTY_DERIVED_ROLE_CODES),
+    ],
+  ].map((parts) => parts.join("\u0000"));
+  const persistedGroupedContracts = db.prepare(`
+    SELECT producer_id, producer_version, contract_version, admission_policy, origin,
+           field_name, evidence_kinds_json, role_codes_json
+      FROM canonical_grouped_role_contracts
+     ORDER BY producer_id, producer_version, contract_version, origin, field_name
+  `).all() as Array<Record<string, unknown>>;
+  const actualGroupedContracts = persistedGroupedContracts.map((row) => [
+    String(row.producer_id),
+    String(row.producer_version),
+    String(row.contract_version),
+    String(row.admission_policy),
+    String(row.origin),
+    String(row.evidence_kinds_json),
+    String(row.role_codes_json),
+  ].join("\u0000"));
+  if (actualGroupedContracts.length !== expectedGroupedContracts.length ||
+      actualGroupedContracts.some((contract) => !expectedGroupedContracts.includes(contract)))
+    throw new Error("Canonical grouped counterparty role contract registry is incomplete or mutated.");
   const malformed = count(
     db,
     `SELECT COUNT(*) AS count
@@ -793,13 +1068,90 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
       WHERE participation.origin NOT IN ('source','derived')
          OR NOT EXISTS (
            SELECT 1 FROM counterparty_participations stored
-            WHERE stored.participation_id = participation.participation_id
+           WHERE stored.participation_id = participation.participation_id
               AND stored.transaction_id = participation.transaction_id
               AND stored.assertion_id = participation.assertion_id
          )`,
   );
   if (malformed !== 0)
     throw new Error("Canonical current counterparty participation is malformed.");
+  const malformedTypedMembers = count(
+    db,
+    `SELECT COUNT(*) AS count
+       FROM counterparty_participations participation
+      WHERE NOT EXISTS (
+        SELECT 1
+          FROM counterparty_participation_taxonomy_values typed
+         WHERE typed.participation_id = participation.participation_id
+           AND typed.transaction_id = participation.transaction_id
+           AND typed.assertion_id = participation.assertion_id
+           AND typed.role_code = participation.role_code
+           AND typed.taxonomy_id = 'transaction-taxonomy'
+           AND typed.taxonomy_version = 'v1'
+           AND typed.taxonomy_dimension = 'counterparty_role'
+           AND typed.taxonomy_code = participation.role_code
+      )`,
+  );
+  if (malformedTypedMembers !== 0)
+    throw new Error("Canonical counterparty participation typed role is missing.");
+  const malformedGroupedMembers = count(
+    db,
+    `SELECT COUNT(*) AS count
+       FROM counterparty_participations participation
+       JOIN enrichment_run_outputs output
+         ON output.assertion_id = participation.assertion_id
+        AND output.transaction_id = participation.transaction_id
+        AND output.field_name = 'counterparty_role'
+        AND output.output_state = 'supported'
+      JOIN enrichment_runs run ON run.run_id = output.run_id
+      WHERE (
+        SELECT COUNT(*)
+          FROM counterparty_participations grouped
+         WHERE grouped.assertion_id = participation.assertion_id
+           AND grouped.transaction_id = participation.transaction_id
+      ) > 1
+        AND NOT EXISTS (
+          SELECT 1
+            FROM canonical_grouped_role_contracts contract
+           WHERE contract.producer_id = run.producer_id
+             AND contract.producer_version = run.producer_version
+             AND contract.origin = output.origin
+             AND contract.field_name = output.field_name
+             AND contract.contract_version = json_extract(output.provenance_json, '$.contractVersion')
+             AND EXISTS (
+               SELECT 1 FROM json_each(contract.evidence_kinds_json)
+                WHERE value = json_extract(output.provenance_json, '$.evidenceKind')
+             )
+             AND EXISTS (
+               SELECT 1 FROM json_each(contract.role_codes_json)
+                WHERE value = participation.role_code
+             )
+        )`,
+  );
+  if (malformedGroupedMembers !== 0)
+    throw new Error("Canonical grouped counterparty participation is outside its versioned role contract.");
+  const malformedBindings = count(
+    db,
+    `SELECT COUNT(*) AS count
+       FROM counterparty_display_assertion_values value
+      WHERE value.origin IN ('source','derived')
+        AND (
+          (value.participation_id IS NULL AND value.reference_id IS NOT NULL)
+          OR (value.participation_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM counterparty_participations participation
+             WHERE participation.participation_id = value.participation_id
+               AND participation.transaction_id = value.transaction_id
+          ))
+          OR (value.participation_id IS NOT NULL AND value.reference_id IS NOT (
+            SELECT participation.reference_id
+              FROM counterparty_participations participation
+             WHERE participation.participation_id = value.participation_id
+               AND participation.transaction_id = value.transaction_id
+          ))
+        )`,
+  );
+  if (malformedBindings !== 0)
+    throw new Error("Canonical counterparty display participation binding is malformed.");
 }
 
 function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
@@ -1237,6 +1589,34 @@ function validateCanonicalTaxonomySchema(db: DatabaseSync): void {
       throw new Error(`Canonical automatic enrichment route ${expected.routeId} differs from the published package.`);
   }
   validateAutomaticEnrichmentAuthorityRoutes(db);
+  const groupedRoleCompatibilityClause = tableExists(db, "canonical_grouped_role_contracts")
+    ? `(
+         output.field_name = 'counterparty_role'
+         AND (
+           SELECT COUNT(*)
+             FROM counterparty_participations participation
+            WHERE participation.assertion_id = output.assertion_id
+              AND participation.transaction_id = output.transaction_id
+         ) > 1
+         AND EXISTS (
+           SELECT 1
+             FROM canonical_grouped_role_contracts contract
+            WHERE contract.producer_id = run.producer_id
+              AND contract.producer_version = run.producer_version
+              AND contract.origin = output.origin
+              AND contract.field_name = output.field_name
+              AND contract.contract_version = json_extract(output.provenance_json, '$.contractVersion')
+              AND EXISTS (
+                SELECT 1 FROM json_each(contract.evidence_kinds_json)
+                 WHERE value = json_extract(output.provenance_json, '$.evidenceKind')
+              )
+              AND EXISTS (
+                SELECT 1 FROM json_each(contract.role_codes_json)
+                 WHERE value = output.value_text
+              )
+         )
+       )`
+    : "0";
   const invalidOutputs = count(db, `SELECT COUNT(*) AS count
     FROM enrichment_run_outputs output
     JOIN enrichment_runs run ON run.run_id = output.run_id
@@ -1247,7 +1627,7 @@ function validateCanonicalTaxonomySchema(db: DatabaseSync): void {
          AND compatibility.origin = output.origin
          AND compatibility.field_name = output.field_name
          AND (compatibility.output_code IS NULL OR compatibility.output_code = output.value_text)
-    )`);
+    ) AND NOT ${groupedRoleCompatibilityClause}`);
   if (invalidOutputs !== 0) throw new Error("Canonical enrichment output is undeclared by its producer compatibility.");
   const invalidAssertions = count(db, `SELECT COUNT(*) AS count
     FROM enrichment_run_outputs output
@@ -1260,7 +1640,7 @@ function validateCanonicalTaxonomySchema(db: DatabaseSync): void {
          AND compatibility.origin = assertion.origin
          AND compatibility.field_name = output.field_name
          AND (compatibility.output_code IS NULL OR compatibility.output_code = output.value_text)
-    )`);
+    ) AND NOT ${groupedRoleCompatibilityClause}`);
   if (invalidAssertions !== 0) throw new Error("Canonical enrichment assertion is undeclared by its producer compatibility.");
   const invalidTypedCodes = count(db, `SELECT COUNT(*) AS count
     FROM enrichment_taxonomy_assertion_values typed
@@ -1273,17 +1653,22 @@ function validateCanonicalTaxonomySchema(db: DatabaseSync): void {
    )`);
   if (invalidTypedCodes !== 0)
     throw new Error("Canonical typed enrichment value references an undeclared taxonomy code.");
-  const invalidCounterpartyRoles = count(db, `SELECT COUNT(*) AS count
+  const invalidCounterpartyRoles = tableExists(db, "counterparty_participation_taxonomy_values")
+    ? count(db, `SELECT COUNT(*) AS count
     FROM counterparty_participations participation
    WHERE NOT EXISTS (
-     SELECT 1 FROM enrichment_taxonomy_assertion_values typed
-      WHERE typed.assertion_id = participation.assertion_id
-        AND typed.field_name = 'counterparty_role'
+     SELECT 1 FROM counterparty_participation_taxonomy_values typed
+      WHERE typed.participation_id = participation.participation_id
+        AND typed.transaction_id = participation.transaction_id
+        AND typed.assertion_id = participation.assertion_id
+        AND typed.taxonomy_id = 'transaction-taxonomy'
+        AND typed.taxonomy_version = 'v1'
         AND typed.taxonomy_dimension = 'counterparty_role'
         AND typed.taxonomy_code = participation.role_code
-   )`);
+   )`)
+    : 0;
   if (invalidCounterpartyRoles !== 0)
-    throw new Error("Canonical counterparty participation role is not its typed taxonomy role.");
+    throw new Error("Canonical counterparty participation role is missing its typed taxonomy member value.");
 }
 
 
@@ -9063,32 +9448,70 @@ function migrateV22ToV23(
            ), producer_version);
   `);
   ensureCanonicalDisplayAndTagsSchema(db);
+  /* v22 did not retain a mutable-name revision stream.  Only participation
+   * observations with an unambiguous name at their own knowledge commit are
+   * admissible evidence for a v23 reference revision.  In particular, never
+   * copy the current reference row back to its creation commit. */
+  const legacyObservations = db.prepare(`
+    SELECT participation.reference_id, participation.observed_name,
+           participation.producer_id, participation.producer_version,
+           participation.provenance_json, participation.commit_id,
+           participation.rowid AS observation_rowid,
+           commit_row.commit_sequence
+      FROM counterparty_participations participation
+      JOIN canonical_commits commit_row
+        ON commit_row.commit_id = participation.commit_id
+     WHERE participation.reference_id IS NOT NULL
+       AND participation.observed_name IS NOT NULL
+     ORDER BY commit_row.commit_sequence, participation.rowid
+  `).all() as Array<Record<string, unknown>>;
+  const observationsByCommit = new Map<string, Array<Record<string, unknown>>>();
+  for (const observation of legacyObservations) {
+    const key = `${Buffer.from(blob(observation.reference_id)).toString("hex")}:${Buffer.from(blob(observation.commit_id)).toString("hex")}`;
+    const bucket = observationsByCommit.get(key) ?? [];
+    bucket.push(observation);
+    observationsByCommit.set(key, bucket);
+  }
+  for (const bucket of observationsByCommit.values()) {
+    const names = new Set(bucket.map((observation) => String(observation.observed_name)));
+    const producers = new Set(bucket.map((observation) => `${String(observation.producer_id)}:${String(observation.producer_version)}`));
+    if (names.size !== 1 || producers.size !== 1) continue;
+    const observation = bucket[0]!;
+    db.prepare(`
+      INSERT OR IGNORE INTO counterparty_reference_revisions(
+        reference_revision_id, reference_id, display_name, legal_name,
+        producer_id, producer_version, provenance_json, created_commit_id)
+      VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+    `).run(
+      randomBytes(16) as SQLInputValue,
+      observation.reference_id as SQLInputValue,
+      observation.observed_name as SQLInputValue,
+      observation.producer_id as SQLInputValue,
+      observation.producer_version as SQLInputValue,
+      (observation.provenance_json ?? "{}") as SQLInputValue,
+      observation.commit_id as SQLInputValue,
+    );
+  }
   db.exec(`
-    INSERT OR IGNORE INTO counterparty_reference_revisions(
-      reference_revision_id, reference_id, display_name, legal_name,
-      producer_id, producer_version, provenance_json, created_commit_id)
-    SELECT randomblob(16), reference.reference_id, reference.display_name,
-           reference.legal_name,
-           COALESCE((
-             SELECT participation.producer_id
-               FROM counterparty_participations participation
-               JOIN canonical_commits participation_commit
-                 ON participation_commit.commit_id = participation.commit_id
-              WHERE participation.reference_id = reference.reference_id
-              ORDER BY participation_commit.commit_sequence, participation.rowid
-              LIMIT 1
-           ), 'legacy/counterparty'),
-           COALESCE((
-             SELECT participation.producer_version
-               FROM counterparty_participations participation
-               JOIN canonical_commits participation_commit
-                 ON participation_commit.commit_id = participation.commit_id
-              WHERE participation.reference_id = reference.reference_id
-              ORDER BY participation_commit.commit_sequence, participation.rowid
-              LIMIT 1
-           ), 'v1'), '{}',
-           reference.created_commit_id
-      FROM counterparty_references reference;
+    INSERT OR IGNORE INTO counterparty_participation_taxonomy_values(
+      participation_id, transaction_id, assertion_id, role_code,
+      taxonomy_id, taxonomy_version, taxonomy_dimension, taxonomy_code,
+      route_id, run_id, source_record_id, provenance_json, created_commit_id)
+    SELECT participation.participation_id, participation.transaction_id,
+           participation.assertion_id, participation.role_code,
+           typed.taxonomy_id, typed.taxonomy_version, 'counterparty_role',
+           participation.role_code, typed.route_id, typed.run_id,
+           typed.source_record_id, participation.provenance_json,
+           participation.commit_id
+      FROM counterparty_participations participation
+      JOIN enrichment_taxonomy_assertion_values typed
+        ON typed.assertion_id = participation.assertion_id
+       AND typed.field_name = 'counterparty_role'
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM counterparty_participation_taxonomy_values member
+        WHERE member.participation_id = participation.participation_id
+     );
     INSERT OR IGNORE INTO current_counterparty_participations(
       transaction_id, participation_id, assertion_id, participation_key,
       role_code, reference_id, observed_name, observed_reference,
