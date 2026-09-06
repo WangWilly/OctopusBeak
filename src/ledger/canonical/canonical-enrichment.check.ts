@@ -149,7 +149,15 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
       assert.match(requireSupported(transaction.kind).route.id, /automatic-enrichment\/v1\/kind/u);
       assert.equal(transaction.kind.provenance.evidenceKind, "description");
       assert.equal(transaction.category.status, "absent");
-      assert.equal(transaction.display.status, "absent");
+      assert.equal(transaction.display.status, "fallback");
+      if (transaction.display.status !== "fallback") throw new Error("Expected source-description fallback.");
+      assert.match(transaction.display.value, /^Synthetic Cathay .+ description$/u);
+      assert.equal(transaction.display.origin, "source");
+      assert.equal(transaction.display.displayKind, "source_description");
+      assert.equal(transaction.display.referenceId, null);
+      assert.equal(transaction.display.participationKey, null);
+      assert.equal(transaction.display.provenance.kind, "source-description");
+      assert.equal(transaction.display.provenance.knowledgePoint, current.knowledgePoint);
       assert.equal(transaction.counterparties.length, 0);
     }
 
@@ -160,6 +168,7 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
     });
     assert.equal(beforeEnrichment.transactions.length, 3);
     assert.equal(beforeEnrichment.transactions.every((transaction) => transaction.kind.status === "absent"), true);
+    assert.equal(beforeEnrichment.transactions.every((transaction) => transaction.display.status === "fallback"), true);
 
     const afterEnrichment = query.historical({
       sourceConnectionKey: state.sourceConnectionKey,
@@ -184,6 +193,11 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
     assert.match(String(kindLineage?.routeId), /automatic-enrichment\/v1\/kind/u);
     assert.equal((kindLineage?.provenance as Record<string, unknown>).ruleLineage, "cathay/domestic-deposit/v1/description-taxonomy");
     assert.equal((kindLineage?.events as Array<Record<string, unknown>>).every((event) => Number(event.commitSequence) <= result.commitSequence), true);
+    const lineageTransaction = lineage.transactions.find((transaction) => transaction.transactionId === state.transactionId)!;
+    assert.equal(lineageTransaction.display.status, "fallback");
+    if (lineageTransaction.display.status !== "fallback") throw new Error("Expected lineage source-description fallback.");
+    assert.equal(lineageTransaction.display.value, "Synthetic Cathay deposit description");
+    assert.equal(lineageTransaction.display.provenance.sourceRecordId, state.sourceRecordId);
   } finally {
     await discard(state.directory);
   }
