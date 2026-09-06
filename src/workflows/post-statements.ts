@@ -452,17 +452,21 @@ export function postCaptchaAssistanceStage(
 }
 
 export async function dismissPostNoticeIfPresent(page: Page): Promise<boolean> {
-  const closeButton = page
-    .getByRole("button", {
-      name: "關閉",
-      exact: true,
-    })
-    .first();
+  const closeButtons = page
+    .locator('button.css_btn_class[ng-click="closeBox()"]:visible')
+    .filter({ hasText: /^\s*關閉\s*$/ });
+  const closeButton = closeButtons.first();
   if (!(await closeButton.isVisible({ timeout: 2_000 }).catch(() => false))) {
     return false;
   }
 
-  await closeButton.click({ force: true });
+  try {
+    await closeButton.click({ timeout: 2_000 });
+  } catch (error) {
+    const remainingVisibleButtons = await closeButtons.count().catch(() => 1);
+    if (remainingVisibleButtons > 0) throw error;
+    return false;
+  }
   await page.waitForTimeout(250);
   return true;
 }

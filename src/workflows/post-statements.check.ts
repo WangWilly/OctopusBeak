@@ -28,10 +28,16 @@ import {
 function fakeNoticePage(visible: boolean) {
   let clicks = 0;
   const page = {
-    getByRole(role: string, options: { name: string; exact: boolean }) {
-      assert.equal(role, "button");
-      assert.deepEqual(options, { name: "關閉", exact: true });
+    locator(selector: string) {
+      assert.equal(
+        selector,
+        'button.css_btn_class[ng-click="closeBox()"]:visible',
+      );
       return {
+        filter(filterOptions: { hasText: RegExp }) {
+          assert.deepEqual(filterOptions, { hasText: /^\s*關閉\s*$/ });
+          return this;
+        },
         first() {
           return this;
         },
@@ -46,6 +52,49 @@ function fakeNoticePage(visible: boolean) {
     async waitForTimeout() {},
   };
   return { page, clicks: () => clicks };
+}
+
+function visibilityRacingNoticePage(page: import("playwright").Page) {
+  let probeCompleted = false;
+  const wrapLocator = (locator: import("playwright").Locator) => ({
+    filter(options: { hasText?: RegExp; visible?: boolean }) {
+      return wrapLocator(locator.filter(options));
+    },
+    first() {
+      return wrapLocator(locator.first());
+    },
+    async isVisible(visibilityOptions: { timeout: number }) {
+      const visible = await locator.isVisible(visibilityOptions);
+      if (visible && !probeCompleted) {
+        probeCompleted = true;
+        await page.locator("#racing-primary").evaluate((button) => {
+          (button as HTMLElement).style.transform = "scale(0)";
+        });
+        await page.locator("#racing-replacement").evaluate((button) => {
+          (button as HTMLElement).style.transform = "scale(1)";
+        });
+      }
+      return visible;
+    },
+    async click(clickOptions?: { force?: boolean }) {
+      // Preserve the real Playwright click path while exercising the
+      // provider's visibility transition between probe and click.
+      return locator.click({
+        ...clickOptions,
+        force: false,
+        timeout: 1_000,
+      });
+    },
+  });
+  return {
+    probeCompleted: () => probeCompleted,
+    page: {
+      locator(selector: string) {
+        return wrapLocator(page.locator(selector));
+      },
+      waitForTimeout: page.waitForTimeout.bind(page),
+    },
+  };
 }
 
 {
@@ -162,6 +211,93 @@ assert.equal(fakeSuccessPage.listenerCount("dialog"), 0);
 
 const browser = await chromium.launch();
 try {
+  const racingNoticePage = await browser.newPage();
+  await racingNoticePage.setContent(`
+    <button
+      id="racing-primary"
+      type="button"
+      class="css_btn_class"
+      ng-click="closeBox()"
+      onclick="document.body.dataset.racingClosed = 'primary';"
+    >關閉</button>
+    <button
+      id="racing-replacement"
+      type="button"
+      class="css_btn_class"
+      ng-click="closeBox()"
+      style="transform: scale(0)"
+      onclick="document.body.dataset.racingClosed = 'replacement'; this.remove();"
+    >關閉</button>
+  `);
+  const racingNotice = visibilityRacingNoticePage(racingNoticePage);
+  await dismissPostNoticeIfPresent(racingNotice.page as never);
+  assert.equal(racingNotice.probeCompleted(), true);
+  assert.equal(
+    await racingNoticePage.locator("body").getAttribute("data-racing-closed"),
+    "replacement",
+  );
+  assert.equal(
+    await racingNoticePage
+      .locator('button.css_btn_class[ng-click="closeBox()"]:visible')
+      .filter({ hasText: /^\s*關閉\s*$/ })
+      .count(),
+    0,
+  );
+  await racingNoticePage.close();
+
+  const duplicateNoticePage = await browser.newPage();
+  await duplicateNoticePage.setContent(`
+    <button id="unrelated-close" type="button">關閉</button>
+    <div id="hidden-post-notice" style="transform: scale(0)">
+      <button
+        type="button"
+        class="css_btn_class"
+        ng-click="closeBox()"
+      >關閉</button>
+    </div>
+    <div id="active-post-notice" role="dialog">
+      <button
+        type="button"
+        class="css_btn_class"
+        ng-click="closeBox()"
+        onclick="document.body.dataset.activeNoticeClosed = 'yes'; document.querySelector('#active-post-notice').remove();"
+      >關閉</button>
+    </div>
+  `);
+  assert.equal(await dismissPostNoticeIfPresent(duplicateNoticePage), true);
+  assert.equal(
+    await duplicateNoticePage.locator("body").getAttribute("data-active-notice-closed"),
+    "yes",
+  );
+  assert.equal(await duplicateNoticePage.locator("#hidden-post-notice").isVisible(), false);
+  await duplicateNoticePage.close();
+
+  const goneNoticePage = await browser.newPage();
+  await goneNoticePage.setContent(`<main data-post-login="ready"></main>`);
+  assert.equal(await dismissPostNoticeIfPresent(goneNoticePage), false);
+  await goneNoticePage.close();
+
+  const blockedNoticePage = await browser.newPage();
+  await blockedNoticePage.setContent(`
+    <div style="position: relative; width: 180px; height: 48px">
+      <button
+        type="button"
+        class="css_btn_class"
+        ng-click="closeBox()"
+        style="position: absolute; inset: 0"
+      >關閉</button>
+      <div
+        data-blocking-overlay
+        style="position: absolute; inset: 0; background: transparent"
+      ></div>
+    </div>
+  `);
+  await assert.rejects(
+    dismissPostNoticeIfPresent(blockedNoticePage),
+    /intercepts pointer events|Timeout 2000ms exceeded/i,
+  );
+  await blockedNoticePage.close();
+
   const successfulLoginPage = await browser.newPage();
   await successfulLoginPage.setContent(`
     <div id="tab1">
