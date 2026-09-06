@@ -28,8 +28,12 @@ import {
   queryCanonicalSourceLineage,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
-import { admitCanonicalFinancialDepositCapture } from "./canonical-financial-deposit-writer.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCapture,
+} from "./canonical-financial-deposit-writer.ts";
 import { buildHncbDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
+import { test } from "node:test";
 
 assert.equal(
   HNCB_DOMESTIC_DEPOSIT_CONTRACT.authority,
@@ -122,6 +126,119 @@ const sourceCapture = {
     downloadSelector: 'input[name="excel_download"]' as const,
   },
 };
+
+test("HNCB recapture preserves occurrences when a changed query moves rows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hncb-recapture-position-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const originalRow = sourceCapture.downloads[0]!.rows[0]!;
+    const insertedRow = {
+      rowOrdinal: 0,
+      values: originalRow.values.with(1, "08:00:00"),
+    };
+    const captures = [
+      sourceCapture,
+      {
+        ...sourceCapture,
+        downloads: [
+          {
+            ...sourceCapture.downloads[0]!,
+            rows: [insertedRow, { ...originalRow, rowOrdinal: 1 }],
+          },
+        ],
+      },
+      {
+        ...sourceCapture,
+        downloads: [
+          {
+            ...sourceCapture.downloads[0]!,
+            rows: [originalRow, { ...insertedRow, rowOrdinal: 1 }],
+          },
+        ],
+      },
+    ];
+    for (const [index, capture] of captures.entries()) {
+      const structural = admitHncbDomesticDepositCaptureEvidence(capture);
+      assert.equal(
+        structural.status,
+        "admissible",
+        structural.diagnostics.join(", "),
+      );
+      await commitCanonicalHncbDomesticDepositCapture(store, {
+        capture: structural.capture!,
+        captureId: `hncb-position-${index}`,
+        humanAttestation: getHncbHumanAttestedV1Manifest(),
+      });
+    }
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+          .get() as { count: number }
+      ).count,
+      2,
+    );
+    const records = store.db
+      .prepare(
+        "SELECT occurrence_key, payload_json FROM source_records WHERE record_kind = 'hncb-domestic-deposit' ORDER BY rowid",
+      )
+      .all() as Array<{ occurrence_key: string; payload_json: string }>;
+    assert.equal(records.length, 5);
+    const original = records.filter(
+      (record) => record.occurrence_key === records[0]!.occurrence_key,
+    );
+    assert.deepEqual(
+      original.map((record) => {
+        const payload = JSON.parse(record.payload_json);
+        return [payload.pageOrdinal, payload.rowOrdinal];
+      }),
+      [
+        [0, 0],
+        [0, 1],
+        [0, 0],
+      ],
+    );
+    const structural = admitHncbDomesticDepositCaptureEvidence(sourceCapture);
+    const financial = admitHncbDomesticDepositFinancialCapture({
+      capture: structural.capture!,
+      captureId: "hncb-content-conflict",
+      humanAttestation: getHncbHumanAttestedV1Manifest(),
+    }).capture!;
+    const originalRecord = financial.records[0]!;
+    // Position is transport metadata; an altered source value remains a conflict,
+    // even if the caller attempts to reuse the same occurrence and content hash.
+    const altered = admitCanonicalFinancialDepositCapture({
+      ...financial,
+      records: [
+        {
+          ...originalRecord,
+          compactJson: JSON.stringify({
+            ...JSON.parse(originalRecord.compactJson),
+            noteDigest: digest("f"),
+          }),
+        },
+      ],
+    });
+    await assert.rejects(
+      commitCanonicalFinancialDepositCapture(store, altered),
+      /Source occurrence content overwrite is forbidden/,
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM source_records WHERE record_kind = 'hncb-domestic-deposit'",
+          )
+          .get() as { count: number }
+      ).count,
+      5,
+    );
+    validateCanonicalSourceStore(store);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const admitted = admitHncbDomesticDepositCaptureEvidence(sourceCapture);
 assert.equal(admitted.status, "admissible");
