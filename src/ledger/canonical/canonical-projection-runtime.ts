@@ -15,7 +15,10 @@ import type {
 } from "./canonical-projection-contract.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { refreshCanonicalEnrichmentProjection } from "./canonical-enrichment-projection.ts";
-import { refreshCanonicalCategorizationGeneration } from "./canonical-categorization-projection.ts";
+import {
+  refreshCanonicalCategorizationGeneration,
+  validateCurrentCategorizationProjectionRows,
+} from "./canonical-categorization-projection.ts";
 
 type ProjectionSqlInput =
   | null
@@ -1298,8 +1301,9 @@ function readFamily(
     }
     case "transaction-categorization": {
       if (generation === null && request.kind === "current") return [];
-      if (request.kind === "current")
-        return rows(
+      if (request.kind === "current") {
+        if (generation === null) return [];
+        const projectionRows = rows(
           db,
           `SELECT projected.transaction_id, projected.assertion_id,
                   'user' AS origin, projected.mode,
@@ -1365,6 +1369,19 @@ function readFamily(
           dateEnd ?? null,
           dateEnd ?? null,
         );
+        const invalidAllocationSetIds = validateCurrentCategorizationProjectionRows(
+          db,
+          generation,
+          projectionRows,
+        );
+        return projectionRows.filter(
+          (row) =>
+            String(row.mode) !== "allocated" ||
+            !invalidAllocationSetIds.has(
+              String(row.allocation_set_id ?? "").toLowerCase(),
+            ),
+        );
+      }
       return rows(
         db,
         `WITH eligible_transactions AS (
