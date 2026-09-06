@@ -313,6 +313,8 @@ Enrichment uses knowledge time only. It inherits the Transaction's financial dat
 
 Financial report inclusion is a separate, versioned policy evaluated from admitted financial semantics before Category, display, alias, notes, or Tags. An included Transaction with absent categorization contributes its whole amount to a query-time Unclassified bucket and to classification-coverage metrics. Unclassified is not stored or selectable.
 
+The canonical spending query currently publishes policy `gross-posted-outflow` version `v1`, named **Gross posted outflow**. It includes only active, normal, posted outflows whose required inclusion semantics are present, keeps totals separate by currency, and excludes known transfer, cash, investment, credit-card-payment, and loan-payment kinds. This policy describes gross posted outflow coverage; it does not claim net-spending coverage. Category selection never changes this inclusion decision.
+
 If an inclusion policy requires a missing optional Kind or other admitted semantic, the query returns an eligibility-coverage gap with affected count and amount and does not silently count, drop, or persist an unknown status. A supported integration that claims complete spending coverage must prove through fixtures that its declared scope has no such gap.
 
 ## 9. Taxonomy authoring and publishing
