@@ -326,6 +326,92 @@ const workflowDownload = {
     YUANTA_RELATION_EVIDENCE_FIXTURES_V1.exactCounterpartyAccount,
   ],
 };
+const nextDayAccountingWorkflowDownload = {
+  ...workflowDownload,
+  rows: [
+    {
+      ...workflowDownload.rows[0]!,
+      values: [
+        "YUANTA-ACCOUNT-001",
+        "20260907",
+        "20260906",
+        "09:10:11",
+        "CLEAN DEPOSIT",
+        "",
+        "100",
+        "900",
+        "",
+        "",
+      ],
+      sortTime: Date.parse("2026-09-06T09:10:11+08:00"),
+    },
+  ],
+  source: {
+    ...workflowDownload.source,
+    contentDigest: "sha256:yuanta-next-day-accounting-content" as `sha256:${string}`,
+    rows: [
+      {
+        rowOrdinal: 0,
+        values: [
+          "臺幣活期存款",
+          "YUANTA-ACCOUNT-001",
+          "20260907",
+          "20260906",
+          "09:10:11",
+          "CLEAN DEPOSIT",
+          "",
+          "100",
+          "900",
+          "",
+          "",
+        ],
+      },
+    ],
+  },
+};
+const transactionOutsideWorkflowDownload = {
+  ...nextDayAccountingWorkflowDownload,
+  rows: [
+    {
+      ...nextDayAccountingWorkflowDownload.rows[0]!,
+      values: [
+        "YUANTA-ACCOUNT-001",
+        "20260906",
+        "20260907",
+        "09:10:11",
+        "CLEAN DEPOSIT",
+        "",
+        "100",
+        "900",
+        "",
+        "",
+      ],
+      sortTime: Date.parse("2026-09-07T09:10:11+08:00"),
+    },
+  ],
+  source: {
+    ...nextDayAccountingWorkflowDownload.source,
+    contentDigest: "sha256:yuanta-transaction-outside-content" as `sha256:${string}`,
+    rows: [
+      {
+        rowOrdinal: 0,
+        values: [
+          "臺幣活期存款",
+          "YUANTA-ACCOUNT-001",
+          "20260906",
+          "20260907",
+          "09:10:11",
+          "CLEAN DEPOSIT",
+          "",
+          "100",
+          "900",
+          "",
+          "",
+        ],
+      },
+    ],
+  },
+};
 const maskedWorkflowDownload = {
   ...workflowDownload,
   source: {
@@ -435,6 +521,87 @@ try {
   }
 } finally {
   await rm(sourceOnlyDir, { recursive: true, force: true });
+}
+
+const boundaryDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-date-boundary-workflow-"),
+);
+try {
+  const boundaryOutput = await runYuantaStatements(
+    {} as never,
+    {
+      dateRange: "three_months",
+      accountFilters: [],
+      replaceActiveSession: true,
+      telemetry: false,
+    },
+    {
+      ...stableConnectionIdentity,
+      observedAt: () => "2026-09-06T23:40:39+08:00",
+      canonicalLedgerDir: boundaryDir,
+      canonicalFinancialLedgerDir: boundaryDir,
+      readDepositAccountOptions: async () => [workflowAccount],
+      queryAccount: async () => undefined,
+      downloadStatementRows: async () => nextDayAccountingWorkflowDownload,
+      writeBankTransactionsFile: writeWorkflowFile as never,
+    },
+  );
+  assert.equal(boundaryOutput.admissions[0]?.status, "financial-admitted");
+  const boundaryStore = createCanonicalSourceStore(
+    join(boundaryDir, "canonical.sqlite"),
+  );
+  try {
+    const boundaryCurrent = queryCanonicalSourceCurrent(boundaryStore);
+    assert.equal(boundaryCurrent.records.length, 1);
+    assert.deepEqual(
+      {
+        accountingDate: boundaryCurrent.records[0]?.compact.accountingDate,
+        transactionDate: boundaryCurrent.records[0]?.compact.transactionDate,
+      },
+      { accountingDate: "2026-09-07", transactionDate: "2026-09-06" },
+    );
+    assert.equal(
+      boundaryStore.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      1,
+    );
+  } finally {
+    boundaryStore.close();
+  }
+} finally {
+  await rm(boundaryDir, { recursive: true, force: true });
+}
+
+const outOfRangeDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-out-of-range-workflow-"),
+);
+try {
+  await assert.rejects(
+    () =>
+      runYuantaStatements(
+        {} as never,
+        {
+          dateRange: "three_months",
+          accountFilters: [],
+          replaceActiveSession: true,
+          telemetry: false,
+        },
+        {
+          ...stableConnectionIdentity,
+          observedAt: () => "2026-09-06T23:40:39+08:00",
+          canonicalLedgerDir: outOfRangeDir,
+          canonicalFinancialLedgerDir: outOfRangeDir,
+          readDepositAccountOptions: async () => [workflowAccount],
+          queryAccount: async () => undefined,
+          downloadStatementRows: async () => transactionOutsideWorkflowDownload,
+          writeBankTransactionsFile: writeWorkflowFile as never,
+        },
+      ),
+    /Yuanta domestic deposit financial admission failed: row-outside-query-range/,
+  );
+} finally {
+  await rm(outOfRangeDir, { recursive: true, force: true });
 }
 
 const financialSourceDir = await mkdtemp(
