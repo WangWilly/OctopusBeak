@@ -272,6 +272,129 @@ CREATE INDEX IF NOT EXISTS idx_enrichment_taxonomy_values_code ON enrichment_tax
 CREATE INDEX IF NOT EXISTS idx_counterparty_participations_transaction ON counterparty_participations(transaction_id, role_code, commit_id);
 `;
 
+/**
+ * User categorization is a typed extension of the shared assertion spine.
+ * The assertion records authority and lifecycle; these tables record the
+ * registered category and exact allocation values without turning the
+ * canonical facts into an EAV or JSON-only model.
+ */
+const CANONICAL_CATEGORIZATION_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS category_allocation_sets (
+  allocation_set_id BLOB PRIMARY KEY CHECK(length(allocation_set_id) = 16),
+  assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  booked_coefficient TEXT NOT NULL,
+  booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0),
+  booked_currency TEXT NOT NULL,
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(assertion_id)
+);
+CREATE TABLE IF NOT EXISTS category_allocation_components (
+  allocation_set_id BLOB NOT NULL REFERENCES category_allocation_sets(allocation_set_id),
+  component_ordinal INTEGER NOT NULL CHECK(component_ordinal >= 1),
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'category'),
+  category_code TEXT NOT NULL,
+  amount_coefficient TEXT NOT NULL,
+  amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0),
+  amount_currency TEXT NOT NULL,
+  booked_coefficient TEXT NOT NULL,
+  booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0),
+  booked_currency TEXT NOT NULL,
+  conversion_evidence_kind TEXT,
+  conversion_evidence_id TEXT,
+  conversion_from_currency TEXT,
+  conversion_to_currency TEXT,
+  conversion_evidence_json TEXT,
+  PRIMARY KEY(allocation_set_id, component_ordinal),
+  UNIQUE(allocation_set_id, category_code),
+  FOREIGN KEY(taxonomy_id, taxonomy_version)
+    REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
+  FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, category_code)
+    REFERENCES taxonomy_codes(taxonomy_id, taxonomy_version, dimension, code),
+  CHECK((conversion_evidence_kind IS NULL AND conversion_evidence_id IS NULL
+         AND conversion_from_currency IS NULL AND conversion_to_currency IS NULL
+         AND conversion_evidence_json IS NULL)
+    OR (conversion_evidence_kind IS NOT NULL AND conversion_evidence_id IS NOT NULL
+        AND conversion_from_currency IS NOT NULL AND conversion_to_currency IS NOT NULL
+        AND conversion_evidence_json IS NOT NULL))
+);
+CREATE TABLE IF NOT EXISTS transaction_categorization_values (
+  assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  mode TEXT NOT NULL CHECK(mode IN ('single','allocated')),
+  category_code TEXT,
+  allocation_set_id BLOB REFERENCES category_allocation_sets(allocation_set_id),
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'category'),
+  created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  FOREIGN KEY(taxonomy_id, taxonomy_version)
+    REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
+  FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, category_code)
+    REFERENCES taxonomy_codes(taxonomy_id, taxonomy_version, dimension, code),
+  CHECK((mode = 'single' AND category_code IS NOT NULL AND allocation_set_id IS NULL)
+    OR (mode = 'allocated' AND category_code IS NULL AND allocation_set_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_category_allocation_sets_transaction
+  ON category_allocation_sets(transaction_id, created_commit_id, allocation_set_id);
+CREATE INDEX IF NOT EXISTS idx_category_allocation_components_category
+  ON category_allocation_components(category_code, allocation_set_id, component_ordinal);
+CREATE INDEX IF NOT EXISTS idx_transaction_categorization_transaction
+  ON transaction_categorization_values(transaction_id, mode, created_commit_id, assertion_id);
+`;
+
+function ensureCanonicalCategorizationSchema(db: DatabaseSync): void {
+  db.exec(CANONICAL_CATEGORIZATION_SCHEMA_SQL);
+}
+
+function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
+  const required: Record<string, readonly string[]> = {
+    category_allocation_sets: [
+      "allocation_set_id", "assertion_id", "transaction_id",
+      "booked_coefficient", "booked_scale", "booked_currency", "created_commit_id",
+    ],
+    category_allocation_components: [
+      "allocation_set_id", "component_ordinal", "category_code",
+      "taxonomy_id", "taxonomy_version",
+      "taxonomy_dimension",
+      "amount_coefficient", "amount_scale", "amount_currency",
+      "booked_coefficient", "booked_scale", "booked_currency",
+      "conversion_evidence_kind", "conversion_evidence_id",
+      "conversion_from_currency", "conversion_to_currency", "conversion_evidence_json",
+    ],
+    transaction_categorization_values: [
+      "assertion_id", "transaction_id", "mode", "category_code",
+      "allocation_set_id", "taxonomy_id", "taxonomy_version", "taxonomy_dimension", "created_commit_id",
+    ],
+  };
+  for (const [table, columns] of Object.entries(required)) {
+    if (!tableExists(db, table))
+      throw new Error(`Canonical categorization table ${table} is missing.`);
+    const actual = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>)
+        .map((column) => String(column.name ?? "")),
+    );
+    for (const column of columns)
+      if (!actual.has(column))
+        throw new Error(`Canonical categorization column ${table}.${column} is missing.`);
+  }
+  for (const index of [
+    "idx_category_allocation_sets_transaction",
+    "idx_category_allocation_components_category",
+    "idx_transaction_categorization_transaction",
+  ])
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index))
+      throw new Error(`Canonical categorization index ${index} is missing.`);
+  const invalidModes = count(
+    db,
+    "SELECT COUNT(*) AS count FROM transaction_categorization_values WHERE mode NOT IN ('single','allocated')",
+  );
+  if (invalidModes !== 0)
+    throw new Error("Canonical categorization contains an invalid mode.");
+}
+
 function ensureCanonicalTaxonomySchema(db: DatabaseSync): void {
   db.exec(CANONICAL_TAXONOMY_SCHEMA_SQL);
   db.exec(CANONICAL_ENRICHMENT_SCHEMA_SQL);
@@ -738,9 +861,9 @@ function localDateToUtcMicros(value: string): number {
   return localDateTimeToUtcMicros(`${value}T00:00:00`);
 }
 
-function currentUtcMicros(): number {
+function currentUtcMicros(value = new Date().toISOString()): number {
   return parseRfc3339UtcMicros(
-    new Date().toISOString(),
+    value,
     "Canonical migration clock",
   );
 }
@@ -850,7 +973,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 21;
+export const CANONICAL_SCHEMA_VERSION = 22;
 
 type CanonicalId = Buffer;
 
@@ -8355,6 +8478,15 @@ function migrateV20ToV21(db: DatabaseSync): void {
   db.exec("PRAGMA user_version = 21");
 }
 
+function migrateV21ToV22(db: DatabaseSync): void {
+  ensureCanonicalCategorizationSchema(db);
+  validateCanonicalCategorizationSchema(db);
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (22, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 22");
+}
+
 type CanonicalAttestationColumn = {
   readonly name: string;
   readonly definition: string;
@@ -9060,6 +9192,14 @@ export function createCanonicalSchemaLifecyclePlan(
         migrateV20ToV21(db);
       },
     },
+    {
+      id: "canonical/v21-v22/user-categorization-and-allocation/v1",
+      fromVersion: 21,
+      toVersion: 22,
+      apply(db) {
+        migrateV21ToV22(db);
+      },
+    },
     ],
   );
   return {
@@ -9363,6 +9503,8 @@ function validateReadOnlyDatabase(
   validateCanonicalLoanRepaymentRelationSchema(db);
   validateCanonicalRelationResolutionCommitSchema(db);
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
+  if (tableExists(db, "transaction_categorization_values"))
+    validateCanonicalCategorizationSchema(db);
   // The lifecycle validates the physical audit schema only. Whether a
   // versioned financial/source cleanup has been applied is a data-transition
   // concern checked after a validated handle exists.
@@ -9974,6 +10116,8 @@ export function validateCanonicalDatabaseAfterLifecycle(
   validateCanonicalFinancialRevisionLifecycleSchema(db);
   validateCanonicalTimeObservationLifecycleSchema(db);
   validateForeignCurrencyConversionLifecycleSchema(db);
+  if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
+  validateCanonicalCategorizationSchema(db);
   if (hasCanonicalCreditCardExtension(db))
     validateCanonicalCreditCardSchema(db);
   if (hasFubonCreditCardExtension(db)) validateFubonCreditCardSchema(db);
