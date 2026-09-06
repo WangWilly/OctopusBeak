@@ -550,6 +550,64 @@ assert.equal(
   "2026-08-03T09:10:11",
 );
 
+const providerBoundaryEvidence = admitYuantaDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  observedAt: "2026-09-06T23:40:39+08:00",
+  queryRange: {
+    dateRange: "three_months",
+    startDate: "2026/06/06",
+    endDate: "2026/09/06",
+  },
+  downloads: [
+    {
+      ...sourceCapture.downloads[0]!,
+      terminal: true,
+      rows: [
+        {
+          rowOrdinal: 0,
+          values: [
+            "臺幣活期存款 123456",
+            "123456",
+            "20260907",
+            "20260906",
+            "18:19:46",
+            "DATE BOUNDARY",
+            "",
+            "100",
+            "900",
+            "",
+            "",
+          ],
+        },
+      ],
+    },
+  ],
+});
+assert.equal(providerBoundaryEvidence.status, "admissible");
+assert.ok(providerBoundaryEvidence.capture);
+const providerBoundary = admitYuantaDomesticDepositFinancialCapture({
+  capture: providerBoundaryEvidence.capture,
+  captureId: "yuanta-financial-provider-boundary",
+  humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+});
+assert.equal(providerBoundary.status, "admitted");
+assert.ok(providerBoundary.capture);
+const providerBoundaryCompact = JSON.parse(
+  providerBoundary.capture.records[0]!.compactJson,
+) as { accountingDate?: string; transactionDate?: string };
+assert.deepEqual(
+  {
+    accountingDate: providerBoundaryCompact.accountingDate,
+    transactionDate: providerBoundaryCompact.transactionDate,
+    effectiveOn: providerBoundary.capture.records[0]!.effectiveOn,
+  },
+  {
+    accountingDate: "2026-09-07",
+    transactionDate: "2026-09-06",
+    effectiveOn: "2026-09-06",
+  },
+);
+
 let negativeCounter = 0;
 const blockedFinancial = (
   rowPatch: string[],
@@ -574,6 +632,59 @@ const blockedFinancial = (
     humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   });
 };
+const providerBoundaryRange = {
+  dateRange: "three_months",
+  startDate: "2026/06/06",
+  endDate: "2026/09/06",
+};
+assert.ok(
+  blockedFinancial(
+    [
+      "臺幣活期存款",
+      "123456",
+      "20260906",
+      "20260907",
+      "18:20:12",
+      "DATE OUTSIDE",
+      "",
+      "100",
+      "900",
+      "",
+      "",
+    ],
+    { queryRange: providerBoundaryRange },
+  ).diagnostics.includes("row-outside-query-range"),
+);
+const invalidDateEvidence = admitYuantaDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  queryRange: providerBoundaryRange,
+  downloads: [
+    {
+      ...sourceCapture.downloads[0]!,
+      terminal: true,
+      rows: [
+        {
+          rowOrdinal: 0,
+          values: [
+            "臺幣活期存款",
+            "123456",
+            "20260931",
+            "20260906",
+            "18:20:12",
+            "INVALID DATE",
+            "",
+            "100",
+            "900",
+            "",
+            "",
+          ],
+        },
+      ],
+    },
+  ],
+});
+assert.equal(invalidDateEvidence.status, "rejected");
+assert.ok(invalidDateEvidence.diagnostics.includes("row-date-invalid"));
 assert.ok(
   blockedFinancial([
     "臺幣活期存款",
