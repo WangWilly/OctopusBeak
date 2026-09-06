@@ -211,9 +211,11 @@ test("production schema registry declares every published version transition", (
     steps.map(({ id, fromVersion, toVersion }) => ({ id, fromVersion, toVersion })),
     [
       { id: "canonical/fresh-v1-baseline/v1", fromVersion: 0, toVersion: 1 },
-      ...Array.from({ length: 20 }, (_, index) => ({
+      ...Array.from({ length: 21 }, (_, index) => ({
         id:
-          index === 19
+          index === 20
+            ? "canonical/v21-v22/user-categorization-and-allocation/v1"
+            : index === 19
             ? "canonical/v20-v21/taxonomy-package-and-enrichment/v1"
             : `canonical/v${index + 1}-v${index + 2}/v1`,
         fromVersion: index + 1,
@@ -229,7 +231,7 @@ test("production schema registry declares every published version transition", (
     createHash("sha256")
       .update(JSON.stringify(steps))
       .digest("hex"),
-    "96d9126d9dc6fe7ffd425ec20ed911544fa845a0987986154a96a446f6ec5c14",
+    "11de9acbe26d5d06b5f0774fb82ecf15ec2b1f527bd12656c6a24629ce287e4f",
     "published migration ids and version ordering are immutable during the architecture refactor",
   );
   assert.deepEqual(
@@ -1166,7 +1168,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (22, 0)", /migration metadata/i],
+    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (23, 0)", /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(

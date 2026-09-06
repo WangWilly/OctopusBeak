@@ -53,6 +53,7 @@ const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
   "transactions",
   "transaction-fields",
   "transaction-enrichment",
+  "transaction-categorization",
   "loan-accounts",
   "loan-balances",
   "loan-relations",
@@ -102,6 +103,9 @@ export type CanonicalProjectionTransaction = Readonly<{
   amountScale: number;
   currency: string;
   direction: string;
+  postingStatus: string;
+  economicStatus: string;
+  administrativeState: string;
   effectiveOn: string;
   description: string | null;
   projectionCommitId: string | null;
@@ -128,6 +132,30 @@ export type CanonicalProjectionTransactionEnrichment = Readonly<{
   taxonomyVersion: string;
   taxonomyDimension: string | null;
   taxonomyCode: string | null;
+  projectionCommitId: string | null;
+  projectionCommitSequence: number;
+}>;
+export type CanonicalProjectionTransactionCategorization = Readonly<{
+  transactionId: string;
+  assertionId: string;
+  origin: "user";
+  mode: "single" | "allocated";
+  categoryCode: string | null;
+  taxonomyId: string;
+  taxonomyVersion: string;
+  allocationSetId: string | null;
+  componentOrdinal: number | null;
+  amountCoefficient: string | null;
+  amountScale: number | null;
+  amountCurrency: string | null;
+  bookedCoefficient: string | null;
+  bookedScale: number | null;
+  bookedCurrency: string | null;
+  conversionEvidenceKind: string | null;
+  conversionEvidenceId: string | null;
+  conversionFromCurrency: string | null;
+  conversionToCurrency: string | null;
+  conversionEvidenceJson: string | null;
   projectionCommitId: string | null;
   projectionCommitSequence: number;
 }>;
@@ -209,6 +237,7 @@ export type CanonicalProjectionFamilyRows = Readonly<{
   transactions: CanonicalProjectionTransaction;
   "transaction-fields": CanonicalProjectionTransactionField;
   "transaction-enrichment": CanonicalProjectionTransactionEnrichment;
+  "transaction-categorization": CanonicalProjectionTransactionCategorization;
   "loan-accounts": CanonicalProjectionLoanAccount;
   "loan-balances": CanonicalProjectionLoanBalance;
   "loan-relations": CanonicalProjectionLoanRelation;
@@ -895,7 +924,9 @@ function readFamily(
                   projected.projection_commit_id, projected.revision_commit_id,
                   transaction_row.account_id, account.account_no,
                   revision.amount_coefficient, revision.amount_scale,
-                  revision.currency, revision.direction, revision.effective_on,
+                  revision.currency, revision.direction, revision.posting_status,
+                  revision.economic_status, revision.administrative_state,
+                  revision.effective_on,
                   revision.description, revision.commit_id
              FROM projection_generation_transactions projected
              JOIN financial_transactions transaction_row
@@ -923,7 +954,9 @@ function readFamily(
         `SELECT transaction_row.transaction_id, transaction_row.account_id,
                 account.account_no, revision.revision_id,
                 revision.amount_coefficient, revision.amount_scale,
-                revision.currency, revision.direction, revision.effective_on,
+                revision.currency, revision.direction, revision.posting_status,
+                revision.economic_status, revision.administrative_state,
+                revision.effective_on,
                 revision.description, revision.commit_id
            FROM financial_transactions transaction_row
            JOIN financial_accounts account
@@ -1250,6 +1283,215 @@ function readFamily(
         knowledgeAt,
         knowledgeAt,
         knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+        knowledgeAt,
+      );
+    }
+    case "transaction-categorization": {
+      if (generation === null && request.kind === "current") return [];
+      if (request.kind === "current")
+        return rows(
+          db,
+          `WITH eligible_transactions AS (
+             SELECT projected.transaction_id, account.account_id
+               FROM projection_generation_transactions projected
+               JOIN financial_transactions transaction_row
+                 ON transaction_row.transaction_id = projected.transaction_id
+               JOIN financial_accounts account
+                 ON account.account_id = transaction_row.account_id
+               JOIN source_connections connection_scope
+                 ON connection_scope.source_connection_id = account.source_connection_id
+               JOIN transaction_revisions revision
+                 ON revision.revision_id = projected.revision_id
+              WHERE projected.generation_id = ? ${scopedFilter("account")}${transactionFilter("projected")}
+                AND (? IS NULL OR revision.effective_on >= ?)
+                AND (? IS NULL OR revision.effective_on <= ?)
+           ), user_candidates AS (
+             SELECT assertion.transaction_id, assertion.assertion_id,
+                    event.commit_id AS projection_commit_id,
+                    event_commit.commit_sequence AS projection_commit_sequence,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY assertion.transaction_id
+                      ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+                    ) AS candidate_rank,
+                    COUNT(*) OVER (
+                      PARTITION BY assertion.transaction_id
+                    ) AS candidate_count
+               FROM assertions assertion
+               JOIN assertion_transitions event
+                 ON event.assertion_id = assertion.assertion_id
+               JOIN canonical_commits event_commit
+                 ON event_commit.commit_id = event.commit_id
+               JOIN eligible_transactions eligible
+                 ON eligible.transaction_id = assertion.transaction_id
+              WHERE assertion.field_name = 'category'
+                AND assertion.origin = 'user'
+                AND event_commit.commit_sequence <= ?
+                AND event.event_kind NOT IN ('withdrawn', 'superseded')
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM assertion_transitions newer_event
+                    JOIN canonical_commits newer_commit
+                      ON newer_commit.commit_id = newer_event.commit_id
+                   WHERE newer_event.assertion_id = event.assertion_id
+                     AND newer_commit.commit_sequence <= ?
+                     AND (newer_commit.commit_sequence > event_commit.commit_sequence
+                          OR (newer_commit.commit_sequence = event_commit.commit_sequence
+                              AND newer_event.rowid > event.rowid))
+                )
+           )
+           SELECT candidate.transaction_id, candidate.assertion_id,
+                  'user' AS origin, categorization.mode,
+                  COALESCE(component.category_code, categorization.category_code) AS category_code,
+                  categorization.taxonomy_id, categorization.taxonomy_version,
+                  categorization.allocation_set_id,
+                  component.component_ordinal,
+                  component.amount_coefficient, component.amount_scale,
+                  component.amount_currency,
+                  component.booked_coefficient, component.booked_scale,
+                  component.booked_currency,
+                  component.conversion_evidence_kind,
+                  component.conversion_evidence_id,
+                  component.conversion_from_currency,
+                  component.conversion_to_currency,
+                  component.conversion_evidence_json,
+                  candidate.projection_commit_id,
+                  candidate.projection_commit_sequence
+             FROM user_candidates candidate
+             JOIN transaction_categorization_values categorization
+               ON categorization.assertion_id = candidate.assertion_id
+              AND categorization.transaction_id = candidate.transaction_id
+             LEFT JOIN category_allocation_components component
+               ON component.allocation_set_id = categorization.allocation_set_id
+            WHERE candidate.candidate_rank = 1
+              AND candidate.candidate_count = 1
+            ORDER BY candidate.transaction_id, component.component_ordinal`,
+          generation,
+          ...scopedParameters(),
+          ...transactionParameters(),
+          dateStart ?? null,
+          dateStart ?? null,
+          dateEnd ?? null,
+          dateEnd ?? null,
+          knowledgeAt,
+          knowledgeAt,
+        );
+      return rows(
+        db,
+        `WITH eligible_transactions AS (
+             SELECT revision.transaction_id, account.account_id
+               FROM transaction_revisions revision
+               JOIN canonical_commits revision_commit
+                 ON revision_commit.commit_id = revision.commit_id
+               JOIN financial_transactions transaction_row
+                 ON transaction_row.transaction_id = revision.transaction_id
+               JOIN financial_accounts account
+                 ON account.account_id = transaction_row.account_id
+               JOIN source_connections connection_scope
+                 ON connection_scope.source_connection_id = account.source_connection_id
+              WHERE revision_commit.commit_sequence <= ?
+                AND revision.effective_on <= ?
+                AND (? IS NULL OR revision.effective_on >= ?)
+                AND (? IS NULL OR revision.effective_on <= ?)
+                ${scopedFilter("account")}${transactionFilter("revision")}
+                AND EXISTS (
+                  SELECT 1
+                    FROM assertions source_assertion
+                   WHERE source_assertion.revision_id = revision.revision_id
+                     AND source_assertion.origin = 'source'
+                     AND (SELECT commit_sequence FROM canonical_commits
+                           WHERE commit_id = source_assertion.created_commit_id) <= ?
+                     AND COALESCE((
+                       SELECT source_event.event_kind
+                         FROM assertion_transitions source_event
+                         JOIN canonical_commits source_event_commit
+                           ON source_event_commit.commit_id = source_event.commit_id
+                        WHERE source_event.assertion_id = source_assertion.assertion_id
+                          AND source_event_commit.commit_sequence <= ?
+                        ORDER BY source_event_commit.commit_sequence DESC, source_event.rowid DESC
+                        LIMIT 1
+                     ), 'observed') NOT IN ('withdrawn', 'superseded')
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM transaction_revisions newer
+                    JOIN canonical_commits newer_commit
+                      ON newer_commit.commit_id = newer.commit_id
+                   WHERE newer.transaction_id = revision.transaction_id
+                     AND newer_commit.commit_sequence <= ?
+                     AND newer_commit.commit_sequence > revision_commit.commit_sequence
+                )
+           ), user_candidates AS (
+             SELECT assertion.transaction_id, assertion.assertion_id,
+                    event.commit_id AS projection_commit_id,
+                    event_commit.commit_sequence AS projection_commit_sequence,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY assertion.transaction_id
+                      ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+                    ) AS candidate_rank,
+                    COUNT(*) OVER (
+                      PARTITION BY assertion.transaction_id
+                    ) AS candidate_count
+               FROM assertions assertion
+               JOIN assertion_transitions event
+                 ON event.assertion_id = assertion.assertion_id
+               JOIN canonical_commits event_commit
+                 ON event_commit.commit_id = event.commit_id
+               JOIN eligible_transactions eligible
+                 ON eligible.transaction_id = assertion.transaction_id
+              WHERE assertion.field_name = 'category'
+                AND assertion.origin = 'user'
+                AND event_commit.commit_sequence <= ?
+                AND event.event_kind NOT IN ('withdrawn', 'superseded')
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM assertion_transitions newer_event
+                    JOIN canonical_commits newer_commit
+                      ON newer_commit.commit_id = newer_event.commit_id
+                   WHERE newer_event.assertion_id = event.assertion_id
+                     AND newer_commit.commit_sequence <= ?
+                     AND (newer_commit.commit_sequence > event_commit.commit_sequence
+                          OR (newer_commit.commit_sequence = event_commit.commit_sequence
+                              AND newer_event.rowid > event.rowid))
+                )
+           )
+           SELECT candidate.transaction_id, candidate.assertion_id,
+                  'user' AS origin, categorization.mode,
+                  COALESCE(component.category_code, categorization.category_code) AS category_code,
+                  categorization.taxonomy_id, categorization.taxonomy_version,
+                  categorization.allocation_set_id,
+                  component.component_ordinal,
+                  component.amount_coefficient, component.amount_scale,
+                  component.amount_currency,
+                  component.booked_coefficient, component.booked_scale,
+                  component.booked_currency,
+                  component.conversion_evidence_kind,
+                  component.conversion_evidence_id,
+                  component.conversion_from_currency,
+                  component.conversion_to_currency,
+                  component.conversion_evidence_json,
+                  candidate.projection_commit_id,
+                  candidate.projection_commit_sequence
+             FROM user_candidates candidate
+             JOIN transaction_categorization_values categorization
+               ON categorization.assertion_id = candidate.assertion_id
+              AND categorization.transaction_id = candidate.transaction_id
+             LEFT JOIN category_allocation_components component
+               ON component.allocation_set_id = categorization.allocation_set_id
+            WHERE candidate.candidate_rank = 1
+              AND candidate.candidate_count = 1
+            ORDER BY candidate.transaction_id, component.component_ordinal`,
+        knowledgeAt,
+        financialAt,
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
+        ...scopedParameters(),
+        ...transactionParameters(),
         knowledgeAt,
         knowledgeAt,
         knowledgeAt,
@@ -1744,6 +1986,9 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           amountScale: Number(row.amount_scale),
           currency: textValue(row, "currency"),
           direction: textValue(row, "direction"),
+          postingStatus: textValue(row, "posting_status"),
+          economicStatus: textValue(row, "economic_status"),
+          administrativeState: textValue(row, "administrative_state"),
           effectiveOn: textValue(row, "effective_on"),
           description: nullableTextValue(row, "description"),
           projectionCommitId: nullableTextValue(row, "projection_commit_id"),
@@ -1757,6 +2002,31 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           fieldName: textValue(row, "field_name"),
           value: textValue(row, "value_text"),
           origin: textValue(row, "origin"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          projectionCommitSequence: Number(row.projection_commit_sequence),
+        };
+      case "transaction-categorization":
+        return {
+          transactionId: textValue(row, "transaction_id"),
+          assertionId: textValue(row, "assertion_id"),
+          origin: "user",
+          mode: textValue(row, "mode") as "single" | "allocated",
+          categoryCode: nullableTextValue(row, "category_code"),
+          taxonomyId: textValue(row, "taxonomy_id"),
+          taxonomyVersion: textValue(row, "taxonomy_version"),
+          allocationSetId: nullableTextValue(row, "allocation_set_id"),
+          componentOrdinal: nullableNumberValue(row, "component_ordinal"),
+          amountCoefficient: nullableTextValue(row, "amount_coefficient"),
+          amountScale: nullableNumberValue(row, "amount_scale"),
+          amountCurrency: nullableTextValue(row, "amount_currency"),
+          bookedCoefficient: nullableTextValue(row, "booked_coefficient"),
+          bookedScale: nullableNumberValue(row, "booked_scale"),
+          bookedCurrency: nullableTextValue(row, "booked_currency"),
+          conversionEvidenceKind: nullableTextValue(row, "conversion_evidence_kind"),
+          conversionEvidenceId: nullableTextValue(row, "conversion_evidence_id"),
+          conversionFromCurrency: nullableTextValue(row, "conversion_from_currency"),
+          conversionToCurrency: nullableTextValue(row, "conversion_to_currency"),
+          conversionEvidenceJson: nullableTextValue(row, "conversion_evidence_json"),
           projectionCommitId: nullableTextValue(row, "projection_commit_id"),
           projectionCommitSequence: Number(row.projection_commit_sequence),
         };
@@ -1928,6 +2198,7 @@ function readSnapshotInTransaction(
     transactions: familyRows("transactions"),
     "transaction-fields": familyRows("transaction-fields"),
     "transaction-enrichment": familyRows("transaction-enrichment"),
+    "transaction-categorization": familyRows("transaction-categorization"),
     "loan-accounts": familyRows("loan-accounts"),
     "loan-balances": familyRows("loan-balances"),
     "loan-relations": familyRows("loan-relations"),
