@@ -585,8 +585,12 @@ function validateConversionEvidence(
     const evidenceId = requireId(conversion.id, "Conversion evidence ID");
     const matchingEvidence =
       revision.conversion_id instanceof Uint8Array &&
+      revision.source_record_id instanceof Uint8Array &&
+      revision.conversion_source_record_id instanceof Uint8Array &&
+      Buffer.from(revision.source_record_id).equals(
+        Buffer.from(revision.conversion_source_record_id),
+      ) &&
       ((conversion.kind === "source_record" &&
-        revision.conversion_source_record_id instanceof Uint8Array &&
         Buffer.from(revision.conversion_source_record_id).equals(evidenceId)) ||
         (conversion.kind === "transaction_revision" &&
           revision.conversion_revision_id instanceof Uint8Array &&
@@ -1011,7 +1015,9 @@ export type CanonicalSpendingLineageAssertion = Readonly<{
   lifecycle: "selected" | "withdrawn" | "superseded" | "observed";
   taxonomyId: string | null;
   taxonomyVersion: string | null;
+  mode: "single" | "allocated" | "absent";
   categoryCode: string | null;
+  components: readonly CanonicalSpendingCategoryComponent[];
   events: readonly CanonicalSpendingLineageEvent[];
   provenance: readonly CanonicalSpendingLineageProvenance[];
 }>;
@@ -1023,7 +1029,9 @@ export type CanonicalSpendingLineageEntry = Readonly<{
   selectedOrigin: "source" | "derived" | "user" | null;
   selectedTaxonomyId: string | null;
   selectedTaxonomyVersion: string | null;
+  selectedMode: "single" | "allocated" | "absent" | null;
   selectedCategoryCode: string | null;
+  selectedComponents: readonly CanonicalSpendingCategoryComponent[];
   assertions: readonly CanonicalSpendingLineageAssertion[];
 }>;
 
@@ -1560,7 +1568,7 @@ function spendingLineage(
       const typed = db
         .prepare(
           `SELECT value.taxonomy_id, value.taxonomy_version,
-                  value.category_code, value.mode
+                  value.category_code, value.mode, value.allocation_set_id
              FROM transaction_categorization_values value
             WHERE value.assertion_id = ? AND value.transaction_id = ?`,
         )
@@ -1573,12 +1581,52 @@ function spendingLineage(
             WHERE typed.assertion_id = ? AND typed.field_name = 'category'`,
         )
         .get(assertionId) as Record<string, unknown> | undefined;
+      const allocationComponents =
+        typed?.mode === "allocated" && typed.allocation_set_id instanceof Uint8Array
+          ? (db
+              .prepare(
+                `SELECT component.category_code, component.taxonomy_id,
+                        component.taxonomy_version, component.booked_coefficient,
+                        component.booked_scale, component.booked_currency,
+                        component.conversion_evidence_kind,
+                        component.conversion_evidence_id,
+                        component.conversion_from_currency,
+                        component.conversion_to_currency,
+                        component.conversion_evidence_json
+                   FROM category_allocation_components component
+                   JOIN category_allocation_sets allocation_set
+                     ON allocation_set.allocation_set_id = component.allocation_set_id
+                    AND allocation_set.assertion_id = ?
+                    AND allocation_set.transaction_id = ?
+                  WHERE component.allocation_set_id = ?
+                  ORDER BY component.component_ordinal`,
+              )
+              .all(assertionId, transactionId, typed.allocation_set_id) as Array<Record<string, unknown>>)
+          : [];
+      const assertionProvenance = provenance.at(-1);
+      const componentProvenance = {
+        projectionCommitId:
+          assertionProvenance?.commit_id == null
+            ? null
+            : idToString(blob(assertionProvenance.commit_id)),
+        projectionCommitSequence: Number(assertionProvenance?.commit_sequence ?? 0),
+      };
+      const mode =
+        typed?.mode === "allocated"
+          ? "allocated"
+          : typed?.mode === "single" || automatic
+            ? "single"
+            : "absent";
       return {
         assertionId: idToString(assertionId),
         origin: String(assertion.origin) as "source" | "derived" | "user",
         producerId: String(assertion.producer_id),
         ruleLineage: String(assertion.rule_lineage),
-        value: assertion.value_text == null ? null : String(assertion.value_text),
+        value:
+          mode === "allocated" ||
+          assertion.value_text == null
+            ? null
+            : String(assertion.value_text),
         lifecycle: (latest?.event_kind
           ? String(latest.event_kind)
           : "observed") as "selected" | "withdrawn" | "superseded" | "observed",
@@ -1594,14 +1642,43 @@ function spendingLineage(
               ? null
               : String(automatic.taxonomy_version)
             : String(typed.taxonomy_version),
+        mode,
         categoryCode:
-          typed?.category_code == null
-            ? automatic?.category_code == null
-              ? assertion.value_text == null
-                ? null
-                : String(assertion.value_text)
-              : String(automatic.category_code)
-            : String(typed.category_code),
+          mode === "allocated"
+            ? null
+            : typed?.category_code == null
+              ? automatic?.category_code == null
+                ? assertion.value_text == null
+                  ? null
+                  : String(assertion.value_text)
+                : String(automatic.category_code)
+              : String(typed.category_code),
+        components: allocationComponents.map((component) => ({
+          categoryCode: String(component.category_code),
+          origin: "user" as const,
+          assertionId: idToString(assertionId),
+          provenance: componentProvenance,
+          taxonomyId: String(component.taxonomy_id),
+          taxonomyVersion: String(component.taxonomy_version),
+          coefficient: String(component.booked_coefficient),
+          scale: Number(component.booked_scale),
+          currency: String(component.booked_currency),
+          ...(component.conversion_evidence_kind &&
+          component.conversion_evidence_id &&
+          component.conversion_from_currency &&
+          component.conversion_to_currency &&
+          component.conversion_evidence_json
+            ? {
+                conversionEvidence: {
+                  kind: String(component.conversion_evidence_kind),
+                  id: String(component.conversion_evidence_id),
+                  fromCurrency: String(component.conversion_from_currency),
+                  toCurrency: String(component.conversion_to_currency),
+                  json: String(component.conversion_evidence_json),
+                },
+              }
+            : {}),
+        })),
         events: events.map((event) => ({
           eventId: idToString(blob(event.event_id)),
           eventKind: String(event.event_kind),
@@ -1636,8 +1713,14 @@ function spendingLineage(
         selected?.taxonomyId ?? transaction.categorization.taxonomyId ?? null,
       selectedTaxonomyVersion:
         selected?.taxonomyVersion ?? transaction.categorization.taxonomyVersion ?? null,
+      selectedMode:
+        selected?.mode ?? transaction.categorization.mode ?? null,
       selectedCategoryCode:
-        selected?.categoryCode ?? transaction.categorization.categoryCode ?? null,
+        selected?.mode === "allocated"
+          ? null
+          : selected?.categoryCode ?? transaction.categorization.categoryCode ?? null,
+      selectedComponents:
+        selected?.components ?? transaction.categorization.components ?? [],
       assertions,
     } satisfies CanonicalSpendingLineageEntry;
   });

@@ -1347,8 +1347,9 @@ function readFamily(
               AND (
                 projected.mode = 'single'
                 OR EXISTS (
-                  SELECT 1 FROM category_allocation_sets allocation_set
+                   SELECT 1 FROM category_allocation_sets allocation_set
                    WHERE allocation_set.allocation_set_id = projected.allocation_set_id
+                     AND allocation_set.assertion_id = projected.assertion_id
                      AND allocation_set.transaction_id = projected.transaction_id
                      AND allocation_set.booked_coefficient = revision.amount_coefficient
                      AND allocation_set.booked_scale = revision.amount_scale
@@ -1472,6 +1473,8 @@ function readFamily(
                ON component.allocation_set_id = categorization.allocation_set_id
              LEFT JOIN category_allocation_sets allocation_set
                ON allocation_set.allocation_set_id = categorization.allocation_set_id
+              AND allocation_set.assertion_id = categorization.assertion_id
+              AND allocation_set.transaction_id = categorization.transaction_id
             WHERE candidate.candidate_rank = 1
               AND candidate.candidate_count = 1
               AND (categorization.mode = 'single'
