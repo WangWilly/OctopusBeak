@@ -32,9 +32,12 @@ import {
 import {
   createCanonicalProjectionRuntime,
   type CanonicalProjectionTransactionEnrichment,
+  type CanonicalProjectionTransactionCategorization,
+  type CanonicalProjectionTransaction,
 } from "./canonical-projection-runtime.ts";
 
 export type CanonicalEnrichmentOrigin = Exclude<TaxonomyOrigin, "user">;
+type CanonicalEffectiveOrigin = CanonicalEnrichmentOrigin | "user";
 export type CanonicalEnrichmentOutputState = "supported" | "unsupported";
 
 export type CanonicalEnrichmentEvidence = Readonly<{
@@ -858,10 +861,62 @@ export type CanonicalEnrichmentFieldResult = Readonly<{
   provenance: Readonly<Record<string, unknown>>;
 }> | Readonly<{ status: "absent" }>;
 
+export type CanonicalEnrichmentCategoryComponent = Readonly<{
+  categoryCode: string;
+  taxonomyId: string;
+  taxonomyVersion: string;
+  coefficient: string;
+  scale: number;
+  currency: string;
+  origin: "user";
+  assertionId: string;
+  provenance: Readonly<Record<string, unknown>>;
+  conversionEvidence?: Readonly<{
+    kind: string;
+    id: string;
+    fromCurrency: string;
+    toCurrency: string;
+    json: string;
+  }>;
+}>;
+
+export type CanonicalEnrichmentCategoryResult =
+  | Readonly<{ status: "absent"; mode: "absent" }>
+  | Readonly<{
+      status: "supported";
+      mode: "single";
+      code?: string;
+      value: string;
+      taxonomyId: string;
+      taxonomyVersion: string;
+      taxonomyDimension: string | null;
+      origin: CanonicalEffectiveOrigin;
+      route: Readonly<{
+        id: string;
+        producerId: string;
+        producerVersion: string;
+      }> | null;
+      assertionId: string;
+      provenance: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      status: "supported";
+      mode: "allocated";
+      value: null;
+      taxonomyId: string;
+      taxonomyVersion: string;
+      taxonomyDimension: "category";
+      origin: "user";
+      route: null;
+      assertionId: string;
+      provenance: Readonly<Record<string, unknown>>;
+      components: readonly CanonicalEnrichmentCategoryComponent[];
+    }>;
+
 export type CanonicalEnrichmentTransaction = Readonly<{
   transactionId: string;
   kind: CanonicalEnrichmentFieldResult;
-  category: CanonicalEnrichmentFieldResult;
+  category: CanonicalEnrichmentCategoryResult;
   counterparties: readonly Readonly<Record<string, unknown>>[];
   display: CanonicalEnrichmentFieldResult;
 }>;
@@ -933,6 +988,193 @@ function resultFromRuntimeRow(
     assertionId: idToString(canonicalStoredId(row.assertionId, "Assertion ID")),
     provenance,
   };
+}
+
+type PersistedExact = Readonly<{ coefficient: bigint; scale: number }>;
+
+function persistedExact(
+  coefficient: string | null,
+  scale: number | null,
+  label: string,
+): PersistedExact | null {
+  if (coefficient === null || scale === null) return null;
+  if (!/^-?(?:0|[1-9]\d*)$/u.test(coefficient) || !Number.isSafeInteger(scale) || scale < 0)
+    throw new Error(`${label} is not a canonical exact amount.`);
+  return { coefficient: BigInt(coefficient), scale };
+}
+
+function alignPersisted(left: PersistedExact, right: PersistedExact): [bigint, bigint] {
+  const scale = Math.max(left.scale, right.scale);
+  return [
+    left.coefficient * 10n ** BigInt(scale - left.scale),
+    right.coefficient * 10n ** BigInt(scale - right.scale),
+  ];
+}
+
+function equalPersisted(left: PersistedExact, right: PersistedExact): boolean {
+  const aligned = alignPersisted(left, right);
+  return aligned[0] === aligned[1];
+}
+
+function addPersisted(left: PersistedExact, right: PersistedExact): PersistedExact {
+  const scale = Math.max(left.scale, right.scale);
+  const [leftCoefficient, rightCoefficient] = alignPersisted(left, right);
+  return { coefficient: leftCoefficient + rightCoefficient, scale };
+}
+
+function absentCategory(): CanonicalEnrichmentCategoryResult {
+  return { status: "absent", mode: "absent" };
+}
+
+function categoryFromRuntimeRows(
+  transaction: CanonicalProjectionTransaction,
+  kind: CanonicalProjectionTransactionEnrichment | undefined,
+  automatic: CanonicalProjectionTransactionEnrichment | undefined,
+  userRows: readonly CanonicalProjectionTransactionCategorization[],
+  db: DatabaseSync,
+  knowledgeAt?: number,
+): CanonicalEnrichmentCategoryResult {
+  const kindCode = kind?.taxonomyCode ?? kind?.value ?? null;
+  const transactionRows = userRows.filter(
+    (row) => row.transactionId === transaction.transactionId,
+  );
+  if (kindCode !== null && transactionRows.length > 0) {
+    const assertionIds = new Set(transactionRows.map((row) => row.assertionId));
+    const first = transactionRows[0]!;
+    const oneAssertion = assertionIds.size === 1;
+    if (oneAssertion && first.mode === "single") {
+      const selected = transactionRows.length === 1 ? first : null;
+      if (
+        selected &&
+        selected.categoryCode &&
+        isCategoryApplicable(selected.categoryCode, kindCode)
+      ) {
+        return {
+          status: "supported",
+          mode: "single",
+          code: selected.categoryCode,
+          value: selected.categoryCode,
+          taxonomyId: selected.taxonomyId,
+          taxonomyVersion: selected.taxonomyVersion,
+          taxonomyDimension: "category",
+          origin: "user",
+          route: null,
+          assertionId: selected.assertionId,
+          provenance: {
+            kind: "user-categorization",
+            projectionCommitId: selected.projectionCommitId,
+            projectionCommitSequence: selected.projectionCommitSequence,
+          },
+        };
+      }
+    } else if (oneAssertion && first.mode === "allocated") {
+      const components = [...transactionRows].sort(
+        (left, right) => (left.componentOrdinal ?? 0) - (right.componentOrdinal ?? 0),
+      );
+      const seen = new Set<string>();
+      let total: PersistedExact = { coefficient: 0n, scale: 0 };
+      let complete = components.length >= 2;
+      for (const component of components) {
+        if (
+          component.categoryCode === null ||
+          component.componentOrdinal === null ||
+          component.amountCoefficient === null ||
+          component.amountScale === null ||
+          component.amountCurrency === null ||
+          component.bookedCoefficient === null ||
+          component.bookedScale === null ||
+          component.bookedCurrency === null ||
+          seen.has(component.categoryCode) ||
+          !isCategoryApplicable(component.categoryCode, kindCode) ||
+          component.bookedCurrency !== transaction.currency
+        ) {
+          complete = false;
+          break;
+        }
+        seen.add(component.categoryCode);
+        const booked = persistedExact(
+          component.bookedCoefficient,
+          component.bookedScale,
+          "Persisted allocation booked amount",
+        );
+        if (!booked) {
+          complete = false;
+          break;
+        }
+        total = addPersisted(total, booked);
+      }
+      const transactionAmount = persistedExact(
+        transaction.amountCoefficient,
+        transaction.amountScale,
+        "Transaction amount",
+      );
+      if (!transactionAmount || !equalPersisted(total, transactionAmount))
+        complete = false;
+      if (complete) {
+        return {
+          status: "supported",
+          mode: "allocated",
+          value: null,
+          taxonomyId: first.taxonomyId,
+          taxonomyVersion: first.taxonomyVersion,
+          taxonomyDimension: "category",
+          origin: "user",
+          route: null,
+          assertionId: first.assertionId,
+          provenance: {
+            kind: "user-categorization",
+            projectionCommitId: first.projectionCommitId,
+            projectionCommitSequence: first.projectionCommitSequence,
+          },
+          components: components.map((component) => ({
+            categoryCode: component.categoryCode!,
+            taxonomyId: component.taxonomyId,
+            taxonomyVersion: component.taxonomyVersion,
+            coefficient: component.bookedCoefficient!,
+            scale: component.bookedScale!,
+            currency: component.bookedCurrency!,
+            origin: "user" as const,
+            assertionId: component.assertionId,
+            provenance: {
+              kind: "user-categorization",
+              projectionCommitId: component.projectionCommitId,
+              projectionCommitSequence: component.projectionCommitSequence,
+            },
+            ...(component.conversionEvidenceKind &&
+            component.conversionEvidenceId &&
+            component.conversionFromCurrency &&
+            component.conversionToCurrency &&
+            component.conversionEvidenceJson
+              ? {
+                  conversionEvidence: {
+                    kind: component.conversionEvidenceKind,
+                    id: component.conversionEvidenceId,
+                    fromCurrency: component.conversionFromCurrency,
+                    toCurrency: component.conversionToCurrency,
+                    json: component.conversionEvidenceJson,
+                  },
+                }
+              : {}),
+          })),
+        };
+      }
+    }
+  }
+  const automaticCode = automatic?.taxonomyCode ?? automatic?.value ?? null;
+  if (
+    automatic &&
+    automaticCode &&
+    kindCode &&
+    isCategoryApplicable(automaticCode, kindCode)
+  ) {
+    const automaticResult = resultFromRuntimeRow(
+      automatic,
+      outputProvenance(db, automatic.assertionId, knowledgeAt),
+    );
+    if (automaticResult.status === "supported")
+      return { ...automaticResult, mode: "single" };
+  }
+  return absentCategory();
 }
 
 function outputProvenance(
@@ -1102,7 +1344,20 @@ function currentTransaction(
   db: DatabaseSync,
   transactionId: Uint8Array,
 ): CanonicalEnrichmentTransaction {
-  const enrichmentRows = currentEnrichmentRows(db, blob(transactionId));
+  const transactionIdText = idToString(transactionId);
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment", "transaction-categorization"],
+    scope: { transactionIds: [transactionIdText] },
+  });
+  const transactionKey = transactionIdText.replaceAll("-", "").toLowerCase();
+  const transaction = projection.families.transactions.find(
+    (row) => row.transactionId.replaceAll("-", "").toLowerCase() === transactionKey,
+  );
+  if (!transaction)
+    throw new Error("Canonical projection returned an unknown transaction subject.");
+  const enrichmentRows = projection.families["transaction-enrichment"];
+  const categorizationRows = projection.families["transaction-categorization"];
   const byField = new Map(
     enrichmentRows.map((row) => [row.fieldName, row]),
   );
@@ -1160,9 +1415,12 @@ function currentTransaction(
       byField.get("kind"),
       outputProvenance(db, byField.get("kind")?.assertionId),
     ),
-    category: resultFromRuntimeRow(
+    category: categoryFromRuntimeRows(
+      transaction,
+      byField.get("kind"),
       byField.get("category"),
-      outputProvenance(db, byField.get("category")?.assertionId),
+      categorizationRows,
+      db,
     ),
     display: resultFromRuntimeRow(
       byField.get("counterparty_display"),
@@ -1192,7 +1450,9 @@ function historicalTransaction(
   db: DatabaseSync,
   transactionId: Uint8Array,
   cutoff: number,
+  transaction: CanonicalProjectionTransaction,
   enrichmentRows: readonly CanonicalProjectionTransactionEnrichment[],
+  categorizationRows: readonly CanonicalProjectionTransactionCategorization[],
 ): CanonicalEnrichmentTransaction {
   const transactionKey = idToString(transactionId).replaceAll("-", "").toLowerCase();
   const selectedRows = enrichmentRows.filter(
@@ -1261,9 +1521,13 @@ function historicalTransaction(
       byField.get("kind"),
       outputProvenance(db, byField.get("kind")?.assertionId, cutoff),
     ),
-    category: resultFromRuntimeRow(
+    category: categoryFromRuntimeRows(
+      transaction,
+      byField.get("kind"),
       byField.get("category"),
-      outputProvenance(db, byField.get("category")?.assertionId, cutoff),
+      categorizationRows,
+      db,
+      cutoff,
     ),
     display: resultFromRuntimeRow(
       byField.get("counterparty_display"),
@@ -1313,6 +1577,57 @@ function lineageRows(
        ORDER BY (SELECT commit_sequence FROM canonical_commits WHERE commit_id = assertion.created_commit_id), assertion.assertion_id
     `).all(knowledgeAt, sqliteValue(transaction.transaction_id), knowledgeAt) as DbRow[];
     for (const row of assertions) {
+      const isAllocation =
+        row.field_name === "category" && row.value_text === "__allocation__";
+      const typedCategorization = row.field_name === "category"
+        ? db.prepare(`
+            SELECT value.mode, value.category_code, value.taxonomy_id,
+                   value.taxonomy_version, value.allocation_set_id
+              FROM transaction_categorization_values value
+             WHERE value.assertion_id = ? AND value.transaction_id = ?
+          `).get(sqliteValue(row.assertion_id), sqliteValue(transaction.transaction_id)) as DbRow | undefined
+        : undefined;
+      const lineageComponents =
+        typedCategorization?.mode === "allocated" &&
+        typedCategorization.allocation_set_id instanceof Uint8Array
+          ? db.prepare(`
+              SELECT component.category_code, component.taxonomy_id,
+                     component.taxonomy_version, component.booked_coefficient,
+                     component.booked_scale, component.booked_currency,
+                     component.conversion_evidence_kind,
+                     component.conversion_evidence_id,
+                     component.conversion_from_currency,
+                     component.conversion_to_currency,
+                     component.conversion_evidence_json
+                FROM category_allocation_components component
+                JOIN category_allocation_sets allocation_set
+                  ON allocation_set.allocation_set_id = component.allocation_set_id
+                 AND allocation_set.assertion_id = ?
+                 AND allocation_set.transaction_id = ?
+               WHERE component.allocation_set_id = ?
+               ORDER BY component.component_ordinal
+            `).all(
+              sqliteValue(row.assertion_id),
+              sqliteValue(transaction.transaction_id),
+              typedCategorization.allocation_set_id,
+            ) as DbRow[]
+          : [];
+      const lineageCategoryMode = row.field_name === "category"
+        ? typedCategorization?.mode === "allocated" || isAllocation
+          ? "allocated"
+          : row.output_state === "supported" &&
+              (typedCategorization?.mode === "single" ||
+                row.taxonomy_code !== null ||
+                row.value_text !== null)
+            ? "single"
+            : "absent"
+        : undefined;
+      const lineageTaxonomyId =
+        typedCategorization?.taxonomy_id ?? row.taxonomy_id;
+      const lineageTaxonomyVersion =
+        typedCategorization?.taxonomy_version ?? row.taxonomy_version;
+      const lineageCategoryCode =
+        typedCategorization?.category_code ?? row.taxonomy_code;
       const events = db.prepare(`
         SELECT event.event_kind AS eventKind, hex(event.commit_id) AS commitId,
                event_commit.commit_sequence AS commitSequence
@@ -1325,17 +1640,51 @@ function lineageRows(
         transactionId: idToString(blob(transaction.transaction_id)),
         assertionId: idToString(blob(row.assertion_id)),
         field: String(row.field_name),
-        value: row.value_text === null || row.value_text === undefined ? null : String(row.value_text),
+        value:
+          isAllocation || row.value_text === null || row.value_text === undefined
+            ? null
+            : String(row.value_text),
+        ...(lineageCategoryMode ? { mode: lineageCategoryMode } : {}),
+        ...(row.field_name === "category"
+          ? {
+              components: lineageComponents.map((component) => ({
+                categoryCode: String(component.category_code),
+                taxonomyId: String(component.taxonomy_id),
+                taxonomyVersion: String(component.taxonomy_version),
+                coefficient: String(component.booked_coefficient),
+                scale: Number(component.booked_scale),
+                currency: String(component.booked_currency),
+                origin: "user",
+                assertionId: idToString(blob(row.assertion_id)),
+                provenance: parseProvenance(row.provenance_json),
+                ...(component.conversion_evidence_kind &&
+                component.conversion_evidence_id &&
+                component.conversion_from_currency &&
+                component.conversion_to_currency &&
+                component.conversion_evidence_json
+                  ? {
+                      conversionEvidence: {
+                        kind: String(component.conversion_evidence_kind),
+                        id: String(component.conversion_evidence_id),
+                        fromCurrency: String(component.conversion_from_currency),
+                        toCurrency: String(component.conversion_to_currency),
+                        json: String(component.conversion_evidence_json),
+                      },
+                    }
+                  : {}),
+              })),
+            }
+          : {}),
         origin: String(row.origin),
         producerId: String(row.producer_id),
         producerVersion: String(row.producer_version ?? ""),
         ruleLineage: String(row.rule_lineage),
         routeId: String(row.route_id ?? ""),
         outputState: String(row.output_state ?? "supported"),
-        taxonomyId: row.taxonomy_id === null || row.taxonomy_id === undefined ? null : String(row.taxonomy_id),
-        taxonomyVersion: row.taxonomy_version === null || row.taxonomy_version === undefined ? null : String(row.taxonomy_version),
+        taxonomyId: lineageTaxonomyId === null || lineageTaxonomyId === undefined ? null : String(lineageTaxonomyId),
+        taxonomyVersion: lineageTaxonomyVersion === null || lineageTaxonomyVersion === undefined ? null : String(lineageTaxonomyVersion),
         taxonomyDimension: row.taxonomy_dimension === null || row.taxonomy_dimension === undefined ? null : String(row.taxonomy_dimension),
-        taxonomyCode: row.taxonomy_code === null || row.taxonomy_code === undefined ? null : String(row.taxonomy_code),
+        taxonomyCode: lineageCategoryCode === null || lineageCategoryCode === undefined ? null : String(lineageCategoryCode),
         outputCommitId: row.output_commit_id === null || row.output_commit_id === undefined ? null : idToString(blob(row.output_commit_id)),
         sourceRecordId: row.source_record_id === null || row.source_record_id === undefined ? null : idToString(blob(row.source_record_id)),
         sourceField: row.source_field === null || row.source_field === undefined ? null : String(row.source_field),
@@ -1395,7 +1744,11 @@ function readHistoricalProjection(
   };
   return createCanonicalProjectionRuntime(db).read({
     kind: "historical",
-    families: ["transactions", "transaction-enrichment"],
+    families: [
+      "transactions",
+      "transaction-enrichment",
+      "transaction-categorization",
+    ],
     scope,
     cutoff: { financialAt: request.financialAt!, knowledgeAt },
   });
@@ -1413,7 +1766,14 @@ function queryHistorical(db: DatabaseSync, request: CanonicalEnrichmentQueryRequ
     throw new Error("Historical enrichment knowledge cutoff is invalid.");
   const rows = transactionRows(db, request, "historical", knowledgeAt);
   const projection = readHistoricalProjection(db, request, knowledgeAt);
+  const transactionRowsById = new Map(
+    projection.families.transactions.map((row) => [
+      row.transactionId.replaceAll("-", "").toLowerCase(),
+      row,
+    ]),
+  );
   const enrichmentRows = projection.families["transaction-enrichment"];
+  const categorizationRows = projection.families["transaction-categorization"];
   return {
     kind: "historical",
     knowledgePoint: knowledgeAt,
@@ -1422,7 +1782,11 @@ function queryHistorical(db: DatabaseSync, request: CanonicalEnrichmentQueryRequ
       db,
       blob(row.transaction_id),
       knowledgeAt,
+      transactionRowsById.get(
+        idToString(blob(row.transaction_id)).replaceAll("-", "").toLowerCase(),
+      )!,
       enrichmentRows,
+      categorizationRows,
     )),
   };
 }
@@ -1450,13 +1814,29 @@ export function createCanonicalEnrichmentQuery(ledgerDir: string) {
           ? null
           : readHistoricalProjection(db, boundedRequest, knowledgeAt);
         const enrichmentRows = historicalProjection?.families["transaction-enrichment"] ?? [];
+        const categorizationRows = historicalProjection?.families["transaction-categorization"] ?? [];
+        const transactionRowsById = new Map(
+          historicalProjection?.families.transactions.map((row) => [
+            row.transactionId.replaceAll("-", "").toLowerCase(),
+            row,
+          ]) ?? [],
+        );
         return {
           kind: "lineage",
           knowledgePoint: knowledgeAt,
           financialAt: request.financialAt ?? null,
           transactions: rows.map((row) => request.knowledgeAt === undefined && request.financialAt === undefined
             ? currentTransaction(db, blob(row.transaction_id))
-            : historicalTransaction(db, blob(row.transaction_id), knowledgeAt, enrichmentRows)),
+            : historicalTransaction(
+              db,
+              blob(row.transaction_id),
+              knowledgeAt,
+              transactionRowsById.get(
+                idToString(blob(row.transaction_id)).replaceAll("-", "").toLowerCase(),
+              )!,
+              enrichmentRows,
+              categorizationRows,
+            )),
           lineage: lineageRows(db, boundedRequest, knowledgeAt),
         };
       });

@@ -291,6 +291,7 @@ CREATE TABLE IF NOT EXISTS category_allocation_sets (
   created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
   UNIQUE(assertion_id),
   UNIQUE(assertion_id, transaction_id),
+  UNIQUE(allocation_set_id, assertion_id, transaction_id),
   CHECK(booked_coefficient = '0' OR (booked_coefficient NOT GLOB '*[^0-9]*' AND substr(booked_coefficient, 1, 1) <> '0')),
   CHECK(booked_coefficient = '0' OR booked_coefficient GLOB '[0-9]*'),
   CHECK(booked_scale <= 1000),
@@ -350,6 +351,8 @@ CREATE TABLE IF NOT EXISTS transaction_categorization_values (
     REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
   FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, category_code)
     REFERENCES taxonomy_codes(taxonomy_id, taxonomy_version, dimension, code),
+  FOREIGN KEY(allocation_set_id, assertion_id, transaction_id)
+    REFERENCES category_allocation_sets(allocation_set_id, assertion_id, transaction_id),
   CHECK((mode = 'single' AND category_code IS NOT NULL AND allocation_set_id IS NULL)
     OR (mode = 'allocated' AND category_code IS NULL AND allocation_set_id IS NOT NULL))
 );
@@ -384,6 +387,8 @@ CREATE TABLE IF NOT EXISTS projection_generation_transaction_categorizations (
     REFERENCES transaction_categorization_values(assertion_id, transaction_id),
   FOREIGN KEY(allocation_set_id)
     REFERENCES category_allocation_sets(allocation_set_id),
+  FOREIGN KEY(allocation_set_id, assertion_id, transaction_id)
+    REFERENCES category_allocation_sets(allocation_set_id, assertion_id, transaction_id),
   FOREIGN KEY(conversion_id)
     REFERENCES transaction_conversion_evidence(conversion_id),
   CHECK((mode = 'single' AND component_ordinal = 0 AND category_code IS NOT NULL
@@ -509,6 +514,34 @@ function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
   ])
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index))
       throw new Error(`Canonical categorization index ${index} is missing.`);
+  const hasCompositeOwnership = (table: string): boolean => {
+    const rows = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      id?: unknown;
+      table?: unknown;
+      from?: unknown;
+      to?: unknown;
+    }>;
+    const grouped = new Map<number, Set<string>>();
+    for (const row of rows) {
+      if (String(row.table ?? "") !== "category_allocation_sets") continue;
+      const id = Number(row.id);
+      const fields = grouped.get(id) ?? new Set<string>();
+      fields.add(`${String(row.from ?? "")}=${String(row.to ?? "")}`);
+      grouped.set(id, fields);
+    }
+    return [...grouped.values()].some(
+      (fields) =>
+        fields.has("allocation_set_id=allocation_set_id") &&
+        fields.has("assertion_id=assertion_id") &&
+        fields.has("transaction_id=transaction_id"),
+    );
+  };
+  for (const table of [
+    "transaction_categorization_values",
+    "projection_generation_transaction_categorizations",
+  ])
+    if (!hasCompositeOwnership(table))
+      throw new Error(`Canonical categorization ownership FK ${table} is missing.`);
   const invalidModes = count(
     db,
     "SELECT COUNT(*) AS count FROM transaction_categorization_values WHERE mode NOT IN ('single','allocated')",
