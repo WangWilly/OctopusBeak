@@ -14,6 +14,7 @@ import {
   type CanonicalEnrichmentFieldResult,
   type CanonicalEnrichmentOutput,
 } from "./canonical-enrichment.ts";
+import { commitCanonicalUserCategorization } from "./canonical-categorization.ts";
 import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 import { blob, canonicalSqlitePath, idToString } from "./canonical-schema-implementation.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
@@ -565,8 +566,12 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
     const transaction = createCanonicalEnrichmentQuery(compatible.directory)
       .current({ sourceConnectionKey: compatible.sourceConnectionKey }).transactions[0]!;
     assert.equal(requireSupported(transaction.kind).code, "purchase");
-    assert.equal(requireSupported(transaction.category).code, "dining");
-    assert.equal(requireSupported(transaction.category).taxonomyDimension, "category");
+    assert.equal(transaction.category.status, "supported");
+    assert.equal(transaction.category.mode, "single");
+    if (transaction.category.status !== "supported")
+      throw new Error("Expected a supported category in this fixture.");
+    assert.equal(transaction.category.code, "dining");
+    assert.equal(transaction.category.taxonomyDimension, "category");
     assert.equal(transaction.counterparties.length, 1);
     assert.equal(transaction.counterparties[0]?.taxonomyId, "transaction-taxonomy");
     assert.equal(transaction.counterparties[0]?.taxonomyVersion, "v1");
@@ -604,6 +609,133 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
     }
   } finally {
     await discard(incompatible.directory);
+  }
+});
+
+test("legacy enrichment facade follows effective user category selection and allocation lineage", async () => {
+  const state = await createFixtureState();
+  try {
+    const automatic = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/facade-category-lifecycle",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind", "category"] }],
+      outputs: [
+        typedDerivedOutput(state, "kind", "purchase", "test/facade-category-lifecycle"),
+        typedDerivedOutput(state, "category", "dining", "test/facade-category-lifecycle"),
+      ],
+    });
+    const query = createCanonicalEnrichmentQuery(state.directory);
+    const automaticCurrent = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(automaticCurrent.category.status, "supported");
+    assert.equal(automaticCurrent.category.mode, "single");
+    if (automaticCurrent.category.status !== "supported")
+      throw new Error("Expected automatic category to be supported.");
+    assert.equal(automaticCurrent.category.origin, "derived");
+    assert.equal(automaticCurrent.category.code, "dining");
+
+    const userSingle = await commitCanonicalUserCategorization(state.directory, {
+      transactionId: state.transactionId,
+      mode: "single",
+      categoryCode: "transportation",
+      userId: "facade-user",
+    });
+    const singleCurrent = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(singleCurrent.category.status, "supported");
+    assert.equal(singleCurrent.category.mode, "single");
+    if (singleCurrent.category.status !== "supported")
+      throw new Error("Expected user single category to be supported.");
+    assert.equal(singleCurrent.category.origin, "user");
+    assert.equal(singleCurrent.category.code, "transportation");
+
+    const allocation = await commitCanonicalUserCategorization(state.directory, {
+      transactionId: state.transactionId,
+      mode: "allocated",
+      userId: "facade-user",
+      allocation: [
+        {
+          categoryCode: "dining",
+          amount: { coefficient: "5000", scale: 0, currency: "TWD" },
+        },
+        {
+          categoryCode: "transportation",
+          amount: { coefficient: "7500", scale: 0, currency: "TWD" },
+        },
+      ],
+    });
+    const allocatedCurrent = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(allocatedCurrent.category.status, "supported");
+    assert.equal(allocatedCurrent.category.mode, "allocated");
+    if (allocatedCurrent.category.status !== "supported" || allocatedCurrent.category.mode !== "allocated")
+      throw new Error("Expected user allocation to be supported.");
+    assert.equal(allocatedCurrent.category.value, null);
+    assert.deepEqual(allocatedCurrent.category.components.map((component) => component.categoryCode), ["dining", "transportation"]);
+    assert.equal(allocatedCurrent.category.components.every((component) => component.taxonomyId === "transaction-taxonomy" && component.taxonomyVersion === "v1"), true);
+
+    const beforeUser = query.historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: automatic.commitSequence,
+    }).transactions[0]!;
+    assert.equal(beforeUser.category.status, "supported");
+    if (beforeUser.category.status !== "supported")
+      throw new Error("Expected historical automatic category to be supported.");
+    assert.equal(beforeUser.category.mode, "single");
+    assert.equal(beforeUser.category.origin, "derived");
+    assert.equal(beforeUser.category.code, "dining");
+
+    const atAllocation = query.historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: allocation.commitSequence,
+    }).transactions[0]!;
+    assert.equal(atAllocation.category.status, "supported");
+    if (atAllocation.category.status !== "supported" || atAllocation.category.mode !== "allocated")
+      throw new Error("Expected historical user allocation to be supported.");
+    assert.equal(atAllocation.category.value, null);
+    assert.deepEqual(atAllocation.category.components.map((component) => component.categoryCode), ["dining", "transportation"]);
+
+    const lineageAtAllocation = query.lineage({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: allocation.commitSequence,
+    });
+    const lineageTransaction = lineageAtAllocation.transactions[0]!;
+    assert.equal(lineageTransaction.category.status, "supported");
+    if (lineageTransaction.category.status !== "supported" || lineageTransaction.category.mode !== "allocated")
+      throw new Error("Expected lineage transaction to expose the allocation mode.");
+    assert.equal(lineageTransaction.category.value, null);
+    const allocationLineage = lineageAtAllocation.lineage?.find(
+      (entry) => entry.field === "category" && entry.assertionId === allocation.assertionId,
+    );
+    assert.equal(allocationLineage?.mode, "allocated");
+    assert.equal(allocationLineage?.value, null);
+    assert.notEqual(allocationLineage?.value, "__allocation__");
+    assert.deepEqual(
+      (allocationLineage?.components as Array<Record<string, unknown>>).map(
+        (component) => [component.categoryCode, component.taxonomyId, component.taxonomyVersion],
+      ),
+      [
+        ["dining", "transaction-taxonomy", "v1"],
+        ["transportation", "transaction-taxonomy", "v1"],
+      ],
+    );
+
+    const cleared = await commitCanonicalUserCategorization(state.directory, {
+      transactionId: state.transactionId,
+      mode: "clear",
+      userId: "facade-user",
+    });
+    const afterClear = query.current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
+    assert.equal(afterClear.category.status, "supported");
+    if (afterClear.category.status !== "supported")
+      throw new Error("Expected automatic category after clear to be supported.");
+    assert.equal(afterClear.category.mode, "single");
+    assert.equal(afterClear.category.origin, "derived");
+    assert.equal(afterClear.category.code, "dining");
+    assert.equal(cleared.withdrawn, true);
+  } finally {
+    await discard(state.directory);
   }
 });
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./canonical-categorization.ts";
 import {
   blob,
+  canonicalSqlitePath,
   idToString,
   uuidV7,
 } from "./canonical-schema-implementation.ts";
@@ -86,7 +88,10 @@ async function foreignConversionFixture(): Promise<FixtureState> {
   });
 }
 
-function admitTypedConversionEvidence(state: FixtureState): void {
+function admitTypedConversionEvidence(
+  state: FixtureState,
+  evidenceSourceRecordId = state.sourceRecordId,
+): void {
   const store = createCanonicalSourceStore(join(state.directory, "canonical.sqlite"));
   try {
     const row = store.db
@@ -104,9 +109,12 @@ function admitTypedConversionEvidence(state: FixtureState): void {
     assert.ok(row);
     const transactionId = row.transaction_id as Uint8Array;
     const revisionId = row.revision_id as Uint8Array;
-    const sourceRecordId = row.source_record_id as Uint8Array;
     const captureId = row.capture_id as Uint8Array;
     const commitId = row.commit_id as Uint8Array;
+    const evidenceSourceRecord = Buffer.from(
+      evidenceSourceRecordId.replaceAll("-", ""),
+      "hex",
+    );
     store.db
       .prepare(
         `INSERT INTO transaction_conversion_evidence(
@@ -123,7 +131,7 @@ function admitTypedConversionEvidence(state: FixtureState): void {
         uuidV7(),
         transactionId,
         revisionId,
-        sourceRecordId,
+        evidenceSourceRecord,
         captureId,
         commitId,
         "10",
@@ -621,6 +629,83 @@ test("typed conversion evidence supports an exact split and rejects guessed or s
   }
 });
 
+test("typed conversion evidence rejects a different source record from the same capture", async () => {
+  const state = await foreignConversionFixture();
+  try {
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const current = db
+      .prepare(
+        `SELECT revision.capture_id, revision.source_record_id
+           FROM current_transactions current_row
+           JOIN transaction_revisions revision
+             ON revision.revision_id = current_row.revision_id
+          WHERE current_row.transaction_id = ?`,
+      )
+      .get(blob(Buffer.from(state.transactionId.replaceAll("-", ""), "hex"))) as {
+      capture_id: Uint8Array;
+      source_record_id: Uint8Array;
+    };
+    const unrelated = db
+      .prepare(
+        `SELECT source_record_id
+           FROM source_records
+          WHERE capture_id = ? AND source_record_id <> ?
+          LIMIT 1`,
+      )
+      .get(current.capture_id, current.source_record_id) as {
+      source_record_id: Uint8Array;
+    };
+    db.close();
+    const unrelatedId = idToString(blob(unrelated.source_record_id));
+    admitTypedConversionEvidence(state, unrelatedId);
+    await publishPurchaseKind(state);
+    await assert.rejects(
+      () =>
+        commitCanonicalUserCategorization(state.directory, {
+          transactionId: state.transactionId,
+          mode: "allocated",
+          allocation: [
+            {
+              categoryCode: "dining",
+              amount: { coefficient: "4", scale: 0, currency: "USD" },
+              conversion: {
+                fromCurrency: "USD",
+                toCurrency: "TWD",
+                convertedAmount: { coefficient: "126", scale: 0, currency: "TWD" },
+                evidenceKind: "source_record",
+                evidenceId: unrelatedId,
+              },
+            },
+            {
+              categoryCode: "transportation",
+              amount: { coefficient: "6", scale: 0, currency: "USD" },
+              conversion: {
+                fromCurrency: "USD",
+                toCurrency: "TWD",
+                convertedAmount: { coefficient: "189", scale: 0, currency: "TWD" },
+                evidenceKind: "source_record",
+                evidenceId: unrelatedId,
+              },
+            },
+          ],
+        }),
+      /typed fact/u,
+    );
+    const after = openCanonicalDatabase(state.directory, { readOnly: true });
+    assert.equal(
+      Number(
+        (after.prepare("SELECT COUNT(*) AS count FROM transaction_categorization_values").get() as {
+          count?: unknown;
+        }).count,
+      ),
+      0,
+    );
+    after.close();
+  } finally {
+    await discard(state.directory);
+  }
+});
+
 test("spending report publishes gross posted outflow scope and reports semantic gaps separately from unclassified amounts", async () => {
   const state = await fixture();
   try {
@@ -673,6 +758,166 @@ test("rebuild and reopen retain the selected user categorization and allocation 
     const after = spending(state);
     assert.deepEqual(after.includedTransactions, before.includedTransactions);
     assert.deepEqual(after.categoryTotalsByCurrency, before.categoryTotalsByCurrency);
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("allocation ownership rejects equal-amount cross-links and preserves the active generation on malformed rebuild", async () => {
+  const raw = JSON.parse(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse) as {
+    content: { datas: Array<{ details: Array<Record<string, unknown>> }> };
+  };
+  raw.content.datas[0]!.details[2]!.incomeAmt = 300;
+  raw.content.datas[0]!.details[2]!.balance = 12500;
+  const state = await fixtureWithInput({
+    ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    rawResponse: JSON.stringify(raw),
+  });
+  try {
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const rows = db
+      .prepare(
+        `SELECT current_row.transaction_id, revision.source_record_id,
+                revision.direction, revision.amount_coefficient
+           FROM current_transactions current_row
+           JOIN transaction_revisions revision
+             ON revision.revision_id = current_row.revision_id
+          ORDER BY current_row.rowid`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const owner = rows.find((row) => row.direction === "outflow")!;
+    const victim = rows.find(
+      (row) =>
+        row.direction === "inflow" &&
+        String(row.amount_coefficient) === "300",
+    )!;
+    db.close();
+    const ownerId = idToString(blob(owner.transaction_id));
+    const victimId = idToString(blob(victim.transaction_id));
+    const ownerSource = idToString(blob(owner.source_record_id));
+    const victimSource = idToString(blob(victim.source_record_id));
+    await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/canonical-categorization/cross-link-kind",
+      declaredSubjects: [
+        { transactionId: ownerId, fields: ["kind"] },
+        { transactionId: victimId, fields: ["kind"] },
+      ],
+      outputs: [
+        {
+          transactionId: ownerId,
+          field: "kind",
+          origin: "derived",
+          value: "purchase",
+          confidenceBasisPoints: 10_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: ownerSource,
+            sourceValue: "synthetic owner purchase",
+            contractVersion: "test/canonical-categorization/v1",
+          },
+        },
+        {
+          transactionId: victimId,
+          field: "kind",
+          origin: "derived",
+          value: "purchase",
+          confidenceBasisPoints: 10_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: victimSource,
+            sourceValue: "synthetic victim purchase",
+            contractVersion: "test/canonical-categorization/v1",
+          },
+        },
+      ],
+    });
+    const ownerCategorization = await commitCanonicalUserCategorization(state.directory, {
+      transactionId: ownerId,
+      mode: "allocated",
+      allocation: [
+        { categoryCode: "dining", coefficient: "100", scale: 0, currency: "TWD" },
+        { categoryCode: "transportation", coefficient: "200", scale: 0, currency: "TWD" },
+      ],
+    });
+    await commitCanonicalUserCategorization(state.directory, {
+      transactionId: victimId,
+      mode: "allocated",
+      allocation: [
+        { categoryCode: "food_and_groceries", coefficient: "100", scale: 0, currency: "TWD" },
+        { categoryCode: "travel", coefficient: "200", scale: 0, currency: "TWD" },
+      ],
+    });
+    const runtimeModule = await import("./canonical-projection-runtime.ts");
+    const writable = new DatabaseSync(canonicalSqlitePath(state.directory));
+    try {
+      writable.exec("PRAGMA foreign_keys = ON");
+      const ownerSet = writable
+        .prepare("SELECT allocation_set_id FROM category_allocation_sets WHERE assertion_id = ?")
+        .get(blob(Buffer.from(ownerCategorization.assertionId!.replaceAll("-", ""), "hex"))) as {
+        allocation_set_id?: Uint8Array;
+      };
+      assert.ok(ownerSet.allocation_set_id);
+      const ownerAllocationSetId = ownerSet.allocation_set_id;
+      writable.exec("DROP TRIGGER transaction_categorization_values_no_update");
+      assert.throws(
+        () =>
+          writable
+            .prepare("UPDATE transaction_categorization_values SET allocation_set_id = ? WHERE transaction_id = ?")
+            .run(ownerAllocationSetId, Buffer.from(victimId.replaceAll("-", ""), "hex")),
+        /FOREIGN KEY/u,
+      );
+      writable.exec(`
+        CREATE TRIGGER transaction_categorization_values_no_update
+        BEFORE UPDATE ON transaction_categorization_values
+        BEGIN SELECT RAISE(ABORT, 'transaction categorization values are immutable'); END;
+      `);
+    } finally {
+      writable.close();
+    }
+    const victimBeforeCorruption = spending(state).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, victimId),
+    );
+    assert.deepEqual(
+      victimBeforeCorruption?.categorization.components?.map((component) => component.categoryCode),
+      ["food_and_groceries", "travel"],
+    );
+
+    const malformed = new DatabaseSync(canonicalSqlitePath(state.directory));
+    try {
+      malformed.exec("PRAGMA foreign_keys = ON");
+      const victimSet = malformed
+        .prepare("SELECT allocation_set_id FROM category_allocation_sets WHERE transaction_id = ?")
+        .get(Buffer.from(victimId.replaceAll("-", ""), "hex")) as {
+        allocation_set_id?: Uint8Array;
+      };
+      assert.ok(victimSet.allocation_set_id);
+      malformed.exec("DROP TRIGGER category_allocation_components_no_delete");
+      malformed
+        .prepare(
+          "DELETE FROM category_allocation_components WHERE allocation_set_id = ? AND component_ordinal = 2",
+        )
+        .run(victimSet.allocation_set_id);
+      malformed.exec(`
+        CREATE TRIGGER category_allocation_components_no_delete
+        BEFORE DELETE ON category_allocation_components
+        BEGIN SELECT RAISE(ABORT, 'category allocation components are immutable'); END;
+      `);
+    } finally {
+      malformed.close();
+    }
+    await assert.rejects(
+      runtimeModule.createCanonicalProjectionRuntime(state.directory).rebuild(),
+      /allocation is incomplete|allocation does not exactly reconcile/u,
+    );
+    const victimAfterFailedRebuild = spending(state).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, victimId),
+    );
+    assert.deepEqual(
+      victimAfterFailedRebuild?.categorization.components?.map((component) => component.categoryCode),
+      ["food_and_groceries", "travel"],
+    );
   } finally {
     await discard(state.directory);
   }
