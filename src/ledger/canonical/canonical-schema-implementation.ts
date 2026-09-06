@@ -5290,6 +5290,22 @@ function canonicalCommitHasEvidence(
         .get(commitId, commitId)
     )
       return true;
+    if (
+      tableExists(db, "user_tags") &&
+      (db
+        .prepare(
+          `SELECT 1 FROM user_tags WHERE created_commit_id = ?
+           UNION ALL
+           SELECT 1 FROM user_tag_label_revisions WHERE created_commit_id = ?
+           UNION ALL
+           SELECT 1 FROM user_tag_status_revisions WHERE created_commit_id = ?
+           UNION ALL
+           SELECT 1 FROM transaction_tag_assertion_values WHERE created_commit_id = ?
+           LIMIT 1`,
+        )
+        .get(commitId, commitId, commitId, commitId) as unknown)
+    )
+      return true;
     const provenanceRows = db
       .prepare(
         `SELECT assertion_id FROM assertion_provenance

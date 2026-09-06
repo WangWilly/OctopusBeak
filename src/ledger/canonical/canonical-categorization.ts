@@ -1757,6 +1757,12 @@ export function createCanonicalSpendingQuery(
       return run((db) => spendingSnapshot(db, request, "historical"));
     },
     lineage(request: CanonicalSpendingQueryRequest = {}) {
+      const hasFinancialCutoff = request.financialAt !== undefined;
+      const hasKnowledgeCutoff = request.knowledgeAt !== undefined;
+      if (hasFinancialCutoff !== hasKnowledgeCutoff)
+        throw new Error(
+          "Spending lineage queries require both financialAt and knowledgeAt cutoffs.",
+        );
       const bounded =
         request.knowledgeAt === undefined
           ? request

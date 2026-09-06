@@ -519,7 +519,7 @@ test("versioned grouped contracts preserve source and derived role permutations"
     }).transactions[0]!;
     assert.deepEqual(historicalSource.counterparties.map((row) => row.taxonomyCode), ["merchant", "marketplace"]);
     assert.equal(historicalSource.counterparties.every((row) => row.origin === "source"), true);
-    const lineage = query.lineage({ transactionIds: [state.transactionId], knowledgeAt: derived.commitSequence });
+    const lineage = query.lineage({ transactionIds: [state.transactionId], financialAt: "2026-12-31", knowledgeAt: derived.commitSequence });
     const roleLineage = lineage.lineage?.filter((entry) => entry.field === "counterparty_role") ?? [];
     assert.deepEqual(roleLineage.map((entry) => entry.origin), ["source", "derived"]);
     assert.equal(roleLineage.every((entry) => Array.isArray(entry.participations) && entry.participations.length >= 2), true);

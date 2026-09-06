@@ -181,8 +181,23 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
       "payment.credit_card",
     ]);
 
+    assert.throws(
+      () => query.lineage({
+        sourceConnectionKey: state.sourceConnectionKey,
+        knowledgeAt: result.commitSequence,
+      }),
+      /both financialAt and knowledgeAt cutoffs/u,
+    );
+    assert.throws(
+      () => query.lineage({
+        sourceConnectionKey: state.sourceConnectionKey,
+        financialAt: "2026-12-31",
+      }),
+      /both financialAt and knowledgeAt cutoffs/u,
+    );
     const lineage = query.lineage({
       sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
       knowledgeAt: result.commitSequence,
     });
     const kindLineage = lineage.lineage?.find((entry) => entry.field === "kind" && entry.transactionId === state.transactionId);
