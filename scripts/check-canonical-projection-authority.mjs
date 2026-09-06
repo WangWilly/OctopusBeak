@@ -14,6 +14,7 @@ export const PROJECTION_STORAGE_IDENTIFIERS = Object.freeze([
   "projection_generation_transactions",
   "projection_generation_transaction_selection",
   "projection_generation_transaction_fields",
+  "projection_generation_transaction_categorizations",
   "projection_generation_provenance",
   "current_projection_state",
   "current_transactions",
@@ -56,6 +57,7 @@ export const PROJECTION_AUTHORITY_ESCAPE_IDENTIFIERS = Object.freeze([
 export const PROJECTION_STORAGE_ALLOWLIST = Object.freeze([
   "src/ledger/canonical/canonical-projection-runtime.ts",
   "src/ledger/canonical/canonical-projection-implementation.ts",
+  "src/ledger/canonical/canonical-categorization-projection.ts",
   "src/ledger/canonical/canonical-schema-lifecycle.ts",
 ]);
 
@@ -72,6 +74,8 @@ const SCHEMA_IMPLEMENTATION_CONTEXT_ALLOWLIST = new Set([
   "SCHEMA_V10_LOAN_REPAYMENT_RELATIONS",
   "CANONICAL_FINANCIAL_PROJECTION_TABLES",
   "CANONICAL_EMPTY_STORE_TABLES",
+  "CANONICAL_CATEGORIZATION_SCHEMA_SQL",
+  "validateCanonicalCategorizationSchema",
   "migrateV1ToV2",
   "migrateV4ToV5",
   "migrateV6ToV7",
@@ -134,6 +138,7 @@ export const CANONICAL_ENTRY_MODULES = Object.freeze([
   "src/ledger/canonical/canonical-database.ts",
   "src/ledger/canonical/canonical-projection-contract.ts",
   "src/ledger/canonical/canonical-projection-implementation.ts",
+  "src/ledger/canonical/canonical-categorization-projection.ts",
   "src/ledger/canonical/canonical-projection-runtime.ts",
   "src/ledger/canonical/fubon-credit-card-schema.ts",
 ]);

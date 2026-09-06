@@ -26,6 +26,7 @@ import type {
   CanonicalProjectionRebuildResult,
 } from "./canonical-projection-contract.ts";
 import { rebuildCanonicalEnrichmentProjection } from "./canonical-enrichment-projection.ts";
+import { refreshCanonicalCategorizationGeneration } from "./canonical-categorization-projection.ts";
 
 function parseRfc3339UtcMicros(value: string, label: string): number {
   const match = value.match(
@@ -240,6 +241,11 @@ function rebuildCathayCanonicalProjectionOnce(
       SELECT generation_id, transaction_id, revision_id, projection_commit_id, 'rebuild'
       FROM projection_generation_transactions WHERE generation_id = ?`,
     ).run(generation);
+    refreshCanonicalCategorizationGeneration(db, {
+      generationId: generation,
+      projectionCommitId: commitId,
+      knowledgePoint: cutoff,
+    });
     db.prepare(
       `INSERT INTO current_loan_accounts(
          generation_id, account_id, projection_commit_id, created_commit_id
@@ -602,6 +608,9 @@ function syncActiveProjectionFromCompatibility(
   db.prepare(
     "UPDATE projection_generations SET build_cutoff_commit_sequence = (SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?) WHERE generation_id = ?",
   ).run(projectionCommitId, generationId);
+  db.prepare(
+    "DELETE FROM projection_generation_transaction_categorizations WHERE generation_id = ?",
+  ).run(generationId);
   db.prepare(
     "DELETE FROM projection_generation_transaction_fields WHERE generation_id = ?",
   ).run(generationId);

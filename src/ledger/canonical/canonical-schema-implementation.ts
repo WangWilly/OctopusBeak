@@ -279,6 +279,8 @@ CREATE INDEX IF NOT EXISTS idx_counterparty_participations_transaction ON counte
  * canonical facts into an EAV or JSON-only model.
  */
 const CANONICAL_CATEGORIZATION_SCHEMA_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assertions_id_transaction
+  ON assertions(assertion_id, transaction_id);
 CREATE TABLE IF NOT EXISTS category_allocation_sets (
   allocation_set_id BLOB PRIMARY KEY CHECK(length(allocation_set_id) = 16),
   assertion_id BLOB NOT NULL REFERENCES assertions(assertion_id),
@@ -287,7 +289,14 @@ CREATE TABLE IF NOT EXISTS category_allocation_sets (
   booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0),
   booked_currency TEXT NOT NULL,
   created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
-  UNIQUE(assertion_id)
+  UNIQUE(assertion_id),
+  UNIQUE(assertion_id, transaction_id),
+  CHECK(booked_coefficient = '0' OR (booked_coefficient NOT GLOB '*[^0-9]*' AND substr(booked_coefficient, 1, 1) <> '0')),
+  CHECK(booked_coefficient = '0' OR booked_coefficient GLOB '[0-9]*'),
+  CHECK(booked_scale <= 1000),
+  CHECK(booked_currency = upper(booked_currency)),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES assertions(assertion_id, transaction_id)
 );
 CREATE TABLE IF NOT EXISTS category_allocation_components (
   allocation_set_id BLOB NOT NULL REFERENCES category_allocation_sets(allocation_set_id),
@@ -297,28 +306,34 @@ CREATE TABLE IF NOT EXISTS category_allocation_components (
   taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'category'),
   category_code TEXT NOT NULL,
   amount_coefficient TEXT NOT NULL,
-  amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0),
+  amount_scale INTEGER NOT NULL CHECK(amount_scale >= 0 AND amount_scale <= 1000),
   amount_currency TEXT NOT NULL,
   booked_coefficient TEXT NOT NULL,
-  booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0),
+  booked_scale INTEGER NOT NULL CHECK(booked_scale >= 0 AND booked_scale <= 1000),
   booked_currency TEXT NOT NULL,
   conversion_evidence_kind TEXT,
   conversion_evidence_id TEXT,
   conversion_from_currency TEXT,
   conversion_to_currency TEXT,
   conversion_evidence_json TEXT,
+  conversion_id BLOB REFERENCES transaction_conversion_evidence(conversion_id),
   PRIMARY KEY(allocation_set_id, component_ordinal),
   UNIQUE(allocation_set_id, category_code),
   FOREIGN KEY(taxonomy_id, taxonomy_version)
     REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
   FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, category_code)
     REFERENCES taxonomy_codes(taxonomy_id, taxonomy_version, dimension, code),
+  CHECK(amount_coefficient = '0' OR (amount_coefficient NOT GLOB '*[^0-9]*' AND substr(amount_coefficient, 1, 1) <> '0')),
+  CHECK(amount_coefficient = '0' OR amount_coefficient GLOB '[0-9]*'),
+  CHECK(booked_coefficient = '0' OR (booked_coefficient NOT GLOB '*[^0-9]*' AND substr(booked_coefficient, 1, 1) <> '0')),
+  CHECK(booked_coefficient = '0' OR booked_coefficient GLOB '[0-9]*'),
+  CHECK(amount_currency = upper(amount_currency) AND booked_currency = upper(booked_currency)),
   CHECK((conversion_evidence_kind IS NULL AND conversion_evidence_id IS NULL
          AND conversion_from_currency IS NULL AND conversion_to_currency IS NULL
-         AND conversion_evidence_json IS NULL)
+         AND conversion_evidence_json IS NULL AND conversion_id IS NULL)
     OR (conversion_evidence_kind IS NOT NULL AND conversion_evidence_id IS NOT NULL
         AND conversion_from_currency IS NOT NULL AND conversion_to_currency IS NOT NULL
-        AND conversion_evidence_json IS NOT NULL))
+        AND conversion_evidence_json IS NOT NULL AND conversion_id IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS transaction_categorization_values (
   assertion_id BLOB PRIMARY KEY REFERENCES assertions(assertion_id),
@@ -330,6 +345,7 @@ CREATE TABLE IF NOT EXISTS transaction_categorization_values (
   taxonomy_version TEXT NOT NULL,
   taxonomy_dimension TEXT NOT NULL CHECK(taxonomy_dimension = 'category'),
   created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  UNIQUE(assertion_id, transaction_id),
   FOREIGN KEY(taxonomy_id, taxonomy_version)
     REFERENCES taxonomy_versions(taxonomy_id, taxonomy_version),
   FOREIGN KEY(taxonomy_id, taxonomy_version, taxonomy_dimension, category_code)
@@ -337,12 +353,108 @@ CREATE TABLE IF NOT EXISTS transaction_categorization_values (
   CHECK((mode = 'single' AND category_code IS NOT NULL AND allocation_set_id IS NULL)
     OR (mode = 'allocated' AND category_code IS NULL AND allocation_set_id IS NOT NULL))
 );
+CREATE TABLE IF NOT EXISTS projection_generation_transaction_categorizations (
+  generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+  transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+  revision_id BLOB NOT NULL REFERENCES transaction_revisions(revision_id),
+  assertion_id BLOB NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('single','allocated')),
+  category_code TEXT,
+  taxonomy_id TEXT NOT NULL,
+  taxonomy_version TEXT NOT NULL,
+  allocation_set_id BLOB,
+  component_ordinal INTEGER NOT NULL CHECK(component_ordinal >= 0),
+  amount_coefficient TEXT,
+  amount_scale INTEGER CHECK(amount_scale IS NULL OR (amount_scale >= 0 AND amount_scale <= 1000)),
+  amount_currency TEXT,
+  booked_coefficient TEXT,
+  booked_scale INTEGER CHECK(booked_scale IS NULL OR (booked_scale >= 0 AND booked_scale <= 1000)),
+  booked_currency TEXT,
+  conversion_evidence_kind TEXT,
+  conversion_evidence_id TEXT,
+  conversion_from_currency TEXT,
+  conversion_to_currency TEXT,
+  conversion_evidence_json TEXT,
+  conversion_id BLOB,
+  projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+  PRIMARY KEY(generation_id, transaction_id, assertion_id, component_ordinal),
+  FOREIGN KEY(generation_id, transaction_id)
+    REFERENCES projection_generation_transactions(generation_id, transaction_id),
+  FOREIGN KEY(assertion_id, transaction_id)
+    REFERENCES transaction_categorization_values(assertion_id, transaction_id),
+  FOREIGN KEY(allocation_set_id)
+    REFERENCES category_allocation_sets(allocation_set_id),
+  FOREIGN KEY(conversion_id)
+    REFERENCES transaction_conversion_evidence(conversion_id),
+  CHECK((mode = 'single' AND component_ordinal = 0 AND category_code IS NOT NULL
+         AND allocation_set_id IS NULL AND amount_coefficient IS NULL
+         AND amount_scale IS NULL AND amount_currency IS NULL
+         AND booked_coefficient IS NULL AND booked_scale IS NULL
+         AND booked_currency IS NULL)
+    OR (mode = 'allocated' AND component_ordinal > 0 AND category_code IS NOT NULL
+        AND allocation_set_id IS NOT NULL AND amount_coefficient IS NOT NULL
+        AND amount_scale IS NOT NULL AND amount_currency IS NOT NULL
+        AND booked_coefficient IS NOT NULL AND booked_scale IS NOT NULL
+        AND booked_currency IS NOT NULL)),
+  CHECK((conversion_evidence_kind IS NULL AND conversion_evidence_id IS NULL
+         AND conversion_from_currency IS NULL AND conversion_to_currency IS NULL
+         AND conversion_evidence_json IS NULL AND conversion_id IS NULL)
+    OR (conversion_evidence_kind IS NOT NULL AND conversion_evidence_id IS NOT NULL
+        AND conversion_from_currency IS NOT NULL AND conversion_to_currency IS NOT NULL
+        AND conversion_evidence_json IS NOT NULL AND conversion_id IS NOT NULL))
+);
+DROP TRIGGER IF EXISTS category_allocation_sets_origin_guard_insert;
+CREATE TRIGGER category_allocation_sets_origin_guard_insert
+BEFORE INSERT ON category_allocation_sets
+WHEN EXISTS (SELECT 1 FROM assertions WHERE assertion_id = NEW.assertion_id)
+ AND NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'category'
+     AND assertion.target_kind = 'transaction'
+     AND assertion.origin = 'user'
+)
+BEGIN SELECT RAISE(ABORT, 'category allocation assertion authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS category_allocation_components_no_update
+BEFORE UPDATE ON category_allocation_components
+BEGIN SELECT RAISE(ABORT, 'category allocation components are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS category_allocation_components_no_delete
+BEFORE DELETE ON category_allocation_components
+BEGIN SELECT RAISE(ABORT, 'category allocation components are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS category_allocation_sets_no_update
+BEFORE UPDATE ON category_allocation_sets
+BEGIN SELECT RAISE(ABORT, 'category allocation sets are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS category_allocation_sets_no_delete
+BEFORE DELETE ON category_allocation_sets
+BEGIN SELECT RAISE(ABORT, 'category allocation sets are immutable'); END;
+DROP TRIGGER IF EXISTS transaction_categorization_values_origin_guard_insert;
+CREATE TRIGGER transaction_categorization_values_origin_guard_insert
+BEFORE INSERT ON transaction_categorization_values
+WHEN EXISTS (SELECT 1 FROM assertions WHERE assertion_id = NEW.assertion_id)
+ AND NOT EXISTS (
+  SELECT 1 FROM assertions assertion
+   WHERE assertion.assertion_id = NEW.assertion_id
+     AND assertion.transaction_id = NEW.transaction_id
+     AND assertion.field_name = 'category'
+     AND assertion.target_kind = 'transaction'
+     AND assertion.origin = 'user'
+)
+BEGIN SELECT RAISE(ABORT, 'transaction categorization assertion authority mismatch'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_categorization_values_no_update
+BEFORE UPDATE ON transaction_categorization_values
+BEGIN SELECT RAISE(ABORT, 'transaction categorization values are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS transaction_categorization_values_no_delete
+BEFORE DELETE ON transaction_categorization_values
+BEGIN SELECT RAISE(ABORT, 'transaction categorization values are immutable'); END;
 CREATE INDEX IF NOT EXISTS idx_category_allocation_sets_transaction
   ON category_allocation_sets(transaction_id, created_commit_id, allocation_set_id);
 CREATE INDEX IF NOT EXISTS idx_category_allocation_components_category
   ON category_allocation_components(category_code, allocation_set_id, component_ordinal);
 CREATE INDEX IF NOT EXISTS idx_transaction_categorization_transaction
   ON transaction_categorization_values(transaction_id, mode, created_commit_id, assertion_id);
+CREATE INDEX IF NOT EXISTS idx_projection_generation_transaction_categorizations
+  ON projection_generation_transaction_categorizations(generation_id, transaction_id, assertion_id, component_ordinal);
 `;
 
 function ensureCanonicalCategorizationSchema(db: DatabaseSync): void {
@@ -362,11 +474,20 @@ function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
       "amount_coefficient", "amount_scale", "amount_currency",
       "booked_coefficient", "booked_scale", "booked_currency",
       "conversion_evidence_kind", "conversion_evidence_id",
-      "conversion_from_currency", "conversion_to_currency", "conversion_evidence_json",
+      "conversion_from_currency", "conversion_to_currency", "conversion_evidence_json", "conversion_id",
     ],
     transaction_categorization_values: [
       "assertion_id", "transaction_id", "mode", "category_code",
       "allocation_set_id", "taxonomy_id", "taxonomy_version", "taxonomy_dimension", "created_commit_id",
+    ],
+    projection_generation_transaction_categorizations: [
+      "generation_id", "transaction_id", "revision_id", "assertion_id", "mode",
+      "category_code", "taxonomy_id", "taxonomy_version", "allocation_set_id",
+      "component_ordinal", "amount_coefficient", "amount_scale", "amount_currency",
+      "booked_coefficient", "booked_scale", "booked_currency",
+      "conversion_evidence_kind", "conversion_evidence_id", "conversion_from_currency",
+      "conversion_to_currency", "conversion_evidence_json", "conversion_id",
+      "projection_commit_id",
     ],
   };
   for (const [table, columns] of Object.entries(required)) {
@@ -384,6 +505,7 @@ function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
     "idx_category_allocation_sets_transaction",
     "idx_category_allocation_components_category",
     "idx_transaction_categorization_transaction",
+    "idx_projection_generation_transaction_categorizations",
   ])
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index))
       throw new Error(`Canonical categorization index ${index} is missing.`);
@@ -393,6 +515,18 @@ function validateCanonicalCategorizationSchema(db: DatabaseSync): void {
   );
   if (invalidModes !== 0)
     throw new Error("Canonical categorization contains an invalid mode.");
+  for (const trigger of [
+    "category_allocation_sets_origin_guard_insert",
+    "category_allocation_components_no_update",
+    "category_allocation_components_no_delete",
+    "category_allocation_sets_no_update",
+    "category_allocation_sets_no_delete",
+    "transaction_categorization_values_origin_guard_insert",
+    "transaction_categorization_values_no_update",
+    "transaction_categorization_values_no_delete",
+  ])
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger))
+      throw new Error(`Canonical categorization trigger ${trigger} is missing.`);
 }
 
 function ensureCanonicalTaxonomySchema(db: DatabaseSync): void {
@@ -4506,11 +4640,13 @@ const CANONICAL_FINANCIAL_PROJECTION_TABLES = [
   "projection_generation_transactions",
   "projection_generation_transaction_selection",
   "projection_generation_transaction_fields",
+  "projection_generation_transaction_categorizations",
 ] as const;
 
 function nonEmptyFinancialProjectionTables(db: DatabaseSync): string[] {
   return CANONICAL_FINANCIAL_PROJECTION_TABLES.filter(
     (table) =>
+      relationType(db, table) === "table" &&
       Number(
         (
           db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
@@ -8479,6 +8615,10 @@ function migrateV20ToV21(db: DatabaseSync): void {
 }
 
 function migrateV21ToV22(db: DatabaseSync): void {
+  // Conversion evidence is a typed financial admission fact.  Create it
+  // before the categorization tables so their conversion foreign keys are
+  // valid from the first v22 transaction.
+  ensureForeignCurrencyConversionSchema(db);
   ensureCanonicalCategorizationSchema(db);
   validateCanonicalCategorizationSchema(db);
   db.prepare(
@@ -9537,6 +9677,7 @@ function validateReadOnlyDatabase(
     "projection_generation_transactions",
     "projection_generation_transaction_selection",
     "projection_generation_transaction_fields",
+    "projection_generation_transaction_categorizations",
   ];
   for (const table of requiredTables) {
     if (
@@ -9786,6 +9927,31 @@ function validateReadOnlyDatabase(
       "origin",
       "derived_assertion_id",
       "user_assertion_id",
+      "projection_commit_id",
+    ],
+    projection_generation_transaction_categorizations: [
+      "generation_id",
+      "transaction_id",
+      "revision_id",
+      "assertion_id",
+      "mode",
+      "category_code",
+      "taxonomy_id",
+      "taxonomy_version",
+      "allocation_set_id",
+      "component_ordinal",
+      "amount_coefficient",
+      "amount_scale",
+      "amount_currency",
+      "booked_coefficient",
+      "booked_scale",
+      "booked_currency",
+      "conversion_evidence_kind",
+      "conversion_evidence_id",
+      "conversion_from_currency",
+      "conversion_to_currency",
+      "conversion_evidence_json",
+      "conversion_id",
       "projection_commit_id",
     ],
   };
