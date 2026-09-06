@@ -779,6 +779,7 @@ const SOURCE_OCCURRENCE_TRANSPORT_FIELDS: Readonly<
   Record<string, readonly string[]>
 > = Object.freeze({
   "fubon-domestic-deposit": Object.freeze(["pageOrdinal", "rowOrdinal"]),
+  "hncb-domestic-deposit": Object.freeze(["pageOrdinal", "rowOrdinal"]),
   "ctbc-domestic-deposit": Object.freeze(["rangeOrdinal", "rowOrdinal"]),
   "yuanta-domestic-deposit": Object.freeze(["pageOrdinal", "rowOrdinal"]),
 });
