@@ -15,6 +15,7 @@ import type {
 } from "./canonical-projection-contract.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { refreshCanonicalEnrichmentProjection } from "./canonical-enrichment-projection.ts";
+import { refreshCanonicalCategorizationGeneration } from "./canonical-categorization-projection.ts";
 
 type ProjectionSqlInput =
   | null
@@ -841,6 +842,11 @@ function applyCommitInTransaction(
     return;
   refreshTransactionProjection(db, token.commitId, targetSequence);
   canonicalProjectionRuntimeSyncInternal(db, token.commitId);
+  refreshCanonicalCategorizationGeneration(db, {
+    generationId: activeCanonicalProjectionGeneration(db),
+    projectionCommitId: token.commitId,
+    knowledgePoint: targetSequence,
+  });
   refreshCanonicalEnrichmentProjection(db, token.commitId, targetSequence);
   markCurrentProjectionCommit(db, token.commitId);
   refreshLoanProjection(db, token.commitId, targetSequence);
@@ -1295,80 +1301,61 @@ function readFamily(
       if (request.kind === "current")
         return rows(
           db,
-          `WITH eligible_transactions AS (
-             SELECT projected.transaction_id, account.account_id
-               FROM projection_generation_transactions projected
-               JOIN financial_transactions transaction_row
-                 ON transaction_row.transaction_id = projected.transaction_id
-               JOIN financial_accounts account
-                 ON account.account_id = transaction_row.account_id
-               JOIN source_connections connection_scope
-                 ON connection_scope.source_connection_id = account.source_connection_id
-               JOIN transaction_revisions revision
-                 ON revision.revision_id = projected.revision_id
-              WHERE projected.generation_id = ? ${scopedFilter("account")}${transactionFilter("projected")}
-                AND (? IS NULL OR revision.effective_on >= ?)
-                AND (? IS NULL OR revision.effective_on <= ?)
-           ), user_candidates AS (
-             SELECT assertion.transaction_id, assertion.assertion_id,
-                    event.commit_id AS projection_commit_id,
-                    event_commit.commit_sequence AS projection_commit_sequence,
-                    ROW_NUMBER() OVER (
-                      PARTITION BY assertion.transaction_id
-                      ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
-                    ) AS candidate_rank,
-                    COUNT(*) OVER (
-                      PARTITION BY assertion.transaction_id
-                    ) AS candidate_count
-               FROM assertions assertion
-               JOIN assertion_transitions event
-                 ON event.assertion_id = assertion.assertion_id
-               JOIN canonical_commits event_commit
-                 ON event_commit.commit_id = event.commit_id
-               JOIN eligible_transactions eligible
-                 ON eligible.transaction_id = assertion.transaction_id
-              WHERE assertion.field_name = 'category'
-                AND assertion.origin = 'user'
-                AND event_commit.commit_sequence <= ?
-                AND event.event_kind NOT IN ('withdrawn', 'superseded')
-                AND NOT EXISTS (
-                  SELECT 1
-                    FROM assertion_transitions newer_event
-                    JOIN canonical_commits newer_commit
-                      ON newer_commit.commit_id = newer_event.commit_id
-                   WHERE newer_event.assertion_id = event.assertion_id
-                     AND newer_commit.commit_sequence <= ?
-                     AND (newer_commit.commit_sequence > event_commit.commit_sequence
-                          OR (newer_commit.commit_sequence = event_commit.commit_sequence
-                              AND newer_event.rowid > event.rowid))
+          `SELECT projected.transaction_id, projected.assertion_id,
+                  'user' AS origin, projected.mode,
+                  projected.category_code, projected.taxonomy_id,
+                  projected.taxonomy_version, projected.allocation_set_id,
+                  NULLIF(projected.component_ordinal, 0) AS component_ordinal,
+                  projected.amount_coefficient, projected.amount_scale,
+                  projected.amount_currency, projected.booked_coefficient,
+                  projected.booked_scale, projected.booked_currency,
+                  projected.conversion_evidence_kind,
+                  projected.conversion_evidence_id,
+                  projected.conversion_from_currency,
+                  projected.conversion_to_currency,
+                  projected.conversion_evidence_json,
+                  projected.projection_commit_id,
+                  projection_commit.commit_sequence AS projection_commit_sequence
+             FROM projection_generation_transaction_categorizations projected
+             JOIN projection_generation_transactions generation_tx
+               ON generation_tx.generation_id = projected.generation_id
+              AND generation_tx.transaction_id = projected.transaction_id
+              AND generation_tx.revision_id = projected.revision_id
+             JOIN canonical_commits projection_commit
+               ON projection_commit.commit_id = projected.projection_commit_id
+             JOIN financial_transactions transaction_row
+               ON transaction_row.transaction_id = projected.transaction_id
+             JOIN financial_accounts account
+               ON account.account_id = transaction_row.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+             JOIN transaction_revisions revision
+               ON revision.revision_id = generation_tx.revision_id
+             LEFT JOIN current_transaction_enrichment kind
+               ON kind.transaction_id = projected.transaction_id
+              AND kind.field_name = 'kind'
+            WHERE projected.generation_id = ? ${scopedFilter("account")}${transactionFilter("generation_tx")}
+              AND (? IS NULL OR revision.effective_on >= ?)
+              AND (? IS NULL OR revision.effective_on <= ?)
+              AND EXISTS (
+                SELECT 1 FROM taxonomy_applicability applicable
+                 WHERE applicable.taxonomy_id = projected.taxonomy_id
+                   AND applicable.taxonomy_version = projected.taxonomy_version
+                   AND applicable.category_code = projected.category_code
+                   AND applicable.kind_code = kind.taxonomy_code
+              )
+              AND (
+                projected.mode = 'single'
+                OR EXISTS (
+                  SELECT 1 FROM category_allocation_sets allocation_set
+                   WHERE allocation_set.allocation_set_id = projected.allocation_set_id
+                     AND allocation_set.transaction_id = projected.transaction_id
+                     AND allocation_set.booked_coefficient = revision.amount_coefficient
+                     AND allocation_set.booked_scale = revision.amount_scale
+                     AND allocation_set.booked_currency = revision.currency
                 )
-           )
-           SELECT candidate.transaction_id, candidate.assertion_id,
-                  'user' AS origin, categorization.mode,
-                  COALESCE(component.category_code, categorization.category_code) AS category_code,
-                  categorization.taxonomy_id, categorization.taxonomy_version,
-                  categorization.allocation_set_id,
-                  component.component_ordinal,
-                  component.amount_coefficient, component.amount_scale,
-                  component.amount_currency,
-                  component.booked_coefficient, component.booked_scale,
-                  component.booked_currency,
-                  component.conversion_evidence_kind,
-                  component.conversion_evidence_id,
-                  component.conversion_from_currency,
-                  component.conversion_to_currency,
-                  component.conversion_evidence_json,
-                  candidate.projection_commit_id,
-                  candidate.projection_commit_sequence
-             FROM user_candidates candidate
-             JOIN transaction_categorization_values categorization
-               ON categorization.assertion_id = candidate.assertion_id
-              AND categorization.transaction_id = candidate.transaction_id
-             LEFT JOIN category_allocation_components component
-               ON component.allocation_set_id = categorization.allocation_set_id
-            WHERE candidate.candidate_rank = 1
-              AND candidate.candidate_count = 1
-            ORDER BY candidate.transaction_id, component.component_ordinal`,
+              )
+            ORDER BY projected.transaction_id, projected.component_ordinal`,
           generation,
           ...scopedParameters(),
           ...transactionParameters(),
@@ -1376,13 +1363,13 @@ function readFamily(
           dateStart ?? null,
           dateEnd ?? null,
           dateEnd ?? null,
-          knowledgeAt,
-          knowledgeAt,
         );
       return rows(
         db,
         `WITH eligible_transactions AS (
-             SELECT revision.transaction_id, account.account_id
+             SELECT revision.transaction_id, revision.revision_id,
+                    revision.amount_coefficient, revision.amount_scale,
+                    revision.currency, account.account_id
                FROM transaction_revisions revision
                JOIN canonical_commits revision_commit
                  ON revision_commit.commit_id = revision.commit_id
@@ -1426,6 +1413,8 @@ function readFamily(
                 )
            ), user_candidates AS (
              SELECT assertion.transaction_id, assertion.assertion_id,
+                    eligible.amount_coefficient, eligible.amount_scale,
+                    eligible.currency,
                     event.commit_id AS projection_commit_id,
                     event_commit.commit_sequence AS projection_commit_sequence,
                     ROW_NUMBER() OVER (
@@ -1481,8 +1470,14 @@ function readFamily(
               AND categorization.transaction_id = candidate.transaction_id
              LEFT JOIN category_allocation_components component
                ON component.allocation_set_id = categorization.allocation_set_id
+             LEFT JOIN category_allocation_sets allocation_set
+               ON allocation_set.allocation_set_id = categorization.allocation_set_id
             WHERE candidate.candidate_rank = 1
               AND candidate.candidate_count = 1
+              AND (categorization.mode = 'single'
+                   OR (allocation_set.booked_coefficient = candidate.amount_coefficient
+                       AND allocation_set.booked_scale = candidate.amount_scale
+                       AND allocation_set.booked_currency = candidate.currency))
             ORDER BY candidate.transaction_id, component.component_ordinal`,
         knowledgeAt,
         financialAt,
