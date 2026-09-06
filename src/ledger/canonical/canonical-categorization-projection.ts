@@ -81,9 +81,7 @@ function validateSelectedCategorizationAllocations(
           WHERE candidate_rank = 1 AND candidate_count = 1
        )
        SELECT selected.transaction_id, selected.assertion_id,
-              categorization.mode, categorization.allocation_set_id,
-              revision.amount_coefficient, revision.amount_scale,
-              revision.currency
+              categorization.mode, categorization.allocation_set_id
          FROM selected
          JOIN transaction_categorization_values categorization
            ON categorization.assertion_id = selected.assertion_id
@@ -91,8 +89,6 @@ function validateSelectedCategorizationAllocations(
          JOIN projection_generation_transactions generation_tx
            ON generation_tx.generation_id = ?
           AND generation_tx.transaction_id = selected.transaction_id
-         JOIN transaction_revisions revision
-           ON revision.revision_id = generation_tx.revision_id
         WHERE categorization.mode = 'allocated'`,
     )
     .all(generationId, knowledgePoint, knowledgePoint, generationId) as Array<
@@ -120,11 +116,6 @@ function validateSelectedCategorizationAllocations(
     const allocationSetId = row.allocation_set_id;
     const assertionId = row.assertion_id;
     const transactionId = row.transaction_id;
-    const transactionAmount = exactAmount(
-      row.amount_coefficient,
-      row.amount_scale,
-      "transaction amount",
-    );
     const set = allocationSet.get(
       allocationSetId,
       assertionId,
@@ -137,11 +128,6 @@ function validateSelectedCategorizationAllocations(
       set.booked_scale,
       "allocation set amount",
     );
-    if (
-      String(set.booked_currency) !== String(row.currency) ||
-      !equalExact(setAmount, transactionAmount)
-    )
-      throw new Error("Canonical categorization allocation set does not match the selected revision.");
     const rows = components.all(allocationSetId) as Array<Record<string, unknown>>;
     if (rows.length < 2)
       throw new Error("Canonical categorization allocation is incomplete.");
@@ -153,7 +139,7 @@ function validateSelectedCategorizationAllocations(
         throw new Error("Canonical categorization allocation has duplicate or missing targets.");
       seen.add(categoryCode);
       if (
-        String(component.booked_currency) !== String(row.currency) ||
+        String(component.booked_currency) !== String(set.booked_currency) ||
         component.component_ordinal === null ||
         component.component_ordinal === undefined
       )
@@ -171,9 +157,114 @@ function validateSelectedCategorizationAllocations(
         throw new Error("Canonical categorization allocation source currency is missing.");
       total = addExact(total, componentAmount);
     }
-    if (!equalExact(total, transactionAmount))
+    if (!equalExact(total, setAmount))
       throw new Error("Canonical categorization allocation does not exactly reconcile.");
   }
+}
+
+/**
+ * Validate only allocation sets represented by the current cached rows. A
+ * user allocation is bound to its immutable booked basis; when a later
+ * financial revision changes that basis, the Runtime SQL predicate excludes
+ * the stale rows and the automatic result may take over. A set that still
+ * matches the selected revision must be complete and exactly reconciling.
+ */
+export function validateCurrentCategorizationProjectionRows(
+  db: DatabaseSync,
+  generationId: number,
+  projectionRows: readonly Readonly<Record<string, unknown>>[],
+): ReadonlySet<string> {
+  const invalidAllocationSetIds = new Set<string>();
+  const allocated = new Map<
+    string,
+    { allocationSetId: Uint8Array; assertionId: Uint8Array; transactionId: Uint8Array; rowCount: number }
+  >();
+  for (const row of projectionRows) {
+    if (String(row.mode) !== "allocated") continue;
+    const allocationSetId = Buffer.from(String(row.allocation_set_id ?? ""), "hex");
+    const assertionId = Buffer.from(String(row.assertion_id ?? ""), "hex");
+    const transactionId = Buffer.from(String(row.transaction_id ?? ""), "hex");
+    if (allocationSetId.length !== 16 || assertionId.length !== 16 || transactionId.length !== 16) {
+      invalidAllocationSetIds.add(String(row.allocation_set_id ?? "").toLowerCase());
+      continue;
+    }
+    const key = allocationSetId.toString("hex");
+    const prior = allocated.get(key);
+    if (prior) prior.rowCount += 1;
+    else allocated.set(key, { allocationSetId, assertionId, transactionId, rowCount: 1 });
+  }
+  if (allocated.size === 0) return invalidAllocationSetIds;
+  const allocationSet = db.prepare(
+    `SELECT allocation_set_id, assertion_id, transaction_id,
+            booked_coefficient, booked_scale, booked_currency
+       FROM category_allocation_sets
+      WHERE allocation_set_id = ? AND assertion_id = ? AND transaction_id = ?`,
+  );
+  const revision = db.prepare(
+    `SELECT revision.amount_coefficient, revision.amount_scale, revision.currency
+       FROM projection_generation_transactions generation_tx
+       JOIN transaction_revisions revision ON revision.revision_id = generation_tx.revision_id
+      WHERE generation_tx.generation_id = ? AND generation_tx.transaction_id = ?`,
+  );
+  const components = db.prepare(
+    `SELECT component_ordinal, category_code,
+            booked_coefficient, booked_scale, booked_currency
+       FROM category_allocation_components
+      WHERE allocation_set_id = ?
+      ORDER BY component_ordinal`,
+  );
+  for (const selected of allocated.values()) {
+    const set = allocationSet.get(
+      selected.allocationSetId,
+      selected.assertionId,
+      selected.transactionId,
+    ) as Record<string, unknown> | undefined;
+    if (!set) {
+      invalidAllocationSetIds.add(Buffer.from(selected.allocationSetId).toString("hex"));
+      continue;
+    }
+    const currentRevision = revision.get(generationId, selected.transactionId) as Record<string, unknown> | undefined;
+    if (!currentRevision) {
+      invalidAllocationSetIds.add(Buffer.from(selected.allocationSetId).toString("hex"));
+      continue;
+    }
+    const setAmount = exactAmount(set.booked_coefficient, set.booked_scale, "allocation set amount");
+    const revisionAmount = exactAmount(currentRevision.amount_coefficient, currentRevision.amount_scale, "selected revision amount");
+    // A valid historical/user allocation is stale for this current revision,
+    // so the Runtime query intentionally omits it from the effective family.
+    if (
+      String(set.booked_currency) !== String(currentRevision.currency) ||
+      !equalExact(setAmount, revisionAmount)
+    )
+      continue;
+    const componentRows = components.all(selected.allocationSetId) as Array<Record<string, unknown>>;
+    if (componentRows.length < 2 || componentRows.length !== selected.rowCount) {
+      invalidAllocationSetIds.add(Buffer.from(selected.allocationSetId).toString("hex"));
+      continue;
+    }
+    const seen = new Set<string>();
+    let total: ExactAmount = { coefficient: 0n, scale: 0 };
+    let valid = true;
+    for (const component of componentRows) {
+      const categoryCode = String(component.category_code ?? "");
+      if (!categoryCode || seen.has(categoryCode) || component.component_ordinal == null) {
+        valid = false;
+        break;
+      }
+      seen.add(categoryCode);
+      if (String(component.booked_currency) !== String(set.booked_currency)) {
+        valid = false;
+        break;
+      }
+      total = addExact(
+        total,
+        exactAmount(component.booked_coefficient, component.booked_scale, "allocation component"),
+      );
+    }
+    if (!valid || !equalExact(total, setAmount))
+      invalidAllocationSetIds.add(Buffer.from(selected.allocationSetId).toString("hex"));
+  }
+  return invalidAllocationSetIds;
 }
 
 type CategorizationGenerationRefresh = Readonly<{

@@ -344,6 +344,130 @@ test("user categorization supersedes and clears atomically to the current automa
   }
 });
 
+test("a later source revision makes the old allocation stale for Current while preserving Historical allocation", async () => {
+  const state = await fixture();
+  try {
+    await publishPurchaseKind(state);
+    const automatic = await publishAutomaticCategory(state, "dining");
+    const user = await commitCanonicalUserCategorization(state.directory, {
+      transactionId: state.transactionId,
+      mode: "allocated",
+      allocation: [
+        { categoryCode: "dining", coefficient: "100", scale: 0, currency: "TWD" },
+        { categoryCode: "transportation", coefficient: "200", scale: 0, currency: "TWD" },
+      ],
+    });
+    const raw = JSON.parse(CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse) as {
+      content: { datas: Array<{ details: Array<Record<string, unknown>> }> };
+    };
+    raw.content.datas[0]!.details[1]!.expendAmt = 301;
+    raw.content.datas[0]!.details[1]!.balance = 12199;
+    raw.content.datas[0]!.details[2]!.balance = 12999;
+    const correction = await commitCathayDomesticDeposit(state.directory, {
+      ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+      rawResponse: JSON.stringify(raw),
+    });
+    assert.equal(correction.commitSequence, user.commitSequence + 1);
+
+    const current = spending(state).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, state.transactionId),
+    );
+    assert.equal(current?.amount.coefficient, "301");
+    assert.equal(current?.categorization.mode, "single");
+    assert.equal(current?.categorization.origin, "derived");
+    assert.equal(current?.categorization.categoryCode, "dining");
+    const runtimeModule = await import("./canonical-projection-runtime.ts");
+    const currentCategorization = runtimeModule
+      .createCanonicalProjectionRuntime(state.directory)
+      .read({
+        kind: "current",
+        families: ["transaction-categorization"],
+        scope: { transactionIds: [state.transactionId] },
+      }).families["transaction-categorization"];
+    assert.equal(currentCategorization.length, 0);
+
+    const historical = createCanonicalSpendingQuery(state.directory).historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: user.commitSequence,
+    });
+    const historicalTransaction = historical.transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, state.transactionId),
+    );
+    assert.equal(historicalTransaction?.amount.coefficient, "300");
+    assert.equal(historicalTransaction?.categorization.mode, "allocated");
+    assert.deepEqual(
+      historicalTransaction?.categorization.components?.map((component) => component.categoryCode),
+      ["dining", "transportation"],
+    );
+    assert.equal(automatic.commitSequence, user.commitSequence - 1);
+
+    const currentDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const currentRevision = currentDb
+      .prepare(
+        `SELECT revision.source_record_id
+           FROM current_transactions current_row
+           JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+          WHERE current_row.transaction_id = ?`,
+      )
+      .get(blob(Buffer.from(state.transactionId.replaceAll("-", ""), "hex"))) as {
+      source_record_id?: unknown;
+    };
+    const currentSourceRecordId = idToString(blob(currentRevision.source_record_id));
+    currentDb.close();
+    await commitCanonicalAutomaticEnrichmentRun(state.directory, {
+      sourceConnectionKey: state.sourceConnectionKey,
+      stream: "domestic-deposit",
+      ruleLineage: "test/canonical-categorization/transfer-after-correction",
+      declaredSubjects: [{ transactionId: state.transactionId, fields: ["kind", "category"] }],
+      outputs: [
+        {
+          transactionId: state.transactionId,
+          field: "kind",
+          origin: "derived",
+          value: "transfer.internal",
+          confidenceBasisPoints: 10_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: currentSourceRecordId,
+            sourceValue: "synthetic corrected transfer",
+            contractVersion: "test/canonical-categorization/v1",
+          },
+        },
+        {
+          transactionId: state.transactionId,
+          field: "category",
+          origin: "derived",
+          state: "unsupported",
+          value: null,
+          confidenceBasisPoints: 10_000,
+          evidence: {
+            kind: "description",
+            sourceRecordId: currentSourceRecordId,
+            sourceValue: "synthetic corrected transfer",
+            contractVersion: "test/canonical-categorization/v1",
+          },
+        },
+      ],
+    });
+    const afterKind = spending(state).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, state.transactionId),
+    );
+    assert.equal(afterKind?.kind, "transfer.internal");
+    assert.equal(afterKind?.categorization.mode, "absent");
+    const historicalAfterKind = createCanonicalSpendingQuery(state.directory).historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: user.commitSequence,
+    }).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, state.transactionId),
+    );
+    assert.equal(historicalAfterKind?.categorization.mode, "allocated");
+  } finally {
+    await discard(state.directory);
+  }
+});
+
 test("allocation rejects partial or duplicate targets without a commit and preserves exact high scale totals", async () => {
   const state = await fixture();
   try {
@@ -911,13 +1035,18 @@ test("allocation ownership rejects equal-amount cross-links and preserves the ac
       runtimeModule.createCanonicalProjectionRuntime(state.directory).rebuild(),
       /allocation is incomplete|allocation does not exactly reconcile/u,
     );
-    const victimAfterFailedRebuild = spending(state).transactions.find(
+    const currentAfterMalformedSet = spending(state).transactions.find(
       (transaction) => matchesTransaction(transaction.transactionId, victimId),
     );
-    assert.deepEqual(
-      victimAfterFailedRebuild?.categorization.components?.map((component) => component.categoryCode),
-      ["food_and_groceries", "travel"],
+    assert.equal(currentAfterMalformedSet?.categorization.mode, "absent");
+    const historicalAfterMalformedSet = createCanonicalSpendingQuery(state.directory).historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: 4,
+    }).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, victimId),
     );
+    assert.equal(historicalAfterMalformedSet?.categorization.mode, "absent");
   } finally {
     await discard(state.directory);
   }
