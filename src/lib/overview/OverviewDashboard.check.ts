@@ -38,4 +38,19 @@ test("overview exposes canonical current and honest history states", () => {
   assert.match(source, /data-overview-state="history-unavailable"/);
 });
 
+test("unavailable current state wins when source gaps are also present", () => {
+  const stateExpression = source.slice(
+    source.indexOf("$: currentStateLabel"),
+    source.indexOf("\n\n  onMount", source.indexOf("$: currentStateLabel")),
+  );
+  assert.match(
+    stateExpression,
+    /overview\.availability === "unavailable"\s*\?\s*\$t\.overview\.currentUnavailable/,
+  );
+  assert.ok(
+    stateExpression.indexOf('overview.availability === "unavailable"') <
+      stateExpression.indexOf("overview.sourceGaps.length > 0"),
+  );
+});
+
 assert.match(source, /formatUtcDateTime\(value, \$systemTimezone, \$locale\)/);
