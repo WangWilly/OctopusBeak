@@ -3,6 +3,7 @@ import {
   type ExplicitLoanTransactionLink,
   type LoanRepaymentRelationResolutionResult,
 } from "../ledger/canonical/loan-repayment-relations.ts";
+import { runCanonicalLoanRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
 
 export type LoanRelationResolver = typeof resolveLoanRepaymentRelations;
 
@@ -22,20 +23,5 @@ export async function resolveLoanRelationsAfterCapture(
     explicitLinks?: readonly ExplicitLoanTransactionLink[];
   }>,
 ): Promise<LoanRepaymentRelationResolutionResult | null> {
-  try {
-    return await resolver(store, {
-      sourceConnectionKey: input.sourceConnectionKey,
-      integrationNamespace: input.integrationNamespace,
-      observedAt: input.observedAt,
-      requiredCoverage: { complete: true },
-      ...(input.explicitLinks && input.explicitLinks.length > 0
-        ? { explicitLinks: input.explicitLinks }
-        : {}),
-    });
-  } catch (error) {
-    console.warn(input.failureEvent, {
-      message: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return runCanonicalLoanRelationFollowThrough(store, resolver, input);
 }

@@ -27,9 +27,9 @@ import {
 } from "../ledger/canonical/canonical-source-store.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
-  resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "../ledger/canonical/investment-funding-relations.ts";
+import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -2319,7 +2319,7 @@ export async function commitYuantaForeignCurrencyCapture(
   input: ForeignCurrencyDepositCaptureInput,
 ) {
   const results = await commitForeignCurrencyDepositCaptureBatch(store, [input]);
-  await resolveCanonicalInvestmentFundingRelations(store);
+  await runCanonicalInvestmentRelationFollowThrough(store);
   return results;
 }
 
@@ -2422,7 +2422,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
           );
         });
         await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
-        await resolveCanonicalInvestmentFundingRelations(financialStore);
+        await runCanonicalInvestmentRelationFollowThrough(financialStore);
       } finally {
         financialStore.close();
       }
