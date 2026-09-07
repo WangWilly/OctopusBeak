@@ -2,10 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialNonTransactionRecord,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmission } from "./canonical-financial-admission.ts";
+import { runCanonicalInvestmentRelationFollowThrough } from "./canonical-relation-followthrough.ts";
 import {
   createCanonicalSourceStore,
   validateCanonicalInvestmentExtensionSchema,
@@ -17,7 +19,6 @@ import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.t
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   queryCanonicalInvestmentFundingRelationsInSnapshot,
-  resolveCanonicalInvestmentFundingRelations,
   isYuantaForeignSettlementMarketCode,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
@@ -1258,6 +1259,62 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       capture.margin.effectiveOn,
     );
 }
+
+/**
+ * Build the complete investment admission in its canonical order: ordinary
+ * investment captures, each independent margin-loan counterpart followed by
+ * its loan spine, then independent margin-credit captures. The shared
+ * admission boundary invokes this adapter so callers do not coordinate that
+ * ordering themselves.
+ */
+export function canonicalInvestmentAdmissionSpines(
+  captures: readonly InvestmentValidatedCapture[],
+): readonly CanonicalFinancialDepositValidatedCapture[] {
+  for (const capture of captures)
+    if (!VALIDATED.has(capture))
+      throw new CanonicalInvestmentAdmissionError(
+        "Investment capture must be admitted before commit.",
+      );
+  const marginLoans = captures
+    .map(canonicalMarginLoanCapture)
+    .filter((capture): capture is LoanValidatedCapture => capture !== null);
+  const marginCredits = captures
+    .map(canonicalMarginCreditSpine)
+    .filter(
+      (
+        capture,
+      ): capture is NonNullable<
+        ReturnType<typeof canonicalMarginCreditSpine>
+      > => capture !== null,
+    );
+  return [
+    ...captures.map(canonicalSpine),
+    ...marginLoans.flatMap(canonicalLoanCaptureSpines),
+    ...marginCredits,
+  ];
+}
+
+/** Persist investment and margin extensions in the same transaction as all
+ * generic source spines. The shared admission owner calls this only after
+ * every spine has been admitted successfully. */
+export function persistCanonicalInvestmentAdmissionExtensions(
+  db: DatabaseSync,
+  captures: readonly InvestmentValidatedCapture[],
+): void {
+  assertValidatedCanonicalDatabase(db);
+  for (const capture of captures)
+    if (!VALIDATED.has(capture))
+      throw new CanonicalInvestmentAdmissionError(
+        "Investment capture must be admitted before commit.",
+      );
+  const marginLoans = captures
+    .map(canonicalMarginLoanCapture)
+    .filter((capture): capture is LoanValidatedCapture => capture !== null);
+  for (const capture of captures) extensionRows(db, capture);
+  for (const marginLoan of marginLoans)
+    persistCanonicalLoanCaptureExtensions(db, marginLoan);
+}
+
 export async function commitCanonicalInvestmentCapture(
   store: CanonicalInvestmentStore,
   capture: InvestmentValidatedCapture,
@@ -1278,40 +1335,17 @@ export async function commitCanonicalInvestmentCaptureBatch(
   captures: readonly InvestmentValidatedCapture[],
 ) {
   assertValidatedCanonicalDatabase(store.db);
-  for (const capture of captures)
-    if (!VALIDATED.has(capture))
-      throw new CanonicalInvestmentAdmissionError(
-        "Investment capture must be admitted before commit.",
-      );
-  const marginLoans = captures
-    .map(canonicalMarginLoanCapture)
-    .filter((capture): capture is LoanValidatedCapture => capture !== null);
-  const marginCredits = captures
-    .map(canonicalMarginCreditSpine)
-    .filter(
-      (
-        capture,
-      ): capture is NonNullable<
-        ReturnType<typeof canonicalMarginCreditSpine>
-      > => capture !== null,
-    );
-  const results = await commitCanonicalFinancialDepositCaptureBatch(
+  const results = await commitCanonicalFinancialAdmission(
     store,
-    [
-      ...captures.map(canonicalSpine),
-      ...marginLoans.flatMap(canonicalLoanCaptureSpines),
-      ...marginCredits,
-    ],
-    (db) => {
-      for (const capture of captures) extensionRows(db, capture);
-      for (const marginLoan of marginLoans)
-        persistCanonicalLoanCaptureExtensions(db, marginLoan);
-    },
+    { kind: "investment", captures: [...captures] },
   );
-  // Relation resolution is deliberately outside the source-capture commit.
-  // A later bank capture can complete the same canonical history, so this is
-  // an idempotent post-commit boundary rather than a workflow-run relation.
-  await resolveCanonicalInvestmentFundingRelations(store);
+  // Relation resolution is a separate, fail-soft follow-through after the
+  // full investment admission (including margin extensions) is durable.
+  await runCanonicalInvestmentRelationFollowThrough(
+    store,
+    undefined,
+    "canonical-investment-relation-resolution-failed",
+  );
   return results;
 }
 

@@ -59,7 +59,7 @@ test("safe relation resolver isolates downstream failures under the caller event
     assert.deepEqual(warnings, [
       [
         "yuanta-loan-relation-resolution-failed",
-        { message: "resolver unavailable" },
+        { code: "relation-resolution-failed" },
       ],
     ]);
   } finally {

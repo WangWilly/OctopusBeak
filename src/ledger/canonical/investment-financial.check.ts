@@ -10,6 +10,7 @@ import {
   commitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmission } from "./canonical-financial-admission.ts";
 import { admitForeignCurrencyDepositCapture } from "./foreign-currency-deposit.ts";
 import {
   admitCanonicalInvestmentCapture,
@@ -31,7 +32,10 @@ import {
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
+  createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
+  validateCanonicalInvestmentExtensionSchema,
+  validateCanonicalInvestmentFundingRelationSchema,
 } from "./canonical-source-store.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
@@ -394,6 +398,225 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
     store.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("closed admission rejects unknown requests before opening SQLite", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  try {
+    await assert.rejects(
+      commitCanonicalFinancialAdmission(
+        store,
+        { kind: "unsupported" } as never,
+      ),
+      /unsupported/,
+    );
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
+            .get() as { count: number }
+        ).count,
+      ),
+      0,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("closed admission leaves a caller-owned transaction untouched", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  try {
+    const request = {
+      kind: "investment" as const,
+      captures: [admitCanonicalInvestmentCapture(fixture("caller-transaction"))],
+    };
+    store.db.exec("BEGIN IMMEDIATE");
+    await assert.rejects(
+      commitCanonicalFinancialAdmission(store, request),
+      /transaction|within a transaction/i,
+    );
+    assert.doesNotThrow(() => store.db.exec("ROLLBACK"));
+  } finally {
+    store.close();
+  }
+});
+
+test("closed admission snapshots an investment request before queued work", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  try {
+    const admitted = admitCanonicalInvestmentCapture(
+      fixture("queued-admission"),
+    );
+    const captures = [admitted];
+    const pending = commitCanonicalFinancialAdmission(store, {
+      kind: "investment",
+      captures,
+    });
+    captures.length = 0;
+    const results = await pending;
+    assert.equal(results.length, 1);
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare("SELECT COUNT(*) AS count FROM source_captures")
+            .get() as { count: number }
+        ).count,
+      ),
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("closed investment admission rolls back source and extensions together", async () => {
+  const store = createCanonicalInvestmentStore(":memory:");
+  try {
+    await commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(fixture("closed-admission-extension-base")),
+    );
+    const countsBeforeFailure = new Map(
+      ["canonical_commits", "source_captures", "investment_captures"].map(
+        (table) => [
+          table,
+          Number(
+            (
+              store.db
+                .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+                .get() as { count: number }
+            ).count,
+          ),
+        ],
+      ),
+    );
+    const drift = fixture("closed-admission-extension-failure");
+    drift.securities[0] = {
+      ...drift.securities[0]!,
+      name: "CHANGED LABEL",
+    };
+    await assert.rejects(
+      commitCanonicalFinancialAdmission(store, {
+        kind: "investment",
+        captures: [admitCanonicalInvestmentCapture(drift)],
+      }),
+      /Immutable Security/,
+    );
+    for (const table of [
+      "canonical_commits",
+      "source_captures",
+      "investment_captures",
+    ])
+      assert.equal(
+        Number(
+          (
+            store.db
+              .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+              .get() as { count: number }
+          ).count,
+        ),
+        countsBeforeFailure.get(table),
+        `${table} must roll back with the failed extension`,
+      );
+  } finally {
+    store.close();
+  }
+});
+
+test("investment capture stays successful when relation follow-through fails", async () => {
+  let clockCalls = 0;
+  const store = createCanonicalSourceStore(":memory:", {
+    commitClock: () => {
+      clockCalls += 1;
+      if (clockCalls === 3)
+        throw new Error("source financial value must not be logged");
+      return 1_000_000 + clockCalls;
+    },
+  });
+  validateCanonicalInvestmentExtensionSchema(store.db);
+  validateCanonicalInvestmentFundingRelationSchema(store.db);
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
+  try {
+    await commitCanonicalFinancialDepositCapture(
+      store,
+      depositCapture("follow-through-failure"),
+    );
+    const input = fixture("follow-through-failure-investment");
+    input.transactions[0] = {
+      ...input.transactions[0]!,
+      fundingEvidence: fundingEvidence(),
+    };
+    console.warn = (...values: unknown[]) => warnings.push(values);
+    const [result] = await commitCanonicalInvestmentCaptureBatch(store, [
+      admitCanonicalInvestmentCapture(input),
+    ]);
+    assert.equal(result?.status, "canonical-live");
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM source_captures WHERE capture_key=?",
+            )
+            .get(input.captureId) as { count: number }
+        ).count,
+      ),
+      1,
+    );
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM canonical_commits WHERE commit_kind='relation_resolution'",
+            )
+            .get() as { count: number }
+        ).count,
+      ),
+      0,
+    );
+    assert.deepEqual(warnings, [
+      [
+        "canonical-investment-relation-resolution-failed",
+        { code: "relation-resolution-failed" },
+      ],
+    ]);
+    assert.deepEqual(await resolveCanonicalInvestmentFundingRelations(store), {
+      resolved: 1,
+      noAdmission: 0,
+      reasons: [],
+    });
+    const resolutionCommitCount = Number(
+      (
+        store.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM canonical_commits WHERE commit_kind='relation_resolution'",
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    assert.equal(resolutionCommitCount, 1);
+    await resolveCanonicalInvestmentFundingRelations(store);
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM canonical_commits WHERE commit_kind='relation_resolution'",
+            )
+            .get() as { count: number }
+        ).count,
+      ),
+      resolutionCommitCount,
+    );
+  } finally {
+    console.warn = originalWarn;
+    store.close();
   }
 });
 

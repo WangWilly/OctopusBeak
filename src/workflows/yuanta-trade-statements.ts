@@ -26,7 +26,6 @@ import {
 import {
   deriveYuantaForeignSettlementLinkageKey,
   isYuantaForeignSettlementMarketCode,
-  resolveCanonicalInvestmentFundingRelations,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
@@ -1523,10 +1522,6 @@ async function commitYuantaTradeCanonicalIfComplete(
   );
   try {
     await commitCanonicalInvestmentCaptureBatch(store, captures);
-    // Run only after the source-capture transaction is durable.  The bank
-    // workflow may have been collected earlier or may complete this relation
-    // later; either order is safe because the resolver is idempotent.
-    await resolveCanonicalInvestmentFundingRelations(store);
   } finally {
     store.close();
   }

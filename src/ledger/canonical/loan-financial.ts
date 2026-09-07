@@ -2,11 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmission } from "./canonical-financial-admission.ts";
 import {
   createCanonicalSourceStore,
   validateCanonicalLoanExtensionSchema,
@@ -1719,6 +1719,17 @@ export function canonicalLoanCaptureSpines(
   ];
 }
 
+/** Runtime validation used by the shared closed admission dispatcher. */
+export function validateCanonicalLoanCaptureForAdmission(
+  capture: LoanValidatedCapture,
+): void {
+  if (!hasValidatedBrand(capture))
+    throw new CanonicalLoanConflictError(
+      "Loan capture did not cross the runtime-validated admission seam.",
+    );
+  validateCapture(capture);
+}
+
 function canonicalLoanCounterpartCapture(
   capture: LoanValidatedCapture,
   counterpart: LoanCounterpartTransactionInput,
@@ -2562,11 +2573,9 @@ export async function commitCanonicalLoanCapture(
     throw new CanonicalLoanConflictError(
       "Loan capture did not cross the runtime-validated admission seam.",
     );
-  validateCapture(capture);
-  const result = await commitCanonicalFinancialDepositCaptureBatch(
+  const result = await commitCanonicalFinancialAdmission(
     asWriterStore(store),
-    canonicalLoanCaptureSpines(capture),
-    () => persistCanonicalLoanCaptureExtensions(store.db, capture),
+    { kind: "loan", capture },
   );
   const committed = result.at(-1)!;
   return {

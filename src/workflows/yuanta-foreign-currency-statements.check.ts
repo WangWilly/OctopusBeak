@@ -40,10 +40,13 @@ const foreignWorkflowSource = await readFile(
   new URL("./yuanta-foreign-currency-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(foreignWorkflowSource, /resolveCanonicalInvestmentFundingRelations/);
 assert.match(
   foreignWorkflowSource,
-  /await commitForeignCurrencyDepositCaptureBatch\([\s\S]*?resolveCanonicalInvestmentFundingRelations\(financialStore\)/,
+  /runCanonicalInvestmentRelationFollowThrough/,
+);
+assert.match(
+  foreignWorkflowSource,
+  /await commitForeignCurrencyDepositCaptureBatch\([\s\S]*?runCanonicalInvestmentRelationFollowThrough\(financialStore\)/,
 );
 
 const fixedForeignDateRange = {

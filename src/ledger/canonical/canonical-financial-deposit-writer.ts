@@ -1821,14 +1821,15 @@ export async function commitCanonicalFinancialDepositCapture(
   capture: CanonicalFinancialDepositValidatedCapture,
 ): Promise<CanonicalFinancialDepositCommitResult> {
   requireValidatedFinancialWriterStore(store);
-  return withCanonicalSourceCaptureAdmissionTransaction(
-    store as CanonicalSourceStore,
-    (capability) => commitOnce(store, capture, capability),
-  );
+  const [result] = await commitCanonicalFinancialDepositCaptureBatch(store, [capture]);
+  return result!;
 }
 
 /** Commit a provider's already-admitted account captures as one SQLite unit.
- * A collision or overwrite in any later account rolls the entire batch back. */
+ * A collision or overwrite in any later account rolls the entire batch back.
+ * The optional extension hook is retained for generic statement families
+ * whose schemas are outside the closed loan/investment admission variants.
+ * Domain adapters use canonical-financial-admission.ts instead. */
 export async function commitCanonicalFinancialDepositCaptureBatch(
   store: CanonicalFinancialDepositWriterStore,
   captures: readonly CanonicalFinancialDepositValidatedCapture[],
@@ -1843,18 +1844,18 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
   return withCanonicalSourceCaptureAdmissionTransaction(
     store as CanonicalSourceStore,
     (capability) => {
-    for (const capture of captures) {
-      if (!hasValidatedBrand(capture))
-        throw new CanonicalFinancialDepositConflictError(
-          "Financial deposit batch contains a capture outside the runtime-validated seam.",
-        );
+      for (const capture of captures) {
+        if (!hasValidatedBrand(capture))
+          throw new CanonicalFinancialDepositConflictError(
+            "Financial deposit batch contains a capture outside the runtime-validated seam.",
+          );
         validateCapture(capture);
-    }
-    const results = captures.map((capture) =>
-      commitOnce(store, capture, capability),
-    );
-    beforeCommit?.(store.db, results);
-    return results;
+      }
+      const results = captures.map((capture) =>
+        commitOnce(store, capture, capability),
+      );
+      beforeCommit?.(store.db, results);
+      return results;
     },
   );
 }
