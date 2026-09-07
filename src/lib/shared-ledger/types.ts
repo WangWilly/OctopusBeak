@@ -1,6 +1,28 @@
 export type CurrencyAmountDto = {
   currency: string;
   value: number;
+  /** Exact canonical value retained beside the presentation number. */
+  exact?: {
+    coefficient: string;
+    scale: number;
+  };
+  /** Canonical observation lineage for authoritative amounts. */
+  traces?: readonly {
+    kind: string;
+    accountId: string;
+    observationId?: string;
+    revisionId?: string;
+    securityId?: string;
+    effectiveAt?: string;
+    observedAt?: string;
+    knowledgePoint?: number;
+  }[];
+  /** FX evidence used when a display total is converted. */
+  conversion?: {
+    fromCurrency: string;
+    rateDate: string;
+    twdPerUnit: number;
+  };
 };
 
 export type ExchangeRateDto = {
@@ -54,11 +76,13 @@ export type AccountRowDto = {
   kind: AccountKind;
   typeLabel: string;
   amountLines: CurrencyAmountDto[];
+  marginAmountLines?: CurrencyAmountDto[];
   transactionCount: number;
   assetPositionCount: number;
   lastUpdated: string | null;
-  valueAvailability: "available" | "unavailable";
+  valueAvailability: "available" | "awaiting" | "unavailable";
   dataIssueId?: string;
+  canonicalAccountId?: string;
 };
 
 export type TransactionRowDto = {

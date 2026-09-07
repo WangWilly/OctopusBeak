@@ -28,6 +28,7 @@ const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
 
 const ALL_PROJECTION_FAMILIES = [
+  "financial-accounts",
   "transactions",
   "transaction-fields",
   "transaction-enrichment",

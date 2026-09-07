@@ -29,4 +29,12 @@ test("overview renders the production Sankey graph with the existing base-curren
   assert.doesNotMatch(source, /overviewSankeyPrototype/);
 });
 
+test("overview exposes canonical current and honest history states", () => {
+  assert.match(source, /overview\.coverage !== "complete"/);
+  assert.match(source, /data-overview-state=\{overview\.coverage\}/);
+  assert.match(source, /currentPartial\(overview\.sourceGaps\.length\)/);
+  assert.match(source, /overview\.historyAvailability === "unavailable"/);
+  assert.match(source, /data-overview-state="history-unavailable"/);
+});
+
 assert.match(source, /formatUtcDateTime\(value, \$systemTimezone, \$locale\)/);
