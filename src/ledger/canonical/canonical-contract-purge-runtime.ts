@@ -53,12 +53,20 @@ export type CanonicalContractPurgeScope = Readonly<{
 
 export type CanonicalContractPurgeRequest = Readonly<{
   scope: CanonicalContractPurgeScope;
-  /** A short operational reason. Financial content is rejected. */
-  reason: string;
+  /** A closed operational reason code; its audit description is fixed. */
+  reason: CanonicalContractPurgeReason;
   runtime?: CanonicalRuntimeOptions;
   /** Failure injection is retained as a test seam for atomicity checks. */
   projection?: CanonicalProjectionRebuildOptions;
 }>;
+
+export type CanonicalContractPurgeReason = "wrong-contract";
+
+const CANONICAL_CONTRACT_PURGE_REASON_DESCRIPTIONS: Readonly<
+  Record<CanonicalContractPurgeReason, string>
+> = Object.freeze({
+  "wrong-contract": "Source contract invalidated.",
+});
 
 export type CanonicalDeletionScrubStatus = Readonly<{
   status: "completed" | "pending";
@@ -425,20 +433,14 @@ function normalizeScope(input: CanonicalContractPurgeScope): NormalizedScope {
 }
 
 function normalizeReason(reason: unknown): string {
-  if (typeof reason !== "string" || reason.trim() === "")
-    throw new Error("Contract Purge reason is required.");
-  const normalized = reason.trim();
   if (
-    normalized.length > 240 ||
-    /[\u0000-\u001f{}[\]]/u.test(normalized) ||
-    /\b(?:account|amount|balance|card|content|currency|financial|income|investment|loan|money|pan|payload|payment|record|statement|transaction)\b|(?:sha256:|\b(?:twd|usd|jpy|eur)\b|\d{6,})/iu.test(
-      normalized,
-    )
+    typeof reason !== "string" ||
+    !Object.hasOwn(CANONICAL_CONTRACT_PURGE_REASON_DESCRIPTIONS, reason)
   )
-    throw new Error(
-      "Contract Purge reason must be a short non-financial operational description.",
-    );
-  return normalized;
+    throw new Error("Contract Purge reason code is not registered.");
+  return CANONICAL_CONTRACT_PURGE_REASON_DESCRIPTIONS[
+    reason as CanonicalContractPurgeReason
+  ];
 }
 
 function sidecarPath(databasePath: string): string | null {
@@ -1326,6 +1328,71 @@ function deleteClosure(
   );
 }
 
+/**
+ * A broad purge request is only a deletion selector. Recollection fencing is
+ * recorded from the admitted rows that actually existed in that selector, so
+ * a later contract version or identity epoch on the same Source Connection
+ * remains admissible. An empty selector is rejected before this function is
+ * reached; it must never create a wildcard marker for future data.
+ */
+function exactDisabledScopesForClosure(
+  db: DatabaseSync,
+  selected: SelectedRows,
+): readonly NormalizedScope[] {
+  const captureRows = [...(selected.get("source_captures") ?? [])];
+  if (captureRows.length === 0)
+    throw new Error(
+      "Canonical Contract Purge requires at least one admitted source capture.",
+    );
+  const expectedRows = new Set(captureRows);
+  const scopes = new Map<string, NormalizedScope>();
+  const seenRows = new Set<number>();
+  for (const captureBatch of batches(captureRows)) {
+    const rows = db
+      .prepare(
+        `SELECT capture.rowid,
+                connection.integration_namespace,
+                connection.source_connection_key,
+                connection.source_connection_id,
+                capture.stream,
+                route.contract_version,
+                epoch.epoch_key
+           FROM source_captures capture
+           JOIN source_connections connection
+             ON connection.source_connection_id = capture.source_connection_id
+           JOIN identity_epochs epoch
+             ON epoch.identity_epoch_id = capture.identity_epoch_id
+           JOIN source_authority_routes route
+             ON route.authority_route = capture.authority_route
+          WHERE capture.rowid IN (${inValues(captureBatch)})`,
+      )
+      .all(...captureBatch) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const rowId = Number(row.rowid);
+      if (!Number.isSafeInteger(rowId) || !expectedRows.has(rowId))
+        throw new Error("Canonical Contract Purge capture fence is malformed.");
+      seenRows.add(rowId);
+      if (!(row.source_connection_id instanceof Uint8Array))
+        throw new Error("Canonical Contract Purge capture fence is malformed.");
+      const exact = normalizeScope({
+        integrationNamespace: String(row.integration_namespace ?? ""),
+        sourceConnectionKey: String(row.source_connection_key ?? ""),
+        sourceConnectionId: idToString(Buffer.from(row.source_connection_id)),
+        stream: String(row.stream ?? ""),
+        contractVersion: String(row.contract_version ?? ""),
+        identityEpoch: String(row.epoch_key ?? ""),
+      });
+      const key = JSON.stringify(exact);
+      scopes.set(key, exact);
+    }
+  }
+  if (seenRows.size !== captureRows.length)
+    throw new Error("Canonical Contract Purge capture fence is incomplete.");
+  return [...scopes.values()].sort((left, right) =>
+    JSON.stringify(left).localeCompare(JSON.stringify(right)),
+  );
+}
+
 function sourceScopeMatches(
   scope: NormalizedScope,
   candidate: {
@@ -1366,7 +1433,7 @@ function deterministicSourceConnectionId(
 function runtimePurgeRows(db: DatabaseSync): Array<Record<string, unknown>> {
   return db
     .prepare(
-      "SELECT purge_id, scope_json FROM canonical_runtime_contract_purges WHERE purge_id LIKE ? ORDER BY applied_at_utc_us, purge_id",
+      "SELECT purge_id, scope_json, disabled_scopes_json FROM canonical_runtime_contract_purges WHERE purge_id LIKE ? ORDER BY applied_at_utc_us, purge_id",
     )
     .all(`${RUNTIME_PURGE_PREFIX}%`) as Array<Record<string, unknown>>;
 }
@@ -1380,6 +1447,32 @@ function markerScope(row: Record<string, unknown>): NormalizedScope {
       cause: error,
     });
   }
+}
+
+function markerDisabledScopes(
+  row: Record<string, unknown>,
+): readonly NormalizedScope[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(row.disabled_scopes_json ?? ""));
+  } catch (error) {
+    throw new Error("Canonical runtime Contract Purge marker is malformed.", {
+      cause: error,
+    });
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0)
+    throw new Error("Canonical runtime Contract Purge marker is malformed.");
+  return parsed.map((scope) => {
+    try {
+      if (!scope || typeof scope !== "object" || Array.isArray(scope))
+        throw new Error("scope is not an object");
+      return normalizeScope(scope as CanonicalContractPurgeScope);
+    } catch (error) {
+      throw new Error("Canonical runtime Contract Purge marker is malformed.", {
+        cause: error,
+      });
+    }
+  });
 }
 
 /** Admission calls this before creating a capture. It is intentionally a
@@ -1396,19 +1489,20 @@ export function assertCanonicalContractPurgeScopeEnabled(
 ): void {
   assertValidatedCanonicalDatabase(db);
   for (const row of runtimePurgeRows(db)) {
-    const scope = markerScope(row);
-    if (
-      sourceScopeMatches(scope, {
-        ...candidate,
-        sourceConnectionId: deterministicSourceConnectionId(
-          candidate.integrationNamespace,
-          candidate.sourceConnectionKey,
-        ),
-      })
-    )
-      throw new Error(
-        "Canonical source scope has been purged and is disabled for recollection.",
-      );
+    const sourceConnectionId = deterministicSourceConnectionId(
+      candidate.integrationNamespace,
+      candidate.sourceConnectionKey,
+    );
+    for (const scope of markerDisabledScopes(row))
+      if (
+        sourceScopeMatches(scope, {
+          ...candidate,
+          sourceConnectionId,
+        })
+      )
+        throw new Error(
+          "Canonical source scope has been purged and is disabled for recollection.",
+        );
   }
 }
 
@@ -1422,6 +1516,7 @@ function validateRuntimePurgeAuditSchema(db: DatabaseSync): void {
     "audit_version",
     "reason",
     "scope_json",
+    "disabled_scopes_json",
     "deleted_row_count",
     "deleted_table_counts_json",
     "closure_fingerprint",
@@ -1446,6 +1541,10 @@ function purgeCanonicalDataTransition(
   }
   const info = allTableInfo(db);
   const selected = seedScopeRows(db, info, scope);
+  if (!(selected.get("source_captures")?.size ?? 0))
+    throw new Error(
+      "Canonical Contract Purge requires at least one admitted source capture.",
+    );
   let changed = true;
   while (changed) {
     changed = expandChildren(db, info, selected);
@@ -1453,6 +1552,7 @@ function purgeCanonicalDataTransition(
   }
   failOnBoundaryReferences(db, info, selected, scope);
   failOnExternalReferences(db, info, selected);
+  const disabledScopes = exactDisabledScopesForClosure(db, selected);
   const fingerprint = closureFingerprint(selected);
   const purgedCommitIds = commitIdsForClosure(db, info, selected);
   const deletedTableCounts = deleteClosure(db, info, selected);
@@ -1465,14 +1565,16 @@ function purgeCanonicalDataTransition(
   db.prepare(
     `INSERT INTO canonical_runtime_contract_purges(
        purge_id, audit_version, reason, scope_json, deleted_row_count,
-       deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       disabled_scopes_json, deleted_table_counts_json, closure_fingerprint,
+       applied_at_utc_us
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     purgeId,
     RUNTIME_PURGE_SCHEMA_VERSION,
     reason,
     scopeJson,
     deletedRowCount,
+    JSON.stringify(disabledScopes),
     JSON.stringify(deletedTableCounts),
     fingerprint,
     scrubNow(),
