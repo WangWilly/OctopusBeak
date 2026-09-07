@@ -824,6 +824,7 @@ BEFORE UPDATE ON transaction_tag_assertion_values
 BEGIN SELECT RAISE(ABORT, 'transaction tag values are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS transaction_tag_assertion_values_no_delete
 BEFORE DELETE ON transaction_tag_assertion_values
+WHEN canonical_purge_delete_allowed() = 0
 BEGIN SELECT RAISE(ABORT, 'transaction tag values cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS user_tags_no_update
 BEFORE UPDATE ON user_tags
@@ -5213,6 +5214,29 @@ function isValidUserAssertionProvenanceEvidence(
   );
 }
 
+function canonicalRuntimePurgeCommitHasEvidence(
+  db: DatabaseSync,
+  commitId: CanonicalId,
+): boolean {
+  return (
+    relationType(db, "canonical_runtime_contract_purge_commits") === "table" &&
+    Boolean(
+      db
+        .prepare(
+          `SELECT 1
+             FROM canonical_runtime_contract_purge_commits purge
+            WHERE purge.commit_id = ?
+              AND EXISTS (
+                SELECT 1 FROM canonical_runtime_contract_purges audit
+                 WHERE audit.purge_id = purge.purge_id
+              )
+            LIMIT 1`,
+        )
+        .get(commitId),
+    )
+  );
+}
+
 function canonicalCommitHasEvidence(
   db: DatabaseSync,
   commitKind: string,
@@ -5242,9 +5266,8 @@ function canonicalCommitHasEvidence(
     // closure while preserving its commit as immutable projection history.
     // The purge audit is then the retained canonical evidence for that
     // historical routine event; do not rewrite the guarded event chain.
-    return (
-      relationType(db, "canonical_contract_purge_commits") === "table" &&
-      Boolean(
+    return Boolean(
+      (relationType(db, "canonical_contract_purge_commits") === "table" &&
         db
           .prepare(
             `SELECT 1
@@ -5256,8 +5279,8 @@ function canonicalCommitHasEvidence(
                 )
               LIMIT 1`,
           )
-          .get(commitId),
-      )
+          .get(commitId)) ||
+      canonicalRuntimePurgeCommitHasEvidence(db, commitId),
     );
   }
   if (commitKind === "derived_import") {
@@ -5277,7 +5300,7 @@ function canonicalCommitHasEvidence(
            SELECT 1 FROM enrichment_runs WHERE commit_id = ? LIMIT 1`,
         )
         .get(commitId, commitId),
-    );
+    ) || canonicalRuntimePurgeCommitHasEvidence(db, commitId);
   }
   if (commitKind === "user_assertion") {
     if (
@@ -5306,6 +5329,7 @@ function canonicalCommitHasEvidence(
         .get(commitId, commitId, commitId, commitId) as unknown)
     )
       return true;
+    if (canonicalRuntimePurgeCommitHasEvidence(db, commitId)) return true;
     const provenanceRows = db
       .prepare(
         `SELECT assertion_id FROM assertion_provenance
@@ -5333,7 +5357,7 @@ function canonicalCommitHasEvidence(
         )
         .get(commitId, commitId, commitId),
     );
-    if (!relationEvidence) return false;
+    if (!relationEvidence) return canonicalRuntimePurgeCommitHasEvidence(db, commitId);
     // Relation commits became generation Knowledge Points only after the
     // Projection Runtime began recording them. Legacy relation facts remain
     // valid immutable history without retroactively widening an older
@@ -5346,7 +5370,7 @@ function canonicalCommitHasEvidence(
               AND event_source = 'routine' LIMIT 1`,
         )
         .get(commitId),
-    );
+    ) || canonicalRuntimePurgeCommitHasEvidence(db, commitId);
   }
   return false;
 }
@@ -8694,6 +8718,64 @@ function widenCanonicalContractPurgeAuditForV19(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Runtime Contract Purges have a different lifecycle from the historical
+ * migration audits above. Keep their durable disable marker in its own table
+ * so the published schema_version check remains a closed record of v11/v12/
+ * v14/v17/v19 migrations.
+ */
+function ensureCanonicalRuntimeContractPurgeAuditSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS canonical_runtime_contract_purges (
+      purge_id TEXT PRIMARY KEY CHECK(purge_id LIKE 'runtime:contract-purge:%'),
+      audit_version INTEGER NOT NULL CHECK(audit_version = 1),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_canonical_runtime_contract_purges_scope
+      ON canonical_runtime_contract_purges(scope_json, applied_at_utc_us, purge_id);
+    CREATE TABLE IF NOT EXISTS canonical_runtime_contract_purge_commits (
+      purge_id TEXT NOT NULL REFERENCES canonical_runtime_contract_purges(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_canonical_runtime_contract_purge_commits_commit
+      ON canonical_runtime_contract_purge_commits(commit_id, purge_id);
+  `);
+}
+
+function validateCanonicalRuntimeContractPurgeAuditSchema(
+  db: DatabaseSync,
+): void {
+  if (relationType(db, "canonical_runtime_contract_purges") !== "table")
+    throw new Error("Canonical runtime Contract Purge audit table is missing.");
+  if (relationType(db, "canonical_runtime_contract_purge_commits") !== "table")
+    throw new Error("Canonical runtime Contract Purge commit audit table is missing.");
+  const columns = new Set(
+    (db
+      .prepare("PRAGMA table_info(canonical_runtime_contract_purges)")
+      .all() as Array<{ name?: unknown }>).map((column) => String(column.name ?? "")),
+  );
+  for (const required of [
+    "purge_id",
+    "audit_version",
+    "reason",
+    "scope_json",
+    "deleted_row_count",
+    "deleted_table_counts_json",
+    "closure_fingerprint",
+    "applied_at_utc_us",
+  ])
+    if (!columns.has(required))
+      throw new Error(
+        `Canonical runtime Contract Purge audit column ${required} is missing.`,
+      );
+}
+
 export const SCHEMA_V15_INVESTMENTS = `
 CREATE TABLE IF NOT EXISTS investment_captures (
   capture_id BLOB PRIMARY KEY REFERENCES source_captures(capture_id),
@@ -10421,8 +10503,73 @@ export function createCanonicalSchemaLifecyclePlan(
           validateFubonCreditCardSchema(db);
         },
       },
+      {
+        id: "canonical/runtime-contract-purge-audit/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "canonical_runtime_contract_purges",
+          "idx_canonical_runtime_contract_purges_scope",
+          "canonical_runtime_contract_purge_commits",
+          "idx_canonical_runtime_contract_purge_commits_commit",
+        ],
+        applies: (db) =>
+          relationType(db, "canonical_runtime_contract_purges") !== "table",
+        apply(db) {
+          ensureCanonicalRuntimeContractPurgeAuditSchema(db);
+        },
+        validate(db) {
+          validateCanonicalRuntimeContractPurgeAuditSchema(db);
+        },
+      },
     ],
     repairs: [
+      {
+        id: "canonical/runtime-contract-purge-tag-delete-guard/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: ["transaction_tag_assertion_values_no_delete"],
+        allowedExistingTriggerTargets: ["transaction_tag_assertion_values"],
+        runOnCurrentVersion: true,
+        precondition: (db) => {
+          const trigger = db
+            .prepare(
+              `SELECT sql FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'transaction_tag_assertion_values_no_delete'`,
+            )
+            .get() as { sql?: unknown } | undefined;
+          return !String(trigger?.sql ?? "").includes(
+            "canonical_purge_delete_allowed",
+          );
+        },
+        apply(db) {
+          db.exec(`
+            DROP TRIGGER IF EXISTS transaction_tag_assertion_values_no_delete;
+            CREATE TRIGGER transaction_tag_assertion_values_no_delete
+            BEFORE DELETE ON transaction_tag_assertion_values
+            WHEN canonical_purge_delete_allowed() = 0
+            BEGIN
+              SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
+            END;
+          `);
+        },
+        validate(db) {
+          const trigger = db
+            .prepare(
+              `SELECT sql FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'transaction_tag_assertion_values_no_delete'`,
+            )
+            .get() as { sql?: unknown } | undefined;
+          if (
+            !String(trigger?.sql ?? "").includes(
+              "canonical_purge_delete_allowed",
+            )
+          )
+            throw new Error(
+              "Canonical transaction tag delete guard is missing its purge capability.",
+            );
+        },
+      },
       {
         id: "canonical/foreign-currency-conversion-schema/v1",
         version: CANONICAL_SCHEMA_VERSION,

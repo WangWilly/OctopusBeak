@@ -58,6 +58,9 @@ export const PROJECTION_STORAGE_ALLOWLIST = Object.freeze([
   "src/ledger/canonical/canonical-projection-runtime.ts",
   "src/ledger/canonical/canonical-projection-implementation.ts",
   "src/ledger/canonical/canonical-categorization-projection.ts",
+  // Contract Purge computes and deletes its source-owned projection closure
+  // before delegating the generation rebuild through the Runtime seam.
+  "src/ledger/canonical/canonical-contract-purge-runtime.ts",
   "src/ledger/canonical/canonical-schema-lifecycle.ts",
 ]);
 
