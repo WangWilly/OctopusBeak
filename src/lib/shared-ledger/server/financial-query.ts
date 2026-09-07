@@ -23,6 +23,10 @@ import {
   createCathayCanonicalFinancialQuery as createCathayCanonicalQuery,
   type CathayCanonicalFinancialQuery,
 } from "../../../ledger/canonical/cathay-domestic-deposit.ts";
+import {
+  createCanonicalOverviewQuery,
+  type CanonicalOverviewCurrentQueryResult,
+} from "../../../ledger/canonical/canonical-overview-query.ts";
 
 export type {
   CanonicalAmount,
@@ -164,6 +168,8 @@ export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   unavailableAccounts: AccountRowDto[];
 };
 
+export type CurrentOverviewProjectionQueryResult = CanonicalOverviewCurrentQueryResult;
+
 export type CurrentSpendingQueryResult = {
   status: "ok";
   kind: "current";
@@ -183,7 +189,7 @@ export type CurrentFinancialQueryResult<Product extends FinancialProduct = Finan
   Product extends "spending"
     ? CurrentSpendingQueryResult
     : Product extends "overview"
-      ? CurrentLedgerQueryResult<"overview"> | CurrentOverviewExchangeRateQueryResult
+      ? CurrentOverviewProjectionQueryResult | CurrentOverviewExchangeRateQueryResult
       : Product extends LedgerFinancialProduct
       ? CurrentLedgerQueryResult<Product>
       : never;
@@ -214,7 +220,7 @@ export type LineageFinancialQueryResult<Entry = never, SubjectKind extends strin
 
 export interface FinancialQueryBoundary {
   current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
-  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentLedgerQueryResult<"overview">>;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentOverviewProjectionQueryResult>;
   current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
   current<Product extends LedgerFinancialProduct>(
     request: CurrentFinancialQueryRequest<Product> & { product: Exclude<Product, "overview"> },
@@ -223,13 +229,9 @@ export interface FinancialQueryBoundary {
   lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>>;
 }
 
-/**
- * Creates the product read boundary. The default implementation is deliberately
- * a legacy adapter; it preserves current ledger behavior while leaving the
- * Current/Historical/Lineage contract seam ready for a canonical store.
- */
+/** Creates the product read boundary. Overview is backed by Current Projection. */
 export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQueryBoundary {
-  return new LegacyFinancialQueryAdapter(ledgerDir);
+  return new ProductFinancialQueryAdapter(ledgerDir);
 }
 
 /** Canonical adapter factory kept alongside the phase-1 legacy boundary. */
@@ -241,7 +243,7 @@ export function createCathayCanonicalFinancialQuery(
   return createCathayCanonicalQuery(ledgerDir);
 }
 
-class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
+class LegacyFinancialQueryAdapter {
   private readonly ledgerDir: string;
 
   constructor(ledgerDir: string) {
@@ -425,6 +427,48 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
     } finally {
       sqlite.close();
     }
+  }
+}
+
+/**
+ * Routes Overview reads to the canonical Current Projection Query while
+ * leaving the still-migrating product adapters behind the same public seam.
+ */
+class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
+  private readonly legacy: LegacyFinancialQueryAdapter;
+  private readonly canonicalOverview: ReturnType<typeof createCanonicalOverviewQuery>;
+
+  constructor(ledgerDir: string) {
+    this.legacy = new LegacyFinancialQueryAdapter(ledgerDir);
+    this.canonicalOverview = createCanonicalOverviewQuery(ledgerDir);
+  }
+
+  current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentOverviewProjectionQueryResult>;
+  current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
+  current<Product extends LedgerFinancialProduct>(
+    request: CurrentFinancialQueryRequest<Product> & { product: Exclude<Product, "overview"> },
+  ): Promise<CurrentLedgerQueryResult<Product>>;
+  current(
+    request: CurrentFinancialQueryRequest,
+  ): CurrentSpendingQueryResult | Promise<
+    CurrentOverviewProjectionQueryResult |
+    CurrentOverviewExchangeRateQueryResult |
+    CurrentLedgerQueryResult<"assets" | "liabilities">
+  > {
+    if (request.product === "overview" && !("selection" in request))
+      return this.canonicalOverview.current();
+    return this.legacy.current(request as never) as CurrentSpendingQueryResult | Promise<
+      CurrentOverviewExchangeRateQueryResult | CurrentLedgerQueryResult<"assets" | "liabilities">
+    >;
+  }
+
+  historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>> {
+    return this.legacy.historical(request);
+  }
+
+  lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>> {
+    return this.legacy.lineage(request);
   }
 }
 

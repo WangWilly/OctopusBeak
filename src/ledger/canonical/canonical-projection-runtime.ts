@@ -53,6 +53,7 @@ const CANONICAL_PROJECTION_COMMIT_IMPACTS: Readonly<
 });
 
 const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
+  "financial-accounts",
   "transactions",
   "transaction-fields",
   "transaction-enrichment",
@@ -114,6 +115,21 @@ export type CanonicalProjectionTransaction = Readonly<{
   projectionCommitId: string | null;
   revisionCommitId: string;
 }>;
+export type CanonicalProjectionFinancialAccount = Readonly<{
+  accountId: string;
+  sourceConnectionId: string;
+  identityEpochId: string;
+  sourceConnectionKey: string;
+  integrationNamespace: string;
+  stream: string;
+  accountNo: string;
+  accountType: "depository" | "credit" | "loan" | "investment" | "other";
+  investmentSubtype: string | null;
+  currency: string | null;
+  createdCommitId: string;
+  createdCommitSequence: number;
+  latestCaptureObservedAt: string | null;
+}>;
 export type CanonicalProjectionTransactionField = Readonly<{
   transactionId: string;
   fieldName: string;
@@ -167,6 +183,14 @@ export type CanonicalProjectionLoanBalance = Readonly<{
   accountId: string;
   observationId: string;
   revisionId: string;
+  balanceKind: string;
+  coefficient: string;
+  scale: number;
+  currency: string;
+  effectiveAt: string;
+  observedAt: string;
+  projectionCommitId: string | null;
+  revisionCommitId: string | null;
 }>;
 export type CanonicalProjectionLoanRelation = Readonly<{
   relationId: string;
@@ -186,6 +210,10 @@ export type CanonicalProjectionInvestmentHolding = Readonly<{
   accountId: string;
   securityId: string;
   securityKey: string;
+  securityName: string | null;
+  securityTicker: string | null;
+  securityCurrency: string;
+  securityType: string;
   measurementKey: string;
   revisionNumber: number;
   isCurrent: boolean;
@@ -216,11 +244,14 @@ export type CanonicalProjectionInvestmentTransaction = Readonly<{
 }>;
 export type CanonicalProjectionInvestmentMarginBalance = Readonly<{
   accountId: string;
+  observationId: string;
   balanceKind: string;
   coefficient: string;
   scale: number;
   currency: string;
   effectiveOn: string;
+  observedAt: string;
+  revisionCommitId: string | null;
 }>;
 export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
   relationId: string;
@@ -237,6 +268,7 @@ export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
   investmentTransactionCount: number;
 }>;
 export type CanonicalProjectionFamilyRows = Readonly<{
+  "financial-accounts": CanonicalProjectionFinancialAccount;
   transactions: CanonicalProjectionTransaction;
   "transaction-fields": CanonicalProjectionTransactionField;
   "transaction-enrichment": CanonicalProjectionTransactionEnrichment;
@@ -987,6 +1019,39 @@ function readFamily(
   const financialAt =
     request.kind === "historical" ? request.cutoff?.financialAt ?? null : null;
   switch (family) {
+    case "financial-accounts":
+      return rows(
+        db,
+        `SELECT account.account_id, account.source_connection_id,
+                account.identity_epoch_id, connection_scope.source_connection_key,
+                connection_scope.integration_namespace, account.stream,
+                account.account_no, account.account_type, account.currency,
+                investment_account.account_subtype AS investment_subtype,
+                account.created_commit_id,
+                created.commit_sequence AS created_commit_sequence,
+                (SELECT MAX(capture.observed_at)
+                   FROM source_captures capture
+                   JOIN canonical_commits capture_commit
+                     ON capture_commit.commit_id = capture.commit_id
+                  WHERE capture.source_connection_id = account.source_connection_id
+                    AND capture.identity_epoch_id = account.identity_epoch_id
+                    AND capture.stream = account.stream
+                    AND (capture.account_no IS NULL OR capture.account_no = account.account_no)
+                    AND capture_commit.commit_sequence <= ?) AS latest_capture_observed_at
+           FROM financial_accounts account
+           JOIN source_connections connection_scope
+             ON connection_scope.source_connection_id = account.source_connection_id
+           JOIN canonical_commits created
+             ON created.commit_id = account.created_commit_id
+           LEFT JOIN investment_accounts investment_account
+             ON investment_account.account_id = account.account_id
+          WHERE created.commit_sequence <= ? ${scopedFilter("account")}
+          ORDER BY connection_scope.source_connection_key, account.stream,
+                   account.account_no, hex(account.account_id)`,
+        knowledgeAt,
+        knowledgeAt,
+        ...scopedParameters(),
+      );
     case "transactions": {
       if (request.kind === "current" && generation !== null)
         return rows(
@@ -1614,7 +1679,8 @@ function readFamily(
                   projected.balance_kind, projected.observation_id,
                   projected.revision_id, projected.projection_commit_id,
                   projected.revision_commit_id, revision.balance_coefficient,
-                  revision.balance_scale, revision.currency, revision.effective_at
+                  revision.balance_scale, revision.currency, revision.effective_at,
+                  revision.observed_at
              FROM current_loan_balance_observations projected
              JOIN balance_observation_revisions revision ON revision.revision_id = projected.revision_id
              JOIN financial_accounts account ON account.account_id = projected.account_id
@@ -1636,7 +1702,7 @@ function readFamily(
                 observation.balance_kind, revision.revision_id,
                 revision.balance_coefficient, revision.balance_scale,
                 revision.currency, revision.effective_at,
-                revision.commit_id AS revision_commit_id
+                revision.observed_at, revision.commit_id AS revision_commit_id
            FROM balance_observations observation
            JOIN balance_observation_revisions revision
              ON revision.observation_id = observation.observation_id
@@ -1901,7 +1967,9 @@ function readFamily(
                 holding.cost_coefficient, holding.cost_scale, holding.cost_currency,
                 holding.effective_on, holding.observed_at, holding.lineage_json,
                 holding.is_current,
-                security.security_key
+                security.security_key, security.name AS security_name,
+                security.ticker AS security_ticker, security.currency AS security_currency,
+                security.security_type
            FROM (
              SELECT observation.*,
                ${
@@ -1965,18 +2033,39 @@ function readFamily(
         financialAt,
         financialAt,
       );
-    case "investment-margin-balances":
+    case "investment-margin-balances": {
       return rows(
         db,
-        `SELECT margin.account_id, margin.balance_kind, margin.coefficient,
-                margin.scale, margin.currency, margin.effective_on
-           FROM investment_margin_balance_observations margin
+        `WITH selected_margin AS (
+           SELECT margin.account_id, margin.observation_id, margin.balance_kind,
+                  margin.coefficient, margin.scale, margin.currency,
+                  margin.effective_on, margin.commit_id,
+                  capture.observed_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY margin.account_id, margin.balance_kind, margin.currency
+                    ORDER BY margin.effective_on DESC,
+                             margin_commit.commit_sequence DESC, margin.rowid DESC
+                  ) AS selection_rank
+             FROM investment_margin_balance_observations margin
+             JOIN canonical_commits margin_commit ON margin_commit.commit_id = margin.commit_id
+             JOIN investment_captures investment_capture
+               ON investment_capture.capture_id = margin.capture_id
+             JOIN source_captures capture
+               ON capture.capture_id = investment_capture.capture_id
+            WHERE margin_commit.commit_sequence <= ?
+         )
+         SELECT margin.account_id, margin.observation_id, margin.balance_kind,
+                margin.coefficient, margin.scale, margin.currency,
+                margin.effective_on, margin.observed_at,
+                margin.commit_id AS revision_commit_id
+           FROM selected_margin margin
            JOIN canonical_commits margin_commit ON margin_commit.commit_id = margin.commit_id
            JOIN source_connections connection_scope ON connection_scope.source_connection_id = (
              SELECT investment_account.source_connection_id FROM investment_accounts investment_account
               WHERE investment_account.account_id = margin.account_id
            )
-          WHERE margin_commit.commit_sequence <= ? ${scopedFilter("margin")}
+          WHERE ${request.kind === "current" ? "margin.selection_rank = 1 AND" : ""}
+            1 = 1 ${scopedFilter("margin")}
             AND (? IS NULL OR margin.effective_on >= ?)
             AND (? IS NULL OR margin.effective_on <= ?)
             AND (? IS NULL OR margin.effective_on <= ?)
@@ -1990,6 +2079,7 @@ function readFamily(
         financialAt,
         financialAt,
       );
+    }
     case "investment-funding-relations":
       return rows(
         db,
@@ -2054,6 +2144,22 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
 ): readonly CanonicalProjectionFamilyRows[Family][] {
   const projected = storageRows.map((row) => {
     switch (family) {
+      case "financial-accounts":
+        return {
+          accountId: textValue(row, "account_id"),
+          sourceConnectionId: textValue(row, "source_connection_id"),
+          identityEpochId: textValue(row, "identity_epoch_id"),
+          sourceConnectionKey: textValue(row, "source_connection_key"),
+          integrationNamespace: textValue(row, "integration_namespace"),
+          stream: textValue(row, "stream"),
+          accountNo: textValue(row, "account_no"),
+          accountType: textValue(row, "account_type") as CanonicalProjectionFinancialAccount["accountType"],
+          investmentSubtype: nullableTextValue(row, "investment_subtype"),
+          currency: nullableTextValue(row, "currency"),
+          createdCommitId: textValue(row, "created_commit_id"),
+          createdCommitSequence: Number(row.created_commit_sequence),
+          latestCaptureObservedAt: nullableTextValue(row, "latest_capture_observed_at"),
+        };
       case "transactions":
         return {
           transactionId: textValue(row, "transaction_id"),
@@ -2132,6 +2238,14 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           accountId: textValue(row, "account_id"),
           observationId: textValue(row, "observation_id"),
           revisionId: textValue(row, "revision_id"),
+          balanceKind: textValue(row, "balance_kind"),
+          coefficient: textValue(row, "balance_coefficient"),
+          scale: Number(row.balance_scale),
+          currency: textValue(row, "currency"),
+          effectiveAt: textValue(row, "effective_at"),
+          observedAt: textValue(row, "observed_at"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
         };
       case "loan-relations":
         return {
@@ -2153,6 +2267,10 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           accountId: textValue(row, "account_id"),
           securityId: textValue(row, "security_id"),
           securityKey: textValue(row, "security_key"),
+          securityName: nullableTextValue(row, "security_name"),
+          securityTicker: nullableTextValue(row, "security_ticker"),
+          securityCurrency: textValue(row, "security_currency"),
+          securityType: textValue(row, "security_type"),
           measurementKey: textValue(row, "measurement_key"),
           revisionNumber: Number(row.revision_number),
           isCurrent: Number(row.is_current) === 1,
@@ -2185,11 +2303,14 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
       case "investment-margin-balances":
         return {
           accountId: textValue(row, "account_id"),
+          observationId: textValue(row, "observation_id"),
           balanceKind: textValue(row, "balance_kind"),
           coefficient: textValue(row, "coefficient"),
           scale: Number(row.scale),
           currency: textValue(row, "currency"),
           effectiveOn: textValue(row, "effective_on"),
+          observedAt: textValue(row, "observed_at"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
         };
       case "investment-funding-relations":
         return {
@@ -2273,6 +2394,7 @@ function readSnapshotInTransaction(
         )
       : ([] as readonly CanonicalProjectionFamilyRows[Family][]);
   const families = {
+    "financial-accounts": familyRows("financial-accounts"),
     transactions: familyRows("transactions"),
     "transaction-fields": familyRows("transaction-fields"),
     "transaction-enrichment": familyRows("transaction-enrichment"),

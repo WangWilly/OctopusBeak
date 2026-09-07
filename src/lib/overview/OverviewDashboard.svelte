@@ -54,6 +54,13 @@
   ).rows;
   $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+  $: currentStateLabel = overview.sourceGaps.length > 0
+    ? $t.overview.currentPartial(overview.sourceGaps.length)
+    : overview.availability === "awaiting"
+      ? $t.overview.currentAwaiting
+      : overview.availability === "empty"
+        ? $t.overview.currentEmpty
+        : $t.overview.currentUnavailable;
 
   onMount(() => {
     const stored = localStorage.getItem(dailyCurrencyStorageKey);
@@ -117,6 +124,11 @@
   syncDataOnboarding="overview-imported"
 >
   <div class="content">
+    {#if overview.coverage !== "complete"}
+      <div class="projection-state" role="status" data-overview-state={overview.coverage}>
+        {currentStateLabel}
+      </div>
+    {/if}
     <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
       <SummaryStrip {metrics} />
     </section>
@@ -140,12 +152,18 @@
           </label>
           <span class="chip">{$t.common.days30}</span>
         </div>
-        <div class="card pad">
-          <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
-          {#key snapshotCurrency}
-            <DailyHistoryTable rows={snapshotHistory} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
-          {/key}
-        </div>
+        {#if overview.historyAvailability === "unavailable"}
+          <div class="card pad projection-state history-state" role="status" data-overview-state="history-unavailable">
+            {$t.overview.historyUnavailable}
+          </div>
+        {:else}
+          <div class="card pad">
+            <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
+            {#key snapshotCurrency}
+              <DailyHistoryTable rows={snapshotHistory} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
+            {/key}
+          </div>
+        {/if}
       </article>
 
       <div class="overview-allocation-stack">
@@ -182,9 +200,13 @@
           </span>
         {/if}
       </div>
-      {#key dailyCurrency}
-        <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
-      {/key}
+      {#if overview.historyAvailability === "unavailable"}
+        <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
+      {:else}
+        {#key dailyCurrency}
+          <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
+        {/key}
+      {/if}
     </section>
 
     {#if overview.sankey}
@@ -240,4 +262,22 @@
   .sankey-card {
     margin-top: var(--space-4);
   }
+
+  .projection-state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--muted);
+    background: var(--surface-soft);
+  }
+
+  .history-state {
+    min-height: 5rem;
+    align-items: center;
+  }
+
 </style>

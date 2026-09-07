@@ -25,16 +25,12 @@ try {
   db.close();
 
   const overview = await loadOverview(ledgerDir);
-  assert.deepEqual(overview.exchangeRates, [
-    { rateDate: "2026-06-03", currency: "USD", twdPerUnit: 32 },
-    { rateDate: "2026-06-04", currency: "USD", twdPerUnit: 32 },
-    { rateDate: "2026-07-11", currency: "USD", twdPerUnit: 32 },
-  ]);
-  assert.equal(overview.latestExchangeRateDate, "2026-07-11");
-  assert.deepEqual(overview.sankeyExchangeRates, [
-    { rateDate: "2026-07-12", currency: "USD", twdPerUnit: 32 },
-  ]);
-  assert.equal(overview.sankeyLatestExchangeRateDate, "2026-07-12");
+  assert.deepEqual(overview.exchangeRates, []);
+  assert.equal(overview.latestExchangeRateDate, null);
+  assert.deepEqual(overview.sankeyExchangeRates, []);
+  assert.equal(overview.sankeyLatestExchangeRateDate, null);
+  assert.equal(overview.availability, "awaiting");
+  assert.equal(overview.historyAvailability, "unavailable");
   assert.equal(overview.sankey, null);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });

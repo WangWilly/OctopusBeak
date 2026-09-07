@@ -107,8 +107,8 @@ try {
   assert.deepEqual(assets.ledger.creditCardSnapshots, []);
   assert.deepEqual(assets.ledger.loanTransactions, []);
   const overview = await productQuery.current({ kind: "current", product: "overview" });
-  assert.deepEqual(overview.ledger.fundBuyTransactions, []);
-  assert.deepEqual(overview.ledger.brokerageTradeTransactions, []);
+  assert.equal(overview.projection.availability, "awaiting");
+  assert.deepEqual(overview.projection.accounts, []);
   const liabilities = await productQuery.current({ kind: "current", product: "liabilities" });
   assert.deepEqual(liabilities.ledger.maicoinStatementRows, []);
   const spending = productQuery.current({ kind: "current", product: "spending" });

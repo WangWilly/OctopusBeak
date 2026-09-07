@@ -139,6 +139,10 @@ const overview = (
   accounts = 0,
   importedAt: string | null = null,
 ): OverviewPageDto => ({
+  availability: accounts > 0 ? "available" : "empty",
+  coverage: accounts > 0 ? "complete" : "partial",
+  historyAvailability: "unavailable",
+  sourceGaps: [],
   importedAt,
   summary: [],
   dailyHistory: [],

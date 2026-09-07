@@ -72,6 +72,13 @@ const en = {
     exchangeRatesThrough: (date: string) => `Rates through ${date}`,
     portfolioFlow: "Portfolio flow",
     portfolioFlowBaseCurrency: "Portfolio flow base currency",
+    currentAwaiting: "Current values are awaiting typed source observations.",
+    currentEmpty: "No canonical financial accounts are available yet.",
+    currentUnavailable: "The canonical current projection is unavailable.",
+    currentPartial: (count: number) => count === 1
+      ? "1 source account is awaiting a typed current value; totals are partial."
+      : `${count} source accounts are awaiting typed current values; totals are partial.`,
+    historyUnavailable: "History is unavailable until a historical projection is available.",
   },
   assets: {
     eyebrow: "Assets",
@@ -879,6 +886,11 @@ const zh: typeof en = {
     exchangeRatesThrough: (date) => `匯率資料截至 ${date}`,
     portfolioFlow: "資產與負債流向",
     portfolioFlowBaseCurrency: "資產與負債流向基準幣別",
+    currentAwaiting: "目前數值正在等待具型別的來源觀測值。",
+    currentEmpty: "尚無可用的 canonical 財務帳戶。",
+    currentUnavailable: "目前 canonical projection 無法使用。",
+    currentPartial: (count) => `${count} 個來源帳戶尚無具型別的目前數值；總額為部分資料。`,
+    historyUnavailable: "歷史 projection 尚未提供，因此無法顯示歷史資料。",
   },
   assets: {
     eyebrow: "資產",
