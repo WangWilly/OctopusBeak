@@ -46,6 +46,15 @@ let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
+process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
+  projectRoot(),
+  "src",
+  "lib",
+  "automation",
+  "server",
+  "models",
+  "sherpa-onnx-paraformer-zh-small",
+);
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: () => {
     scheduler?.stop();

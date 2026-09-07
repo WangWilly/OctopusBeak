@@ -8,6 +8,7 @@ import {
   type HumanVerificationTarget,
   type VerificationContextRegion,
   type VerificationChallengeImageRegion,
+  type VerificationChallengeAudioSource,
   type VerificationChallengeKind,
   type ChallengeCharacterSet,
   type CaptchaImagePreprocessingMode,
@@ -39,6 +40,7 @@ export type WorkflowHumanAssistanceStage = {
   focus: HumanAssistanceFocus;
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: WorkflowChallengeImageRegion;
+  challengeAudioSource?: VerificationChallengeAudioSource;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;

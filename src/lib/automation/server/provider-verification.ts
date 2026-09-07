@@ -37,6 +37,8 @@ import {
 } from "./provider-verification-capabilities.ts";
 
 const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
+const YUANTA_TRADE_AUDIO_SEMANTIC_ID = "yuanta-trade.login.audio-challenge";
+const YUANTA_TRADE_AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
 const CATHAY_EMAIL_OTP_SELECTOR = "#OtpMailPassword";
 export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
 export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
@@ -108,6 +110,11 @@ export type ProviderVerificationHost = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handlesChallengeImage(contract: HumanAssistanceContract): boolean;
+  handlesChallengeAudio(contract: HumanAssistanceContract): boolean;
+  captureChallengeAudio(
+    session: string,
+    contract: HumanAssistanceContract,
+  ): Promise<Buffer | null>;
   refreshTarget(
     session: string,
     contract: HumanAssistanceContract,
@@ -438,6 +445,10 @@ function yuantaBankCaptchaContract(contract: HumanAssistanceContract) {
   ) && contract.challengeImageRegion?.semanticId === "yuanta-bank.login.captcha-image";
 }
 
+function yuantaTradeAudioContract(contract: HumanAssistanceContract) {
+  return contract.challengeAudioSource?.semanticId === YUANTA_TRADE_AUDIO_SEMANTIC_ID;
+}
+
 function fubonCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
     (target) => target.semanticId === FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
@@ -757,6 +768,30 @@ export function createProviderVerificationHost(
     return sourceFreshness.isCurrent(session, contract);
   };
 
+  const handlesChallengeAudio = (contract: HumanAssistanceContract) =>
+    yuantaTradeAudioContract(contract);
+
+  const captureChallengeAudio = async (
+    session: string,
+    contract: HumanAssistanceContract,
+  ): Promise<Buffer | null> => {
+    if (!yuantaTradeAudioContract(contract)) return null;
+    return withPage(session, async (page) => {
+      if (!page.evaluate) return null;
+      // Fetch inside the page so the provider session cookie is carried; a
+      // Node-side request on a CDP-connected context drops the httpOnly
+      // session cookie and the provider answers with an error clip.
+      const bytes = await page.evaluate(async (audioPath) => {
+        const response = await fetch(String(audioPath));
+        if (!response.ok) return null;
+        const buffer = await response.arrayBuffer();
+        return Array.from(new Uint8Array(buffer));
+      }, YUANTA_TRADE_AUDIO_PATH);
+      if (!bytes || bytes.length === 0) return null;
+      return Buffer.from(bytes);
+    });
+  };
+
   const refreshTarget = async (
     session: string,
     contract: HumanAssistanceContract,
@@ -841,6 +876,8 @@ export function createProviderVerificationHost(
     captureChallengeImage,
     isChallengeImageCurrent,
     handlesChallengeImage,
+    handlesChallengeAudio,
+    captureChallengeAudio,
     refreshTarget,
     sendInput,
     injectAnswer,
@@ -860,6 +897,8 @@ const defaultHost = createProviderVerificationHost();
 export const captureProviderVerificationImage = defaultHost.captureChallengeImage;
 export const isProviderVerificationImageCurrent = defaultHost.isChallengeImageCurrent;
 export const providerVerificationHandlesChallengeImage = defaultHost.handlesChallengeImage;
+export const providerVerificationHandlesChallengeAudio = defaultHost.handlesChallengeAudio;
+export const captureProviderVerificationAudio = defaultHost.captureChallengeAudio;
 export const refreshProviderVerificationTarget = defaultHost.refreshTarget;
 export const sendProviderVerificationInput = defaultHost.sendInput;
 export const injectProviderVerificationAnswer = defaultHost.injectAnswer;

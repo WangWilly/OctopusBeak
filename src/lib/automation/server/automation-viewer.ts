@@ -28,6 +28,8 @@ export type ViewerPageAccess = {
   frame?: (name: string) => Frame | null;
   /** The current page URL, used to bind provider-owned captures to navigation. */
   url?: () => string;
+  /** Run code in the page context (same-origin fetch, session cookies). */
+  evaluate?: <T>(pageFunction: (arg: string) => T | Promise<T>, arg: string) => Promise<T>;
   /** Capture a page-relative region without exposing the Playwright Page. */
   screenshot(options: { clip: HumanVerificationRect; type: "png" }): Promise<Buffer>;
   /** Attach a short-lived provider-owned observer to native browser dialogs. */
@@ -265,6 +267,7 @@ export function withViewerPage<T>(
     mainFrame: () => page.mainFrame(),
     frame: (name) => page.frame({ name }),
     url: () => page.url(),
+    evaluate: (pageFunction, arg) => page.evaluate(pageFunction, arg),
     screenshot: (options) => page.screenshot(options),
     onDialog: (handler) => page.on("dialog", handler as (dialog: Dialog) => void),
     offDialog: (handler) => page.off("dialog", handler as (dialog: Dialog) => void),
