@@ -9678,6 +9678,7 @@ function migrateV22ToV23(
  * migration fails closed instead of preserving a wildcard recollection ban.
  */
 function migrateV23ToV24(db: DatabaseSync): void {
+  const canonicalPurgeAuditReason = "Source contract invalidated.";
   ensureCanonicalRuntimeContractPurgeAuditSchema(db);
   const columns = new Set(
     (
@@ -9697,7 +9698,7 @@ function migrateV23ToV24(db: DatabaseSync): void {
     )
     .all() as Array<{ purge_id?: unknown; scope_json?: unknown }>;
   const update = db.prepare(
-    "UPDATE canonical_runtime_contract_purges SET disabled_scopes_json = ? WHERE purge_id = ?",
+    "UPDATE canonical_runtime_contract_purges SET reason = ?, disabled_scopes_json = ? WHERE purge_id = ?",
   );
   for (const row of rows) {
     let scope: unknown;
@@ -9723,7 +9724,11 @@ function migrateV23ToV24(db: DatabaseSync): void {
           "Canonical runtime Contract Purge marker lacks an exact recollection fence.",
         );
     }
-    update.run(JSON.stringify([scope]), String(row.purge_id ?? ""));
+    update.run(
+      canonicalPurgeAuditReason,
+      JSON.stringify([scope]),
+      String(row.purge_id ?? ""),
+    );
   }
   db.exec(`
     DROP TRIGGER IF EXISTS transaction_tag_assertion_values_no_delete;
