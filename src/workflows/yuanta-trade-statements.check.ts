@@ -33,11 +33,7 @@ const workflowSource = await readFile(
 assert.match(workflowSource, /commitYuantaTradeCanonicalIfComplete/);
 assert.match(workflowSource, /buildYuantaInvestmentCapture/);
 assert.match(workflowSource, /commitCanonicalInvestmentCapture/);
-assert.match(workflowSource, /resolveCanonicalInvestmentFundingRelations/);
-assert.match(
-  workflowSource,
-  /await commitCanonicalInvestmentCaptureBatch\([\s\S]*?resolveCanonicalInvestmentFundingRelations\(store\)/,
-);
+assert.doesNotMatch(workflowSource, /resolveCanonicalInvestmentFundingRelations/);
 assert.match(workflowSource, /holding-capture-incomplete/);
 assert.match(
   workflowSource,
