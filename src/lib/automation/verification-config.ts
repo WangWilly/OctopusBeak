@@ -13,7 +13,8 @@ export type SolverChallengeKind = Exclude<VerificationChallengeKind, "checkbox">
 export function isSolverChallengeKind(
   kind: VerificationChallengeKind | undefined,
 ): kind is SolverChallengeKind {
-  return kind === "text-captcha" || kind === "image-selection";
+  return kind === "text-captcha" || kind === "image-selection"
+    || kind === "audio-captcha";
 }
 
 export const VERIFICATION_CONFIDENCE_THRESHOLD_KEYS: Record<
@@ -22,6 +23,7 @@ export const VERIFICATION_CONFIDENCE_THRESHOLD_KEYS: Record<
 > = {
   "text-captcha": "VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD",
   "image-selection": "VERIFICATION_IMAGE_SELECTION_CONFIDENCE_THRESHOLD",
+  "audio-captcha": "VERIFICATION_AUDIO_CAPTCHA_CONFIDENCE_THRESHOLD",
 };
 
 type VerificationSettings = Record<string, string | boolean | undefined>;

@@ -788,11 +788,11 @@ The continuation of verification after an incomplete or incorrect result. For a 
 _Avoid_: Repeating a rejected challenge, treating an incorrect answer as an ordinary infrastructure failure
 
 **Verification solver**:
-The automated producer behind a `solver` Verification Actor, which reads a verification challenge image and returns an answer with a Solve Confidence. The first version is a lightweight Local Verification Solver run by the automation host; a future Remote Verification Solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
+The automated producer behind a `solver` Verification Actor, which reads a verification challenge image or audio clip and returns an answer with a Solve Confidence. The first version is a lightweight Local Verification Solver run by the automation host; a future Remote Verification Solver is plugged behind the same seam, subject to consent and de-identification. The host injects the solver answer into the live CDP session.
 _Avoid_: Workflow-side solver, generic input scanner
 
 **Local verification solver**:
-The first-release client-resident Verification Solver. It may preserve source-image fidelity, apply deterministic provider-declared preprocessing, and generate candidates with the bundled Tesseract runtime, but it does not ship provider-trained models, custom neural recognizers, PaddleOCR, or another heavyweight OCR runtime. When those lightweight methods cannot support an answer, the attempt fails or refreshes the challenge instead of expanding the client model stack.
+The first-release client-resident Verification Solver. It may preserve source-image fidelity, apply deterministic provider-declared preprocessing, and generate candidates with the bundled Tesseract OCR runtime, a local vision runtime, and a local speech recogniser, but it does not ship provider-trained models, custom neural recognizers, PaddleOCR, or another heavyweight OCR runtime. When those lightweight methods cannot support an answer, the attempt fails or refreshes the challenge instead of expanding the client model stack.
 _Avoid_: Client-side provider model, client-side fine-tuning runtime
 
 **Remote verification solver**:
@@ -838,6 +838,10 @@ _Avoid_: Retry log marker, error-message matching, inferred process failure
 **Yuanta Bank login CAPTCHA**:
 The single supported CAPTCHA family on the Yuanta Bank login workflow: a grid-background image whose answer is exactly six decimal digits. Captures with a plain background, a different geometry, or a five-digit answer are not Yuanta Bank calibration or acceptance evidence and must not influence its solver policy.
 _Avoid_: Yuanta five-digit CAPTCHA, mixed-provider CAPTCHA corpus
+
+**Yuanta Trade login audio verification**:
+The single supported CAPTCHA family on the Yuanta Trade login workflow: a first-party audio clip served by the login page whose content is "開始播放" followed by exactly six spoken decimal digits rendered as Chinese numerals. The workflow switches the login to the audio verification mode, and a local speech recogniser (sherpa-onnx running the paraformer-zh-small model) transcribes the clip, mapping the Chinese numerals to decimal digits and dropping the leading prompt. A clip with a different prompt, digit count, or language is unsupported and must not be submitted automatically.
+_Avoid_: Yuanta Trade image-selection solver, mixed-mode Yuanta Trade CAPTCHA corpus
 
 **Bank SinoPac login CAPTCHA**:
 The single supported CAPTCHA family on the Bank SinoPac login workflow: a 120-by-40-pixel image whose answer is exactly six decimal digits and whose glyphs are crossed by multiple colored straight interference lines. A capture with different dimensions, answer length, or character set is unsupported and must not be submitted automatically.

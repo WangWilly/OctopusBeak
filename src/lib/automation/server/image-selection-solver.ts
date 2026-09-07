@@ -64,6 +64,9 @@ export function imageSelectionSolver(
           `Image-selection solver does not support challenge kind ${challengeKind}.`,
         );
       }
+      if (!image) {
+        throw new Error("Image-selection solver requires a challenge image.");
+      }
       if (!prompt) {
         throw new Error("Image-selection solver requires a challenge prompt.");
       }

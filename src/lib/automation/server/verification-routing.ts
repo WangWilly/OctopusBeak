@@ -29,6 +29,7 @@ import {
   injectVerificationSelections,
 } from "./automation-viewer.ts";
 import {
+  captureProviderVerificationAudio,
   captureProviderVerificationImage,
   injectProviderVerificationAnswer,
   isProviderVerificationImageCurrent,
@@ -46,6 +47,10 @@ import { taskRunById } from "./store.ts";
 export type VerificationRoutingDependencies = {
   solver: VerificationSolver;
   captureChallengeImage: (
+    session: string,
+    contract: HumanAssistanceContract,
+  ) => Promise<Buffer | null>;
+  captureChallengeAudio?: (
     session: string,
     contract: HumanAssistanceContract,
   ) => Promise<Buffer | null>;
@@ -193,6 +198,9 @@ export async function routeVerificationActor(input: {
         }
         return image;
       },
+      captureChallengeAudio: deps.captureChallengeAudio
+        ? () => deps.captureChallengeAudio!(input.session, contract!)
+        : undefined,
       injectAnswer: (answer) =>
         deps.injectAnswer(input.session, contract!, answer),
       injectSelections: (selections) =>
@@ -240,6 +248,8 @@ export async function routeWaitingRunVerification(input: {
   scheduleResume: (session: string) => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
+  captureChallengeAudio?: VerificationRoutingDependencies["captureChallengeAudio"];
+  providerCaptureChallengeAudio?: ProviderVerificationHost["captureChallengeAudio"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
   providerProbePostSubmit?: ProviderVerificationHost["probePostSubmit"];
@@ -314,6 +324,9 @@ export async function routeWaitingRunVerification(input: {
   const dependencies: VerificationRoutingDependencies = {
     solver: input.solver ?? defaultLocalSolver,
     captureChallengeImage: selectedCapture,
+    captureChallengeAudio: input.captureChallengeAudio
+      ?? input.providerCaptureChallengeAudio
+      ?? captureProviderVerificationAudio,
     validateChallengeImage: input.validateChallengeImage
       ?? imageSelection.validateChallengeImage,
     injectAnswer: input.injectAnswer

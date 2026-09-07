@@ -81,6 +81,9 @@ export function textCaptchaSolver(engine: TextRecognitionEngine): VerificationSo
           `OCR solver does not support challenge kind ${challengeKind}.`,
         );
       }
+      if (!image) {
+        throw new Error("OCR solver requires a challenge image.");
+      }
       const effectiveImagePreprocessing = strategy?.imagePreprocessing
         ?? imagePreprocessing;
       const effectivePageSegmentationMode = strategy?.ocrPageSegmentationMode
