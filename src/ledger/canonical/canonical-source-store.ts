@@ -113,6 +113,7 @@ export {
 export type {
   CanonicalContractPurgeRequest,
   CanonicalContractPurgeResult,
+  CanonicalContractPurgeReason,
   CanonicalContractPurgeScope,
   CanonicalDeletionScrubStatus,
 } from "./canonical-contract-purge-runtime.ts";

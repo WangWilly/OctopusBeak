@@ -16,6 +16,7 @@ import {
   resumeCanonicalDeletionScrub,
   submitCanonicalContractPurge,
 } from "./canonical-source-store.ts";
+import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 import {
   applyCanonicalTransactionTag,
   createCanonicalTransactionTag,
@@ -23,6 +24,23 @@ import {
 import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import { blob, idFromString, idToString } from "./canonical-schema-implementation.ts";
+import {
+  LOAN_CONTRACT_FIXTURES,
+  admitCanonicalLoanCapture,
+  commitCanonicalLoanCapture,
+  createCanonicalLoanStore,
+  queryCanonicalLoanCurrent,
+  queryCanonicalLoanHistorical,
+  queryCanonicalLoanLineage,
+} from "./loan-financial.ts";
+import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCapture,
+  queryCanonicalInvestmentCurrent,
+  queryCanonicalInvestmentHistorical,
+  queryCanonicalInvestmentLineage,
+} from "./investment-financial.ts";
+import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
 
 const token = (value: string): string => `sha256:${value}`;
 
@@ -115,14 +133,24 @@ test("source-scoped purge removes only its closure and disables recollection acr
       1,
     );
 
+    await assert.rejects(
+      () =>
+        submitCanonicalContractPurge(store, {
+          scope: {
+            integrationNamespace: selected.integrationNamespace,
+            sourceConnectionKey: selected.sourceConnectionKey,
+          },
+          reason: "餘額 新臺幣 5000" as never,
+        }),
+      /reason code is not registered/iu,
+    );
+
     const result = await submitCanonicalContractPurge(store, {
       scope: {
         integrationNamespace: selected.integrationNamespace,
         sourceConnectionKey: selected.sourceConnectionKey,
-        productStream: selected.stream,
-        identityEpochKey: selected.identityEpoch,
       },
-      reason: "remove obsolete source contract",
+      reason: "wrong-contract",
     });
     assert.equal(result.scrub.status, "completed");
     assert.ok(result.deletedRowCount > 0);
@@ -145,7 +173,7 @@ test("source-scoped purge removes only its closure and disables recollection acr
         "SELECT reason, scope_json, deleted_table_counts_json FROM canonical_runtime_contract_purges",
       )
       .get() as Record<string, unknown>;
-    assert.equal(audit.reason, "remove obsolete source contract");
+    assert.equal(audit.reason, "Source contract invalidated.");
     assert.doesNotMatch(String(audit.scope_json), /payload|compact|content|amount/iu);
     assert.doesNotMatch(String(audit.deleted_table_counts_json), /compact|payload/iu);
 
@@ -163,6 +191,10 @@ test("source-scoped purge removes only its closure and disables recollection acr
         () => reopenedAdmission.admit(sourceEvidence("selected", "recollection")),
         /purged.*disabled/iu,
       );
+      await reopenedAdmission.admit({
+        ...sourceEvidence("selected", "recollection-new-epoch"),
+        identityEpoch: token("epoch-selected-v2"),
+      });
       const scrubPath = `${path}.deletion-scrub.json`;
       const scrubState = JSON.parse(readFileSync(scrubPath, "utf8")) as {
         entries: Array<Record<string, unknown>>;
@@ -208,7 +240,7 @@ test("purge failure rolls back closure deletion, projection switch, and disable 
             sourceConnectionKey: selected.sourceConnectionKey,
             stream: selected.stream,
           },
-          reason: "atomic failure probe",
+          reason: "wrong-contract",
           projection: { injectFailure: "pre-switch" },
         }),
       /Injected projection rebuild failure at pre-switch/iu,
@@ -254,7 +286,7 @@ test("source connection ID fences use the admitted deterministic identity", asyn
     assert.ok(row.source_connection_id);
     await submitCanonicalContractPurge(store, {
       scope: { sourceConnectionId: idToString(Buffer.from(row.source_connection_id)) },
-      reason: "remove one source connection",
+      reason: "wrong-contract",
     });
     assert.deepEqual(
       queryCanonicalSourceCurrent(store).records.map(
@@ -283,7 +315,7 @@ test("a busy WAL checkpoint leaves scrub pending and resumes after the reader re
           integrationNamespace: selected.integrationNamespace,
           sourceConnectionKey: selected.sourceConnectionKey,
         },
-        reason: "busy scrub probe",
+        reason: "wrong-contract",
       });
       assert.equal(result.scrub.status, "pending");
       assert.deepEqual(result.scrub.pendingPurgeIds, [result.purgeId]);
@@ -365,7 +397,7 @@ test("purge removes owned transaction tag assertion links while retaining shared
           sourceConnectionKey: identity.sourceConnectionKey,
           stream: identity.stream,
         },
-        reason: "remove obsolete source contract",
+        reason: "wrong-contract",
       });
       assert.equal(
         Number(
@@ -388,6 +420,187 @@ test("purge removes owned transaction tag assertion links while retaining shared
           ).count ?? 0,
         ),
         1,
+      );
+    } finally {
+      store.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("public purge removes investment, loan, enrichment, and sync closure while retaining unrelated providers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-contract-purge-provider-"));
+  const path = join(directory, "canonical.sqlite");
+  const selectedInvestment = admitCanonicalInvestmentCapture(
+    buildYuantaInvestmentCapture({
+      sourceId: "yuanta-trade",
+      captureId: "runtime-purge-investment-selected",
+      sourceConnectionKey: token("runtime-purge-investment-selected-connection"),
+      identityEpochKey: token("runtime-purge-investment-selected-epoch"),
+      accountKey: token("runtime-purge-investment-selected-account"),
+      reportingCurrency: "TWD",
+      observedAt: "2026-08-31T12:00:00.000Z",
+      sourceEffectiveOn: "2026-08-30",
+      holdings: [
+        {
+          sourceRecordKey: token("runtime-purge-investment-selected-holding"),
+          producerSecurityId: "PURGE-SELECTED-SECURITY",
+          currency: "TWD",
+          effectiveOn: "2026-08-30",
+          quantity: { coefficient: "1", scale: 0 },
+        },
+      ],
+      transactions: [],
+    }),
+  );
+  const retainedInvestment = admitCanonicalInvestmentCapture(
+    buildYuantaInvestmentCapture({
+      sourceId: "yuanta-fund",
+      captureId: "runtime-purge-investment-retained",
+      sourceConnectionKey: token("runtime-purge-investment-retained-connection"),
+      identityEpochKey: token("runtime-purge-investment-retained-epoch"),
+      accountKey: token("runtime-purge-investment-retained-account"),
+      reportingCurrency: "TWD",
+      observedAt: "2026-08-31T12:00:00.000Z",
+      sourceEffectiveOn: "2026-08-30",
+      holdings: [
+        {
+          sourceRecordKey: token("runtime-purge-investment-retained-holding"),
+          producerSecurityId: "PURGE-RETAINED-SECURITY",
+          currency: "TWD",
+          effectiveOn: "2026-08-30",
+          quantity: { coefficient: "2", scale: 0 },
+        },
+      ],
+      transactions: [],
+    }),
+  );
+  const fubonLoan = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  const yuantaLoan = structuredClone(LOAN_CONTRACT_FIXTURES.yuanta);
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const loanStore = createCanonicalLoanStore(path);
+    try {
+      await commitCanonicalLoanCapture(loanStore, admitCanonicalLoanCapture(fubonLoan));
+      await commitCanonicalLoanCapture(loanStore, admitCanonicalLoanCapture(yuantaLoan));
+      await commitCanonicalInvestmentCapture(loanStore.sourceStore, selectedInvestment);
+      await commitCanonicalInvestmentCapture(loanStore.sourceStore, retainedInvestment);
+    } finally {
+      loanStore.close();
+    }
+    await commitCathayAutomaticEnrichmentFromDescriptions(directory);
+
+    const store = createCanonicalSourceStore(path);
+    try {
+      const knowledgeAt = Number(
+        (store.db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as { value?: unknown }).value ?? 0,
+      );
+      const selectedInvestmentKey = selectedInvestment.identity.sourceConnectionKey;
+      const retainedInvestmentKey = retainedInvestment.identity.sourceConnectionKey;
+      assert.ok(queryCanonicalInvestmentCurrent(store, selectedInvestmentKey).holdings.length > 0);
+      assert.ok(queryCanonicalInvestmentHistorical(store, selectedInvestmentKey, {
+        financialAt: "9999-12-31",
+        knowledgeAt,
+      }).holdings.length > 0);
+      assert.ok(queryCanonicalInvestmentLineage(
+        store,
+        selectedInvestmentKey,
+        selectedInvestment.holdings[0]!.measurementKey,
+      ).holdings.length > 0);
+      assert.ok(queryCanonicalLoanCurrent(store, { sourceId: "fubon" }).transactions.length > 0);
+      assert.ok(queryCanonicalLoanHistorical(store, {
+        sourceId: "fubon",
+        financialAt: "9999-12-31",
+        knowledgeAt,
+      }).transactions.length > 0);
+      assert.ok(queryCanonicalLoanLineage(store, {
+        sourceId: "fubon",
+        sourceRecordKey: fubonLoan.records[0]!.sourceRecordKey,
+      }).lineage.length > 0);
+      assert.ok(
+        Number((store.db.prepare("SELECT COUNT(*) AS count FROM enrichment_runs").get() as { count?: unknown }).count ?? 0) > 0,
+      );
+
+      await submitCanonicalContractPurge(store, {
+        scope: {
+          integrationNamespace: selectedInvestment.sourceId,
+          sourceConnectionKey: selectedInvestmentKey,
+        },
+        reason: "wrong-contract",
+      });
+      assert.equal(queryCanonicalInvestmentCurrent(store, selectedInvestmentKey).holdings.length, 0);
+      assert.equal(queryCanonicalInvestmentHistorical(store, selectedInvestmentKey, {
+        financialAt: "9999-12-31",
+        knowledgeAt,
+      }).holdings.length, 0);
+      assert.equal(queryCanonicalInvestmentLineage(
+        store,
+        selectedInvestmentKey,
+        selectedInvestment.holdings[0]!.measurementKey,
+      ).holdings.length, 0);
+      assert.ok(queryCanonicalInvestmentCurrent(store, retainedInvestmentKey).holdings.length > 0);
+      assert.equal(
+        Number(
+          (store.db.prepare(`
+            SELECT COUNT(*) AS count
+              FROM source_sync_states sync
+              JOIN source_connections connection
+                ON connection.source_connection_id = sync.source_connection_id
+             WHERE connection.source_connection_key = ?
+          `).get(selectedInvestmentKey) as { count?: unknown }).count ?? 0,
+        ),
+        0,
+      );
+      assert.ok(
+        Number(
+          (store.db.prepare(`
+            SELECT COUNT(*) AS count
+              FROM source_sync_states sync
+              JOIN source_connections connection
+                ON connection.source_connection_id = sync.source_connection_id
+             WHERE connection.source_connection_key = ?
+          `).get(retainedInvestmentKey) as { count?: unknown }).count ?? 0,
+        ) > 0,
+      );
+
+      await submitCanonicalContractPurge(store, {
+        scope: {
+          integrationNamespace: "fubon",
+          sourceConnectionKey: fubonLoan.identity.sourceConnectionKey,
+        },
+        reason: "wrong-contract",
+      });
+      assert.equal(queryCanonicalLoanCurrent(store, { sourceId: "fubon" }).transactions.length, 0);
+      assert.equal(queryCanonicalLoanHistorical(store, {
+        sourceId: "fubon",
+        financialAt: "9999-12-31",
+        knowledgeAt,
+      }).transactions.length, 0);
+      assert.equal(queryCanonicalLoanLineage(store, {
+        sourceId: "fubon",
+        sourceRecordKey: fubonLoan.records[0]!.sourceRecordKey,
+      }).lineage.length, 0);
+      assert.ok(queryCanonicalLoanCurrent(store, { sourceId: "yuanta" }).transactions.length > 0);
+
+      const cathayConnectionKey = String(
+        (store.db.prepare(`
+          SELECT source_connection_key
+            FROM source_connections
+           WHERE integration_namespace = 'cathay'
+           LIMIT 1
+        `).get() as { source_connection_key?: unknown }).source_connection_key,
+      );
+      await submitCanonicalContractPurge(store, {
+        scope: {
+          integrationNamespace: "cathay",
+          sourceConnectionKey: cathayConnectionKey,
+        },
+        reason: "wrong-contract",
+      });
+      assert.equal(
+        Number((store.db.prepare("SELECT COUNT(*) AS count FROM enrichment_runs").get() as { count?: unknown }).count ?? 0),
+        0,
       );
     } finally {
       store.close();

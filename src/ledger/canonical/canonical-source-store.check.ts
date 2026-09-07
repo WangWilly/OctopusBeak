@@ -226,6 +226,11 @@ test("production schema registry declares every published version transition", (
         fromVersion: 22,
         toVersion: 23,
       },
+      {
+        id: "canonical/v23-v24/runtime-contract-purge-tag-delete-guard/v1",
+        fromVersion: 23,
+        toVersion: 24,
+      },
     ],
   );
   assert.equal(steps[0]!.toVersion, 1);
@@ -236,7 +241,7 @@ test("production schema registry declares every published version transition", (
     createHash("sha256")
       .update(JSON.stringify(steps))
       .digest("hex"),
-    "b18477083e71a42d1c942856a450b996389d2c0a1b6050e726dc83c4d2e9b38c",
+    "9d70ef9b4112f8a32d49b44a1973b54f5409087e37e2f4a3e38b487724aa3c7e",
     "published migration ids and version ordering are immutable during the architecture refactor",
   );
   assert.deepEqual(
@@ -253,7 +258,6 @@ test("production schema registry declares every published version transition", (
   assert.deepEqual(
     (plan.repairs ?? []).map(({ id }) => id),
     [
-      "canonical/runtime-contract-purge-tag-delete-guard/v1",
       "canonical/foreign-currency-conversion-schema/v1",
       "canonical/credit-card-extension/v1",
       "canonical/fubon-credit-card-extension/v1",
@@ -269,6 +273,105 @@ test("production schema registry declares every published version transition", (
       "canonical/attestation/yuanta-events/v1",
     ],
   );
+});
+
+test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-purge-migration-"));
+  const path = join(directory, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP TRIGGER transaction_tag_assertion_values_no_delete;
+      CREATE TRIGGER transaction_tag_assertion_values_no_delete
+      BEFORE DELETE ON transaction_tag_assertion_values
+      BEGIN
+        SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
+      END;
+      ALTER TABLE canonical_runtime_contract_purges
+        DROP COLUMN disabled_scopes_json;
+      INSERT INTO canonical_runtime_contract_purges(
+        purge_id, audit_version, reason, scope_json, deleted_row_count,
+        deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      ) VALUES (
+        'runtime:contract-purge:11111111-1111-4111-8111-111111111111',
+        1, 'Source contract invalidated.',
+        '{"integrationNamespace":"fubon","sourceConnectionKey":"sha256:legacy","stream":"loan","contractVersion":"loan/canonical/v2.fubon","identityEpoch":"sha256:legacy-epoch"}',
+        1, '{}', 'sha256:legacy-fingerprint', 1
+      );
+      DELETE FROM schema_migrations WHERE version = 24;
+      PRAGMA user_version = 23;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    try {
+      assert.equal(
+        Number((migrated.db.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version),
+        24,
+      );
+      const marker = migrated.db
+        .prepare("SELECT disabled_scopes_json FROM canonical_runtime_contract_purges")
+        .get() as { disabled_scopes_json?: unknown };
+      assert.deepEqual(JSON.parse(String(marker.disabled_scopes_json)), [
+        {
+          integrationNamespace: "fubon",
+          sourceConnectionKey: "sha256:legacy",
+          stream: "loan",
+          contractVersion: "loan/canonical/v2.fubon",
+          identityEpoch: "sha256:legacy-epoch",
+        },
+      ]);
+      const trigger = migrated.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'transaction_tag_assertion_values_no_delete'",
+        )
+        .get() as { sql?: unknown };
+      assert.match(String(trigger.sql), /canonical_purge_delete_allowed\s*\(\s*\)/iu);
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v23 to v24 rejects a broad runtime marker instead of creating a wildcard fence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-broad-marker-"));
+  const path = join(directory, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE canonical_runtime_contract_purges
+        DROP COLUMN disabled_scopes_json;
+      INSERT INTO canonical_runtime_contract_purges(
+        purge_id, audit_version, reason, scope_json, deleted_row_count,
+        deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      ) VALUES (
+        'runtime:contract-purge:22222222-2222-4222-8222-222222222222',
+        1, 'Source contract invalidated.',
+        '{"integrationNamespace":"fubon","sourceConnectionKey":"sha256:broad"}',
+        1, '{}', 'sha256:broad-fingerprint', 1
+      );
+      DELETE FROM schema_migrations WHERE version = 24;
+      PRAGMA user_version = 23;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    assert.throws(
+      () => createCanonicalSourceStore(path),
+      /lacks an exact recollection fence/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("retired Fubon recovery policy accepts only exact writable pending-v20 state", () => {
@@ -1175,7 +1278,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (24, 0)", /migration metadata/i],
+    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (25, 0)", /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(

@@ -903,7 +903,10 @@ function ensureCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
   );
 }
 
-function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
+function validateCanonicalDisplayAndTagsSchema(
+  db: DatabaseSync,
+  options: { requirePurgeDeleteGuard?: boolean } = {},
+): void {
   const required: Record<string, readonly string[]> = {
     canonical_grouped_role_contracts: [
       "producer_id", "producer_version", "contract_version", "admission_policy", "origin",
@@ -999,12 +1002,26 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
     "counterparty_display_assertion_values_origin_guard",
     "counterparty_display_assertion_values_binding_guard",
     "transaction_tag_assertion_origin_guard",
+    "transaction_tag_assertion_values_no_delete",
     "user_tags_no_update",
     "user_tag_label_revisions_no_update",
     "user_tag_status_revisions_no_update",
   ]) {
     if (!triggerExists(db, trigger))
       throw new Error(`Canonical display/tag trigger ${trigger} is missing.`);
+  }
+  if (options.requirePurgeDeleteGuard !== false) {
+    const tagDeleteTrigger = db
+      .prepare(
+        `SELECT sql FROM sqlite_master
+          WHERE type = 'trigger'
+            AND name = 'transaction_tag_assertion_values_no_delete'`,
+      )
+      .get() as { sql?: unknown } | undefined;
+    if (!/canonical_purge_delete_allowed\s*\(\s*\)/iu.test(String(tagDeleteTrigger?.sql ?? "")))
+      throw new Error(
+        "Canonical transaction tag delete guard is missing its purge capability.",
+      );
   }
   const expectedGroupedContracts = [
     [
@@ -1863,7 +1880,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 23;
+export const CANONICAL_SCHEMA_VERSION = 24;
 
 type CanonicalId = Buffer;
 
@@ -8731,6 +8748,7 @@ function ensureCanonicalRuntimeContractPurgeAuditSchema(db: DatabaseSync): void 
       audit_version INTEGER NOT NULL CHECK(audit_version = 1),
       reason TEXT NOT NULL,
       scope_json TEXT NOT NULL,
+      disabled_scopes_json TEXT NOT NULL DEFAULT '[]',
       deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
       deleted_table_counts_json TEXT NOT NULL,
       closure_fingerprint TEXT NOT NULL,
@@ -8765,6 +8783,7 @@ function validateCanonicalRuntimeContractPurgeAuditSchema(
     "audit_version",
     "reason",
     "scope_json",
+    "disabled_scopes_json",
     "deleted_row_count",
     "deleted_table_counts_json",
     "closure_fingerprint",
@@ -9642,11 +9661,84 @@ function migrateV22ToV23(
   `);
   if (injectMigrationFailure === "v22-v23-after-display-tags")
     throw new Error("Injected v22-v23 migration failure after display/tag schema.");
-  validateCanonicalDisplayAndTagsSchema(db);
+  validateCanonicalDisplayAndTagsSchema(db, { requirePurgeDeleteGuard: false });
   db.prepare(
     "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (23, ?)",
   ).run(currentUtcMicros());
   db.exec("PRAGMA user_version = 23");
+}
+
+/**
+ * v24 publishes the lifecycle-owned purge delete guard. This is a schema
+ * transition rather than a current-version repair because the trigger targets
+ * a published canonical table. Existing runtime purge markers are retained;
+ * their historical scope is accepted only when it already records every
+ * admitted connection/epoch/stream/version dimension. A broad marker cannot
+ * be upgraded into an exact fence after its source rows have been deleted, so
+ * migration fails closed instead of preserving a wildcard recollection ban.
+ */
+function migrateV23ToV24(db: DatabaseSync): void {
+  ensureCanonicalRuntimeContractPurgeAuditSchema(db);
+  const columns = new Set(
+    (
+      db
+        .prepare("PRAGMA table_info(canonical_runtime_contract_purges)")
+        .all() as Array<{ name?: unknown }>
+    ).map((column) => String(column.name ?? "")),
+  );
+  if (!columns.has("disabled_scopes_json")) {
+    db.exec(
+      "ALTER TABLE canonical_runtime_contract_purges ADD COLUMN disabled_scopes_json TEXT NOT NULL DEFAULT '[]'",
+    );
+  }
+  const rows = db
+    .prepare(
+      "SELECT purge_id, scope_json FROM canonical_runtime_contract_purges",
+    )
+    .all() as Array<{ purge_id?: unknown; scope_json?: unknown }>;
+  const update = db.prepare(
+    "UPDATE canonical_runtime_contract_purges SET disabled_scopes_json = ? WHERE purge_id = ?",
+  );
+  for (const row of rows) {
+    let scope: unknown;
+    try {
+      scope = JSON.parse(String(row.scope_json ?? ""));
+    } catch (error) {
+      throw new Error("Canonical runtime Contract Purge marker is malformed.", {
+        cause: error,
+      });
+    }
+    if (!scope || typeof scope !== "object" || Array.isArray(scope))
+      throw new Error("Canonical runtime Contract Purge marker is malformed.");
+    const scopeRecord = scope as Record<string, unknown>;
+    for (const key of [
+      "integrationNamespace",
+      "sourceConnectionKey",
+      "stream",
+      "contractVersion",
+      "identityEpoch",
+    ]) {
+      if (typeof scopeRecord[key] !== "string" || scopeRecord[key].trim() === "")
+        throw new Error(
+          "Canonical runtime Contract Purge marker lacks an exact recollection fence.",
+        );
+    }
+    update.run(JSON.stringify([scope]), String(row.purge_id ?? ""));
+  }
+  db.exec(`
+    DROP TRIGGER IF EXISTS transaction_tag_assertion_values_no_delete;
+    CREATE TRIGGER transaction_tag_assertion_values_no_delete
+    BEFORE DELETE ON transaction_tag_assertion_values
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
+    END;
+  `);
+  validateCanonicalDisplayAndTagsSchema(db);
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (24, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 24");
 }
 
 type CanonicalAttestationColumn = {
@@ -10370,6 +10462,14 @@ export function createCanonicalSchemaLifecyclePlan(
         migrateV22ToV23(db, options.injectMigrationFailure);
       },
     },
+    {
+      id: "canonical/v23-v24/runtime-contract-purge-tag-delete-guard/v1",
+      fromVersion: 23,
+      toVersion: 24,
+      apply(db) {
+        migrateV23ToV24(db);
+      },
+    },
     ],
   );
   return {
@@ -10523,53 +10623,6 @@ export function createCanonicalSchemaLifecyclePlan(
       },
     ],
     repairs: [
-      {
-        id: "canonical/runtime-contract-purge-tag-delete-guard/v1",
-        version: CANONICAL_SCHEMA_VERSION,
-        allowedSchemaObjects: ["transaction_tag_assertion_values_no_delete"],
-        allowedExistingTriggerTargets: ["transaction_tag_assertion_values"],
-        runOnCurrentVersion: true,
-        precondition: (db) => {
-          const trigger = db
-            .prepare(
-              `SELECT sql FROM sqlite_master
-                WHERE type = 'trigger'
-                  AND name = 'transaction_tag_assertion_values_no_delete'`,
-            )
-            .get() as { sql?: unknown } | undefined;
-          return !String(trigger?.sql ?? "").includes(
-            "canonical_purge_delete_allowed",
-          );
-        },
-        apply(db) {
-          db.exec(`
-            DROP TRIGGER IF EXISTS transaction_tag_assertion_values_no_delete;
-            CREATE TRIGGER transaction_tag_assertion_values_no_delete
-            BEFORE DELETE ON transaction_tag_assertion_values
-            WHEN canonical_purge_delete_allowed() = 0
-            BEGIN
-              SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
-            END;
-          `);
-        },
-        validate(db) {
-          const trigger = db
-            .prepare(
-              `SELECT sql FROM sqlite_master
-                WHERE type = 'trigger'
-                  AND name = 'transaction_tag_assertion_values_no_delete'`,
-            )
-            .get() as { sql?: unknown } | undefined;
-          if (
-            !String(trigger?.sql ?? "").includes(
-              "canonical_purge_delete_allowed",
-            )
-          )
-            throw new Error(
-              "Canonical transaction tag delete guard is missing its purge capability.",
-            );
-        },
-      },
       {
         id: "canonical/foreign-currency-conversion-schema/v1",
         version: CANONICAL_SCHEMA_VERSION,
@@ -10740,7 +10793,8 @@ function validateReadOnlyDatabase(
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   if (tableExists(db, "transaction_categorization_values"))
     validateCanonicalCategorizationSchema(db);
-  if (tableExists(db, "user_tags")) validateCanonicalDisplayAndTagsSchema(db);
+  if (tableExists(db, "user_tags"))
+    validateCanonicalDisplayAndTagsSchema(db, { requirePurgeDeleteGuard: false });
   // The lifecycle validates the physical audit schema only. Whether a
   // versioned financial/source cleanup has been applied is a data-transition
   // concern checked after a validated handle exists.
