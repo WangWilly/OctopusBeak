@@ -297,7 +297,7 @@ test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", 
         deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
       ) VALUES (
         'runtime:contract-purge:11111111-1111-4111-8111-111111111111',
-        1, 'Source contract invalidated.',
+        1, '餘額 新臺幣 5000',
         '{"integrationNamespace":"fubon","sourceConnectionKey":"sha256:legacy","stream":"loan","contractVersion":"loan/canonical/v2.fubon","identityEpoch":"sha256:legacy-epoch"}',
         1, '{}', 'sha256:legacy-fingerprint', 1
       );
@@ -314,8 +314,9 @@ test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", 
         24,
       );
       const marker = migrated.db
-        .prepare("SELECT disabled_scopes_json FROM canonical_runtime_contract_purges")
-        .get() as { disabled_scopes_json?: unknown };
+        .prepare("SELECT reason, disabled_scopes_json FROM canonical_runtime_contract_purges")
+        .get() as { reason?: unknown; disabled_scopes_json?: unknown };
+      assert.equal(marker.reason, "Source contract invalidated.");
       assert.deepEqual(JSON.parse(String(marker.disabled_scopes_json)), [
         {
           integrationNamespace: "fubon",
