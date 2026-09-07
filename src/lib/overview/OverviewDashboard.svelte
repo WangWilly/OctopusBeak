@@ -52,13 +52,15 @@
   ).rows;
   $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
-  $: currentStateLabel = overview.sourceGaps.length > 0
-    ? $t.overview.currentPartial(overview.sourceGaps.length)
-    : overview.availability === "awaiting"
-      ? $t.overview.currentAwaiting
-      : overview.availability === "empty"
-        ? $t.overview.currentEmpty
-        : $t.overview.currentUnavailable;
+  $: currentStateLabel = overview.availability === "unavailable"
+    ? $t.overview.currentUnavailable
+    : overview.sourceGaps.length > 0
+      ? $t.overview.currentPartial(overview.sourceGaps.length)
+      : overview.availability === "awaiting"
+        ? $t.overview.currentAwaiting
+        : overview.availability === "empty"
+          ? $t.overview.currentEmpty
+          : $t.overview.currentUnavailable;
 
   onMount(() => {
     const stored = localStorage.getItem(dailyCurrencyStorageKey);
