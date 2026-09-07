@@ -117,6 +117,15 @@ export type CanonicalSchemaLifecycleOptions = CanonicalRuntimeOptions & {
 
 const VALIDATED_DATABASES = new WeakSet<object>();
 const VALIDATED_REPAIRERS = new WeakMap<object, (id: string) => void>();
+const VALIDATED_DATA_TRANSITIONERS = new WeakMap<
+  object,
+  <T>(operation: (db: DatabaseSync) => T) => T
+>();
+const VALIDATED_CONTRACT_PURGE_TRANSITIONERS = new WeakMap<
+  object,
+  <T>(operation: (db: DatabaseSync) => T) => T
+>();
+const VALIDATED_SCRUBBERS = new WeakMap<object, () => void>();
 const MIGRATION_DATABASES = new WeakMap<object, DatabaseSync>();
 const MIGRATION_REGISTRIES = new WeakSet<object>();
 const MIGRATION_REGISTRY_STEPS = new WeakMap<
@@ -2499,6 +2508,57 @@ export function runCanonicalSchemaRepair(
   repair(id);
 }
 
+/**
+ * Run a domain-owned hard data transition on a lifecycle-created database.
+ * The database capability itself intentionally does not expose transaction
+ * control; this narrow seam lets a domain module request the lifecycle's
+ * deferred-FK transaction without gaining schema or pragma authority.
+ */
+export function runCanonicalDataTransition<T>(
+  db: DatabaseSync,
+  operation: (db: DatabaseSync) => T,
+): T {
+  const transition = VALIDATED_DATA_TRANSITIONERS.get(db);
+  if (!transition)
+    throw new Error(
+      "Canonical data transition requires a lifecycle-created database.",
+    );
+  return transition(operation);
+}
+
+/**
+ * Run the source-contract purge transition with its narrowly scoped delete
+ * capability enabled.  The capability is intentionally separate from the
+ * ordinary data-transition seam: immutable user-tag records keep their
+ * normal no-delete trigger, while the owned assertion link can be removed
+ * only by the lifecycle-owned purge operation.
+ */
+export function runCanonicalContractPurgeDataTransition<T>(
+  db: DatabaseSync,
+  operation: (db: DatabaseSync) => T,
+): T {
+  const transition = VALIDATED_CONTRACT_PURGE_TRANSITIONERS.get(db);
+  if (!transition)
+    throw new Error(
+      "Canonical contract purge requires a lifecycle-created database.",
+    );
+  return transition(operation);
+}
+
+/**
+ * Run the small local post-commit scrub permitted for a validated store. The
+ * native connection is temporarily detached from the normal authorizer only
+ * for the fixed secure-delete, WAL checkpoint, and VACUUM sequence.
+ */
+export function runCanonicalLocalScrub(db: DatabaseSync): void {
+  const scrub = VALIDATED_SCRUBBERS.get(db);
+  if (!scrub)
+    throw new Error(
+      "Canonical local scrub requires a lifecycle-created database.",
+    );
+  scrub();
+}
+
 function validatedDatabaseCapability(
   db: DatabaseSync,
   close: () => void,
@@ -2592,6 +2652,7 @@ export class ValidatedCanonicalStore {
   readonly #raw: DatabaseSync;
   readonly #release: () => void;
   #closed = false;
+  #contractPurgeDeleteMode = false;
 
   constructor(
     token: typeof CONSTRUCTION_TOKEN,
@@ -2609,6 +2670,10 @@ export class ValidatedCanonicalStore {
     this.openedFromVersion = openedFromVersion;
     this.#raw = db;
     this.#release = release;
+    this.#raw.function(
+      "canonical_purge_delete_allowed",
+      () => (this.#contractPurgeDeleteMode ? 1 : 0),
+    );
     this.db = validatedDatabaseCapability(db, () => this.close(), (id) => {
       // A repair may have committed its savepoint before its exclusive lease
       // was downgraded. Validate only after the repair runner returns, so a
@@ -2624,6 +2689,49 @@ export class ValidatedCanonicalStore {
         throw error;
       }
     });
+    VALIDATED_DATA_TRANSITIONERS.set(this.db, (operation) =>
+      this.runDataTransition(operation),
+    );
+    VALIDATED_CONTRACT_PURGE_TRANSITIONERS.set(this.db, (operation) =>
+      this.runContractPurgeDataTransition(operation),
+    );
+    VALIDATED_SCRUBBERS.set(this.db, () => {
+      if (this.#closed) throw new Error("Validated canonical store is closed.");
+      this.#raw.setAuthorizer(null);
+      let configuredBusyTimeout = 0;
+      try {
+        configuredBusyTimeout = Number(
+          (
+            this.#raw.prepare("PRAGMA busy_timeout").get() as {
+              timeout?: unknown;
+            }
+          ).timeout ?? 0,
+        );
+        // A scrub is resumable operational work. Ask SQLite to report a busy
+        // WAL reader immediately so the caller can leave the durable marker
+        // pending instead of blocking the canonical writer for its normal
+        // thirty-second mutation timeout.
+        this.#raw.exec("PRAGMA busy_timeout = 0");
+        this.#raw.exec("PRAGMA secure_delete = ON");
+        const checkpoint = (): void => {
+          const result = this.#raw
+            .prepare("PRAGMA wal_checkpoint(TRUNCATE)")
+            .get() as { busy?: unknown } | undefined;
+          if (Number(result?.busy ?? 0) !== 0)
+            throw new Error("Canonical local scrub WAL checkpoint is busy.");
+        };
+        checkpoint();
+        this.#raw.exec("VACUUM");
+        // VACUUM may append a fresh WAL frame. Do not report completion while
+        // that frame is still retained by an external reader.
+        checkpoint();
+      } finally {
+        this.#raw.exec(
+          `PRAGMA busy_timeout = ${Math.max(0, Math.floor(configuredBusyTimeout))}`,
+        );
+        installValidatedDatabaseAuthorizer(this.#raw);
+      }
+    });
     lease?.onLost(() => {
       // A failed shared-to-exclusive transition cannot leave an otherwise
       // live handle running without its schema guard. Close the native
@@ -2632,6 +2740,9 @@ export class ValidatedCanonicalStore {
       this.#closed = true;
       VALIDATED_DATABASES.delete(this.db);
       VALIDATED_REPAIRERS.delete(this.db);
+      VALIDATED_DATA_TRANSITIONERS.delete(this.db);
+      VALIDATED_CONTRACT_PURGE_TRANSITIONERS.delete(this.db);
+      VALIDATED_SCRUBBERS.delete(this.db);
       try {
         this.#raw.close();
       } catch {
@@ -2646,6 +2757,9 @@ export class ValidatedCanonicalStore {
     this.#closed = true;
     VALIDATED_DATABASES.delete(this.db);
     VALIDATED_REPAIRERS.delete(this.db);
+    VALIDATED_DATA_TRANSITIONERS.delete(this.db);
+    VALIDATED_CONTRACT_PURGE_TRANSITIONERS.delete(this.db);
+    VALIDATED_SCRUBBERS.delete(this.db);
     try {
       this.#raw.close();
     } finally {
@@ -2698,6 +2812,25 @@ export class ValidatedCanonicalStore {
       installValidatedDatabaseAuthorizer(this.#raw);
       this.#raw.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  /**
+   * The purge is still an ordinary lifecycle transaction.  This wrapper only
+   * enables the trigger's lifecycle-registered function for the duration of
+   * that transaction, so a caller cannot turn the immutable tag tables into
+   * a general deletion API.
+   */
+  runContractPurgeDataTransition<T>(operation: (db: DatabaseSync) => T): T {
+    if (this.#closed)
+      throw new Error("Validated canonical store is closed.");
+    if (this.#contractPurgeDeleteMode)
+      throw new Error("Canonical contract purge transition is already active.");
+    this.#contractPurgeDeleteMode = true;
+    try {
+      return this.runDataTransition(operation);
+    } finally {
+      this.#contractPurgeDeleteMode = false;
     }
   }
 

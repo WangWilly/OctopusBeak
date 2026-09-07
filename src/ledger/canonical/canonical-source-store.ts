@@ -7,7 +7,9 @@ import {
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
-import { isValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import {
+  isValidatedCanonicalDatabase,
+} from "./canonical-schema-lifecycle.ts";
 import {
   CANONICAL_SOURCE_ADMISSION,
   CANONICAL_SOURCE_STAGE,
@@ -66,6 +68,12 @@ import {
   addSelectedFields,
   type SelectedHistoricalField,
 } from "./canonical-projection-implementation.ts";
+import {
+  submitCanonicalContractPurgeInValidatedStore,
+  resumeCanonicalDeletionScrub,
+  type CanonicalContractPurgeRequest,
+  type CanonicalContractPurgeResult,
+} from "./canonical-contract-purge-runtime.ts";
 
 async function withCanonicalWriter<T>(
   ledgerDir: string,
@@ -99,6 +107,15 @@ export {
   validateCanonicalLoanExtensionSchema,
   validateCanonicalLoanRepaymentRelationSchema,
 } from "./canonical-schema-implementation.ts";
+export {
+  resumeCanonicalDeletionScrub,
+} from "./canonical-contract-purge-runtime.ts";
+export type {
+  CanonicalContractPurgeRequest,
+  CanonicalContractPurgeResult,
+  CanonicalContractPurgeScope,
+  CanonicalDeletionScrubStatus,
+} from "./canonical-contract-purge-runtime.ts";
 export type {
   CanonicalDatabaseOptions,
   CanonicalMigrationFailureInjection,
@@ -3232,6 +3249,23 @@ export function createCanonicalSourceStore(
   Object.freeze(store);
   CANONICAL_SOURCE_STORE_OBJECTS.add(store);
   return store;
+}
+
+/**
+ * Hard-delete one source-scoped Contract Purge through the lifecycle-owned
+ * transaction. The post-commit local scrub is resumable via
+ * resumeCanonicalDeletionScrub when a process exits between those phases.
+ */
+export function submitCanonicalContractPurge(
+  store: CanonicalSourceStore,
+  request: CanonicalContractPurgeRequest,
+): Promise<CanonicalContractPurgeResult> {
+  requireValidatedCanonicalSourceStore(store);
+  return withCanonicalWriterQueue(
+    store.databasePath,
+    () => submitCanonicalContractPurgeInValidatedStore(store.db, store.databasePath, request),
+    request.runtime,
+  );
 }
 export function validateCanonicalSourceStore(
   store: CanonicalSourceStore,

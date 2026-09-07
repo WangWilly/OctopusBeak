@@ -247,11 +247,13 @@ test("production schema registry declares every published version transition", (
       "canonical/time-observation-schema/v1",
       "canonical/account-currency-schema/v1",
       "canonical/fubon-credit-card-extension-compatibility/v1",
+      "canonical/runtime-contract-purge-audit/v1",
     ],
   );
   assert.deepEqual(
     (plan.repairs ?? []).map(({ id }) => id),
     [
+      "canonical/runtime-contract-purge-tag-delete-guard/v1",
       "canonical/foreign-currency-conversion-schema/v1",
       "canonical/credit-card-extension/v1",
       "canonical/fubon-credit-card-extension/v1",

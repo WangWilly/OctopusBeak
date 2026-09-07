@@ -16,6 +16,9 @@ import {
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { canonicalSourceRouteRegistration } from "./canonical-source-route-registry.ts";
+import {
+  assertCanonicalContractPurgeScopeEnabled,
+} from "./canonical-contract-purge-runtime.ts";
 
 /** The pre-admission shape submitted by a provider adapter. */
 export type CanonicalSourceCaptureAdmissionRequest = CanonicalSourceEvidence;
@@ -907,6 +910,17 @@ function persistWithinTransaction(
     );
   validateSourceEvidence(evidence);
   const db = store.db;
+
+  // A committed source-scoped purge is a durable recollection fence. Check it
+  // inside the same lifecycle transaction that will create the capture so a
+  // restart cannot resurrect deleted financial evidence.
+  assertCanonicalContractPurgeScopeEnabled(db, {
+    integrationNamespace: evidence.integrationNamespace,
+    sourceConnectionKey: evidence.sourceConnectionKey,
+    stream: evidence.stream,
+    contractVersion: evidence.contractVersion,
+    identityEpoch: evidence.identityEpoch,
+  });
 
   if (
     db

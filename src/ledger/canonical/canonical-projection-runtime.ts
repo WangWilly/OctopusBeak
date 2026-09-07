@@ -5,6 +5,7 @@ import { CANONICAL_SQLITE_FILE, blob } from "./canonical-schema-implementation.t
 import { openCanonicalDatabase } from "./canonical-database.ts";
 import {
   canonicalProjectionRuntimeRebuildInternal,
+  canonicalProjectionRuntimeRebuildInTransaction,
   canonicalProjectionRuntimeSyncInternal,
 } from "./canonical-projection-implementation.ts";
 import type {
@@ -2370,4 +2371,17 @@ export function createCanonicalProjectionRuntime(
     throw new Error("Canonical projection runtime database path is required.");
   if (typeof target !== "string") assertValidatedCanonicalDatabase(target);
   return createRuntime(target);
+}
+
+/**
+ * Rebuild the live projection inside a caller-owned lifecycle transaction.
+ * Contract Purge uses this seam after deleting its closure so the purge,
+ * generation switch, and disable marker commit as one unit.
+ */
+export function rebuildCanonicalProjectionInTransaction(
+  db: DatabaseSync,
+  options: CanonicalProjectionRebuildOptions = {},
+): CanonicalProjectionRebuildResult {
+  assertValidatedCanonicalDatabase(db);
+  return canonicalProjectionRuntimeRebuildInTransaction(db, options);
 }
