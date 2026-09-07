@@ -38,10 +38,8 @@
   $: history = overview.dailyHistory;
   $: dailyCurrencies = dailyHistoryCurrencies(history);
   $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
-  $: sankeyRatesByCurrency = new Map(overview.sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
   $: sankeyCurrencies = ["TWD", ...overview.sankeyExchangeRates.map((rate) => rate.currency)];
   $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
-  $: sankeyTwdPerUnit = sankeyRatesByCurrency.get(sankeyCurrency) ?? 1;
   $: convertedDailyHistory = convertDailyHistoryRows(
     history,
     overview.exchangeRates,
@@ -126,7 +124,14 @@
   <div class="content">
     {#if overview.coverage !== "complete"}
       <div class="projection-state" role="status" data-overview-state={overview.coverage}>
-        {currentStateLabel}
+        <span>{currentStateLabel}</span>
+        {#if overview.sourceGaps.length > 0}
+          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
+            {#each overview.sourceGaps as gap}
+              <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
+            {/each}
+          </ul>
+        {/if}
       </div>
     {/if}
     <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
@@ -235,7 +240,11 @@
           {/if}
         </div>
         <div class="card pad overview-sankey-panel">
-          <OverviewSankeyCard graph={overview.sankey} currency={sankeyCurrency} twdPerUnit={sankeyTwdPerUnit} />
+          <OverviewSankeyCard
+            graph={overview.sankey}
+            currency={sankeyCurrency}
+            exchangeRates={overview.sankeyExchangeRates}
+          />
         </div>
       </section>
     {/if}
@@ -278,6 +287,17 @@
   .history-state {
     min-height: 5rem;
     align-items: center;
+  }
+
+  .projection-gap-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text);
+    font-size: var(--font-size-sm);
   }
 
 </style>

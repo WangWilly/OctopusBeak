@@ -2,12 +2,14 @@
   import { Chart, Group, Layer, Link, Rect, Text, Tooltip, sankeyGraphFromNode } from "layerchart";
   import { Sankey } from "layerchart/graph";
   import { locale, t } from "$lib/i18n/i18n.ts";
+  import type { ExchangeRateDto } from "$lib/shared-ledger/types.ts";
   import type { OverviewSankeyGraphDto, OverviewSankeyNodeDto } from "$lib/overview/types.ts";
+  import { displayOverviewSankeyGraph } from "$lib/overview/components/sankey-display.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
 
   export let graph: OverviewSankeyGraphDto;
   export let currency = "TWD";
-  export let twdPerUnit = 1;
+  export let exchangeRates: readonly ExchangeRateDto[] = [];
 
   type SankeyNodeState = OverviewSankeyNodeDto & {
     sourceLinks?: SankeyLinkState[];
@@ -23,8 +25,8 @@
     liability: "oklch(56% 0.11 34)",
   } as const;
 
-  function amount(value: number) {
-    return formatMoney({ currency, value }, { locale: $locale });
+  function amount(link: { value: number; currency?: string; exact?: { coefficient: string; scale: number } }) {
+    return formatMoney({ currency: link.currency ?? currency, value: link.value, exact: link.exact }, { locale: $locale });
   }
 
   function colorFor(tone: OverviewSankeyNodeDto["tone"]) {
@@ -54,14 +56,11 @@
   }
 
   $: chartHeight = chartHeightFor(graph.nodes);
-  $: displayGraph = twdPerUnit === 1 ? graph : {
-    nodes: graph.nodes,
-    links: graph.links.map((link) => ({ ...link, value: link.value / twdPerUnit })),
-  };
+  $: displayGraph = displayOverviewSankeyGraph(graph, currency, exchangeRates);
   $: graphLabels = new Map(graph.nodes.map((node) => [node.id, node.label]));
   $: chartGraph = selectedNode ? sankeyGraphFromNode(selectedNode) : displayGraph;
   $: flowSummary = chartGraph.links.map((link) =>
-    `${labelFor(graphLabels.get(link.source) ?? link.source)} → ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link.value)}.`,
+    `${labelFor(graphLabels.get(link.source) ?? link.source)} → ${labelFor(graphLabels.get(link.target) ?? link.target)}: ${amount(link)}.`,
   ).join(" ");
 </script>
 
@@ -131,7 +130,7 @@
               <strong>{labelFor(data.node.label)}</strong>
               <div class="overview-sankey-tooltip-row">
                 <span>{$t.common.total}</span>
-                <b data-sensitive>{amount(data.node.value)}</b>
+                <b data-sensitive>{amount({ currency, value: data.node.value })}</b>
               </div>
               {#if data.node.targetLinks.length}
                 <div class="overview-sankey-tooltip-section">{$t.common.sources}</div>
@@ -139,7 +138,7 @@
                   <div class="overview-sankey-tooltip-row">
                     <span>{labelFor(link.source.label)}</span>
                     <span class="overview-sankey-tooltip-values">
-                      <b data-sensitive>{amount(link.value)}</b>
+                      <b data-sensitive>{amount(link)}</b>
                       <em>{percentage(link.value, data.node.value)}</em>
                     </span>
                   </div>
@@ -151,7 +150,7 @@
                   <div class="overview-sankey-tooltip-row">
                     <span>{labelFor(link.target.label)}</span>
                     <span class="overview-sankey-tooltip-values">
-                      <b data-sensitive>{amount(link.value)}</b>
+                      <b data-sensitive>{amount(link)}</b>
                       <em>{percentage(link.value, data.node.value)}</em>
                     </span>
                   </div>
@@ -161,7 +160,7 @@
               <strong>{labelFor(data.link.source.label)} → {labelFor(data.link.target.label)}</strong>
               <div class="overview-sankey-tooltip-row">
                 <span>{$t.common.balance}</span>
-                <b data-sensitive>{amount(data.link.value)}</b>
+                <b data-sensitive>{amount(data.link)}</b>
               </div>
             {/if}
           </div>

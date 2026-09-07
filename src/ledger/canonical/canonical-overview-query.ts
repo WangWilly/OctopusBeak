@@ -84,7 +84,25 @@ export type CanonicalOverviewSourceGap = Readonly<{
   accountId: string;
   sourceConnectionKey: string;
   accountNo: string;
-  reason: "current-value-not-observed" | "canonical-read-unavailable";
+  integrationNamespace?: string;
+  stream?: string;
+  label?: string;
+  reason:
+    | "current-value-not-observed"
+    | "source-not-collected"
+    | "canonical-read-unavailable";
+}>;
+
+/**
+ * Non-financial configuration may advertise a source before its first
+ * canonical capture. The Overview query consumes that expectation as input;
+ * it never reads settings or source-specific tables itself.
+ */
+export type CanonicalOverviewExpectedSource = Readonly<{
+  sourceId: string;
+  integrationNamespace: string;
+  label: string;
+  stream?: string;
 }>;
 
 export type CanonicalOverviewProjection = Readonly<{
@@ -132,11 +150,14 @@ const EMPTY_PROJECTION: CanonicalOverviewProjection = Object.freeze({
  */
 export function createCanonicalOverviewQuery(
   ledgerDir: string,
+  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
 ): CanonicalOverviewCurrentQuery {
+  const expectedSources = input.expectedSources ?? [];
   return Object.freeze({
     async current(): Promise<CanonicalOverviewCurrentQueryResult> {
       const databasePath = canonicalSqlitePath(ledgerDir);
-      if (!existsSync(databasePath)) return result(EMPTY_PROJECTION);
+      if (!existsSync(databasePath))
+        return result(withExpectedSourceGaps(EMPTY_PROJECTION, expectedSources));
 
       let db: DatabaseSync | undefined;
       try {
@@ -149,18 +170,18 @@ export function createCanonicalOverviewQuery(
             families: [
               "financial-accounts",
               "transactions",
-              "loan-balances",
+              "overview-loan-balances",
               "investment-accounts",
               "investment-holdings",
               "investment-margin-balances",
             ],
             scope: ALL_TIME_SCOPE,
           });
-          return mapProjection(snapshot);
+          return mapProjection(snapshot, expectedSources);
         });
         return result(projection);
       } catch {
-        return result(unavailableProjection());
+        return result(unavailableProjection(expectedSources));
       } finally {
         db?.close();
       }
@@ -179,12 +200,16 @@ function result(
   };
 }
 
-function unavailableProjection(): CanonicalOverviewProjection {
+function unavailableProjection(
+  expectedSources: readonly CanonicalOverviewExpectedSource[],
+): CanonicalOverviewProjection {
   return {
     availability: "unavailable",
     accounts: [],
     positions: [],
-    sourceGaps: [],
+    sourceGaps: expectedSources.map((source) =>
+      expectedSourceGap(source, "canonical-read-unavailable"),
+    ),
     importedAt: null,
     knowledgePoint: 0,
   };
@@ -192,17 +217,22 @@ function unavailableProjection(): CanonicalOverviewProjection {
 
 function mapProjection(
   snapshot: CanonicalProjectionSnapshot,
+  expectedSources: readonly CanonicalOverviewExpectedSource[],
 ): CanonicalOverviewProjection {
   const accountRows = snapshot.families["financial-accounts"];
-  if (accountRows.length === 0)
+  if (accountRows.length === 0) {
+    const sourceGaps = expectedSources.map((source) =>
+      expectedSourceGap(source, "source-not-collected"),
+    );
     return {
-      availability: "empty",
+      availability: sourceGaps.length > 0 ? "awaiting" : "empty",
       accounts: [],
       positions: [],
-      sourceGaps: [],
+      sourceGaps,
       importedAt: null,
       knowledgePoint: snapshot.knowledgePoint,
     };
+  }
 
   const transactionsByAccount = new Map<string, number>();
   for (const transaction of snapshot.families.transactions)
@@ -211,7 +241,12 @@ function mapProjection(
       (transactionsByAccount.get(transaction.accountId) ?? 0) + 1,
     );
 
-  const balancesByAccount = selectLoanBalances(snapshot);
+  const balancesByAccount = new Map<string, CanonicalProjectionSnapshot["families"]["overview-loan-balances"][number][]>();
+  for (const balance of snapshot.families["overview-loan-balances"]) {
+    const rows = balancesByAccount.get(balance.accountId) ?? [];
+    rows.push(balance);
+    balancesByAccount.set(balance.accountId, rows);
+  }
   const holdingsByAccount = new Map<string, CanonicalProjectionInvestmentHolding[]>();
   for (const holding of snapshot.families["investment-holdings"])
     if (holding.isCurrent) {
@@ -258,6 +293,9 @@ function mapProjection(
         accountId: account.accountId,
         sourceConnectionKey: account.sourceConnectionKey,
         accountNo: account.accountNo,
+        integrationNamespace: account.integrationNamespace,
+        stream: account.stream,
+        label: `${account.integrationNamespace} ${account.accountNo}`,
         reason: "current-value-not-observed",
       });
     return {
@@ -276,6 +314,7 @@ function mapProjection(
     .filter((value): value is string => value !== null)
     .sort()
     .at(-1) ?? null;
+  sourceGaps.push(...missingExpectedSourceGaps(accounts, expectedSources));
   const availability = accounts.some((account) => account.availability === "available")
     ? "available"
     : "awaiting";
@@ -287,6 +326,49 @@ function mapProjection(
     importedAt,
     knowledgePoint: snapshot.knowledgePoint,
   };
+}
+
+function withExpectedSourceGaps(
+  projection: CanonicalOverviewProjection,
+  expectedSources: readonly CanonicalOverviewExpectedSource[],
+): CanonicalOverviewProjection {
+  if (expectedSources.length === 0) return projection;
+  const sourceGaps = [
+    ...projection.sourceGaps,
+    ...expectedSources.map((source) => expectedSourceGap(source, "source-not-collected")),
+  ];
+  return {
+    ...projection,
+    availability: projection.availability === "empty" ? "awaiting" : projection.availability,
+    sourceGaps,
+  };
+}
+
+function expectedSourceGap(
+  source: CanonicalOverviewExpectedSource,
+  reason: "source-not-collected" | "canonical-read-unavailable",
+): CanonicalOverviewSourceGap {
+  return {
+    accountId: `expected:${source.sourceId}`,
+    sourceConnectionKey: `expected:${source.sourceId}`,
+    accountNo: "",
+    integrationNamespace: source.integrationNamespace,
+    stream: source.stream,
+    label: source.label,
+    reason,
+  };
+}
+
+function missingExpectedSourceGaps(
+  accounts: readonly CanonicalOverviewAccount[],
+  expectedSources: readonly CanonicalOverviewExpectedSource[],
+): CanonicalOverviewSourceGap[] {
+  return expectedSources
+    .filter((source) => !accounts.some((account) =>
+      account.integrationNamespace === source.integrationNamespace
+      && (!source.stream || account.stream === source.stream),
+    ))
+    .map((source) => expectedSourceGap(source, "source-not-collected"));
 }
 
 function accountDisplay(account: CanonicalProjectionFinancialAccount) {
@@ -342,43 +424,9 @@ function accountDisplay(account: CanonicalProjectionFinancialAccount) {
   };
 }
 
-function selectLoanBalances(snapshot: CanonicalProjectionSnapshot) {
-  const preference = new Map([
-    ["outstanding_total", 0],
-    ["loan_outstanding", 1],
-    ["outstanding_principal", 2],
-  ]);
-  const rows = new Map<string, Array<CanonicalProjectionSnapshot["families"]["loan-balances"][number]>>();
-  for (const balance of snapshot.families["loan-balances"]) {
-    if (!preference.has(balance.balanceKind)) continue;
-    const current = rows.get(`${balance.accountId}|${balance.currency}`) ?? [];
-    current.push(balance);
-    rows.set(`${balance.accountId}|${balance.currency}`, current);
-  }
-  const selected = new Map<string, Array<CanonicalProjectionSnapshot["families"]["loan-balances"][number]>>();
-  for (const [accountKey, balances] of rows)
-    selected.set(
-      accountKey,
-      [...balances].sort(
-        (left, right) =>
-          (preference.get(left.balanceKind) ?? 99) -
-            (preference.get(right.balanceKind) ?? 99) ||
-          right.effectiveAt.localeCompare(left.effectiveAt) ||
-          right.observedAt.localeCompare(left.observedAt),
-      ).slice(0, 1),
-    );
-  const byAccount = new Map<string, Array<CanonicalProjectionSnapshot["families"]["loan-balances"][number]>>();
-  for (const balances of selected.values()) {
-    const accountId = balances[0]?.accountId;
-    if (!accountId) continue;
-    byAccount.set(accountId, [...(byAccount.get(accountId) ?? []), ...balances]);
-  }
-  return byAccount;
-}
-
 function aggregateAccountAmounts(
   account: CanonicalProjectionFinancialAccount,
-  balances: readonly CanonicalProjectionSnapshot["families"]["loan-balances"][number][],
+  balances: readonly CanonicalProjectionSnapshot["families"]["overview-loan-balances"][number][],
   holdings: readonly CanonicalProjectionInvestmentHolding[],
   knowledgePoint: number,
 ): CanonicalOverviewAmount[] {

@@ -72,13 +72,14 @@ const en = {
     exchangeRatesThrough: (date: string) => `Rates through ${date}`,
     portfolioFlow: "Portfolio flow",
     portfolioFlowBaseCurrency: "Portfolio flow base currency",
-    currentAwaiting: "Current values are awaiting typed source observations.",
-    currentEmpty: "No canonical financial accounts are available yet.",
-    currentUnavailable: "The canonical current projection is unavailable.",
+    currentAwaiting: "Current balances have not been collected yet.",
+    currentEmpty: "No financial accounts are available yet.",
+    currentUnavailable: "Current balances are temporarily unavailable.",
     currentPartial: (count: number) => count === 1
-      ? "1 source account is awaiting a typed current value; totals are partial."
-      : `${count} source accounts are awaiting typed current values; totals are partial.`,
-    historyUnavailable: "History is unavailable until a historical projection is available.",
+      ? "1 account is still waiting for a current balance; totals are partial."
+      : `${count} accounts are still waiting for current balances; totals are partial.`,
+    sourceGapsAria: "Sources waiting for current balances",
+    historyUnavailable: "Historical balances are not available yet.",
   },
   assets: {
     eyebrow: "Assets",
@@ -886,11 +887,12 @@ const zh: typeof en = {
     exchangeRatesThrough: (date) => `匯率資料截至 ${date}`,
     portfolioFlow: "資產與負債流向",
     portfolioFlowBaseCurrency: "資產與負債流向基準幣別",
-    currentAwaiting: "目前數值正在等待具型別的來源觀測值。",
-    currentEmpty: "尚無可用的 canonical 財務帳戶。",
-    currentUnavailable: "目前 canonical projection 無法使用。",
-    currentPartial: (count) => `${count} 個來源帳戶尚無具型別的目前數值；總額為部分資料。`,
-    historyUnavailable: "歷史 projection 尚未提供，因此無法顯示歷史資料。",
+    currentAwaiting: "目前尚未收集餘額。",
+    currentEmpty: "尚無可用的財務帳戶。",
+    currentUnavailable: "目前餘額暫時無法使用。",
+    currentPartial: (count) => `${count} 個帳戶尚未取得目前餘額；總額僅供部分參考。`,
+    sourceGapsAria: "等待目前餘額的來源",
+    historyUnavailable: "歷史餘額尚未提供。",
   },
   assets: {
     eyebrow: "資產",
