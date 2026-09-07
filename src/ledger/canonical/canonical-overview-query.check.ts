@@ -52,6 +52,35 @@ test("Current Overview keeps canonical account identity and never infers deposit
   }
 });
 
+test("enabled expected sources remain visible before their first canonical capture", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-expected-source-"));
+  const expectedSource = {
+    sourceId: "cathay",
+    integrationNamespace: "cathay",
+    label: "Cathay United Bank",
+  } as const;
+  try {
+    const current = await createCanonicalOverviewQuery(directory, {
+      expectedSources: [expectedSource],
+    }).current();
+    assert.equal(current.projection.availability, "awaiting");
+    assert.deepEqual(current.projection.sourceGaps, [{
+      accountId: "expected:cathay",
+      sourceConnectionKey: "expected:cathay",
+      accountNo: "",
+      integrationNamespace: "cathay",
+      stream: undefined,
+      label: "Cathay United Bank",
+      reason: "source-not-collected",
+    }]);
+    const overview = await loadOverview(directory, { expectedSources: [expectedSource] });
+    assert.equal(overview.coverage, "partial");
+    assert.equal(overview.sourceGaps[0]?.label, "Cathay United Bank");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Current Overview uses exact current holding valuation and exposes its trace", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-investment-"));
   const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
@@ -98,7 +127,13 @@ test("Overview loader preserves exact totals and marks Current-only history unav
     assert.equal(overview.summary[1]?.amounts[0]?.value, 1234.56);
     const convertedLink = overview.sankey?.links.at(-1);
     assert.equal(convertedLink?.value, 39505.92);
-    assert.deepEqual(convertedLink?.conversion, { fromCurrency: "USD", rateDate: "2026-08-31", twdPerUnit: 32 });
+    assert.deepEqual(convertedLink?.conversion, {
+      fromCurrency: "USD",
+      toCurrency: "TWD",
+      rateDate: "2026-08-31",
+      twdPerUnit: 32,
+      convertedExact: { coefficient: "3950592", scale: 2 },
+    });
     assert.deepEqual(convertedLink?.exact, { coefficient: "123456", scale: 2 });
     assert.equal(overview.dailyHistory.length, 0);
     assert.equal(overview.accounts[0]?.amountLines[0]?.traces?.[0]?.kind, "investment-holding-observation");

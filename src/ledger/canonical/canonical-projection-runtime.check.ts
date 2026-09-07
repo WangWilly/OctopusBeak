@@ -35,6 +35,7 @@ const ALL_PROJECTION_FAMILIES = [
   "transaction-categorization",
   "loan-accounts",
   "loan-balances",
+  "overview-loan-balances",
   "loan-relations",
   "loan-settlement-groups",
   "investment-accounts",

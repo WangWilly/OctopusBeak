@@ -24,7 +24,7 @@ test("overview renders the production Sankey graph with the existing base-curren
   assert.match(source, /id="sankey-base-currency"/);
   assert.match(source, /aria-label=\{\$t\.overview\.portfolioFlowBaseCurrency\}/);
   assert.match(source, /\$t\.overview\.exchangeRatesThrough\(overview\.sankeyLatestExchangeRateDate\)/);
-  assert.match(source, /<OverviewSankeyCard graph=\{overview\.sankey\} currency=\{sankeyCurrency\} twdPerUnit=\{sankeyTwdPerUnit\} \/>/);
+  assert.match(source, /<OverviewSankeyCard[\s\S]*graph=\{overview\.sankey\}[\s\S]*currency=\{sankeyCurrency\}[\s\S]*exchangeRates=\{overview\.sankeyExchangeRates\}/);
   assert.match(source, /class="card sankey-card"/);
   assert.doesNotMatch(source, /overviewSankeyPrototype/);
 });
@@ -33,6 +33,7 @@ test("overview exposes canonical current and honest history states", () => {
   assert.match(source, /overview\.coverage !== "complete"/);
   assert.match(source, /data-overview-state=\{overview\.coverage\}/);
   assert.match(source, /currentPartial\(overview\.sourceGaps\.length\)/);
+  assert.match(source, /class="projection-gap-list"[\s\S]*gap\.label/);
   assert.match(source, /overview\.historyAvailability === "unavailable"/);
   assert.match(source, /data-overview-state="history-unavailable"/);
 });

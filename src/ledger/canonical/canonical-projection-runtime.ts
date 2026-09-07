@@ -60,6 +60,7 @@ const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
   "transaction-categorization",
   "loan-accounts",
   "loan-balances",
+  "overview-loan-balances",
   "loan-relations",
   "loan-settlement-groups",
   "investment-accounts",
@@ -275,6 +276,7 @@ export type CanonicalProjectionFamilyRows = Readonly<{
   "transaction-categorization": CanonicalProjectionTransactionCategorization;
   "loan-accounts": CanonicalProjectionLoanAccount;
   "loan-balances": CanonicalProjectionLoanBalance;
+  "overview-loan-balances": CanonicalProjectionLoanBalance;
   "loan-relations": CanonicalProjectionLoanRelation;
   "loan-settlement-groups": CanonicalProjectionLoanSettlementGroup;
   "investment-accounts": CanonicalProjectionInvestmentAccount;
@@ -1734,6 +1736,59 @@ function readFamily(
         financialAt,
       );
     }
+    case "overview-loan-balances": {
+      if (request.kind !== "current" || generation === null) return [];
+      // Overview may use only a contract-approved liability balance. Selection
+      // is newest evidence per account/currency; the Runtime deliberately
+      // does not rank total versus principal because those kinds are not
+      // comparable without provider contract evidence.
+      return rows(
+        db,
+        `WITH selected AS (
+           SELECT projected.generation_id, projected.account_id,
+                  projected.balance_kind, projected.observation_id,
+                  projected.revision_id, projected.projection_commit_id,
+                  projected.revision_commit_id, revision.balance_coefficient,
+                  revision.balance_scale, revision.currency, revision.effective_at,
+                  revision.observed_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY projected.account_id, revision.currency
+                    ORDER BY revision.effective_at DESC,
+                             revision.observed_at DESC,
+                             revision_commit.commit_sequence DESC,
+                             hex(projected.observation_id) DESC
+                  ) AS selection_rank
+             FROM current_loan_balance_observations projected
+             JOIN balance_observation_revisions revision
+               ON revision.revision_id = projected.revision_id
+             JOIN canonical_commits revision_commit
+               ON revision_commit.commit_id = projected.revision_commit_id
+             JOIN financial_accounts account
+               ON account.account_id = projected.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE projected.generation_id = ? ${scopedFilter("account")}
+              AND projected.balance_kind IN (
+                'outstanding_total', 'loan_outstanding', 'outstanding_principal'
+              )
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+         )
+         SELECT generation_id, account_id, balance_kind, observation_id,
+                revision_id, projection_commit_id, revision_commit_id,
+                balance_coefficient, balance_scale, currency, effective_at,
+                observed_at
+           FROM selected
+          WHERE selection_rank = 1
+          ORDER BY effective_at, account_id`,
+        generation,
+        ...scopedParameters(),
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
+      );
+    }
     case "loan-relations": {
       if (request.kind === "current" && generation !== null)
         return rows(
@@ -2234,6 +2289,7 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
       case "loan-accounts":
         return { accountId: textValue(row, "account_id") };
       case "loan-balances":
+      case "overview-loan-balances":
         return {
           accountId: textValue(row, "account_id"),
           observationId: textValue(row, "observation_id"),
@@ -2401,6 +2457,7 @@ function readSnapshotInTransaction(
     "transaction-categorization": familyRows("transaction-categorization"),
     "loan-accounts": familyRows("loan-accounts"),
     "loan-balances": familyRows("loan-balances"),
+    "overview-loan-balances": familyRows("overview-loan-balances"),
     "loan-relations": familyRows("loan-relations"),
     "loan-settlement-groups": familyRows("loan-settlement-groups"),
     "investment-accounts": familyRows("investment-accounts"),

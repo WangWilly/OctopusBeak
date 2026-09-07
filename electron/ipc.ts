@@ -48,6 +48,7 @@ import {
 } from "../src/lib/automation/server/human-session.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
+import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import {
   loadSpending,
   updateSpendingItemCategory,
@@ -114,7 +115,9 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => loadOverview());
+  ipcMain.handle("overview:load", () =>
+    loadOverview(undefined, { expectedSources: configuredOverviewSources() }),
+  );
   ipcMain.handle("assets:load", () => loadAssets());
   ipcMain.handle("liabilities:load", () => loadLiabilities());
   ipcMain.handle(

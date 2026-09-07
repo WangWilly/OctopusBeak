@@ -25,6 +25,7 @@ import {
 } from "../../../ledger/canonical/cathay-domestic-deposit.ts";
 import {
   createCanonicalOverviewQuery,
+  type CanonicalOverviewExpectedSource,
   type CanonicalOverviewCurrentQueryResult,
 } from "../../../ledger/canonical/canonical-overview-query.ts";
 
@@ -46,6 +47,7 @@ export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
   product: "overview";
+  expectedSources?: readonly CanonicalOverviewExpectedSource[];
 };
 
 export type CurrentOverviewExchangeRateQueryRequest =
@@ -435,10 +437,12 @@ class LegacyFinancialQueryAdapter {
  * leaving the still-migrating product adapters behind the same public seam.
  */
 class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
+  private readonly ledgerDir: string;
   private readonly legacy: LegacyFinancialQueryAdapter;
   private readonly canonicalOverview: ReturnType<typeof createCanonicalOverviewQuery>;
 
   constructor(ledgerDir: string) {
+    this.ledgerDir = ledgerDir;
     this.legacy = new LegacyFinancialQueryAdapter(ledgerDir);
     this.canonicalOverview = createCanonicalOverviewQuery(ledgerDir);
   }
@@ -456,8 +460,12 @@ class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
     CurrentOverviewExchangeRateQueryResult |
     CurrentLedgerQueryResult<"assets" | "liabilities">
   > {
-    if (request.product === "overview" && !("selection" in request))
-      return this.canonicalOverview.current();
+    if (request.product === "overview" && !("selection" in request)) {
+      if (!request.expectedSources?.length) return this.canonicalOverview.current();
+      return createCanonicalOverviewQuery(this.ledgerDir, {
+        expectedSources: request.expectedSources,
+      }).current();
+    }
     return this.legacy.current(request as never) as CurrentSpendingQueryResult | Promise<
       CurrentOverviewExchangeRateQueryResult | CurrentLedgerQueryResult<"assets" | "liabilities">
     >;

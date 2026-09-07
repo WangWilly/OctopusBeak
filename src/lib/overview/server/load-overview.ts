@@ -1,5 +1,8 @@
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
-import type { CanonicalOverviewAmount } from "../../../ledger/canonical/canonical-overview-query.ts";
+import type {
+  CanonicalOverviewAmount,
+  CanonicalOverviewExpectedSource,
+} from "../../../ledger/canonical/canonical-overview-query.ts";
 import { exactAmountToNumber } from "../../../ledger/canonical/canonical-overview-query.ts";
 import type {
   AccountRowDto,
@@ -10,9 +13,16 @@ import type { OverviewPageDto } from "../types.ts";
 import { buildCanonicalOverviewSankeyGraph } from "./overview-sankey.ts";
 import { createFinancialQuery } from "../../shared-ledger/server/financial-query.ts";
 
-export async function loadOverview(ledgerDir = DEFAULT_LEDGER_DIR): Promise<OverviewPageDto> {
+export async function loadOverview(
+  ledgerDir = DEFAULT_LEDGER_DIR,
+  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
+): Promise<OverviewPageDto> {
   const query = createFinancialQuery(ledgerDir);
-  const current = await query.current({ kind: "current", product: "overview" });
+  const current = await query.current({
+    kind: "current",
+    product: "overview",
+    expectedSources: input.expectedSources,
+  });
   const projection = current.projection;
   const accounts = projection.accounts.map((account): AccountRowDto => ({
     id: account.id,

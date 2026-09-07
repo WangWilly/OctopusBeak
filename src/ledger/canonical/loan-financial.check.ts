@@ -1405,6 +1405,81 @@ test("current loan balance selection is deterministic across input order and reb
   }
 });
 
+test("Runtime preserves per-kind loan balances while Overview selects one latest liability value", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "loan-balance-family-selection-"));
+  const capture = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  const payment = capture.records.find((record) => record.eventKind === "payment")!;
+  const paymentEvidence = payment.balanceSourceEvidence![0]!;
+  payment.balanceSourceEvidence = [
+    paymentEvidence,
+    { ...paymentEvidence, balanceKind: "outstanding_principal" },
+  ];
+  const disbursement = capture.records.find((record) => record.eventKind === "disbursement")!;
+  disbursement.balanceSourceEvidence = [{
+    kind: "source-reported-balance",
+    balanceKind: "outstanding_total",
+    balanceField: "balance-after-transaction",
+    balance: { coefficient: "100000", scale: 2 },
+    effectiveAtField: "transaction-date",
+    effectiveAt: "2026-01-05",
+    effectiveAtPrecision: "date",
+    effectiveAtTimeOrigin: "source_reported",
+    storageAnchor: "effective-at-date-only",
+    contractVersion: capture.contractVersion,
+  }];
+  capture.balanceObservations = [
+    capture.balanceObservations[0]!,
+    {
+      ...capture.balanceObservations[0]!,
+      observationKey: "sha256:fubon-balance-principal",
+      balanceKind: "outstanding_principal",
+    },
+    {
+      ...capture.balanceObservations[0]!,
+      observationKey: "sha256:fubon-balance-total",
+      sourceRecordKey: disbursement.sourceRecordKey,
+      balanceKind: "outstanding_total",
+      balance: { coefficient: "100000", scale: 2 },
+      effectiveAt: "2026-01-05",
+      effectiveTimeEvidence: {
+        ...capture.balanceObservations[0]!.effectiveTimeEvidence,
+        sourceRecordKey: disbursement.sourceRecordKey,
+        value: "2026-01-05",
+      },
+    },
+  ];
+  try {
+    const store = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(capture));
+    const scope = { sourceConnectionKey: capture.identity.sourceConnectionKey } as const;
+    const before = createCanonicalProjectionRuntime(store.db).read({
+      kind: "current",
+      families: ["loan-balances", "overview-loan-balances"],
+      scope,
+    });
+    assert.equal(before.families["loan-balances"].length, 3);
+    assert.equal(before.families["overview-loan-balances"].length, 1);
+    assert.ok(["loan_outstanding", "outstanding_principal"].includes(
+      before.families["overview-loan-balances"][0]?.balanceKind ?? "",
+    ));
+    assert.equal(before.families["overview-loan-balances"][0]?.effectiveAt, "2026-01-31");
+    store.close();
+
+    await rebuildCanonicalProjection(directory);
+    const reopened = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    const after = createCanonicalProjectionRuntime(reopened.db).read({
+      kind: "current",
+      families: ["loan-balances", "overview-loan-balances"],
+      scope,
+    });
+    assert.equal(after.families["loan-balances"].length, 3);
+    assert.equal(after.families["overview-loan-balances"].length, 1);
+    reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("loan historical queries require both cutoffs", () => {
   const store = createCanonicalLoanStore(":memory:");
   try {
