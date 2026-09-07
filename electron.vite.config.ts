@@ -12,6 +12,8 @@ const external = [
   /^@ai-sdk\/openai/,
   /^tesseract\.js/,
   /^onnxruntime-node/,
+  /^sherpa-onnx/,
+  /^mpg123-decoder/,
   /^pngjs/,
 ];
 

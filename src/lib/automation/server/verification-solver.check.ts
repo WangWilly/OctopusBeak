@@ -80,7 +80,7 @@ test("a confident solve is captured once, solved, and injected", async () => {
   const injected: string[] = [];
   const solver: VerificationSolver = {
     async solve({ image: received }) {
-      captured.push(received);
+      captured.push(received!);
       return { answer: "A1B2", confidence: 0.95 };
     },
   };

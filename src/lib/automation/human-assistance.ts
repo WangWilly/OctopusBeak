@@ -33,6 +33,7 @@ export const HUMAN_ASSISTANCE_COMPLETION_STATUSES = [
 export const VERIFICATION_CHALLENGE_KINDS = [
   "text-captcha",
   "image-selection",
+  "audio-captcha",
   "checkbox",
 ] as const;
 
@@ -103,6 +104,12 @@ export type VerificationChallengeImageRegion = {
   rect: HumanVerificationRect;
 };
 
+export type VerificationChallengeAudioSource = {
+  id: string;
+  label: string;
+  semanticId: string;
+};
+
 export type HumanAssistanceCompletion = {
   mode: "independent" | "inline";
   targetIds: readonly string[];
@@ -128,6 +135,7 @@ export type HumanAssistanceContractInput = {
   focus: HumanAssistanceFocus;
   challengeKind?: VerificationChallengeKind;
   challengeImageRegion?: VerificationChallengeImageRegion;
+  challengeAudioSource?: VerificationChallengeAudioSource;
   charset?: ChallengeCharacterSet;
   imagePreprocessing?: readonly CaptchaImagePreprocessingMode[];
   ocrPageSegmentationMode?: CaptchaOcrPageSegmentationMode;
@@ -509,6 +517,21 @@ export function createHumanAssistanceContract(
   if (input.challengeImageRegion !== undefined) {
     assertChallengeImageRegion(input.challengeImageRegion);
   }
+  if (input.challengeAudioSource !== undefined) {
+    nonEmpty(input.challengeAudioSource.id, "challenge audio source id");
+    nonEmpty(input.challengeAudioSource.label, "challenge audio source label");
+    nonEmpty(input.challengeAudioSource.semanticId, "challenge audio source semanticId");
+  }
+  if (input.challengeKind === "audio-captcha" && input.challengeAudioSource === undefined) {
+    throw new Error(
+      "Invalid human assistance contract: an audio CAPTCHA challenge requires a challenge audio source.",
+    );
+  }
+  if (input.challengeKind !== undefined && input.challengeKind !== "audio-captcha" && input.challengeAudioSource !== undefined) {
+    throw new Error(
+      "Invalid human assistance contract: a challenge audio source requires an audio CAPTCHA challenge.",
+    );
+  }
 
   return {
     schemaVersion: HUMAN_ASSISTANCE_SCHEMA_VERSION,
@@ -529,6 +552,7 @@ export function createHumanAssistanceContract(
     },
     ...(input.challengeKind === undefined ? {} : { challengeKind: input.challengeKind }),
     ...(input.challengeImageRegion === undefined ? {} : { challengeImageRegion: { ...input.challengeImageRegion } }),
+    ...(input.challengeAudioSource === undefined ? {} : { challengeAudioSource: { ...input.challengeAudioSource } }),
     ...(input.charset === undefined ? {} : { charset: input.charset }),
     ...(input.imagePreprocessing === undefined
       ? {}

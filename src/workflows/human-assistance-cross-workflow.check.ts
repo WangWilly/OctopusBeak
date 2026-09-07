@@ -36,12 +36,11 @@ const solverBackedCaptchaWorkflows = [
   { provider: "E-Invoice", source: "../workflows/einvoice-personal-invoices.ts" },
 ] as const;
 
+const solverBackedAudioCaptchaWorkflows = [
+  { provider: "Yuanta Trade", source: "../workflows/yuanta-trade-statements.ts" },
+] as const;
+
 const explicitlyExcludedCaptchaWorkflows = [
-  {
-    provider: "Yuanta Trade",
-    source: "../workflows/yuanta-trade-statements.ts",
-    reason: "checkbox and image-selection remain human-assisted",
-  },
   {
     provider: "Cathay United Bank",
     source: "../workflows/cathay-statements.ts",
@@ -129,6 +128,34 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
     );
   }
 
+  const audioSolverSources = await Promise.all(
+    solverBackedAudioCaptchaWorkflows.map(async ({ provider, source }) => ({
+      provider,
+      content: await readFile(new URL(source, import.meta.url), "utf8"),
+    })),
+  );
+  assert.deepEqual(
+    audioSolverSources.map(({ provider }) => provider),
+    ["Yuanta Trade"],
+  );
+  for (const { provider, content } of audioSolverSources) {
+    assert.match(
+      content,
+      /challengeKind:\s*["']audio-captcha["']/,
+      `${provider} must declare the audio CAPTCHA consumed by the local solver`,
+    );
+    assert.match(
+      content,
+      /challengeAudioSource:/,
+      `${provider} must expose a challenge audio source to the local solver`,
+    );
+    assert.match(
+      content,
+      /expectedAnswerLength:\s*6/,
+      `${provider} must declare the six-digit audio answer length`,
+    );
+  }
+
   const excludedSources = await Promise.all(
     explicitlyExcludedCaptchaWorkflows.map(async ({ provider, source, reason }) => ({
       provider,
@@ -136,9 +163,10 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
       content: await readFile(new URL(source, import.meta.url), "utf8"),
     })),
   );
-  const solverSourcePaths = new Set<string>(
-    solverBackedCaptchaWorkflows.map(({ source }) => source),
-  );
+  const solverSourcePaths = new Set<string>([
+    ...solverBackedCaptchaWorkflows.map(({ source }) => source),
+    ...solverBackedAudioCaptchaWorkflows.map(({ source }) => source),
+  ]);
   for (const { provider, reason, content } of excludedSources) {
     assert.ok(
       !content.includes("challengeKind: \"text-captcha\""),
@@ -152,10 +180,6 @@ test("solver-backed CAPTCHA workflow contract is explicit and excludes human flo
       `${provider} must remain outside the solver-backed workflow table (${reason})`,
     );
   }
-  const yuantaTrade = excludedSources.find(({ provider }) => provider === "Yuanta Trade");
-  assert.ok(yuantaTrade);
-  assert.match(yuantaTrade.content, /challengeKind:\s*["']checkbox["']/);
-  assert.match(yuantaTrade.content, /challengeKind:\s*["']image-selection["']/);
   const cathay = excludedSources.find(({ provider }) => provider === "Cathay United Bank");
   assert.ok(cathay);
   assert.doesNotMatch(cathay.content, /challengeKind:\s*["']text-captcha["']/);
@@ -239,40 +263,16 @@ test("inline verification check recognizes a deadline-wrapped value probe", () =
   );
 });
 
-test("Yuanta Trade keeps checkbox and later challenge as separate declared stages", async () => {
-  const [source, captchaSelectors] = await Promise.all([
-    readFile(new URL("./yuanta-trade-statements.ts", import.meta.url), "utf8"),
-    readFile(
-      new URL("../lib/automation/yuanta-trade-captcha.ts", import.meta.url),
-      "utf8",
-    ),
-  ]);
-  assert.match(source, /yuanta-trade-captcha-checkbox/);
-  assert.match(source, /yuanta-trade-captcha-challenge/);
-  assert.match(source, /\.check-area/);
-  assert.match(
-    source,
-    /from "\.\.\/lib\/automation\/yuanta-trade-captcha\.ts"/,
-  );
-  assert.match(
-    captchaSelectors,
-    /#modalYCaptchaV2, #captchaModal, \.captcha-modal/,
-  );
-  assert.match(captchaSelectors, /\.y-captcha-image:visible/);
-  assert.match(
-    source,
-    /completion: \{ mode: "independent", targetIds: challengeTargets\.map/,
-  );
-  assert.match(source, /maxChallengeRetries = 2/);
-});
-
-test("Yuanta Trade declares a checkbox click and a solver image-selection challenge", async () => {
+test("Yuanta Trade switches to audio verification and declares one audio challenge", async () => {
   const source = await readFile(
     new URL("./yuanta-trade-statements.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /challengeKind: "checkbox"/);
-  assert.match(source, /challengeKind: "image-selection"/);
-  assert.match(source, /challengeImageRegion/);
-  assert.match(source, /prompt:/);
+  assert.match(source, /switchCaptchaType\("A"\)/);
+  assert.match(source, /yuantaTradeAudioAssistanceStage/);
+  assert.match(source, /#verificationCode/);
+  assert.match(source, /challengeKind: "audio-captcha"/);
+  assert.match(source, /challengeAudioSource:/);
+  assert.match(source, /expectedAnswerLength: 6/);
+  assert.match(source, /charset: "digits"/);
 });

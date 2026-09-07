@@ -18,11 +18,13 @@ import {
   yuantaTradeCaptchaModal,
   yuantaTradeCaptchaSubmit,
   yuantaTradeCanonicalOccurrenceIdentity,
+  yuantaTradeAudioAssistanceStage,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
 import { readFile } from "node:fs/promises";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const workflowSource = await readFile(
   new URL("./yuanta-trade-statements.ts", import.meta.url),
@@ -202,6 +204,33 @@ test("targets the visible YuanTa challenge modal and image tiles", () => {
     YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
     'button:has-text("驗證"), input[value*="驗"], [role="button"]:has-text("驗證"), a:has-text("驗證"), [aria-label*="驗"]',
   );
+});
+
+test("declares the audio verification challenge with a six-digit answer", async () => {
+  const page = {
+    locator(selector: string) {
+      const locator = {
+        boundingBox: async () => ({ x: 120, y: 537, width: 150, height: 50 }),
+        first: () => locator,
+      };
+      return locator;
+    },
+  } as unknown as Page;
+  const contract = await emitHumanAssistanceStage(
+    yuantaTradeAudioAssistanceStage(page),
+    () => undefined,
+  );
+
+  assert.equal(contract.challengeKind, "audio-captcha");
+  assert.equal(contract.charset, "digits");
+  assert.equal(contract.expectedAnswerLength, 6);
+  assert.deepEqual(contract.challengeAudioSource, {
+    id: "audio-challenge",
+    label: "Verification audio challenge",
+    semanticId: "yuanta-trade.login.audio-challenge",
+  });
+  assert.equal(contract.targets[0]?.semanticId, "yuanta-trade.login.audio-code-input");
+  assert.deepEqual(contract.targets[0]?.modes, ["type"]);
 });
 
 const completeHoldingPage = {

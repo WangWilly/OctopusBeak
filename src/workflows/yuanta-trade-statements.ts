@@ -38,7 +38,7 @@ import {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../lib/automation/yuanta-trade-captcha.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
+import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -63,6 +63,45 @@ export function yuantaTradeCaptchaImages(modal: Locator) {
 
 export function yuantaTradeCaptchaSubmit(modal: Locator) {
   return modal.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
+}
+
+export function yuantaTradeAudioAssistanceStage(
+  authPage: Page,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "yuanta-trade-audio-verification",
+    title: "Enter the YuanTa Trade audio verification code",
+    challengeKind: "audio-captcha" as const,
+    challengeAudioSource: {
+      id: "audio-challenge",
+      label: "Verification audio challenge",
+      semanticId: "yuanta-trade.login.audio-challenge",
+    },
+    charset: "digits" as const,
+    expectedAnswerLength: 6,
+    targets: [
+      {
+        id: "audio-code-input",
+        label: "Verification code",
+        semanticId: "yuanta-trade.login.audio-code-input",
+        modes: ["type"] as const,
+        locator: authPage.locator("#verificationCode"),
+      },
+    ],
+    contextRegions: [
+      {
+        id: "audio-verification",
+        label: "Audio verification controls",
+        semanticId: "yuanta-trade.login.audio-verification",
+      },
+    ],
+    completion: { mode: "inline", targetIds: ["audio-code-input"] },
+    focus: {
+      targetId: "audio-code-input",
+      contextRegionIds: ["audio-verification"],
+      initialZoom: 1.15,
+    },
+  };
 }
 
 type YuantaTradeCredentials = {
@@ -1534,134 +1573,25 @@ export default workflow("yuantaTradeStatements", {
           authPage,
           signInCredentials as YuantaTradeCredentials,
         );
-        const captchaCheckbox = yuantaTradeCaptchaCheckbox(authPage);
-        if (
-          !(await captchaCheckbox
-            .isVisible({ timeout: 10_000 })
-            .catch(() => false))
-        ) {
-          throw new Error(
-            "YuanTa Trade CAPTCHA checkbox could not be resolved.",
-          );
-        }
-        await emitHumanAssistanceStage({
-          stageId: "yuanta-trade-captcha-checkbox",
-          title: "Confirm the YuanTa Trade CAPTCHA checkbox",
-          challengeKind: "checkbox",
-          targets: [
-            {
-              id: "captcha-checkbox",
-              label: "CAPTCHA checkbox",
-              semanticId: "yuanta-trade.login.captcha-checkbox",
-              modes: ["click", "press"],
-              locator: captchaCheckbox,
-            },
-          ],
-          contextRegions: [
-            {
-              id: "captcha-challenge",
-              label: "CAPTCHA challenge instructions",
-              semanticId: "yuanta-trade.login.captcha-challenge",
-            },
-          ],
-          completion: { mode: "independent", targetIds: ["captcha-checkbox"] },
-          focus: {
-            targetId: "captcha-checkbox",
-            contextRegionIds: ["captcha-challenge"],
-            initialZoom: 1.15,
-          },
-        });
+        await authPage.evaluate(() => (
+          window as unknown as { switchCaptchaType: (type: string) => void }
+        ).switchCaptchaType("A"));
+        await emitHumanAssistanceStage(
+          yuantaTradeAudioAssistanceStage(authPage),
+        );
         console.log(
-          "manual-auth-required: solve YuanTa CAPTCHA/challenge in the browser, then run `npx libretto resume --session " +
+          "manual-auth-required: enter the YuanTa Trade audio verification code, then run `npx libretto resume --session " +
             authSession +
             "`.",
         );
         await pause(authSession);
-
-        const maxChallengeRetries = 2;
-        let challengeRetry = 0;
-        while (true) {
-          const challengeModal = yuantaTradeCaptchaModal(authPage);
-          const challengeVisible = await challengeModal
-            .isVisible({ timeout: 3_000 })
-            .catch(() => false);
-          if (!challengeVisible) {
-            await submitLoginIfReady(authPage);
-            break;
-          }
-          if (challengeRetry >= maxChallengeRetries) {
-            throw new Error(
-              "YuanTa Trade verification challenge did not complete after the allowed retries.",
-            );
-          }
-          const challengeImages = yuantaTradeCaptchaImages(challengeModal);
-          const challengeImageCount = await challengeImages.count();
-          if (challengeImageCount === 0) {
-            throw new Error(
-              "YuanTa Trade CAPTCHA challenge images could not be resolved.",
-            );
-          }
-          const challengeSubmit = yuantaTradeCaptchaSubmit(challengeModal);
-          const challengeSubmitVisible = await challengeSubmit
-            .isVisible({ timeout: 3_000 })
-            .catch(() => false);
-          const challengePrompt = (
-            await challengeModal.innerText().catch(() => "")
-          ).trim();
-          const challengeTargets = Array.from(
-            { length: challengeImageCount },
-            (_, index) => ({
-              id: `challenge-image-${index + 1}`,
-              label: `Verification challenge image ${index + 1}`,
-              semanticId: "yuanta-trade.login.challenge-control",
-              modes: ["click"] as const,
-              locator: challengeImages.nth(index),
-            }),
-          );
-          if (challengeSubmitVisible) {
-            challengeTargets.push({
-              id: "challenge-submit",
-              label: "Verify challenge",
-              semanticId: "yuanta-trade.login.challenge-submit",
-              modes: ["click"] as const,
-              locator: challengeSubmit,
-            });
-          }
-          await emitHumanAssistanceStage({
-            stageId: "yuanta-trade-captcha-challenge",
-            title: `Complete the YuanTa Trade verification challenge (attempt ${challengeRetry + 1})`,
-            challengeKind: "image-selection",
-            challengeImageRegion: {
-              id: "challenge-images",
-              label: "Verification challenge images",
-              semanticId: "yuanta-trade.login.challenge-images",
-              locator: challengeModal,
-            },
-            prompt: challengePrompt || undefined,
-            targets: challengeTargets,
-            contextRegions: [
-              {
-                id: "challenge-modal",
-                label: "Verification modal and instructions",
-                semanticId: "yuanta-trade.login.challenge-modal",
-                locator: challengeModal,
-              },
-            ],
-            completion: { mode: "independent", targetIds: challengeTargets.map((target) => target.id) },
-            focus: {
-              targetId: challengeTargets[0]!.id,
-              contextRegionIds: ["challenge-modal"],
-              initialZoom: 1,
-            },
-          });
-          await pause(authSession);
-          challengeRetry += 1;
-        }
-        if (lastBankDialogMessage.includes("請勾選")) {
+        const verificationCode = authPage.locator("#verificationCode");
+        if (!(await verificationCode.inputValue()).trim()) {
           throw new Error(
-            `YuanTa login rejected the customer confirmation checkbox: ${lastBankDialogMessage}`,
+            "YuanTa Trade audio verification code is empty. Enter it in the browser before resuming.",
           );
         }
+        await submitLoginIfReady(authPage);
         await completeCertificateIfPresent(
           authPage,
           requireCredential(

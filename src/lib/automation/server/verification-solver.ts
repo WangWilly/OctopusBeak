@@ -39,7 +39,8 @@ export type VerificationSolverResult =
 
 export type VerificationSolver = {
   solve(input: {
-    image: Buffer;
+    image?: Buffer;
+    audio?: Buffer;
     attempt?: number;
     strategy?: CaptchaOcrAttemptStrategy;
     challengeKind: SolverChallengeKind;
@@ -69,6 +70,11 @@ export function verificationPlanForContract(
     return target ? { kind: "click", targetId: target.id } : { kind: "proceed" };
   }
   if (isSolverChallengeKind(kind)) {
+    if (kind === "audio-captcha") {
+      return contract.challengeAudioSource
+        ? { kind: "solve", challengeKind: kind }
+        : { kind: "unsolvable" };
+    }
     return contract.challengeImageRegion
       ? { kind: "solve", challengeKind: kind }
       : { kind: "unsolvable" };
@@ -81,6 +87,7 @@ export type SolveDependencies = {
   confidenceThreshold: number;
   solver: VerificationSolver;
   captureChallengeImage: () => Promise<Buffer | null>;
+  captureChallengeAudio?: () => Promise<Buffer | null>;
   /** Re-checks provider-owned source pixels immediately before injection. */
   validateChallengeImage?: () => Promise<boolean>;
   injectAnswer: (answer: string) => Promise<void>;
@@ -166,6 +173,31 @@ export async function solveVerificationChallenge(
   const isEligible = (result: VerificationSolverResult) =>
     isStructurallyValid(result, deps)
     && result.confidence >= deps.confidenceThreshold;
+
+  if (deps.challengeKind === "audio-captcha") {
+    if (!deps.captureChallengeAudio) {
+      throw new Error(
+        "Audio verification challenge requires an audio capture capability.",
+      );
+    }
+    const audio = await deps.captureChallengeAudio();
+    if (audio === null) return { status: "absent" };
+    const result = await deps.solver.solve({
+      audio,
+      challengeKind: deps.challengeKind,
+      prompt: deps.prompt,
+      charset: deps.charset,
+      expectedAnswerLength: deps.expectedAnswerLength,
+    });
+    if (!isEligible(result)) return { status: "exhausted" };
+    if ("selections" in result) {
+      throw new Error(
+        "Audio solver returned a selection answer; expected a text answer.",
+      );
+    }
+    await deps.injectAnswer(result.answer);
+    return { status: "solved" };
+  }
 
   if (plannedAttempts) {
     const candidates: PlannedCandidate[] = [];
