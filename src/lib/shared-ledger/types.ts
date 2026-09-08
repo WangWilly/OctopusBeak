@@ -134,6 +134,11 @@ export type TransactionRowDto = {
   label: string;
   type: string;
   amount: number;
+  /** Exact signed canonical amount retained beside the presentation number. */
+  amountExact?: {
+    coefficient: string;
+    scale: number;
+  };
   currency: string;
   note: string | null;
 };
@@ -145,6 +150,11 @@ export type AssetPositionDto = {
   name: string;
   units: string;
   value: number | null;
+  /** Exact canonical valuation retained beside the presentation number. */
+  valueExact?: {
+    coefficient: string;
+    scale: number;
+  } | null;
   valueAvailability?: "available" | "awaiting";
   currency: string;
   change: string;

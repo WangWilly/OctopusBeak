@@ -60,15 +60,14 @@ export function mapCanonicalProduct(
   for (const transaction of projection.transactions) {
     if (!accountIds.has(transaction.accountId)) continue;
     const rows = transactionsByAccount[transaction.accountId] ?? [];
-    const amount = exactAmountToNumber(transaction.amount);
+    const amountExact = signedExact(transaction.amount, transaction.direction);
     rows.push({
       date: transaction.effectiveOn,
       occurredAtUtc: null,
       label: transaction.description ?? "Canonical transaction",
       type: transaction.direction,
-      amount: transaction.direction.toLowerCase() === "outflow"
-        ? -Math.abs(amount)
-        : Math.abs(amount),
+      amount: exactAmountToNumber(amountExact),
+      amountExact,
       currency: transaction.currency,
       note: transaction.postingStatus,
     });
@@ -145,10 +144,22 @@ function mapPosition(position: CanonicalOverviewPosition): AssetPositionDto {
     name: position.name,
     units: position.units ? exactToDecimal(position.units) : "--",
     value: position.amount ? exactAmountToNumber(position.amount.exact) : null,
+    valueExact: position.amount ? { ...position.amount.exact } : null,
     ...(position.amount ? { valueAvailability: "available" as const } : { valueAvailability: "awaiting" as const }),
     currency: position.currency,
     change: "--",
     metricLabel: position.typeLabel,
+  };
+}
+
+function signedExact(
+  exact: { coefficient: string; scale: number },
+  direction: string,
+): { coefficient: string; scale: number } {
+  const coefficient = BigInt(exact.coefficient);
+  return {
+    coefficient: (direction.toLowerCase() === "outflow" ? -coefficient : coefficient).toString(),
+    scale: exact.scale,
   };
 }
 
