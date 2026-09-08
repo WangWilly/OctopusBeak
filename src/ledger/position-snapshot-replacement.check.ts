@@ -22,6 +22,8 @@ async function symbolsAfterSnapshots(options: {
   sourceId: InvestmentSourceId;
   snapshots: string[][];
 }) {
+  // Investment captures do not declare comparable-complete absence authority;
+  // an omitted Security is therefore never an inferred withdrawal.
   const rootDir = await mkdtemp(join(tmpdir(), `${options.fixtureName}-`));
   const outputDir = join(rootDir, "ledger");
   const store = createCanonicalInvestmentStore(canonicalSqlitePath(outputDir));
@@ -43,31 +45,66 @@ async function symbolsAfterSnapshots(options: {
   }
 }
 
-test("a newer brokerage holdings snapshot removes sold positions", async () => {
+test("a newer brokerage capture retains a security omitted under never-infer", async () => {
   const symbols = await symbolsAfterSnapshots({
     fixtureName: "brokerage-snapshot-replacement",
     sourceId: "yuanta-trade",
     snapshots: [["ANET", "VRT"], ["ANET"]],
   });
-  assert.deepEqual(symbols, ["ANET"]);
+  assert.deepEqual(symbols, ["ANET", "VRT"]);
 });
 
-test("an empty brokerage holdings snapshot clears the account positions", async () => {
+test("an empty brokerage capture retains prior positions under never-infer", async () => {
   const symbols = await symbolsAfterSnapshots({
     fixtureName: "brokerage-empty-snapshot",
     sourceId: "yuanta-trade",
     snapshots: [["ANET"], []],
   });
-  assert.deepEqual(symbols, []);
+  assert.deepEqual(symbols, ["ANET"]);
 });
 
-test("a newer fund holdings snapshot removes redeemed funds", async () => {
+test("a newer fund capture retains a fund omitted under never-infer", async () => {
   const symbols = await symbolsAfterSnapshots({
     fixtureName: "fund-snapshot-replacement",
     sourceId: "yuanta-fund",
     snapshots: [["FUND-A", "FUND-B"], ["FUND-A"]],
   });
-  assert.deepEqual(symbols, ["FUND-A"]);
+  assert.deepEqual(symbols, ["FUND-A", "FUND-B"]);
+});
+
+test("an explicit zero holding remains the latest observed position", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "investment-zero-holding-"));
+  const outputDir = join(rootDir, "ledger");
+  const store = createCanonicalInvestmentStore(canonicalSqlitePath(outputDir));
+  try {
+    await commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(
+        investmentSnapshot("yuanta-trade", 0, ["ANET"]),
+      ),
+    );
+    const zeroCapture = investmentSnapshot("yuanta-trade", 1, ["ANET"]);
+    zeroCapture.holdings[0] = {
+      ...zeroCapture.holdings[0]!,
+      quantity: { coefficient: "0", scale: 0 },
+      valuation: { coefficient: "0", scale: 0, currency: "USD" },
+    };
+    await commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(zeroCapture),
+    );
+
+    const assets = await loadAssets(outputDir, { expectedSources: [] });
+    assert.deepEqual(
+      Object.values(assets.positionsByAccount)
+        .flat()
+        .map(({ symbol, units, value }) => ({ symbol, units, value })),
+      [{ symbol: "ANET", units: "0", value: 0 }],
+    );
+  } finally {
+    store.close();
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 function investmentSnapshot(
