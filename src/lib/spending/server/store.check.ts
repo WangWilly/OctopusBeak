@@ -1,693 +1,152 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import test from "node:test";
 import {
-  activeImportSql,
-  loadSpending,
-  updateSpendingItemCategory,
-  updateSpendingTransactionOverride,
-} from "./store.ts";
+  CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  commitCathayDomesticDeposit,
+} from "../../../ledger/canonical/canonical-source-store.ts";
+import {
+  applyCanonicalTransactionTag,
+  commitCanonicalAutomaticEnrichmentRun,
+  commitCanonicalCounterpartyDisplay,
+  createCanonicalTransactionTag,
+} from "../../../ledger/canonical/canonical-enrichment.ts";
+import { createCanonicalProjectionRuntime } from "../../../ledger/canonical/canonical-projection-runtime.ts";
+import { openCanonicalDatabase } from "../../../ledger/canonical/canonical-database.ts";
+import { blob, idToString } from "../../../ledger/canonical/canonical-schema-implementation.ts";
+import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
+import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
+import { loadSpending } from "./store.ts";
+
+test("Spending loader uses the canonical report and exposes eligibility gaps", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-canonical-store-"));
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const before = loadSpending(directory);
+    assert.ok(before.canonical);
+    assert.equal(before.canonical.policy.id, "gross-posted-outflow");
+    assert.equal(before.canonical.policy.version, "v1");
+    assert.equal(before.canonical.reportEligibility.status, "incomplete");
+    assert.equal(before.canonical.reportEligibility.gapCount, 3);
+    assert.deepEqual(
+      before.canonical.reportEligibility.gapAmountByCurrency.map((amount) => amount.exact),
+      [{ coefficient: "13600", scale: 0 }],
+    );
+    assert.equal(before.canonical.unclassifiedByCurrency.length, 0);
+
+    const db = openCanonicalDatabase(directory, { readOnly: true });
+    const transactions = createCanonicalProjectionRuntime(db).read({
+      kind: "current",
+      families: ["transactions"],
+      scope: { startDate: "1900-01-01", endDate: "2999-12-31" },
+    }).families.transactions;
+    const outflow = transactions.find((row) => row.direction === "outflow");
+    assert.ok(outflow);
+    const sourceRows = transactions.map((transaction) => {
+      const transactionId = Buffer.from(transaction.transactionId, "hex");
+      const sourceRecord = db.prepare(`
+      SELECT revision.source_record_id
+        FROM current_transactions current_row
+        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+       WHERE current_row.transaction_id = ?
+      `).get(blob(transactionId)) as { source_record_id: Uint8Array };
+      return {
+        transactionId: idToString(transactionId),
+        sourceRecordId: idToString(sourceRecord.source_record_id),
+      };
+    });
+    const connection = db.prepare(`
+      SELECT connection.source_connection_key
+        FROM financial_transactions transaction_row
+        JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+        JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
+       WHERE transaction_row.transaction_id = ?
+    `).get(blob(Buffer.from(outflow.transactionId, "hex"))) as { source_connection_key: string };
+    db.close();
+
+    await commitCanonicalAutomaticEnrichmentRun(directory, {
+      sourceConnectionKey: connection.source_connection_key,
+      stream: "domestic-deposit",
+      ruleLineage: "test/spending/canonical-kind",
+      declaredSubjects: sourceRows.map(({ transactionId }) => ({ transactionId, fields: ["kind"] })),
+      outputs: sourceRows.map(({ transactionId, sourceRecordId }) => ({
+        transactionId,
+        field: "kind",
+        origin: "derived",
+        value: "purchase",
+        confidenceBasisPoints: 10_000,
+        evidence: {
+          kind: "description",
+          sourceRecordId,
+          sourceValue: "synthetic spending purchase",
+          contractVersion: "test/spending/v1",
+        },
+      })),
+    });
+
+    const loaded = loadSpending(directory, { selectedMonth: "2026-07" });
+    assert.ok(loaded.canonical);
+    assert.equal(loaded.canonical.reportEligibility.status, "complete");
+    assert.deepEqual(loaded.canonical.totalsByCurrency.map((amount) => amount.exact), [
+      { coefficient: "300", scale: 0 },
+    ]);
+    assert.deepEqual(loaded.canonical.unclassifiedByCurrency.map((amount) => amount.exact), [
+      { coefficient: "300", scale: 0 },
+    ]);
+    assert.equal(loaded.canonical.classificationCoverage.unclassifiedCount, 1);
+    const loadedOutflow = loaded.canonical.includedTransactions.find(
+      (record) => record.amount.exact.coefficient === "300",
+    );
+    assert.ok(loadedOutflow);
+    assert.equal(loadedOutflow.category.mode, "absent");
+    assert.equal(loadedOutflow.display.status, "fallback");
+    assert.equal(loadedOutflow.display.kind, "source_description");
+    assert.equal(loadedOutflow.display.label, "Synthetic Cathay transfer description");
+
+    const display = await commitCanonicalCounterpartyDisplay(directory, {
+      transactionId: idToString(Buffer.from(outflow.transactionId, "hex")),
+      action: "override",
+      label: "Canonical Cafe",
+      userId: "fixture-user",
+    });
+    const tag = await createCanonicalTransactionTag(directory, {
+      label: "reviewed",
+      userId: "fixture-user",
+    });
+    await applyCanonicalTransactionTag(directory, {
+      tagId: tag.tagId,
+      transactionId: idToString(Buffer.from(outflow.transactionId, "hex")),
+      userId: "fixture-user",
+    });
+    assert.equal(display.status, "committed");
+    const enriched = loadSpending(directory).canonical!.includedTransactions.find(
+      (record) => record.amount.exact.coefficient === "300",
+    );
+    assert.equal(enriched?.display.label, "Canonical Cafe");
+    assert.equal(enriched?.display.kind, "override");
+    assert.deepEqual(enriched?.tags.map((value) => value.label), ["reviewed"]);
+    assert.equal(loaded.invoices.length, 0);
+    assert.equal(loaded.accountRecords.length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Spending does not fall back to legacy rows when canonical data is absent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-canonical-empty-"));
+  try {
+    seedMockLedger(directory, new Date("2026-07-11T04:00:00.000Z"));
+    const loaded = loadSpending(directory);
+    assert.ok(loaded.canonical);
+    assert.equal(loaded.canonical.availability, "empty");
+    assert.deepEqual(loaded.canonical.transactions, []);
+    assert.deepEqual(loaded.invoices, []);
+    assert.deepEqual(loaded.accountRecords, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 assert.throws(() => activeImportSql("invoices; DROP TABLE personal_invoices"), /Unsafe SQL alias/);
-
-const aliasedActiveImportSql = activeImportSql("account_transactions", "transactions");
-assert.match(aliasedActiveImportSql, /lineage\.projection_table = 'account_transactions'/);
-assert.match(aliasedActiveImportSql, /lineage\.statement_row_id = transactions\.statement_row_id/);
-
-const ledgerDir = mkdtempSync(join(tmpdir(), "spending-store-"));
-const destinationAccountNumber = ["0000", "0102", "2817", "40"].join("");
-const transferNote = [`066${destinationAccountNumber}`, ["7097", "2302", "7990", "0200"].join("")].join(" ");
-
-function sourceVersionKey(sourceFileId: string, importRunId: string) {
-  return `version-${sourceFileId}-${importRunId}`;
-}
-
-function insertSourceLineage(
-  db: LedgerDatabase,
-  projectionTable: string,
-  statementRowId: string,
-  sourceFileId: string,
-  importRunId: string,
-  versionKey = sourceVersionKey(sourceFileId, importRunId),
-) {
-  db.prepare(`
-    INSERT OR IGNORE INTO source_file_imports (
-      source_file_id, import_run_id, source_version_key, source_relative_path,
-      source_file_hash, source_file_bytes, source_file_modified_at, imported_at,
-      bank, product, first_seen_at, last_seen_at, observation_count, row_count,
-      status, record_json
-    ) VALUES (?, ?, ?, 'fixture.csv', 'fixture-hash', 1, NULL,
-      '2026-02-01T00:00:00.000Z', 'test-bank', 'fixture',
-      '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z', 1, 1, 'imported', '{}')
-  `).run(sourceFileId, importRunId, versionKey);
-  db.prepare(`
-    INSERT OR IGNORE INTO source_row_lineage (
-      source_file_id, import_run_id, source_version_key, source_row_index,
-      projection_table, statement_row_id, outcome, created_at
-    ) VALUES (?, ?, ?, 1, ?, ?, 'inserted', '2026-02-01T00:00:00.000Z')
-  `).run(sourceFileId, importRunId, versionKey, projectionTable, statementRowId);
-}
-
-function insertInvoice(
-  db: LedgerDatabase,
-  input: {
-    invoiceKey: string;
-    invoiceId: string;
-    status: string;
-    amount: number;
-    issuedAt?: number | null;
-    sourceFileId?: string;
-    importRunId?: string;
-  },
-) {
-  const sourceFileId = input.sourceFileId ?? `source-${input.invoiceKey}`;
-  const importRunId = input.importRunId ?? "run";
-  db.prepare(`
-    INSERT INTO personal_invoices (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, content_hash, bank, product,
-      raw_payload_json, imported_at, created_at, invoice_key,
-      issued_at, invoice_id, amount, status, rebated, seller_name
-    ) VALUES (?, ?, ?, 'invoices.csv', 1, ?, ?, 'einvoice',
-      'personal-invoices', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', ?, ?, ?, ?, ?, 0, ?)
-  `).run(
-    `row-${input.invoiceKey}`,
-    sourceFileId,
-    importRunId,
-    `source-hash-${input.invoiceKey}`,
-    `content-hash-${input.invoiceKey}`,
-    input.invoiceKey,
-    input.issuedAt === undefined ? 1769877000 : input.issuedAt,
-    input.invoiceId,
-    input.amount,
-    input.status,
-    `${input.status} seller`,
-  );
-  insertSourceLineage(db, "personal_invoices", `row-${input.invoiceKey}`, sourceFileId, importRunId);
-}
-
-function insertItem(
-  db: LedgerDatabase,
-  input: {
-    itemKey: string;
-    invoiceKey: string;
-    sequence: number | null;
-    paidAmount: number;
-    productName: string;
-    category: string;
-  },
-) {
-  db.prepare(`
-    INSERT INTO personal_invoice_items (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, content_hash, bank, product,
-      raw_payload_json, imported_at, created_at, item_key,
-      invoice_key, item_sequence_number, item_quantity, item_unit_price,
-      item_paid_amount, item_product_name, category
-    ) VALUES (?, ?, 'run', 'items.csv', ?, ?, ?, 'einvoice',
-      'personal-invoices', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', ?, ?, ?, 1, ?, ?, ?, ?)
-  `).run(
-    `row-${input.itemKey}`,
-    `source-${input.itemKey}`,
-    input.sequence ?? 0,
-    `source-hash-${input.itemKey}`,
-    `content-hash-${input.itemKey}`,
-    input.itemKey,
-    input.invoiceKey,
-    input.sequence,
-    input.paidAmount,
-    input.paidAmount,
-    input.productName,
-    input.category,
-  );
-  insertSourceLineage(db, "personal_invoice_items", `row-${input.itemKey}`, `source-${input.itemKey}`, "run");
-}
-
-function insertAccountTransaction(
-  db: LedgerDatabase,
-  input: {
-    statementRowId: string;
-    accountNumber: string;
-    date: string;
-    transactionTime?: string;
-    description: string;
-    note?: string;
-    withdrawalAmount?: number;
-    depositAmount?: number;
-    sourceFileId?: string;
-    importRunId?: string;
-  },
-) {
-  const sourceFileId = input.sourceFileId ?? `source-${input.statementRowId}`;
-  const importRunId = input.importRunId ?? "run";
-  db.prepare(`
-    INSERT INTO account_transactions (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, content_hash, bank, product,
-      raw_payload_json, imported_at, created_at, account_number, currency,
-      transaction_date, transaction_time, description, note,
-      withdrawal_amount, deposit_amount
-    ) VALUES (?, ?, ?, 'account.csv', 1, ?, ?, 'test-bank',
-      'account-transactions', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', ?, 'TWD', ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.statementRowId,
-    sourceFileId,
-    importRunId,
-    `source-hash-${input.statementRowId}`,
-    `content-hash-${input.statementRowId}`,
-    input.accountNumber,
-    input.date,
-    input.transactionTime ?? null,
-    input.description,
-    input.note ?? null,
-    input.withdrawalAmount ?? null,
-    input.depositAmount ?? null,
-  );
-  insertSourceLineage(db, "account_transactions", input.statementRowId, sourceFileId, importRunId);
-}
-
-function insertCardStatementLine(
-  db: LedgerDatabase,
-  statementRowId: string,
-  amount: number,
-  sourceFileId = `source-${statementRowId}`,
-  importRunId = "run",
-) {
-  db.prepare(`
-    INSERT INTO credit_card_statement_lines (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, content_hash, bank, product,
-      raw_payload_json, imported_at, created_at, statement_type,
-      consume_date, description, twd_amount
-    ) VALUES (?, ?, ?, 'card.csv', 1, ?, ?, 'test-bank',
-      'credit-card-statements', '{}', '2026-02-01T00:00:00.000Z',
-      '2026-02-01T00:00:00.000Z', 'billed', '2026-02-01',
-      '信用卡繳款', ?)
-  `).run(
-    statementRowId,
-    sourceFileId,
-    importRunId,
-    `source-hash-${statementRowId}`,
-    `content-hash-${statementRowId}`,
-    amount,
-  );
-  insertSourceLineage(db, "credit_card_statement_lines", statementRowId, sourceFileId, importRunId);
-}
-
-try {
-  const db = openLedgerDatabase(ledgerDir);
-  insertInvoice(db, {
-    invoiceKey: "confirmed-invoice",
-    invoiceId: "AB12345678",
-    status: "confirmed",
-    amount: 100,
-  });
-  insertInvoice(db, {
-    invoiceKey: "voided-invoice",
-    invoiceId: "CD12345678",
-    status: "voided",
-    amount: 999,
-  });
-  insertInvoice(db, {
-    invoiceKey: "missing-issued-at-invoice",
-    invoiceId: "EF12345678",
-    status: "confirmed",
-    amount: 50,
-    issuedAt: null,
-  });
-  insertInvoice(db, {
-    invoiceKey: "legacy-null-sequence-invoice",
-    invoiceId: "GH12345678",
-    status: "confirmed",
-    amount: 5,
-  });
-  insertItem(db, {
-    itemKey: "confirmed-item-b",
-    invoiceKey: "confirmed-invoice",
-    sequence: 1,
-    paidAmount: 20,
-    productName: "Tied B",
-    category: "daily",
-  });
-  insertItem(db, {
-    itemKey: "confirmed-item-a",
-    invoiceKey: "confirmed-invoice",
-    sequence: 1,
-    paidAmount: 30,
-    productName: "Tied A",
-    category: "food",
-  });
-  insertItem(db, {
-    itemKey: "confirmed-item-2",
-    invoiceKey: "confirmed-invoice",
-    sequence: 2,
-    paidAmount: 40,
-    productName: "Second",
-    category: "home",
-  });
-  insertItem(db, {
-    itemKey: "legacy-null-sequence-item",
-    invoiceKey: "legacy-null-sequence-invoice",
-    sequence: null,
-    paidAmount: 5,
-    productName: "Legacy",
-    category: "other",
-  });
-  insertItem(db, {
-    itemKey: "voided-item",
-    invoiceKey: "voided-invoice",
-    sequence: 1,
-    paidAmount: 999,
-    productName: "Excluded",
-    category: "shopping",
-  });
-  insertAccountTransaction(db, {
-    statementRowId: "mirrored-transfer",
-    accountNumber: "111",
-    date: "2026-02-01",
-    transactionTime: "17:27:28",
-    description: "轉帳",
-    note: transferNote,
-    withdrawalAmount: 200,
-  });
-  insertAccountTransaction(db, {
-    statementRowId: "counterpart-deposit",
-    accountNumber: "222",
-    date: "2026-02-02",
-    description: "轉入",
-    depositAmount: 200,
-  });
-  insertAccountTransaction(db, {
-    statementRowId: "card-payment",
-    accountNumber: "111",
-    date: "2026-02-02",
-    description: "自動扣款",
-    withdrawalAmount: 300,
-  });
-  insertCardStatementLine(db, "card-purchase-line", 200);
-  insertCardStatementLine(db, "card-payment-line", -300);
-  db.close();
-
-  const loaded = loadSpending(ledgerDir);
-  assert.equal(
-    loaded.invoices.some((invoice) => invoice.invoiceKey === "missing-issued-at-invoice"),
-    false,
-  );
-  assert.equal(loaded.invoices.length, 2);
-  const confirmedInvoice = loaded.invoices.find(
-    (invoice) => invoice.invoiceKey === "confirmed-invoice",
-  );
-  assert.deepEqual(confirmedInvoice?.items.map((item) => item.itemKey), [
-    "confirmed-item-a",
-    "confirmed-item-b",
-    "confirmed-item-2",
-  ]);
-  assert.deepEqual(confirmedInvoice?.items.map((item) => item.sequence), [1, 1, 2]);
-  assert.equal(
-    loaded.invoices.find((invoice) => invoice.invoiceKey === "legacy-null-sequence-invoice")
-      ?.items[0]?.sequence,
-    null,
-  );
-  assert.deepEqual(loaded.monthlyRows, [{
-    month: "2026-02",
-    total: 105,
-    invoice: {
-      food: 40,
-      daily: 20,
-      transport: 0,
-      shopping: 0,
-      home: 40,
-      leisure: 0,
-      other: 5,
-    },
-    account: {
-      food: 0,
-      daily: 0,
-      transport: 0,
-      shopping: 0,
-      home: 0,
-      leisure: 0,
-      other: 0,
-    },
-    pendingAccount: {
-      food: 0,
-      daily: 0,
-      transport: 0,
-      shopping: 0,
-      home: 0,
-      leisure: 0,
-      other: 0,
-    },
-  }]);
-  assert.equal(
-    loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
-      ?.automaticReason,
-    "internal_transfer",
-  );
-  assert.deepEqual(
-    loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer") && {
-      time: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")?.time,
-      note: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")?.note,
-      destinationBankCode: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
-        ?.destinationBankCode,
-      destinationAccountNumber: loaded.accountRecords.find((row) => row.statementRowId === "mirrored-transfer")
-        ?.destinationAccountNumber,
-    },
-    {
-      time: "17:27:28",
-      note: transferNote,
-      destinationBankCode: "066",
-      destinationAccountNumber,
-    },
-  );
-  assert.equal(
-    loaded.accountRecords.find((row) => row.statementRowId === "card-payment")
-      ?.automaticReason,
-    "credit_card_payment",
-  );
-  assert.equal(loaded.recordsByDate.flatMap((group) => group.records).length, 4);
-  assert.equal(Object.hasOwn(confirmedInvoice ?? {}, "rawPayloadJson"), false);
-
-  updateSpendingTransactionOverride({
-    statementRowId: "card-payment",
-    state: "included",
-    category: "home",
-    automaticState: "excluded",
-    automaticReason: "credit_card_payment",
-  }, ledgerDir);
-  const overridden = loadSpending(ledgerDir);
-  assert.equal(
-    overridden.accountRecords.find((row) => row.statementRowId === "card-payment")?.state,
-    "included",
-  );
-  assert.equal(overridden.monthlyRows[0]?.account.home, 300);
-
-  updateSpendingTransactionOverride({ statementRowId: "card-payment", state: null }, ledgerDir);
-  assert.equal(
-    loadSpending(ledgerDir).accountRecords.find((row) => row.statementRowId === "card-payment")
-      ?.state,
-    "excluded",
-  );
-  assert.throws(
-    () => updateSpendingTransactionOverride({
-      statementRowId: " ",
-      state: "included",
-      category: "home",
-      automaticState: "excluded",
-      automaticReason: "credit_card_payment",
-    }, ledgerDir),
-    /statement row id is required/i,
-  );
-  assert.throws(
-    () => updateSpendingTransactionOverride({
-      statementRowId: "card-payment",
-      state: "invalid" as never,
-      category: "home",
-      automaticState: "excluded",
-      automaticReason: "credit_card_payment",
-    }, ledgerDir),
-    /Unknown spending state: invalid/,
-  );
-  assert.throws(
-    () => updateSpendingTransactionOverride({
-      statementRowId: "card-payment",
-      state: "included",
-      category: "invalid" as never,
-      automaticState: "excluded",
-      automaticReason: "credit_card_payment",
-    }, ledgerDir),
-    /Unknown spending category: invalid/,
-  );
-  assert.throws(
-    () => updateSpendingTransactionOverride({
-      statementRowId: "card-payment",
-      state: "included",
-      category: "home",
-      automaticState: "excluded",
-      automaticReason: "invalid" as never,
-    }, ledgerDir),
-    /Unknown automatic spending reason: invalid/,
-  );
-  assert.throws(
-    () => updateSpendingTransactionOverride({
-      statementRowId: "missing",
-      state: "included",
-      category: "home",
-      automaticState: "excluded",
-      automaticReason: "credit_card_payment",
-    }, ledgerDir),
-    /No account transaction found for statement row id: missing/,
-  );
-
-  updateSpendingItemCategory({ itemKey: "confirmed-item-2", category: "leisure" }, ledgerDir);
-  assert.equal(
-    loadSpending(ledgerDir).invoices.find((invoice) => invoice.invoiceKey === "confirmed-invoice")
-      ?.items[2]?.category,
-    "leisure",
-  );
-  assert.throws(
-    () => updateSpendingItemCategory({
-      itemKey: "confirmed-item-a",
-      category: "invalid" as never,
-    }, ledgerDir),
-    /Unknown spending category: invalid/,
-  );
-  assert.throws(
-    () => updateSpendingItemCategory({ itemKey: "", category: "food" }, ledgerDir),
-    /item key is required/i,
-  );
-  assert.throws(
-    () => updateSpendingItemCategory({ itemKey: "missing", category: "food" }, ledgerDir),
-    /No spending item found for key: missing/,
-  );
-
-  const januaryDb = openLedgerDatabase(ledgerDir);
-  insertInvoice(januaryDb, {
-    invoiceKey: "january-invoice",
-    invoiceId: "IJ12345678",
-    status: "confirmed",
-    amount: 70,
-    issuedAt: Date.UTC(2026, 0, 15, 12) / 1000,
-  });
-  insertItem(januaryDb, {
-    itemKey: "january-item",
-    invoiceKey: "january-invoice",
-    sequence: 1,
-    paidAmount: 70,
-    productName: "January meal",
-    category: "food",
-  });
-  insertAccountTransaction(januaryDb, {
-    statementRowId: "january-account-spend",
-    accountNumber: "111",
-    date: "2026-01-15",
-    description: "簽帳消費",
-    withdrawalAmount: 30,
-  });
-  januaryDb.close();
-
-  const january = loadSpending(ledgerDir, { selectedMonth: "2026-01" });
-  assert.equal(january.selectedMonth, "2026-01");
-  assert.deepEqual(january.selectedMonthSummary, {
-    total: 100,
-    invoiceCount: 1,
-    accountCount: 1,
-  });
-  assert.deepEqual(january.dailyRows.map((row) => [row.date, row.total]), [["2026-01-15", 100]]);
-  assert.deepEqual(january.invoices.map((invoice) => invoice.invoiceKey), ["january-invoice"]);
-  assert.deepEqual(
-    january.recordsByDate.flatMap((group) => group.records).map((record) => record.key).sort(),
-    ["account:january-account-spend", "invoice:january-invoice"],
-  );
-  const januaryFood = loadSpending(ledgerDir, {
-    selectedMonth: "2026-01",
-    selectedCategory: "food",
-  });
-  assert.equal(januaryFood.selectedCategory, "food");
-  assert.deepEqual(
-    januaryFood.recordsByDate.flatMap((group) => group.records).map((record) => record.key),
-    ["invoice:january-invoice"],
-  );
-
-  const disabledDb = openLedgerDatabase(ledgerDir);
-  insertInvoice(disabledDb, {
-    invoiceKey: "cross-invoice-same-source",
-    invoiceId: "KL12345678",
-    status: "confirmed",
-    amount: 11,
-    sourceFileId: "source-confirmed-invoice",
-    importRunId: "run-other",
-  });
-  insertInvoice(disabledDb, {
-    invoiceKey: "cross-invoice-same-run",
-    invoiceId: "MN12345678",
-    status: "confirmed",
-    amount: 12,
-    sourceFileId: "source-other-invoice",
-    importRunId: "run",
-  });
-  insertInvoice(disabledDb, {
-    invoiceKey: "invoice-with-disabled-item",
-    invoiceId: "OP12345678",
-    status: "confirmed",
-    amount: 13,
-  });
-  insertItem(disabledDb, {
-    itemKey: "disabled-item",
-    invoiceKey: "invoice-with-disabled-item",
-    sequence: 1,
-    paidAmount: 13,
-    productName: "Disabled item",
-    category: "shopping",
-  });
-  insertAccountTransaction(disabledDb, {
-    statementRowId: "cross-account-same-source",
-    accountNumber: "333",
-    date: "2026-02-01",
-    description: "Cross-pair purchase",
-    withdrawalAmount: 21,
-    sourceFileId: "source-mirrored-transfer",
-    importRunId: "run-other",
-  });
-  insertAccountTransaction(disabledDb, {
-    statementRowId: "cross-account-same-run",
-    accountNumber: "333",
-    date: "2026-02-01",
-    description: "Cross-pair purchase",
-    withdrawalAmount: 22,
-    sourceFileId: "source-other-account",
-    importRunId: "run",
-  });
-  insertCardStatementLine(
-    disabledDb,
-    "cross-card-same-source",
-    -301,
-    "source-card-payment-line",
-    "run-other",
-  );
-  insertCardStatementLine(
-    disabledDb,
-    "cross-card-same-run",
-    -302,
-    "source-other-card",
-    "run",
-  );
-  insertAccountTransaction(disabledDb, {
-    statementRowId: "cross-card-payment-same-source",
-    accountNumber: "333",
-    date: "2026-02-02",
-    description: "Card payment",
-    withdrawalAmount: 301,
-  });
-  insertAccountTransaction(disabledDb, {
-    statementRowId: "cross-card-payment-same-run",
-    accountNumber: "333",
-    date: "2026-02-02",
-    description: "Card payment",
-    withdrawalAmount: 302,
-  });
-  for (const [index, sourceFileId] of [
-    "source-confirmed-invoice",
-    "source-mirrored-transfer",
-    "source-card-payment-line",
-    "source-disabled-item",
-  ].entries()) {
-    disabledDb.prepare(`
-      INSERT INTO disabled_import_sources (
-        disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-        source_version_key, reason, state, disabled_at, preview_token
-      ) VALUES (?, 'issue-a', ?, 'run', ?, 'test', 'active',
-        '2026-07-20T00:00:00.000Z', ?)
-    `).run(`disabled-${index}`, sourceFileId, sourceVersionKey(sourceFileId, "run"), `preview-${index}`);
-  }
-  insertAccountTransaction(disabledDb, {
-    statementRowId: "lineage-account",
-    accountNumber: "444",
-    date: "2026-02-03",
-    description: "Versioned purchase",
-    withdrawalAmount: 23,
-    sourceFileId: "lineage-source",
-    importRunId: "run-a",
-  });
-  disabledDb.prepare(`
-    INSERT INTO source_row_lineage (
-      source_file_id, import_run_id, source_version_key, source_row_index,
-      projection_table, statement_row_id, outcome, created_at
-    ) VALUES ('lineage-source-b', 'run-b', 'lineage-version-b', 1,
-      'account_transactions', 'lineage-account', 'inserted', '2026-02-03T00:00:00.000Z')
-  `).run();
-  disabledDb.prepare(`
-    INSERT INTO disabled_import_sources (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      source_version_key, reason, state, disabled_at, preview_token
-    ) VALUES ('disabled-lineage-a', 'issue-lineage', 'lineage-source', 'run-a',
-      ?, 'test', 'active', '2026-07-20T00:00:00.000Z', 'preview-lineage-a')
-  `).run(sourceVersionKey("lineage-source", "run-a"));
-  disabledDb.close();
-
-  const visible = loadSpending(ledgerDir);
-  assert.equal(
-    visible.invoices.some((invoice) => invoice.invoiceKey === "confirmed-invoice"),
-    false,
-  );
-  assert.equal(
-    visible.accountRecords.some((row) => row.statementRowId === "mirrored-transfer"),
-    false,
-  );
-  const visibleCardPayment = visible.accountRecords
-    .find((row) => row.statementRowId === "card-payment");
-  assert.ok(visibleCardPayment);
-  assert.equal(visibleCardPayment.automaticReason, "unclassified");
-  for (const invoiceKey of ["cross-invoice-same-source", "cross-invoice-same-run"]) {
-    assert.equal(visible.invoices.some((invoice) => invoice.invoiceKey === invoiceKey), true);
-  }
-  assert.deepEqual(
-    visible.invoices.find((invoice) => invoice.invoiceKey === "invoice-with-disabled-item")?.items,
-    [],
-  );
-  for (const statementRowId of ["cross-account-same-source", "cross-account-same-run"]) {
-    assert.equal(visible.accountRecords.some((row) => row.statementRowId === statementRowId), true);
-  }
-  for (const statementRowId of [
-    "cross-card-payment-same-source",
-    "cross-card-payment-same-run",
-  ]) {
-    assert.equal(
-      visible.accountRecords.find((row) => row.statementRowId === statementRowId)?.automaticReason,
-      "credit_card_payment",
-    );
-  }
-  assert.equal(
-    visible.accountRecords.some((row) => row.statementRowId === "lineage-account"),
-    true,
-  );
-
-  const hiddenLineageDb = openLedgerDatabase(ledgerDir);
-  hiddenLineageDb.prepare(`
-    INSERT INTO disabled_import_sources (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      source_version_key, reason, state, disabled_at, preview_token
-    ) VALUES ('disabled-lineage-b', 'issue-lineage', 'lineage-source-b', 'run-b',
-      'lineage-version-b', 'test', 'active', '2026-07-20T00:00:00.000Z', 'preview-lineage-b')
-  `).run();
-  const lineagePlan = hiddenLineageDb.prepare(`EXPLAIN QUERY PLAN
-    SELECT statement_row_id FROM account_transactions
-    WHERE ${activeImportSql("account_transactions")}
-  `).all() as Array<{ detail: string }>;
-  assert.equal(
-    lineagePlan.some((row) => row.detail.includes("source_row_lineage_active_support_idx")),
-    true,
-  );
-  hiddenLineageDb.close();
-  assert.equal(
-    loadSpending(ledgerDir).accountRecords.some((row) => row.statementRowId === "lineage-account"),
-    false,
-  );
-} finally {
-  rmSync(ledgerDir, { recursive: true, force: true });
-}

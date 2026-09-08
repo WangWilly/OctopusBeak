@@ -139,6 +139,7 @@ export type SpendingDateGroup = {
   pendingCount: number;
 };
 export type SpendingModel = {
+  canonical?: CanonicalSpendingView;
   months: string[];
   monthlyRows: MonthlySpendingRow[];
   selectedMonth: string | null;
@@ -154,6 +155,92 @@ export type SpendingModel = {
 };
 
 export type SpendingPageDto = SpendingModel;
+
+export type CanonicalSpendingAmountDto = {
+  currency: string;
+  value: number;
+  exact: {
+    coefficient: string;
+    scale: number;
+  };
+};
+
+export type CanonicalSpendingCategoryDto = {
+  mode: "single" | "allocated" | "absent";
+  code: string | null;
+  taxonomyId: string | null;
+  taxonomyVersion: string | null;
+  components: readonly {
+    code: string;
+    taxonomyId: string;
+    taxonomyVersion: string;
+    amount: CanonicalSpendingAmountDto;
+  }[];
+};
+
+export type CanonicalSpendingRecordDto = {
+  transactionId: string;
+  accountId: string;
+  accountNumber: string | null;
+  sourceConnectionKey: string;
+  integrationNamespace: string;
+  stream: string;
+  date: string;
+  description: string | null;
+  amount: CanonicalSpendingAmountDto;
+  kind: string | null;
+  category: CanonicalSpendingCategoryDto;
+  display: {
+    label: string | null;
+    status: "supported" | "fallback" | "absent";
+    origin: string | null;
+    kind: string | null;
+  };
+  tags: readonly {
+    id: string;
+    label: string;
+  }[];
+  inclusion: "included" | "excluded" | "eligibility-gap";
+  eligibilityGap: string | null;
+};
+
+export type CanonicalSpendingView = {
+  availability: "empty" | "available" | "unavailable";
+  policy: {
+    id: "gross-posted-outflow";
+    version: "v1";
+    name: "Gross posted outflow";
+  };
+  knowledgePoint: number;
+  selectedMonth: string | null;
+  selectedCategory: string | null;
+  transactions: readonly CanonicalSpendingRecordDto[];
+  includedTransactions: readonly CanonicalSpendingRecordDto[];
+  totalsByCurrency: readonly CanonicalSpendingAmountDto[];
+  categoryTotalsByCurrency: readonly {
+    categoryCode: string;
+    taxonomyId: string;
+    taxonomyVersion: string;
+    currency: string;
+    amount: CanonicalSpendingAmountDto;
+    count: number;
+  }[];
+  unclassifiedByCurrency: readonly CanonicalSpendingAmountDto[];
+  classificationCoverage: {
+    includedCount: number;
+    classifiedCount: number;
+    unclassifiedCount: number;
+    includedAmountByCurrency: readonly CanonicalSpendingAmountDto[];
+    classifiedAmountByCurrency: readonly CanonicalSpendingAmountDto[];
+    unclassifiedAmountByCurrency: readonly CanonicalSpendingAmountDto[];
+  };
+  reportEligibility: {
+    status: "complete" | "incomplete";
+    gapCount: number;
+    gapAmountByCurrency: readonly CanonicalSpendingAmountDto[];
+  };
+  totalStatus: "complete" | "incomplete";
+};
 
 export type BuildSpendingModelInput = {
   invoices: readonly SpendingInvoiceDto[];

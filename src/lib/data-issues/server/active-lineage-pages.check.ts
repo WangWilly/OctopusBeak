@@ -133,14 +133,9 @@ try {
   assert.equal(overview.accounts.length, 0);
   assert.equal(overview.historyAvailability, "unavailable");
   assert.deepEqual(overview.dailyHistory, []);
-  assert.equal(
-    spending.accountRecords.some((row) => row.statementRowId === FIXTURE.validStatement),
-    true,
-  );
-  assert.equal(
-    spending.accountRecords.some((row) => row.statementRowId === FIXTURE.wrongStatement),
-    false,
-  );
+  assert.equal(spending.canonical?.availability, "empty");
+  assert.deepEqual(spending.canonical?.transactions, []);
+  assert.deepEqual(spending.accountRecords, []);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

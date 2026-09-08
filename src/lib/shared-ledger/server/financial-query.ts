@@ -4,10 +4,7 @@ import {
   openLedgerDrizzle,
 } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
-import type { SpendingCategory } from "../../spending/categories.ts";
-import type { SpendingReason, SpendingState } from "../../spending/model.ts";
 import {
-  activeImportSql,
   applyLedgerVisibility,
   loadActiveLedgerSupport,
   loadUnavailableAccountIssues,
@@ -28,6 +25,10 @@ import {
   type CanonicalOverviewExpectedSource,
   type CanonicalOverviewCurrentQueryResult,
 } from "../../../ledger/canonical/canonical-overview-query.ts";
+import {
+  createCanonicalSpendingQuery,
+  type CanonicalSpendingReport,
+} from "../../../ledger/canonical/canonical-categorization.ts";
 
 export type {
   CanonicalAmount,
@@ -112,54 +113,6 @@ export type ExchangeRateQueryRow = {
   twdPerUnit: number;
 };
 
-export type LegacySpendingInvoiceRow = {
-  invoice_key: string;
-  invoice_id: string;
-  issued_at: number | string | null;
-  invoice_amount: number | null;
-  seller_business_account_number: string | null;
-  seller_name: string | null;
-  seller_addr: string | null;
-  item_key: string | null;
-  item_sequence_number: number | null;
-  item_quantity: number | null;
-  item_unit_price: number | null;
-  item_paid_amount: number | null;
-  item_product_name: string | null;
-  category: SpendingCategory | null;
-};
-
-export type LegacySpendingAccountRow = {
-  statement_row_id: string;
-  bank: string;
-  account_number: string | null;
-  currency: string;
-  date: string;
-  transaction_time: string | null;
-  description: string | null;
-  note: string | null;
-  withdrawal_amount: number | null;
-  deposit_amount: number | null;
-};
-
-export type LegacySpendingCardPaymentRow = { date: string; twd_amount: number };
-
-export type LegacySpendingOverrideRow = {
-  statement_row_id: string;
-  state: SpendingState;
-  category: SpendingCategory | null;
-  automatic_state: SpendingState;
-  automatic_reason: SpendingReason | null;
-  updated_at: string;
-};
-
-export type LegacySpendingQueryData = {
-  invoices: LegacySpendingInvoiceRow[];
-  accountTransactions: LegacySpendingAccountRow[];
-  cardPayments: LegacySpendingCardPaymentRow[];
-  overrides: LegacySpendingOverrideRow[];
-};
-
 export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   status: "ok";
   kind: "current";
@@ -176,7 +129,7 @@ export type CurrentSpendingQueryResult = {
   status: "ok";
   kind: "current";
   product: "spending";
-  spending: LegacySpendingQueryData;
+  spending: CanonicalSpendingReport;
 };
 
 export type CurrentOverviewExchangeRateQueryResult = {
@@ -262,7 +215,9 @@ class LegacyFinancialQueryAdapter {
     request: CurrentFinancialQueryRequest,
   ): CurrentSpendingQueryResult
     | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct> | CurrentOverviewExchangeRateQueryResult> {
-    if (request.product === "spending") return this.readCurrentSpending();
+    if (request.product === "spending") {
+      throw new Error("Spending reads must use the canonical query boundary.");
+    }
     if (request.product === "overview" && "selection" in request) {
       return this.readCurrentOverviewExchangeRates(request);
     }
@@ -417,19 +372,6 @@ class LegacyFinancialQueryAdapter {
     }
   }
 
-  private readCurrentSpending(): CurrentSpendingQueryResult {
-    const sqlite = openLedgerDatabase(this.ledgerDir);
-    try {
-      return {
-        status: "ok",
-        kind: "current",
-        product: "spending",
-        spending: loadSpendingQueryData(sqlite),
-      };
-    } finally {
-      sqlite.close();
-    }
-  }
 }
 
 /**
@@ -440,11 +382,13 @@ class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
   private readonly ledgerDir: string;
   private readonly legacy: LegacyFinancialQueryAdapter;
   private readonly canonicalOverview: ReturnType<typeof createCanonicalOverviewQuery>;
+  private readonly canonicalSpending: ReturnType<typeof createCanonicalSpendingQuery>;
 
   constructor(ledgerDir: string) {
     this.ledgerDir = ledgerDir;
     this.legacy = new LegacyFinancialQueryAdapter(ledgerDir);
     this.canonicalOverview = createCanonicalOverviewQuery(ledgerDir);
+    this.canonicalSpending = createCanonicalSpendingQuery(ledgerDir);
   }
 
   current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
@@ -465,6 +409,14 @@ class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
       return createCanonicalOverviewQuery(this.ledgerDir, {
         expectedSources: request.expectedSources,
       }).current();
+    }
+    if (request.product === "spending") {
+      return {
+        status: "ok",
+        kind: "current",
+        product: "spending",
+        spending: this.canonicalSpending.current(),
+      };
     }
     return this.legacy.current(request as never) as CurrentSpendingQueryResult | Promise<
       CurrentOverviewExchangeRateQueryResult | CurrentLedgerQueryResult<"assets" | "liabilities">
@@ -495,55 +447,4 @@ function currentLedgerResult<Product extends LedgerFinancialProduct>(
     unavailableAccountIssues,
     unavailableAccounts: unavailableAccountIssues.map(unavailableAccountFromIssue),
   };
-}
-
-function loadSpendingQueryData(db: ReturnType<typeof openLedgerDrizzle>["sqlite"]): LegacySpendingQueryData {
-  const invoices = db.prepare(`
-    SELECT
-      personal_invoices.invoice_key,
-      personal_invoices.invoice_id,
-      personal_invoices.issued_at,
-      personal_invoices.amount AS invoice_amount,
-      personal_invoices.seller_business_account_number,
-      personal_invoices.seller_name,
-      personal_invoices.seller_addr,
-      items.item_key,
-      items.item_sequence_number,
-      items.item_quantity,
-      items.item_unit_price,
-      items.item_paid_amount,
-      items.item_product_name,
-      items.category
-    FROM personal_invoices
-    LEFT JOIN personal_invoice_items AS items
-      ON items.invoice_key = personal_invoices.invoice_key
-      AND ${activeImportSql("personal_invoice_items", "items")}
-    WHERE personal_invoices.status = ?
-      AND ${activeImportSql("personal_invoices")}
-    ORDER BY personal_invoices.issued_at, personal_invoices.invoice_key,
-      items.item_sequence_number, items.item_key
-  `).all("confirmed") as LegacySpendingInvoiceRow[];
-  const accountTransactions = db.prepare(`
-    SELECT statement_row_id, bank, account_number, currency,
-      COALESCE(transaction_date, accounting_date) AS date,
-      transaction_time, description, note, withdrawal_amount, deposit_amount
-    FROM account_transactions
-    WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
-      AND COALESCE(transaction_date, accounting_date) IS NOT NULL
-      AND ${activeImportSql("account_transactions")}
-    ORDER BY date, statement_row_id
-  `).all() as LegacySpendingAccountRow[];
-  const cardPayments = db.prepare(`
-    SELECT COALESCE(consume_date, posting_date) AS date, twd_amount
-    FROM credit_card_statement_lines
-    WHERE twd_amount < 0
-      AND COALESCE(consume_date, posting_date) IS NOT NULL
-      AND ${activeImportSql("credit_card_statement_lines")}
-  `).all() as LegacySpendingCardPaymentRow[];
-  const overrides = db.prepare(`
-    SELECT statement_row_id, state, category, automatic_state,
-      automatic_reason, updated_at
-    FROM spending_transaction_overrides
-  `).all() as LegacySpendingOverrideRow[];
-  return { invoices, accountTransactions, cardPayments, overrides };
 }
