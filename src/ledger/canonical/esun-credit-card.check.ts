@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -23,6 +25,8 @@ import {
   isEsunCreditCardHumanAttestedV2Active,
 } from "./esun-credit-card-human-attestation.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalSchemaLifecyclePlan } from "./canonical-schema-implementation.ts";
+import { openCanonicalSchemaLifecycle } from "./canonical-schema-lifecycle.ts";
 
 const identity = {
   sourceConnectionKey: "esun-connection-synthetic",
@@ -327,6 +331,57 @@ test("E.SUN initial attestation repair reuses the writer transaction snapshot", 
   }
 });
 
+for (const existingDatabase of [false, true]) {
+  test(`E.SUN first capture commits while another process holds a validated runtime handle (${existingDatabase ? "existing" : "fresh"} database)`, async () => {
+    const directory = mkdtempSync(join("/tmp", "esun-credit-card-runtime-reader-"));
+    const databasePath = join(directory, "canonical.sqlite");
+    if (existingDatabase) {
+      // Reproduce a current-version ledger opened before the readiness repairs
+      // existed, without seeding or changing any financial facts.
+      const plan = createCanonicalSchemaLifecyclePlan();
+      const previous = openCanonicalSchemaLifecycle(databasePath, {
+        ...plan,
+        repairs: plan.repairs?.filter((repair) => !repair.id.includes("runtime-readiness/")),
+      });
+      previous.close();
+    }
+    const store = createCanonicalSourceStore(databasePath);
+    const reader = spawn(process.execPath, [
+      "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e",
+      `import { createCanonicalSourceStore } from ${JSON.stringify(new URL("./canonical-source-store.ts", import.meta.url).href)};
+       const store = createCanonicalSourceStore(process.argv[1]);
+       console.log("ready");
+       process.stdin.resume();
+       process.stdin.on("end", () => { store.close(); });`,
+      databasePath,
+    ], { stdio: ["pipe", "pipe", "pipe"] });
+    const exited = once(reader, "exit");
+    let diagnostics = "";
+    reader.stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Reader did not start: ${diagnostics}`)), 10_000);
+        reader.stdout.once("data", () => { clearTimeout(timer); resolve(); });
+        reader.once("error", (error) => { clearTimeout(timer); reject(error); });
+        reader.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Reader exited ${code}: ${diagnostics}`)); });
+      });
+      const committed = await commitEsunCreditCardCapture(store,
+        buildEsunCanonicalCreditCardCapture(options({
+          statementRows: [],
+          grid: { ...grid, capturedRowCount: 1 },
+        })),
+      );
+      assert.equal(committed.status, "canonical-live");
+      assert.equal(committed.transactionCount, 1);
+    } finally {
+      reader.stdin.end();
+      await exited;
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("E.SUN repeated captures retain one account/instrument authority and add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repeat-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
@@ -474,19 +529,15 @@ test("E.SUN extension failure rolls back the shared capture and initial attestat
       }).value ?? 0);
     assert.equal(count("source_captures"), 0);
     assert.equal(count("source_records"), 0);
-    assert.equal(
-      Number((base.db.prepare(`
-        SELECT COUNT(*) AS value FROM sqlite_master
-        WHERE type = 'table' AND name IN (
-          'canonical_credit_card_account_identities',
-          'canonical_credit_card_instruments',
-          'canonical_credit_card_transaction_details',
-          'canonical_credit_card_statements',
-          'esun_credit_card_attestation_events'
-        )
-      `).get() as { value?: number }).value ?? 0),
-      0,
-    );
+    // Physical schema is ready before collection; failed capture data and
+    // the attestation event must still roll back together.
+    for (const table of [
+      "canonical_credit_card_account_identities",
+      "canonical_credit_card_instruments",
+      "canonical_credit_card_transaction_details",
+      "canonical_credit_card_statements",
+      "esun_credit_card_attestation_events",
+    ]) assert.equal(count(table), 0);
   } finally {
     base.close();
   }
