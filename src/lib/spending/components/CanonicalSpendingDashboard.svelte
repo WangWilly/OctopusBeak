@@ -2,6 +2,11 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import {
+    aggregateCanonicalByMonth,
+    canonicalSpendingCategoryMatches,
+    scopeCanonicalSpendingView,
+  } from "../canonical-view.ts";
   import type {
     CanonicalSpendingAmountDto,
     CanonicalSpendingRecordDto,
@@ -11,32 +16,37 @@
   export let spending: CanonicalSpendingView;
 
   let selectedMonth: string | undefined;
-  let selectedCategory: string | undefined;
+  let selectedCategory: string | null | undefined;
+  let previousSpending: CanonicalSpendingView | undefined;
 
+  $: if (previousSpending !== spending) {
+    previousSpending = spending;
+    selectedMonth = undefined;
+    selectedCategory = undefined;
+  }
   $: months = [...new Set(spending.transactions
     .filter((record) => record.inclusion !== "excluded")
     .map((record) => record.date.slice(0, 7)))].sort();
   $: activeMonth = selectedMonth ?? spending.selectedMonth ?? months.at(-1) ?? null;
-  $: activeCategory = selectedCategory ?? spending.selectedCategory ?? null;
-  $: monthTransactions = spending.transactions.filter((record) =>
-    activeMonth === null || record.date.startsWith(`${activeMonth}-`),
+  $: activeCategory = selectedCategory === undefined ? spending.selectedCategory : selectedCategory;
+  $: period = scopeCanonicalSpendingView(spending, activeMonth);
+  $: policyLabel = $locale === "zh-TW" ? "已入帳流出總額" : "Gross posted outflow";
+  $: visibleTransactions = period.transactions.filter((record) =>
+    record.inclusion !== "excluded" && canonicalSpendingCategoryMatches(record, activeCategory),
   );
-  $: visibleTransactions = monthTransactions.filter((record) =>
-    record.inclusion !== "excluded" && categoryMatches(record, activeCategory),
-  );
-  $: categoryCodes = [...new Set(spending.includedTransactions.flatMap((record) => {
+  $: categoryCodes = [...new Set(period.includedTransactions.flatMap((record) => {
     if (record.category.mode === "single" && record.category.code) return [record.category.code];
     if (record.category.mode === "allocated") return record.category.components.map((component) => component.code);
     return [];
   }))].sort((left, right) => left.localeCompare(right));
-  $: monthTotals = aggregateByMonth(spending.includedTransactions);
+  $: monthTotals = aggregateCanonicalByMonth(spending.includedTransactions);
   $: categoryTotals = [
-    ...spending.categoryTotalsByCurrency.map((row) => ({
-      label: row.categoryCode,
+    ...period.categoryTotalsByCurrency.map((row) => ({
+      label: categoryText(row.labels, row.categoryCode),
       amount: row.amount,
       code: row.categoryCode,
     })),
-    ...spending.unclassifiedByCurrency.map((amount) => ({
+    ...period.unclassifiedByCurrency.map((amount) => ({
       label: $locale === "zh-TW" ? "未分類" : "Unclassified",
       amount,
       code: "__unclassified",
@@ -45,14 +55,6 @@
   $: visibleCategoryTotals = activeCategory
     ? categoryTotals.filter((row) => row.code === activeCategory)
     : categoryTotals;
-
-  function categoryMatches(record: CanonicalSpendingRecordDto, category: string | null) {
-    if (!category) return true;
-    if (category === "__unclassified") return record.category.mode === "absent";
-    return record.category.mode === "single"
-      ? record.category.code === category
-      : record.category.mode === "allocated" && record.category.components.some((component) => component.code === category);
-  }
 
   function amountText(amount: CanonicalSpendingAmountDto) {
     return formatMoney(amount, { locale: $locale });
@@ -68,33 +70,34 @@
 
   function categoryLabel(record: CanonicalSpendingRecordDto) {
     if (record.category.mode === "absent") return $locale === "zh-TW" ? "未分類" : "Unclassified";
-    if (record.category.mode === "single") return record.category.code ?? ($locale === "zh-TW" ? "未分類" : "Unclassified");
-    return record.category.components.map((component) => component.code).join(" · ");
+    if (record.category.mode === "single") return categoryText(record.category.labels, record.category.code);
+    return record.category.components.map((component) => categoryText(component.labels, component.code)).join(" · ");
+  }
+
+  function categoryLabelForCode(code: string) {
+    for (const record of period.includedTransactions) {
+      if (record.category.mode === "single" && record.category.code === code)
+        return categoryText(record.category.labels, code);
+      if (record.category.mode === "allocated") {
+        const component = record.category.components.find((candidate) => candidate.code === code);
+        if (component) return categoryText(component.labels, code);
+      }
+    }
+    return categoryText(null, code);
+  }
+
+  function categoryText(
+    labels: { en: string; zhHant: string } | null,
+    code: string | null,
+  ) {
+    if (labels) return $locale === "zh-TW" ? labels.zhHant : labels.en;
+    if (!code) return $locale === "zh-TW" ? "未分類" : "Unclassified";
+    return code.replaceAll("_", " ").replace(/\b\w/gu, (character) => character.toUpperCase());
   }
 
   function statusLabel(record: CanonicalSpendingRecordDto) {
     if (record.inclusion === "eligibility-gap") return $locale === "zh-TW" ? "資格缺口" : "Eligibility gap";
     return $locale === "zh-TW" ? "已納入" : "Included";
-  }
-
-  function aggregateByMonth(records: readonly CanonicalSpendingRecordDto[]) {
-    const amounts = new Map<string, CanonicalSpendingAmountDto>();
-    for (const record of records) {
-      const key = `${record.date.slice(0, 7)}|${record.amount.currency}`;
-      const previous = amounts.get(key);
-      if (!previous) {
-        amounts.set(key, record.amount);
-        continue;
-      }
-      const scale = Math.max(previous.exact.scale, record.amount.exact.scale);
-      const coefficient = BigInt(previous.exact.coefficient) * 10n ** BigInt(scale - previous.exact.scale)
-        + BigInt(record.amount.exact.coefficient) * 10n ** BigInt(scale - record.amount.exact.scale);
-      const exact = { coefficient: coefficient.toString(), scale };
-      amounts.set(key, { currency: previous.currency, exact, value: Number(coefficient) / 10 ** scale });
-    }
-    return [...amounts.entries()]
-      .map(([key, amount]) => ({ month: key.slice(0, key.indexOf("|")), amount }))
-      .sort((left, right) => left.month.localeCompare(right.month) || left.amount.currency.localeCompare(right.amount.currency));
   }
 
   function barWidth(
@@ -116,11 +119,11 @@
   active="spending"
   eyebrow={$t.spending.eyebrow}
   title={$t.spending.title}
-  sideLabel={$locale === "zh-TW" ? "Gross posted outflow" : "Gross posted outflow"}
-  sideValue={spending.totalsByCurrency.length > 0
-    ? spending.totalsByCurrency.map(amountText).join(" / ")
+  sideLabel={policyLabel}
+  sideValue={period.totalsByCurrency.length > 0
+    ? period.totalsByCurrency.map(amountText).join(" / ")
     : "--"}
-  sideSub={spending.totalStatus === "complete"
+  sideSub={period.totalStatus === "complete"
     ? ($locale === "zh-TW" ? "已入帳流出總額" : "Posted outflow total")
     : ($locale === "zh-TW" ? "總額不完整" : "Total incomplete")}
 >
@@ -128,27 +131,27 @@
     <section class="card canonical-policy-card" data-policy-id={spending.policy.id}>
       <div>
         <p class="eyebrow">{$locale === "zh-TW" ? "支出範圍" : "Spending scope"}</p>
-        <h2>{spending.policy.name} {spending.policy.version}</h2>
+        <h2>{policyLabel}</h2>
         <p class="panel-meta">
           {$locale === "zh-TW"
             ? "只計入已入帳的流出交易；不同幣別分開顯示。"
             : "Only posted outflows are counted; currencies stay separate."}
         </p>
       </div>
-      <span class:incomplete={spending.totalStatus === "incomplete"} class="canonical-total-status" data-total-status={spending.totalStatus}>
-        {spending.totalStatus === "complete"
+      <span class:incomplete={period.totalStatus === "incomplete"} class="canonical-total-status" data-total-status={period.totalStatus}>
+        {period.totalStatus === "complete"
           ? ($locale === "zh-TW" ? "總額完整" : "Complete total")
           : ($locale === "zh-TW" ? "總額不完整" : "Incomplete total")}
       </span>
     </section>
 
-    {#if spending.reportEligibility.status === "incomplete"}
+    {#if period.reportEligibility.status === "incomplete"}
       <section class="card canonical-gap-card" data-eligibility-gap role="status">
         <strong>{$locale === "zh-TW" ? "資料資格缺口" : "Eligibility coverage gap"}</strong>
         <span>
           {$locale === "zh-TW"
-            ? `${spending.reportEligibility.gapCount} 筆、${spending.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} 缺少判定是否列入支出所需資料。`
-            : `${spending.reportEligibility.gapCount} transaction(s), ${spending.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} are missing data needed to decide whether they belong in spending.`}
+            ? `${period.reportEligibility.gapCount} 筆、${period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} 缺少判定是否列入支出所需資料。`
+            : `${period.reportEligibility.gapCount} transaction(s), ${period.reportEligibility.gapAmountByCurrency.map(amountText).join(" / ")} are missing data needed to decide whether they belong in spending.`}
         </span>
       </section>
     {/if}
@@ -157,24 +160,24 @@
       <div class="panel-title">
         <div>
           <p class="eyebrow">{$locale === "zh-TW" ? "Totals" : "Totals"}</p>
-          <h2>{$locale === "zh-TW" ? "Gross posted outflow" : "Gross posted outflow"}</h2>
+          <h2>{policyLabel}</h2>
         </div>
-        <span class="panel-meta">{spending.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
+        <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {period.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
       </div>
       <div class="canonical-amount-list">
-        {#each spending.totalsByCurrency as amount (amount.currency)}
+        {#each period.totalsByCurrency as amount (amount.currency)}
           <div class="canonical-amount-row">
             <span>{amount.currency}</span>
             <strong class="money" data-sensitive>{amountText(amount)}</strong>
           </div>
         {:else}
-          <span class="panel-meta">{$locale === "zh-TW" ? "尚無 canonical spending" : "No canonical spending yet."}</span>
+          <span class="panel-meta">{$locale === "zh-TW" ? "尚無支出資料" : "No spending data yet."}</span>
         {/each}
       </div>
       <div class="canonical-coverage-grid">
-        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{spending.classificationCoverage.classifiedCount}</strong></div>
-        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{spending.classificationCoverage.unclassifiedCount}</strong></div>
-        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{spending.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{period.classificationCoverage.classifiedCount}</strong></div>
+        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{period.classificationCoverage.unclassifiedCount}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{period.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
       </div>
     </section>
 
@@ -188,13 +191,13 @@
       </div>
     {/if}
 
-    <section class="card canonical-chart-card" aria-label={$locale === "zh-TW" ? "每月 Gross posted outflow" : "Monthly gross posted outflow chart"}>
+    <section class="card canonical-chart-card" aria-label={$locale === "zh-TW" ? "每月已入帳流出總額" : "Monthly gross posted outflow chart"}>
       <div class="panel-title">
         <div>
           <p class="eyebrow">{$locale === "zh-TW" ? "圖表" : "Chart"}</p>
           <h2>{$locale === "zh-TW" ? "每月支出" : "Monthly outflow"}</h2>
         </div>
-        <span class="panel-meta">{$locale === "zh-TW" ? "幣別分開" : "Currencies remain separate"}</span>
+        <span class="panel-meta">{$locale === "zh-TW" ? "全部月份・全部分類・幣別分開" : "All months · all categories · currencies remain separate"}</span>
       </div>
       <div class="canonical-chart" data-chart>
         {#each monthTotals as row (row.month + row.amount.currency)}
@@ -209,7 +212,7 @@
       </div>
       <div class="canonical-category-chart" data-category-chart>
         <h3>{$locale === "zh-TW" ? "依分類" : "By category"}</h3>
-        <p class="panel-meta">{$locale === "zh-TW" ? "全部月份" : "All months"}</p>
+        <p class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")}</p>
         {#each visibleCategoryTotals as row (row.code + row.amount.currency)}
           <div class="canonical-chart-row">
             <span>{row.label} · {row.amount.currency}</span>
@@ -231,11 +234,11 @@
         <span class="panel-meta">{visibleTransactions.length} {$locale === "zh-TW" ? "筆" : "records"}</span>
       </div>
       <div class="canonical-filter-row" role="group" aria-label={$locale === "zh-TW" ? "分類篩選" : "Category filter"}>
-        <button type="button" class="filter-btn" aria-pressed={!activeCategory} onclick={() => selectedCategory = undefined}>{$locale === "zh-TW" ? "全部" : "All"}</button>
+        <button type="button" class="filter-btn" aria-pressed={!activeCategory} onclick={() => selectedCategory = null}>{$locale === "zh-TW" ? "全部" : "All"}</button>
         {#each categoryCodes as categoryCode}
-          <button type="button" class="filter-btn" aria-pressed={activeCategory === categoryCode} onclick={() => selectedCategory = categoryCode}>{categoryCode}</button>
+          <button type="button" class="filter-btn" aria-pressed={activeCategory === categoryCode} onclick={() => selectedCategory = categoryCode}>{categoryLabelForCode(categoryCode)}</button>
         {/each}
-        {#if spending.classificationCoverage.unclassifiedCount > 0}
+        {#if period.classificationCoverage.unclassifiedCount > 0}
           <button type="button" class="filter-btn" aria-pressed={activeCategory === "__unclassified"} onclick={() => selectedCategory = "__unclassified"}>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</button>
         {/if}
       </div>
@@ -252,7 +255,7 @@
               {#if record.category.mode === "allocated"}
                 <div class="canonical-allocation-list" data-allocation-components>
                   {#each record.category.components as component (component.code)}
-                    <span>{component.code}: {amountText(component.amount)}</span>
+                    <span>{categoryText(component.labels, component.code)}: {amountText(component.amount)}</span>
                   {/each}
                 </div>
               {/if}

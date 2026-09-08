@@ -127,8 +127,6 @@ test("Spending loader uses the canonical report and exposes eligibility gaps", a
     assert.equal(enriched?.display.label, "Canonical Cafe");
     assert.equal(enriched?.display.kind, "override");
     assert.deepEqual(enriched?.tags.map((value) => value.label), ["reviewed"]);
-    assert.equal(loaded.invoices.length, 0);
-    assert.equal(loaded.accountRecords.length, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -142,8 +140,6 @@ test("Spending does not fall back to legacy rows when canonical data is absent",
     assert.ok(loaded.canonical);
     assert.equal(loaded.canonical.availability, "empty");
     assert.deepEqual(loaded.canonical.transactions, []);
-    assert.deepEqual(loaded.invoices, []);
-    assert.deepEqual(loaded.accountRecords, []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

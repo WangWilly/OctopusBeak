@@ -154,7 +154,11 @@ export type SpendingModel = {
   recordsByDate: SpendingDateGroup[];
 };
 
-export type SpendingPageDto = SpendingModel;
+/** Active desktop Spending payload. Legacy model fields stay available only to
+ * the compatibility model builder and are not emitted by the product loader. */
+export type SpendingPageDto = {
+  canonical: CanonicalSpendingView;
+};
 
 export type CanonicalSpendingAmountDto = {
   currency: string;
@@ -170,10 +174,18 @@ export type CanonicalSpendingCategoryDto = {
   code: string | null;
   taxonomyId: string | null;
   taxonomyVersion: string | null;
+  labels: {
+    en: string;
+    zhHant: string;
+  } | null;
   components: readonly {
     code: string;
     taxonomyId: string;
     taxonomyVersion: string;
+    labels: {
+      en: string;
+      zhHant: string;
+    } | null;
     amount: CanonicalSpendingAmountDto;
   }[];
 };
@@ -221,6 +233,10 @@ export type CanonicalSpendingView = {
     categoryCode: string;
     taxonomyId: string;
     taxonomyVersion: string;
+    labels: {
+      en: string;
+      zhHant: string;
+    } | null;
     currency: string;
     amount: CanonicalSpendingAmountDto;
     count: number;
