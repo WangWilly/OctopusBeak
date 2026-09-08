@@ -37,8 +37,8 @@
     <div class="modal-panel statements-modal-panel" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-head">
         <div>
-          <h2>{account ? $t.statements.accountTitle(account.label) : $t.statements.title}</h2>
-          <p class="lead">{account ? `${account.institution} / ${translateKnownLabel($t, account.typeLabel)}` : ""}</p>
+          <h2>{account ? $t.statements.accountTitle(account.institution) : $t.statements.title}</h2>
+          <p class="lead">{account ? translateKnownLabel($t, account.typeLabel) : ""}</p>
         </div>
         <button class="modal-close" type="button" aria-label={$t.common.close} on:click={() => (open = false)}>×</button>
       </div>
@@ -66,7 +66,7 @@
               <article class="statement-card" data-statement-id={statement.statementId} data-statement-revision-id={statement.statementRevisionId}>
                 <div class="statement-head">
                   <div>
-                    <h3>{$t.statements.statementRevision(statement.revisionNumber)}</h3>
+                    <h3>{$t.statements.statement}</h3>
                     <p class="statement-cycle">{statementDate(statement.cycleStart)} – {statementDate(statement.cycleEnd)}</p>
                   </div>
                   <div class="statement-amount">
@@ -93,8 +93,8 @@
                     <dd>{minimumAmount(statement)}</dd>
                   </div>
                   <div>
-                    <dt>{$t.statements.membershipIdentity}</dt>
-                    <dd>{$t.statements.membershipCount(statement.memberships.length)}</dd>
+                    <dt>{$t.statements.statementTransactions}</dt>
+                    <dd>{$t.statements.statementTransactionCount(statement.memberships.length)}</dd>
                   </div>
                 </dl>
 
@@ -115,7 +115,7 @@
                     </div>
                   </dl>
                   {#if statement.memberships.length > 0}
-                    <h4>{$t.statements.membershipIdentity}</h4>
+                    <h4>{$t.statements.statementTransactions}</h4>
                     <ul class="membership-list">
                       {#each statement.memberships as membership}
                         <li
@@ -154,6 +154,15 @@
 <style>
   .statements-modal-panel {
     width: min(980px, 100%);
+  }
+
+  .modal-head > div:first-child {
+    min-width: 0;
+  }
+
+  .modal-head h2 {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .statements-body {

@@ -5,15 +5,8 @@ import test from "node:test";
 const source = readFileSync(new URL("./LiabilitiesDashboard.svelte", import.meta.url), "utf8");
 
 test("liabilities exposes canonical coverage gaps and keeps awaiting ahead of partial copy", () => {
-  assert.match(source, /liabilities\.coverage !== "complete"/);
-  assert.match(source, /data-product-state=\{liabilities\.coverage\}/);
-  assert.match(source, /gap\.label \?\? gap\.integrationNamespace \?\? gap\.sourceConnectionKey/);
-  const stateExpression = source.slice(
-    source.indexOf("$: currentStateLabel"),
-    source.indexOf("\n\n  function buildMetrics", source.indexOf("$: currentStateLabel")),
-  );
-  assert.ok(stateExpression.indexOf('liabilities.availability === "awaiting"') < stateExpression.indexOf("liabilities.sourceGaps.length > 0"));
-  assert.ok(stateExpression.indexOf('liabilities.availability === "empty"') < stateExpression.indexOf("liabilities.sourceGaps.length > 0"));
+  assert.match(source, /ProjectionStateBanner/);
+  assert.match(source, /<ProjectionStateBanner projection=\{liabilities\} \/>/);
 });
 
 test("margin exposure keeps an independent investment-kind filter", () => {

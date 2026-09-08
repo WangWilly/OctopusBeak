@@ -60,6 +60,14 @@
     return cost > 0 ? `${(((value - cost) / cost) * 100).toFixed(2)}%` : "--";
   }
 
+  function formatPositionValue(row: AssetPositionDto) {
+    return formatMoney({
+      currency: row.currency,
+      value: row.value ?? 0,
+      exact: row.valueExact ?? undefined,
+    });
+  }
+
   function toggleExpanded(symbol: string) {
     expandedSymbols = { ...expandedSymbols, [symbol]: !expandedSymbols[symbol] };
   }
@@ -221,10 +229,10 @@
                 </td>
                 <td class="right num">{row.units}</td>
                 <td class="right money">
-                  {#if row.value === null}
+                  {#if row.value === null && !row.valueExact}
                     <span class="awaiting-value">{$t.positions.valueAwaiting}</span>
                   {:else}
-                    {formatMoney({ currency: row.currency, value: row.value })}
+                    {formatPositionValue(row)}
                   {/if}
                 </td>
                 <td
@@ -244,10 +252,10 @@
                     </td>
                     <td class="right num">{child.units}</td>
                     <td class="right money">
-                      {#if child.value === null}
+                      {#if child.value === null && !child.valueExact}
                         <span class="awaiting-value">{$t.positions.valueAwaiting}</span>
                       {:else}
-                        {formatMoney({ currency: child.currency, value: child.value })}
+                        {formatPositionValue(child)}
                       {/if}
                     </td>
                     <td

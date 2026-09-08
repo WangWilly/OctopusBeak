@@ -8,3 +8,8 @@ test("date sorting uses the timestamp displayed by the transaction table", () =>
   assert.match(source, /if \(key === "date"\) return row\.occurredAtUtc \?\? row\.date;/);
   assert.match(source, /formatUtcDate\(row\.occurredAtUtc \?\? row\.date,/);
 });
+
+test("transaction amounts preserve canonical exact values when present", () => {
+  assert.match(source, /row\.amountExact/);
+  assert.match(source, /formatTransactionAmount\(row\)/);
+});
