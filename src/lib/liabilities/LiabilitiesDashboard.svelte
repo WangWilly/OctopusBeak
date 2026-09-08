@@ -6,6 +6,7 @@
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import {
     historyPointKey,
+    type AccountKind,
     type AccountRowDto,
     type CurrencyAmountDto,
     type SummaryMetricDto,
@@ -25,6 +26,7 @@
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let marginFilter: AccountKind | "all" = "all";
   let reportOpen = false;
   let reportAccount: AccountRowDto | null = null;
 
@@ -48,6 +50,15 @@
     currency: chartCurrency,
     mode: "liability",
   });
+  $: currentStateLabel = liabilities.availability === "unavailable"
+    ? $t.overview.currentUnavailable
+    : liabilities.availability === "awaiting"
+      ? $t.overview.currentAwaiting
+      : liabilities.availability === "empty"
+        ? $t.overview.currentEmpty
+        : liabilities.sourceGaps.length > 0
+          ? $t.overview.currentPartial(liabilities.sourceGaps.length)
+          : $t.overview.currentUnavailable;
 
   function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
@@ -147,6 +158,18 @@
   bind:search
 >
   <div class="content">
+    {#if liabilities.coverage !== "complete"}
+      <div class="projection-state" role="status" data-product-state={liabilities.coverage}>
+        <span>{currentStateLabel}</span>
+        {#if liabilities.sourceGaps.length > 0}
+          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
+            {#each liabilities.sourceGaps as gap}
+              <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
     <section aria-label={$t.liabilities.metricsAria}>
       <SummaryStrip {metrics} />
     </section>
@@ -186,7 +209,39 @@
       focusAccountId={focusAccountId}
       onReportDataIssue={openReport}
     />
+
+    {#if liabilities.marginAccounts.length > 0}
+      <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
+        <div class="panel-title">
+          <h2>{$t.liabilities.marginExposure}</h2>
+        </div>
+        <AccountTable
+          accounts={liabilities.marginAccounts}
+          mode="liability"
+          bind:search
+          bind:filter={marginFilter}
+          transactionsByAccount={liabilities.transactionsByAccount}
+          dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+          onReportDataIssue={openReport}
+        />
+      </section>
+    {/if}
   </div>
 </DashboardShell>
 
 <ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />
+
+<style>
+  .projection-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+    color: var(--muted);
+  }
+  .projection-gap-list { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0; padding-left: var(--space-4); }
+</style>

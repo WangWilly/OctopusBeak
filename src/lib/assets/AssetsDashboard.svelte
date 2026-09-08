@@ -56,6 +56,15 @@
     currency: chartCurrency,
     mode: "asset",
   });
+  $: currentStateLabel = assets.availability === "unavailable"
+    ? $t.overview.currentUnavailable
+    : assets.availability === "awaiting"
+      ? $t.overview.currentAwaiting
+      : assets.availability === "empty"
+        ? $t.overview.currentEmpty
+        : assets.sourceGaps.length > 0
+          ? $t.overview.currentPartial(assets.sourceGaps.length)
+          : $t.overview.currentUnavailable;
 
   function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
@@ -150,6 +159,18 @@
   bind:search
 >
   <div class="content">
+    {#if assets.coverage !== "complete"}
+      <div class="projection-state" role="status" data-product-state={assets.coverage}>
+        <span>{currentStateLabel}</span>
+        {#if assets.sourceGaps.length > 0}
+          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
+            {#each assets.sourceGaps as gap}
+              <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
     <section aria-label={$t.assets.metricsAria}>
       <SummaryStrip {metrics} />
     </section>
@@ -194,3 +215,18 @@
 </DashboardShell>
 
 <ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />
+
+<style>
+  .projection-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+    color: var(--muted);
+  }
+  .projection-gap-list { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0; padding-left: var(--space-4); }
+</style>
