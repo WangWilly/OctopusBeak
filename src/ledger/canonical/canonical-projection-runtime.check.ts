@@ -22,6 +22,7 @@ import {
   commitCanonicalInvestmentCapture,
   createCanonicalInvestmentStore,
 } from "./investment-financial.ts";
+import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
 import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 
 const token = (label: string) =>
@@ -815,5 +816,196 @@ test("investment families are derived inside the Runtime snapshot", async () => 
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("current holdings keep financial effective time across later recollections", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-projection-investment-time-"));
+  const sourceConnectionKey = token("projection-runtime-time-connection");
+  const identityEpochKey = token("projection-runtime-time-epoch");
+  const accountKey = token("projection-runtime-time-account");
+  try {
+    const store = createCanonicalInvestmentStore(join(directory, "canonical.sqlite"));
+    const commit = async (input: {
+      captureId: string;
+      observedAt: string;
+      sourceEffectiveOn: string;
+      holdings: Array<{
+        sourceRecordKey: string;
+        producerSecurityId: string;
+        securityName: string;
+        ticker: string;
+        quantity: string;
+        valuation: string;
+        effectiveOn: string;
+      }>;
+    }) => {
+      await commitCanonicalInvestmentCapture(
+        store,
+        admitCanonicalInvestmentCapture(
+          buildYuantaInvestmentCapture({
+            sourceId: "yuanta-trade",
+            captureId: input.captureId,
+            sourceConnectionKey,
+            identityEpochKey,
+            accountKey,
+            reportingCurrency: "USD",
+            observedAt: input.observedAt,
+            sourceEffectiveOn: input.sourceEffectiveOn,
+            holdings: input.holdings.map((holding) => ({
+              sourceRecordKey: holding.sourceRecordKey,
+              producerSecurityId: holding.producerSecurityId,
+              securityName: holding.securityName,
+              ticker: holding.ticker,
+              currency: "USD",
+              effectiveOn: holding.effectiveOn,
+              quantity: { coefficient: holding.quantity, scale: 0 },
+              valuation: { coefficient: holding.valuation, scale: 0, currency: "USD" },
+            })),
+            transactions: [],
+          }),
+        ),
+      );
+    };
+    await commit({
+      captureId: "projection-runtime-time-recent",
+      observedAt: "2026-09-08T12:00:00.000Z",
+      sourceEffectiveOn: "2026-09-07",
+      holdings: [
+        {
+          sourceRecordKey: token("projection-runtime-time-recent-a"),
+          producerSecurityId: "SYNTHETIC-A",
+          securityName: "Synthetic A",
+          ticker: "SYN-A",
+          quantity: "2",
+          valuation: "200",
+          effectiveOn: "2026-09-07",
+        },
+        {
+          sourceRecordKey: token("projection-runtime-time-recent-b"),
+          producerSecurityId: "SYNTHETIC-B",
+          securityName: "Synthetic B",
+          ticker: "SYN-B",
+          quantity: "3",
+          valuation: "300",
+          effectiveOn: "2026-09-07",
+        },
+      ],
+    });
+    await commit({
+      captureId: "projection-runtime-time-recollected",
+      observedAt: "2026-09-09T12:00:00.000Z",
+      sourceEffectiveOn: "2026-09-01",
+      holdings: [
+        {
+          sourceRecordKey: token("projection-runtime-time-recollected-a"),
+          producerSecurityId: "SYNTHETIC-A",
+          securityName: "Synthetic A",
+          ticker: "SYN-A",
+          quantity: "1",
+          valuation: "100",
+          effectiveOn: "2026-09-01",
+        },
+      ],
+    });
+    store.close();
+
+    const rows = createCanonicalProjectionRuntime(join(directory, "canonical.sqlite"))
+      .read({
+        kind: "current",
+        families: ["investment-holdings"],
+        scope: { sourceConnectionKey },
+      }).families["investment-holdings"];
+    assert.deepEqual(
+      rows.map((row) => ({
+        securityKey: row.securityKey,
+        effectiveOn: row.effectiveOn,
+        quantity: row.quantityCoefficient,
+      })),
+      [
+        { securityKey: "yuanta-trade:SYNTHETIC-A", effectiveOn: "2026-09-07", quantity: "2" },
+        { securityKey: "yuanta-trade:SYNTHETIC-B", effectiveOn: "2026-09-07", quantity: "3" },
+      ],
+      "a later recollection of an older report must not displace the financially newer holding or infer withdrawal of an omitted security",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("credit-card statements distinguish lifecycle-ready empty profiles from missing schema", async () => {
+  const empty = await fixture();
+  try {
+    assert.deepEqual(
+      empty.runtime.read({
+        kind: "current",
+        families: ["credit-card-statements"],
+        scope: empty.scope,
+      }).families["credit-card-statements"],
+      [],
+      "a lifecycle-ready profile with no credit account has a legitimate empty family",
+    );
+  } finally {
+    await rm(empty.directory, { recursive: true, force: true });
+  }
+
+  const allMissing = await fixture();
+  try {
+    const path = canonicalSqlitePath(allMissing.directory);
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      for (const table of [
+        "canonical_credit_card_statement_memberships",
+        "canonical_credit_card_statement_revisions",
+        "canonical_credit_card_statements",
+        "canonical_credit_card_transaction_lifecycle",
+        "canonical_credit_card_transaction_details",
+        "canonical_credit_card_instrument_evidence",
+        "canonical_credit_card_relations",
+        "canonical_credit_card_instruments",
+        "canonical_credit_card_account_identities",
+        "canonical_credit_card_statement_summary_evidence",
+        "fubon_credit_statement_membership_details",
+        "fubon_credit_statement_revision_details",
+        "fubon_credit_statement_details",
+      ])
+        db.exec(`DROP TABLE IF EXISTS ${table}`);
+    } finally {
+      db.close();
+    }
+    assert.throws(
+      () => allMissing.runtime.read({
+        kind: "current",
+        families: ["credit-card-statements"],
+        scope: allMissing.scope,
+      }),
+      /credit-card statement projection is unavailable|credit-card table .* missing/i,
+      "missing both physical statement families must fail closed",
+    );
+  } finally {
+    await rm(allMissing.directory, { recursive: true, force: true });
+  }
+
+  const partial = await fixture();
+  try {
+    const db = new DatabaseSync(canonicalSqlitePath(partial.directory));
+    try {
+      db.exec("PRAGMA foreign_keys = OFF");
+      db.exec("DROP TABLE canonical_credit_card_statement_memberships");
+    } finally {
+      db.close();
+    }
+    assert.throws(
+      () => partial.runtime.read({
+        kind: "current",
+        families: ["credit-card-statements"],
+        scope: partial.scope,
+      }),
+      /credit-card statement projection is unavailable|credit-card table .* missing/i,
+      "a partial physical statement family must fail closed",
+    );
+  } finally {
+    await rm(partial.directory, { recursive: true, force: true });
   }
 });

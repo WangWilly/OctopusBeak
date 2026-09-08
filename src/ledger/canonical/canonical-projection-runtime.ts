@@ -2064,28 +2064,6 @@ function readFamily(
                } AS selection_rank
              FROM investment_holding_observations observation
             JOIN canonical_commits holding_commit ON holding_commit.commit_id = observation.commit_id
-            ${request.kind === "current" ? `JOIN (
-                 SELECT capture_scope.account_id, investment_capture.capture_id,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY capture_scope.account_id
-                          ORDER BY source_capture.observed_at DESC,
-                                   capture_commit.commit_sequence DESC,
-                                   hex(investment_capture.capture_id) DESC
-                        ) AS snapshot_rank
-                   FROM investment_captures investment_capture
-                   JOIN capture_scopes capture_scope
-                     ON capture_scope.capture_id = investment_capture.capture_id
-                   JOIN source_captures source_capture
-                     ON source_capture.capture_id = investment_capture.capture_id
-                   JOIN canonical_commits capture_commit
-                     ON capture_commit.commit_id = source_capture.commit_id
-                  WHERE capture_commit.commit_sequence <= ?
-                    AND source_capture.completeness = 'complete-range'
-                    AND source_capture.stream = 'investment'
-               ) latest_snapshot
-              ON latest_snapshot.capture_id = observation.capture_id
-             AND latest_snapshot.account_id = observation.account_id
-             AND latest_snapshot.snapshot_rank = 1` : ""}
             WHERE holding_commit.commit_sequence <= ?
               ${request.kind === "current" ? "AND observation.is_current = 1" : ""}
               AND (? IS NULL OR observation.effective_on <= ?)
@@ -2100,7 +2078,6 @@ function readFamily(
             AND (? IS NULL OR holding.effective_on >= ?)
           ORDER BY holding.effective_on, security.security_key`,
         knowledgeAt,
-        ...(request.kind === "current" ? [knowledgeAt] : []),
         knowledgeAt,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
@@ -2230,12 +2207,6 @@ function readFamily(
         knowledgeAt,
       );
     case "credit-card-statements": {
-      const creditAccount = db.prepare(`
-        SELECT 1
-          FROM financial_accounts
-         WHERE account_type = 'credit'
-         LIMIT 1
-      `).get();
       const tableExists = (name: string) => Boolean(db.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
       ).get(name));
@@ -2253,7 +2224,15 @@ function readFamily(
       const hasFubon = fubonTables.map(tableExists);
       const neutralComplete = hasNeutral.every(Boolean);
       const fubonComplete = hasFubon.every(Boolean);
+      // The lifecycle initializes the neutral statement family on a writable
+      // open; the provider-specific Fubon family is initialized by its own
+      // extension readiness when that source is present. A read against a
+      // store that skipped the required readiness transition must fail
+      // closed, even when the profile has no credit account yet; returning an
+      // empty family would make missing schema indistinguishable from a
+      // legitimate empty profile.
       if (
+        (!neutralComplete && !fubonComplete) ||
         (hasNeutral.some(Boolean) && !neutralComplete) ||
         (hasFubon.some(Boolean) && !fubonComplete)
       )
@@ -2273,7 +2252,6 @@ function readFamily(
       );
       if ((requiresFubon && !fubonComplete) || (requiresNeutral && !neutralComplete))
         throw new Error("Canonical credit-card statement projection is unavailable.");
-      if (!creditAccount && !neutralComplete && !fubonComplete) return [];
       const sourceRows: string[] = [];
       const sourceMemberships: string[] = [];
       const sourceParameters: ProjectionSqlInput[] = [];
