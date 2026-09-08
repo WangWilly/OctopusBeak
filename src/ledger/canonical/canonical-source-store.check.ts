@@ -231,6 +231,11 @@ test("production schema registry declares every published version transition", (
         fromVersion: 23,
         toVersion: 24,
       },
+      {
+        id: "canonical/v24-v25/security-name-observations/v1",
+        fromVersion: 24,
+        toVersion: 25,
+      },
     ],
   );
   assert.equal(steps[0]!.toVersion, 1);
@@ -239,7 +244,7 @@ test("production schema registry declares every published version transition", (
   assert.ok(Object.isFrozen(steps));
   assert.equal(
     createHash("sha256")
-      .update(JSON.stringify(steps))
+      .update(JSON.stringify(steps.filter(step => step.toVersion <= 24)))
       .digest("hex"),
     "9d70ef9b4112f8a32d49b44a1973b54f5409087e37e2f4a3e38b487724aa3c7e",
     "published migration ids and version ordering are immutable during the architecture refactor",
@@ -313,7 +318,7 @@ test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", 
     try {
       assert.equal(
         Number((migrated.db.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version),
-        24,
+        CANONICAL_SOURCE_SCHEMA_VERSION,
       );
       const marker = migrated.db
         .prepare("SELECT reason, disabled_scopes_json FROM canonical_runtime_contract_purges")
@@ -1281,7 +1286,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (25, 0)", /migration metadata/i],
+    ["extra", `INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (${CANONICAL_SOURCE_SCHEMA_VERSION + 1}, 0)`, /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(

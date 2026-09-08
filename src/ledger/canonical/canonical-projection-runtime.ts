@@ -2022,7 +2022,12 @@ function readFamily(
                 holding.cost_coefficient, holding.cost_scale, holding.cost_currency,
                 holding.effective_on, holding.observed_at, holding.lineage_json,
                 holding.is_current,
-                security.security_key, security.name AS security_name,
+                security.security_key,
+                COALESCE((SELECT name_observation.name
+                  FROM investment_security_name_observations name_observation
+                  JOIN canonical_commits name_commit ON name_commit.commit_id=name_observation.commit_id
+                  WHERE name_observation.security_id=security.security_id AND name_commit.commit_sequence <= ?
+                  ORDER BY name_commit.commit_sequence DESC,name_observation.rowid DESC LIMIT 1),security.name) AS security_name,
                 security.ticker AS security_ticker, security.currency AS security_currency,
                 security.security_type
            FROM (
@@ -2051,6 +2056,7 @@ function readFamily(
           WHERE holding.selection_rank = 1 ${scopedFilter("holding")}
             AND (? IS NULL OR holding.effective_on >= ?)
           ORDER BY holding.effective_on, security.security_key`,
+        knowledgeAt,
         knowledgeAt,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
