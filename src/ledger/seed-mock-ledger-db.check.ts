@@ -12,8 +12,6 @@ seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
 const spending = loadSpending(ledgerDir);
 assert.equal(spending.canonical?.availability, "empty");
 assert.deepEqual(spending.canonical?.transactions, []);
-assert.deepEqual(spending.invoices, []);
-assert.deepEqual(spending.accountRecords, []);
 
 const db = openLedgerDatabase(ledgerDir, { readOnly: true });
 const invoiceCounts = db.prepare(`

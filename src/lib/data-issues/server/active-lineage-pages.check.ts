@@ -135,7 +135,6 @@ try {
   assert.deepEqual(overview.dailyHistory, []);
   assert.equal(spending.canonical?.availability, "empty");
   assert.deepEqual(spending.canonical?.transactions, []);
-  assert.deepEqual(spending.accountRecords, []);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

@@ -1,47 +1,43 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { createServer } from "vite";
-
-const categories = ["food", "daily", "transport", "shopping", "home", "leisure", "other"];
-
-function categoryAmounts(seed) {
-  return Object.fromEntries(categories.map((category, index) => [category, (seed + index * 7) * 90]));
-}
-
-const emptyCategoryAmounts = Object.fromEntries(categories.map((category) => [category, 0]));
+import {
+  allocatedCategory,
+  record,
+  singleCategory,
+  view,
+} from "./spending-canonical-fixture.mjs";
 
 const months = Array.from({ length: 30 }, (_, index) => {
   const date = new Date(Date.UTC(2024, 7 + index, 1));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 });
 
-const monthlyRows = months.map((month, index) => {
-  const invoice = index === 20 ? emptyCategoryAmounts : categoryAmounts(12 + (index % 6));
-  const account = index === 20 ? emptyCategoryAmounts : categoryAmounts(index % 4);
-  const pendingAccount = index === 24 ? { ...emptyCategoryAmounts, other: 8_400 } : emptyCategoryAmounts;
-  return {
-    month,
-    invoice,
-    account,
-    pendingAccount,
-    total: categories.reduce((total, category) => total + invoice[category] + account[category], 0),
-  };
-});
+const records = months.map((month, index) => record({
+  id: `chart-${month}`,
+  date: `${month}-13`,
+  value: 100 + index * 10,
+  category: index % 2 === 0
+    ? singleCategory("dining")
+    : allocatedCategory([
+        { code: "food_and_groceries", value: 60 },
+        { code: "transportation", value: 40 + index * 10 },
+      ]),
+  label: `Chart fixture ${month}`,
+}));
+records.push(record({
+  id: "chart-usd",
+  date: `${months[24]}-20`,
+  value: 25,
+  currency: "USD",
+  category: singleCategory("dining"),
+  label: "USD chart fixture",
+}));
 
-const model = {
-  months,
-  monthlyRows,
-  selectedMonth: months[24],
-  selectedMonthSummary: { total: monthlyRows[24].total, invoiceCount: 16, accountCount: 4 },
-  selectedCategory: undefined,
-  dailyRows: [],
-  presentCategories: categories,
-  invoices: [],
-  accountRecords: [],
-  excludedAccountRecords: [],
-  pendingAccountRecords: [],
-  recordsByDate: [],
-};
+const model = view(records, {
+  selectedMonth: months[25],
+  selectedCategory: null,
+});
 
 const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
 await server.listen();
@@ -62,152 +58,43 @@ try {
     window.octopusBeak = {
       settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
       spending: {
-        load: async ({ selectedMonth } = {}) => {
+        load: async () => {
           window.__spendingLoadCount += 1;
-          return {
-            ...model,
-            selectedMonth: selectedMonth ?? model.selectedMonth,
-            selectedMonthSummary: selectedMonth
-              ? { ...model.selectedMonthSummary, total: model.monthlyRows.find((row) => row.month === selectedMonth)?.total ?? 0 }
-              : model.selectedMonthSummary,
-          };
+          return { canonical: model };
         },
-        updateTransactionOverride: async () => {},
-        updateItemCategory: async () => {},
+        updateTransactionOverride: async () => {
+          throw new Error("legacy Spending mutation invoked");
+        },
+        updateItemCategory: async () => {
+          throw new Error("legacy Spending mutation invoked");
+        },
       },
     };
   }, { model });
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
-  const chart = page.locator('.monthly-panel [data-interaction="pan-zoom"]');
+  const chart = page.locator("[data-chart]");
   await chart.waitFor();
-  assert.equal(await page.locator(".shell-page.sidebar-resize-snap").count(), 0);
-  assert.equal(await chart.getAttribute("data-chart-layout"), "group-stack");
-  assert.equal(await chart.locator('canvas[data-spending-bars-canvas]').count(), 1);
-  assert.equal(await chart.locator("[data-selected-period]").count(), 1);
-  assert.equal(await chart.locator("[data-selection-outline]").count(), 0);
-  assert.equal(await chart.locator("canvas.lc-layout-canvas").count(), 1);
-  assert.equal(await chart.locator("svg.lc-layout-svg").count() > 0, true);
-  assert.equal(await chart.getAttribute("data-rendered-months"), "30");
-  assert.equal(await chart.getAttribute("data-rendered-buckets"), "60");
-  const confirmedToggle = page.locator('[data-chart-state="confirmed"]');
-  const pendingToggle = page.locator('[data-chart-state="pending"]');
-  assert.equal(await confirmedToggle.getAttribute("aria-pressed"), "true");
-  assert.equal(await pendingToggle.getAttribute("aria-pressed"), "false");
-  assert.equal(await chart.getAttribute("data-show-pending"), "false");
-  await pendingToggle.click();
-  assert.equal(await pendingToggle.getAttribute("aria-pressed"), "true");
-  assert.equal(await chart.getAttribute("data-show-pending"), "true");
-  assert.equal(await chart.getAttribute("data-rendered-buckets"), "60");
-  assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), /Pending.*TWD 8,400/u);
-  assert.match(await chart.locator(".spending-row-summary").nth(24).textContent(), new RegExp(`Confirmed total.*TWD ${monthlyRows[24].total.toLocaleString("en-US")}`, "u"));
-  assert.equal(await chart.getAttribute("data-rounded-bars"), "58");
-  assert.equal(await chart.locator("[data-spending-bar]").count(), 0);
-  const initialScale = Number(await chart.getAttribute("data-initial-scale"));
-  const initialTranslateX = Number(await chart.getAttribute("data-initial-translate-x"));
-  assert.ok(initialScale > 1);
-  assert.equal(await page.locator(".monthly-panel [data-chart-concept]").count(), 0);
-  assert.equal(await page.locator(".monthly-panel [data-concept-option]").count(), 0);
-  assert.equal(
-    await chart.locator(
-      '[data-action="pan-left"], [data-action="pan-right"], [data-action="zoom-in"], [data-action="zoom-out"]',
-    ).count(),
-    0,
-  );
-  assert.equal(await chart.locator('[data-action="reset"]').count(), 0);
-  assert.equal(await chart.getAttribute("data-at-start"), "false");
-  assert.equal(await chart.getAttribute("data-at-end"), "true");
-  const selectedBandBeforeDrag = await chart.locator("[data-selected-period]").boundingBox();
-  assert.ok(selectedBandBeforeDrag);
+  assert.equal(await page.locator("[data-spending-canonical]").count(), 1);
+  assert.equal(await chart.locator(".canonical-chart-row").count(), 31);
+  assert.equal(await chart.locator(".canonical-chart-row").filter({ hasText: "USD" }).count(), 1);
+  assert.match((await page.locator(".canonical-chart-card .panel-meta").first().textContent()) ?? "", /All months.*all categories.*currencies remain separate/u);
+  assert.equal(await page.locator('[data-total-status="incomplete"]').count(), 0);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
 
-  const stage = chart.locator(".spending-bar-stage");
-  const chartRoot = stage.locator(".lc-root-container");
-  const initialStageWidth = await stage.evaluate((element) => element.clientWidth);
-  const initialChartWidth = await chartRoot.evaluate((element) => element.clientWidth);
-  assert.equal(initialChartWidth, initialStageWidth);
-  await page.locator(".sidebar-toggle").click();
-  await page.waitForFunction(
-    (width) => Math.abs(document.querySelector(".spending-bar-stage")?.clientWidth - width) > 8,
-    initialStageWidth,
-  );
-  assert.equal(await chartRoot.evaluate((element) => element.clientWidth), initialChartWidth);
-  await page.waitForFunction(() => {
-    const stageElement = document.querySelector(".spending-bar-stage");
-    const chartElement = stageElement?.querySelector(".lc-root-container");
-    return Math.abs((stageElement?.clientWidth ?? 0) - (chartElement?.clientWidth ?? -1)) <= 1;
-  });
-  await page.locator(".sidebar-toggle").click();
-  await page.waitForFunction(
-    (width) => Math.abs(document.querySelector(".spending-bar-stage")?.clientWidth - width) <= 1,
-    initialStageWidth,
-  );
+  await page.getByRole("button", { name: "September 2026" }).click();
+  assert.match((await page.locator(".canonical-summary-card .panel-meta").textContent()) ?? "", /September 2026.*All categories.*included/u);
+  assert.equal(await page.locator(".canonical-category-chart .canonical-chart-row").count(), 2);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
 
-  const loadCountBeforeDrag = await page.evaluate(() => window.__spendingLoadCount);
-  const box = await stage.boundingBox();
-  assert.ok(box);
-  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.5);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.65, box.y + box.height * 0.5, { steps: 8 });
-  assert.equal(await chart.getAttribute("data-moving"), "true");
-  assert.equal(await chart.locator("[data-visible-range]").count(), 1);
-  await page.mouse.up();
-  await page.waitForFunction(() =>
-    document.querySelector('[data-interaction="pan-zoom"]')?.getAttribute("data-moving") === "false"
-  );
-  assert.notEqual(Number(await chart.getAttribute("data-transform-translate-x")), initialTranslateX);
-  const selectedBandAfterDrag = await chart.locator("[data-selected-period]").boundingBox();
-  assert.ok(selectedBandAfterDrag);
-  assert.notEqual(selectedBandAfterDrag.x, selectedBandBeforeDrag.x);
-  assert.equal(await chart.getAttribute("data-rendered-months"), "30");
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), loadCountBeforeDrag);
-  assert.equal(await chart.locator('[data-action="reset"]').count(), 1);
-  const paintedBounds = await chart.locator('canvas[data-spending-bars-canvas]').evaluate((canvas) => {
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Missing canvas context");
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let minX = canvas.width;
-    let maxX = -1;
-    for (let y = 0; y < canvas.height; y += 1) {
-      for (let x = 0; x < canvas.width; x += 1) {
-        if (pixels[(y * canvas.width + x) * 4 + 3] > 0) {
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-        }
-      }
-    }
-    return { minX, maxX, scale: canvas.width / canvas.clientWidth, width: canvas.width };
-  });
-  assert.ok(paintedBounds.minX >= 58 * paintedBounds.scale, JSON.stringify(paintedBounds));
-  assert.ok(paintedBounds.maxX <= paintedBounds.width - 16 * paintedBounds.scale, JSON.stringify(paintedBounds));
-
-  await chart.locator('[data-action="reset"]').click();
-  await page.waitForFunction(({ scale, translateX }) => {
-    const root = document.querySelector('[data-interaction="pan-zoom"]');
-    return Math.abs(Number(root?.getAttribute("data-transform-scale")) - scale) < 0.001 &&
-      Math.abs(Number(root?.getAttribute("data-transform-translate-x")) - translateX) < 0.1;
-  }, { scale: initialScale, translateX: initialTranslateX });
-
-  const emptyMonth = months[20];
-  const emptyMonthHitTarget = chart.locator(`[data-period-hit="${emptyMonth}"]`);
-  assert.equal(await emptyMonthHitTarget.count(), 1);
-  const loadCountBeforeEmptyMonthClick = await page.evaluate(() => window.__spendingLoadCount);
-  await emptyMonthHitTarget.click();
-  await page.waitForFunction(
-    ({ previous, month }) =>
-      window.__spendingLoadCount > previous &&
-      document.querySelector(`[data-selected-period="${month}"]`) !== null,
-    { previous: loadCountBeforeEmptyMonthClick, month: emptyMonth },
-  );
-
-  const populatedMonthHitTarget = chart.locator(`[data-period-hit="${months[24]}"]`);
-  await populatedMonthHitTarget.hover();
-  const tooltip = page.locator(".spending-tooltip");
-  assert.equal(await tooltip.isVisible(), true);
-  assert.equal(await tooltip.evaluate((element) => element.closest(".spending-bar-stage") === null), true);
-  const loadCountBeforeTooltipClick = await page.evaluate(() => window.__spendingLoadCount);
-  await populatedMonthHitTarget.click();
-  await page.waitForFunction((previous) => window.__spendingLoadCount > previous, loadCountBeforeTooltipClick);
-  await page.screenshot({ path: "/tmp/spending-chart-grab-glide.png", fullPage: true });
+  const summaryBeforeCategory = await page.locator(".canonical-summary-card").textContent();
+  await page.getByRole("button", { name: "Transportation" }).click();
+  assert.equal(await page.locator(".canonical-record-list .canonical-record").count(), 1);
+  assert.equal(await page.locator(".canonical-category-chart .canonical-chart-row").count(), 1);
+  assert.equal(await page.locator(".canonical-summary-card").textContent(), summaryBeforeCategory);
+  await page.getByRole("button", { name: "All" }).click();
+  assert.equal(await page.locator(".canonical-record-list .canonical-record").count(), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
 
   assert.deepEqual(errors, []);
 } finally {

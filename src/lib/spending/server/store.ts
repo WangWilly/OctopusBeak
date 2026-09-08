@@ -1,7 +1,7 @@
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
-import { isSpendingCategory, type SpendingCategory } from "../categories.ts";
+import type { SpendingCategory } from "../categories.ts";
 import type {
-  SpendingModel,
+  SpendingPageDto,
   SpendingReason,
   SpendingState,
   CanonicalSpendingAmountDto,
@@ -18,6 +18,9 @@ import type {
   CanonicalSpendingReport,
   CanonicalSpendingTransaction,
 } from "../../../ledger/canonical/canonical-categorization.ts";
+import {
+  TRANSACTION_TAXONOMY_PACKAGE_V1,
+} from "../../../ledger/canonical/transaction-taxonomy.ts";
 
 export { activeImportSql };
 
@@ -36,6 +39,20 @@ export type SpendingLoadInput = {
   selectedCategory?: SpendingCategory | string;
 };
 
+function taxonomyLabels(
+  code: string | null | undefined,
+  taxonomyId: string | null | undefined,
+  taxonomyVersion: string | null | undefined,
+): { en: string; zhHant: string } | null {
+  if (!code || taxonomyId !== TRANSACTION_TAXONOMY_PACKAGE_V1.packageId || taxonomyVersion !== TRANSACTION_TAXONOMY_PACKAGE_V1.version) return null;
+  const definition = TRANSACTION_TAXONOMY_PACKAGE_V1.categories.find((candidate) => candidate.code === code);
+  if (!definition) return null;
+  const labels = TRANSACTION_TAXONOMY_PACKAGE_V1.localizations[definition.localizationKey];
+  return labels?.en && labels["zh-Hant"]
+    ? { en: labels.en, zhHant: labels["zh-Hant"] }
+    : null;
+}
+
 function canonicalAmount(
   value: Readonly<{ currency: string; coefficient: string; scale: number }>,
 ): CanonicalSpendingAmountDto {
@@ -52,6 +69,7 @@ function canonicalCategory(
       code: null,
       taxonomyId: null,
       taxonomyVersion: null,
+      labels: null,
       components: [],
     };
   }
@@ -61,6 +79,7 @@ function canonicalCategory(
       code: value.categoryCode ?? null,
       taxonomyId: value.taxonomyId ?? null,
       taxonomyVersion: value.taxonomyVersion ?? null,
+      labels: taxonomyLabels(value.categoryCode, value.taxonomyId, value.taxonomyVersion),
       components: [],
     };
   }
@@ -69,10 +88,12 @@ function canonicalCategory(
     code: null,
     taxonomyId: value.taxonomyId ?? null,
     taxonomyVersion: value.taxonomyVersion ?? null,
+    labels: null,
     components: (value.components ?? []).map((component) => ({
       code: component.categoryCode,
       taxonomyId: component.taxonomyId,
       taxonomyVersion: component.taxonomyVersion,
+      labels: taxonomyLabels(component.categoryCode, component.taxonomyId, component.taxonomyVersion),
       amount: canonicalAmount({
         currency: component.currency,
         coefficient: component.coefficient,
@@ -141,6 +162,7 @@ function canonicalView(
       categoryCode: value.categoryCode,
       taxonomyId: value.taxonomyId,
       taxonomyVersion: value.taxonomyVersion,
+      labels: taxonomyLabels(value.categoryCode, value.taxonomyId, value.taxonomyVersion),
       currency: value.currency,
       amount: canonicalAmount(value),
       count: value.count,
@@ -166,7 +188,7 @@ function canonicalView(
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
   { selectedMonth, selectedCategory }: SpendingLoadInput = {},
-): SpendingModel {
+): SpendingPageDto {
   const { spending } = createFinancialQuery(ledgerDir).current({
     kind: "current",
     product: "spending",
@@ -176,30 +198,7 @@ export function loadSpending(
     selectedMonth,
     selectedCategory,
   );
-  return {
-    canonical,
-    months: [...new Set(canonical.transactions
-      .filter((record) => record.inclusion !== "excluded")
-      .map((record) => record.date.slice(0, 7)))],
-    monthlyRows: [],
-    selectedMonth: canonical.selectedMonth,
-    selectedCategory: isSpendingCategory(selectedCategory) ? selectedCategory : undefined,
-    selectedMonthSummary: {
-      // Canonical totals are exact and currency-keyed in `canonical`; the
-      // legacy numeric field must never add unlike currencies together.
-      total: 0,
-      invoiceCount: 0,
-      accountCount: canonical.includedTransactions
-        .filter((record) => record.date.startsWith(`${canonical.selectedMonth ?? ""}-`)).length,
-    },
-    dailyRows: [],
-    presentCategories: [],
-    invoices: [],
-    accountRecords: [],
-    excludedAccountRecords: [],
-    pendingAccountRecords: [],
-    recordsByDate: [],
-  };
+  return { canonical };
 }
 
 export function updateSpendingTransactionOverride(
