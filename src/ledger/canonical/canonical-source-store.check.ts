@@ -260,10 +260,12 @@ test("production schema registry declares every published version transition", (
     [
       "canonical/foreign-currency-conversion-schema/v1",
       "canonical/credit-card-extension/v1",
+      "canonical/credit-card-runtime-readiness/v1",
       "canonical/fubon-credit-card-extension/v1",
       "canonical/attestation/cathay-events/v1",
       "canonical/attestation/ctbc-events/v1",
       "canonical/attestation/esun-credit-card-events/v1",
+      "canonical/attestation/esun-credit-card-runtime-readiness/v1",
       "canonical/attestation/fubon-credit-card-events/v1",
       "canonical/attestation/fubon-events/v1",
       "canonical/attestation/hncb-events/v1",

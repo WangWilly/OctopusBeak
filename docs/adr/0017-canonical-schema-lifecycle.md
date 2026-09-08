@@ -308,6 +308,13 @@ fallback is retained only for isolated raw adapters, not for a validated
 production store. Credit-card and provider extensions follow the same named
 repair path.
 
+The shared credit-card extension and E.SUN attestation schema are prepared by
+named runtime-readiness repairs before lifecycle open returns a shared handle.
+This also applies to existing current-version ledgers: the first E.SUN Capture
+must not need a physical repair while the desktop and workflow processes hold
+runtime leases. These repairs create empty schema only; the initial attestation
+event still commits or rolls back with its Capture.
+
 ### 14. This phase preserves v20 and financial semantics
 
 The first seam cutover does not add a schema version, alter canonical money,

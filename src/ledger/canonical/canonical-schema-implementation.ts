@@ -10237,6 +10237,14 @@ function canonicalAttestationSchemaRepairs(): readonly CanonicalSchemaRepair[] {
 export function createCanonicalSchemaLifecyclePlan(
   options: CanonicalDatabaseOptions = {},
 ): CanonicalSchemaLifecyclePlan {
+  // E.SUN collection runs in a child process while the desktop retains a
+  // shared runtime lease. Install its required physical extensions before
+  // returning the first runtime handle, not during the first financial commit.
+  // New repair IDs preserve the existing on-demand repair contracts.
+  const runtimeReadinessRepairs = new Map([
+    ["canonical/credit-card-extension/v1", "canonical/credit-card-runtime-readiness/v1"],
+    ["canonical/attestation/esun-credit-card-events/v1", "canonical/attestation/esun-credit-card-runtime-readiness/v1"],
+  ]);
   const freshBootstrapMarker = "canonical_fresh_v7_bootstrap";
   const advanceFreshBootstrap = (db: DatabaseSync, version: number): boolean => {
     if (!tableExists(db, freshBootstrapMarker)) return false;
@@ -10627,7 +10635,7 @@ export function createCanonicalSchemaLifecyclePlan(
         },
       },
     ],
-    repairs: [
+    repairs: ([
       {
         id: "canonical/foreign-currency-conversion-schema/v1",
         version: CANONICAL_SCHEMA_VERSION,
@@ -10706,7 +10714,18 @@ export function createCanonicalSchemaLifecyclePlan(
         },
       },
       ...canonicalAttestationSchemaRepairs(),
-    ],
+    ] satisfies CanonicalSchemaRepair[]).flatMap((repair) => {
+      const readinessId = runtimeReadinessRepairs.get(repair.id);
+      if (!readinessId) return [repair];
+      return [repair, {
+        ...repair,
+        id: readinessId,
+        allowOnDemand: false,
+        runOnCurrentVersion: true,
+        precondition: (db, context) =>
+          repair.precondition(db, { ...context, explicitRequest: true }),
+      } satisfies CanonicalSchemaRepair];
+    }),
     validateBeforeRepairs(db) {
       validateCanonicalSchemaMigrationMetadata(db);
       validateReadOnlyDatabase(db, {
