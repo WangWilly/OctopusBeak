@@ -1,179 +1,123 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import { loadAssets } from "../lib/assets/server/load-assets.ts";
-import { importDownloadsCsv } from "./import-downloads-csv.ts";
+import {
+  admitCanonicalInvestmentCapture,
+  commitCanonicalInvestmentCapture,
+  createCanonicalInvestmentStore,
+  type InvestmentCaptureInput,
+  type InvestmentSourceId,
+} from "./canonical/investment-financial.ts";
+import { canonicalSqlitePath } from "./canonical/canonical-database.ts";
 
-const brokerageHeaders = [
-  "as_of_date",
-  "account_number",
-  "asset_type",
-  "sub_category",
-  "product_code",
-  "product_name",
-  "currency",
-  "quantity",
-  "market_date",
-  "market_price",
-  "market_value_original",
-  "market_value_twd",
-  "cost_price",
-  "cost_amount",
-  "unrealized_pnl_original",
-  "unrealized_pnl_twd",
-  "return_rate",
-  "fx_rate",
-];
+const token = (label: string) =>
+  `sha256:${createHash("sha256").update(label).digest("base64url")}`;
 
-function brokerageCsv(symbols: string[]) {
-  const rows = symbols.map((symbol, index) => [
-    "2026-07-31",
-    "9948",
-    "stock",
-    "US stock",
-    symbol,
-    `${symbol} Incorporated`,
-    "USD",
-    String(index + 1),
-    "2026-07-31",
-    "100",
-    String((index + 1) * 100),
-    String((index + 1) * 3000),
-    "90",
-    String((index + 1) * 90),
-    "10",
-    "300",
-    "11.11",
-    "30",
-  ]);
-  return [brokerageHeaders, ...rows].map((row) => row.join(",")).join("\n") + "\n";
-}
-
-const fundHeaders = [
-  "資料類別",
-  "基金識別",
-  "查詢期間",
-  "基金名稱",
-  "基金類型",
-  "投資幣別",
-  "投資金額",
-  "不含息參考市值",
-  "不含息參考損益",
-  "不含息參考報酬率",
-  "含息參考損益",
-  "含息參考報酬率",
-  "狀態",
-];
-
-function fundCsv(funds: string[]) {
-  const rows = funds.map((fund, index) => [
-    "holding",
-    fund,
-    "2026-07-31",
-    `${fund} Fund`,
-    "equity",
-    "USD",
-    String((index + 1) * 100),
-    String((index + 1) * 110),
-    "10",
-    "10",
-    "10",
-    "10",
-    "active",
-  ]);
-  return [fundHeaders, ...rows].map((row) => row.join(",")).join("\n") + "\n";
-}
-
-async function symbolsAfterImports(options: {
+async function symbolsAfterSnapshots(options: {
   fixtureName: string;
-  sourceFolder: string;
-  product: string;
-  snapshots: Array<{ fileName: string; csv: string }>;
+  sourceId: InvestmentSourceId;
+  snapshots: string[][];
 }) {
   const rootDir = await mkdtemp(join(tmpdir(), `${options.fixtureName}-`));
+  const outputDir = join(rootDir, "ledger");
+  const store = createCanonicalInvestmentStore(canonicalSqlitePath(outputDir));
   try {
-    const downloadsDir = join(rootDir, "downloads");
-    const outputDir = join(rootDir, "ledger");
-    const sourceDir = join(downloadsDir, options.sourceFolder);
-    await mkdir(sourceDir, { recursive: true });
-
-    const importInput = {
-      downloadsDir,
-      outputDir,
-      bankFilters: ["yuanta"],
-      productFilters: [options.product],
-    };
-
-    for (const snapshot of options.snapshots) {
-      await writeFile(join(sourceDir, snapshot.fileName), snapshot.csv, "utf8");
-      await importDownloadsCsv(importInput);
+    for (const [index, symbols] of options.snapshots.entries()) {
+      await commitCanonicalInvestmentCapture(
+        store,
+        admitCanonicalInvestmentCapture(investmentSnapshot(options.sourceId, index, symbols)),
+      );
     }
-
-    const assets = await loadAssets(outputDir);
+    const assets = await loadAssets(outputDir, { expectedSources: [] });
     return Object.values(assets.positionsByAccount)
       .flat()
       .map((position) => position.symbol)
       .sort();
   } finally {
+    store.close();
     await rm(rootDir, { recursive: true, force: true });
   }
 }
 
 test("a newer brokerage holdings snapshot removes sold positions", async () => {
-  const symbols = await symbolsAfterImports({
+  const symbols = await symbolsAfterSnapshots({
     fixtureName: "brokerage-snapshot-replacement",
-    sourceFolder: "yuanta-trade-statements",
-    product: "trade-statements",
-    snapshots: [
-      {
-        fileName: "holdings-20260731090000.csv",
-        csv: brokerageCsv(["ANET", "VRT"]),
-      },
-      {
-        fileName: "holdings-20260731100000.csv",
-        csv: brokerageCsv(["ANET"]),
-      },
-    ],
+    sourceId: "yuanta-trade",
+    snapshots: [["ANET", "VRT"], ["ANET"]],
   });
   assert.deepEqual(symbols, ["ANET"]);
 });
 
-test("an empty brokerage holdings snapshot clears the account", async () => {
-  const symbols = await symbolsAfterImports({
+test("an empty brokerage holdings snapshot clears the account positions", async () => {
+  const symbols = await symbolsAfterSnapshots({
     fixtureName: "brokerage-empty-snapshot",
-    sourceFolder: "yuanta-trade-statements",
-    product: "trade-statements",
-    snapshots: [
-      {
-        fileName: "holdings-20260731090000.csv",
-        csv: brokerageCsv(["ANET"]),
-      },
-      {
-        fileName: "holdings-20260731100000.csv",
-        csv: brokerageCsv([]),
-      },
-    ],
+    sourceId: "yuanta-trade",
+    snapshots: [["ANET"], []],
   });
   assert.deepEqual(symbols, []);
 });
 
 test("a newer fund holdings snapshot removes redeemed funds", async () => {
-  const symbols = await symbolsAfterImports({
+  const symbols = await symbolsAfterSnapshots({
     fixtureName: "fund-snapshot-replacement",
-    sourceFolder: "yuanta-fund-statements",
-    product: "fund-statements",
-    snapshots: [
-      {
-        fileName: "fund-holdings-20260731090000.csv",
-        csv: fundCsv(["FUND-A", "FUND-B"]),
-      },
-      {
-        fileName: "fund-holdings-20260731100000.csv",
-        csv: fundCsv(["FUND-A"]),
-      },
-    ],
+    sourceId: "yuanta-fund",
+    snapshots: [["FUND-A", "FUND-B"], ["FUND-A"]],
   });
   assert.deepEqual(symbols, ["FUND-A"]);
 });
+
+function investmentSnapshot(
+  sourceId: InvestmentSourceId,
+  index: number,
+  symbols: readonly string[],
+): InvestmentCaptureInput {
+  const route = `${sourceId}/investment/canonical-v1`;
+  const observedAt = `2026-07-31T${String(9 + index).padStart(2, "0")}:00:00.000Z`;
+  return {
+    captureId: token(`${sourceId}:capture:${index}`),
+    sourceId,
+    authorityRoute: route,
+    contractVersion: route,
+    observedAt,
+    identity: {
+      sourceConnectionKey: token(`${sourceId}:connection`),
+      identityEpochKey: token(`${sourceId}:epoch`),
+      accountKey: token(`${sourceId}:account`),
+      accountType: "investment",
+      reportingCurrency: "TWD",
+    },
+    scope: { effectiveOn: "2026-07-31", complete: true },
+    securities: symbols.map((symbol) => ({
+      securityKey: `${sourceId}:${symbol}`,
+      producerSecurityId: symbol,
+      name: `${symbol} Holding`,
+      ticker: symbol,
+      currency: "USD",
+      securityType: sourceId === "yuanta-fund" ? "mutual_fund" as const : "equity" as const,
+      identityEvidence: { kind: "producer-security-id" as const, contractVersion: route },
+    })),
+    holdings: symbols.map((symbol, row) => ({
+      measurementKey: token(`${sourceId}:measurement:${index}:${symbol}`),
+      measurementSubjectKey: token(`${sourceId}:subject:${symbol}`),
+      sourceRecordKey: token(`${sourceId}:record:${index}:${symbol}`),
+      securityKey: `${sourceId}:${symbol}`,
+      quantity: { coefficient: String(row + 1), scale: 0 },
+      valuation: { coefficient: String((row + 1) * 100), scale: 0, currency: "USD" },
+      effectiveOn: "2026-07-31",
+      observedAt,
+      effectiveTimeEvidence: {
+        kind: "source-reported-as-of" as const,
+        sourceRecordKey: token(`${sourceId}:record:${index}:${symbol}`),
+        sourceField: "as_of_date",
+        value: "2026-07-31",
+        contractVersion: route,
+      },
+      lineage: { page: 0, row, contractVersion: route },
+    })),
+    transactions: [],
+  };
+}

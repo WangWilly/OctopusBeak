@@ -68,6 +68,7 @@ const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
   "investment-transactions",
   "investment-margin-balances",
   "investment-funding-relations",
+  "credit-card-statements",
 ] as const);
 
 export type CanonicalProjectionFamily =
@@ -268,6 +269,25 @@ export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
   sourceLinkageKey: string;
   investmentTransactionCount: number;
 }>;
+export type CanonicalProjectionCreditCardStatement = Readonly<{
+  accountId: string;
+  statementId: string;
+  statementKey: string;
+  statementRevisionId: string;
+  revisionNumber: number;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  balanceCoefficient: string;
+  balanceScale: number;
+  minimumCoefficient: string | null;
+  minimumScale: number | null;
+  transactionId: string | null;
+  transactionRevisionId: string | null;
+  sourceRecordId: string | null;
+}>;
 export type CanonicalProjectionFamilyRows = Readonly<{
   "financial-accounts": CanonicalProjectionFinancialAccount;
   transactions: CanonicalProjectionTransaction;
@@ -284,6 +304,7 @@ export type CanonicalProjectionFamilyRows = Readonly<{
   "investment-transactions": CanonicalProjectionInvestmentTransaction;
   "investment-margin-balances": CanonicalProjectionInvestmentMarginBalance;
   "investment-funding-relations": CanonicalProjectionInvestmentFundingRelation;
+  "credit-card-statements": CanonicalProjectionCreditCardStatement;
 }>;
 
 export type CanonicalProjectionSnapshot = Readonly<{
@@ -2043,6 +2064,28 @@ function readFamily(
                } AS selection_rank
              FROM investment_holding_observations observation
             JOIN canonical_commits holding_commit ON holding_commit.commit_id = observation.commit_id
+            ${request.kind === "current" ? `JOIN (
+                 SELECT capture_scope.account_id, investment_capture.capture_id,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY capture_scope.account_id
+                          ORDER BY source_capture.observed_at DESC,
+                                   capture_commit.commit_sequence DESC,
+                                   hex(investment_capture.capture_id) DESC
+                        ) AS snapshot_rank
+                   FROM investment_captures investment_capture
+                   JOIN capture_scopes capture_scope
+                     ON capture_scope.capture_id = investment_capture.capture_id
+                   JOIN source_captures source_capture
+                     ON source_capture.capture_id = investment_capture.capture_id
+                   JOIN canonical_commits capture_commit
+                     ON capture_commit.commit_id = source_capture.commit_id
+                  WHERE capture_commit.commit_sequence <= ?
+                    AND source_capture.completeness = 'complete-range'
+                    AND source_capture.stream = 'investment'
+               ) latest_snapshot
+              ON latest_snapshot.capture_id = observation.capture_id
+             AND latest_snapshot.account_id = observation.account_id
+             AND latest_snapshot.snapshot_rank = 1` : ""}
             WHERE holding_commit.commit_sequence <= ?
               ${request.kind === "current" ? "AND observation.is_current = 1" : ""}
               AND (? IS NULL OR observation.effective_on <= ?)
@@ -2057,6 +2100,7 @@ function readFamily(
             AND (? IS NULL OR holding.effective_on >= ?)
           ORDER BY holding.effective_on, security.security_key`,
         knowledgeAt,
+        ...(request.kind === "current" ? [knowledgeAt] : []),
         knowledgeAt,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
@@ -2185,6 +2229,138 @@ function readFamily(
         financialAt,
         knowledgeAt,
       );
+    case "credit-card-statements": {
+      const creditAccount = db.prepare(`
+        SELECT 1
+          FROM financial_accounts
+         WHERE account_type = 'credit'
+         LIMIT 1
+      `).get();
+      const tableExists = (name: string) => Boolean(db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(name));
+      const neutralTables = [
+        "canonical_credit_card_statements",
+        "canonical_credit_card_statement_revisions",
+        "canonical_credit_card_statement_memberships",
+      ];
+      const fubonTables = [
+        "fubon_credit_statement_details",
+        "fubon_credit_statement_revision_details",
+        "fubon_credit_statement_membership_details",
+      ];
+      const hasNeutral = neutralTables.map(tableExists);
+      const hasFubon = fubonTables.map(tableExists);
+      const neutralComplete = hasNeutral.every(Boolean);
+      const fubonComplete = hasFubon.every(Boolean);
+      if (
+        (hasNeutral.some(Boolean) && !neutralComplete) ||
+        (hasFubon.some(Boolean) && !fubonComplete)
+      )
+        throw new Error("Canonical credit-card statement projection is unavailable.");
+      const creditNamespaces = db.prepare(`
+        SELECT DISTINCT connection_scope.integration_namespace
+          FROM financial_accounts account
+          JOIN source_connections connection_scope
+            ON connection_scope.source_connection_id = account.source_connection_id
+         WHERE account.account_type = 'credit'
+      `).all() as Array<{ integration_namespace?: unknown }>;
+      const requiresFubon = creditNamespaces.some(
+        (row) => row.integration_namespace === "fubon",
+      );
+      const requiresNeutral = creditNamespaces.some(
+        (row) => row.integration_namespace !== "fubon",
+      );
+      if ((requiresFubon && !fubonComplete) || (requiresNeutral && !neutralComplete))
+        throw new Error("Canonical credit-card statement projection is unavailable.");
+      if (!creditAccount && !neutralComplete && !fubonComplete) return [];
+      const sourceRows: string[] = [];
+      const sourceMemberships: string[] = [];
+      const sourceParameters: ProjectionSqlInput[] = [];
+      const addSource = (
+        family: "neutral" | "fubon",
+        tables: { statements: string; revisions: string; memberships: string },
+      ) => {
+        sourceRows.push(`
+          SELECT '${family}' AS family, statement.account_id,
+                 statement.statement_id, statement.statement_key,
+                 revision.statement_revision_id, revision.revision_number,
+                 revision.cycle_start, revision.cycle_end,
+                 revision.issue_date, revision.due_date, revision.currency,
+                 revision.balance_coefficient, revision.balance_scale,
+                 revision.minimum_coefficient, revision.minimum_scale,
+                 revision_commit.commit_sequence AS revision_commit_sequence,
+                 revision.rowid AS revision_rowid
+            FROM ${tables.statements} statement
+            JOIN ${tables.revisions} revision
+              ON revision.statement_id = statement.statement_id
+            JOIN source_captures capture
+              ON capture.capture_id = ${family === "neutral" ? "revision.created_capture_id" : "revision.capture_id"}
+            JOIN canonical_commits revision_commit
+              ON revision_commit.commit_id = capture.commit_id
+            JOIN financial_accounts account
+              ON account.account_id = statement.account_id
+            JOIN source_connections connection_scope
+              ON connection_scope.source_connection_id = account.source_connection_id
+           WHERE revision_commit.commit_sequence <= ?
+             ${scopedFilter("statement")}
+             AND (? IS NULL OR revision.cycle_end <= ?)`);
+        sourceParameters.push(
+          knowledgeAt,
+          ...scopedParameters(),
+          request.kind === "historical" ? financialAt : dateEnd ?? null,
+          request.kind === "historical" ? financialAt : dateEnd ?? null,
+        );
+        sourceMemberships.push(`
+          SELECT '${family}' AS family, statement_revision_id,
+                 transaction_id, transaction_revision_id, source_record_id
+            FROM ${tables.memberships}`);
+      };
+      if (neutralComplete)
+        addSource("neutral", {
+          statements: "canonical_credit_card_statements",
+          revisions: "canonical_credit_card_statement_revisions",
+          memberships: "canonical_credit_card_statement_memberships",
+        });
+      if (fubonComplete)
+        addSource("fubon", {
+          statements: "fubon_credit_statement_details",
+          revisions: "fubon_credit_statement_revision_details",
+          memberships: "fubon_credit_statement_membership_details",
+        });
+      return rows(
+        db,
+        `WITH statement_rows AS (
+           ${sourceRows.join("\n           UNION ALL")}
+         ), ranked AS (
+           SELECT statement_rows.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY statement_rows.family, statement_rows.statement_id
+                    ORDER BY statement_rows.revision_number DESC,
+                             statement_rows.revision_commit_sequence DESC,
+                             statement_rows.revision_rowid DESC
+                  ) AS selection_rank
+             FROM statement_rows
+         ), memberships AS (
+           ${sourceMemberships.join("\n           UNION ALL")}
+         )
+         SELECT ranked.account_id, ranked.statement_id, ranked.statement_key,
+                ranked.statement_revision_id, ranked.revision_number,
+                ranked.cycle_start, ranked.cycle_end, ranked.issue_date,
+                ranked.due_date, ranked.currency, ranked.balance_coefficient,
+                ranked.balance_scale, ranked.minimum_coefficient,
+                ranked.minimum_scale, memberships.transaction_id,
+                memberships.transaction_revision_id, memberships.source_record_id
+           FROM ranked
+           LEFT JOIN memberships
+             ON memberships.family = ranked.family
+            AND memberships.statement_revision_id = ranked.statement_revision_id
+          WHERE ranked.selection_rank = 1
+          ORDER BY ranked.account_id, ranked.cycle_end, ranked.statement_id,
+                   memberships.transaction_id`,
+        ...sourceParameters,
+      );
+    }
   }
 }
 
@@ -2389,6 +2565,26 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           sourceLinkageKey: textValue(row, "source_linkage_key"),
           investmentTransactionCount: Number(row.investment_transaction_count),
         };
+      case "credit-card-statements":
+        return {
+          accountId: textValue(row, "account_id"),
+          statementId: textValue(row, "statement_id"),
+          statementKey: textValue(row, "statement_key"),
+          statementRevisionId: textValue(row, "statement_revision_id"),
+          revisionNumber: Number(row.revision_number),
+          cycleStart: textValue(row, "cycle_start"),
+          cycleEnd: textValue(row, "cycle_end"),
+          issueDate: textValue(row, "issue_date"),
+          dueDate: textValue(row, "due_date"),
+          currency: textValue(row, "currency"),
+          balanceCoefficient: textValue(row, "balance_coefficient"),
+          balanceScale: Number(row.balance_scale),
+          minimumCoefficient: nullableTextValue(row, "minimum_coefficient"),
+          minimumScale: nullableNumberValue(row, "minimum_scale"),
+          transactionId: nullableTextValue(row, "transaction_id"),
+          transactionRevisionId: nullableTextValue(row, "transaction_revision_id"),
+          sourceRecordId: nullableTextValue(row, "source_record_id"),
+        };
     }
   });
   return freezeDeep(projected) as unknown as readonly CanonicalProjectionFamilyRows[Family][];
@@ -2471,6 +2667,7 @@ function readSnapshotInTransaction(
     "investment-transactions": familyRows("investment-transactions"),
     "investment-margin-balances": familyRows("investment-margin-balances"),
     "investment-funding-relations": familyRows("investment-funding-relations"),
+    "credit-card-statements": familyRows("credit-card-statements"),
   };
   return freezeDeep({
     kind: request.kind,

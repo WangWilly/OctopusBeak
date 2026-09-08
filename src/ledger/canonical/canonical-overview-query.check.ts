@@ -9,6 +9,7 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   canonicalSqlitePath,
+  createCanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
   admitCanonicalInvestmentCapture,
@@ -17,7 +18,14 @@ import {
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
 import { createCanonicalOverviewQuery, exactAmountToNumber } from "./canonical-overview-query.ts";
+import {
+  LOAN_CONTRACT_FIXTURES,
+  admitCanonicalLoanCapture,
+  commitCanonicalLoanCapture,
+} from "./loan-financial.ts";
 import { loadOverview } from "../../lib/overview/server/load-overview.ts";
+import { loadAssets } from "../../lib/assets/server/load-assets.ts";
+import { loadLiabilities } from "../../lib/liabilities/server/load-liabilities.ts";
 
 const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
@@ -81,6 +89,54 @@ test("enabled expected sources remain visible before their first canonical captu
   }
 });
 
+test("Current liabilities preserve loan directions and source effective dates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-loan-"));
+  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  try {
+    await commitCanonicalLoanCapture(
+      store,
+      admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
+    );
+    store.close();
+
+    const current = await createCanonicalOverviewQuery(directory).current();
+    const loan = current.projection.accounts.find((account) => account.kind === "loan");
+    assert.ok(loan);
+    assert.deepEqual(loan.amounts.map((amount) => amount.exact), [{ coefficient: "875", scale: 0 }]);
+    const loanTransactions = current.projection.transactions.filter(
+      (transaction) => transaction.accountId === loan.id,
+    );
+    assert.deepEqual(
+      loanTransactions.map((transaction) => ({
+        direction: transaction.direction,
+        effectiveOn: transaction.effectiveOn,
+      })),
+      [
+        { direction: "outflow", effectiveOn: "2026-01-05" },
+        { direction: "inflow", effectiveOn: "2026-01-31" },
+      ],
+    );
+
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    const liability = liabilities.accounts.find((account) => account.id === loan.id);
+    assert.ok(liability);
+    assert.deepEqual(liability.amountLines.map((amount) => amount.exact), [{ coefficient: "875", scale: 0 }]);
+    assert.deepEqual(
+      liabilities.transactionsByAccount[loan.id]?.map((transaction) => ({
+        amount: transaction.amount,
+        date: transaction.date,
+      })),
+      [
+        { amount: -1000, date: "2026-01-05" },
+        { amount: 125, date: "2026-01-31" },
+      ],
+    );
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Current Overview uses exact current holding valuation and exposes its trace", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-investment-"));
   const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
@@ -100,9 +156,66 @@ test("Current Overview uses exact current holding valuation and exposes its trac
     })), [{ currency: "USD", exact: { coefficient: "777", scale: 0 } }]);
     assert.equal(account.amounts[0]?.traces[0]?.kind, "investment-holding-observation");
     assert.equal(current.projection.positions[0]?.kind, "crypto");
-    assert.equal(current.projection.positions[0]?.amount.exact.coefficient, "123456");
+    assert.equal(current.projection.positions[0]?.amount?.exact.coefficient, "123456");
+    const assets = await loadAssets(directory, { expectedSources: [] });
+    assert.equal(assets.availability, "available");
+    assert.equal(assets.coverage, "complete");
+    assert.equal(assets.accounts[0]?.marginAmountLines?.[0]?.exact?.coefficient, "777");
+    assert.equal(assets.positionsByAccount[assets.accounts[0]!.id]?.[0]?.value, 1234.56);
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    assert.equal(liabilities.availability, "available");
+    assert.equal(liabilities.coverage, "complete");
+    assert.deepEqual(liabilities.accounts, []);
+    assert.equal(liabilities.marginAccounts.length, 1);
+    assert.equal(liabilities.marginAccounts[0]?.id, assets.accounts[0]?.id);
+    assert.equal(liabilities.marginAccounts[0]?.amountLines[0]?.exact?.coefficient, "777");
   } finally {
     store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Current liabilities keep margin-only exposure visible without inventing a loan", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-margin-only-"));
+  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  try {
+    const capture = investmentFixture();
+    capture.holdings = [];
+    await commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(capture),
+    );
+    store.close();
+
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    assert.equal(liabilities.accounts.length, 0);
+    assert.equal(liabilities.marginAccounts.length, 1);
+    assert.equal(liabilities.marginAccounts[0]?.kind, "crypto");
+    assert.equal(liabilities.marginAccounts[0]?.id, liabilities.sourceGaps[0]?.accountId);
+    assert.equal(liabilities.availability, "available");
+    assert.equal(liabilities.coverage, "partial");
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Product projection states ignore unrelated accounts and source gaps", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-product-filter-"));
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const assets = await loadAssets(directory, { expectedSources: [] });
+    assert.equal(assets.accounts.length, 1);
+    assert.equal(assets.accounts[0]?.kind, "bank");
+    assert.equal(assets.availability, "awaiting");
+    assert.equal(assets.coverage, "awaiting");
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    assert.deepEqual(liabilities.accounts, []);
+    assert.deepEqual(liabilities.marginAccounts, []);
+    assert.deepEqual(liabilities.sourceGaps, []);
+    assert.equal(liabilities.availability, "empty");
+    assert.equal(liabilities.coverage, "awaiting");
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -197,7 +310,10 @@ test("Current Overview with an unvalued current holding does not present a parti
     const account = current.projection.accounts[0];
     assert.equal(account?.availability, "awaiting");
     assert.deepEqual(account?.amounts, []);
-    assert.deepEqual(account?.positions, []);
+    assert.deepEqual(account?.marginAmounts.map((amount) => amount.exact), [{ coefficient: "777", scale: 0 }]);
+    assert.equal(account?.positions.length, 2);
+    assert.equal(account?.positions.find((position) => position.symbol === "ETH")?.units?.coefficient, "1");
+    assert.equal(account?.positions.find((position) => position.symbol === "ETH")?.amount, null);
     assert.equal(current.projection.sourceGaps.length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import { canonicalSqlitePath, openCanonicalDatabase } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
@@ -21,7 +20,10 @@ export type CanonicalOverviewExactAmount = Readonly<{
 }>;
 
 export type CanonicalOverviewAmountTrace = Readonly<{
-  kind: "loan-balance-observation" | "investment-holding-observation" | "investment-margin-observation";
+  kind:
+    | "loan-balance-observation"
+    | "investment-holding-observation"
+    | "investment-margin-observation";
   accountId: string;
   observationId?: string;
   revisionId?: string;
@@ -43,12 +45,46 @@ export type CanonicalOverviewPosition = Readonly<{
   label: string;
   symbol: string;
   name: string;
-  kind: "brokerage" | "crypto";
+  kind: "fund" | "brokerage" | "crypto";
   group: "asset";
   typeLabel: string;
   currency: string;
-  amount: CanonicalOverviewAmount;
+  amount: CanonicalOverviewAmount | null;
   units: CanonicalOverviewExactAmount | null;
+}>;
+
+export type CanonicalOverviewTransaction = Readonly<{
+  id: string;
+  accountId: string;
+  amount: CanonicalOverviewExactAmount;
+  currency: string;
+  direction: string;
+  postingStatus: string;
+  effectiveOn: string;
+  description: string | null;
+}>;
+
+export type CanonicalOverviewCreditCardStatement = Readonly<{
+  statementId: string;
+  statementRevisionId: string;
+  statementKey: string;
+  revisionNumber: number;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  statementBalance: CanonicalOverviewExactAmount;
+  minimumPayment: CanonicalOverviewExactAmount | null;
+  memberships: readonly {
+    transactionId: string;
+    transactionRevisionId: string;
+    sourceRecordId: string;
+  }[];
+}>;
+
+export type CanonicalOverviewCreditCard = Readonly<{
+  statements: readonly CanonicalOverviewCreditCardStatement[];
 }>;
 
 export type CanonicalOverviewAccount = Readonly<{
@@ -66,6 +102,7 @@ export type CanonicalOverviewAccount = Readonly<{
   kind:
     | "bank"
     | "foreign"
+    | "fund"
     | "brokerage"
     | "crypto"
     | "credit-card"
@@ -75,6 +112,7 @@ export type CanonicalOverviewAccount = Readonly<{
   amounts: readonly CanonicalOverviewAmount[];
   marginAmounts: readonly CanonicalOverviewAmount[];
   positions: readonly CanonicalOverviewPosition[];
+  creditCard?: CanonicalOverviewCreditCard;
   transactionCount: number;
   observedAt: string | null;
   availability: "available" | "awaiting" | "unavailable";
@@ -109,6 +147,7 @@ export type CanonicalOverviewProjection = Readonly<{
   availability: CanonicalOverviewAvailability;
   accounts: readonly CanonicalOverviewAccount[];
   positions: readonly CanonicalOverviewPosition[];
+  transactions: readonly CanonicalOverviewTransaction[];
   sourceGaps: readonly CanonicalOverviewSourceGap[];
   importedAt: string | null;
   knowledgePoint: number;
@@ -134,6 +173,7 @@ const EMPTY_PROJECTION: CanonicalOverviewProjection = Object.freeze({
   availability: "awaiting",
   accounts: [],
   positions: [],
+  transactions: [],
   sourceGaps: [],
   importedAt: null,
   knowledgePoint: 0,
@@ -159,7 +199,7 @@ export function createCanonicalOverviewQuery(
       if (!existsSync(databasePath))
         return result(withExpectedSourceGaps(EMPTY_PROJECTION, expectedSources));
 
-      let db: DatabaseSync | undefined;
+      let db: ReturnType<typeof openCanonicalDatabase> | undefined;
       try {
         const opened = openCanonicalDatabase(ledgerDir, { readOnly: true });
         db = opened;
@@ -174,6 +214,7 @@ export function createCanonicalOverviewQuery(
               "investment-accounts",
               "investment-holdings",
               "investment-margin-balances",
+              "credit-card-statements",
             ],
             scope: ALL_TIME_SCOPE,
           });
@@ -207,6 +248,7 @@ function unavailableProjection(
     availability: "unavailable",
     accounts: [],
     positions: [],
+    transactions: [],
     sourceGaps: expectedSources.map((source) =>
       expectedSourceGap(source, "canonical-read-unavailable"),
     ),
@@ -220,6 +262,19 @@ function mapProjection(
   expectedSources: readonly CanonicalOverviewExpectedSource[],
 ): CanonicalOverviewProjection {
   const accountRows = snapshot.families["financial-accounts"];
+  const transactions = snapshot.families.transactions.map((transaction) => ({
+    id: transaction.transactionId,
+    accountId: transaction.accountId,
+    amount: {
+      coefficient: transaction.amountCoefficient,
+      scale: transaction.amountScale,
+    },
+    currency: transaction.currency,
+    direction: transaction.direction,
+    postingStatus: transaction.postingStatus,
+    effectiveOn: transaction.effectiveOn,
+    description: transaction.description,
+  } satisfies CanonicalOverviewTransaction));
   if (accountRows.length === 0) {
     const sourceGaps = expectedSources.map((source) =>
       expectedSourceGap(source, "source-not-collected"),
@@ -228,6 +283,7 @@ function mapProjection(
       availability: sourceGaps.length > 0 ? "awaiting" : "empty",
       accounts: [],
       positions: [],
+      transactions,
       sourceGaps,
       importedAt: null,
       knowledgePoint: snapshot.knowledgePoint,
@@ -260,6 +316,9 @@ function mapProjection(
     rows.push(margin);
     marginsByAccount.set(margin.accountId, rows);
   }
+  const creditCardStatementsByAccount = mapCreditCardStatements(
+    snapshot.families["credit-card-statements"],
+  );
 
   const positions: CanonicalOverviewPosition[] = [];
   const sourceGaps: CanonicalOverviewSourceGap[] = [];
@@ -284,7 +343,7 @@ function mapProjection(
     const hasUnvaluedHolding = accountHoldings.some(
       (holding) => holding.valuationCoefficient === null || holding.valuationScale === null || holding.valuationCurrency === null,
     );
-    const accountPositions = hasUnvaluedHolding ? [] : rawAccountPositions;
+    const accountPositions = rawAccountPositions;
     positions.push(...accountPositions);
     const available = amounts.length > 0 && !hasUnvaluedHolding;
     const availability = available ? "available" : "awaiting";
@@ -301,8 +360,15 @@ function mapProjection(
     return {
       ...accountDisplay(account),
       amounts: hasUnvaluedHolding ? [] : amounts,
-      marginAmounts: hasUnvaluedHolding ? [] : marginAmounts,
+      marginAmounts,
       positions: accountPositions,
+      ...(account.accountType === "credit"
+        ? {
+          creditCard: {
+            statements: creditCardStatementsByAccount.get(account.accountId) ?? [],
+          },
+        }
+        : {}),
       transactionCount: transactionsByAccount.get(account.accountId) ?? 0,
       observedAt: account.latestCaptureObservedAt,
       availability,
@@ -322,10 +388,64 @@ function mapProjection(
     availability,
     accounts,
     positions,
+    transactions,
     sourceGaps,
     importedAt,
     knowledgePoint: snapshot.knowledgePoint,
   };
+}
+
+function mapCreditCardStatements(
+  rows: readonly CanonicalProjectionSnapshot["families"]["credit-card-statements"][number][],
+): Map<string, CanonicalOverviewCreditCardStatement[]> {
+  type CreditCardStatementDraft = Omit<CanonicalOverviewCreditCardStatement, "memberships"> & {
+    memberships: {
+      transactionId: string;
+      transactionRevisionId: string;
+      sourceRecordId: string;
+    }[];
+  };
+  const byAccount = new Map<string, CreditCardStatementDraft[]>();
+  for (const row of rows) {
+    const statements = byAccount.get(row.accountId) ?? [];
+    let statement = statements.find((candidate) => candidate.statementRevisionId === row.statementRevisionId);
+    if (!statement) {
+      statement = {
+        statementId: row.statementId,
+        statementRevisionId: row.statementRevisionId,
+        statementKey: row.statementKey,
+        revisionNumber: row.revisionNumber,
+        cycleStart: row.cycleStart,
+        cycleEnd: row.cycleEnd,
+        issueDate: row.issueDate,
+        dueDate: row.dueDate,
+        currency: row.currency,
+        statementBalance: {
+          coefficient: row.balanceCoefficient,
+          scale: row.balanceScale,
+        },
+        minimumPayment: row.minimumCoefficient === null || row.minimumScale === null
+          ? null
+          : {
+            coefficient: row.minimumCoefficient,
+            scale: row.minimumScale,
+          },
+        memberships: [],
+      };
+      statements.push(statement);
+    }
+    if (row.transactionId !== null && row.transactionRevisionId !== null && row.sourceRecordId !== null)
+      statement.memberships = [
+        ...statement.memberships,
+        {
+          transactionId: row.transactionId,
+          transactionRevisionId: row.transactionRevisionId,
+          sourceRecordId: row.sourceRecordId,
+        },
+      ];
+    byAccount.set(row.accountId, statements);
+  }
+  return byAccount as Map<string, CanonicalOverviewCreditCardStatement[]>;
 }
 
 function withExpectedSourceGaps(
@@ -409,11 +529,12 @@ function accountDisplay(account: CanonicalProjectionFinancialAccount) {
     };
   if (account.accountType === "investment") {
     const crypto = account.investmentSubtype === "crypto_exchange" || account.investmentSubtype === "non_custodial_wallet" || account.stream === "crypto" || account.stream.includes("crypto");
+    const fund = account.integrationNamespace === "yuanta-fund" || account.stream.includes("fund");
     return {
       ...identity,
       group: "investment" as const,
-      kind: crypto ? "crypto" as const : "brokerage" as const,
-      typeLabel: crypto ? "Crypto" : "Investment",
+      kind: crypto ? "crypto" as const : fund ? "fund" as const : "brokerage" as const,
+      typeLabel: crypto ? "Crypto" : fund ? "Fund" : "Investment",
     };
   }
   return {
@@ -482,24 +603,13 @@ function holdingPosition(
   holding: CanonicalProjectionInvestmentHolding,
   knowledgePoint: number,
 ): CanonicalOverviewPosition | null {
-  if (holding.valuationCoefficient === null || holding.valuationScale === null || holding.valuationCurrency === null)
-    return null;
   const crypto = holding.securityType === "cryptocurrency" || account.investmentSubtype === "crypto_exchange" || account.investmentSubtype === "non_custodial_wallet" || account.stream.includes("crypto");
-  return {
-    id: `${account.accountId}:${holding.securityId}`,
-    accountId: account.accountId,
-    label: holding.securityName ?? holding.securityTicker ?? holding.securityKey,
-    symbol: holding.securityTicker ?? holding.securityKey,
-    name: holding.securityName ?? holding.securityKey,
-    kind: crypto ? "crypto" : "brokerage",
-    group: "asset",
-    typeLabel: crypto ? "Crypto" : "Investment",
-    currency: holding.valuationCurrency,
-    amount: {
+  const amount = holding.valuationCoefficient !== null && holding.valuationScale !== null && holding.valuationCurrency !== null
+    ? {
       currency: holding.valuationCurrency,
       exact: { coefficient: holding.valuationCoefficient, scale: holding.valuationScale },
       traces: [{
-        kind: "investment-holding-observation",
+        kind: "investment-holding-observation" as const,
         accountId: account.accountId,
         observationId: holding.measurementKey,
         securityId: holding.securityId,
@@ -507,7 +617,19 @@ function holdingPosition(
         observedAt: holding.observedAt,
         knowledgePoint,
       }],
-    },
+    }
+    : null;
+  return {
+    id: `${account.accountId}:${holding.securityId}`,
+    accountId: account.accountId,
+    label: holding.securityName ?? holding.securityTicker ?? holding.securityKey,
+    symbol: holding.securityTicker ?? holding.securityKey,
+    name: holding.securityName ?? holding.securityKey,
+    kind: crypto ? "crypto" : account.integrationNamespace === "yuanta-fund" ? "fund" : "brokerage",
+    group: "asset",
+    typeLabel: crypto ? "Crypto" : account.integrationNamespace === "yuanta-fund" ? "Fund" : "Investment",
+    currency: holding.valuationCurrency ?? holding.securityCurrency,
+    amount,
     units: holding.quantityCoefficient !== null && holding.quantityScale !== null
       ? { coefficient: holding.quantityCoefficient, scale: holding.quantityScale }
       : null,
