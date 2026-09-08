@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import type { AssetsPageDto } from "./types.ts";
 
 const model = {
+  availability: "empty",
+  coverage: "awaiting",
+  sourceGaps: [],
+  importedAt: null,
   accounts: [],
   positionsByAccount: {},
   transactionsByAccount: {},

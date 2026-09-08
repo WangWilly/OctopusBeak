@@ -51,6 +51,8 @@ for (const [reader, forbidden] of [
   assert.ok(start >= 0, `${reader} must be a private product reader`);
   assert.doesNotMatch(boundarySource.slice(start, end < 0 ? undefined : end), forbidden);
 }
+assert.match(boundarySource, /request\.product === "assets" \|\| request\.product === "liabilities"/);
+assert.match(boundarySource, /createCanonicalOverviewQuery\(this\.ledgerDir/);
 
 type Assert<T extends true> = T;
 type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
@@ -103,14 +105,17 @@ try {
   seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
   const productQuery = createFinancialQuery(ledgerDir);
   const assets = await productQuery.current({ kind: "current", product: "assets" });
-  assert.deepEqual(assets.ledger.creditCardStatementLines, []);
-  assert.deepEqual(assets.ledger.creditCardSnapshots, []);
-  assert.deepEqual(assets.ledger.loanTransactions, []);
+  assert.equal(assets.product, "assets");
+  assert.equal(assets.projection.availability, "empty");
+  assert.deepEqual(assets.projection.accounts, []);
+  assert.deepEqual(assets.projection.transactions, []);
   const overview = await productQuery.current({ kind: "current", product: "overview" });
   assert.equal(overview.projection.availability, "awaiting");
   assert.deepEqual(overview.projection.accounts, []);
   const liabilities = await productQuery.current({ kind: "current", product: "liabilities" });
-  assert.deepEqual(liabilities.ledger.maicoinStatementRows, []);
+  assert.equal(liabilities.product, "liabilities");
+  assert.equal(liabilities.projection.availability, "empty");
+  assert.deepEqual(liabilities.projection.accounts, []);
   const spending = productQuery.current({ kind: "current", product: "spending" });
   assert.equal(spending.product, "spending");
 } finally {

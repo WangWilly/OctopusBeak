@@ -112,23 +112,23 @@ try {
   db.close();
 
   const [assets, liabilities, overview] = await Promise.all([
-    loadAssets(ledgerDir),
-    loadLiabilities(ledgerDir),
+    loadAssets(ledgerDir, { expectedSources: [] }),
+    loadLiabilities(ledgerDir, { expectedSources: [] }),
     loadOverview(ledgerDir),
   ]);
   const spending = loadSpending(ledgerDir);
-  const asset = assets.accounts.find((account) => account.institution === "Example Bank");
-  assert.ok(asset);
-  assert.equal(asset.amountLines.find((amount) => amount.currency === "TWD")?.value, 1250);
-  assert.equal(
-    Object.values(assets.transactionsByAccount).flat().some((row) => row.label === "Synthetic purchase"),
-    true,
-  );
-  assert.equal(assets.dailyHistoryByAccount[asset.id]?.at(-1)?.assets[0]?.value, 1250);
-  const loan = liabilities.accounts.find((account) => account.institution === "Example Bank");
-  assert.ok(loan);
-  assert.equal(loan.amountLines[0]?.value, 6000);
-  assert.equal(liabilities.dailyHistoryByAccount[loan.id]?.at(-1)?.liabilities[0]?.value, 6000);
+  assert.equal(assets.availability, "empty");
+  assert.equal(assets.coverage, "awaiting");
+  assert.deepEqual(assets.accounts, []);
+  assert.deepEqual(assets.positionsByAccount, {});
+  assert.deepEqual(assets.transactionsByAccount, {});
+  assert.deepEqual(assets.dailyHistoryByAccount, {});
+  assert.equal(liabilities.availability, "empty");
+  assert.equal(liabilities.coverage, "awaiting");
+  assert.deepEqual(liabilities.accounts, []);
+  assert.deepEqual(liabilities.marginAccounts, []);
+  assert.deepEqual(liabilities.transactionsByAccount, {});
+  assert.deepEqual(liabilities.dailyHistoryByAccount, {});
   assert.equal(overview.availability, "awaiting");
   assert.equal(overview.accounts.length, 0);
   assert.equal(overview.historyAvailability, "unavailable");

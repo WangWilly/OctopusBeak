@@ -83,6 +83,49 @@ export type AccountRowDto = {
   valueAvailability: "available" | "awaiting" | "unavailable";
   dataIssueId?: string;
   canonicalAccountId?: string;
+  creditCard?: CreditCardAccountDto;
+};
+
+export type CreditCardStatementMembershipDto = {
+  transactionId: string;
+  transactionRevisionId: string;
+  sourceRecordId: string;
+};
+
+export type CreditCardStatementDto = {
+  statementId: string;
+  statementRevisionId: string;
+  statementKey: string;
+  revisionNumber: number;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  statementBalance: CurrencyAmountDto;
+  minimumPayment: CurrencyAmountDto | null;
+  memberships: CreditCardStatementMembershipDto[];
+};
+
+export type CreditCardAccountDto = {
+  statements: CreditCardStatementDto[];
+};
+
+export type ProductSourceGapDto = {
+  accountId: string;
+  sourceConnectionKey: string;
+  accountNo: string;
+  integrationNamespace?: string;
+  stream?: string;
+  label?: string;
+  reason: "current-value-not-observed" | "source-not-collected" | "canonical-read-unavailable";
+};
+
+export type CurrentProjectionStateDto = {
+  availability: "empty" | "awaiting" | "available" | "unavailable";
+  coverage: "complete" | "partial" | "awaiting" | "unavailable";
+  sourceGaps: ProductSourceGapDto[];
+  importedAt: string | null;
 };
 
 export type TransactionRowDto = {
@@ -101,7 +144,8 @@ export type AssetPositionDto = {
   symbol: string;
   name: string;
   units: string;
-  value: number;
+  value: number | null;
+  valueAvailability?: "available" | "awaiting";
   currency: string;
   change: string;
   metricLabel?: string;

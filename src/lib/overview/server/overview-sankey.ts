@@ -100,6 +100,7 @@ export function buildCanonicalOverviewSankeyGraph(
 ): OverviewSankeyGraphDto | null {
   const converted: CanonicalConvertedPosition[] = [];
   for (const position of positions) {
+    if (position.amount === null) continue;
     const value = exactToNumber(position.amount.exact);
     if (!Number.isFinite(value) || value <= 0) continue;
     const rate = position.currency === "TWD" ? { rateDate: "", twdPerUnit: 1 } : rates.get(position.currency);

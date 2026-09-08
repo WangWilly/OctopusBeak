@@ -25,6 +25,8 @@ import {
   commitFubonCreditCardCapture,
   ensureFubonCreditCardSchema,
 } from "./fubon-credit-card.ts";
+import { createCanonicalOverviewQuery } from "./canonical-overview-query.ts";
+import { loadLiabilities } from "../../lib/liabilities/server/load-liabilities.ts";
 import {
   fubonCreditCardPanFingerprint,
   fubonCreditCardPanLast4,
@@ -1303,6 +1305,34 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
           row.provider_key === "human-attested:no-provider-key" &&
           /^observed-source-order:\d+$/.test(row.sequence_lexeme ?? ""),
       ),
+    );
+
+    const current = await createCanonicalOverviewQuery(directory).current();
+    const creditAccount = current.projection.accounts.find(
+      (account) => account.kind === "credit-card",
+    );
+    assert.ok(creditAccount, "Fubon credit account must be in the canonical projection");
+    const statement = creditAccount.creditCard?.statements[0];
+    assert.ok(statement, "Fubon statement must be read through the typed runtime family");
+    assert.equal(statement.statementBalance.coefficient, "12345");
+    assert.equal(statement.statementBalance.scale, 2);
+    assert.equal(statement.minimumPayment?.coefficient, "1000");
+    assert.equal(statement.minimumPayment?.scale, 2);
+    assert.ok(statement.statementRevisionId.length > 0);
+    assert.equal(statement.memberships.length, 1);
+    assert.ok(statement.memberships[0]?.transactionId.length > 0);
+    assert.ok(statement.memberships[0]?.transactionRevisionId.length > 0);
+    assert.ok(statement.memberships[0]?.sourceRecordId.length > 0);
+
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    const liabilityCard = liabilities.accounts.find((account) => account.id === creditAccount.id);
+    assert.ok(liabilityCard, "Fubon credit account must remain in the liabilities product");
+    assert.deepEqual(liabilityCard.amountLines, [], "statement totals must not become current balances");
+    assert.equal(liabilityCard.valueAvailability, "awaiting");
+    assert.equal(liabilityCard.creditCard?.statements[0]?.statementRevisionId, statement.statementRevisionId);
+    assert.equal(
+      liabilityCard.creditCard?.statements[0]?.memberships[0]?.transactionRevisionId,
+      statement.memberships[0]?.transactionRevisionId,
     );
   } finally {
     store.close();
