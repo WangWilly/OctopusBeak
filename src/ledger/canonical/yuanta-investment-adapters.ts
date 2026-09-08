@@ -59,6 +59,10 @@ export function buildYuantaInvestmentCapture(
     securityKey: `${input.sourceId}:${row.producerSecurityId}`,
     producerSecurityId: row.producerSecurityId,
     name: row.securityName,
+    nameEvidence: {
+      contractVersion: `${input.sourceId}/security-name/source-reported-v1`,
+      sourceRecordKey: row.sourceRecordKey,
+    },
     ticker: row.ticker,
     currency: row.currency,
     identityEvidence: {

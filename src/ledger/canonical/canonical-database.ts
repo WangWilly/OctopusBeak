@@ -34,7 +34,7 @@ export function openCanonicalDatabasePath(
     if (options.readOnly) {
       validateRequiredCanonicalContractPurges(validated.db);
     } else {
-      validated.runDataTransition((db) =>
+      validated.runContractPurgeDataTransition((db) =>
         applyCanonicalContractDataTransitions(
           db,
           validated.openedFromVersion,

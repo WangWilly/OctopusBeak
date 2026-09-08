@@ -1880,7 +1880,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 24;
+export const CANONICAL_SCHEMA_VERSION = 25;
 
 type CanonicalId = Buffer;
 
@@ -9746,6 +9746,31 @@ function migrateV23ToV24(db: DatabaseSync): void {
   db.exec("PRAGMA user_version = 24");
 }
 
+/** Source labels are observations; identity rows and historical evidence stay immutable. */
+function migrateV24ToV25(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS investment_security_name_observations (
+      security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+      capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      contract_version TEXT NOT NULL CHECK(contract_version IN (
+        'yuanta-trade/security-name/source-reported-v1','yuanta-fund/security-name/source-reported-v1')),
+      name TEXT NOT NULL,
+      PRIMARY KEY(security_id,capture_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS investment_security_names_no_update
+    BEFORE UPDATE ON investment_security_name_observations
+    BEGIN SELECT RAISE(ABORT, 'Security name observations are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS investment_security_names_no_delete
+    BEFORE DELETE ON investment_security_name_observations
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Security name observations cannot be deleted'); END;
+  `);
+  db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at_utc_us) VALUES(25,?)").run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 25");
+}
+
 type CanonicalAttestationColumn = {
   readonly name: string;
   readonly definition: string;
@@ -10482,6 +10507,12 @@ export function createCanonicalSchemaLifecyclePlan(
       apply(db) {
         migrateV23ToV24(db);
       },
+    },
+    {
+      id: "canonical/v24-v25/security-name-observations/v1",
+      fromVersion: 24,
+      toVersion: 25,
+      apply(db) { migrateV24ToV25(db); },
     },
     ],
   );
@@ -11449,6 +11480,10 @@ export function validateCanonicalDatabaseAfterLifecycle(
 ): void {
   validateCanonicalSchemaMigrationMetadata(db);
   validateReadOnlyDatabase(db, options);
+  for (const name of ["investment_security_name_observations", "investment_security_names_no_update", "investment_security_names_no_delete"]) {
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE name=?").get(name))
+      throw new Error(`Canonical Security name schema ${name} is missing.`);
+  }
   validateV8SourceEvidenceSchema(db);
   validateCanonicalCompatibilityViews(db);
   validateCanonicalCaptureScopeLifecycleSchema(db);

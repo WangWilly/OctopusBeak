@@ -63,11 +63,7 @@ export type InvestmentSecurityType =
   | "other";
 /** A provider-reported investment event, never an inference from amounts. */
 export type InvestmentTransactionAction =
-  | "buy"
-  | "sell"
-  | "corporate_action_in"
-  | "corporate_action_out"
-  | "dividend";
+  "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend";
 export type InvestmentFundingEvidence =
   | { kind: "unresolved"; sourceRecordKey: string }
   | {
@@ -78,9 +74,7 @@ export type InvestmentFundingEvidence =
       sourceLinkageKey: string;
       settlementGroupKey: string;
       settlementEffectiveOn: string;
-      settlementModel:
-        | "single-transaction"
-        | "account-currency-date-net";
+      settlementModel: "single-transaction" | "account-currency-date-net";
       contractVersion: string;
     }
   | {
@@ -128,6 +122,7 @@ export type InvestmentCaptureInput = {
     ticker?: string;
     currency: string;
     securityType?: InvestmentSecurityType;
+    nameEvidence?: { contractVersion: string; sourceRecordKey: string };
     identityEvidence: { kind: "producer-security-id"; contractVersion: string };
   }>;
   holdings: Array<{
@@ -370,6 +365,20 @@ export function admitCanonicalInvestmentCapture(
     )
       throw new CanonicalInvestmentAdmissionError(
         "Security identity must use the contract-proven producer-scoped key, not name or ticker.",
+      );
+    if (
+      security.nameEvidence &&
+      (!["yuanta-trade", "yuanta-fund"].includes(capture.sourceId) ||
+        security.nameEvidence.contractVersion !==
+          `${capture.sourceId}/security-name/source-reported-v1` ||
+        ![...capture.holdings, ...capture.transactions].some(
+          (row) =>
+            row.securityKey === security.securityKey &&
+            row.sourceRecordKey === security.nameEvidence!.sourceRecordKey,
+        ))
+    )
+      throw new CanonicalInvestmentAdmissionError(
+        "Security name requires a supported source-name contract and matching source record.",
       );
     if (securityKeys.has(security.securityKey))
       throw new CanonicalInvestmentAdmissionError("Duplicate security key.");
@@ -1038,7 +1047,7 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
     if (
       prior &&
       (prior.producerSecurityId !== security.producerSecurityId ||
-        prior.name !== (security.name ?? null) ||
+        (!security.nameEvidence && prior.name !== (security.name ?? null)) ||
         prior.ticker !== (security.ticker ?? null) ||
         prior.currency !== security.currency ||
         prior.securityType !== (security.securityType ?? "other"))
@@ -1048,7 +1057,9 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
       );
     const securityId = prior ? (prior.securityId as Uint8Array) : uuidV7();
     if (!prior)
-      db.prepare("INSERT INTO investment_securities(security_id,source_id,security_key,producer_security_id,name,ticker,currency,security_type) VALUES(?,?,?,?,?,?,?,?)").run(
+      db.prepare(
+        "INSERT INTO investment_securities(security_id,source_id,security_key,producer_security_id,name,ticker,currency,security_type) VALUES(?,?,?,?,?,?,?,?)",
+      ).run(
         securityId,
         capture.sourceId,
         security.securityKey,
@@ -1058,6 +1069,30 @@ function extensionRows(db: DatabaseSync, capture: InvestmentValidatedCapture) {
         security.currency,
         security.securityType ?? "other",
       );
+    if (security.nameEvidence && security.name !== undefined) {
+      const record = db
+        .prepare(
+          "SELECT source_record_id AS id FROM source_records WHERE capture_id=? AND occurrence_key=?",
+        )
+        .get(spine.captureId, security.nameEvidence.sourceRecordKey) as
+        { id: Uint8Array } | undefined;
+      if (!record)
+        throw new CanonicalInvestmentAdmissionError(
+          "Security name source record is missing.",
+        );
+      db.prepare(
+        `INSERT INTO investment_security_name_observations
+        (security_id,capture_id,commit_id,source_record_id,contract_version,name)
+        VALUES(?,?,?,?,?,?)`,
+      ).run(
+        securityId,
+        spine.captureId,
+        spine.commitId,
+        record.id,
+        security.nameEvidence.contractVersion,
+        security.name,
+      );
+    }
     securities.set(security.securityKey, securityId);
   }
   const sourceRecord = (key: string) =>
@@ -1335,10 +1370,10 @@ export async function commitCanonicalInvestmentCaptureBatch(
   captures: readonly InvestmentValidatedCapture[],
 ) {
   assertValidatedCanonicalDatabase(store.db);
-  const results = await commitCanonicalFinancialAdmission(
-    store,
-    { kind: "investment", captures: [...captures] },
-  );
+  const results = await commitCanonicalFinancialAdmission(store, {
+    kind: "investment",
+    captures: [...captures],
+  });
   // Relation resolution is a separate, fail-soft follow-through after the
   // full investment admission (including margin extensions) is durable.
   await runCanonicalInvestmentRelationFollowThrough(
@@ -1353,9 +1388,7 @@ function queryRows(
   store: CanonicalInvestmentStore,
   sourceConnectionKey: string,
   projectionRequest:
-    | "current"
-    | Readonly<{ financialAt: string; knowledgeAt: number }>
-    | null,
+    "current" | Readonly<{ financialAt: string; knowledgeAt: number }> | null,
 ) {
   assertValidatedCanonicalDatabase(store.db);
   token(sourceConnectionKey, "Source connection key");
@@ -1389,7 +1422,11 @@ function queryRows(
           .all(sourceConnectionKey);
     const securityRows = store.db
       .prepare(
-        `SELECT DISTINCT hex(s.security_id) AS runtimeSecurityId,s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,s.name,s.ticker,s.currency,s.security_type AS securityType
+        `SELECT DISTINCT hex(s.security_id) AS runtimeSecurityId,s.source_id AS sourceId,s.security_key AS securityKey,s.producer_security_id AS producerSecurityId,
+          COALESCE((SELECT n.name FROM investment_security_name_observations n
+            JOIN canonical_commits nc ON nc.commit_id=n.commit_id
+            WHERE n.security_id=s.security_id AND nc.commit_sequence <= ?
+            ORDER BY nc.commit_sequence DESC,n.rowid DESC LIMIT 1),s.name) AS name,s.ticker,s.currency,s.security_type AS securityType
            FROM investment_securities s
           WHERE EXISTS (
             SELECT 1 FROM investment_holding_observations h
@@ -1403,9 +1440,13 @@ function queryRows(
             WHERE t.security_id=s.security_id AND c.source_connection_key=?
           ) ORDER BY s.security_key`,
       )
-      .all(sourceConnectionKey, sourceConnectionKey) as Array<
-        Record<string, unknown> & { runtimeSecurityId: string }
-      >;
+      .all(
+        projectionRequest && projectionRequest !== "current"
+          ? projectionRequest.knowledgeAt
+          : Number.MAX_SAFE_INTEGER,
+        sourceConnectionKey,
+        sourceConnectionKey,
+      ) as Array<Record<string, unknown> & { runtimeSecurityId: string }>;
     const selectedSecurityIds = projection
       ? new Set([
           ...projection.families["investment-holdings"].map(
@@ -1457,16 +1498,18 @@ function queryRows(
             `SELECT t.action,t.effective_on AS effectiveOn,t.funding_evidence_json AS fundingEvidenceJson FROM investment_transactions t JOIN investment_accounts a ON a.account_id=t.account_id JOIN source_connections c ON c.source_connection_id=a.source_connection_id WHERE c.source_connection_key=? ORDER BY t.effective_on`,
           )
           .all(sourceConnectionKey) as Array<{
-        action: InvestmentTransactionAction;
-        effectiveOn: string;
-        fundingEvidenceJson: string;
-      }>);
-    const transactions = transactionRows.map(({ fundingEvidenceJson, ...row }) => ({
-      ...row,
-      fundingEvidence: JSON.parse(
-        fundingEvidenceJson,
-      ) as InvestmentFundingEvidence,
-    }));
+          action: InvestmentTransactionAction;
+          effectiveOn: string;
+          fundingEvidenceJson: string;
+        }>);
+    const transactions = transactionRows.map(
+      ({ fundingEvidenceJson, ...row }) => ({
+        ...row,
+        fundingEvidence: JSON.parse(
+          fundingEvidenceJson,
+        ) as InvestmentFundingEvidence,
+      }),
+    );
     const marginBalances = projection
       ? projection.families["investment-margin-balances"]!.map((row) => ({
           balanceKind: row.balanceKind,

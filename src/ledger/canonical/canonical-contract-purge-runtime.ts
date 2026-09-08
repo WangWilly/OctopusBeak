@@ -155,6 +155,7 @@ const OWNED_TABLES = new Set([
   "investment_holding_observations",
   "investment_margin_balance_observations",
   "investment_securities",
+  "investment_security_name_observations",
   "investment_transactions",
   "loan_account_identities",
   "loan_repayment_relation_events",
