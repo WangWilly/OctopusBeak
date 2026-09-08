@@ -292,7 +292,8 @@ function declaredSubjectScope(
 function canonicalId(value: string | Uint8Array, label: string): CanonicalId {
   if (value instanceof Uint8Array) return blob(value);
   try {
-    return idFromString(requireText(value, label));
+    const text = requireText(value, label);
+    return /^[0-9a-f]{32}$/iu.test(text) ? Buffer.from(text, "hex") : idFromString(text);
   } catch (error) {
     throw new Error(`${label} must be a canonical UUID.`, { cause: error });
   }
@@ -2591,6 +2592,31 @@ function queryCurrent(db: DatabaseSync, request: CanonicalEnrichmentQueryRequest
   const rows = transactionRows(db, request, "current");
   const knowledgePoint = latestKnowledgePoint(db);
   return { kind: "current", knowledgePoint, financialAt: request.financialAt ?? null, transactions: rows.map((row) => currentTransaction(db, blob(row.transaction_id))) };
+}
+
+/**
+ * Read the current enrichment query inside a caller-owned canonical snapshot.
+ * Product queries that need to join enrichment with another projection family
+ * use this adapter so all values come from one knowledge point and one SQLite
+ * read transaction.
+ */
+export function queryCanonicalEnrichmentCurrentFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalEnrichmentQueryRequest = {},
+): CanonicalEnrichmentQueryResult {
+  return queryCurrent(db, request);
+}
+
+/**
+ * Read historical enrichment inside a caller-owned canonical snapshot.
+ * Spending's historical report uses this to keep display, tags, and
+ * categorization at the same financial and knowledge cutoffs.
+ */
+export function queryCanonicalEnrichmentHistoricalFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalEnrichmentQueryRequest,
+): CanonicalEnrichmentQueryResult {
+  return queryHistorical(db, request);
 }
 
 function readHistoricalProjection(

@@ -1,27 +1,25 @@
-import { DEFAULT_LEDGER_DIR, openLedgerDatabase } from "../../../ledger/db/client.ts";
+import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import { isSpendingCategory, type SpendingCategory } from "../categories.ts";
 import type {
-  SpendingAccountTransactionInput,
-  SpendingCardPaymentInput,
-  SpendingInvoiceDto,
   SpendingModel,
-  SpendingOverrideDto,
   SpendingReason,
   SpendingState,
+  CanonicalSpendingAmountDto,
+  CanonicalSpendingCategoryDto,
+  CanonicalSpendingRecordDto,
+  CanonicalSpendingView,
 } from "../model.ts";
-import { buildSpendingModel, SPENDING_REASONS } from "../model.ts";
 import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
 import {
   createFinancialQuery,
-  type LegacySpendingAccountRow,
-  type LegacySpendingCardPaymentRow,
-  type LegacySpendingOverrideRow,
 } from "../../shared-ledger/server/financial-query.ts";
+import { exactToNumber } from "../../shared-money/exact.ts";
+import type {
+  CanonicalSpendingReport,
+  CanonicalSpendingTransaction,
+} from "../../../ledger/canonical/canonical-categorization.ts";
 
 export { activeImportSql };
-
-const SPENDING_STATES = new Set<SpendingState>(["included", "excluded", "pending"]);
-const SPENDING_REASON_SET = new Set<SpendingReason>(SPENDING_REASONS);
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -35,8 +33,135 @@ export type SpendingOverrideUpdate =
 
 export type SpendingLoadInput = {
   selectedMonth?: string;
-  selectedCategory?: SpendingCategory;
+  selectedCategory?: SpendingCategory | string;
 };
+
+function canonicalAmount(
+  value: Readonly<{ currency: string; coefficient: string; scale: number }>,
+): CanonicalSpendingAmountDto {
+  const exact = { coefficient: value.coefficient, scale: value.scale };
+  return { currency: value.currency, exact, value: exactToNumber(exact) };
+}
+
+function canonicalCategory(
+  value: CanonicalSpendingTransaction["categorization"],
+): CanonicalSpendingCategoryDto {
+  if (value.mode === "absent") {
+    return {
+      mode: "absent",
+      code: null,
+      taxonomyId: null,
+      taxonomyVersion: null,
+      components: [],
+    };
+  }
+  if (value.mode === "single") {
+    return {
+      mode: "single",
+      code: value.categoryCode ?? null,
+      taxonomyId: value.taxonomyId ?? null,
+      taxonomyVersion: value.taxonomyVersion ?? null,
+      components: [],
+    };
+  }
+  return {
+    mode: "allocated",
+    code: null,
+    taxonomyId: value.taxonomyId ?? null,
+    taxonomyVersion: value.taxonomyVersion ?? null,
+    components: (value.components ?? []).map((component) => ({
+      code: component.categoryCode,
+      taxonomyId: component.taxonomyId,
+      taxonomyVersion: component.taxonomyVersion,
+      amount: canonicalAmount({
+        currency: component.currency,
+        coefficient: component.coefficient,
+        scale: component.scale,
+      }),
+    })),
+  };
+}
+
+function canonicalRecord(
+  transaction: CanonicalSpendingTransaction,
+): CanonicalSpendingRecordDto {
+  return {
+    transactionId: transaction.transactionId,
+    accountId: transaction.accountId,
+    accountNumber: transaction.accountNumber,
+    sourceConnectionKey: transaction.sourceConnectionKey,
+    integrationNamespace: transaction.integrationNamespace,
+    stream: transaction.stream,
+    date: transaction.effectiveOn,
+    description: transaction.description,
+    amount: canonicalAmount(transaction.amount),
+    kind: transaction.kind,
+    category: canonicalCategory(transaction.categorization),
+    display: {
+      label: transaction.display.status === "absent" ? null : transaction.display.value,
+      status: transaction.display.status,
+      origin: transaction.display.status === "absent" ? null : transaction.display.origin,
+      kind: transaction.display.status === "absent" ? null : transaction.display.displayKind ?? null,
+    },
+    tags: transaction.tags.map((tag) => ({ id: tag.tagId, label: tag.label })),
+    inclusion: transaction.inclusion,
+    eligibilityGap: transaction.eligibilityGap ?? null,
+  };
+}
+
+function canonicalView(
+  report: CanonicalSpendingReport,
+  selectedMonth: string | undefined,
+  selectedCategory: string | undefined,
+): CanonicalSpendingView {
+  const records = report.transactions.map(canonicalRecord);
+  const included = report.includedTransactions.map(canonicalRecord);
+  const months = [...new Set(records
+    .filter((record) => record.inclusion !== "excluded")
+    .map((record) => record.date.slice(0, 7)))];
+  const activeMonth = selectedMonth ?? months.at(-1) ?? null;
+  return {
+    availability: report.transactions.length > 0
+      ? "available"
+      : report.reportEligibility.status === "incomplete"
+        ? "unavailable"
+        : "empty",
+    policy: {
+      id: report.inclusionPolicy.id,
+      version: report.inclusionPolicy.version,
+      name: report.inclusionPolicy.name,
+    },
+    knowledgePoint: report.knowledgePoint,
+    selectedMonth: activeMonth,
+    selectedCategory: selectedCategory ?? null,
+    transactions: records,
+    includedTransactions: included,
+    totalsByCurrency: report.totalsByCurrency.map((value) => canonicalAmount(value)),
+    categoryTotalsByCurrency: report.categoryTotalsByCurrency.map((value) => ({
+      categoryCode: value.categoryCode,
+      taxonomyId: value.taxonomyId,
+      taxonomyVersion: value.taxonomyVersion,
+      currency: value.currency,
+      amount: canonicalAmount(value),
+      count: value.count,
+    })),
+    unclassifiedByCurrency: report.unclassifiedByCurrency.map((value) => canonicalAmount(value)),
+    classificationCoverage: {
+      includedCount: report.classificationCoverage.includedCount,
+      classifiedCount: report.classificationCoverage.classifiedCount,
+      unclassifiedCount: report.classificationCoverage.unclassifiedCount,
+      includedAmountByCurrency: report.classificationCoverage.includedAmountByCurrency.map((value) => canonicalAmount(value)),
+      classifiedAmountByCurrency: report.classificationCoverage.classifiedAmountByCurrency.map((value) => canonicalAmount(value)),
+      unclassifiedAmountByCurrency: report.classificationCoverage.unclassifiedAmountByCurrency.map((value) => canonicalAmount(value)),
+    },
+    reportEligibility: {
+      status: report.reportEligibility.status,
+      gapCount: report.reportEligibility.gapCount,
+      gapAmountByCurrency: report.reportEligibility.gapAmountByCurrency.map((value) => canonicalAmount(value)),
+    },
+    totalStatus: report.totalStatus,
+  };
+}
 
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
@@ -46,168 +171,51 @@ export function loadSpending(
     kind: "current",
     product: "spending",
   });
-  {
-    const rows = spending.invoices;
-    const accountRows = spending.accountTransactions;
-    const cardPaymentRows = spending.cardPayments;
-    const overrideRows = spending.overrides;
-    const invoices: SpendingInvoiceDto[] = [];
-    const invoicesByKey = new Map<string, SpendingInvoiceDto>();
-    for (const row of rows) {
-      const issuedAt = row.issued_at;
-      if (typeof issuedAt !== "number" || !Number.isFinite(issuedAt) || issuedAt <= 0) {
-        continue;
-      }
-      let invoice = invoicesByKey.get(row.invoice_key);
-      if (!invoice) {
-        invoice = {
-          invoiceKey: row.invoice_key,
-          invoiceId: row.invoice_id,
-          issuedAt,
-          amount: Number(row.invoice_amount ?? 0),
-          sellerBusinessAccountNumber: row.seller_business_account_number,
-          sellerName: row.seller_name,
-          sellerAddr: row.seller_addr,
-          items: [],
-        };
-        invoicesByKey.set(row.invoice_key, invoice);
-        invoices.push(invoice);
-      }
-      if (row.item_key && row.category) {
-        invoice.items.push({
-          itemKey: row.item_key,
-          sequence: row.item_sequence_number === null
-            ? null
-            : Number(row.item_sequence_number),
-          quantity: row.item_quantity === null ? null : Number(row.item_quantity),
-          unitPrice: row.item_unit_price === null ? null : Number(row.item_unit_price),
-          paidAmount: Number(row.item_paid_amount ?? 0),
-          productName: row.item_product_name,
-          category: row.category,
-        });
-      }
-    }
-    const accountTransaction = (row: LegacySpendingAccountRow, amount: number): SpendingAccountTransactionInput => ({
-      statementRowId: row.statement_row_id,
-      bank: row.bank,
-      accountNumber: row.account_number,
-      currency: row.currency,
-      date: row.date,
-      time: row.transaction_time,
-      description: row.description,
-      note: row.note,
-      amount,
-    });
-    const accountTransactions = accountRows
-      .filter((row) => Number(row.withdrawal_amount) > 0)
-      .map((row) => accountTransaction(row, Number(row.withdrawal_amount)));
-    const counterpartDeposits = accountRows
-      .filter((row) => Number(row.deposit_amount) > 0)
-      .map((row) => accountTransaction(row, Number(row.deposit_amount)));
-    const cardPayments: SpendingCardPaymentInput[] = cardPaymentRows.map((row: LegacySpendingCardPaymentRow) => ({
-      date: row.date,
-      amount: Math.abs(Number(row.twd_amount)),
-    }));
-    const overrides: SpendingOverrideDto[] = overrideRows.map((row: LegacySpendingOverrideRow) => ({
-      statementRowId: row.statement_row_id,
-      state: row.state,
-      category: row.category,
-      automaticState: row.automatic_state,
-      automaticReason: row.automatic_reason,
-      updatedAt: row.updated_at,
-    }));
-    return buildSpendingModel({
-      invoices,
-      accountTransactions,
-      counterpartDeposits,
-      cardPayments,
-      overrides,
-      selectedMonth,
-      selectedCategory,
-    });
-  }
+  const canonical = canonicalView(
+    spending,
+    selectedMonth,
+    selectedCategory,
+  );
+  return {
+    canonical,
+    months: [...new Set(canonical.transactions
+      .filter((record) => record.inclusion !== "excluded")
+      .map((record) => record.date.slice(0, 7)))],
+    monthlyRows: [],
+    selectedMonth: canonical.selectedMonth,
+    selectedCategory: isSpendingCategory(selectedCategory) ? selectedCategory : undefined,
+    selectedMonthSummary: {
+      // Canonical totals are exact and currency-keyed in `canonical`; the
+      // legacy numeric field must never add unlike currencies together.
+      total: 0,
+      invoiceCount: 0,
+      accountCount: canonical.includedTransactions
+        .filter((record) => record.date.startsWith(`${canonical.selectedMonth ?? ""}-`)).length,
+    },
+    dailyRows: [],
+    presentCategories: [],
+    invoices: [],
+    accountRecords: [],
+    excludedAccountRecords: [],
+    pendingAccountRecords: [],
+    recordsByDate: [],
+  };
 }
 
 export function updateSpendingTransactionOverride(
   input: SpendingOverrideUpdate,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): void {
-  if (typeof input.statementRowId !== "string" || input.statementRowId.trim() === "") {
-    throw new Error("Spending statement row id is required");
-  }
-  if (input.state !== null && !SPENDING_STATES.has(input.state)) {
-    throw new Error(`Unknown spending state: ${String(input.state)}`);
-  }
-  if (input.state !== null && input.category !== null && !isSpendingCategory(input.category)) {
-    throw new Error(`Unknown spending category: ${String(input.category)}`);
-  }
-  if (input.state !== null && !SPENDING_STATES.has(input.automaticState)) {
-    throw new Error(`Unknown automatic spending state: ${String(input.automaticState)}`);
-  }
-  if (input.state !== null && input.automaticReason !== null &&
-    !SPENDING_REASON_SET.has(input.automaticReason)) {
-    throw new Error(`Unknown automatic spending reason: ${String(input.automaticReason)}`);
-  }
-
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    if (input.state === null) {
-      db.prepare(`
-        DELETE FROM spending_transaction_overrides WHERE statement_row_id = ?
-      `).run(input.statementRowId);
-      return;
-    }
-    if (!db.prepare(`
-      SELECT 1 FROM account_transactions WHERE statement_row_id = ?
-    `).get(input.statementRowId)) {
-      throw new Error(`No account transaction found for statement row id: ${input.statementRowId}`);
-    }
-    db.prepare(`
-      INSERT INTO spending_transaction_overrides (
-        statement_row_id, state, category, automatic_state,
-        automatic_reason, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(statement_row_id) DO UPDATE SET
-        state = excluded.state,
-        category = excluded.category,
-        automatic_state = excluded.automatic_state,
-        automatic_reason = excluded.automatic_reason,
-        updated_at = excluded.updated_at
-    `).run(
-      input.statementRowId,
-      input.state,
-      input.category,
-      input.automaticState,
-      input.automaticReason,
-      new Date().toISOString(),
-    );
-  } finally {
-    db.close();
-  }
+  void input;
+  void ledgerDir;
+  throw new Error("Canonical Spending does not support financial overrides.");
 }
 
 export function updateSpendingItemCategory(
   input: { itemKey: string; category: SpendingCategory },
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): void {
-  if (typeof input.itemKey !== "string" || input.itemKey.trim() === "") {
-    throw new Error("Spending item key is required");
-  }
-  if (!isSpendingCategory(input.category)) {
-    throw new Error(`Unknown spending category: ${String(input.category)}`);
-  }
-
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const result = db.prepare(`
-      UPDATE personal_invoice_items
-      SET category = ?
-      WHERE item_key = ?
-    `).run(input.category, input.itemKey);
-    if (result.changes !== 1) {
-      throw new Error(`No spending item found for key: ${input.itemKey}`);
-    }
-  } finally {
-    db.close();
-  }
+  void input;
+  void ledgerDir;
+  throw new Error("Canonical Spending does not support legacy invoice categorization.");
 }

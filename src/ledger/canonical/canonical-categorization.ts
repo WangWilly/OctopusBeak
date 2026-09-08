@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { openCanonicalDatabase } from "./canonical-database.ts";
 import {
@@ -15,6 +16,7 @@ import {
 } from "./canonical-runtime.ts";
 import {
   createCanonicalProjectionRuntime,
+  type CanonicalProjectionFinancialAccount,
   type CanonicalProjectionTransaction,
   type CanonicalProjectionTransactionCategorization,
   type CanonicalProjectionTransactionEnrichment,
@@ -25,6 +27,12 @@ import {
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_VERSION,
 } from "./transaction-taxonomy.ts";
+import {
+  queryCanonicalEnrichmentCurrentFromDatabase,
+  queryCanonicalEnrichmentHistoricalFromDatabase,
+  type CanonicalEnrichmentFieldResult,
+  type CanonicalTransactionTagView,
+} from "./canonical-enrichment.ts";
 
 const MAX_EXACT_SCALE = 1_000;
 const UUID_OR_HEX =
@@ -939,10 +947,35 @@ export type CanonicalSpendingCategorization = Readonly<{
   components?: readonly CanonicalSpendingCategoryComponent[];
 }>;
 
+export type CanonicalSpendingDisplay = Readonly<{
+  status: "supported" | "fallback" | "absent";
+  value: string | null;
+  origin: string | null;
+  displayKind: "automatic" | "override" | "reference_alias" | "source_description" | null;
+  assertionId: string | null;
+  referenceId: string | null;
+}>;
+
+export type CanonicalSpendingTag = Readonly<{
+  tagId: string;
+  userId: string;
+  label: string;
+  normalizedLabel: string;
+  lifecycle: "active" | "archived";
+  assertionId: string;
+  origin: "user";
+}>;
+
 export type CanonicalSpendingTransaction = Readonly<{
   transactionId: string;
   revisionId: string;
+  accountId: string;
+  accountNumber: string | null;
+  sourceConnectionKey: string;
+  integrationNamespace: string;
+  stream: string;
   effectiveOn: string;
+  description: string | null;
   amount: Readonly<{ coefficient: string; scale: number; currency: string }>;
   direction: string;
   postingStatus: string;
@@ -950,6 +983,8 @@ export type CanonicalSpendingTransaction = Readonly<{
   administrativeState: string;
   kind: string | null;
   categorization: CanonicalSpendingCategorization;
+  display: CanonicalSpendingDisplay;
+  tags: readonly CanonicalSpendingTag[];
   inclusion: "included" | "excluded" | "eligibility-gap";
   eligibilityGap?: string;
 }>;
@@ -1224,15 +1259,60 @@ type RuntimeSpendingSnapshot = Readonly<{
   knowledgePoint: number;
   financialAt: string | null;
   families: {
+    "financial-accounts": readonly CanonicalProjectionFinancialAccount[];
     transactions: readonly CanonicalProjectionTransaction[];
     "transaction-enrichment": readonly CanonicalProjectionTransactionEnrichment[];
     "transaction-categorization": readonly CanonicalProjectionTransactionCategorization[];
   };
+  enrichment: ReadonlyMap<string, Readonly<{
+    display: CanonicalEnrichmentFieldResult;
+    tags: readonly CanonicalTransactionTagView[];
+  }>>;
 }>;
+
+function spendingIdKey(value: string): string {
+  return value.replaceAll("-", "").toLowerCase();
+}
+
+function spendingDisplay(value: CanonicalEnrichmentFieldResult): CanonicalSpendingDisplay {
+  if (value.status === "absent") {
+    return {
+      status: "absent",
+      value: null,
+      origin: null,
+      displayKind: null,
+      assertionId: null,
+      referenceId: null,
+    };
+  }
+  return {
+    status: value.status,
+    value: value.value,
+    origin: value.origin,
+    displayKind: value.displayKind ?? null,
+    assertionId: value.assertionId,
+    referenceId: value.referenceId ?? null,
+  };
+}
+
+function spendingTags(value: readonly CanonicalTransactionTagView[]): readonly CanonicalSpendingTag[] {
+  return value.map((tag) => ({
+    tagId: tag.tagId,
+    userId: tag.userId,
+    label: tag.label,
+    normalizedLabel: tag.normalizedLabel,
+    lifecycle: tag.lifecycle,
+    assertionId: tag.assertionId,
+    origin: tag.origin,
+  }));
+}
 
 function reportForSnapshot(
   projection: RuntimeSpendingSnapshot,
 ): CanonicalSpendingReport {
+  const accountsById = new Map(
+    projection.families["financial-accounts"].map((account) => [account.accountId, account]),
+  );
   const transactions = projection.families.transactions;
   const enrichments = projection.families["transaction-enrichment"];
   const userRows = projection.families["transaction-categorization"];
@@ -1255,6 +1335,11 @@ function reportForSnapshot(
   const gapValues = new Map<string, { amount: Decimal; count: number }>();
 
   for (const transaction of transactions) {
+    const account = accountsById.get(transaction.accountId);
+    if (!account) throw new Error("Canonical spending projection returned an unknown account.");
+    const enrichment = projection.enrichment.get(spendingIdKey(transaction.transactionId));
+    const display = spendingDisplay(enrichment?.display ?? { status: "absent" });
+    const tags = spendingTags(enrichment?.tags ?? []);
     let kind: string | null = null;
     const kindRow = enrichments.find(
       (row) =>
@@ -1299,7 +1384,13 @@ function reportForSnapshot(
       const reportTransaction: CanonicalSpendingTransaction = {
         transactionId: transaction.transactionId,
         revisionId: transaction.revisionId,
+        accountId: transaction.accountId,
+        accountNumber: account.accountNo,
+        sourceConnectionKey: account.sourceConnectionKey,
+        integrationNamespace: account.integrationNamespace,
+        stream: account.stream,
         effectiveOn: transaction.effectiveOn,
+        description: transaction.description,
         amount: {
           coefficient: transaction.amountCoefficient,
           scale: transaction.amountScale,
@@ -1311,6 +1402,8 @@ function reportForSnapshot(
         administrativeState: transaction.administrativeState,
         kind,
         categorization,
+        display,
+        tags,
         inclusion,
       };
       included.push(reportTransaction);
@@ -1373,7 +1466,13 @@ function reportForSnapshot(
       output.push({
         transactionId: transaction.transactionId,
         revisionId: transaction.revisionId,
+        accountId: transaction.accountId,
+        accountNumber: account.accountNo,
+        sourceConnectionKey: account.sourceConnectionKey,
+        integrationNamespace: account.integrationNamespace,
+        stream: account.stream,
         effectiveOn: transaction.effectiveOn,
+        description: transaction.description,
         amount: {
           coefficient: transaction.amountCoefficient,
           scale: transaction.amountScale,
@@ -1385,6 +1484,8 @@ function reportForSnapshot(
         administrativeState: transaction.administrativeState,
         kind,
         categorization,
+        display,
+        tags,
         inclusion,
         ...(eligibilityGap ? { eligibilityGap } : {}),
       });
@@ -1473,8 +1574,8 @@ function spendingSnapshot(
     ...(request.transactionIds !== undefined
       ? { transactionIds: request.transactionIds }
       : {}),
-    ...(request.startDate ? { startDate: request.startDate } : {}),
-    ...(request.endDate ? { endDate: request.endDate } : {}),
+    startDate: request.startDate ?? "1900-01-01",
+    endDate: request.endDate ?? "2999-12-31",
   };
   if (request.startDate !== undefined && !ISO_DATE.test(request.startDate))
     throw new Error("Spending startDate is invalid.");
@@ -1490,13 +1591,23 @@ function spendingSnapshot(
     const projection = createCanonicalProjectionRuntime(db).read({
       kind,
       families: [
+        "financial-accounts",
         "transactions",
         "transaction-enrichment",
         "transaction-categorization",
       ],
       scope,
     });
-    return reportForSnapshot(projection as RuntimeSpendingSnapshot);
+    const enrichment = queryCanonicalEnrichmentCurrentFromDatabase(db, {
+      transactionIds: projection.families.transactions.map((transaction) => transaction.transactionId),
+    });
+    return reportForSnapshot({
+      ...(projection as unknown as RuntimeSpendingSnapshot),
+      enrichment: new Map(enrichment.transactions.map((transaction) => [spendingIdKey(transaction.transactionId), {
+        display: transaction.display,
+        tags: transaction.tags,
+      }])),
+    });
   }
   if (!request.financialAt || !ISO_DATE.test(request.financialAt))
     throw new Error("Historical spending queries require financialAt.");
@@ -1505,6 +1616,7 @@ function spendingSnapshot(
   const projection = createCanonicalProjectionRuntime(db).read({
     kind,
     families: [
+      "financial-accounts",
       "transactions",
       "transaction-enrichment",
       "transaction-categorization",
@@ -1515,7 +1627,18 @@ function spendingSnapshot(
       knowledgeAt: request.knowledgeAt!,
     },
   });
-  return reportForSnapshot(projection as RuntimeSpendingSnapshot);
+  const enrichment = queryCanonicalEnrichmentHistoricalFromDatabase(db, {
+    transactionIds: projection.families.transactions.map((transaction) => transaction.transactionId),
+    financialAt: request.financialAt,
+    knowledgeAt: request.knowledgeAt,
+  });
+  return reportForSnapshot({
+    ...(projection as unknown as RuntimeSpendingSnapshot),
+    enrichment: new Map(enrichment.transactions.map((transaction) => [spendingIdKey(transaction.transactionId), {
+      display: transaction.display,
+      tags: transaction.tags,
+    }])),
+  });
 }
 
 function lineageId(value: unknown): string | null {
@@ -1732,6 +1855,31 @@ function spendingLineage(
   };
 }
 
+function emptySpendingReport(kind: "current" | "historical"): CanonicalSpendingReport {
+  return {
+    status: "ok",
+    kind,
+    knowledgePoint: 0,
+    financialAt: null,
+    inclusionPolicy: CANONICAL_SPENDING_INCLUSION_POLICY,
+    transactions: [],
+    includedTransactions: [],
+    totalsByCurrency: [],
+    categoryTotalsByCurrency: [],
+    unclassifiedByCurrency: [],
+    classificationCoverage: {
+      includedCount: 0,
+      classifiedCount: 0,
+      unclassifiedCount: 0,
+      includedAmountByCurrency: [],
+      classifiedAmountByCurrency: [],
+      unclassifiedAmountByCurrency: [],
+    },
+    reportEligibility: { status: "complete", gapCount: 0, gapAmountByCurrency: [] },
+    totalStatus: "complete",
+  };
+}
+
 export interface CanonicalSpendingQuery {
   current(request?: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
   historical(request: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
@@ -1751,6 +1899,9 @@ export function createCanonicalSpendingQuery(
   };
   return Object.freeze({
     current(request: CanonicalSpendingQueryRequest = {}) {
+      if (!existsSync(canonicalSqlitePath(ledgerDir))) {
+        return emptySpendingReport("current");
+      }
       return run((db) => spendingSnapshot(db, request, "current"));
     },
     historical(request: CanonicalSpendingQueryRequest) {

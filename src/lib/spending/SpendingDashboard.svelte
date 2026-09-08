@@ -10,6 +10,7 @@
   import DailySpendingModal from "./components/DailySpendingModal.svelte";
   import AccountTransactionReviewModal from "./components/AccountTransactionReviewModal.svelte";
   import InvoiceDetailModal from "./components/InvoiceDetailModal.svelte";
+  import CanonicalSpendingDashboard from "./components/CanonicalSpendingDashboard.svelte";
   import SpendingBarChart from "./components/SpendingBarChart.svelte";
   import { applySpendingAccountOverride } from "./model.ts";
   import type {
@@ -358,6 +359,9 @@
 
 </script>
 
+{#if model.canonical}
+  <CanonicalSpendingDashboard spending={model.canonical} />
+{:else}
 <DashboardShell
   active="spending"
   eyebrow={$t.spending.eyebrow}
@@ -676,6 +680,7 @@
     {/if}
   </div>
 </DashboardShell>
+{/if}
 
 <style>
   .spending-dashboard {
