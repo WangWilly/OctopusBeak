@@ -8,10 +8,15 @@ const source = readFileSync(new URL("./CreditCardStatementsModal.svelte", import
 test("credit-card statement view keeps statement values separate from provider fields", () => {
   assert.equal(translations.en.statements.notObserved, "Not observed");
   assert.equal(translations["zh-TW"].statements.notObserved, "尚未觀測");
+  assert.equal(translations.en.statements.statement, "Statement");
+  assert.match(translations.en.statements.statementTransactionCount(1), /statement transaction/);
+  assert.match(translations.en.statements.statementTransactionCount(2), /statement transactions/);
   assert.match(source, /statement\.statementBalance/);
   assert.match(source, /statement\.minimumPayment/);
   assert.match(source, /statement\.cycleStart[\s\S]*statement\.cycleEnd/);
   assert.match(source, /statement\.dueDate/);
+  assert.doesNotMatch(source, /statement\.statementRevision\(/);
+  assert.doesNotMatch(source, /membershipIdentity/);
   assert.match(source, /statements\.providerBalance[\s\S]*statements\.notObserved/);
   assert.match(source, /statements\.amountDue[\s\S]*statements\.notObserved/);
   assert.match(source, /statements\.creditLimit[\s\S]*statements\.notObserved/);

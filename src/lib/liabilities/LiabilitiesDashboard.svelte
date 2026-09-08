@@ -4,6 +4,7 @@
   import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
+  import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import {
     historyPointKey,
     type AccountKind,
@@ -50,16 +51,6 @@
     currency: chartCurrency,
     mode: "liability",
   });
-  $: currentStateLabel = liabilities.availability === "unavailable"
-    ? $t.overview.currentUnavailable
-    : liabilities.availability === "awaiting"
-      ? $t.overview.currentAwaiting
-      : liabilities.availability === "empty"
-        ? $t.overview.currentEmpty
-        : liabilities.sourceGaps.length > 0
-          ? $t.overview.currentPartial(liabilities.sourceGaps.length)
-          : $t.overview.currentUnavailable;
-
   function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
     const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
@@ -158,18 +149,7 @@
   bind:search
 >
   <div class="content">
-    {#if liabilities.coverage !== "complete"}
-      <div class="projection-state" role="status" data-product-state={liabilities.coverage}>
-        <span>{currentStateLabel}</span>
-        {#if liabilities.sourceGaps.length > 0}
-          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
-            {#each liabilities.sourceGaps as gap}
-              <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-    {/if}
+    <ProjectionStateBanner projection={liabilities} />
     <section aria-label={$t.liabilities.metricsAria}>
       <SummaryStrip {metrics} />
     </section>
@@ -230,18 +210,3 @@
 </DashboardShell>
 
 <ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />
-
-<style>
-  .projection-state {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-muted);
-    color: var(--muted);
-  }
-  .projection-gap-list { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0; padding-left: var(--space-4); }
-</style>
