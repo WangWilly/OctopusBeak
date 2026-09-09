@@ -22,6 +22,18 @@ export type CanonicalSchemaMigration = {
   readonly id: string;
   readonly fromVersion: number;
   readonly toVersion: number;
+  /** Explicit column-renames for a reviewed immutable-table rebuild.  The
+   * renamed value is compared across the transition; other columns remain
+   * byte-for-byte row-preserved. */
+  readonly immutableTableColumnRenames?: readonly Readonly<{
+    table: string;
+    renames: readonly Readonly<{ from: string; to: string }>[];
+  }>[];
+  /** Immutable financial tables that this transition explicitly creates and
+   * populates from reviewed pre-transition evidence.  Inserts are permitted
+   * only into the newly-created table during this migration; later updates
+   * and deletes remain denied by the historical migration guard. */
+  readonly immutableDataCopyTables?: readonly string[];
   readonly apply: (
     db: DatabaseSync,
     context: { fromVersion: number; targetVersion: number },
@@ -372,8 +384,11 @@ const CORE_TRIGGER_TARGETS = new Set([
  */
 const IMMUTABLE_FINANCIAL_DATA_TABLES = new Set([
   "financial_accounts",
+  "financial_account_identifier_observations",
   "financial_transactions",
   "transaction_revisions",
+  "balance_observations",
+  "balance_observation_revisions",
 ]);
 
 const SQLITE_SCHEMA_ACTIONS = new Set([
@@ -548,7 +563,10 @@ function assertSynchronousLifecycleCallback(
  * trigger bodies, so this closes the direct, prepared, and trigger-mediated
  * forms of the same escape.
  */
-function createHistoricalMigrationAuthorizer(): Parameters<
+function createHistoricalMigrationAuthorizer(
+  db: DatabaseSync,
+  immutableDataCopyTables: ReadonlySet<string> = new Set(),
+): Parameters<
   DatabaseSync["setAuthorizer"]
 >[0] {
   // SQLite reports the physical row removal performed by DROP TABLE as a
@@ -556,6 +574,14 @@ function createHistoricalMigrationAuthorizer(): Parameters<
   // schema-driven deletion; a standalone DELETE against a financial table
   // remains denied.
   const pendingDroppedTables = new Set<string>();
+  const preExistingImmutableDataCopyTables = new Set(
+    [...immutableDataCopyTables].filter((table) =>
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table),
+    ),
+  );
+  const createdImmutableDataCopyTables = new Set<string>();
   return (actionCode, arg1, arg2, dbName): number => {
     if (dbName !== null && dbName !== "main" && dbName !== "temp")
       return constants.SQLITE_DENY;
@@ -601,8 +627,14 @@ function createHistoricalMigrationAuthorizer(): Parameters<
         pendingDroppedTables.delete(table)
       )
         return constants.SQLITE_OK;
-      if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table))
+      if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table)) {
+        if (
+          actionCode === constants.SQLITE_INSERT &&
+          createdImmutableDataCopyTables.has(table)
+        )
+          return constants.SQLITE_OK;
         return constants.SQLITE_DENY;
+      }
       // SQLite emits bookkeeping writes to sqlite_master/sqlite_sequence for
       // DDL.  Other tables are the explicitly reviewed legacy backfill
       // surface (metadata, provenance, projection state, and staging).
@@ -612,6 +644,15 @@ function createHistoricalMigrationAuthorizer(): Parameters<
       const table = String(arg1 ?? "");
       if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table))
         pendingDroppedTables.add(table);
+      return constants.SQLITE_OK;
+    }
+    if (actionCode === constants.SQLITE_CREATE_TABLE) {
+      const table = String(arg1 ?? "");
+      if (
+        immutableDataCopyTables.has(table) &&
+        !preExistingImmutableDataCopyTables.has(table)
+      )
+        createdImmutableDataCopyTables.add(table);
       return constants.SQLITE_OK;
     }
     if (SQLITE_SCHEMA_ACTIONS.has(actionCode)) return constants.SQLITE_OK;
@@ -1040,6 +1081,53 @@ function assertMigrationDescriptor(step: CanonicalSchemaMigration): void {
     step.toVersion <= step.fromVersion
   )
     throw new Error(`Canonical schema migration ${step.id} has an invalid version range.`);
+  if (step.immutableTableColumnRenames !== undefined) {
+    if (!Array.isArray(step.immutableTableColumnRenames))
+      throw new Error(`Canonical schema migration ${step.id} has invalid immutable table transforms.`);
+    const tables = new Set<string>();
+    for (const transform of step.immutableTableColumnRenames) {
+      if (
+        typeof transform.table !== "string" ||
+        !REPAIR_IDENTIFIER.test(transform.table) ||
+        tables.has(transform.table) ||
+        !IMMUTABLE_FINANCIAL_DATA_TABLES.has(transform.table) ||
+        !Array.isArray(transform.renames) ||
+        transform.renames.length === 0
+      )
+        throw new Error(`Canonical schema migration ${step.id} has invalid immutable table transforms.`);
+      tables.add(transform.table);
+      const from = new Set<string>();
+      const to = new Set<string>();
+      for (const rename of transform.renames) {
+        if (
+          typeof rename.from !== "string" ||
+          typeof rename.to !== "string" ||
+          !REPAIR_IDENTIFIER.test(rename.from) ||
+          !REPAIR_IDENTIFIER.test(rename.to) ||
+          from.has(rename.from) ||
+          to.has(rename.to)
+        )
+          throw new Error(`Canonical schema migration ${step.id} has invalid immutable column rename.`);
+        from.add(rename.from);
+        to.add(rename.to);
+      }
+    }
+  }
+  if (step.immutableDataCopyTables !== undefined) {
+    if (!Array.isArray(step.immutableDataCopyTables))
+      throw new Error(`Canonical schema migration ${step.id} has invalid immutable data-copy tables.`);
+    const tables = new Set<string>();
+    for (const table of step.immutableDataCopyTables) {
+      if (
+        typeof table !== "string" ||
+        !REPAIR_IDENTIFIER.test(table) ||
+        tables.has(table) ||
+        !IMMUTABLE_FINANCIAL_DATA_TABLES.has(table)
+      )
+        throw new Error(`Canonical schema migration ${step.id} has invalid immutable data-copy table.`);
+      tables.add(table);
+    }
+  }
 }
 
 /** Create the immutable versioned migration registry used by every lifecycle. */
@@ -1138,7 +1226,13 @@ function runCanonicalSchemaMigrationRegistry(
       MIGRATION_DATABASES.get(db) ?? db,
       () => active,
     );
-    setLifecycleAuthorizer(db, createHistoricalMigrationAuthorizer());
+    setLifecycleAuthorizer(
+      db,
+      createHistoricalMigrationAuthorizer(
+        db,
+        new Set(step.immutableDataCopyTables ?? []),
+      ),
+    );
     try {
       const result = step.apply(guardedDb, {
         fromVersion: before,
@@ -1186,6 +1280,12 @@ function assertHistoricalFinancialRowsPreserved(
   step: CanonicalSchemaMigration,
   before: ReadonlyMap<string, RepairTableSnapshot>,
 ): void {
+  const transforms = new Map(
+    (step.immutableTableColumnRenames ?? []).map((transform) => [
+      transform.table,
+      new Map(transform.renames.map((rename) => [rename.from, rename.to])),
+    ]),
+  );
   for (const [name, table] of before) {
     if (relationExistsForRepair(db, name) !== "table")
       throw new Error(
@@ -1198,15 +1298,62 @@ function assertHistoricalFinancialRowsPreserved(
         }>
       ).map((column) => String(column.name ?? "")),
     );
-    if (table.columns.some((column) => !afterColumns.has(column)))
+    const transform = transforms.get(name);
+    if (transform !== undefined) {
+      const mappedColumns = table.columns.map(
+        (column) => transform.get(column) ?? column,
+      );
+      if (new Set(mappedColumns).size !== mappedColumns.length)
+        throw new Error(
+          `Canonical schema migration ${step.id} has an immutable column rename alias collision in ${name}.`,
+        );
+    }
+    if (
+      table.columns.some((column) =>
+        !afterColumns.has(transform?.get(column) ?? column),
+      )
+    )
       throw new Error(
         `Canonical schema migration ${step.id} removed financial columns from ${name}.`,
       );
-    if (repairRowsDigest(db, name, table.columns) !== table.digest)
+    if (
+      transform === undefined
+        ? repairRowsDigest(db, name, table.columns) !== table.digest
+        : repairRowsDigestWithColumnRenames(db, name, table.columns, transform) !==
+          table.digest
+    )
       throw new Error(
         `Canonical schema migration ${step.id} changed or lost financial rows in ${name}.`,
       );
   }
+}
+
+function repairRowsDigestWithColumnRenames(
+  db: DatabaseSync,
+  table: string,
+  beforeColumns: readonly string[],
+  renames: ReadonlyMap<string, string>,
+): string {
+  const afterColumns = beforeColumns.map((column) => renames.get(column) ?? column);
+  const rows = db
+    .prepare(
+      `SELECT ${afterColumns
+        .map((column, index) => `${quoteIdentifier(column)} AS ${quoteIdentifier(beforeColumns[index]!)}`)
+        .join(", ")} FROM ${quoteIdentifier(table)}`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const encodedRows = rows
+    .map((row) =>
+      beforeColumns
+        .map((column) => repairValueKey(row[column]))
+        .join("\u0001"),
+    )
+    .sort();
+  return createHash("sha256")
+    .update(beforeColumns.join("\u0000"))
+    .update("\u0002")
+    .update(encodedRows.join("\u0002"))
+    .digest("hex");
 }
 
 /**
@@ -1875,6 +2022,14 @@ function createCurrentVersionMigrationAuthorizer(
         actionCode === constants.SQLITE_CREATE_INDEX &&
         objectName.startsWith("sqlite_autoindex_") &&
         allowed.has(arg2 ?? "")
+      )
+        return constants.SQLITE_OK;
+      if (
+        actionCode === constants.SQLITE_DROP_INDEX &&
+        objectName.startsWith("sqlite_autoindex_") &&
+        [...allowed].some((table) =>
+          objectName.startsWith(`sqlite_autoindex_${table}_`),
+        )
       )
         return constants.SQLITE_OK;
       // Rebuilding a declared table may drop and recreate its existing

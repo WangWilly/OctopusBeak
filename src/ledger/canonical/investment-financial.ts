@@ -26,6 +26,10 @@ import {
 } from "./investment-funding-relations.ts";
 import type { YuantaForeignSettlementMarketCode } from "./investment-funding-relations.ts";
 import {
+  validateCanonicalSourceAccountNumber,
+  type CanonicalSourceAccountNumber,
+} from "./canonical-source-evidence.ts";
+import {
   admitCanonicalLoanCapture,
   canonicalLoanCaptureSpines,
   persistCanonicalLoanCaptureExtensions,
@@ -110,6 +114,8 @@ export type InvestmentCaptureInput = {
     sourceConnectionKey: string;
     identityEpochKey: string;
     accountKey: string;
+    /** Optional provider-supported brokerage/platform identifier. */
+    accountNumber?: CanonicalSourceAccountNumber | null;
     accountType: "investment";
     accountSubtype?: "crypto_exchange" | "non_custodial_wallet";
     reportingCurrency: string;
@@ -328,6 +334,25 @@ export function admitCanonicalInvestmentCapture(
   token(capture.identity.identityEpochKey, "Identity epoch key");
   token(capture.identity.accountKey, "Account key");
   required(capture.identity.reportingCurrency, "Reporting currency");
+  try {
+    validateCanonicalSourceAccountNumber(capture.identity.accountNumber);
+  } catch (error) {
+    throw new CanonicalInvestmentAdmissionError(
+      error instanceof Error
+        ? error.message
+        : "Investment account number evidence is invalid.",
+    );
+  }
+  if (
+    capture.identity.accountNumber &&
+    (capture.sourceId === "maicoin" ||
+      !["brokerage-account", "platform-account"].includes(
+        capture.identity.accountNumber.kind,
+      ))
+  )
+    throw new CanonicalInvestmentAdmissionError(
+      "Investment account number evidence is outside the provider contract.",
+    );
   if (
     capture.identity.accountSubtype !== undefined &&
     capture.identity.accountSubtype !== "crypto_exchange" &&
@@ -704,6 +729,8 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
         capture.identity.accountKey,
       ),
       accountNo: capture.identity.accountKey,
+      sourceAccountKey: capture.identity.accountKey,
+      accountNumber: capture.identity.accountNumber ?? null,
       accountType: "investment",
       currency: capture.identity.reportingCurrency,
     },

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -41,6 +42,11 @@ import {
   queryCanonicalInvestmentLineage,
 } from "./investment-financial.ts";
 import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
+import {
+  admitCreditCardCurrentBalanceCapture,
+  commitCreditCardCurrentBalanceCapture,
+  creditCardCurrentBalanceSourceRecord,
+} from "./credit-card-current-balance-writer.ts";
 
 const token = (value: string): string => `sha256:${value}`;
 
@@ -211,6 +217,337 @@ test("source-scoped purge removes only its closure and disables recollection acr
       reopened.close();
     }
   });
+});
+
+test("source-scoped purge removes identifier observations with the account closure", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-contract-purge-identifiers-"),
+  );
+  const path = join(directory, "canonical.sqlite");
+  const accountCapture = (
+    sourceConnectionId: string,
+    accountNo: string,
+  ) => ({
+    ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+    sourceConnectionId,
+    identityEpoch: `${sourceConnectionId}-epoch`,
+    accountNo,
+    accountNumber: {
+      value: accountNo,
+      kind: "depository-account" as const,
+      evidenceVersion: "cathay/domestic-deposit/account-number-v1",
+      sourceField: "content.datas.accountNumber",
+    },
+    rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replaceAll(
+      CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo,
+      accountNo,
+    ),
+  });
+  try {
+    await commitCathayDomesticDeposit(
+      directory,
+      accountCapture("purge-identifier-selected", "012345678901"),
+    );
+    await commitCathayDomesticDeposit(
+      directory,
+      accountCapture("purge-identifier-retained", "012345678902"),
+    );
+    const store = createCanonicalSourceStore(path);
+    try {
+      const observationCounts = store.db
+        .prepare(
+          `SELECT connection.source_connection_key AS source_connection_key,
+                  COUNT(observation.observation_id) AS count
+             FROM financial_account_identifier_observations observation
+             JOIN financial_accounts account
+               ON account.account_id = observation.account_id
+             JOIN source_connections connection
+               ON connection.source_connection_id = account.source_connection_id
+            GROUP BY connection.source_connection_key
+            ORDER BY connection.source_connection_key`,
+        )
+        .all() as Array<{ source_connection_key?: string; count?: number }>;
+      assert.deepEqual(
+        observationCounts.map((row) => [row.source_connection_key, Number(row.count)]),
+        [
+          ["purge-identifier-retained", 1],
+          ["purge-identifier-selected", 1],
+        ],
+      );
+
+      const result = await submitCanonicalContractPurge(store, {
+        scope: {
+          integrationNamespace: "cathay",
+          sourceConnectionKey: "purge-identifier-selected",
+        },
+        reason: "wrong-contract",
+      });
+      assert.equal(
+        result.deletedTableCounts.financial_account_identifier_observations,
+        1,
+      );
+      assert.equal(
+        Number(
+          (
+            store.db
+              .prepare(
+                `SELECT COUNT(*) AS count
+                   FROM financial_account_identifier_observations observation
+                   JOIN financial_accounts account
+                     ON account.account_id = observation.account_id
+                   JOIN source_connections connection
+                     ON connection.source_connection_id = account.source_connection_id
+                  WHERE connection.source_connection_key = ?`,
+              )
+              .get("purge-identifier-selected") as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+      );
+      assert.equal(
+        Number(
+          (
+            store.db
+              .prepare(
+                `SELECT COUNT(*) AS count
+                   FROM financial_account_identifier_observations observation
+                   JOIN financial_accounts account
+                     ON account.account_id = observation.account_id
+                   JOIN source_connections connection
+                     ON connection.source_connection_id = account.source_connection_id
+                  WHERE connection.source_connection_key = ?`,
+              )
+              .get("purge-identifier-retained") as { count?: number }
+          ).count ?? 0,
+        ),
+        1,
+      );
+      assert.equal(
+        Number(
+          (store.db.prepare("PRAGMA foreign_key_check").all() as unknown[]).length,
+        ),
+        0,
+      );
+    } finally {
+      store.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("source-scoped purge removes credit estimate and current-account closure", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "canonical-contract-purge-credit-current-"),
+  );
+  const path = join(directory, "canonical.sqlite");
+  const store = createCanonicalSourceStore(path);
+  const route = "yuanta/credit-card/current-used-credit-v1";
+  const contractVersion = route;
+  const selected = {
+    sourceConnectionKey: token("purge-credit-selected-connection"),
+    identityEpochKey: token("purge-credit-selected-epoch"),
+    sourceAccountKey: token("purge-credit-selected-account"),
+    captureId: "purge-credit-selected",
+    sourceRecordKey: token("purge-credit-selected-record"),
+  };
+  const retained = {
+    sourceConnectionKey: token("purge-credit-retained-connection"),
+    identityEpochKey: token("purge-credit-retained-epoch"),
+    sourceAccountKey: token("purge-credit-retained-account"),
+    captureId: "purge-credit-retained",
+    sourceRecordKey: token("purge-credit-retained-record"),
+  };
+  const seedCommitId = randomBytes(16);
+  store.db
+    .prepare(
+      `INSERT INTO canonical_commits(
+         commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
+       ) VALUES (?, 1, 1, ?, 'source_capture')`,
+    )
+    .run(seedCommitId, route);
+  const setupAccount = (identity: typeof selected): void => {
+    const createdCommit = store.db
+      .prepare(
+        "SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1",
+      )
+      .get() as { commit_id?: Uint8Array } | undefined;
+    assert.ok(createdCommit?.commit_id instanceof Uint8Array);
+    const connectionId = randomBytes(16);
+    const epochId = randomBytes(16);
+    const accountId = randomBytes(16);
+    store.db
+      .prepare(
+        `INSERT INTO source_connections(
+           source_connection_id, integration_namespace, source_connection_key, created_commit_id
+         ) VALUES (?, 'yuanta', ?, ?)`,
+      )
+      .run(connectionId, identity.sourceConnectionKey, createdCommit.commit_id);
+    store.db
+      .prepare(
+        `INSERT INTO identity_epochs(
+           identity_epoch_id, source_connection_id, epoch_key, created_commit_id
+         ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(epochId, connectionId, identity.identityEpochKey, createdCommit.commit_id);
+    store.db
+      .prepare(
+        `INSERT INTO financial_accounts(
+           account_id, source_connection_id, identity_epoch_id, stream,
+           source_account_key, account_no, account_type, currency, created_commit_id
+         ) VALUES (?, ?, ?, 'credit-card', ?, ?, 'credit', 'TWD', ?)`,
+      )
+      .run(
+        accountId,
+        connectionId,
+        epochId,
+        identity.sourceAccountKey,
+        identity.sourceAccountKey,
+        createdCommit.commit_id,
+      );
+  };
+  const buildCapture = (identity: typeof selected, observedAt: string) => {
+    const time = {
+      effectiveAt: "2026-09-09T02:26:43.000Z",
+      effectiveTimeBasis: "provider-http-date" as const,
+      effectiveTimeRuleVersion: contractVersion,
+      sourceField: "HTTP Date" as const,
+      sourceValue: "Wed, 09 Sep 2026 02:26:43 GMT",
+      contractVersion,
+    };
+    const estimate = {
+      kind: "estimate" as const,
+      basis: "provider-used-credit" as const,
+      formula: "provider-reported-used-credit",
+    };
+    const value = { coefficient: "123450", scale: 2 };
+    return admitCreditCardCurrentBalanceCapture({
+      captureId: identity.captureId,
+      authorityRoute: route,
+      contractVersion,
+      subjectDigest: identity.sourceAccountKey,
+      identity: {
+        integrationNamespace: "yuanta",
+        sourceConnectionKey: identity.sourceConnectionKey,
+        identityEpochKey: identity.identityEpochKey,
+        stream: "credit-card",
+        sourceAccountKey: identity.sourceAccountKey,
+      },
+      observedAt,
+      scope: { startDate: "2026-09-09", endDate: "2026-09-09" },
+      providerResponse: {
+        endpoint: "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+        status: 200,
+        cacheControl: "no-store",
+      },
+      pages: [{
+        pageOrdinal: 0,
+        responseCode: "200",
+        rowCount: 1,
+        terminal: true,
+        metadata: { sourceField: "已使用額度" },
+      }],
+      records: [creditCardCurrentBalanceSourceRecord({
+        sourceRecordKey: identity.sourceRecordKey,
+        providerKey: token(`${identity.captureId}-provider`),
+        sourceField: "已使用額度",
+        balanceKind: "credit_used",
+        currency: "TWD",
+        value,
+        time,
+        estimate,
+      })],
+      observations: [{
+        observationKey: "issuer-aggregate",
+        balanceKind: "credit_used",
+        balance: value,
+        currency: "TWD",
+        time,
+        sourceRecordKey: identity.sourceRecordKey,
+        sourceField: "已使用額度",
+        estimate,
+      }],
+    });
+  };
+  try {
+    setupAccount(selected);
+    setupAccount(retained);
+    await commitCreditCardCurrentBalanceCapture(
+      store,
+      buildCapture(selected, "2026-09-09T02:27:00.000Z"),
+    );
+    await commitCreditCardCurrentBalanceCapture(
+      store,
+      buildCapture(retained, "2026-09-09T02:28:00.000Z"),
+    );
+    const count = (table: string, sourceConnectionKey: string): number =>
+      Number(
+        (
+          store.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM ${table} row
+                 JOIN financial_accounts account ON account.account_id = row.account_id
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = account.source_connection_id
+                WHERE connection.source_connection_key = ?`,
+            )
+            .get(sourceConnectionKey) as { count?: number }
+        ).count ?? 0,
+      );
+    assert.equal(count("current_credit_card_accounts", selected.sourceConnectionKey), 1);
+    assert.equal(count("current_credit_card_balance_observations", selected.sourceConnectionKey), 1);
+    assert.equal(
+      Number(
+        (
+          store.db
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM credit_card_balance_estimate_details detail
+                 JOIN balance_observation_revisions revision
+                   ON revision.revision_id = detail.revision_id
+                 JOIN financial_accounts account
+                   ON account.account_id = (
+                     SELECT observation.account_id
+                       FROM balance_observations observation
+                      WHERE observation.observation_id = revision.observation_id
+                   )
+                 JOIN source_connections connection
+                   ON connection.source_connection_id = account.source_connection_id
+                WHERE connection.source_connection_key = ?`,
+            )
+            .get(selected.sourceConnectionKey) as { count?: number }
+        ).count ?? 0,
+      ),
+      1,
+    );
+
+    const result = await submitCanonicalContractPurge(store, {
+      scope: {
+        integrationNamespace: "yuanta",
+        sourceConnectionKey: selected.sourceConnectionKey,
+      },
+      reason: "wrong-contract",
+    });
+    for (const table of [
+      "current_credit_card_accounts",
+      "current_credit_card_balance_observations",
+      "credit_card_balance_estimate_details",
+    ]) {
+      assert.equal(result.deletedTableCounts[table], 1);
+    }
+    assert.equal(count("current_credit_card_accounts", selected.sourceConnectionKey), 0);
+    assert.equal(count("current_credit_card_balance_observations", selected.sourceConnectionKey), 0);
+    assert.ok(count("current_credit_card_accounts", retained.sourceConnectionKey) > 0);
+    assert.ok(count("current_credit_card_balance_observations", retained.sourceConnectionKey) > 0);
+    assert.equal(
+      Number((store.db.prepare("PRAGMA foreign_key_check").all() as unknown[]).length),
+      0,
+    );
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("purge failure rolls back closure deletion, projection switch, and disable marker", async () => {

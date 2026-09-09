@@ -13,6 +13,13 @@ export type CurrencyAmountDto = {
     observationId?: string;
     revisionId?: string;
     securityId?: string;
+    balanceKind?: "ledger" | "available";
+    sourceField?: string;
+    estimateKind?: "estimate";
+    estimateBasis?: "provider-used-credit" | "credit-limit-minus-available";
+    estimateFormula?: string;
+    componentLimit?: { coefficient: string; scale: number };
+    componentAvailable?: { coefficient: string; scale: number };
     effectiveAt?: string;
     observedAt?: string;
     knowledgePoint?: number;
@@ -107,14 +114,26 @@ export type CreditCardStatementDto = {
   memberships: CreditCardStatementMembershipDto[];
 };
 
+export type CreditCardBalanceDto = {
+  balanceKind: "credit_used";
+  estimateKind: "estimate";
+  estimateBasis: "provider-used-credit" | "credit-limit-minus-available";
+  estimateFormula: string;
+  amount: CurrencyAmountDto;
+  componentLimit: { coefficient: string; scale: number } | null;
+  componentAvailable: { coefficient: string; scale: number } | null;
+};
+
 export type CreditCardAccountDto = {
   statements: CreditCardStatementDto[];
+  currentUsedCredit?: CreditCardBalanceDto;
 };
 
 export type ProductSourceGapDto = {
   accountId: string;
   sourceConnectionKey: string;
-  accountNo: string;
+  sourceAccountKey?: string;
+  accountNo: string | null;
   integrationNamespace?: string;
   stream?: string;
   label?: string;

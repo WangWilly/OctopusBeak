@@ -18,9 +18,13 @@ import {
 } from "./canonical/investment-financial.ts";
 import {
   buildMaicoinInvestmentCaptures,
+  parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
+  resolveMaicoinTwdQuote,
   type MaicoinAccountRecord,
   type MaicoinInvestmentCaptureBuildInput,
+  type MaicoinPublicMarket,
+  type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
 
@@ -81,6 +85,11 @@ type Ticker = {
   at: number;
   last: string;
   [key: string]: unknown;
+};
+
+type TickerSnapshot = {
+  providerDate: ReturnType<typeof parseMaicoinProviderDate> | null;
+  tickers: Map<string, Ticker>;
 };
 
 type AccountSnapshot = {
@@ -464,13 +473,78 @@ function tickerMarketsForAccounts(accounts: Account[], markets: Set<string>) {
 }
 
 async function fetchTickers(client: MaxClient, markets: Set<string>) {
-  if (markets.size === 0) return new Map<string, Ticker>();
+  if (markets.size === 0) return { providerDate: null, tickers: new Map<string, Ticker>() };
   const url = new URL("/api/v3/tickers", API_BASE_URL);
   for (const market of [...markets].sort()) {
     url.searchParams.append("markets[]", market);
   }
-  const tickers = await fetchJson<Ticker[]>(url);
-  return new Map(tickers.map((ticker) => [ticker.market, ticker]));
+  const response = await fetchWithRetry(() => fetchJsonWithMetadata<Ticker[]>(url));
+  let providerDate: TickerSnapshot["providerDate"] = null;
+  try {
+    providerDate = parseMaicoinProviderDate(response.providerDate);
+  } catch {
+    // Public ticker time is required for a valuation, but not for retaining
+    // the independently time-qualified wallet holding.  Keep the quotes
+    // unavailable when the public response cannot provide that evidence.
+  }
+  if (!Array.isArray(response.data))
+    throw new Error("MAX public tickers response is not an array.");
+  const tickers = new Map<string, Ticker>();
+  for (const ticker of response.data) {
+    if (!ticker || typeof ticker.market !== "string" || ticker.market.trim() === "")
+      throw new Error("MAX public ticker is missing its market identifier.");
+    const market = ticker.market.toLowerCase();
+    if (tickers.has(market))
+      throw new Error(`MAX public tickers response contains duplicate market: ${market}.`);
+    tickers.set(market, ticker);
+  }
+  return { providerDate, tickers };
+}
+
+function publicMarket(market: Market): MaicoinPublicMarket {
+  return {
+    id: market.id,
+    baseUnit: market.base_unit,
+    quoteUnit: market.quote_unit,
+    status: market.status,
+  };
+}
+
+function valuationQuotesForAccounts(
+  accounts: readonly MaicoinAccountRecord[],
+  markets: readonly Market[],
+  tickerSnapshot: TickerSnapshot,
+) {
+  if (!tickerSnapshot.providerDate) return new Map<string, MaicoinTwdQuote>();
+  const publicMarkets = markets.map(publicMarket);
+  const byMarket = new Map(publicMarkets.map((market) => [market.id.toLowerCase(), market]));
+  const components = new Map<string, ReturnType<typeof parseMaicoinTickerQuote>>();
+  for (const [marketId, ticker] of tickerSnapshot.tickers) {
+    const market = byMarket.get(marketId);
+    if (!market) continue;
+    try {
+      components.set(
+        marketId,
+        parseMaicoinTickerQuote(ticker, market, tickerSnapshot.providerDate),
+      );
+    } catch {
+      // A malformed public quote is an unavailable valuation input.  The
+      // canonical capture still retains the source holding and leaves its
+      // valuation absent rather than persisting a guessed value.
+    }
+  }
+  const quotes = new Map<string, MaicoinTwdQuote>();
+  for (const account of accounts) {
+    const currency = account.currency.toUpperCase();
+    if (currency === "TWD" || quotes.has(currency)) continue;
+    try {
+      const quote = resolveMaicoinTwdQuote(currency, publicMarkets, components);
+      if (quote) quotes.set(currency, quote);
+    } catch {
+      // Ambiguous market metadata is a known gap, never a zero valuation.
+    }
+  }
+  return quotes;
 }
 
 async function statementValueMap(
@@ -916,11 +990,18 @@ export async function syncMaicoin(params: CliParams) {
     const accountBatches = await fetchAccounts(client, walletTypes);
     const accounts = accountBatches.flatMap((batch) => batch.accounts);
     console.log("automation-progress: 25");
-    const markets = new Set(
-      (await client.publicGet<Market[]>("/api/v3/markets")).map((market) => market.id),
+    const marketRows = await client.publicGet<Market[]>("/api/v3/markets");
+    const markets = new Set(marketRows.map((market) => market.id));
+    const tickerSnapshot = await fetchTickers(
+      client,
+      tickerMarketsForAccounts(accounts, markets),
     );
-    const tickers = await fetchTickers(client, tickerMarketsForAccounts(accounts, markets));
-    const snapshots = buildSnapshots(accountBatches, tickers);
+    const snapshots = buildSnapshots(accountBatches, tickerSnapshot.tickers);
+    const valuationQuotes = valuationQuotesForAccounts(
+      accounts,
+      marketRows,
+      tickerSnapshot,
+    );
     const capturedAt = new Date().toISOString();
     console.log("automation-progress: 50");
     const statement = await fetchStatement(client, walletTypes, params.statementLimit);
@@ -937,6 +1018,7 @@ export async function syncMaicoin(params: CliParams) {
         providerEmail: walletSelection.providerEmail,
         subAccount: credentials.subAccount,
         accountBatches,
+        valuationQuotes,
       },
     );
 

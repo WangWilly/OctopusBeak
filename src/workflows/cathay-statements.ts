@@ -26,6 +26,15 @@ import {
   recordInitialCathayHumanAttestationIfMissing,
   type CathayStagedCapturePage,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
+import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
+import {
+  readCathayCurrentDepositBalances,
+} from "./cathay-current-deposit-balances.ts";
+import {
+  buildCathayCurrentDepositBalanceCaptures,
+  cathayCurrentSubjectDigest,
+  commitCathayCurrentDepositBalanceCaptures,
+} from "./cathay-current-deposit-canonical.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -237,6 +246,12 @@ export type CathayDomesticWorkflowOptions = {
   scope?: { startDate: string; endDate: string };
   syncState?: { cursor?: string | null };
   observedAt?: string;
+  /** Capture the provider current-state domestic balance after account admission. */
+  captureCurrentBalances?: boolean;
+  /** Focused-check seam for the authenticated current-state reader. */
+  readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
+  /** Focused-check seam for current-state canonical admission. */
+  commitCurrentDepositBalances?: typeof commitCathayCurrentDepositBalanceCaptures;
   /** Opt-in privacy-safe row date-shape diagnostics; never emits row values. */
   telemetry?: boolean;
   /** UI preparation seam; production selects every returned account and period. */
@@ -270,6 +285,28 @@ export type CathayAccount = {
   nickName?: string;
   accountType?: string;
 };
+
+const CATHAY_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "cathay/domestic-deposit/account-number-v1" as const;
+
+/**
+ * The transfer response repeats the selected account in the provider-owned
+ * `content.datas[0].accountNumber` field. Keep it only when that field is a
+ * complete numeric account number; the selector/account identity remains the
+ * opaque source key used by canonical joins.
+ */
+export function deriveCathayDomesticDepositAccountNumberEvidence(
+  value: string | undefined,
+): CanonicalSourceAccountNumber | null {
+  const normalized = value?.trim().normalize("NFKC") ?? "";
+  if (!/^\d{6,24}$/u.test(normalized)) return null;
+  return {
+    value: normalized,
+    kind: "depository-account",
+    evidenceVersion: CATHAY_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "content.datas[0].accountNumber",
+  };
+}
 
 type CathayUserProfile = {
   customerId?: string;
@@ -1924,9 +1961,13 @@ export async function downloadCathayStatements(
       rawResponse,
       account.accountNo,
     );
+    const accountNumber = deriveCathayDomesticDepositAccountNumberEvidence(
+      statement.accountNumber,
+    );
     stagedStatements.push({ account, statement });
     stagedPages.push({
       accountNo: account.accountNo,
+      ...(accountNumber ? { accountNumber } : {}),
       currency: (account.currency ?? "TWD") as "TWD",
       scope,
       pageOrdinal: 0,
@@ -1970,6 +2011,49 @@ export async function downloadCathayStatements(
     }
     throw error;
   }
+  if (options.captureCurrentBalances) {
+    const currentRows = await (
+      options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
+    )(page, "domestic", {});
+    const admittedAccountKeys = new Set(
+      stagedPages.map((stagedPage) => stagedPage.accountNo),
+    );
+    const selectedRows = currentRows.filter((row) =>
+      admittedAccountKeys.has(row.sourceAccountKey),
+    );
+    if (selectedRows.length === 0) {
+      throw new Error(
+        "Cathay current domestic balance response did not contain an admitted account.",
+      );
+    }
+    const missingAccountKeys = [...admittedAccountKeys].filter(
+      (accountKey) =>
+        !selectedRows.some((row) => row.sourceAccountKey === accountKey),
+    );
+    if (missingAccountKeys.length > 0) {
+      throw new Error(
+        "Cathay current domestic balance response omitted an admitted account.",
+      );
+    }
+    const observedAtForBalances = selectedRows[0]!.observedAt;
+    const balanceCaptures = buildCathayCurrentDepositBalanceCaptures(
+      selectedRows,
+      {
+        sourceConnectionKey: sourceConnectionId,
+        identityEpochKey: identityEpoch,
+        subjectDigest: cathayCurrentSubjectDigest(
+          sourceConnectionId,
+          identityEpoch,
+        ),
+        observedAt: observedAtForBalances,
+        scopeDate: observedAtForBalances.slice(0, 10),
+      },
+    );
+    await (
+      options.commitCurrentDepositBalances ??
+      commitCathayCurrentDepositBalanceCaptures
+    )(canonicalLedgerDir, balanceCaptures);
+  }
   // The existing Cathay canonical writer commits the provider response first.
   // Only after that durable financial capture succeeds do we append the
   // observed-human attestation event used by the readiness gate.
@@ -2004,6 +2088,8 @@ export default workflow("cathayStatements", {
       page,
       input.dateRange,
       input.accountFilters,
+      undefined,
+      { captureCurrentBalances: true },
     );
 
     return {

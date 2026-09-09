@@ -17,12 +17,21 @@ import {
   createCanonicalInvestmentStore,
   type InvestmentCaptureInput,
 } from "./investment-financial.ts";
-import { createCanonicalOverviewQuery, exactAmountToNumber } from "./canonical-overview-query.ts";
+import {
+  createCanonicalOverviewQuery,
+  exactAmountToNumber,
+  LINEBANK_AVAILABLE_ASSET_FALLBACK_POLICY,
+  selectCanonicalOverviewDepositoryBalances,
+} from "./canonical-overview-query.ts";
 import {
   LOAN_CONTRACT_FIXTURES,
   admitCanonicalLoanCapture,
   commitCanonicalLoanCapture,
 } from "./loan-financial.ts";
+import {
+  commitForeignCurrencyDepositCapture,
+} from "./foreign-currency-deposit.ts";
+import { YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "./foreign-currency-deposit.fixtures.ts";
 import { loadOverview } from "../../lib/overview/server/load-overview.ts";
 import { loadAssets } from "../../lib/assets/server/load-assets.ts";
 import { loadLiabilities } from "../../lib/liabilities/server/load-liabilities.ts";
@@ -33,6 +42,43 @@ const token = (label: string) =>
 test("unsafe exact presentation never becomes a fabricated zero", () => {
   assert.ok(Number.isNaN(exactAmountToNumber({ coefficient: "1", scale: 400 })));
   assert.ok(Number.isNaN(exactAmountToNumber({ coefficient: "1".padEnd(400, "0"), scale: 0 })));
+});
+
+test("LINE available balance is a bounded fallback with ledger priority", () => {
+  const balance = (
+    balanceKind: "ledger" | "available",
+    currency: string,
+    observationId: string,
+  ) => ({
+    accountId: "line-account",
+    observationId,
+    revisionId: `${observationId}-revision`,
+    balanceKind,
+    coefficient: balanceKind === "ledger" ? "100" : "90",
+    scale: 0,
+    currency,
+    effectiveAt: "2026-09-09T02:05:08.000Z",
+    observedAt: "2026-09-09T10:05:09+08:00",
+    projectionCommitId: null,
+    revisionCommitId: null,
+  });
+  const lineAccount = { accountType: "depository" as const, integrationNamespace: "linebank" };
+  const otherAccount = { accountType: "depository" as const, integrationNamespace: "cathay" };
+  assert.equal(LINEBANK_AVAILABLE_ASSET_FALLBACK_POLICY, "linebank-available-only-when-ledger-missing-v1");
+  assert.deepEqual(
+    selectCanonicalOverviewDepositoryBalances(lineAccount, [
+      balance("ledger", "TWD", "ledger-twd"),
+      balance("available", "TWD", "available-twd"),
+      balance("available", "USD", "available-usd"),
+    ]).map((row) => row.observationId),
+    ["ledger-twd", "available-usd"],
+  );
+  assert.deepEqual(
+    selectCanonicalOverviewDepositoryBalances(otherAccount, [
+      balance("available", "TWD", "other-available"),
+    ]),
+    [],
+  );
 });
 
 test("Current Overview keeps canonical account identity and never infers deposit balance", async () => {
@@ -51,11 +97,58 @@ test("Current Overview keeps canonical account identity and never infers deposit
     const current = await createCanonicalOverviewQuery(directory).current();
     assert.equal(current.projection.accounts.length, 2);
     assert.equal(new Set(current.projection.accounts.map((account) => account.id)).size, 2);
-    assert.equal(new Set(current.projection.accounts.map((account) => account.label)).size, 1);
+    assert.equal(new Set(current.projection.accounts.map((account) => account.label)).size, 2);
+    assert.ok(current.projection.accounts.every((account) => !account.label.includes("sha256:")));
+    assert.ok(current.projection.accounts.every((account) => account.label.includes("Account ")));
+    assert.ok(current.projection.accounts.every((account) => account.institution === "Cathay United Bank"));
     assert.ok(current.projection.accounts.every((account) => account.amounts.length === 0));
     assert.ok(current.projection.accounts.every((account) => account.availability === "awaiting"));
     assert.ok(current.projection.accounts.every((account) => account.transactionCount > 0));
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Current Overview classifies a committed multi-currency account as foreign when account currency is null", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-foreign-account-"));
+  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  try {
+    const fixture = YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1;
+    await commitForeignCurrencyDepositCapture(store, {
+      ...fixture,
+      captureOccurrenceId: "overview-multi-currency-capture",
+      captureCurrencyScope: { kind: "multi-currency" },
+      records: [
+        {
+          ...fixture.records[0]!,
+          sourceKey: "overview-multi-currency-usd",
+          currencyEvidence: { kind: "row", currency: "USD" },
+        },
+        {
+          ...fixture.records[0]!,
+          sourceKey: "overview-multi-currency-jpy",
+          sequence: "2",
+          currencyEvidence: { kind: "row", currency: "JPY" },
+          originalAmount: { amount: "10.25", currency: "JPY" },
+        },
+      ],
+    });
+    store.close();
+
+    const current = await createCanonicalOverviewQuery(directory).current();
+    const account = current.projection.accounts.find(
+      (row) => row.stream === "foreign-currency-deposit",
+    );
+    assert.ok(account);
+    assert.equal(account.currency, null);
+    assert.equal(account.kind, "foreign");
+    assert.equal(account.typeLabel, "Foreign");
+  } finally {
+    try {
+      store.close();
+    } catch {
+      // The successful path closes before reading the read-only projection.
+    }
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -75,7 +168,7 @@ test("enabled expected sources remain visible before their first canonical captu
     assert.deepEqual(current.projection.sourceGaps, [{
       accountId: "expected:cathay",
       sourceConnectionKey: "expected:cathay",
-      accountNo: "",
+      accountNo: null,
       integrationNamespace: "cathay",
       stream: undefined,
       label: "Cathay United Bank",

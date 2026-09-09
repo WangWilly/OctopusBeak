@@ -3,6 +3,7 @@ import {
   parseExactDecimalLexeme,
   type ExactDecimal,
 } from "./canonical-source-store.ts";
+import { multiplyExact } from "../../lib/shared-money/exact.ts";
 import type {
   HoldingEffectiveTimeEvidence,
   InvestmentCaptureInput,
@@ -36,9 +37,24 @@ export type MaicoinProviderDate = {
   effectiveAt: string;
 };
 
-type MaicoinHoldingEffectiveTimeEvidence = HoldingEffectiveTimeEvidence & {
+type MaicoinHoldingEffectiveTimeEvidence = Omit<
+  HoldingEffectiveTimeEvidence,
+  "components"
+> & {
   sourceValueType: typeof MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE;
   sourceValue: string;
+  components?: readonly {
+    role: "market-price";
+    sourceField: string;
+    value: string;
+    market: string;
+    baseCurrency: string;
+    quoteCurrency: "TWD" | "USDT";
+    quoteRoute: "direct-twd" | "via-usdt";
+    tickerAt: string;
+    httpDate: MaicoinProviderDate;
+    price: InvestmentExactAmount;
+  }[];
 };
 
 /**
@@ -57,6 +73,38 @@ export type MaicoinAccountRecord = {
   cost?: { amount: string; currency: string } | null;
 };
 
+/** The allowlisted public market metadata used to qualify a ticker route. */
+export type MaicoinPublicMarket = {
+  id: string;
+  baseUnit: string;
+  quoteUnit: string;
+  status: string;
+};
+
+/** A ticker is parsed only after its response HTTP Date is captured. */
+export type MaicoinPublicTicker = {
+  market: string;
+  last: unknown;
+  at: unknown;
+};
+
+export type MaicoinQuoteComponent = {
+  market: string;
+  baseCurrency: string;
+  quoteCurrency: "TWD" | "USDT";
+  priceLexeme: string;
+  price: InvestmentExactAmount;
+  tickerAt: string;
+  httpDate: MaicoinProviderDate;
+};
+
+export type MaicoinTwdQuote = {
+  currency: string;
+  price: InvestmentExactAmount;
+  route: "direct-twd" | "via-usdt";
+  components: readonly MaicoinQuoteComponent[];
+};
+
 /**
  * A batch is produced only by MAX's verified instantaneous current-state
  * wallet-account endpoint. Its provider HTTP Date is the only accepted
@@ -73,6 +121,7 @@ export type MaicoinInvestmentCaptureBuildInput = {
   providerEmail: string;
   subAccount: string;
   accountBatches: readonly MaicoinWalletAccountBatch[];
+  valuationQuotes?: ReadonlyMap<string, MaicoinTwdQuote>;
 };
 
 export class MaicoinCryptoAdapterError extends Error {
@@ -189,6 +238,173 @@ function requireMaicoinProviderDate(value: unknown): MaicoinProviderDate {
   return evidence as MaicoinProviderDate;
 }
 
+function quoteCurrency(value: string, label: string): "TWD" | "USDT" {
+  const normalized = value.normalize("NFKC").trim().toUpperCase();
+  if (normalized !== "TWD" && normalized !== "USDT")
+    throw new MaicoinCryptoAdapterError(`${label} is not a supported quote currency.`);
+  return normalized;
+}
+
+function tickerTimestamp(value: unknown, label: string): string {
+  const numberValue = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN;
+  if (!Number.isSafeInteger(numberValue) || numberValue <= 0)
+    throw new MaicoinCryptoAdapterError(`${label} must be a provider ticker timestamp.`);
+  const milliseconds = numberValue < 10_000_000_000
+    ? numberValue * 1000
+    : numberValue;
+  const result = new Date(milliseconds);
+  if (!Number.isFinite(result.getTime()))
+    throw new MaicoinCryptoAdapterError(`${label} must be a provider ticker timestamp.`);
+  return result.toISOString();
+}
+
+function normalizeMarketPart(value: string, label: string): string {
+  const normalized = value.normalize("NFKC").trim().toLowerCase();
+  if (!/^[a-z0-9]+$/.test(normalized))
+    throw new MaicoinCryptoAdapterError(`${label} has an invalid market currency.`);
+  return normalized;
+}
+
+/**
+ * Parse one public MAX ticker without coercing its decimal `last` value to a
+ * JavaScript Number.  The HTTP Date belongs to the public ticker response and
+ * is retained alongside the provider's own ticker timestamp.
+ */
+export function parseMaicoinTickerQuote(
+  ticker: MaicoinPublicTicker,
+  market: MaicoinPublicMarket,
+  httpDate: MaicoinProviderDate,
+): MaicoinQuoteComponent {
+  const marketId = stablePart(market.id, "MAX market ID").toLowerCase();
+  const tickerMarket = stablePart(ticker.market, "MAX ticker market").toLowerCase();
+  const baseCurrency = normalizeMarketPart(market.baseUnit, "MAX market base");
+  const quoteCurrency = quoteCurrencyValue(market.quoteUnit, "MAX market quote");
+  if (marketId !== tickerMarket || marketId !== `${baseCurrency}${quoteCurrency.toLowerCase()}`)
+    throw new MaicoinCryptoAdapterError(
+      "MAX ticker market does not match the qualified public market metadata.",
+    );
+  if (market.status.toLowerCase() !== "active")
+    throw new MaicoinCryptoAdapterError("MAX ticker market is not active.");
+  if (typeof ticker.last !== "string" || ticker.last.trim() === "")
+    throw new MaicoinCryptoAdapterError(
+      "MAX ticker last price must remain an exact decimal string.",
+    );
+  let parsed: ExactDecimal;
+  try {
+    parsed = parseExactDecimalLexeme(ticker.last.trim());
+  } catch {
+    throw new MaicoinCryptoAdapterError(
+      "MAX ticker last price is not an exact decimal string.",
+    );
+  }
+  if (parsed.coefficient <= 0n)
+    throw new MaicoinCryptoAdapterError("MAX ticker last price must be positive.");
+  const providerDate = requireMaicoinProviderDate(httpDate);
+  return {
+    market: marketId,
+    baseCurrency: baseCurrency.toUpperCase(),
+    quoteCurrency,
+    priceLexeme: ticker.last.trim(),
+    price: {
+      coefficient: parsed.coefficient.toString(),
+      scale: parsed.scale,
+    },
+    tickerAt: tickerTimestamp(ticker.at, "MAX ticker at"),
+    httpDate: providerDate,
+  };
+}
+
+function quoteCurrencyValue(value: string, label: string): "TWD" | "USDT" {
+  return quoteCurrency(normalizeMarketPart(value, label), label);
+}
+
+function qualifiedMarket(
+  markets: readonly MaicoinPublicMarket[],
+  baseCurrency: string,
+  quoteCurrency: "TWD" | "USDT",
+): MaicoinPublicMarket | null {
+  const base = baseCurrency.toLowerCase();
+  const candidates = markets.filter(
+    (market) =>
+      market.status.toLowerCase() === "active" &&
+      market.baseUnit.toLowerCase() === base &&
+      market.quoteUnit.toLowerCase() === quoteCurrency.toLowerCase() &&
+      market.id.toLowerCase() === `${base}${quoteCurrency.toLowerCase()}`,
+  );
+  if (candidates.length > 1)
+    throw new MaicoinCryptoAdapterError(
+      `MAX public markets are ambiguous for ${baseCurrency}/${quoteCurrency}.`,
+    );
+  return candidates[0] ?? null;
+}
+
+function tickerComponent(
+  market: MaicoinPublicMarket,
+  tickers: ReadonlyMap<string, MaicoinQuoteComponent>,
+): MaicoinQuoteComponent | null {
+  const component = tickers.get(market.id.toLowerCase());
+  if (!component) return null;
+  if (
+    component.market !== market.id.toLowerCase() ||
+    component.baseCurrency !== market.baseUnit.toUpperCase() ||
+    component.quoteCurrency !== quoteCurrencyValue(market.quoteUnit, "MAX market quote")
+  )
+    throw new MaicoinCryptoAdapterError(
+      "MAX ticker evidence does not match the qualified public market.",
+    );
+  return component;
+}
+
+/**
+ * Resolve at most one public route for one asset.  A direct TWD market wins;
+ * otherwise the only permitted fallback is base/USDT multiplied by USDT/TWD.
+ * Missing ticker evidence returns null so callers can preserve an unvalued
+ * holding instead of manufacturing zero.
+ */
+export function resolveMaicoinTwdQuote(
+  currency: string,
+  markets: readonly MaicoinPublicMarket[],
+  tickers: ReadonlyMap<string, MaicoinQuoteComponent>,
+): MaicoinTwdQuote | null {
+  const normalized = normalizeMarketPart(currency, "MAX holding currency");
+  if (normalized === "twd") {
+    return {
+      currency: "TWD",
+      price: { coefficient: "1", scale: 0 },
+      route: "direct-twd",
+      components: [],
+    };
+  }
+  const directMarket = qualifiedMarket(markets, normalized, "TWD");
+  if (directMarket) {
+    const direct = tickerComponent(directMarket, tickers);
+    if (direct)
+      return {
+        currency: normalized.toUpperCase(),
+        price: direct.price,
+        route: "direct-twd",
+        components: [direct],
+      };
+  }
+
+  const viaUsdtMarket = qualifiedMarket(markets, normalized, "USDT");
+  const usdtTwdMarket = qualifiedMarket(markets, "USDT", "TWD");
+  if (!viaUsdtMarket || !usdtTwdMarket) return null;
+  const viaUsdt = tickerComponent(viaUsdtMarket, tickers);
+  const usdtTwd = tickerComponent(usdtTwdMarket, tickers);
+  if (!viaUsdt || !usdtTwd) return null;
+  return {
+    currency: normalized.toUpperCase(),
+    price: multiplyExact(viaUsdt.price, usdtTwd.price),
+    route: "via-usdt",
+    components: [viaUsdt, usdtTwd],
+  };
+}
+
 function taipeiDate(providerDate: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Taipei",
@@ -259,7 +475,94 @@ function securityType(currencyCode: string): "cash" | "cryptocurrency" {
   return FIAT_CURRENCIES.has(currencyCode) ? "cash" : "cryptocurrency";
 }
 
-function normalizeAccount(account: MaicoinAccountRecord, index: number) {
+function quoteForCurrency(
+  valuationQuotes: ReadonlyMap<string, MaicoinTwdQuote> | undefined,
+  currencyCode: string,
+): MaicoinTwdQuote | undefined {
+  if (currencyCode === "TWD") return undefined;
+  if (!valuationQuotes) return undefined;
+  const normalized = currencyCode.toUpperCase();
+  for (const [key, quote] of valuationQuotes)
+    if (key.normalize("NFKC").trim().toUpperCase() === normalized) return quote;
+  return undefined;
+}
+
+function quoteComponents(
+  quote: MaicoinTwdQuote,
+  currencyCode: string,
+): MaicoinHoldingEffectiveTimeEvidence["components"] {
+  if (
+    quote.currency !== currencyCode ||
+    (quote.route === "direct-twd" && quote.components.length !== 1) ||
+    (quote.route === "via-usdt" && quote.components.length !== 2)
+  )
+    throw new MaicoinCryptoAdapterError(
+      `MAX valuation quote is not qualified for ${currencyCode}.`,
+    );
+  const components = quote.components.map((component, index) => {
+    const validRoute = quote.route === "direct-twd"
+      ? index === 0 && component.baseCurrency === currencyCode && component.quoteCurrency === "TWD"
+      : index === 0
+        ? component.baseCurrency === currencyCode && component.quoteCurrency === "USDT"
+        : index === 1 && component.baseCurrency === "USDT" && component.quoteCurrency === "TWD";
+    if (!validRoute)
+      throw new MaicoinCryptoAdapterError(
+        `MAX valuation quote component is not qualified for ${currencyCode}.`,
+      );
+    let parsed: ExactDecimal;
+    try {
+      parsed = parseExactDecimalLexeme(component.priceLexeme);
+    } catch {
+      throw new MaicoinCryptoAdapterError(
+        "MAX valuation quote component lost its exact ticker lexeme.",
+      );
+    }
+    if (
+      parsed.coefficient <= 0n ||
+      parsed.coefficient.toString() !== component.price.coefficient ||
+      parsed.scale !== component.price.scale
+    )
+      throw new MaicoinCryptoAdapterError(
+        "MAX valuation quote component does not match its exact ticker lexeme.",
+      );
+    if (
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(component.tickerAt) ||
+      !Number.isFinite(Date.parse(component.tickerAt)) ||
+      new Date(component.tickerAt).toISOString() !== component.tickerAt
+    )
+      throw new MaicoinCryptoAdapterError("MAX ticker at must be a provider ticker timestamp.");
+    requireMaicoinProviderDate(component.httpDate);
+    return {
+      role: "market-price" as const,
+      sourceField: "ticker.last",
+      value: component.priceLexeme,
+      market: component.market,
+      baseCurrency: component.baseCurrency,
+      quoteCurrency: component.quoteCurrency,
+      quoteRoute: quote.route,
+      tickerAt: component.tickerAt,
+      httpDate: component.httpDate,
+      price: component.price,
+    };
+  });
+  const expectedPrice = quote.route === "direct-twd"
+    ? components[0]!.price
+    : multiplyExact(components[0]!.price, components[1]!.price);
+  if (
+    expectedPrice.coefficient !== quote.price.coefficient ||
+    expectedPrice.scale !== quote.price.scale
+  )
+    throw new MaicoinCryptoAdapterError(
+      "MAX valuation quote does not match its exact ticker components.",
+    );
+  return components;
+}
+
+function normalizeAccount(
+  account: MaicoinAccountRecord,
+  index: number,
+  valuationQuotes?: ReadonlyMap<string, MaicoinTwdQuote>,
+) {
   const currencyCode = currency(account.currency, `Account ${index} currency`);
   const balance = exact(account.balance, `Account ${index} balance`);
   const locked = exact(account.locked, `Account ${index} locked`);
@@ -267,6 +570,14 @@ function normalizeAccount(account: MaicoinAccountRecord, index: number) {
   const principal = exact(account.principal ?? "0", `Account ${index} principal`);
   const interest = exact(account.interest ?? "0", `Account ${index} interest`);
   const quantity = add(add(balance, locked), staked);
+  const quote = quoteForCurrency(valuationQuotes, currencyCode);
+  const valuation = currencyCode === "TWD"
+    ? { ...quantity, currency: "TWD" }
+    : quote
+      ? { ...multiplyExact(quantity, quote.price), currency: "TWD" }
+      : quantity.coefficient === "0"
+        ? { coefficient: "0", scale: 0, currency: "TWD" }
+        : money(account.valuation, `Account ${index} valuation`);
   return {
     currencyCode,
     balance,
@@ -275,7 +586,8 @@ function normalizeAccount(account: MaicoinAccountRecord, index: number) {
     principal,
     interest,
     quantity,
-    valuation: money(account.valuation, `Account ${index} valuation`),
+    valuation,
+    valuationQuote: quote,
     cost: money(account.cost, `Account ${index} cost`),
   };
 }
@@ -292,7 +604,9 @@ function captureForBatch(
   const identityEpochKey = deriveMaicoinIdentityEpochKey(providerEmail, subAccount);
   const accountKey = deriveMaicoinAccountKey(providerEmail, subAccount, batch.walletType);
   const effectiveOn = taipeiDate(providerDate.effectiveAt);
-  const normalized = batch.accounts.map(normalizeAccount);
+  const normalized = batch.accounts.map((account, index) =>
+    normalizeAccount(account, index, input.valuationQuotes),
+  );
   const securities = normalized.map((account) => ({
     securityKey: `maicoin:${account.currencyCode}`,
     producerSecurityId: account.currencyCode,
@@ -319,6 +633,9 @@ function captureForBatch(
       sourceValueType: providerDate.sourceValueType,
       sourceValue: providerDate.sourceValue,
       contractVersion: MAICOIN_INVESTMENT_CONTRACT_VERSION,
+      ...(account.valuationQuote
+        ? { components: quoteComponents(account.valuationQuote, account.currencyCode) }
+        : {}),
     };
     return {
       measurementKey: sourceRecordKey,

@@ -252,6 +252,51 @@ const financialAdmitted = admitYuantaDomesticDepositCaptureEvidence(
 );
 assert.equal(financialAdmitted.status, "admissible");
 assert.ok(financialAdmitted.capture);
+
+const numberedYuantaAccountNumber = {
+  value: "0012345678901234",
+  kind: "depository-account" as const,
+  evidenceVersion: "yuanta/domestic-deposit/account-number-v1" as const,
+  sourceField: "#acctno option.value" as const,
+};
+const numberedYuantaStructural = admitYuantaDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  account: {
+    value: numberedYuantaAccountNumber.value,
+    label: "臺幣活期存款 0012345678901234",
+    accountNumber: numberedYuantaAccountNumber,
+  },
+  downloads: sourceCapture.downloads.map((download) => ({
+    ...download,
+    terminal: true,
+  })),
+});
+assert.equal(numberedYuantaStructural.status, "admissible");
+assert.ok(numberedYuantaStructural.capture);
+const numberedYuantaAdmission = admitYuantaDomesticDepositFinancialCapture({
+  capture: numberedYuantaStructural.capture,
+  captureId: "yuanta-human-attested-numbered",
+  semantics: buildYuantaHumanAttestedFinancialSemantics(
+    numberedYuantaStructural.capture,
+    YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+    stableYuantaConnectionKey,
+  ),
+  humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+});
+assert.equal(
+  numberedYuantaAdmission.status,
+  "admitted",
+  numberedYuantaAdmission.diagnostics.join(", "),
+);
+assert.ok(numberedYuantaAdmission.capture);
+assert.equal(
+  numberedYuantaAdmission.capture.identity.sourceAccountKey,
+  numberedYuantaAdmission.capture.identity.accountNo,
+);
+assert.deepEqual(
+  numberedYuantaAdmission.capture.identity.accountNumber,
+  numberedYuantaAccountNumber,
+);
 const financialIdentity = deriveYuantaDomesticDepositAccountIdentity(
   financialAdmitted.capture.account,
 );

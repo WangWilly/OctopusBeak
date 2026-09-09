@@ -18,6 +18,10 @@ import {
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
+import {
+  validateCanonicalSourceAccountNumber,
+  type CanonicalSourceAccountNumber,
+} from "./canonical-source-evidence.ts";
 
 export type LoanSourceId = "fubon" | "yuanta";
 
@@ -273,6 +277,8 @@ export type LoanCaptureInput = {
     subjectDigest: string;
     accountType: "loan";
     accountNo: string;
+    /** Optional provider-supported account number evidence. */
+    accountNumber?: CanonicalSourceAccountNumber | null;
     stream: "loan";
     recordKind: string;
     currency: "TWD";
@@ -386,6 +392,7 @@ export type CanonicalLoanIdentityInput = {
   accountKey: string;
   subjectDigest: string;
   accountNo: string;
+  accountNumber?: CanonicalSourceAccountNumber | null;
 };
 
 export type CanonicalLoanCaptureBuildInput = {
@@ -1029,6 +1036,23 @@ function validateCapture(capture: LoanCaptureInput): void {
     [identity.accountNo, "Loan account number"],
   ] as const)
     requireOpaque(value, label);
+  try {
+    validateCanonicalSourceAccountNumber(identity.accountNumber);
+  } catch (error) {
+    throw new CanonicalLoanAdmissionError(
+      error instanceof Error
+        ? error.message
+        : "Loan account number evidence is invalid.",
+    );
+  }
+  if (
+    identity.accountNumber &&
+    (identity.accountNumber.kind !== "loan-account" ||
+      !/^\d{6,24}$/u.test(identity.accountNumber.value))
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Loan account number evidence must be a complete provider loan number.",
+    );
   if (
     !RFC3339.test(capture.observedAt) ||
     Number.isNaN(Date.parse(capture.observedAt))
@@ -1646,6 +1670,7 @@ function canonicalLoanSpineCapture(
       // The generic spine's historical column name is account_no, but its
       // natural identity role is the contract-defined stable account key.
       accountNo: capture.identity.accountKey,
+      accountNumber: capture.identity.accountNumber ?? null,
       accountType: capture.identity.accountType,
       currency: capture.identity.currency,
     },
@@ -1978,14 +2003,14 @@ function persistLoanAccountIdentity(
 ): void {
   const account = db
     .prepare(
-      `SELECT source_connection_id, identity_epoch_id, account_no, account_type, stream
+      `SELECT source_connection_id, identity_epoch_id, source_account_key, account_type, stream
        FROM financial_accounts WHERE account_id = ?`,
     )
     .get(context.accountId) as
     | {
         source_connection_id?: unknown;
         identity_epoch_id?: unknown;
-        account_no?: unknown;
+        source_account_key?: unknown;
         account_type?: unknown;
         stream?: unknown;
       }
@@ -1994,7 +2019,7 @@ function persistLoanAccountIdentity(
     !account ||
     !(account.source_connection_id instanceof Uint8Array) ||
     !(account.identity_epoch_id instanceof Uint8Array) ||
-    account.account_no !== identity.accountKey ||
+    account.source_account_key !== identity.accountKey ||
     account.account_type !== identity.accountType ||
     account.stream !== identity.stream
   )
@@ -2734,10 +2759,10 @@ function accountRows(
            WHERE authority_capture.source_connection_id = account.source_connection_id
              AND authority_capture.identity_epoch_id = account.identity_epoch_id
              AND authority_capture.stream = 'loan'
-             AND authority_capture.account_no = loan_identity.account_key
+             AND authority_capture.source_account_key = loan_identity.account_key
              AND ${visibleRoute.sql}
          )
-       ORDER BY connection.integration_namespace, account.account_no`,
+       ORDER BY connection.integration_namespace, account.source_account_key`,
     )
     .all(
       knowledgeAt,
@@ -2826,7 +2851,7 @@ function transactionRows(
        JOIN source_captures source_capture ON source_capture.capture_id = source_record.capture_id
        JOIN loan_transaction_facts loan_fact ON loan_fact.revision_id = revision.revision_id
        WHERE ${clauses.join(" AND ")}
-       ORDER BY connection.integration_namespace, account.account_no,
+       ORDER BY connection.integration_namespace, account.source_account_key,
                 revision.effective_on, transaction_row.source_sequence`,
     )
     .all(...params) as Array<Record<string, unknown>>;
@@ -2960,7 +2985,7 @@ function balanceRows(
        JOIN source_captures capture ON capture.capture_id = revision.capture_id
        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
        WHERE ${clauses.join(" AND ")}
-       ORDER BY connection.integration_namespace, account.account_no, revision.effective_at`,
+       ORDER BY connection.integration_namespace, account.source_account_key, revision.effective_at`,
     )
     .all(...params) as Array<Record<string, unknown>>;
   return rows

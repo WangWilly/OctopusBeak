@@ -13,6 +13,7 @@ import {
   commitPostDomesticDepositSourceEvidenceBatch,
   commitCanonicalPostDomesticDepositCaptureBatch,
   createPostDomesticDepositSourceEvidence,
+  derivePostDomesticDepositAccountNumberEvidence,
   isPostSha256Token,
   preflightPostDomesticDeposit,
 } from "./post-domestic-deposit.ts";
@@ -254,6 +255,32 @@ for (const token of ["PRIVATE-POST-ACCOUNT", "PRIVATE-MEMO", "PRIVATE-NOTE"])
     financialAdmission.capture.records[0]?.compactJson.includes(token),
     false,
   );
+
+const accountNumber = derivePostDomesticDepositAccountNumberEvidence(
+  "03115240529395",
+);
+assert.deepEqual(accountNumber, {
+  value: "03115240529395",
+  kind: "depository-account",
+  evidenceVersion: "post/domestic-deposit/account-number-v1",
+  sourceField: "request.body._USER_ID",
+});
+const accountNumberStructural = admitPostDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  account: { value: "03115240529395", accountNumber: accountNumber! },
+});
+assert.equal(accountNumberStructural.status, "admissible");
+assert.ok(accountNumberStructural.capture);
+const accountNumberFinancial = admitPostDomesticDepositFinancialCapture({
+  capture: accountNumberStructural.capture,
+  captureId: "post-financial-account-number",
+  humanAttestation: getPostHumanAttestedV1Manifest(),
+});
+assert.equal(accountNumberFinancial.status, "admitted");
+assert.deepEqual(
+  accountNumberFinancial.capture?.identity.accountNumber,
+  accountNumber,
+);
 
 const financialDir = await mkdtemp(join(tmpdir(), "post-financial-check-"));
 try {

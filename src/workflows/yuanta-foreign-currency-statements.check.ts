@@ -26,6 +26,8 @@ const {
   readYuantaForeignCurrencyAccountOptions,
   readYuantaForeignCurrencyOptions,
   buildYuantaForeignCurrencyCaptureInput,
+  buildYuantaForeignCurrentDepositBalanceCapture,
+  deriveYuantaForeignAccountNumberEvidence,
   classifyYuantaForeignCurrencyResultMarkup,
   classifyYuantaForeignCurrencyFrameRoute,
   diagnoseYuantaForeignCurrencyResultMarkup,
@@ -69,6 +71,47 @@ assert.equal(
   "menu",
 );
 assert.equal(classifyYuantaForeignCurrencyFrameRoute("/"), "other");
+
+const yuantaForeignCurrentCapture = buildYuantaForeignCurrentDepositBalanceCapture(
+  {
+    source: "yuanta",
+    kind: "foreign",
+    stream: "foreign-currency-deposit",
+    accountNumber: "001234567890",
+    sourceAccountKey: "001234567890",
+    currency: "USD",
+    available: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
+    ledger: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
+    effectiveAt: "2026-08-31T01:00:00.000Z",
+    providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
+    observedAt: "2026-08-31T09:00:00+08:00",
+    sourceEvidence: {
+      endpoint: "/nib/tx/finance_overview_for_summary",
+      method: "POST",
+      status: 200,
+      cacheControl: "no-store",
+      contractVersion: "yuanta/current-deposit-balance-v1",
+    },
+  },
+  {
+    identity: {
+      sourceConnectionKey: "sha256:yuanta-fx-current-connection",
+      identityEpochKey: "sha256:yuanta-fx-current-epoch",
+      subjectDigest: "sha256:yuanta-fx-current-subject",
+      accountNo: "001234567890",
+      sourceAccountKey: "001234567890",
+    },
+  },
+);
+assert.equal(
+  yuantaForeignCurrentCapture.identity.stream,
+  "foreign-currency-deposit",
+);
+assert.deepEqual(
+  yuantaForeignCurrentCapture.observations.map((observation) => observation.currency),
+  ["USD", "USD"],
+);
+assert.equal(yuantaForeignCurrentCapture.records.length, 2);
 
 function locatorForOptions(options: Array<{ value: string; label: string }>) {
   return {
@@ -680,6 +723,27 @@ assert.deepEqual(retryDownload, { fake: "download" });
 assert.equal(retryPage.nativeClickCount, 1);
 assert.equal(retryPage.downloadWaitCount, 2);
 
+// A query can first render the provider's timestamp-only pending marker and
+// then settle after a fresh read-only form submission. One bounded requery
+// must allow the normal result to become downloadable without changing the
+// timestamp-only classifier into no-data.
+const pendingThenReadyPage = new FakePage(
+  yuantaForeignResultFixtures.timestampOnlyResult,
+);
+let pendingThenReadyRequeryCount = 0;
+const pendingThenReadyDownload =
+  await clickYuantaForeignCurrencyCsvDownloadControl(
+    pendingThenReadyPage as never,
+    7_000,
+    async () => {
+      pendingThenReadyRequeryCount += 1;
+      pendingThenReadyPage.html = yuantaForeignResultFixtures.liveFrameShape;
+    },
+  );
+assert.deepEqual(pendingThenReadyDownload, { fake: "download" });
+assert.equal(pendingThenReadyRequeryCount, 1);
+assert.equal(pendingThenReadyPage.nativeClickCount, 1);
+
 // If the control is replaced with an unrelated datepicker, bounded retries
 // fail closed and never click it or issue a second download request.
 const failedRetryPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
@@ -755,6 +819,14 @@ await assert.rejects(
 const providerNoDataPage = new FakePage(yuantaForeignResultFixtures.providerNoData);
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(providerNoDataPage as never, 500),
+  (error: unknown) => {
+    assert.ok(error instanceof StatementComponentAbsentError);
+    assert.match((error as Error).message, /no transaction data/i);
+    return true;
+  },
+);
+await assert.rejects(
+  clickYuantaForeignCurrencyCsvDownloadControl(providerNoDataPage as never, 500),
   (error: unknown) => {
     assert.ok(error instanceof StatementComponentAbsentError);
     assert.match((error as Error).message, /no transaction data/i);
@@ -935,6 +1007,8 @@ const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
   "synthetic-yuanta-login",
 );
 assert.equal(yuantaForeignCapture.accountType, "depository");
+assert.equal(yuantaForeignCapture.accountNo, "fx-1");
+assert.equal(yuantaForeignCapture.accountNumber, null);
 assert.equal(yuantaForeignCapture.records[0]!.currencyEvidence.currency, "USD");
 assert.equal(
   (yuantaForeignCapture.records[0]!.sourcePayload as Record<string, unknown>)
@@ -950,6 +1024,45 @@ assert.deepEqual(
     .conversionEvidence?.sourceReportedRate?.amount,
   { coefficient: "315", scale: 1 },
 );
+
+const yuantaNumberedCapture = buildYuantaForeignCurrencyCaptureInput(
+  [
+    {
+      accountLabel: "外幣綜合存款",
+      accountValue: "001234567890",
+      queryCurrencyLabel: "全部幣別",
+      queryCurrencyValue: "ALL",
+      values: [
+        "1",
+        "20260823",
+        "20260823",
+        "09:10",
+        "USD",
+        "外幣存入",
+        "",
+        "10.00",
+        "110.00",
+        "交易資訊",
+        "31.50",
+      ],
+      sortTime: null,
+    },
+  ],
+  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
+  "001234567890",
+  "2026-08-24T12:00:00+08:00",
+  "yuanta-foreign-check-numbered-account",
+  undefined,
+  "synthetic-yuanta-login",
+);
+assert.deepEqual(yuantaNumberedCapture.accountNumber, {
+  value: "001234567890",
+  kind: "depository-account",
+  evidenceVersion: "yuanta/foreign-account/account-number-v1",
+  sourceField: "#acctno option.value",
+});
+assert.equal(deriveYuantaForeignAccountNumberEvidence("******7890"), null);
+assert.equal(deriveYuantaForeignAccountNumberEvidence("fx-1"), null);
 
 const yuantaMultipleRowsFromOneAccount =
   buildYuantaForeignCurrencyCaptureInput(

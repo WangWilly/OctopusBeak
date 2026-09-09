@@ -9,6 +9,23 @@ export const CANONICAL_SOURCE_ADMISSION = "blocked" as const;
 
 const OPAQUE_SOURCE_TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
 
+/** Provider-reported account identifiers are evidence, not source identity.
+ * `sourceAccountKey` remains the stable opaque key used for joins while this
+ * optional value is the displayable identifier supported by the provider. */
+export type CanonicalSourceAccountIdentifierKind =
+  | "depository-account"
+  | "loan-account"
+  | "brokerage-account"
+  | "credit-portfolio-account"
+  | "platform-account";
+
+export type CanonicalSourceAccountNumber = Readonly<{
+  value: string;
+  kind: CanonicalSourceAccountIdentifierKind;
+  evidenceVersion: string;
+  sourceField: string;
+}>;
+
 export type CanonicalSourcePage = {
   pageOrdinal: number;
   responseCode: "200";
@@ -50,6 +67,8 @@ export type CanonicalSourceEvidence = {
   contractVersion: string;
   subjectDigest: string;
   observedAt: string;
+  /** Optional source-supported account number with explicit lineage. */
+  accountNumber?: CanonicalSourceAccountNumber | null;
   scope: {
     startDate: string;
     endDate: string;
@@ -65,12 +84,37 @@ export type CanonicalSourceEvidence = {
     /** Some provider grids mark every independently terminal page. */
     pageTerminalPolicy?: "last" | "each";
     absenceAuthority?: CanonicalSourceAbsenceAuthority;
+    /** New name for the stable source key; accountNo is retained as an API alias. */
+    sourceAccountKey?: string | null;
     accountNo?: string | null;
     accountId?: Uint8Array | null;
   };
   pages: CanonicalSourcePage[];
   records: CanonicalSourceRecord[];
 };
+
+export function isOpaqueCanonicalSourceToken(value: string): boolean {
+  return OPAQUE_SOURCE_TOKEN.test(value);
+}
+
+export function validateCanonicalSourceAccountNumber(
+  value: CanonicalSourceAccountNumber | null | undefined,
+): void {
+  if (value === undefined || value === null) return;
+  requireCanonicalSourceText(value.value, "Account number value");
+  if (OPAQUE_SOURCE_TOKEN.test(value.value))
+    throw new Error("Account number value must be provider-supported, not an opaque source token.");
+  if (
+    value.kind !== "depository-account" &&
+    value.kind !== "loan-account" &&
+    value.kind !== "brokerage-account" &&
+    value.kind !== "credit-portfolio-account" &&
+    value.kind !== "platform-account"
+  )
+    throw new Error("Account number kind is unsupported.");
+  requireCanonicalSourceText(value.evidenceVersion, "Account number evidence version");
+  requireCanonicalSourceText(value.sourceField, "Account number source field");
+}
 
 export function requireCanonicalSourceText(
   value: unknown,

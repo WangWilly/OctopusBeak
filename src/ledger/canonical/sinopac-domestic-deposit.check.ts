@@ -25,6 +25,7 @@ import {
   commitSinopacStatementSourceEvidenceBatch,
   createSinopacDomesticDepositSourceEvidence,
   createSinopacForeignCurrencySourceEvidence,
+  deriveSinopacStatementAccountNumberEvidence,
   preflightSinopacDomesticDeposit,
   SINOPAC_DOMESTIC_DEPOSIT_CONTRACT,
   SINOPAC_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1,
@@ -434,6 +435,35 @@ try {
     );
     const financial = admitSinopacDomesticDepositFinancialCapture(input);
     assert.equal(financial.status, "admitted");
+    const accountNumber = deriveSinopacStatementAccountNumberEvidence(
+      "14101800082221",
+    );
+    assert.deepEqual(accountNumber, {
+      value: "14101800082221",
+      kind: "depository-account",
+      evidenceVersion: "sinopac/statement/account-number-v1",
+      sourceField: "ws_debitacct.ashx SubInfo.DataValue",
+    });
+    const accountNumberCapture = admitSinopacStatementCaptureEvidence({
+      ...baseCapture,
+      account: {
+        value: "14101800082221",
+        label: "SinoPac 14101800082221",
+        currency: "TWD",
+        accountNumber: accountNumber!,
+      },
+    });
+    assert.equal(accountNumberCapture.status, "admissible");
+    const accountNumberFinancial = admitSinopacDomesticDepositFinancialCapture({
+      ...input,
+      capture: accountNumberCapture.capture!,
+      captureId: "sinopac-financial-account-number",
+    });
+    assert.equal(accountNumberFinancial.status, "admitted");
+    assert.deepEqual(
+      accountNumberFinancial.capture?.identity.accountNumber,
+      accountNumber,
+    );
     assert.equal(
       financial.capture?.authorityRoute,
       SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,

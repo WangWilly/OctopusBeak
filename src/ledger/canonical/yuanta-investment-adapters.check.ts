@@ -11,9 +11,112 @@ import {
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
 } from "./investment-financial.ts";
+import { CANONICAL_SOURCE_SCHEMA_VERSION } from "./canonical-source-store.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
-import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
+import {
+  buildYuantaInvestmentCapture,
+  YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+} from "./yuanta-investment-adapters.ts";
 const token = (c: string) => `sha256:${c.repeat(64)}`;
+
+/** Build a real v24 physical fixture before exercising v24 -> v25.  Changing
+ * user_version alone would leave v26 account-identifier columns in place and
+ * correctly trip the migration integrity audit as a partial schema. */
+function rewindInvestmentDatabaseToV24PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    DELETE FROM schema_migrations WHERE version > 24;
+    INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us)
+      VALUES (24, 0);
+    PRAGMA user_version = 24;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+test("preserves a source brokerage account number beside the stable account key", () => {
+  const capture = buildYuantaInvestmentCapture({
+    sourceId: "yuanta-trade",
+    captureId: "account-number-capture",
+    sourceConnectionKey: token("a"),
+    identityEpochKey: token("b"),
+    accountKey: token("c"),
+    accountNumber: {
+      value: "001234567890",
+      kind: "brokerage-account",
+      evidenceVersion: "yuanta/trade/account-number-v1",
+      sourceField: "CSV account_number",
+    },
+    reportingCurrency: "TWD",
+    observedAt: "2026-08-31T12:00:00.000Z",
+    sourceEffectiveOn: "2026-08-30",
+    holdings: [
+      {
+        sourceRecordKey: token("d"),
+        producerSecurityId: "SANITIZED",
+        securityName: "SANITIZED COMPANY",
+        ticker: "SANITIZED",
+        currency: "TWD",
+        effectiveOn: "2026-08-30",
+        quantity: { coefficient: "1", scale: 0 },
+      },
+    ],
+    transactions: [],
+  });
+  const identity = capture.identity as typeof capture.identity & {
+    accountNumber?: unknown;
+  };
+  assert.equal(identity.accountKey, token("c"));
+  assert.deepEqual(identity.accountNumber, {
+    value: "001234567890",
+    kind: "brokerage-account",
+    evidenceVersion: "yuanta/trade/account-number-v1",
+    sourceField: "CSV account_number",
+  });
+});
+
+test("admits the live YuanTa C-format brokerage account into the investment identity", () => {
+  const capture = buildYuantaInvestmentCapture({
+    sourceId: "yuanta-trade",
+    captureId: "c-format-account-number-capture",
+    sourceConnectionKey: token("a"),
+    identityEpochKey: token("b"),
+    accountKey: token("c"),
+    accountNumber: {
+      value: "123C-0000001",
+      kind: "brokerage-account",
+      evidenceVersion: YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+      sourceField: "BrkAccount_C50",
+    },
+    reportingCurrency: "TWD",
+    observedAt: "2026-08-31T12:00:00.000Z",
+    sourceEffectiveOn: "2026-08-30",
+    holdings: [
+      {
+        sourceRecordKey: token("d"),
+        producerSecurityId: "TWSE:2330",
+        currency: "TWD",
+        effectiveOn: "2026-08-30",
+        quantity: { coefficient: "1", scale: 0 },
+      },
+    ],
+    transactions: [],
+  });
+  assert.doesNotThrow(() => admitCanonicalInvestmentCapture(capture));
+  assert.equal(capture.identity.accountNumber?.value, "123C-0000001");
+  assert.equal(
+    capture.identity.accountNumber?.evidenceVersion,
+    YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+  );
+});
+
 test("Yuanta repeated holdings accept a source display-name change without changing Security identity", async () => {
   const directory = mkdtempSync(join(tmpdir(), "yuanta-security-name-"));
   const path = join(directory, "canonical.sqlite");
@@ -51,9 +154,7 @@ test("Yuanta repeated holdings accept a source display-name change without chang
     );
     store.close();
     const legacy = new DatabaseSync(path);
-    legacy.exec(`DROP TABLE investment_security_name_observations;
-      DELETE FROM schema_migrations WHERE version=25;
-      PRAGMA user_version=24;`);
+    rewindInvestmentDatabaseToV24PhysicalSchema(legacy);
     legacy.close();
     store = createCanonicalInvestmentStore(path);
     assert.equal(
@@ -62,7 +163,7 @@ test("Yuanta repeated holdings accept a source display-name change without chang
           user_version: number;
         }
       ).user_version,
-      25,
+      CANONICAL_SOURCE_SCHEMA_VERSION,
     );
     const knowledgeBefore = Number(
       (
@@ -270,6 +371,37 @@ test("Yuanta adapter does not guess an ambiguous transaction action", () => {
       }),
     /explicit supported action/,
   );
+});
+
+test("Yuanta fund admits dated transactions without inventing a holding as-of date", () => {
+  const capture = buildYuantaInvestmentCapture({
+    sourceId: "yuanta-fund",
+    captureId: "fund-transaction-only",
+    sourceConnectionKey: token("a"),
+    identityEpochKey: token("b"),
+    accountKey: token("c"),
+    reportingCurrency: "TWD",
+    observedAt: "2026-09-08T12:00:00.000Z",
+    sourceEffectiveOn: "2026-08-28",
+    holdings: [],
+    transactions: [
+      {
+        sourceRecordKey: token("d"),
+        producerSecurityId: "FUND-001",
+        securityName: "SANITIZED FUND",
+        currency: "TWD",
+        effectiveOn: "2026-08-28",
+        action: "buy",
+        quantity: { coefficient: "1000", scale: 0 },
+        cashEffect: { coefficient: "10000", scale: 0, currency: "TWD" },
+      },
+    ],
+  });
+  const admitted = admitCanonicalInvestmentCapture(capture);
+  assert.equal(admitted.holdings.length, 0);
+  assert.equal(admitted.transactions.length, 1);
+  assert.equal(admitted.transactions[0]?.effectiveOn, "2026-08-28");
+  assert.equal(admitted.scope.effectiveOn, "2026-08-28");
 });
 
 test("repeated Yuanta source rows do not put capture-local keys into source occurrence content", async () => {

@@ -109,7 +109,10 @@ export type PostDomesticDepositCaptureEvidence = {
   product: "domestic-deposit";
   providerGuaranteed: false;
   observedAt: string;
-  account: { value: string };
+  account: {
+    value: string;
+    accountNumber?: PostDomesticDepositAccountNumberEvidence;
+  };
   queryRange: { startDate: string; endDate: string };
   response: {
     httpStatus: number;
@@ -123,6 +126,29 @@ export type PostDomesticDepositCaptureEvidence = {
     semantics: "unresolved";
   };
 };
+
+export const POST_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "post/domestic-deposit/account-number-v1" as const;
+
+export type PostDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof POST_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "request.body._USER_ID";
+}>;
+
+export function derivePostDomesticDepositAccountNumberEvidence(
+  accountId: string,
+): PostDomesticDepositAccountNumberEvidence | null {
+  const value = accountId.trim().normalize("NFKC");
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: POST_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "request.body._USER_ID",
+  };
+}
 
 export type PostDomesticDepositValidatedEvidence =
   PostDomesticDepositCaptureEvidence & {
@@ -221,6 +247,20 @@ export function admitPostDomesticDepositCaptureEvidence(
   if (
     typeof candidate?.account?.value !== "string" ||
     !normalizedCell(candidate.account.value)
+  )
+    diagnostics.push("account-invalid");
+  const accountNumber = candidate?.account?.accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "depository-account" ||
+      accountNumber.evidenceVersion !==
+        POST_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "request.body._USER_ID" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{6,24}$/.test(accountNumber.value) ||
+      accountNumber.value !== normalizedCell(candidate?.account?.value ?? ""))
   )
     diagnostics.push("account-invalid");
   if (
@@ -347,6 +387,7 @@ export function createPostDomesticDepositSourceEvidence(
     contractVersion: POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     subjectDigest,
     observedAt: capture.observedAt,
+    accountNumber: capture.account.accountNumber ?? null,
     scope: {
       startDate: capture.queryRange.startDate.replaceAll("/", ""),
       endDate: capture.queryRange.endDate.replaceAll("/", ""),
@@ -672,6 +713,9 @@ export function admitPostDomesticDepositFinancialCapture(
       recordKind: "post-domestic-deposit",
       subjectDigest,
       accountNo: input.capture.account.value,
+      ...(input.capture.account.accountNumber
+        ? { accountNumber: input.capture.account.accountNumber }
+        : {}),
       accountType: "depository",
       currency: POST_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY,
     },

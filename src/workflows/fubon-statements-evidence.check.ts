@@ -197,6 +197,59 @@ assert.equal(emptyParsedPage.rows.length, 0);
 
 const accountValue = "123456789012";
 const accountLabel = "123456789012 (012)";
+assert.deepEqual(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: accountValue,
+    label: accountLabel,
+  }),
+  {
+    value: accountValue,
+    kind: "depository-account",
+    evidenceVersion: "fubon/domestic-deposit/account-number-v1",
+    sourceField: "form1:comboAccount option.value",
+  },
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: "****9012",
+    label: "****9012 (012)",
+  }),
+  null,
+);
+const leadingZeroAccount = "01234567890123";
+const leadingZeroSelectorValue = `123-00${leadingZeroAccount}-TWD-01`;
+assert.deepEqual(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: leadingZeroSelectorValue,
+    label: `${leadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  {
+    value: leadingZeroAccount,
+    kind: "depository-account",
+    evidenceVersion: "fubon/domestic-deposit/account-number-v2",
+    sourceField: "form1:comboAccount option.value + option.text",
+  },
+);
+const nonLeadingZeroAccount = "12345678901234";
+assert.deepEqual(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: `987-00${nonLeadingZeroAccount}-TWD-02`,
+    label: `${nonLeadingZeroAccount}（SYNTHETIC-BRANCH）`,
+  }),
+  {
+    value: nonLeadingZeroAccount,
+    kind: "depository-account",
+    evidenceVersion: "fubon/domestic-deposit/account-number-v2",
+    sourceField: "form1:comboAccount option.value + option.text",
+  },
+);
+assert.equal(
+  module.deriveFubonDomesticDepositAccountNumberEvidence({
+    value: `987-99${nonLeadingZeroAccount}-TWD-02`,
+    label: `${nonLeadingZeroAccount} (SYNTHETIC-BRANCH)`,
+  }),
+  null,
+);
 const statement = {
   account: accountLabel,
   accountId: accountValue,
@@ -239,6 +292,12 @@ const statement = {
     value: accountValue,
     label: accountLabel,
     branchName: "012",
+    accountNumber: {
+      value: accountValue,
+      kind: "depository-account",
+      evidenceVersion: "fubon/domestic-deposit/account-number-v1",
+      sourceField: "form1:comboAccount option.value",
+    },
   },
 };
 
@@ -248,6 +307,12 @@ const rawEvidence = module.buildFubonDepositStatementEvidence(
 );
 assert.equal(rawEvidence.length, 1);
 assert.equal(rawEvidence[0].account.value, accountValue);
+assert.deepEqual(rawEvidence[0].account.accountNumber, {
+  value: accountValue,
+  kind: "depository-account",
+  evidenceVersion: "fubon/domestic-deposit/account-number-v1",
+  sourceField: "form1:comboAccount option.value",
+});
 assert.equal(
   rawEvidence[0].pages[0].rows[0].sourceOccurrenceId,
   "SYNTHETIC-OCCURRENCE",

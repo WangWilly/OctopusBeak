@@ -285,6 +285,12 @@
           <tbody>
             {#each sorted as account}
               {@const percent = percentage(account)}
+              {@const availableBalanceBasis = account.amountLines.some((amount) =>
+                amount.traces?.some((trace) => trace.balanceKind === "available"),
+              )}
+              {@const estimatedCreditBasis = account.amountLines.some((amount) =>
+                amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+              )}
               <tr
                 class:selected={account.id === selectedAccountId}
                 class="account-card"
@@ -312,6 +318,12 @@
                       {formatAmountLines(account.amountLines)}
                     {/if}
                   </strong><br />
+                  {#if availableBalanceBasis}
+                    <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
+                  {/if}
+                  {#if estimatedCreditBasis}
+                    <span class="account-meta">{$t.accounts.creditCardEstimateBasis}</span><br />
+                  {/if}
                   <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">

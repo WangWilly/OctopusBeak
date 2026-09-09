@@ -17,6 +17,10 @@ import {
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import {
+  validateCanonicalSourceAccountNumber,
+  type CanonicalSourceAccountNumber,
+} from "./canonical-source-evidence.ts";
 
 export const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
@@ -128,6 +132,8 @@ export type ForeignCurrencyDepositRecordInput = {
 export type ForeignCurrencyDepositCaptureInput = {
   source: ForeignCurrencyDepositSourceId;
   accountNo: string;
+  /** Explicit provider account-number evidence; accountNo remains the source key. */
+  accountNumber?: CanonicalSourceAccountNumber | null;
   sourceConnectionKey: string;
   identityEpochKey: string;
   observedAt: string;
@@ -171,7 +177,8 @@ export type ForeignCurrencyConversionQuery = {
 export type ForeignCurrencyTransaction = {
   id: string;
   accountId: string;
-  accountNo: string;
+  /** Provider account number when explicitly evidenced; otherwise null. */
+  accountNo: string | null;
   sourceSequence: string;
   amount: FinancialDepositAmount;
   bookedAmount: FinancialDepositAmount;
@@ -562,6 +569,15 @@ export function createForeignCurrencyDepositCapture(
   if (!contract) throw new Error("Unsupported foreign-currency source.");
   const accountNo = input.accountNo.trim();
   if (!accountNo) throw new Error("Source-proven account number is required.");
+  validateCanonicalSourceAccountNumber(input.accountNumber);
+  if (
+    input.accountNumber &&
+    (input.accountNumber.kind !== "depository-account" ||
+      !/^\d{6,24}$/u.test(input.accountNumber.value))
+  )
+    throw new Error(
+      "Foreign-currency account number evidence must be a complete provider depository number.",
+    );
   if (typeof input.identityEpochKey !== "string" || !input.identityEpochKey.trim())
     throw new Error("Source identity epoch key is required.");
   if (
@@ -636,6 +652,8 @@ export function createForeignCurrencyDepositCapture(
       recordKind: contract.recordKind,
       subjectDigest: token(`${accountNo}:${contract.recordKind}`),
       accountNo,
+      sourceAccountKey: accountNo,
+      accountNumber: input.accountNumber ?? null,
       accountType: input.accountType,
       // There is no account-level currency for this multi-currency stream.
       currency: FOREIGN_CURRENCY_DEPOSIT_ACCOUNT_CURRENCY,
@@ -785,7 +803,7 @@ function mapTransaction(row: Record<string, unknown>): ForeignCurrencyTransactio
   return {
     id: hex(row.transaction_id),
     accountId: hex(row.account_id),
-    accountNo: String(row.account_no),
+    accountNo: row.account_no == null ? null : String(row.account_no),
     sourceSequence: String(row.source_sequence),
     amount: amount(row.amount_coefficient, row.amount_scale),
     bookedAmount: amount(row.amount_coefficient, row.amount_scale),
@@ -873,7 +891,7 @@ function enrichTransaction(
       `SELECT source_record.source_record_id, source_record.capture_id,
           source_record.sequence_lexeme, source_record.description,
           source_record.payload_json, scope.scope_id, scope.account_id,
-          scope.account_no, scope.stream, scope.scope_start, scope.scope_end,
+          scope.source_account_key AS account_no, scope.stream, scope.scope_start, scope.scope_end,
           scope.completeness, scope.contract_fingerprint, scope.preflight_fingerprint
        FROM source_records source_record
        LEFT JOIN source_record_scopes record_scope
@@ -900,7 +918,10 @@ function enrichTransaction(
             : {
                 id: hex(sourceRecordRow.scope_id),
                 accountId: hex(sourceRecordRow.account_id),
-                accountNo: String(sourceRecordRow.account_no),
+                accountNo:
+                  sourceRecordRow.account_no == null
+                    ? ""
+                    : String(sourceRecordRow.account_no),
                 stream: String(sourceRecordRow.stream),
                 scopeStart: String(sourceRecordRow.scope_start),
                 scopeEnd: String(sourceRecordRow.scope_end),
@@ -958,7 +979,16 @@ function queryRows(
       `SELECT
          transaction_row.transaction_id,
          account_row.account_id,
-         account_row.account_no,
+         ${options.knowledgeAt === undefined ? "account_row.account_no" : `(SELECT observation.identifier_value
+          FROM financial_account_identifier_observations observation
+          JOIN canonical_commits observation_commit
+            ON observation_commit.commit_id = observation.commit_id
+         WHERE observation.account_id = account_row.account_id
+           AND observation_commit.commit_sequence <= ?
+         ORDER BY observation_commit.commit_sequence DESC,
+                  observation.observed_at DESC,
+                  observation.observation_id DESC
+         LIMIT 1)`} AS account_no,
          transaction_row.source_sequence,
          revision.amount_coefficient,
          revision.amount_scale,
@@ -1020,6 +1050,7 @@ function queryRows(
     )
     .all(
       ...(options.knowledgeAt === undefined ? [] : [options.knowledgeAt]),
+      ...(options.knowledgeAt === undefined ? [] : [options.knowledgeAt]),
       FOREIGN_CURRENCY_DEPOSIT_STREAM,
       ...params,
     ) as Array<Record<string, unknown>>;
@@ -1065,7 +1096,7 @@ export function queryForeignCurrencyDepositCurrent(
   const predicates = ["1 = 1"];
   const params: SQLInputValue[] = [];
   if (options.accountNo !== undefined) {
-    predicates.push("account_row.account_no = ?");
+    predicates.push("account_row.source_account_key = ?");
     params.push(options.accountNo);
   }
   if (options.currency !== undefined) {
@@ -1110,7 +1141,7 @@ export function queryForeignCurrencyDepositHistorical(
     params.push(effectiveAt);
   }
   if (request.accountNo !== undefined) {
-    predicates.push("account_row.account_no = ?");
+    predicates.push("account_row.source_account_key = ?");
     params.push(request.accountNo);
   }
   const transactions = queryRows(store.db, predicates.join(" AND "), params, {
@@ -1137,7 +1168,7 @@ export function queryForeignCurrencyDepositLineage(
   ];
   const params: SQLInputValue[] = [request.occurrenceKey];
   if (request.accountNo !== undefined) {
-    predicates.push("account_row.account_no = ?");
+    predicates.push("account_row.source_account_key = ?");
     params.push(request.accountNo);
   }
   const transactions = queryRows(

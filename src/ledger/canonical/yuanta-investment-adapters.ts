@@ -29,12 +29,28 @@ export type YuantaCanonicalInvestmentRow = {
     }[];
   };
 };
+
+export const YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "yuanta/trade/account-number-v1" as const;
+export const YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "yuanta/trade/brokerage-account-number-v1" as const;
+
+export type YuantaTradeAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "brokerage-account";
+  evidenceVersion:
+    | typeof YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION
+    | typeof YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "CSV account_number" | "BrkAccount_C50";
+}>;
+
 export type YuantaInvestmentAdapterInput = {
   sourceId: InvestmentSourceId;
   captureId: string;
   sourceConnectionKey: string;
   identityEpochKey: string;
   accountKey: string;
+  accountNumber?: YuantaTradeAccountNumberEvidence;
   reportingCurrency: string;
   observedAt: string;
   /** Must come from the source page/report contract, never from collection time. */
@@ -71,19 +87,21 @@ export function buildYuantaInvestmentCapture(
     },
   }));
   const contractVersion = `${input.sourceId}/investment/canonical-v1`;
+  const identity = {
+    sourceConnectionKey: input.sourceConnectionKey,
+    identityEpochKey: input.identityEpochKey,
+    accountKey: input.accountKey,
+    ...(input.accountNumber ? { accountNumber: input.accountNumber } : {}),
+    accountType: "investment" as const,
+    reportingCurrency: input.reportingCurrency,
+  };
   return {
     captureId: input.captureId,
     sourceId: input.sourceId,
     authorityRoute: `${input.sourceId}/investment/canonical-v1`,
     contractVersion,
     observedAt: input.observedAt,
-    identity: {
-      sourceConnectionKey: input.sourceConnectionKey,
-      identityEpochKey: input.identityEpochKey,
-      accountKey: input.accountKey,
-      accountType: "investment",
-      reportingCurrency: input.reportingCurrency,
-    },
+    identity,
     scope: { effectiveOn: input.sourceEffectiveOn, complete: true },
     securities,
     holdings: input.holdings.map((row, index) => ({

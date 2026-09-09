@@ -12,6 +12,7 @@ import {
   commitCanonicalCtbcDomesticDepositCaptureBatch,
   commitCtbcDomesticDepositSourceEvidenceBatch,
   createCtbcDomesticDepositSourceEvidence,
+  deriveCtbcDomesticDepositAccountNumberEvidence,
   preflightCtbcDomesticDeposit,
   type CtbcDomesticDepositCaptureEvidence,
 } from "./ctbc-domestic-deposit.ts";
@@ -162,6 +163,36 @@ for (const secret of [
     financial.capture.records[0]?.compactJson.includes(secret),
     false,
   );
+
+const accountNumber = deriveCtbcDomesticDepositAccountNumberEvidence(
+  "001234567890",
+);
+assert.deepEqual(accountNumber, {
+  value: "001234567890",
+  kind: "depository-account",
+  evidenceVersion: "ctbc/domestic-deposit/account-number-v1",
+  sourceField: "accountInfoList.accountId",
+});
+const accountNumberCapture = admitCtbcDomesticDepositCaptureEvidence({
+  ...baseCapture,
+  account: {
+    accountId: "001234567890",
+    accountNumber: accountNumber!,
+  },
+});
+assert.equal(accountNumberCapture.status, "admissible");
+assert.ok(accountNumberCapture.capture);
+const accountNumberFinancial = admitCtbcDomesticDepositFinancialCapture({
+  capture: accountNumberCapture.capture,
+  captureId: "ctbc-financial-account-number",
+  humanAttestation: getCtbcHumanAttestedV1Manifest(),
+});
+assert.equal(accountNumberFinancial.status, "admitted");
+assert.deepEqual(
+  (accountNumberFinancial.capture?.identity as { accountNumber?: unknown })
+    .accountNumber,
+  accountNumber,
+);
 
 const incomplete = admitCtbcDomesticDepositCaptureEvidence({
   ...baseCapture,

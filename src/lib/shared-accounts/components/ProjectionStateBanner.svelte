@@ -1,9 +1,14 @@
 <script lang="ts">
   import { t } from "$lib/i18n/i18n.ts";
+  import {
+    safeSourceGapLabel,
+    sourceGapCounts,
+  } from "$lib/shared-ledger/account-display.ts";
   import type { CurrentProjectionStateDto } from "$lib/shared-ledger/types.ts";
 
   export let projection: Pick<CurrentProjectionStateDto, "availability" | "coverage" | "sourceGaps">;
 
+  $: gapCounts = sourceGapCounts(projection.sourceGaps);
   $: stateLabel = projection.availability === "unavailable"
     ? $t.overview.currentUnavailable
     : projection.availability === "awaiting"
@@ -11,7 +16,7 @@
       : projection.availability === "empty"
         ? $t.overview.currentEmpty
         : projection.sourceGaps.length > 0
-          ? $t.overview.currentPartial(projection.sourceGaps.length)
+          ? $t.overview.currentPartial(gapCounts.currentValue, gapCounts.sourceNotCollected)
           : $t.overview.currentUnavailable;
 </script>
 
@@ -21,7 +26,7 @@
     {#if projection.sourceGaps.length > 0}
       <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
         {#each projection.sourceGaps as gap}
-          <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
+          <li>{safeSourceGapLabel(gap)}</li>
         {/each}
       </ul>
     {/if}

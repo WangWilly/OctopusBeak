@@ -12,6 +12,7 @@ import {
   commitHncbDomesticDepositSourceEvidence,
   commitCanonicalHncbDomesticDepositCapture,
   createHncbDomesticDepositSourceEvidence,
+  deriveHncbDomesticDepositAccountNumberEvidence,
   preflightHncbDomesticDeposit,
   getHncbHumanAttestedV1Manifest,
 } from "./hncb-domestic-deposit.ts";
@@ -243,6 +244,41 @@ test("HNCB recapture preserves occurrences when a changed query moves rows", asy
 const admitted = admitHncbDomesticDepositCaptureEvidence(sourceCapture);
 assert.equal(admitted.status, "admissible");
 assert.ok(admitted.capture);
+
+const accountNumber = deriveHncbDomesticDepositAccountNumberEvidence({
+  selectorValue: "001234567890",
+  workbookAccount: "001234-567890",
+});
+assert.deepEqual(accountNumber, {
+  value: "001234567890",
+  kind: "depository-account",
+  evidenceVersion: "hncb/domestic-deposit/account-number-v1",
+  sourceField: "select#acct1 option.value + workbook metadata 帳號",
+});
+const accountNumberStructural = admitHncbDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  account: {
+    value: "001234567890",
+    label: "HNCB 001234567890",
+    accountNumber: accountNumber!,
+  },
+});
+assert.equal(accountNumberStructural.status, "admissible");
+assert.ok(accountNumberStructural.capture);
+const accountNumberFinancial = admitHncbDomesticDepositFinancialCapture({
+  capture: accountNumberStructural.capture,
+  captureId: "hncb-account-number",
+  humanAttestation: getHncbHumanAttestedV1Manifest(),
+});
+assert.equal(accountNumberFinancial.status, "admitted");
+assert.equal(
+  accountNumberFinancial.capture?.identity.accountNo,
+  "001234567890",
+);
+assert.deepEqual(
+  accountNumberFinancial.capture?.identity.accountNumber,
+  accountNumber,
+);
 const sourceEvidence = createHncbDomesticDepositSourceEvidence(
   admitted.capture,
   "hncb-capture-1",
@@ -383,6 +419,26 @@ const explicitNoData = admitHncbDomesticDepositCaptureEvidence({
   downloads: [{ ...sourceCapture.downloads[0]!, rows: [] }],
 });
 assert.equal(explicitNoData.status, "admissible");
+const selectorBackedNoData = admitHncbDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  account: {
+    value: "012345678901",
+    label: "012345678901",
+    accountNumber: {
+      value: "012345678901",
+      kind: "depository-account",
+      evidenceVersion: "hncb/domestic-deposit/account-number-v2",
+      sourceField: "select#acct1 option.value + option.text",
+    },
+  },
+  zeroResultAuthority: "provider-explicit-no-data",
+  downloads: [{ ...sourceCapture.downloads[0]!, rows: [] }],
+});
+assert.equal(selectorBackedNoData.status, "admissible");
+assert.equal(
+  selectorBackedNoData.capture?.account.accountNumber?.value,
+  "012345678901",
+);
 
 const sourceDirectory = await mkdtemp(join(tmpdir(), "hncb-source-v1-"));
 try {

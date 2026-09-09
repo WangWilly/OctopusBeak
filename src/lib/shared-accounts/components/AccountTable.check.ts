@@ -11,6 +11,18 @@ test("unavailable account balances render explicit localized copy", () => {
   assert.match(source, /\{#if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
 });
 
+test("available-only account rows expose their balance basis", () => {
+  assert.match(source, /availableBalanceBasis = account\.amountLines\.some/);
+  assert.match(source, /trace\.balanceKind === "available"/);
+  assert.match(source, /\$t\.accounts\.availableBalanceBasis/);
+});
+
+test("credit-card current usage rows expose their estimate basis", () => {
+  assert.match(source, /estimatedCreditBasis = account\.amountLines\.some/);
+  assert.match(source, /trace\.estimateKind === "estimate"/);
+  assert.match(source, /\$t\.accounts\.creditCardEstimateBasis/);
+});
+
 test("unavailable accounts omit allocation and exposure values", () => {
   assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
 });

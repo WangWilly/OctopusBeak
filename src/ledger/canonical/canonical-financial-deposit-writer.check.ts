@@ -145,7 +145,9 @@ Object.assign(fubonCapture.identity, {
   integrationNamespace: "fubon",
   stream: "credit-card",
   recordKind: "fubon-credit-card-transaction",
+  sourceAccountKey: "fubon-portfolio",
   accountNo: "fubon-portfolio",
+  accountNumber: null,
   accountType: "credit",
   currency: "TWD",
 });
@@ -220,7 +222,9 @@ function humanAttestedCreditCardCapture(source: "esun" | "yuanta") {
     integrationNamespace: source,
     stream: "credit-card",
     recordKind: `${source}-credit-card-transaction`,
+    sourceAccountKey: `${source}-portfolio`,
     accountNo: `${source}-portfolio`,
+    accountNumber: null,
     accountType: "credit",
     currency: "TWD",
   });

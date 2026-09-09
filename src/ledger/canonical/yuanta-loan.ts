@@ -49,8 +49,19 @@ export type YuantaLoanStatementRow = {
   balanceAfterTransaction: string;
 };
 
+export const YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "yuanta/loan/account-number-v1" as const;
+
+export type YuantaLoanAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "loan-account";
+  evidenceVersion: typeof YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "#acctno option.value";
+}>;
+
 export type YuantaLoanCaptureBuildInput = {
   accountValue: string;
+  accountNumber?: YuantaLoanAccountNumberEvidence;
   sourceConnectionScope: string;
   observedAt: string;
   startDate: string;
@@ -303,6 +314,25 @@ export function admitYuantaLoanCapture(
 ): LoanValidatedCapture {
   if (capture.sourceId !== "yuanta")
     throw new Error("Yuanta loan admission requires a Yuanta capture.");
+  const accountNumber = (
+    capture.identity as LoanCaptureInput["identity"] & {
+      accountNumber?: unknown;
+    }
+  ).accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "loan-account" ||
+      accountNumber.evidenceVersion !==
+        YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "#acctno option.value" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{14}$/.test(accountNumber.value))
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Yuanta loan account number evidence is invalid.",
+    );
   return admitCanonicalLoanCapture(capture);
 }
 
@@ -620,11 +650,14 @@ export function buildYuantaLoanCapture(
   input: YuantaLoanCaptureBuildInput,
 ): LoanCaptureInput {
   const rows = canonicalRows(input);
-  const identity = canonicalLoanSourceIdentity(
-    "yuanta",
-    input.sourceConnectionScope,
-    input.accountValue,
-  );
+  const identity = {
+    ...canonicalLoanSourceIdentity(
+      "yuanta",
+      input.sourceConnectionScope,
+      input.accountValue,
+    ),
+    ...(input.accountNumber ? { accountNumber: input.accountNumber } : {}),
+  };
   return createCanonicalLoanCapture({
     captureId: canonicalLoanToken(
       "yuanta",

@@ -11,6 +11,10 @@ import {
   type CanonicalSourceCaptureAdmissionTransactionCapability,
   type CanonicalSourceCaptureAdmissionTransactionResult,
 } from "./canonical-source-capture-admission.ts";
+import {
+  validateCanonicalSourceAccountNumber,
+  type CanonicalSourceAccountNumber,
+} from "./canonical-source-evidence.ts";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 
 export type FinancialDepositAmount = {
@@ -115,6 +119,10 @@ export type CanonicalFinancialDepositCapture = {
     recordKind: string;
     subjectDigest: string;
     accountNo: string;
+    /** Explicit alias for the stable source key. */
+    sourceAccountKey?: string;
+    /** Provider-supported display identifier with source lineage. */
+    accountNumber?: CanonicalSourceAccountNumber | null;
     accountType: string;
     /** Nullable for a source-proven multi-currency account. */
     currency: string | null;
@@ -208,6 +216,26 @@ function id(): Uint8Array {
 function validateOpaque(value: string, label: string): void {
   if (!/^sha256:[A-Za-z0-9_-]+$/.test(value))
     throw new Error(`${label} must be an opaque sha256 token.`);
+}
+
+function validateFinancialAccountNumber(
+  identifier: CanonicalSourceAccountNumber,
+  accountType: string,
+): void {
+  const value = identifier.value.trim();
+  if (accountType === "depository" || accountType === "loan") {
+    if (!/^\d{6,24}$/.test(value))
+      throw new Error(
+        "Depository and loan account numbers must be complete provider-reported digits.",
+      );
+  } else if (
+    /[*xX•]/u.test(value) ||
+    /^sha256:/u.test(value)
+  ) {
+    throw new Error(
+      "Financial account number cannot be masked or an opaque source token.",
+    );
+  }
 }
 
 const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
@@ -339,6 +367,32 @@ function validateCapture(capture: CanonicalFinancialDepositCapture): void {
   validateText(capture.identity.stream, "Financial stream");
   validateText(capture.identity.recordKind, "Financial record kind");
   validateText(capture.identity.accountNo, "Financial account number");
+  const sourceAccountKey = capture.identity.sourceAccountKey ?? capture.identity.accountNo;
+  if (
+    capture.identity.sourceAccountKey !== undefined &&
+    capture.identity.sourceAccountKey !== capture.identity.accountNo
+  )
+    throw new Error("Source account key and compatibility accountNo disagree.");
+  validateText(sourceAccountKey, "Source account key");
+  validateCanonicalSourceAccountNumber(capture.identity.accountNumber);
+  const identifier = capture.identity.accountNumber;
+  if (identifier) {
+    validateFinancialAccountNumber(identifier, capture.identity.accountType);
+    const validKinds =
+      capture.identity.accountType === "depository"
+        ? ["depository-account"]
+        : capture.identity.accountType === "loan"
+          ? ["loan-account"]
+          : capture.identity.accountType === "credit"
+            ? ["credit-portfolio-account"]
+            : capture.identity.accountType === "investment"
+              ? ["brokerage-account", "platform-account"]
+              : ["platform-account"];
+    if (!(validKinds as readonly string[]).includes(identifier.kind))
+      throw new Error(
+        `Account number kind ${identifier.kind} is incompatible with ${capture.identity.accountType} financial account.`,
+      );
+  }
   validateDate(capture.scope.startDate, "Capture start date");
   validateDate(capture.scope.endDate, "Capture end date");
   if (capture.scope.startDate > capture.scope.endDate)
@@ -1338,6 +1392,7 @@ function sourceAdmissionRequestFromFinancialCapture(
     routeKey: capture.authorityRoute,
     contractVersion: capture.contractVersion,
     subjectDigest: capture.identity.subjectDigest,
+    accountNumber: capture.identity.accountNumber ?? null,
     observedAt: capture.observedAt,
     scope: {
       startDate: capture.scope.startDate,
@@ -1358,6 +1413,8 @@ function sourceAdmissionRequestFromFinancialCapture(
           : (capture.scope.absenceAuthority as
               | "comparable-complete-range"
               | "provider-explicit-no-data"),
+      sourceAccountKey:
+        capture.identity.sourceAccountKey ?? capture.identity.accountNo,
       accountNo: capture.identity.accountNo,
     },
     pages: capture.pages.map((page) => ({
@@ -1387,6 +1444,8 @@ function commitOnce(
     );
   validateCapture(capture);
   const db = store.db;
+  const sourceAccountKey =
+    capture.identity.sourceAccountKey ?? capture.identity.accountNo;
   try {
     const additionalRecords = (capture.nonTransactionRecords ?? [])
       .filter((record) => record.recordType === "statement-evidence")
@@ -1424,16 +1483,21 @@ function commitOnce(
     ];
     const existingAccount = db
       .prepare(
-        `SELECT account_id, currency, account_type FROM financial_accounts
-         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND account_no = ?`,
+        `SELECT account_id, currency, account_type, account_no FROM financial_accounts
+         WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND source_account_key = ?`,
       )
       .get(
         connectionId,
         epochId,
         capture.identity.stream,
-        capture.identity.accountNo,
+        sourceAccountKey,
       ) as
-      | { account_id?: unknown; currency?: unknown; account_type?: unknown }
+      | {
+          account_id?: unknown;
+          currency?: unknown;
+          account_type?: unknown;
+          account_no?: unknown;
+        }
       | undefined;
     const isForeignCurrencyRoute =
       capture.authorityRoute.includes("/foreign-currency/");
@@ -1452,19 +1516,53 @@ function commitOnce(
     if (!existingAccount)
       db.prepare(
         `INSERT INTO financial_accounts(
-          account_id, source_connection_id, identity_epoch_id, stream, account_no,
+          account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no,
           account_type, currency, created_commit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         accountId,
         connectionId,
         epochId,
         capture.identity.stream,
-        capture.identity.accountNo,
+        sourceAccountKey,
+        capture.identity.accountNumber?.value ?? null,
         capture.identity.accountType,
         capture.identity.currency,
         commitId,
       );
+    else if (capture.identity.accountNumber) {
+      const existingAccountNumber = existingAccount.account_no;
+      if (
+        existingAccountNumber !== null &&
+        existingAccountNumber !== undefined &&
+        String(existingAccountNumber) !== capture.identity.accountNumber.value
+      )
+        throw new CanonicalFinancialDepositConflictError(
+          "Financial account provider identifier changed without a versioned account revision.",
+        );
+      if (existingAccountNumber === null || existingAccountNumber === undefined)
+        db.prepare(
+          "UPDATE financial_accounts SET account_no = ? WHERE account_id = ?",
+        ).run(capture.identity.accountNumber.value, accountId);
+    }
+    if (capture.identity.accountNumber) {
+      db.prepare(
+        `INSERT OR IGNORE INTO financial_account_identifier_observations(
+          observation_id, account_id, capture_id, source_record_id, commit_id,
+          identifier_kind, identifier_value, evidence_version, source_field, observed_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id(),
+        accountId,
+        captureId,
+        commitId,
+        capture.identity.accountNumber.kind,
+        capture.identity.accountNumber.value,
+        capture.identity.accountNumber.evidenceVersion,
+        capture.identity.accountNumber.sourceField,
+        capture.observedAt,
+      );
+    }
     capability.linkFinancialAccount({
       accountId,
       scopeId,

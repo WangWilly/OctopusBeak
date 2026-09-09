@@ -6,10 +6,13 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
+  buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailTelemetry,
   ctbcDetailRowsToStatementRows,
   ctbcStatementRowsToCsv,
+  indexCtbcCurrentDepositFinancialCaptures,
   resolveCtbcAccountScope,
   runCtbcStatements,
 } from "./ctbc-statements.ts";
@@ -253,4 +256,99 @@ assert.deepEqual(
 assert.equal(
   ctbcStatementRowsToCsv(rows),
   '帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註\n2026/07/03,2026/07/02,09:08:07,薪資,0,"1,234","5,678","公司,入帳 七月"\n',
+);
+
+const currentRow = {
+  source: "ctbc" as const,
+  stream: "domestic-deposit" as const,
+  accountNumber: "0000314540554100",
+  sourceAccountKey: "0000314540554100",
+  currency: "TWD" as const,
+  ledger: { coefficient: "13155", scale: 0, sourceLexeme: "13,155" },
+  providerFields: {
+    accountId: "0000314540554100",
+    digiSvType: "",
+    acctType: "01",
+    accountNickName: "",
+    openDt: "20200101",
+    isRelaC: "N" as const,
+  },
+  effectiveAt: "2026-09-09T02:09:43.601Z",
+  providerServerTime: 1788919783601,
+  providerDataTime: "2026/09/09 10:09:43",
+  providerHttpDate: "Wed, 09 Sep 2026 02:09:43 GMT",
+  observedAt: "2026-09-09T10:10:00+08:00",
+  sourceEvidence: {
+    endpoint: "/IB/api/adapters/IB_Adapter/resource/ebmwResource" as const,
+    requestResource: "/twrbc-deposit/qu001/010" as const,
+    status: 200 as const,
+    cacheControl: "no-cache, no-store, must-revalidate",
+    contractVersion: "ctbc/current-deposit-balance-v1" as const,
+  },
+};
+
+const existingIdentity = {
+  authorityRoute: "ctbc/domestic-deposit/human-attested-v1",
+  identity: {
+    integrationNamespace: "ctbc",
+    sourceConnectionKey: "sha256:ctbc-connection",
+    identityEpochKey: "sha256:ctbc-epoch",
+    stream: "domestic-deposit",
+    subjectDigest: "sha256:ctbc-subject",
+    accountNo: "0000314540554100",
+    sourceAccountKey: "0000314540554100",
+    accountNumber: { value: "0000314540554100" },
+    currency: "TWD",
+  },
+};
+const currentCapture = buildCtbcCurrentDepositBalanceCapture(
+  currentRow,
+  existingIdentity,
+);
+assert.equal(currentCapture.identity.sourceAccountKey, "0000314540554100");
+assert.equal(currentCapture.observations.length, 1);
+assert.equal(currentCapture.observations[0]?.balanceKind, "ledger");
+assert.equal(currentCapture.observations[0]?.sourceField, "balance");
+assert.equal(currentCapture.observations[0]?.time.sourceField, "serverTime");
+assert.equal(currentCapture.observations[0]?.time.sourceValue, "1788919783601");
+assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(currentCapture));
+assert.deepEqual(currentCapture.observations[0]?.balance, {
+  coefficient: "13155",
+  scale: 0,
+});
+assert.equal(currentCapture.providerResponse.requestResource, "/twrbc-deposit/qu001/010");
+assert.doesNotMatch(
+  JSON.stringify(currentCapture),
+  /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|deviceId/u,
+);
+
+const currentIdentityMap = indexCtbcCurrentDepositFinancialCaptures([
+  existingIdentity,
+]);
+assert.equal(
+  currentIdentityMap.get(
+    "sha256:ctbc-connection\u0000sha256:ctbc-epoch\u0000domestic-deposit\u00000000314540554100",
+  ),
+  existingIdentity,
+);
+assert.throws(
+  () =>
+    buildCtbcCurrentDepositBalanceCapture(currentRow, {
+      ...existingIdentity,
+      identity: {
+        ...existingIdentity.identity,
+        accountNo: "0000314540554101",
+        sourceAccountKey: "0000314540554101",
+        accountNumber: { value: "0000314540554101" },
+      },
+    }),
+  /exactly match existing account evidence/u,
+);
+assert.throws(
+  () =>
+    buildCtbcCurrentDepositBalanceCapture(currentRow, {
+      ...existingIdentity,
+      authorityRoute: "ctbc/domestic-deposit/preflight-v1",
+    }),
+  /not an admitted TWD CTBC account/u,
 );
