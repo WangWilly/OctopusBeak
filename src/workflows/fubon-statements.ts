@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
@@ -30,6 +30,8 @@ import {
   FUBON_DOMESTIC_DEPOSIT_TIME_ZONE,
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_PATH,
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
+  FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+  FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2,
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
   isFubonHumanAttestedV1Active,
   isAdmittedFubonDomesticDepositCaptureEvidence,
@@ -37,6 +39,7 @@ import {
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
+  type FubonDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/fubon-domestic-deposit.ts";
 import {
   canonicalSqlitePath,
@@ -55,6 +58,21 @@ import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
 } from "./fubon-source-connection.ts";
+import {
+  readFubonCurrentDepositBalances,
+  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
+  type FubonCurrentDepositBalanceRow,
+} from "./fubon-current-deposit-balances.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCapture,
+  currentDepositSourceRecord,
+  currentDepositSourceRecordContentHash,
+  type CurrentDepositBalanceCaptureInput,
+  type CurrentDepositBalanceObservationInput,
+  type CurrentDepositExactAmount,
+  type CurrentDepositSourceRecordInput,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -327,7 +345,179 @@ export type FubonStatementsRunDependencies = Partial<{
   /** Raw, non-secret stable login scope used by the canonical adapter. */
   sourceConnectionScope: string;
   resolveLoanRepaymentRelations: typeof resolveLoanRepaymentRelations;
+  /** Injected in checks; production reads the authenticated current-balance page. */
+  readCurrentDepositBalances: typeof readFubonCurrentDepositBalances;
 }>;
+
+type ExistingFubonFinancialCapture = Readonly<{
+  identity: Readonly<{
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    subjectDigest: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+    accountNumber?: Readonly<{ value: string }> | null;
+  }>;
+}>;
+
+function fubonCurrentDepositOpaqueKey(
+  domain: string,
+  ...parts: readonly string[]
+): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(`${domain}\0`)
+    .update(parts.join("\0"))
+    .digest("base64url")}`;
+}
+
+/** Preserve the provider's full account-number evidence while joining the
+ * current snapshot to the existing hashed canonical account identity. */
+export function buildFubonCurrentDepositBalanceCapture(
+  row: FubonCurrentDepositBalanceRow,
+  financialCapture: ExistingFubonFinancialCapture,
+): CurrentDepositBalanceCaptureInput {
+  const identity = financialCapture.identity;
+  if (identity.accountNumber?.value !== row.accountNumber)
+    throw new Error(
+      "Fubon current deposit account does not match the existing full account-number evidence.",
+    );
+  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  const records: CurrentDepositSourceRecordInput[] = [];
+  const observations: CurrentDepositBalanceObservationInput[] = [];
+  const amountPairs: readonly [
+    "ledger" | "available",
+    string,
+    CurrentDepositExactAmount,
+  ][] = [
+    ["ledger", "即時餘額", row.instantBalance],
+    ["available", "可用餘額", row.availableBalance],
+  ];
+  for (const [balanceKind, sourceField, balance] of amountPairs) {
+    const sourceRecordKey = fubonCurrentDepositOpaqueKey(
+      "fubon-current-deposit-source-record-v1",
+      sourceAccountKey,
+      row.currency,
+      balanceKind,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    );
+    const compact = {
+      accountNumber: row.accountNumber,
+      accountNickname: row.accountNickname,
+      depositType: row.depositType,
+      branchName: row.branchName,
+      currencySourceLexeme: row.currencySourceLexeme,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+    };
+    const record = currentDepositSourceRecord({
+      sourceRecordKey,
+      providerKey: fubonCurrentDepositOpaqueKey(
+        "fubon-current-deposit-provider-record-v1",
+        row.accountNumber,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+      ),
+      contentHash: "sha256:placeholder",
+      sourceField,
+      balanceKind,
+      currency: row.currency,
+      value: balance,
+      compact,
+    });
+    records.push({
+      ...record,
+      contentHash: currentDepositSourceRecordContentHash(record.compact),
+    });
+    observations.push({
+      observationKey: fubonCurrentDepositOpaqueKey(
+        "fubon-current-deposit-observation-v1",
+        sourceAccountKey,
+      ),
+      balanceKind,
+      balance,
+      currency: row.currency,
+      time: {
+        effectiveAt: row.effectiveAt,
+        effectiveTimeBasis: "provider-http-date",
+        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+        sourceField: "HTTP Date",
+        sourceValue: row.providerHttpDate,
+        contractVersion: row.sourceEvidence.contractVersion,
+      },
+      sourceRecordKey,
+      sourceField,
+    });
+  }
+  const endpoint = `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`;
+  return {
+    captureId: randomUUID(),
+    authorityRoute: "fubon/domestic-deposit/current-balance-v1",
+    contractVersion: row.sourceEvidence.contractVersion,
+    subjectDigest: identity.subjectDigest,
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      stream: "domestic-deposit",
+      sourceAccountKey,
+    },
+    observedAt: row.observedAt,
+    scope: {
+      startDate: row.effectiveAt.slice(0, 10),
+      endDate: row.effectiveAt.slice(0, 10),
+    },
+    providerResponse: {
+      endpoint,
+      status: 200,
+      cacheControl: row.sourceEvidence.cacheControl,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        rowCount: records.length,
+        terminal: true,
+        metadata: {
+          source: "fubon-current-deposit-summary",
+          sourceRowCount: 1,
+          balanceFieldCount: records.length,
+        },
+      },
+    ],
+    records,
+    observations,
+  };
+}
+
+export function indexFubonCurrentDepositFinancialCaptures(
+  financialCaptures: readonly ExistingFubonFinancialCapture[],
+): ReadonlyMap<string, ExistingFubonFinancialCapture> {
+  const existingByAccountNumber = new Map<string, ExistingFubonFinancialCapture>();
+  for (const candidate of financialCaptures) {
+    const accountNumber = candidate.identity.accountNumber?.value;
+    if (!accountNumber) continue;
+    const prior = existingByAccountNumber.get(accountNumber);
+    if (
+      prior &&
+      (prior.identity.sourceConnectionKey !==
+        candidate.identity.sourceConnectionKey ||
+        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
+        (prior.identity.sourceAccountKey ?? prior.identity.accountNo) !==
+          (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) ||
+        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
+    )
+      throw new Error(
+        "Fubon current deposit identities are ambiguous across financial captures.",
+      );
+    if (!prior) existingByAccountNumber.set(accountNumber, candidate);
+  }
+  return existingByAccountNumber;
+}
 
 export type ParsedDepositStatementPage = {
   account: string;
@@ -434,7 +624,53 @@ export type FubonDepositAccountOptionEvidence = {
   value: string;
   label: string;
   branchName: string;
+  accountNumber?: FubonDomesticDepositAccountNumberEvidence;
 };
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The Fubon domestic selector's option value is an account number only when
+ * the unmasked value is also rendered as the account label. Preserve leading
+ * zeroes and reject masked values or selector tokens that lack that evidence.
+ */
+export function deriveFubonDomesticDepositAccountNumberEvidence(
+  account: Pick<FubonDepositAccountOption, "value" | "label">,
+): FubonDomesticDepositAccountNumberEvidence | null {
+  const value = cleanText(account.value);
+  const label = cleanText(account.label);
+  if (!label) return null;
+  const composite = value.match(
+    /^(?:\d{3})-(\d{16})-TWD-(?:\d{2})$/u,
+  );
+  const displayLabel = label.match(
+    /^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u,
+  );
+  if (
+    composite &&
+    displayLabel &&
+    composite[1] === `00${displayLabel[1]}`
+  ) {
+    return {
+      value: displayLabel[1]!,
+      kind: "depository-account",
+      evidenceVersion:
+        FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2,
+      sourceField: "form1:comboAccount option.value + option.text",
+    };
+  }
+  if (!/^\d{6,24}$/.test(value)) return null;
+  const exactValue = new RegExp(`(?:^|\\D)${escapedRegExp(value)}(?=\\D|$)`);
+  if (!exactValue.test(label)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "form1:comboAccount option.value",
+  };
+}
 
 export type FubonDepositStatementRowEvidence = {
   rowOrdinal: number;
@@ -876,6 +1112,9 @@ function buildFubonHumanAttestedFinancialSemantics(
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
       accountNo: identity.accountNo,
+      ...(capture.account.accountNumber
+        ? { accountNumber: capture.account.accountNumber }
+        : {}),
       sourceConnectionKey: identity.sourceConnectionKey,
       identityEpochKey: identity.identityEpochKey,
       subjectDigest: identity.subjectDigest,
@@ -1530,6 +1769,8 @@ function assembleFubonParsedDepositStatement(
   if (!firstPage) {
     throw new Error("Fubon deposit query returned no response page.");
   }
+  const accountNumber =
+    deriveFubonDomesticDepositAccountNumberEvidence(accountOption);
   return {
     account: firstPage.account || accountOption.label,
     accountId:
@@ -1569,6 +1810,7 @@ function assembleFubonParsedDepositStatement(
       label: accountOption.label,
       branchName:
         firstPage.branchName || branchNameFromAccount(accountOption.label),
+      ...(accountNumber ? { accountNumber } : {}),
     },
   };
 }
@@ -2087,6 +2329,8 @@ export async function runFubonStatements(
     overrides.fetchDepositStatement ?? fetchDepositStatement;
   const writeStatement =
     overrides.writeDepositStatementFiles ?? writeDepositStatementFiles;
+  const readCurrent =
+    overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
   // Source evidence always has a durable default. Financial projection is a
   // separate opt-in boundary: canonicalLedgerDir alone can never enable it.
   const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
@@ -2116,6 +2360,7 @@ export async function runFubonStatements(
     sourceConnectionScope,
     sourceConnectionKey: stableSourceConnectionKey,
   } as const;
+  const financialCaptures: ExistingFubonFinancialCapture[] = [];
 
   try {
     await openTransactionDetail(page, 0);
@@ -2245,6 +2490,7 @@ export async function runFubonStatements(
             throw new Error(
               "Fubon domestic deposit admission lost its canonical capture.",
             );
+          financialCaptures.push(financialCapture);
           for (const counterpartyEvidence of
             buildFubonLoanPaymentAccountEvidence(capture, financialCapture)) {
             await persistCounterpartyAccountEvidence(
@@ -2308,6 +2554,38 @@ export async function runFubonStatements(
       // boundary. Its return value is already masked; do not mask it again.
       downloads.push(await writeStatement(prepared.statements));
       admissions.push(prepared.admission);
+    }
+
+    if (
+      financialWriter &&
+      financialCaptures.length > 0
+    ) {
+      const authority = financialCaptures[0]!.identity;
+      const currentRows = await readCurrent(page, {
+        observedAt: new Date().toISOString(),
+        financialAuthority: {
+          sourceConnectionKey: authority.sourceConnectionKey,
+          identityEpochKey: authority.identityEpochKey,
+          authorityClass: "existing-financial-admission",
+        },
+      });
+      const currentObservedAt = new Date().toISOString();
+      const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
+        financialCaptures,
+      );
+      const captures = currentRows.map((unadjustedRow) => {
+        const row = { ...unadjustedRow, observedAt: currentObservedAt };
+        const matching = existingByAccountNumber.get(row.accountNumber);
+        if (!matching)
+          throw new Error(
+            "Fubon current deposit snapshot contains an account without existing full account-number evidence.",
+          );
+        return admitCurrentDepositBalanceCapture(
+          buildFubonCurrentDepositBalanceCapture(row, matching),
+        );
+      });
+      for (const capture of captures)
+        await commitCurrentDepositBalanceCapture(financialStore!, capture);
     }
 
     return {

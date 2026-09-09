@@ -12,9 +12,11 @@ import {
 import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import {
+  FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   buildFubonLoanCapture,
   persistFubonLoanCapture,
   type FubonLoanCaptureBuildInput,
+  type FubonLoanAccountNumberEvidence,
   type FubonLoanStatementRow,
 } from "../ledger/canonical/fubon-loan.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
@@ -204,6 +206,20 @@ export function extractFubonLoanAccountEvidence(
   return label.match(/^(\d{14})\s*[（(][^()（）]+[）)]$/u)?.[1] ?? null;
 }
 
+export function deriveFubonLoanAccountNumberEvidence(
+  account: LoanAccountOption,
+): FubonLoanAccountNumberEvidence | null {
+  const value = extractFubonLoanAccountEvidence(account.value, account.label);
+  return value
+    ? {
+        value,
+        kind: "loan-account",
+        evidenceVersion: FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+        sourceField: "form1:loanAccountCombo option.text",
+      }
+    : null;
+}
+
 export type FubonLoanPaginationSignal = {
   nextPage: string | null;
   pageFieldName: string | null;
@@ -222,6 +238,7 @@ type ParsedFubonLoanPage = {
 
 type ParsedLoanStatement = {
   loanAccount: string;
+  accountNumber?: FubonLoanAccountNumberEvidence;
   loanAccountId: string;
   sourceAccountValue: string;
   queryPeriod: string;
@@ -1414,8 +1431,10 @@ export function assembleFubonLoanStatement(
         ? page.pagination.terminal
         : page.pagination.evidence === "next-page" && !page.pagination.terminal,
     );
+  const accountNumber = deriveFubonLoanAccountNumberEvidence(account);
   return {
     loanAccount: account.label,
+    ...(accountNumber ? { accountNumber } : {}),
     loanAccountId: loanAccountIdFor(account.label, account.label),
     sourceAccountValue: account.value,
     queryPeriod: loanQueryPeriod(input),
@@ -1658,6 +1677,9 @@ export async function runFubonLoanStatements(
         }
         const captureInput: FubonLoanCaptureBuildInput = {
           accountValue: written.parsed.sourceAccountValue,
+          ...(written.parsed.accountNumber
+            ? { accountNumber: written.parsed.accountNumber }
+            : {}),
           sourceConnectionScope,
           observedAt: observedAt(),
           startDate: dateRange.startDate,

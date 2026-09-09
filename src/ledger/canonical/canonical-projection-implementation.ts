@@ -342,6 +342,104 @@ function rebuildCathayCanonicalProjectionInTransaction(
      ) ranked WHERE ranked.rank = 1`,
   ).run(generation, commitId, cutoff);
   db.prepare(
+    `INSERT INTO current_depository_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created
+         ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'depository'
+        AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+        AND created.commit_sequence <= ?`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_depository_balance_observations(
+       generation_id, account_id, balance_kind, currency,
+       observation_id, revision_id, projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id, ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind,
+                revision.currency, observation.observation_id,
+                revision.revision_id, revision.commit_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind,
+                               revision.currency
+                  ORDER BY revision.effective_at DESC,
+                           revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC,
+                           hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision
+             ON revision.observation_id = observation.observation_id
+           JOIN canonical_commits revision_commit
+             ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account
+             ON account.account_id = observation.account_id
+           JOIN canonical_commits account_created
+             ON account_created.commit_id = account.created_commit_id
+          WHERE account.account_type = 'depository'
+            AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+            AND observation.balance_kind IN ('ledger','available')
+            AND account_created.commit_sequence <= ?
+            AND revision_commit.commit_sequence <= ?
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(generation, commitId, cutoff, cutoff);
+  db.prepare(
+    `INSERT INTO current_credit_card_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'credit'
+        AND account.stream = 'credit-card'
+        AND created.commit_sequence <= ?`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_credit_card_balance_observations(
+       generation_id, account_id, balance_kind, currency, observation_id, revision_id,
+       estimate_kind, estimate_basis, estimate_formula,
+       component_limit_coefficient, component_limit_scale,
+       component_available_coefficient, component_available_scale,
+       projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id,
+            selected.estimate_kind, selected.estimate_basis, selected.formula,
+            selected.component_limit_coefficient, selected.component_limit_scale,
+            selected.component_available_coefficient, selected.component_available_scale,
+            ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind, revision.currency,
+                observation.observation_id, revision.revision_id, revision.commit_id,
+                detail.estimate_kind, detail.estimate_basis, detail.formula,
+                detail.component_limit_coefficient, detail.component_limit_scale,
+                detail.component_available_coefficient, detail.component_available_scale,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind, revision.currency
+                  ORDER BY revision.effective_at DESC, revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC, hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision ON revision.observation_id = observation.observation_id
+           JOIN credit_card_balance_estimate_details detail ON detail.revision_id = revision.revision_id
+           JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account ON account.account_id = observation.account_id
+           JOIN canonical_commits account_created ON account_created.commit_id = account.created_commit_id
+          WHERE account.account_type = 'credit'
+            AND account.stream = 'credit-card'
+            AND observation.balance_kind = 'credit_used'
+            AND account_created.commit_sequence <= ?
+            AND revision_commit.commit_sequence <= ?
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(generation, commitId, cutoff, cutoff);
+  db.prepare(
     `INSERT INTO current_loan_relations(
        generation_id, relation_id, projection_commit_id, relation_commit_id
      )

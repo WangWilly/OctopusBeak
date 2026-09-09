@@ -110,6 +110,14 @@ _Avoid_: Product-specific table name, workflow label, unsupported inferred subty
 A contract-defined stable source key used with integration namespace, source connection, and identity epoch to establish a Financial Account. It may be a provider account identifier or a contract constant only when the integration proves that the connection scope contains exactly one account of that kind; masks, labels, content hashes, card keys, and user input are not sufficient identity keys, and an integration without a stable account scope fails admission rather than creating a provisional account.
 _Avoid_: Cross-source reconciliation key, display label, content hash
 
+**Source account key**:
+The durable, contract-defined key used to join one provider account scope across Captures. It is an identity key rather than a display value and may remain opaque when the provider does not expose a supported complete account number; preserving it never authorizes presenting it as a bank account number.
+_Avoid_: Provider account number, display name, content hash presented as a number
+
+**Provider account number**:
+A nullable identifier explicitly reported by a source and admitted with a versioned evidence contract. It is shown only when the evidence supports a complete value of the relevant account kind; a credit-card mask belongs to a Card instrument, and an integration with no supported account-number field leaves the value absent.
+_Avoid_: Source account key, masked card number, wallet label, login identifier
+
 **Credit-card financial account**:
 A `credit` Financial Account representing one issuer-managed primary-cardholder credit and billing portfolio within a source connection, under which multiple primary, supplementary, virtual, replacement, or renewed Card Instruments may generate transactions and statements. A card number, mask, product name, or billing cycle never establishes a separate account by itself; the integration must provide an account-level key or prove a single-primary-portfolio connection scope before it may use a fixed contract key.
 _Avoid_: Individual card, masked PAN account, issuer-wide merge across connections

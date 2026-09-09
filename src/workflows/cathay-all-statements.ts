@@ -10,7 +10,12 @@ import {
   downloadCathayStatements,
   signInCathay,
 } from "./cathay-statements.js";
-import { downloadCathayForeignStatements } from "./cathay-foreign-statements.js";
+import {
+  captureCathayCurrentForeignDepositBalances,
+  commitCathayForeignCanonicalCaptures,
+  createCathayForeignCanonicalCaptureCollector,
+  downloadCathayForeignStatements,
+} from "./cathay-foreign-statements.js";
 import { retryableStage } from "./retryable-stage.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
 
@@ -90,6 +95,8 @@ const cathayAllStatementsDependencies = {
   retryableStage,
   downloadCathayStatements,
   downloadCathayForeignStatements,
+  commitCathayForeignCanonicalCaptures,
+  captureCathayCurrentForeignDepositBalances,
 };
 
 export async function runCathayAllStatements(
@@ -103,6 +110,8 @@ export async function runCathayAllStatements(
     retryableStage,
     downloadCathayStatements,
     downloadCathayForeignStatements,
+    commitCathayForeignCanonicalCaptures,
+    captureCathayCurrentForeignDepositBalances,
   } = { ...cathayAllStatementsDependencies, ...overrides };
   const input = rawInput as z.infer<typeof inputSchema> & {
     credentials: CathayCredentials;
@@ -155,7 +164,7 @@ export async function runCathayAllStatements(
               input.dateRange,
               input.domesticAccountFilters ?? input.accountFilters,
               cathaySession,
-              { telemetry: input.telemetry },
+              { telemetry: input.telemetry, captureCurrentBalances: true },
             ),
         });
         return downloads.map((download) => ({
@@ -171,21 +180,35 @@ export async function runCathayAllStatements(
         console.log("combined-workflow-section-start", {
           section: "foreign",
         });
+        const canonicalCollector =
+          createCathayForeignCanonicalCaptureCollector(input.dateRange);
         const downloads = await retryableStage({
           name: "cathay-foreign-statements",
           session: ctx.session,
           reset: async () => {
             cathaySession = await createCathaySession(page);
           },
-          run: async () =>
-            downloadCathayForeignStatements(
+          run: async () => {
+            canonicalCollector.reset();
+            return downloadCathayForeignStatements(
               page,
               input.dateRange,
               input.foreignAccountFilters ?? input.accountFilters,
               input.currencyFilters,
               cathaySession,
-            ),
+              canonicalCollector.onStatement,
+            );
+          },
         });
+        await commitCathayForeignCanonicalCaptures(
+          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+          canonicalCollector.captures,
+        );
+        await captureCathayCurrentForeignDepositBalances(
+          page,
+          canonicalCollector.captures,
+          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+        );
         return downloads.map((download) => ({
           type: "foreign" as const,
           ...download,

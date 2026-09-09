@@ -124,7 +124,10 @@ export type CtbcDomesticDepositCaptureEvidence = {
   product: "domestic-deposit";
   providerGuaranteed: false;
   observedAt: string;
-  account: { accountId: string };
+  account: {
+    accountId: string;
+    accountNumber?: CtbcDomesticDepositAccountNumberEvidence;
+  };
   queryRange: { startDate: string; endDate: string };
   responses: CtbcDomesticDepositCaptureResponse[];
   provenance: {
@@ -135,6 +138,29 @@ export type CtbcDomesticDepositCaptureEvidence = {
     authority: "personal-main";
   };
 };
+
+export const CTBC_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "ctbc/domestic-deposit/account-number-v1" as const;
+
+export type CtbcDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof CTBC_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "accountInfoList.accountId";
+}>;
+
+export function deriveCtbcDomesticDepositAccountNumberEvidence(
+  accountId: string,
+): CtbcDomesticDepositAccountNumberEvidence | null {
+  const value = accountId.trim().normalize("NFKC");
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: CTBC_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "accountInfoList.accountId",
+  };
+}
 export type CtbcDomesticDepositValidatedEvidence =
   CtbcDomesticDepositCaptureEvidence & {
     readonly __ctbcDomesticDepositValidated: unique symbol;
@@ -223,6 +249,20 @@ export function admitCtbcDomesticDepositCaptureEvidence(
     !cell(capture.account.accountId)
   )
     diagnostics.push("account-invalid");
+  const accountNumber = capture?.account?.accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "depository-account" ||
+      accountNumber.evidenceVersion !==
+        CTBC_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "accountInfoList.accountId" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{6,24}$/.test(accountNumber.value) ||
+      accountNumber.value !== capture?.account?.accountId)
+  )
+    diagnostics.push("account-number-evidence-invalid");
   const start = capture?.queryRange?.startDate;
   const end = capture?.queryRange?.endDate;
   if (
@@ -392,6 +432,7 @@ export function createCtbcDomesticDepositSourceEvidence(
     contractVersion: CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     subjectDigest,
     observedAt: capture.observedAt,
+    accountNumber: capture.account.accountNumber ?? null,
     scope: {
       startDate: capture.queryRange.startDate.replaceAll("/", ""),
       endDate: capture.queryRange.endDate.replaceAll("/", ""),
@@ -717,6 +758,9 @@ export function admitCtbcDomesticDepositFinancialCapture(
         recordKind: "ctbc-domestic-deposit",
         subjectDigest,
         accountNo: input.capture.account.accountId,
+        ...(input.capture.account.accountNumber
+          ? { accountNumber: input.capture.account.accountNumber }
+          : {}),
         accountType: "depository",
         currency: "TWD",
       },

@@ -124,6 +124,26 @@ export const FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_PATH =
 export const FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT =
   "fubon-domestic-deposit-twd-v1" as const;
 
+/**
+ * Optional account-number evidence is carried beside the opaque source key.
+ * The selector value is admitted as a number only when the provider option
+ * exposes the same complete, unmasked value in its account label.
+ */
+export const FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "fubon/domestic-deposit/account-number-v1" as const;
+export const FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2 =
+  "fubon/domestic-deposit/account-number-v2" as const;
+export type FubonDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion:
+    | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION
+    | typeof FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2;
+  sourceField:
+    | "form1:comboAccount option.value"
+    | "form1:comboAccount option.value + option.text";
+}>;
+
 /** De-identified fixture for parser/page/zero/readiness checks. */
 export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCaptureEvidence =
   {
@@ -205,6 +225,7 @@ export type FubonDomesticDepositCaptureDiagnostic =
   | "observed-at-invalid"
   | "account-option-value-missing"
   | "account-option-label-missing"
+  | "account-number-evidence-invalid"
   | "branch-missing"
   | "query-range-invalid"
   | "query-range-shape-invalid"
@@ -294,6 +315,30 @@ export function isSourceOnlyFubonDomesticDepositCaptureEvidence(
 
 function clean(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function accountNumberLabelMatches(value: string, label: string): boolean {
+  if (!/^\d{6,24}$/.test(value)) return false;
+  return new RegExp(`(?:^|\\D)${value}(?=\\D|$)`).test(clean(label));
+}
+
+function fubonCompositeAccountNumberMatches(
+  value: string,
+  label: string,
+  accountNumber: string,
+): boolean {
+  const selectorValue = clean(value).match(
+    /^(?:\d{3})-(\d{16})-TWD-(?:\d{2})$/u,
+  );
+  const displayLabel = clean(label).match(
+    /^(\d{14})\s*(?:\([^()（）]+\)|（[^()（）]+）)$/u,
+  );
+  return (
+    selectorValue !== null &&
+    displayLabel !== null &&
+    accountNumber === displayLabel[1] &&
+    selectorValue[1] === `00${displayLabel[1]}`
+  );
 }
 
 function validDate(value: string): boolean {
@@ -391,6 +436,32 @@ export function admitFubonDomesticDepositCaptureEvidence(
       diagnostic(diagnostics, "account-option-label-missing");
     if (typeof account.branchName !== "string" || !clean(account.branchName))
       diagnostic(diagnostics, "branch-missing");
+    const accountNumber = account.accountNumber;
+    if (
+      accountNumber !== undefined &&
+      (accountNumber === null ||
+        typeof accountNumber !== "object" ||
+        accountNumber.kind !== "depository-account" ||
+        typeof accountNumber.value !== "string" ||
+        (accountNumber.evidenceVersion ===
+          FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION
+          ? accountNumber.sourceField !== "form1:comboAccount option.value" ||
+            !/^\d{6,24}$/.test(accountNumber.value) ||
+            accountNumber.value !== account.value ||
+            !accountNumberLabelMatches(accountNumber.value, account.label)
+          : accountNumber.evidenceVersion ===
+              FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2
+            ? accountNumber.sourceField !==
+                "form1:comboAccount option.value + option.text" ||
+              !/^\d{14}$/.test(accountNumber.value) ||
+              !fubonCompositeAccountNumberMatches(
+                account.value,
+                account.label,
+                accountNumber.value,
+              )
+            : true))
+    )
+      diagnostic(diagnostics, "account-number-evidence-invalid");
   }
   if (capture.queryRange === null || typeof capture.queryRange !== "object")
     diagnostic(diagnostics, "query-range-shape-invalid");
@@ -952,6 +1023,7 @@ export type FubonDomesticDepositFinancialSemantics = {
   evidenceVersion: typeof FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION;
   account: {
     accountNo: string;
+    accountNumber?: FubonDomesticDepositAccountNumberEvidence;
     sourceConnectionKey: `sha256:${string}`;
     identityEpochKey: `sha256:${string}`;
     subjectDigest: `sha256:${string}`;
@@ -1616,7 +1688,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
       stream: "domestic-deposit",
       recordKind: "fubon-domestic-deposit",
       subjectDigest: identity.subjectDigest,
+      sourceAccountKey: identity.accountNo,
       accountNo: identity.accountNo,
+      ...(semantics.account.accountNumber
+        ? { accountNumber: semantics.account.accountNumber }
+        : {}),
       accountType: semantics.account.accountType,
       currency: semantics.account.currency,
     },

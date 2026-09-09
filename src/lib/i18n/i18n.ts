@@ -75,11 +75,21 @@ const en = {
     currentAwaiting: "Current balances have not been collected yet.",
     currentEmpty: "No financial accounts are available yet.",
     currentUnavailable: "Current balances are temporarily unavailable.",
-    currentPartial: (count: number) => count === 1
-      ? "1 account is still waiting for a current balance; totals are partial."
-      : `${count} accounts are still waiting for current balances; totals are partial.`,
-    sourceGapsAria: "Sources waiting for current balances",
+    currentPartial: (currentValueCount: number, sourceNotCollectedCount: number) => [
+      currentValueCount > 0
+        ? `${currentValueCount} account${currentValueCount === 1 ? " is" : "s are"} still waiting for a current value.`
+        : null,
+      sourceNotCollectedCount > 0
+        ? `${sourceNotCollectedCount} source${sourceNotCollectedCount === 1 ? " is" : "s are"} not collected yet.`
+        : null,
+      "Totals are partial.",
+    ].filter(Boolean).join(" "),
+    sourceGapsAria: "Current value or source collection gaps",
     historyUnavailable: "Historical balances are not available yet.",
+    availableBalanceBasis:
+      "Asset totals include LINE Bank available balance when no ledger balance was observed.",
+    creditCardEstimateBasis:
+      "Estimated liability (including unbilled consumption)",
   },
   assets: {
     eyebrow: "Assets",
@@ -364,6 +374,8 @@ const en = {
     noAvailableData: "No available data",
     noAssetMatches: "No matching asset accounts.",
     noLiabilityMatches: "No matching liabilities.",
+    availableBalanceBasis: "Based on LINE Bank available balance",
+    creditCardEstimateBasis: "Estimated credit-card used credit (including unbilled consumption)",
   },
   historyTable: {
     date: "Date",
@@ -917,9 +929,19 @@ const zh: typeof en = {
     currentAwaiting: "目前尚未收集餘額。",
     currentEmpty: "尚無可用的財務帳戶。",
     currentUnavailable: "目前餘額暫時無法使用。",
-    currentPartial: (count) => `${count} 個帳戶尚未取得目前餘額；總額僅供部分參考。`,
-    sourceGapsAria: "等待目前餘額的來源",
+    currentPartial: (currentValueCount, sourceNotCollectedCount) => [
+      currentValueCount > 0
+        ? `${currentValueCount} 個帳戶的目前金額或價值尚未觀測。`
+        : null,
+      sourceNotCollectedCount > 0
+        ? `${sourceNotCollectedCount} 個來源尚未採集。`
+        : null,
+      "總額僅供部分參考。",
+    ].filter(Boolean).join(" "),
+    sourceGapsAria: "目前金額或來源採集缺口",
     historyUnavailable: "歷史餘額尚未提供。",
+    availableBalanceBasis: "沒有帳面餘額時，資產總額採用 LINE Bank 可用餘額。",
+    creditCardEstimateBasis: "估算負債（含未請款消費）",
   },
   assets: {
     eyebrow: "資產",
@@ -1192,6 +1214,8 @@ const zh: typeof en = {
     noAvailableData: "無可用資料",
     noAssetMatches: "沒有符合條件的資產帳戶。",
     noLiabilityMatches: "沒有符合條件的負債。",
+    availableBalanceBasis: "依 LINE Bank 可用餘額計算",
+    creditCardEstimateBasis: "信用卡已使用額度估算（含未請款消費）",
   },
   historyTable: {
     date: "日期",

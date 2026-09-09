@@ -55,6 +55,16 @@ export const LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION =
 export const LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_KEY_DESCRIPTOR =
   "acctNbr+arrId" as const;
 
+/** Optional depository number evidence carried beside the opaque composite key. */
+export const LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "linebank/domestic-deposit/account-number-v1" as const;
+export type LineBankDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "transactions.content.acctNbr";
+}>;
+
 /**
  * Public evidence narrows currency only for the explicitly staged domestic
  * main-account route. No provider product code is claimed here: the
@@ -1099,6 +1109,7 @@ export type LineBankHumanAttestedV13Capture = {
   contractVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION;
   identityEpoch: number;
   accountKey: string;
+  accountNumber?: LineBankDomesticDepositAccountNumberEvidence;
   scope: { startDate: string; endDate: string };
   pages: LineBankTransactionPage[];
   records: LineBankHumanAttestedV13Record[];
@@ -1297,6 +1308,11 @@ export function validateLineBankHumanAttestedV13Capture(
   const firstPage = pages[0];
   const expectedPageCapacity = firstPage?.pageCnt;
   const expectedTotal = firstPage?.totTxCnt;
+  const accountNumber =
+    firstPage?.source &&
+    sourceAccountIdentityStatus(input.account, firstPage.source) === "match"
+      ? deriveLineBankDomesticDepositAccountNumberEvidence(firstPage.source)
+      : null;
   if (
     !firstPage ||
     !Number.isSafeInteger(expectedPageCapacity) ||
@@ -1554,6 +1570,7 @@ export function validateLineBankHumanAttestedV13Capture(
     contractVersion: LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
     identityEpoch: input.identityEpoch,
     accountKey,
+    ...(accountNumber ? { accountNumber } : {}),
     scope: {
       startDate: clean(input.scope.startDate),
       endDate: clean(input.scope.endDate),
@@ -1672,6 +1689,25 @@ function candidateAccountKey(account: LineBankAccount): string {
   const acctNbr = clean(account.acctNbr);
   const arrId = clean(account.arrId);
   return acctNbr && arrId ? `${acctNbr}:${arrId}` : "";
+}
+
+/**
+ * LINE Bank's account list and transaction envelope both expose `acctNbr`.
+ * The transaction envelope is checked against the requested account before
+ * this evidence is attached, while `arrId` remains part of the stable opaque
+ * account key and is never discarded.
+ */
+export function deriveLineBankDomesticDepositAccountNumberEvidence(
+  account: LineBankAccount,
+): LineBankDomesticDepositAccountNumberEvidence | null {
+  const value = clean(account.acctNbr);
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "transactions.content.acctNbr",
+  };
 }
 
 type SourceAccountIdentityStatus = "match" | "missing" | "mismatch";

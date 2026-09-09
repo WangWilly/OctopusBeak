@@ -35,6 +35,26 @@ const rebuildCanonicalProjection = (
   ledgerDir: string,
   options = {},
 ) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
+
+/** Rewind a freshly bootstrapped database to the physical v23 source shape.
+ * Lowering user_version alone leaves the v26 split identifier columns in
+ * place, which is not a valid historical migration fixture. */
+function rewindCurrentDatabaseToV23PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    DELETE FROM schema_migrations WHERE version > 23;
+    PRAGMA user_version = 23;
+    PRAGMA foreign_keys = ON;
+  `);
+}
 import {
   buildFubonLoanCapture,
   FUBON_LOAN_LIVE_VALIDATION_ATTESTATION_V1,
@@ -1950,7 +1970,9 @@ test("loan identity uses accountKey and current queries read projection selectio
     await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(fixture));
     const persisted = store.db
       .prepare(
-        `SELECT account.account_no AS spine_key, identity.account_key, identity.account_no,
+        `SELECT account.source_account_key AS spine_key,
+                account.account_no AS provider_account_no,
+                identity.account_key, identity.account_no,
                 identity.created_commit_id
          FROM loan_account_identities identity
          JOIN financial_accounts account ON account.account_id = identity.account_id
@@ -1958,6 +1980,7 @@ test("loan identity uses accountKey and current queries read projection selectio
       )
       .get() as Record<string, unknown>;
     assert.equal(persisted.spine_key, fixture.identity.accountKey);
+    assert.equal(persisted.provider_account_no, null);
     assert.equal(persisted.account_key, fixture.identity.accountKey);
     assert.equal(persisted.account_no, fixture.identity.accountNo);
     assert.ok(persisted.created_commit_id instanceof Uint8Array);
@@ -2094,10 +2117,16 @@ test("file-backed loan current projections survive rebuild and schema migration 
       DROP TABLE balance_observations;
       DROP TABLE loan_transaction_facts;
       DROP TABLE loan_account_identities;
+    `);
+    rewindCurrentDatabaseToV23PhysicalSchema(v8);
+    v8.exec(`
+      PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits;
       DELETE FROM canonical_contract_purges;
       DELETE FROM schema_migrations WHERE version > 8;
-      PRAGMA user_version = 8;`);
+      PRAGMA user_version = 8;
+      PRAGMA foreign_keys = ON;
+    `);
     v8.close();
 
     const initial = createCanonicalLoanStore(databasePath);

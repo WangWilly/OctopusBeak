@@ -15,6 +15,8 @@ import {
   CANONICAL_SOURCE_STAGE,
   requireCanonicalSourceText,
   requireCanonicalSourceToken,
+  validateCanonicalSourceAccountNumber,
+  type CanonicalSourceAccountNumber,
   type CanonicalSourceRecord,
 } from "./canonical-source-evidence.ts";
 import {
@@ -160,6 +162,8 @@ export type CathayDomesticDepositCaptureInput = {
   sourceConnectionId: string;
   identityEpoch: string;
   accountNo: string;
+  /** Explicit provider field evidence; never inferred from the source key. */
+  accountNumber?: CanonicalSourceAccountNumber | null;
   currency: string;
   authorityRoute: string;
   stream: string;
@@ -177,6 +181,7 @@ export type CathayTransportCheckpoint = {
 };
 export type CathayStagedCapturePage = {
   accountNo: string;
+  accountNumber?: CanonicalSourceAccountNumber | null;
   currency: "TWD";
   scope: { startDate: string; endDate: string };
   pageOrdinal: number;
@@ -635,6 +640,7 @@ type ValidatedCathayRow = {
 };
 type ValidatedCathayCapture = {
   accountNo: string;
+  accountNumber: CanonicalSourceAccountNumber | null;
   startDate: string;
   endDate: string;
   posting: typeof CATHAY_POSTING_MAPPING;
@@ -643,6 +649,7 @@ type ValidatedCathayCapture = {
 };
 type ValidatedCathayScope = {
   accountNo: string;
+  accountNumber: CanonicalSourceAccountNumber | null;
   currency: "TWD";
   startDate: string;
   endDate: string;
@@ -726,6 +733,25 @@ function validateCapture(
   const accountNo = requiredString(statement, "accountNumber");
   if (accountNo !== input.accountNo)
     throw new Error("Cathay account scope does not match the response.");
+  const accountNumber = input.accountNumber ?? null;
+  try {
+    validateCanonicalSourceAccountNumber(accountNumber);
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? error.message
+        : "Cathay account number evidence is invalid.",
+    );
+  }
+  if (
+    accountNumber &&
+    (accountNumber.kind !== "depository-account" ||
+      !/^\d{6,24}$/u.test(accountNumber.value) ||
+      accountNumber.value !== accountNo)
+  )
+    throw new Error(
+      "Cathay account number evidence must match the complete provider account field.",
+    );
   normalizeCathayResponseDate(
     requiredString(statement, "startDate"),
     startDate,
@@ -811,6 +837,7 @@ function validateCapture(
   });
   return {
     accountNo,
+    accountNumber,
     startDate,
     endDate,
     posting,
@@ -903,6 +930,17 @@ function validateSyncInput(
         );
       if (page.absenceAuthority !== absenceAuthority)
         throw new Error("Cathay page absence authority drifted.");
+      const firstAccountNumber = pages[0]!.accountNumber ?? null;
+      const pageAccountNumber = page.accountNumber ?? null;
+      if (
+        (firstAccountNumber?.value ?? null) !== (pageAccountNumber?.value ?? null) ||
+        (firstAccountNumber?.kind ?? null) !== (pageAccountNumber?.kind ?? null) ||
+        (firstAccountNumber?.evidenceVersion ?? null) !==
+          (pageAccountNumber?.evidenceVersion ?? null) ||
+        (firstAccountNumber?.sourceField ?? null) !==
+          (pageAccountNumber?.sourceField ?? null)
+      )
+        throw new Error("Cathay account number evidence drifted within one account.");
       const requestPageToken = page.requestPageToken ?? null;
       if (requestPageToken !== expectedRequestToken)
         throw new Error("Cathay page continuation token is not contiguous.");
@@ -911,6 +949,7 @@ function validateSyncInput(
         sourceConnectionId: input.sourceConnectionId,
         identityEpoch: input.identityEpoch,
         accountNo,
+        accountNumber: page.accountNumber ?? null,
         currency: page.currency,
         authorityRoute: input.authorityRoute,
         stream: input.stream,
@@ -954,6 +993,7 @@ function validateSyncInput(
     }
     scopes.push({
       accountNo,
+      accountNumber: pages[0]!.accountNumber ?? null,
       currency: "TWD",
       startDate,
       endDate,
@@ -983,7 +1023,7 @@ export type CanonicalAdministrativeState = "active" | "deleted" | "purged";
 export type CanonicalTransaction = {
   id: string;
   accountId: string;
-  accountNo: string;
+  accountNo: string | null;
   sourceSequence: string;
   amount: CanonicalAmount;
   currency: "TWD";
@@ -1020,7 +1060,7 @@ export type CathayCanonicalCurrentQueryResult = {
   kind: "current";
   accounts: Array<{
     id: string;
-    accountNo: string;
+    accountNo: string | null;
     currency: string;
     accountType: "depository" | "credit" | "loan" | "investment" | "other";
   }>;
@@ -1066,7 +1106,7 @@ export type CathayCanonicalLineageEntry = {
     scopeProof: {
       id: string;
       accountId: string;
-      accountNo: string;
+      accountNo: string | null;
       stream: string;
       scopeStart: string;
       scopeEnd: string;
@@ -1307,7 +1347,7 @@ function commitCathayDomesticDepositSyncOnce(
     for (const scope of input.scopes) {
       const existing = db
         .prepare(
-          "SELECT account_id, currency, account_type FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND account_no = ?",
+          "SELECT account_id, currency, account_type, account_no FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND source_account_key = ?",
         )
         .get(
           sourceConnectionId,
@@ -1319,7 +1359,11 @@ function commitCathayDomesticDepositSyncOnce(
         ? blob(dbRow<{ account_id: unknown }>(existing).account_id)
         : uuidV7();
       if (existing) {
-        const row = dbRow<{ currency: string; account_type: string }>(existing);
+        const row = dbRow<{
+          currency: string;
+          account_type: string;
+          account_no?: unknown;
+        }>(existing);
         if (
           row.currency !== scope.currency ||
           row.account_type !== "depository"
@@ -1327,15 +1371,28 @@ function commitCathayDomesticDepositSyncOnce(
           throw new Error(
             "Cathay account identity has conflicting required classification.",
           );
+        if (
+          scope.accountNumber &&
+          row.account_no != null &&
+          String(row.account_no) !== scope.accountNumber.value
+        )
+          throw new Error(
+            "Cathay provider account number changed without a versioned account revision.",
+          );
+        if (scope.accountNumber && row.account_no == null)
+          db.prepare(
+            "UPDATE financial_accounts SET account_no = ? WHERE account_id = ? AND account_no IS NULL",
+          ).run(scope.accountNumber.value, accountId);
       } else
         db.prepare(
-          "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ).run(
           accountId,
           sourceConnectionId,
           identityEpochId,
           input.stream,
           scope.accountNo,
+          scope.accountNumber?.value ?? null,
           "depository",
           scope.currency,
           commitId,
@@ -1356,6 +1413,8 @@ function commitCathayDomesticDepositSyncOnce(
       identityEpochId,
       authorityRoute: input.authorityRoute,
       stream: input.stream,
+      sourceAccountKey:
+        input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
       accountNo: input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
       observedAt: input.observedAt,
       scopeStart: captureStart,
@@ -1365,6 +1424,27 @@ function commitCathayDomesticDepositSyncOnce(
       completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
       commitId,
     });
+    for (const scope of input.scopes) {
+      if (!scope.accountNumber) continue;
+      db.prepare(
+        `INSERT INTO financial_account_identifier_observations(
+          observation_id, account_id, capture_id, source_record_id, commit_id,
+          identifier_kind, identifier_value, evidence_version, source_field, observed_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, capture_id, identifier_kind, identifier_value)
+        DO NOTHING`,
+      ).run(
+        uuidV7(),
+        accountIds.get(scope.accountNo)!,
+        captureId,
+        commitId,
+        scope.accountNumber.kind,
+        scope.accountNumber.value,
+        scope.accountNumber.evidenceVersion,
+        scope.accountNumber.sourceField,
+        input.observedAt,
+      );
+    }
     const allTransactions: CathayCommitTransactionResult[] = [];
     const scopeResults: CathayCanonicalCommitScopeResult[] = [];
     for (const scope of input.scopes) {
@@ -1376,6 +1456,7 @@ function commitCathayDomesticDepositSyncOnce(
         sourceConnectionId,
         identityEpochId,
         accountId,
+        sourceAccountKey: scope.accountNo,
         accountNo: scope.accountNo,
         stream: input.stream,
         scopeStart: scope.startDate,
@@ -1710,6 +1791,7 @@ export function commitCathayDomesticDeposit(
     pages: [
       {
         accountNo: validated.accountNo,
+        accountNumber: validated.accountNumber,
         currency: input.currency as "TWD",
         scope: { startDate: validated.startDate, endDate: validated.endDate },
         pageOrdinal: 0,
@@ -2560,7 +2642,7 @@ function transactionFromRow(
   return {
     id: idToString(row.transaction_id),
     accountId: idToString(row.account_id),
-    accountNo: String(row.account_no),
+    accountNo: row.account_no == null ? null : String(row.account_no),
     sourceSequence: String(row.source_sequence),
     amount: amountFromRow(row),
     currency: "TWD",
@@ -2759,6 +2841,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           db
             .prepare(
               `SELECT account.account_id AS id, account.account_no AS accountNo,
+                account.source_account_key AS sourceAccountKey,
                 account.currency, account.account_type AS accountType
                FROM financial_accounts account
                JOIN source_connections connection
@@ -2773,7 +2856,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                      AND capture.stream = account.stream
                  )
                  ${accountEligibility}
-               ORDER BY account.account_no`,
+               ORDER BY account.source_account_key`,
             )
             .all(this.profile.integrationNamespace, currentRoute) as Record<
             string,
@@ -2781,7 +2864,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           >[]
         ).map((row) => ({
           id: idToString(row.id),
-          accountNo: String(row.accountNo),
+          accountNo: row.accountNo == null ? null : String(row.accountNo),
           currency: String(row.currency),
           accountType:
             row.accountType as CathayCanonicalCurrentQueryResult["accounts"][number]["accountType"],
@@ -2835,7 +2918,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
                 ? `AND ${yuantaV2CompleteCaptureForRevisionSql("r")}`
                 : ""
           }
-        ORDER BY a.account_no, t.source_sequence`,
+        ORDER BY a.source_account_key, t.source_sequence`,
           )
           .all(projectionCommitSequence, currentRoute) as Record<string, unknown>[];
         const currentRows = rows.filter((row) =>
@@ -2895,7 +2978,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
           AND r.effective_on <= ? AND c.commit_sequence <= ? AND NOT EXISTS (
           SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
           WHERE newer.transaction_id = r.transaction_id AND newer.effective_on <= ? AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > c.commit_sequence
-        ) ORDER BY a.account_no, t.source_sequence`,
+        ) ORDER BY a.source_account_key, t.source_sequence`,
           )
           .all(
             knowledgeAt,
@@ -2934,7 +3017,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
         r.direction, r.posting_status, r.posting_origin, r.posting_basis, r.posting_rule_version, r.description, r.economic_status, r.administrative_state, r.semantic_rule_version, r.effective_on, r.effective_time_basis,
         r.effective_time_rule_version, r.transaction_date_time_local, r.time_zone, r.time_precision, r.time_origin,
         r.utc_instant_utc_us, r.revision_id, c.commit_sequence, r.source_record_id, r.capture_id, sr.sequence_lexeme, sr.description, sr.payload_json,
-        source_scope.scope_id, source_scope.account_id AS scope_account_id, source_scope.account_no AS scope_account_no, source_scope.stream AS scope_stream,
+                source_scope.scope_id, source_scope.account_id AS scope_account_id, source_scope.source_account_key AS scope_account_no, source_scope.stream AS scope_stream,
         source_scope.scope_start AS scope_scope_start, source_scope.scope_end AS scope_scope_end, source_scope.contract_fingerprint AS scope_contract_fingerprint, source_scope.preflight_fingerprint AS scope_preflight_fingerprint,
         sc.observed_at, sc.scope_start, sc.scope_end, sc.authority_route, sa.assertion_id FROM financial_transactions t JOIN financial_accounts a ON a.account_id = t.account_id
         JOIN transaction_revisions r ON r.transaction_id = t.transaction_id JOIN canonical_commits c ON c.commit_id = r.commit_id
@@ -3003,7 +3086,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
               scopeProof: {
                 id: idToString(row.scope_id),
                 accountId: idToString(row.scope_account_id),
-                accountNo: String(row.scope_account_no),
+                accountNo: row.scope_account_no == null ? null : String(row.scope_account_no),
                 stream: String(row.scope_stream),
                 scopeStart: String(row.scope_scope_start),
                 scopeEnd: String(row.scope_scope_end),

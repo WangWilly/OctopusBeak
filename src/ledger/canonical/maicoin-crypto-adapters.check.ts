@@ -15,14 +15,39 @@ import {
   deriveMaicoinSourceConnectionKey,
   MAICOIN_CURRENT_STATE_EFFECTIVE_TIME_SOURCE_FIELD,
   MAICOIN_PROVIDER_DATE_SOURCE_VALUE_TYPE,
+  parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
+  resolveMaicoinTwdQuote,
   type MaicoinInvestmentCaptureBuildInput,
+  type MaicoinPublicMarket,
+  type MaicoinQuoteComponent,
   type MaicoinProviderDate,
 } from "./maicoin-crypto-adapters.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
 const providerDateHeader = "Wed, 02 Sep 2026 04:05:06 GMT";
 const providerDate = parseMaicoinProviderDate(providerDateHeader);
+
+function market(
+  id: string,
+  baseUnit: string,
+  quoteUnit: string,
+  status = "active",
+): MaicoinPublicMarket {
+  return { id, baseUnit, quoteUnit, status };
+}
+
+function ticker(
+  descriptor: MaicoinPublicMarket,
+  last: string,
+  at = 1_788_919_695,
+): MaicoinQuoteComponent {
+  return parseMaicoinTickerQuote(
+    { market: descriptor.id, last, at },
+    descriptor,
+    providerDate,
+  );
+}
 
 function input(
   overrides: Partial<MaicoinInvestmentCaptureBuildInput> = {},
@@ -182,6 +207,120 @@ test("MAX exact decimal fields preserve scale and exclude borrowing from holding
           ],
         }),
       ),
+    /exact decimal string/i,
+  );
+});
+
+test("MAX direct and via-USDT quotes produce exact TWD valuation with quote lineage", () => {
+  const btcTwd = market("btctwd", "btc", "twd");
+  const direct = resolveMaicoinTwdQuote(
+    "BTC",
+    [btcTwd],
+    new Map([[btcTwd.id, ticker(btcTwd, "2.500")]]),
+  );
+  assert.ok(direct);
+  assert.equal(direct.route, "direct-twd");
+  assert.deepEqual(direct.price, { coefficient: "2500", scale: 3 });
+  assert.equal(direct.components[0]?.tickerAt, "2026-09-09T02:08:15.000Z");
+  assert.equal(direct.components[0]?.httpDate.sourceValue, providerDateHeader);
+
+  const directCapture = buildMaicoinInvestmentCapture(
+    input({
+      valuationQuotes: new Map([["BTC", direct]]),
+      accountBatches: [{
+        walletType: "spot",
+        providerDate,
+        accounts: [{ currency: "BTC", balance: "1.2300", locked: "0" }],
+      }],
+    }),
+  );
+  assert.deepEqual(directCapture.holdings[0]?.valuation, {
+    coefficient: "3075",
+    scale: 3,
+    currency: "TWD",
+  });
+  const quoteEvidence = (directCapture.holdings[0]?.effectiveTimeEvidence as unknown as {
+    components?: Array<Record<string, unknown>>;
+  }).components;
+  assert.equal(
+    quoteEvidence?.[0]?.market,
+    "btctwd",
+  );
+
+  const btcUsdt = market("btcusdt", "btc", "usdt");
+  const usdtTwd = market("usdttwd", "usdt", "twd");
+  const cross = resolveMaicoinTwdQuote(
+    "BTC",
+    [btcUsdt, usdtTwd],
+    new Map([
+      [btcUsdt.id, ticker(btcUsdt, "1.20")],
+      [usdtTwd.id, ticker(usdtTwd, "31.50")],
+    ]),
+  );
+  assert.ok(cross);
+  assert.equal(cross.route, "via-usdt");
+  assert.deepEqual(cross.price, { coefficient: "378", scale: 1 });
+  assert.deepEqual(cross.components.map((component) => component.market), [
+    "btcusdt",
+    "usdttwd",
+  ]);
+});
+
+test("MAX valuation leaves missing nonzero quotes unvalued but values source-zero holdings exactly", () => {
+  const missing = buildMaicoinInvestmentCapture(
+    input({
+      valuationQuotes: new Map(),
+      accountBatches: [{
+        walletType: "spot",
+        providerDate,
+        accounts: [{ currency: "BTC", balance: "1", locked: "0" }],
+      }],
+    }),
+  );
+  assert.equal(missing.holdings[0]?.valuation, undefined);
+
+  const zero = buildMaicoinInvestmentCapture(
+    input({
+      valuationQuotes: new Map(),
+      accountBatches: [{
+        walletType: "m",
+        providerDate,
+        accounts: [{ currency: "BTC", balance: "0", locked: "0" }],
+      }],
+    }),
+  );
+  assert.deepEqual(zero.holdings[0]?.valuation, {
+    coefficient: "0",
+    scale: 0,
+    currency: "TWD",
+  });
+});
+
+test("MAX quote qualification rejects ambiguous markets and invalid ticker time", () => {
+  const btcTwd = market("btctwd", "btc", "twd");
+  assert.throws(
+    () =>
+      resolveMaicoinTwdQuote(
+        "BTC",
+        [btcTwd, { ...btcTwd }],
+        new Map([[btcTwd.id, ticker(btcTwd, "2.5")]]),
+      ),
+    /ambiguous/i,
+  );
+  assert.throws(
+    () => parseMaicoinTickerQuote(
+      { market: btcTwd.id, last: "2.5", at: "not-a-timestamp" },
+      btcTwd,
+      providerDate,
+    ),
+    /timestamp/i,
+  );
+  assert.throws(
+    () => parseMaicoinTickerQuote(
+      { market: btcTwd.id, last: 2.5, at: 1_788_919_695 },
+      btcTwd,
+      providerDate,
+    ),
     /exact decimal string/i,
   );
 });

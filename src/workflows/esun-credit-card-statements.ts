@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -18,6 +18,14 @@ import {
   type EsunCreditCardSourceRow,
   type EsunCreditCardValidatedCapture,
 } from "../ledger/canonical/esun-credit-card.ts";
+import {
+  admitCreditCardCurrentBalanceCapture,
+  canonicalCreditCardCurrentBalanceIdentity,
+  commitCreditCardCurrentBalanceCapture,
+  creditCardCurrentBalanceSourceRecord,
+  type CreditCardExactAmount,
+  type CreditCardCurrentBalanceObservationInput,
+} from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import {
   canonicalSqlitePath,
@@ -73,6 +81,17 @@ export type EsunIssuerStatementSummary = {
   currency?: string;
 };
 
+export type EsunCurrentUsedCreditSnapshot = Readonly<{
+  usedCredit: string;
+  available: string;
+  sourceField: "已用額度";
+  endpoint?: string;
+  /** Issuer UI 查詢時間, in Asia/Taipei, retained verbatim as time evidence. */
+  queryTime: string;
+  httpDate?: string;
+  cacheControl?: string;
+}>;
+
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
 const inputSchema = z.object({
@@ -108,6 +127,99 @@ const outputSchema = z.object({
 
 type WorkflowInput = z.infer<typeof inputSchema>;
 type TableFile = z.infer<typeof tableFileSchema>;
+
+function esunCurrentAmount(value: string | undefined): string {
+  const normalized = cleanText(value).replace(/[,，\s]/gu, "");
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(normalized))
+    throw new Error("E.SUN current credit amount is not an exact decimal.");
+  return normalized;
+}
+
+function htmlAttribute(tag: string, name: string): string {
+  const match = tag.match(
+    new RegExp(`(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "iu"),
+  );
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
+}
+
+function singleHtmlTableById(html: string, id: string): string | undefined {
+  const tables = [...html.matchAll(/<table\b[^>]*>/giu)].filter(
+    (match) => htmlAttribute(match[0], "id") === id,
+  );
+  if (tables.length > 1)
+    throw new Error(`E.SUN current credit grid id ${id} is ambiguous.`);
+  const opener = tables[0];
+  if (!opener || opener.index === undefined) return undefined;
+
+  const tokens = html.matchAll(/<\/?table\b[^>]*>/giu);
+  let depth = 0;
+  for (const token of tokens) {
+    if (token.index === undefined || token.index < opener.index) continue;
+    if (token[0].startsWith("</")) depth -= 1;
+    else depth += 1;
+    if (depth === 0)
+      return html.slice(opener.index, token.index + token[0].length);
+  }
+  throw new Error(`E.SUN current credit grid id ${id} is unclosed.`);
+}
+
+function esunQueryTimeFromHtml(html: string): string | undefined {
+  const visibleText = html
+    .replace(/<script\b[\s\S]*?<\/script>/giu, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/giu, " ")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/\u00a0/gu, " ");
+  const matches = [
+    ...visibleText.matchAll(
+      /查詢時間\s*[:：]?\s*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})/gu,
+    ),
+  ].map((match) => match[1]);
+  const unique = [...new Set(matches)];
+  if (unique.length > 1)
+    throw new Error("E.SUN current credit query time is ambiguous.");
+  return unique[0];
+}
+
+function esunCurrentGridRows(tableHtml: string): string[][] {
+  return [...tableHtml.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu)].map((match) =>
+    [...match[0].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/giu)].map((cell) =>
+      cleanText(cell[1]?.replace(/<[^>]+>/gu, " ")),
+    ),
+  );
+}
+
+/** Select only the exact 歸戶 row from the current-credit grid. */
+export function parseEsunCurrentCreditCardUsedCreditHtml(
+  html: string,
+): EsunCurrentUsedCreditSnapshot | undefined {
+  const grid = singleHtmlTableById(html, "fcm01006:grid_DataGridBody");
+  if (!grid) return undefined;
+  const rows = esunCurrentGridRows(grid);
+  const headerIndices = rows.flatMap((row, index) =>
+    row.length >= 3 &&
+    row[0] === "信用狀態" &&
+    row[1] === "已用額度" &&
+    row[2] === "可用餘額"
+      ? [index]
+      : [],
+  );
+  if (headerIndices.length !== 1)
+    throw new Error("E.SUN current credit grid header is missing or ambiguous.");
+  const headerIndex = headerIndices[0];
+  const aggregateRows = rows.slice(headerIndex + 1).filter((row) => row[0] === "歸戶");
+  if (aggregateRows.length === 0) return undefined;
+  if (aggregateRows.length > 1)
+    throw new Error("E.SUN current credit aggregate row is ambiguous.");
+  const aggregate = aggregateRows[0];
+  const queryTime = esunQueryTimeFromHtml(html);
+  if (!queryTime) return undefined;
+  return {
+    usedCredit: esunCurrentAmount(aggregate[1]),
+    available: esunCurrentAmount(aggregate[2]),
+    sourceField: "已用額度",
+    queryTime,
+  };
+}
 
 const statementHeaders = [
   "statement_period",
@@ -507,6 +619,39 @@ async function mainFrame(page: Page): Promise<Frame> {
   return await waitForFrame(page, "iframe1");
 }
 
+async function readEsunCurrentUsedCredit(
+  page: Page,
+): Promise<EsunCurrentUsedCreditSnapshot | undefined> {
+  const frame = await mainFrame(page);
+  const navigation = frame.locator(".main_nav_ul_li03").first();
+  await navigation.hover();
+  const link = frame.locator('[taskid="FCM01006"] a').first();
+  await link.waitFor({ state: "visible", timeout: 30_000 });
+  const responsePromise = page
+    .waitForResponse(
+      (response) =>
+        response.url().includes("/l1/l2/dispatcher") &&
+        response.request().method() === "GET" &&
+        response.url().includes("taskId=FCM01006"),
+      { timeout: 60_000 },
+    )
+    .catch(() => null);
+  await link.click({ force: true });
+  await frame.locator("#fcm01006\\:grid_DataGridBody").waitFor({ timeout: 60_000 });
+  const html = await frame.locator("body").innerHTML();
+  const parsed = parseEsunCurrentCreditCardUsedCreditHtml(html);
+  if (!parsed) return undefined;
+  const response = await responsePromise;
+  const headers = response?.headers();
+  if (!response || !headers?.["cache-control"]) return undefined;
+  return {
+    ...parsed,
+    endpoint: response.url(),
+    ...(headers.date ? { httpDate: headers.date } : {}),
+    cacheControl: headers["cache-control"],
+  };
+}
+
 async function isSignedIn(page: Page): Promise<boolean> {
   const frame = page.frame({ name: "iframe1" });
   if (!frame) return false;
@@ -696,6 +841,148 @@ function issuerAmount(value: string | undefined): string | undefined {
     .replace(/[,，\s]/gu, "")
     .replace(/^(?:NT\$|TWD|新臺幣|新台幣)/iu, "");
   return /^[+-]?\d+(?:\.\d+)?$/u.test(normalized) ? normalized : undefined;
+}
+
+function esunExactAmount(value: string): CreditCardExactAmount {
+  const normalized = value.replaceAll(",", "");
+  const [integer, fraction = ""] = normalized.split(".");
+  const sign = integer.startsWith("-") ? "-" : "";
+  const unsigned = integer.replace(/^-?/u, "").replace(/^0+(?=\d)/u, "") || "0";
+  return {
+    coefficient: `${sign}${unsigned}${fraction}` === "-0" ? "0" : `${sign}${unsigned}${fraction}`,
+    scale: fraction.length,
+  };
+}
+
+function esunCreditCurrentSnapshotDate(queryTime: string): string {
+  const match = /^(\d{4})\/(\d{2})\/(\d{2})\s+\d{2}:\d{2}:\d{2}$/u.exec(queryTime);
+  if (!match) throw new Error("E.SUN credit current snapshot query time is invalid.");
+  const civil = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  if (
+    !Number.isFinite(civil.getTime()) ||
+    civil.getUTCFullYear() !== Number(match[1]) ||
+    civil.getUTCMonth() !== Number(match[2]) - 1 ||
+    civil.getUTCDate() !== Number(match[3])
+  )
+    throw new Error("E.SUN credit current snapshot query time is invalid.");
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function esunCreditCurrentSnapshotInstant(queryTime: string): string {
+  const match = /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u.exec(queryTime);
+  if (!match) throw new Error("E.SUN credit current snapshot query time is invalid.");
+  const civil = new Date(
+    Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      Number(match[6]),
+    ),
+  );
+  if (
+    !Number.isFinite(civil.getTime()) ||
+    civil.getUTCFullYear() !== Number(match[1]) ||
+    civil.getUTCMonth() !== Number(match[2]) - 1 ||
+    civil.getUTCDate() !== Number(match[3]) ||
+    civil.getUTCHours() !== Number(match[4]) ||
+    civil.getUTCMinutes() !== Number(match[5]) ||
+    civil.getUTCSeconds() !== Number(match[6])
+  )
+    throw new Error("E.SUN credit current snapshot query time is invalid.");
+  return new Date(civil.getTime() - 8 * 60 * 60 * 1000).toISOString();
+}
+
+function esunCreditCurrentSnapshotCapture(
+  capture: EsunCreditCardValidatedCapture,
+  snapshot: EsunCurrentUsedCreditSnapshot,
+): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
+  if (!snapshot.endpoint || !snapshot.queryTime || !snapshot.cacheControl)
+    throw new Error("E.SUN current credit snapshot is missing response evidence.");
+  const effectiveAt = esunCreditCurrentSnapshotInstant(snapshot.queryTime);
+  const used = esunExactAmount(snapshot.usedCredit);
+  const sourceRecordKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["esun-credit-current-used-credit-v1", capture.identity.accountNaturalKey, snapshot.queryTime]))
+    .digest("base64url")}`;
+  const providerKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["esun-credit-current-used-credit-provider-v1", snapshot.endpoint]))
+    .digest("base64url")}`;
+  const time = {
+    effectiveAt,
+    effectiveTimeBasis: "provider-query-time" as const,
+    effectiveTimeRuleVersion: "esun/credit-card/current-used-credit-v1",
+    sourceField: "查詢時間" as const,
+    sourceValue: snapshot.queryTime,
+    contractVersion: "esun/credit-card/current-used-credit-v1",
+  };
+  const estimate = {
+    kind: "estimate" as const,
+    basis: "provider-used-credit" as const,
+    formula: "provider-reported-used-credit",
+  };
+  const observation: CreditCardCurrentBalanceObservationInput = {
+    observationKey: "issuer-aggregate",
+    balanceKind: "credit_used",
+    balance: used,
+    currency: "TWD",
+    time,
+    sourceRecordKey,
+    sourceField: snapshot.sourceField,
+    estimate,
+  };
+  return admitCreditCardCurrentBalanceCapture({
+    captureId: `${capture.captureId}:current-used-credit`,
+    authorityRoute: "esun/credit-card/current-used-credit-v1",
+    contractVersion: "esun/credit-card/current-used-credit-v1",
+    subjectDigest: capture.identity.accountNaturalKey,
+    identity: canonicalCreditCardCurrentBalanceIdentity({
+      integrationNamespace: "esun",
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      sourceAccountKey: capture.identity.accountNaturalKey,
+    }),
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: esunCreditCurrentSnapshotDate(snapshot.queryTime),
+      endDate: esunCreditCurrentSnapshotDate(snapshot.queryTime),
+    },
+    providerResponse: {
+      endpoint: snapshot.endpoint,
+      status: 200,
+      cacheControl: snapshot.cacheControl,
+    },
+    pages: [{
+      pageOrdinal: 0,
+      responseCode: "200",
+      rowCount: 1,
+      terminal: true,
+      metadata: {
+        sourceField: snapshot.sourceField,
+        aggregate: "歸戶",
+        queryTime: snapshot.queryTime,
+      },
+    }],
+    records: [creditCardCurrentBalanceSourceRecord({
+      sourceRecordKey,
+      providerKey,
+      sourceField: snapshot.sourceField,
+      balanceKind: "credit_used",
+      currency: "TWD",
+      value: used,
+      time,
+      estimate,
+      compact: {
+        provider: "esun",
+        aggregate: "歸戶",
+        usedCredit: snapshot.usedCredit,
+        available: snapshot.available,
+        queryTime: snapshot.queryTime,
+        ...(snapshot.httpDate ? { httpDate: snapshot.httpDate } : {}),
+      },
+    })],
+    observations: [observation],
+  });
 }
 
 export function esunIssuerSummaryFromLabelRows(
@@ -949,6 +1236,14 @@ export default workflow("esunCreditCardStatements", {
     });
     console.log("automation-progress: 40");
 
+    let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
+    try {
+      currentUsedCredit = await readEsunCurrentUsedCredit(page);
+    } catch {
+      console.log("esun-credit-current-used-credit-unavailable", {
+        reason: "optional-current-credit-estimate",
+      });
+    }
     const { frame, startDate, endDate } = await queryStatements(page, input);
     console.log("automation-progress: 60");
     const rows = await readStatementRows(frame);
@@ -1051,6 +1346,13 @@ export default workflow("esunCreditCardStatements", {
       );
       try {
         await commitEsunCreditCardCapture(store, canonicalCapture);
+        if (currentUsedCredit) {
+          const balanceCapture = esunCreditCurrentSnapshotCapture(
+            canonicalCapture,
+            currentUsedCredit,
+          );
+          await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
+        }
         canonicalAdmission = "admitted";
         canonicalCaptureCount = 1;
       } finally {

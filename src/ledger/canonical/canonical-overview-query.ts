@@ -2,11 +2,18 @@ import { existsSync } from "node:fs";
 import { canonicalSqlitePath, openCanonicalDatabase } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
+  type CanonicalProjectionCreditCardBalance,
+  type CanonicalProjectionDepositoryBalance,
   type CanonicalProjectionFinancialAccount,
   type CanonicalProjectionInvestmentHolding,
   type CanonicalProjectionSnapshot,
 } from "./canonical-projection-runtime.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
+import {
+  buildAccountDisplayMap,
+  type AccountDisplay,
+  type AccountDisplayInput,
+} from "../../lib/shared-ledger/account-display.ts";
 
 export type CanonicalOverviewAvailability =
   | "empty"
@@ -22,12 +29,23 @@ export type CanonicalOverviewExactAmount = Readonly<{
 export type CanonicalOverviewAmountTrace = Readonly<{
   kind:
     | "loan-balance-observation"
+    | "depository-balance-observation"
+    | "credit-card-used-credit-estimate"
     | "investment-holding-observation"
     | "investment-margin-observation";
   accountId: string;
   observationId?: string;
   revisionId?: string;
   securityId?: string;
+  /** Provider basis retained when a depository value is available-only. */
+  balanceKind?: "ledger" | "available";
+  /** Exact provider field admitted for the balance observation. */
+  sourceField?: string;
+  estimateKind?: "estimate";
+  estimateBasis?: "provider-used-credit" | "credit-limit-minus-available";
+  estimateFormula?: string;
+  componentLimit?: CanonicalOverviewExactAmount;
+  componentAvailable?: CanonicalOverviewExactAmount;
   effectiveAt: string;
   observedAt: string;
   knowledgePoint: number;
@@ -85,13 +103,30 @@ export type CanonicalOverviewCreditCardStatement = Readonly<{
 
 export type CanonicalOverviewCreditCard = Readonly<{
   statements: readonly CanonicalOverviewCreditCardStatement[];
+  currentUsedCredit?: CanonicalOverviewCreditCardBalance;
+}>;
+
+export type CanonicalOverviewCreditCardBalance = Readonly<{
+  balanceKind: "credit_used";
+  estimateKind: "estimate";
+  estimateBasis: "provider-used-credit" | "credit-limit-minus-available";
+  estimateFormula: string;
+  amount: CanonicalOverviewExactAmount;
+  currency: string;
+  componentLimit: CanonicalOverviewExactAmount | null;
+  componentAvailable: CanonicalOverviewExactAmount | null;
+  effectiveAt: string;
+  observedAt: string;
+  projectionCommitId: string | null;
+  revisionCommitId: string | null;
 }>;
 
 export type CanonicalOverviewAccount = Readonly<{
   id: string;
   sourceConnectionKey: string;
   integrationNamespace: string;
-  accountNo: string;
+  sourceAccountKey: string;
+  accountNo: string | null;
   stream: string;
   accountType: CanonicalProjectionFinancialAccount["accountType"];
   currency: string | null;
@@ -121,7 +156,8 @@ export type CanonicalOverviewAccount = Readonly<{
 export type CanonicalOverviewSourceGap = Readonly<{
   accountId: string;
   sourceConnectionKey: string;
-  accountNo: string;
+  sourceAccountKey?: string;
+  accountNo: string | null;
   integrationNamespace?: string;
   stream?: string;
   label?: string;
@@ -180,6 +216,39 @@ const EMPTY_PROJECTION: CanonicalOverviewProjection = Object.freeze({
 });
 
 /**
+ * Product aggregation policy chosen for LINE Bank: an available amount may
+ * fill a missing current ledger amount for the same currency, while any
+ * observed ledger amount remains authoritative. Other providers' available
+ * observations stay visible in lineage but do not enter Overview totals.
+ */
+export const LINEBANK_AVAILABLE_ASSET_FALLBACK_POLICY =
+  "linebank-available-only-when-ledger-missing-v1" as const;
+
+export function selectCanonicalOverviewDepositoryBalances(
+  account: Pick<CanonicalProjectionFinancialAccount, "accountType" | "integrationNamespace">,
+  balances: readonly CanonicalProjectionDepositoryBalance[],
+): readonly CanonicalProjectionDepositoryBalance[] {
+  if (account.accountType !== "depository") return [];
+  const byCurrency = new Map<string, CanonicalProjectionDepositoryBalance[]>();
+  for (const balance of balances) {
+    const rows = byCurrency.get(balance.currency) ?? [];
+    rows.push(balance);
+    byCurrency.set(balance.currency, rows);
+  }
+  const selected: CanonicalProjectionDepositoryBalance[] = [];
+  for (const rows of byCurrency.values()) {
+    const ledger = rows.filter((balance) => balance.balanceKind === "ledger");
+    if (ledger.length > 0) {
+      selected.push(...ledger);
+      continue;
+    }
+    if (account.integrationNamespace === "linebank")
+      selected.push(...rows.filter((balance) => balance.balanceKind === "available"));
+  }
+  return selected;
+}
+
+/**
  * Read the Overview product's one coherent Current Projection snapshot.
  *
  * The query intentionally has no legacy fallback. A ledger with no canonical
@@ -211,6 +280,8 @@ export function createCanonicalOverviewQuery(
               "financial-accounts",
               "transactions",
               "overview-loan-balances",
+              "depository-balances",
+              "overview-credit-card-balances",
               "investment-accounts",
               "investment-holdings",
               "investment-margin-balances",
@@ -218,7 +289,10 @@ export function createCanonicalOverviewQuery(
             ],
             scope: ALL_TIME_SCOPE,
           });
-          return mapProjection(snapshot, expectedSources);
+          return mapProjection(
+            snapshot,
+            expectedSources,
+          );
         });
         return result(projection);
       } catch {
@@ -303,6 +377,18 @@ function mapProjection(
     rows.push(balance);
     balancesByAccount.set(balance.accountId, rows);
   }
+  const depositoryBalancesByAccount = new Map<string, CanonicalProjectionDepositoryBalance[]>();
+  for (const balance of snapshot.families["depository-balances"]) {
+    const rows = depositoryBalancesByAccount.get(balance.accountId) ?? [];
+    rows.push(balance);
+    depositoryBalancesByAccount.set(balance.accountId, rows);
+  }
+  const creditCardBalancesByAccount = new Map<string, CanonicalProjectionCreditCardBalance[]>();
+  for (const balance of snapshot.families["overview-credit-card-balances"]) {
+    const rows = creditCardBalancesByAccount.get(balance.accountId) ?? [];
+    rows.push(balance);
+    creditCardBalancesByAccount.set(balance.accountId, rows);
+  }
   const holdingsByAccount = new Map<string, CanonicalProjectionInvestmentHolding[]>();
   for (const holding of snapshot.families["investment-holdings"])
     if (holding.isCurrent) {
@@ -322,8 +408,27 @@ function mapProjection(
 
   const positions: CanonicalOverviewPosition[] = [];
   const sourceGaps: CanonicalOverviewSourceGap[] = [];
+  const accountDisplays = buildAccountDisplayMap(
+    accountRows.map((account) => ({
+      ...account,
+      cardMasks: account.cardMasks,
+    })) satisfies readonly AccountDisplayInput[],
+  );
   const accounts = accountRows.map((account) => {
-    const accountBalances = balancesByAccount.get(account.accountId) ?? [];
+    const display = accountDisplays.get(account.accountId);
+    if (!display) throw new Error(`Missing account presentation for ${account.accountId}`);
+    const accountDepositoryBalances = selectCanonicalOverviewDepositoryBalances(
+      account,
+      depositoryBalancesByAccount.get(account.accountId) ?? [],
+    );
+    const accountCreditCardBalances = account.accountType === "credit"
+      ? creditCardBalancesByAccount.get(account.accountId) ?? []
+      : [];
+    const accountBalances = [
+      ...(balancesByAccount.get(account.accountId) ?? []),
+      ...accountDepositoryBalances,
+      ...accountCreditCardBalances,
+    ];
     const accountHoldings = holdingsByAccount.get(account.accountId) ?? [];
     const amounts = aggregateAccountAmounts(
       account,
@@ -351,14 +456,15 @@ function mapProjection(
       sourceGaps.push({
         accountId: account.accountId,
         sourceConnectionKey: account.sourceConnectionKey,
+        sourceAccountKey: account.sourceAccountKey,
         accountNo: account.accountNo,
         integrationNamespace: account.integrationNamespace,
         stream: account.stream,
-        label: `${account.integrationNamespace} ${account.accountNo}`,
+        label: display.label,
         reason: "current-value-not-observed",
       });
     return {
-      ...accountDisplay(account),
+      ...accountDisplay(account, display),
       amounts: hasUnvaluedHolding ? [] : amounts,
       marginAmounts,
       positions: accountPositions,
@@ -366,11 +472,14 @@ function mapProjection(
         ? {
           creditCard: {
             statements: creditCardStatementsByAccount.get(account.accountId) ?? [],
+            ...(accountCreditCardBalances[0]
+              ? { currentUsedCredit: mapCreditCardBalance(accountCreditCardBalances[0]) }
+              : {}),
           },
         }
         : {}),
       transactionCount: transactionsByAccount.get(account.accountId) ?? 0,
-      observedAt: account.latestCaptureObservedAt,
+      observedAt: accountCreditCardBalances[0]?.observedAt ?? account.latestCaptureObservedAt,
       availability,
     } satisfies CanonicalOverviewAccount;
   });
@@ -448,6 +557,29 @@ function mapCreditCardStatements(
   return byAccount as Map<string, CanonicalOverviewCreditCardStatement[]>;
 }
 
+function mapCreditCardBalance(
+  row: CanonicalProjectionCreditCardBalance,
+): CanonicalOverviewCreditCardBalance {
+  return {
+    balanceKind: row.balanceKind,
+    estimateKind: row.estimateKind,
+    estimateBasis: row.estimateBasis,
+    estimateFormula: row.estimateFormula,
+    amount: { coefficient: row.coefficient, scale: row.scale },
+    currency: row.currency,
+    componentLimit: row.componentLimitCoefficient === null || row.componentLimitScale === null
+      ? null
+      : { coefficient: row.componentLimitCoefficient, scale: row.componentLimitScale },
+    componentAvailable: row.componentAvailableCoefficient === null || row.componentAvailableScale === null
+      ? null
+      : { coefficient: row.componentAvailableCoefficient, scale: row.componentAvailableScale },
+    effectiveAt: row.effectiveAt,
+    observedAt: row.observedAt,
+    projectionCommitId: row.projectionCommitId,
+    revisionCommitId: row.revisionCommitId,
+  };
+}
+
 function withExpectedSourceGaps(
   projection: CanonicalOverviewProjection,
   expectedSources: readonly CanonicalOverviewExpectedSource[],
@@ -471,7 +603,7 @@ function expectedSourceGap(
   return {
     accountId: `expected:${source.sourceId}`,
     sourceConnectionKey: `expected:${source.sourceId}`,
-    accountNo: "",
+    accountNo: null,
     integrationNamespace: source.integrationNamespace,
     stream: source.stream,
     label: source.label,
@@ -491,21 +623,26 @@ function missingExpectedSourceGaps(
     .map((source) => expectedSourceGap(source, "source-not-collected"));
 }
 
-function accountDisplay(account: CanonicalProjectionFinancialAccount) {
+function accountDisplay(
+  account: CanonicalProjectionFinancialAccount,
+  display: AccountDisplay,
+) {
   const identity = {
     id: account.accountId,
     sourceConnectionKey: account.sourceConnectionKey,
+    sourceAccountKey: account.sourceAccountKey,
     integrationNamespace: account.integrationNamespace,
     accountNo: account.accountNo,
     stream: account.stream,
     accountType: account.accountType,
     currency: account.currency,
-    label: `${account.integrationNamespace} ${account.accountNo}`,
-    institution: account.integrationNamespace,
-    product: account.stream,
+    label: display.label,
+    institution: display.institution,
+    product: display.product,
   };
   const isForeign = account.accountType === "depository" &&
-    account.currency !== null && account.currency !== "TWD";
+    (account.stream === "foreign-currency-deposit" ||
+      (account.currency !== null && account.currency !== "TWD"));
   if (account.accountType === "depository")
     return {
       ...identity,
@@ -547,21 +684,72 @@ function accountDisplay(account: CanonicalProjectionFinancialAccount) {
 
 function aggregateAccountAmounts(
   account: CanonicalProjectionFinancialAccount,
-  balances: readonly CanonicalProjectionSnapshot["families"]["overview-loan-balances"][number][],
+  balances: readonly (
+    CanonicalProjectionSnapshot["families"]["overview-loan-balances"][number]
+    | CanonicalProjectionSnapshot["families"]["depository-balances"][number]
+    | CanonicalProjectionSnapshot["families"]["overview-credit-card-balances"][number]
+  )[],
   holdings: readonly CanonicalProjectionInvestmentHolding[],
   knowledgePoint: number,
 ): CanonicalOverviewAmount[] {
   const amounts = new Map<string, { exact: CanonicalOverviewExactAmount; traces: CanonicalOverviewAmountTrace[] }>();
-  for (const balance of balances)
-    addAmount(amounts, balance.currency, { coefficient: balance.coefficient, scale: balance.scale }, {
-      kind: "loan-balance-observation",
-      accountId: account.accountId,
-      observationId: balance.observationId,
-      revisionId: balance.revisionId,
-      effectiveAt: balance.effectiveAt,
-      observedAt: balance.observedAt,
-      knowledgePoint,
-    });
+  for (const balance of balances) {
+    const isCreditEstimate = account.accountType === "credit" && "estimateKind" in balance;
+    const isDepository = account.accountType === "depository";
+    const balanceKind = isDepository &&
+        (balance.balanceKind === "ledger" || balance.balanceKind === "available")
+      ? balance.balanceKind
+      : undefined;
+    addAmount(
+      amounts,
+      balance.currency,
+      { coefficient: balance.coefficient, scale: balance.scale },
+      isCreditEstimate
+        ? {
+          kind: "credit-card-used-credit-estimate",
+          accountId: account.accountId,
+          observationId: balance.observationId,
+          revisionId: balance.revisionId,
+          estimateKind: balance.estimateKind,
+          estimateBasis: balance.estimateBasis,
+          estimateFormula: balance.estimateFormula,
+          ...(balance.componentLimitCoefficient === null || balance.componentLimitScale === null
+            ? {}
+            : {
+              componentLimit: {
+                coefficient: balance.componentLimitCoefficient,
+                scale: balance.componentLimitScale,
+              },
+            }),
+          ...(balance.componentAvailableCoefficient === null || balance.componentAvailableScale === null
+            ? {}
+            : {
+              componentAvailable: {
+                coefficient: balance.componentAvailableCoefficient,
+                scale: balance.componentAvailableScale,
+              },
+            }),
+          effectiveAt: balance.effectiveAt,
+          observedAt: balance.observedAt,
+          knowledgePoint,
+        }
+        : {
+          kind: isDepository
+            ? "depository-balance-observation"
+            : "loan-balance-observation",
+          accountId: account.accountId,
+          observationId: balance.observationId,
+          revisionId: balance.revisionId,
+          ...(balanceKind === undefined ? {} : { balanceKind }),
+          ...(balanceKind === "available" && account.integrationNamespace === "linebank"
+            ? { sourceField: "wdrwAvblAmt" }
+            : {}),
+          effectiveAt: balance.effectiveAt,
+          observedAt: balance.observedAt,
+          knowledgePoint,
+        },
+    );
+  }
   for (const holding of holdings) {
     if (holding.valuationCoefficient === null || holding.valuationScale === null || holding.valuationCurrency === null)
       continue;

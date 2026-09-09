@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,15 @@ import {
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
+
+const linebankWorkflowSource = await readFile(
+  new URL("./linebank-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(\)/u);
+assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
+assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
+assert.match(linebankWorkflowSource, /commitCurrentDepositBalanceCapture/u);
 
 assert.deepEqual(
   linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),

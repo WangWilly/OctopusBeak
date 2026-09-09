@@ -8,6 +8,7 @@ import {
 import type {
   AccountRowDto,
   AssetPositionDto,
+  CreditCardBalanceDto,
   CreditCardAccountDto,
   CreditCardStatementDto,
   CurrentProjectionStateDto,
@@ -106,7 +107,7 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
       ? { marginAmountLines: account.marginAmounts.map(mapAmount) }
       : {}),
     ...(account.creditCard
-      ? { creditCard: mapCreditCard(account.creditCard) }
+      ? { creditCard: mapCanonicalCreditCard(account.creditCard) }
       : {}),
     transactionCount: account.transactionCount,
     assetPositionCount: account.positions.length,
@@ -115,7 +116,7 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
   };
 }
 
-function mapCreditCard(
+export function mapCanonicalCreditCard(
   creditCard: NonNullable<CanonicalOverviewAccount["creditCard"]>,
 ): CreditCardAccountDto {
   return {
@@ -135,6 +136,27 @@ function mapCreditCard(
         : null,
       memberships: statement.memberships.map((membership) => ({ ...membership })),
     })),
+    ...(creditCard.currentUsedCredit
+      ? { currentUsedCredit: mapCreditCardBalance(creditCard.currentUsedCredit) }
+      : {}),
+  };
+}
+
+function mapCreditCardBalance(
+  balance: NonNullable<NonNullable<CanonicalOverviewAccount["creditCard"]>["currentUsedCredit"]>,
+): CreditCardBalanceDto {
+  return {
+    balanceKind: balance.balanceKind,
+    estimateKind: balance.estimateKind,
+    estimateBasis: balance.estimateBasis,
+    estimateFormula: balance.estimateFormula,
+    amount: {
+      currency: balance.currency,
+      value: exactAmountToNumber(balance.amount),
+      exact: { ...balance.amount },
+    },
+    componentLimit: balance.componentLimit,
+    componentAvailable: balance.componentAvailable,
   };
 }
 

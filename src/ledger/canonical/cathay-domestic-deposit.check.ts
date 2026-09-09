@@ -56,6 +56,24 @@ const syncInput = (pages = [syncPage()]) => ({
   pages,
 });
 
+// Legacy migration fixtures must downgrade the physical account identity
+// columns together with user_version. Leaving the v26 split in place would
+// make the v4->v5 migration read a column that cannot exist in a real v4 DB.
+function rewindCurrentDatabaseToV23PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 assert.deepEqual(parseExactDecimalLexeme("123.4500"), {
   coefficient: 1234500n,
   scale: 4,
@@ -964,8 +982,8 @@ try {
       6,
     );
     assert.equal(
-      multiDb.prepare("SELECT account_no FROM source_captures").get()
-        ?.account_no,
+      multiDb.prepare("SELECT source_account_key FROM source_captures").get()
+        ?.source_account_key,
       null,
     );
     assert.equal(
@@ -1073,6 +1091,7 @@ try {
   const v4Seed = openCanonicalDatabase(populatedV4ScopeMigrationDir);
   v4Seed.close();
   const v4SeedRaw = new DatabaseSync(canonicalSqlitePath(populatedV4ScopeMigrationDir));
+  rewindCurrentDatabaseToV23PhysicalSchema(v4SeedRaw);
   v4SeedRaw.exec(
     "PRAGMA foreign_keys = OFF; UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
@@ -1138,6 +1157,7 @@ try {
   const provenanceOnlyV4SeedRaw = new DatabaseSync(
     canonicalSqlitePath(provenanceOnlyV4MigrationDir),
   );
+  rewindCurrentDatabaseToV23PhysicalSchema(provenanceOnlyV4SeedRaw);
   provenanceOnlyV4SeedRaw.exec(
     "PRAGMA foreign_keys = OFF; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
@@ -1209,6 +1229,7 @@ try {
   const restorationV4SeedRaw = new DatabaseSync(
     canonicalSqlitePath(restorationV4MigrationDir),
   );
+  rewindCurrentDatabaseToV23PhysicalSchema(restorationV4SeedRaw);
   restorationV4SeedRaw.exec(
     "PRAGMA foreign_keys = OFF; UPDATE current_transactions SET commit_id = revision_commit_id; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
@@ -3349,6 +3370,7 @@ try {
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
   const v3Seed = new DatabaseSync(canonicalSqlitePath(v3MigrationDir));
+  rewindCurrentDatabaseToV23PhysicalSchema(v3Seed);
   v3Seed.exec(
     "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;",
   );
@@ -3394,6 +3416,7 @@ try {
       CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
     );
     const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
+    rewindCurrentDatabaseToV23PhysicalSchema(downgrade);
     downgrade.exec(
       "PRAGMA foreign_keys = OFF; DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable; PRAGMA foreign_keys = ON;",
     );

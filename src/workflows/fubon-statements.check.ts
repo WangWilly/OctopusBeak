@@ -5,6 +5,8 @@ import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/f
 import { queryCanonicalSourceCurrent } from "../ledger/canonical/canonical-source-store.ts";
 import {
   buildFubonLoanPaymentAccountEvidence,
+  buildFubonCurrentDepositBalanceCapture,
+  indexFubonCurrentDepositFinancialCaptures,
   readFubonDepositAccountOptions,
   runFubonStatements,
   type FubonDepositStatementEvidence,
@@ -60,6 +62,76 @@ assert.doesNotMatch(
   source,
   /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
   "deposit workflow must not retain the obsolete date+amount matcher",
+);
+
+const fubonCurrentCapture = buildFubonCurrentDepositBalanceCapture(
+  {
+    source: "fubon",
+    accountNumber: "00123456789012",
+    accountNickname: "synthetic",
+    depositType: "活期",
+    branchName: "012",
+    currency: "TWD",
+    currencySourceLexeme: "台幣",
+    instantBalance: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
+    availableBalance: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
+    effectiveAt: "2026-08-31T01:00:00.000Z",
+    providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
+    observedAt: "2026-08-31T09:00:00+08:00",
+    sourceEvidence: {
+      endpoint: "/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
+      status: 200,
+      cacheControl: "no-store, no-cache",
+      contractVersion: "fubon/current-deposit-balance-v1",
+    },
+  },
+  {
+    identity: {
+      sourceConnectionKey: "sha256:fubon-current-connection",
+      identityEpochKey: "sha256:fubon-current-epoch",
+      subjectDigest: "sha256:fubon-current-subject",
+      accountNo: "sha256:fubon-current-account",
+      sourceAccountKey: "sha256:fubon-current-account",
+      accountNumber: { value: "00123456789012" },
+    },
+  },
+);
+assert.equal(fubonCurrentCapture.identity.sourceAccountKey, "sha256:fubon-current-account");
+assert.deepEqual(
+  fubonCurrentCapture.observations.map((observation) => observation.sourceField),
+  ["即時餘額", "可用餘額"],
+);
+assert.equal(fubonCurrentCapture.records.length, 2);
+const fubonExistingIdentity = {
+  identity: {
+    sourceConnectionKey: "sha256:fubon-current-connection",
+    identityEpochKey: "sha256:fubon-current-epoch",
+    subjectDigest: "sha256:fubon-current-subject",
+    accountNo: "sha256:fubon-current-account",
+    sourceAccountKey: "sha256:fubon-current-account",
+    accountNumber: { value: "00123456789012" },
+  },
+};
+assert.equal(
+  indexFubonCurrentDepositFinancialCaptures([
+    fubonExistingIdentity,
+    fubonExistingIdentity,
+  ]).size,
+  1,
+  "same account identity across date ranges is deduplicated",
+);
+assert.throws(
+  () =>
+    indexFubonCurrentDepositFinancialCaptures([
+      fubonExistingIdentity,
+      {
+        identity: {
+          ...fubonExistingIdentity.identity,
+          sourceAccountKey: "sha256:other-account",
+        },
+      },
+    ]),
+  /ambiguous across financial captures/u,
 );
 const depositCommitMarker = source.indexOf(
   "await commitCanonicalFubonDomesticDepositCapture(",
@@ -178,6 +250,7 @@ try {
       canonicalFinancialLedgerDir: ledgerDir,
       sourceConnectionScope: stableSourceConnectionScope,
       sourceConnectionKey: stableSourceConnectionKey,
+      readCurrentDepositBalances: async () => [],
       resolveLoanRepaymentRelations: async (store) => {
         assert.equal(
           store.db

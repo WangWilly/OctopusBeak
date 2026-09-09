@@ -12,6 +12,7 @@ import type {
 import type { OverviewPageDto } from "../types.ts";
 import { buildCanonicalOverviewSankeyGraph } from "./overview-sankey.ts";
 import { createFinancialQuery } from "../../shared-ledger/server/financial-query.ts";
+import { mapCanonicalCreditCard } from "../../shared-ledger/server/canonical-product.ts";
 
 export async function loadOverview(
   ledgerDir = DEFAULT_LEDGER_DIR,
@@ -39,6 +40,9 @@ export async function loadOverview(
     assetPositionCount: account.positions.length,
     lastUpdated: account.observedAt ? account.observedAt.slice(0, 10) : null,
     valueAvailability: account.availability,
+    ...(account.creditCard
+      ? { creditCard: mapCanonicalCreditCard(account.creditCard) }
+      : {}),
   }));
 
   const currencies = [...new Set(

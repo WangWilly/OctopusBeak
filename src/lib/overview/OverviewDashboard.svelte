@@ -12,6 +12,10 @@
   } from "$lib/overview/exchange-rate-display.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
+  import {
+    safeSourceGapLabel,
+    sourceGapCounts,
+  } from "$lib/shared-ledger/account-display.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
@@ -28,6 +32,16 @@
   let sankeyCurrency = "TWD";
 
   $: metrics = overview.summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
+  $: usesAvailableBalance = overview.accounts.some((account) =>
+    account.amountLines.some((amount) =>
+      amount.traces?.some((trace) => trace.balanceKind === "available"),
+    ),
+  );
+  $: usesEstimatedCredit = overview.accounts.some((account) =>
+    account.group === "liability" && account.amountLines.some((amount) =>
+      amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+    ),
+  );
   $: netMetric = metrics[0] ?? null;
   $: netAmounts = netMetric?.amounts ?? [];
   $: sideValue = formatAmountLines(netAmounts.slice(0, 1));
@@ -52,10 +66,11 @@
   ).rows;
   $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+  $: gapCounts = sourceGapCounts(overview.sourceGaps);
   $: currentStateLabel = overview.availability === "unavailable"
     ? $t.overview.currentUnavailable
     : overview.sourceGaps.length > 0
-      ? $t.overview.currentPartial(overview.sourceGaps.length)
+      ? $t.overview.currentPartial(gapCounts.currentValue, gapCounts.sourceNotCollected)
       : overview.availability === "awaiting"
         ? $t.overview.currentAwaiting
         : overview.availability === "empty"
@@ -130,7 +145,7 @@
         {#if overview.sourceGaps.length > 0}
           <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
             {#each overview.sourceGaps as gap}
-              <li>{gap.label ?? gap.integrationNamespace ?? gap.sourceConnectionKey}</li>
+              <li>{safeSourceGapLabel(gap)}</li>
             {/each}
           </ul>
         {/if}
@@ -138,6 +153,16 @@
     {/if}
     <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
       <SummaryStrip {metrics} />
+      {#if usesAvailableBalance}
+        <p class="balance-basis" data-balance-basis="available" role="note">
+          {$t.overview.availableBalanceBasis}
+        </p>
+      {/if}
+      {#if usesEstimatedCredit}
+        <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
+          {$t.overview.creditCardEstimateBasis}
+        </p>
+      {/if}
     </section>
 
     <section class="grid layout-2">
@@ -299,6 +324,12 @@
     padding: 0;
     list-style: none;
     color: var(--text);
+    font-size: var(--font-size-sm);
+  }
+
+  .balance-basis {
+    margin: var(--space-2) 0 0;
+    color: var(--muted);
     font-size: var(--font-size-sm);
   }
 

@@ -26,6 +26,7 @@ import {
   ensureFubonCreditCardSchema,
 } from "./fubon-credit-card.ts";
 import { createCanonicalOverviewQuery } from "./canonical-overview-query.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { loadLiabilities } from "../../lib/liabilities/server/load-liabilities.ts";
 import {
   fubonCreditCardPanFingerprint,
@@ -391,6 +392,83 @@ test("one portfolio account persists multiple card instruments with display-safe
       ).all(),
     );
     assert.equal(/\d[\d\s-]{11,}\d/u.test(persisted), false);
+  } finally {
+    store.close();
+  }
+});
+
+test("financial-account card masks honor the projection knowledge cutoff", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    const baseline = await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(capture()),
+    );
+    const futureCapture = capture({
+      captureId: "capture-mask-future",
+      observedAt: "2026-08-26T00:00:00.000Z",
+      instruments: [
+        {
+          ...secondaryInstrument,
+          evidence: {
+            ...secondaryInstrument.evidence,
+            sourceRecordKey: "row-mask-future-a",
+          },
+        },
+      ],
+      transactions: [
+        transaction({
+          sourceRecordKey: "row-mask-future-a",
+          instrumentKey: secondaryInstrument.instrumentKey,
+          description: "SYNTHETIC FUTURE MASK",
+        }),
+        transaction({
+          sourceRecordKey: "row-mask-future-b",
+          instrumentKey: secondaryInstrument.instrumentKey,
+          consumeDate: "2026-08-20",
+          postingDate: "2026-08-21",
+          description: "SYNTHETIC FUTURE MASK UNBILLED",
+          billingStatus: "unbilled",
+          statementKey: undefined,
+        }),
+      ],
+      statements: [
+        {
+          ...capture().statements[0]!,
+          revisionKey: "statement-revision-mask-future",
+          transactionSourceKeys: ["row-mask-future-a"],
+        },
+      ],
+    });
+    const future = await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(futureCapture),
+    );
+    assert.ok(future.commitSequence > baseline.commitSequence);
+
+    const runtime = createCanonicalProjectionRuntime(store.db);
+    const historical = runtime.read({
+      kind: "historical",
+      families: ["financial-accounts"],
+      scope: { accountIds: [baseline.accountId] },
+      cutoff: {
+        financialAt: "2026-08-31",
+        knowledgeAt: baseline.commitSequence,
+      },
+    });
+    const current = runtime.read({
+      kind: "current",
+      families: ["financial-accounts"],
+      scope: { accountIds: [baseline.accountId] },
+    });
+    assert.deepEqual(
+      historical.families["financial-accounts"][0]?.cardMasks,
+      ["****1234"],
+    );
+    assert.deepEqual(
+      current.families["financial-accounts"][0]?.cardMasks,
+      ["****1234", "****5678"],
+    );
   } finally {
     store.close();
   }
@@ -1312,6 +1390,12 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
       (account) => account.kind === "credit-card",
     );
     assert.ok(creditAccount, "Fubon credit account must be in the canonical projection");
+    const creditLabels = current.projection.accounts
+      .filter((account) => account.kind === "credit-card")
+      .map((account) => account.label)
+      .join(" ");
+    assert.match(creditLabels, /\*{4}1234/u);
+    assert.doesNotMatch(creditLabels, /\b\d{13,19}\b/u);
     const statement = creditAccount.creditCard?.statements[0];
     assert.ok(statement, "Fubon statement must be read through the typed runtime family");
     assert.equal(statement.statementBalance.coefficient, "12345");
@@ -1327,6 +1411,11 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     const liabilities = await loadLiabilities(directory, { expectedSources: [] });
     const liabilityCard = liabilities.accounts.find((account) => account.id === creditAccount.id);
     assert.ok(liabilityCard, "Fubon credit account must remain in the liabilities product");
+    const liabilityLabels = liabilities.accounts
+      .filter((account) => account.kind === "credit-card")
+      .map((account) => account.label)
+      .join(" ");
+    assert.match(liabilityLabels, /\*{4}1234/u);
     assert.deepEqual(liabilityCard.amountLines, [], "statement totals must not become current balances");
     assert.equal(liabilityCard.valueAvailability, "awaiting");
     assert.equal(liabilityCard.creditCard?.statements[0]?.statementRevisionId, statement.statementRevisionId);
@@ -1612,13 +1701,14 @@ test("generic current, historical, and lineage queries see Fubon after reopen", 
     store.db.prepare(
       `INSERT INTO financial_accounts(
         account_id, source_connection_id, identity_epoch_id, stream,
-        account_no, account_type, currency, created_commit_id
-      ) VALUES (?, ?, ?, 'domestic-deposit', ?, 'depository', 'TWD', ?)`,
+        source_account_key, account_no, account_type, currency, created_commit_id
+      ) VALUES (?, ?, ?, 'domestic-deposit', ?, ?, 'depository', 'TWD', ?)`,
     ).run(
       randomBytes(16),
       creditAccount.source_connection_id,
       creditAccount.identity_epoch_id,
       "mixed-fubon-domestic-account",
+      null,
       creditAccount.created_commit_id,
     );
 

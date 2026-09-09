@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextDecoder } from "node:util";
@@ -21,10 +21,12 @@ import {
   recordInitialYuantaHumanAttestationV2IfMissing,
   YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+  YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
   type YuantaDomesticDepositCaptureEvidence,
   type YuantaDomesticDepositDownloadEvidence,
   type YuantaDomesticDepositTelemetryManifest,
+  type YuantaDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/yuanta-domestic-deposit.ts";
 import {
   canonicalSqlitePath,
@@ -54,6 +56,21 @@ import {
   writeYuantaOccurrenceDiagnosticCandidate,
   yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
 } from "./yuanta-occurrence-diagnostic.ts";
+import {
+  readYuantaCurrentDepositBalances,
+  YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
+  type YuantaCurrentDepositBalanceRow,
+} from "./yuanta-current-deposit-balances.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCapture,
+  currentDepositSourceRecord,
+  currentDepositSourceRecordContentHash,
+  type CurrentDepositBalanceCaptureInput,
+  type CurrentDepositBalanceObservationInput,
+  type CurrentDepositExactAmount,
+  type CurrentDepositSourceRecordInput,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 export {
   dismissYuantaBankNotice,
   type YuantaCredentials,
@@ -238,6 +255,8 @@ export type YuantaStatementsRunDependencies = {
   observedAt?: () => string;
   /** Injected in checks; production uses the canonical resolver. */
   resolveRelations?: typeof resolveLoanRepaymentRelations;
+  /** Injected in checks; production reads the authenticated current-balance page. */
+  readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances;
 };
 
 type BankTransactionRow = {
@@ -250,6 +269,176 @@ type BankTransactionRow = {
 type YuantaStatementsInput = z.infer<typeof yuantaStatementsInputSchema> & {
   credentials?: YuantaCredentials;
 };
+
+type ExistingYuantaFinancialCapture = Readonly<{
+  identity: Readonly<{
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    subjectDigest: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+  }>;
+}>;
+
+function yuantaCurrentDepositOpaqueKey(
+  domain: string,
+  ...parts: readonly string[]
+): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(`${domain}\0`)
+    .update(parts.join("\0"))
+    .digest("base64url")}`;
+}
+
+/**
+ * Build the current-balance capture only after the ordinary financial
+ * admission has supplied the existing identity.  The provider's HTTP Date
+ * is the only effective-time authority here; observedAt is retained solely
+ * as the local knowledge time.
+ */
+export function buildYuantaCurrentDepositBalanceCapture(
+  row: YuantaCurrentDepositBalanceRow,
+  financialCapture: ExistingYuantaFinancialCapture,
+): CurrentDepositBalanceCaptureInput {
+  if (row.kind !== "domestic" || row.stream !== "domestic-deposit")
+    throw new Error("Yuanta domestic current-balance row has the wrong stream.");
+  const identity = financialCapture.identity;
+  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  if (sourceAccountKey !== row.sourceAccountKey)
+    throw new Error("Yuanta current-balance row does not match an existing account.");
+  const route = "yuanta/domestic-deposit/current-balance-v1" as const;
+  const records: CurrentDepositSourceRecordInput[] = [];
+  const observations: CurrentDepositBalanceObservationInput[] = [];
+  const amountPairs: readonly [
+    "ledger" | "available",
+    string,
+    CurrentDepositExactAmount,
+  ][] = [
+    ["ledger", "帳面餘額", row.ledger],
+    ["available", "可用餘額", row.available],
+  ];
+  for (const [balanceKind, sourceField, balance] of amountPairs) {
+    const sourceRecordKey = yuantaCurrentDepositOpaqueKey(
+      "yuanta-current-deposit-source-record-v1",
+      sourceAccountKey,
+      row.currency,
+      balanceKind,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    );
+    const compact = {
+      accountNumber: row.accountNumber,
+      sourceAccountKey,
+      currencySourceLexeme: row.currency,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+    };
+    const record = currentDepositSourceRecord({
+      sourceRecordKey,
+      providerKey: yuantaCurrentDepositOpaqueKey(
+        "yuanta-current-deposit-provider-record-v1",
+        row.accountNumber,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+      ),
+      contentHash: "sha256:placeholder",
+      sourceField,
+      balanceKind,
+      currency: row.currency,
+      value: balance,
+      compact,
+    });
+    records.push({
+      ...record,
+      contentHash: currentDepositSourceRecordContentHash(record.compact),
+    });
+    observations.push({
+      observationKey: yuantaCurrentDepositOpaqueKey(
+        "yuanta-current-deposit-observation-v1",
+        sourceAccountKey,
+      ),
+      balanceKind,
+      balance,
+      currency: row.currency,
+      time: {
+        effectiveAt: row.effectiveAt,
+        effectiveTimeBasis: "provider-http-date",
+        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+        sourceField: "HTTP Date",
+        sourceValue: row.providerHttpDate,
+        contractVersion: row.sourceEvidence.contractVersion,
+      },
+      sourceRecordKey,
+      sourceField,
+    });
+  }
+  const endpoint = `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`;
+  return {
+    captureId: randomUUID(),
+    authorityRoute: route,
+    contractVersion: row.sourceEvidence.contractVersion,
+    subjectDigest: identity.subjectDigest,
+    identity: {
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      stream: "domestic-deposit",
+      sourceAccountKey,
+    },
+    observedAt: row.observedAt,
+    scope: {
+      startDate: row.effectiveAt.slice(0, 10),
+      endDate: row.effectiveAt.slice(0, 10),
+    },
+    providerResponse: {
+      endpoint,
+      status: 200,
+      cacheControl: row.sourceEvidence.cacheControl,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        rowCount: records.length,
+        terminal: true,
+        metadata: {
+          source: "yuanta-current-deposit-summary",
+          sourceRowCount: 1,
+          balanceFieldCount: records.length,
+        },
+      },
+    ],
+    records,
+    observations,
+  };
+}
+
+export function indexYuantaCurrentDepositFinancialCaptures(
+  financialCaptures: readonly ExistingYuantaFinancialCapture[],
+): ReadonlyMap<string, ExistingYuantaFinancialCapture> {
+  const existingBySourceAccount = new Map<string, ExistingYuantaFinancialCapture>();
+  for (const candidate of financialCaptures) {
+    const sourceAccountKey =
+      candidate.identity.sourceAccountKey ?? candidate.identity.accountNo;
+    const prior = existingBySourceAccount.get(sourceAccountKey);
+    if (
+      prior &&
+      (prior.identity.sourceConnectionKey !==
+        candidate.identity.sourceConnectionKey ||
+        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
+        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
+    )
+      throw new Error(
+        "Yuanta current deposit identities are ambiguous across financial captures.",
+      );
+    if (!prior) existingBySourceAccount.set(sourceAccountKey, candidate);
+  }
+  return existingBySourceAccount;
+}
 
 const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
   one_week: "一週",
@@ -378,6 +567,32 @@ function toAsciiDigits(value: string): string {
 
 function digitsOnly(value: string): string {
   return toAsciiDigits(value).replace(/\D/g, "");
+}
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The domestic selector is accepted as an account number only when the
+ * complete unmasked option value is repeated by the provider in its label.
+ * This keeps opaque selector tokens and masked labels out of the identifier
+ * contract while preserving leading zeroes.
+ */
+export function deriveYuantaDomesticDepositAccountNumberEvidence(
+  account: Readonly<{ label: string; value: string }>,
+): YuantaDomesticDepositAccountNumberEvidence | null {
+  const value = cleanText(account.value);
+  const label = toAsciiDigits(cleanText(account.label));
+  if (!/^\d{6,24}$/.test(value) || !label) return null;
+  const exactValue = new RegExp(`(?:^|\\D)${escapedRegExp(value)}(?=\\D|$)`);
+  if (!exactValue.test(label)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "#acctno option.value",
+  };
 }
 
 function maskAccountLabel(value: string): string {
@@ -831,17 +1046,23 @@ function digestAccountValue(value: string): `sha256:${string}` {
     .digest("base64url")}`;
 }
 
-function buildYuantaCapture(
+export function buildYuantaCapture(
   account: { label: string; value: string },
   queryRange: ReturnType<typeof deriveYuantaDomesticDepositQueryRange>,
   observedAt: string,
   download: YuantaStatementDownload,
 ): YuantaDomesticDepositCaptureEvidence {
+  const accountNumber =
+    deriveYuantaDomesticDepositAccountNumberEvidence(account);
   return {
     evidenceVersion: YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     source: "yuanta",
     observedAt,
-    account: { value: account.value, label: account.label },
+    account: {
+      value: account.value,
+      label: account.label,
+      ...(accountNumber ? { accountNumber } : {}),
+    },
     queryRange,
     downloads: [download.source],
     provenance: {
@@ -940,6 +1161,8 @@ export async function runYuantaStatements(
   const download = overrides.downloadStatementRows ?? downloadStatementRows;
   const write =
     overrides.writeBankTransactionsFile ?? writeBankTransactionsFile;
+  const readCurrent =
+    overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
   const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
   const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
   const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
@@ -982,6 +1205,7 @@ export async function runYuantaStatements(
     reason: string | null;
   }> = [];
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
+  const financialCaptures: ExistingYuantaFinancialCapture[] = [];
 
   try {
     // The canonical domestic scope is all visible TWD selectors. Input
@@ -1120,6 +1344,7 @@ export async function runYuantaStatements(
               throw new Error(
                 "Yuanta domestic deposit admission lost its canonical capture.",
               );
+            financialCaptures.push(financialCapture);
             for (const evidence of
               downloaded.counterpartyAccountEvidence ?? []) {
               await persistCounterpartyAccountEvidence(
@@ -1172,6 +1397,44 @@ export async function runYuantaStatements(
         status,
         reason: reasons.size > 0 ? [...reasons].join(",") : null,
       });
+    }
+
+    // The current-balance page is a separate point-in-time source. It is
+    // collected only after the normal account capture committed, and every
+    // row must join an already-admitted account identity before any balance
+    // capture is committed.
+    if (
+      financialWriter &&
+      financialCaptures.length > 0
+    ) {
+      const authority = financialCaptures[0]!.identity;
+      const currentRows = await readCurrent(page, "domestic", {
+        observedAt: yuantaObservedAt(),
+        financialAuthority: {
+          sourceConnectionKey: authority.sourceConnectionKey,
+          identityEpochKey: authority.identityEpochKey,
+          authorityClass: "existing-financial-admission",
+        },
+      });
+      const currentObservedAt = overrides.observedAt?.() ?? yuantaObservedAt();
+      const existingBySourceAccount = indexYuantaCurrentDepositFinancialCaptures(
+        financialCaptures,
+      );
+      const captures = currentRows.map((unadjustedRow) => {
+        const row = { ...unadjustedRow, observedAt: currentObservedAt };
+        const matching = existingBySourceAccount.get(
+          row.sourceAccountKey,
+        );
+        if (!matching)
+          throw new Error(
+            "Yuanta current deposit snapshot contains an account without exactly one existing financial identity.",
+          );
+        return admitCurrentDepositBalanceCapture(
+          buildYuantaCurrentDepositBalanceCapture(row, matching),
+        );
+      });
+      for (const capture of captures)
+        await commitCurrentDepositBalanceCapture(financialStore!, capture);
     }
 
     const file = await write(

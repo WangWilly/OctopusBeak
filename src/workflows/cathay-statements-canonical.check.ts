@@ -8,9 +8,14 @@ import {
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
 import {
   downloadCathayStatements,
+  deriveCathayDomesticDepositAccountNumberEvidence,
   type CathayDomesticStatementsClient,
   type CathayDomesticWorkflowOptions,
 } from "./cathay-statements.ts";
+import {
+  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
+  parseCathayCurrentDepositBalanceSnapshot,
+} from "./cathay-current-deposit-balances.ts";
 
 const ledgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-"),
@@ -87,6 +92,20 @@ const session = {
   idType: "synthetic",
 };
 
+assert.deepEqual(
+  deriveCathayDomesticDepositAccountNumberEvidence("001234567890"),
+  {
+    value: "001234567890",
+    kind: "depository-account",
+    evidenceVersion: "cathay/domestic-deposit/account-number-v1",
+    sourceField: "content.datas[0].accountNumber",
+  },
+);
+assert.equal(
+  deriveCathayDomesticDepositAccountNumberEvidence("sha256:opaque"),
+  null,
+);
+
 try {
   let successfulDateScopeTelemetryEvents = 0;
   let successfulRowDateShapeTelemetryEvents = 0;
@@ -128,6 +147,112 @@ try {
   assert.deepEqual(downloads, [
     { rowCount: 3, account: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo },
   ]);
+
+  const currentCaptureDir = await mkdtemp(
+    join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-current-balance-"),
+  );
+  try {
+    const currentAccount = "123456789012";
+    const currentClient: CathayDomesticStatementsClient = {
+      fetchDomesticAccounts: async () => [
+        { accountNo: currentAccount, currency: "TWD" },
+      ],
+      fetchTransferDetailsRaw: async () =>
+        CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replaceAll(
+          "SYNTHETIC-ACCOUNT-001",
+          currentAccount,
+        ),
+    };
+    const currentRows = parseCathayCurrentDepositBalanceSnapshot({
+      kind: "domestic",
+      response: {
+        url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`,
+        status: 200,
+        method: "POST",
+        headers: { date: "Tue, 08 Sep 2026 13:20:04 GMT" },
+      },
+      rawBody:
+        '{"success":true,"systemTime":"2026-09-08T21:20:04.1234567+08:00","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000123456789012","accountBalance":1000.00,"avaliableBalance":900.25}]}}}',
+      observedAt: "2026-09-08T21:20:10.000+08:00",
+      uiAccountNumbers: [currentAccount],
+    });
+    let currentReaderCalls = 0;
+    let currentCommitCalls = 0;
+    const currentOptions: CathayDomesticWorkflowOptions = {
+      ...options,
+      canonicalLedgerDir: currentCaptureDir,
+      sourceConnectionId: "workflow-current-connection",
+      identityEpoch: "workflow-current-epoch",
+      captureCurrentBalances: true,
+      readCurrentDepositBalances: async (_page, kind, input) => {
+        currentReaderCalls += 1;
+        assert.equal(kind, "domestic");
+        assert.equal(input.observedAt, undefined);
+        return currentRows;
+      },
+      commitCurrentDepositBalances: async (ledgerPath, captures) => {
+        currentCommitCalls += 1;
+        assert.equal(ledgerPath, currentCaptureDir);
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0]?.identity.sourceAccountKey, currentAccount);
+        assert.equal(captures[0]?.observations.length, 2);
+        return [];
+      },
+    };
+    await downloadCathayStatements(
+      page,
+      "one_year",
+      [],
+      session,
+      currentOptions,
+      currentClient,
+    );
+    assert.equal(currentReaderCalls, 1);
+    assert.equal(currentCommitCalls, 1);
+  } finally {
+    await rm(currentCaptureDir, { recursive: true, force: true });
+  }
+
+  const numericAccountDir = await mkdtemp(
+    join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-number-"),
+  );
+  try {
+    const numericAccount = "001234567890";
+    const numericClient: CathayDomesticStatementsClient = {
+      fetchDomesticAccounts: async () => [
+        { accountNo: numericAccount, currency: "TWD" },
+      ],
+      fetchTransferDetailsRaw: async () =>
+        CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse
+          .replaceAll("SYNTHETIC-ACCOUNT-001", numericAccount),
+    };
+    await downloadCathayStatements(
+      page,
+      "one_year",
+      [],
+      session,
+      {
+        ...options,
+        canonicalLedgerDir: numericAccountDir,
+        sourceConnectionId: "workflow-synthetic-numeric-connection",
+        identityEpoch: "workflow-synthetic-numeric-epoch",
+      },
+      numericClient,
+    );
+    const numericDb = openCanonicalDatabase(numericAccountDir, { readOnly: true });
+    try {
+      assert.equal(
+        (numericDb
+          .prepare("SELECT account_no FROM financial_accounts")
+          .get() as { account_no?: string | null } | undefined)?.account_no,
+        numericAccount,
+      );
+    } finally {
+      numericDb.close();
+    }
+  } finally {
+    await rm(numericAccountDir, { recursive: true, force: true });
+  }
 
   const query = createCathayCanonicalFinancialQuery(ledgerDir);
   const current = await query.current({ kind: "current" });

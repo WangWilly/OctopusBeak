@@ -12,6 +12,7 @@ test("canonical product rows retain exact signed transaction and position values
       {
         id: "account-1",
         sourceConnectionKey: "source-connection-1",
+        sourceAccountKey: "sha256:synthetic-account-key",
         integrationNamespace: "synthetic",
         accountNo: "account-1",
         stream: "investment",
@@ -86,6 +87,7 @@ test("canonical product rows retain exact signed transaction and position values
   };
 
   const product = mapCanonicalProduct(projection, "assets");
+  assert.equal(product.accounts[0]?.label, "Synthetic investment");
   const transaction = product.transactionsByAccount["account-1"]?.[0];
   assert.deepEqual(transaction?.amountExact, {
     coefficient: `-${transactionCoefficient}`,

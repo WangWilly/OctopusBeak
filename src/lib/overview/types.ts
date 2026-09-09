@@ -57,7 +57,8 @@ export type OverviewPageDto = {
 export type OverviewSourceGapDto = {
   accountId: string;
   sourceConnectionKey: string;
-  accountNo: string;
+  sourceAccountKey?: string;
+  accountNo: string | null;
   integrationNamespace?: string;
   stream?: string;
   label?: string;

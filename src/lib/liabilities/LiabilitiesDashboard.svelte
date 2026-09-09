@@ -32,6 +32,11 @@
   let reportAccount: AccountRowDto | null = null;
 
   $: liabilityAccounts = liabilities.accounts;
+  $: usesEstimatedCredit = liabilityAccounts.some((account) =>
+    account.amountLines.some((amount) =>
+      amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+    ),
+  );
   $: metrics = buildMetrics(liabilityAccounts, $t);
   $: liabilityValue = metrics[0]?.amounts ?? [];
   $: sideValue = formatAmountLines(liabilityValue.slice(0, 1));
@@ -152,6 +157,11 @@
     <ProjectionStateBanner projection={liabilities} />
     <section aria-label={$t.liabilities.metricsAria}>
       <SummaryStrip {metrics} />
+      {#if usesEstimatedCredit}
+        <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
+          {$t.overview.creditCardEstimateBasis}
+        </p>
+      {/if}
     </section>
 
     <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>

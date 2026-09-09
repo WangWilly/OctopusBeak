@@ -37,6 +37,8 @@ const ALL_PROJECTION_FAMILIES = [
   "loan-accounts",
   "loan-balances",
   "overview-loan-balances",
+  "depository-balances",
+  "overview-depository-balances",
   "loan-relations",
   "loan-settlement-groups",
   "investment-accounts",
@@ -45,6 +47,8 @@ const ALL_PROJECTION_FAMILIES = [
   "investment-margin-balances",
   "investment-funding-relations",
   "credit-card-statements",
+  "credit-card-balances",
+  "overview-credit-card-balances",
 ] as const satisfies readonly CanonicalProjectionFamily[];
 
 async function fixture() {

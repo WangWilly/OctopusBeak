@@ -7,7 +7,9 @@ const source = readFileSync(new URL("./ProjectionStateBanner.svelte", import.met
 test("projection state banner keeps awaiting and empty ahead of partial gaps", () => {
   assert.match(source, /projection\.coverage !== "complete"/);
   assert.match(source, /data-product-state=\{projection\.coverage\}/);
-  assert.match(source, /gap\.label \?\? gap\.integrationNamespace \?\? gap\.sourceConnectionKey/);
+  assert.match(source, /safeSourceGapLabel\(gap\)/);
+  assert.match(source, /sourceGapCounts\(projection\.sourceGaps\)/);
+  assert.match(source, /currentPartial\(gapCounts\.currentValue, gapCounts\.sourceNotCollected\)/);
   assert.ok(source.indexOf('projection.availability === "awaiting"') < source.indexOf("projection.sourceGaps.length > 0"));
   assert.ok(source.indexOf('projection.availability === "empty"') < source.indexOf("projection.sourceGaps.length > 0"));
 });
