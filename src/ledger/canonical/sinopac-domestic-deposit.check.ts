@@ -477,6 +477,10 @@ try {
     assert.equal(financial.capture?.records[0]?.sourceTime.localTime, "09:10");
     assert.equal(financial.capture?.semantics.timePrecision, "minute");
     assert.equal(financial.capture?.scope.absenceAuthority, null);
+    assert.equal(
+      financial.capture?.records[0]?.description,
+      "PRIVATE-SINOPAC-DESCRIPTION · PRIVATE-SINOPAC-NOTE",
+    );
     assert.throws(
       () =>
         admitCanonicalFinancialDepositCapture({

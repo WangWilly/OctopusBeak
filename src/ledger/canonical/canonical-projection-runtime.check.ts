@@ -22,6 +22,7 @@ import {
   commitCanonicalInvestmentCapture,
   createCanonicalInvestmentStore,
 } from "./investment-financial.ts";
+import { CANONICAL_SOURCE_ROUTE_REGISTRY } from "./canonical-source-route-registry.ts";
 import { buildYuantaInvestmentCapture } from "./yuanta-investment-adapters.ts";
 import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 
@@ -50,6 +51,24 @@ const ALL_PROJECTION_FAMILIES = [
   "credit-card-balances",
   "overview-credit-card-balances",
 ] as const satisfies readonly CanonicalProjectionFamily[];
+
+test("closed source route metadata deeply freezes completeness authority", () => {
+  for (const registration of CANONICAL_SOURCE_ROUTE_REGISTRY) {
+    assert.equal(Object.isFrozen(registration), true);
+    assert.equal(Object.isFrozen(registration.contractVersions), true);
+    if (!registration.completenessRuleVersions) continue;
+    assert.equal(Object.isFrozen(registration.completenessRuleVersions), true);
+    const before = [...registration.completenessRuleVersions];
+    assert.throws(
+      () =>
+        (registration.completenessRuleVersions as string[]).push(
+          "forged-after-registry-initialization",
+        ),
+      TypeError,
+    );
+    assert.deepEqual([...registration.completenessRuleVersions], before);
+  }
+});
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "canonical-projection-runtime-"));
@@ -818,6 +837,90 @@ test("investment families are derived inside the Runtime snapshot", async () => 
       reader.close();
       writer.close();
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime accepts a production-admitted MaiCoin investment route", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-projection-maicoin-route-"));
+  const path = join(directory, "canonical.sqlite");
+  const contractVersion = "maicoin/investment/canonical-v1";
+  const sourceRecordKey = token("maicoin-route-transaction-record");
+  const securityKey = "maicoin:BTC";
+  try {
+    const store = createCanonicalInvestmentStore(path);
+    const capture = admitCanonicalInvestmentCapture({
+      captureId: "projection-runtime-maicoin-route",
+      sourceId: "maicoin",
+      authorityRoute: contractVersion,
+      contractVersion,
+      observedAt: "2026-08-31T12:00:00.000Z",
+      identity: {
+        sourceConnectionKey: token("maicoin-route-connection"),
+        identityEpochKey: token("maicoin-route-epoch"),
+        accountKey: token("maicoin-route-account"),
+        accountType: "investment",
+        reportingCurrency: "TWD",
+      },
+      scope: { effectiveOn: "2026-08-30", complete: true },
+      securities: [
+        {
+          securityKey,
+          producerSecurityId: "BTC",
+          name: "SANITIZED BITCOIN",
+          ticker: "BTC",
+          currency: "USD",
+          securityType: "cryptocurrency",
+          identityEvidence: {
+            kind: "producer-security-id",
+            contractVersion,
+          },
+        },
+      ],
+      holdings: [
+        {
+          measurementKey: token("maicoin-route-measurement"),
+          measurementSubjectKey: token("maicoin-route-subject"),
+          sourceRecordKey: token("maicoin-route-holding-record"),
+          securityKey,
+          quantity: { coefficient: "1", scale: 0 },
+          valuation: { coefficient: "60000", scale: 0, currency: "TWD" },
+          effectiveOn: "2026-08-30",
+          observedAt: "2026-08-31T12:00:00.000Z",
+          effectiveTimeEvidence: {
+            kind: "source-reported-as-of",
+            sourceRecordKey: token("maicoin-route-holding-record"),
+            sourceField: "as_of_date",
+            value: "2026-08-30",
+            contractVersion,
+          },
+          lineage: { page: 0, row: 0, contractVersion },
+        },
+      ],
+      transactions: [
+        {
+          sourceRecordKey,
+          transactionKey: token("maicoin-route-transaction"),
+          securityKey,
+          action: "buy",
+          quantity: { coefficient: "1", scale: 0 },
+          cashEffect: { coefficient: "60000", scale: 0, currency: "TWD" },
+          effectiveOn: "2026-08-29",
+          fundingEvidence: { kind: "unresolved", sourceRecordKey },
+        },
+      ],
+    });
+    await commitCanonicalInvestmentCapture(store, capture);
+    store.close();
+
+    const runtime = createCanonicalProjectionRuntime(path);
+    const snapshot = runtime.read({
+      kind: "current",
+      families: ["investment-transactions"],
+      scope: { sourceConnectionKey: token("maicoin-route-connection") },
+    });
+    assert.equal(snapshot.families["investment-transactions"]?.length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

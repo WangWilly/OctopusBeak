@@ -1026,7 +1026,7 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   });
 }
 
-class LineBankApiClient {
+export class LineBankApiClient {
   private page: Page;
 
   constructor(page: Page) {
@@ -1130,15 +1130,16 @@ class LineBankApiClient {
     return snapshot.accounts;
   }
 
-  async fetchAccountSnapshot(observedAt = new Date().toISOString()): Promise<{
+  async fetchAccountSnapshot(observedAt?: string): Promise<{
     accounts: LineBankAccount[];
     currentBalances: readonly LineBankCurrentDepositBalanceRow[];
   }> {
     const snapshot = await this.accountResponse();
+    const effectiveObservedAt = observedAt ?? new Date().toISOString();
     const currentBalances = parseLinebankCurrentDepositBalanceSnapshot({
       response: snapshot.response,
       rawBody: snapshot.rawBody,
-      observedAt,
+      observedAt: effectiveObservedAt,
     });
     return { accounts: snapshot.accounts, currentBalances };
   }

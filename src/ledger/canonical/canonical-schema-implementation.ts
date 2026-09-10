@@ -19,7 +19,10 @@ import {
   ensureFubonCreditCardSchema,
   validateFubonCreditCardSchema,
 } from "./fubon-credit-card-schema.ts";
-import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-deposit-authorities.ts";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  canonicalSourceRouteCompletenessRuleVersions,
+} from "./canonical-source-route-registry.ts";
 import {
   CANONICAL_SOURCE_ADMISSION,
   CANONICAL_SOURCE_STAGE,
@@ -3818,200 +3821,78 @@ function validateGenerationExactAmounts(
   }
 }
 
+function canonicalSourceRouteRegistryCte(): {
+  sql: string;
+  params: string[];
+} {
+  const rows = CANONICAL_SOURCE_ROUTE_REGISTRY.flatMap((registration) => {
+    const completenessRuleVersions =
+      canonicalSourceRouteCompletenessRuleVersions(registration.routeKey);
+    return registration.contractVersions.flatMap((contractVersion) =>
+      completenessRuleVersions.map((completenessRuleVersion) => [
+        registration.routeKey,
+        registration.integrationNamespace,
+        registration.stream,
+        contractVersion,
+        completenessRuleVersion,
+      ] as const),
+    );
+  });
+  if (rows.length === 0)
+    throw new Error("Canonical source-route registry must not be empty.");
+
+  return {
+    sql: `WITH registered_source_routes(
+  authority_route,
+  integration_namespace,
+  stream,
+  contract_version,
+  completeness_rule_version
+) AS (
+  VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}
+)`,
+    params: rows.flatMap((row) => [...row]),
+  };
+}
+
 function validateCanonicalAuthorityRoutes(
   db: DatabaseSync,
   generationId: number,
 ): void {
+  const registry = canonicalSourceRouteRegistryCte();
   const invalid = Number(
     (
       db
         .prepare(
-          `SELECT COUNT(*) AS count FROM projection_generation_transactions projected
-    WHERE projected.generation_id = ? AND NOT EXISTS (
-      SELECT 1 FROM transaction_revisions revision
-      JOIN source_captures capture ON capture.capture_id = revision.capture_id
-      JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
-      JOIN source_authority_routes registered ON registered.authority_route = capture.authority_route
-      WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
-        AND (
-          (capture.stream = ? AND registered.stream = ?)
-          OR (capture.stream = 'credit-card' AND registered.stream = 'credit-card')
-          OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
-          OR (capture.stream = 'loan' AND registered.stream = 'loan')
-          OR (capture.stream = 'investment' AND registered.stream = 'investment')
-          OR (capture.stream = 'domestic-deposit' AND registered.stream = 'domestic-deposit')
+          `${registry.sql}
+SELECT COUNT(*) AS count
+FROM projection_generation_transactions projected
+WHERE projected.generation_id = ? AND NOT EXISTS (
+  SELECT 1
+  FROM transaction_revisions revision
+  JOIN source_captures capture ON capture.capture_id = revision.capture_id
+  JOIN assertions source_assertion
+    ON source_assertion.revision_id = revision.revision_id
+    AND source_assertion.origin = 'source'
+  JOIN source_authority_routes registered
+    ON registered.authority_route = capture.authority_route
+  JOIN registered_source_routes route
+    ON route.authority_route = capture.authority_route
+    AND route.integration_namespace = registered.integration_namespace
+    AND route.stream = capture.stream
+    AND route.stream = registered.stream
+    AND route.contract_version = registered.contract_version
+    AND route.completeness_rule_version = capture.completeness_rule_version
+  WHERE revision.revision_id = projected.revision_id
+    AND revision.transaction_id = projected.transaction_id
+    AND source_assertion.producer_id = capture.authority_route
+    AND source_assertion.rule_lineage IN (
+      capture.authority_route,
+      revision.semantic_rule_version
+    )
+)`,
         )
-        AND source_assertion.producer_id = capture.authority_route
-        AND source_assertion.rule_lineage IN (capture.authority_route, revision.semantic_rule_version)
-        AND (
-          (capture.authority_route = ?
-            AND capture.completeness_rule_version = ?
-            AND registered.integration_namespace = ?
-            AND registered.contract_version = ?)
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v1'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/canonical/v1.fubon')
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v2'
-            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/canonical/v2.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/canonical-v1'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'loan/canonical/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon'
-            AND capture.stream = 'domestic-deposit'
-            AND registered.stream = 'domestic-deposit'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/counterpart/v1.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta'
-            AND capture.stream = 'domestic-deposit'
-            AND registered.stream = 'domestic-deposit'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'loan/counterpart/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'fubon/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'fubon/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'esun'
-            AND registered.contract_version = 'esun/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'esun'
-            AND registered.contract_version = 'esun/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'yuanta/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'yuanta/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND registered.stream = 'investment'
-            AND registered.integration_namespace = 'yuanta-fund'
-            AND registered.contract_version = 'yuanta-fund/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND registered.stream = 'investment'
-            AND registered.integration_namespace = 'yuanta-trade'
-            AND registered.contract_version = 'yuanta-trade/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-fund'
-            AND registered.contract_version = 'yuanta-fund/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-trade'
-            AND registered.contract_version = 'yuanta-trade/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
-            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
-            AND registered.integration_namespace = 'linebank'
-            AND registered.contract_version = 'human-attested-v13')
-          OR
-          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version IN (
-              'human-attested-v1',
-              'fubon/domestic-deposit/human-attested-v1'
-            ))
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'human-attested-v2')
-          OR
-          (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'hncb'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'ctbc'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'sinopac'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'post/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'post'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.stream = 'foreign-currency-deposit'
-            AND registered.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
-            AND capture.completeness_rule_version LIKE 'foreign-currency/%'
-            AND registered.contract_version = capture.completeness_rule_version)
-        )
-    )`,
-        )
-        .get(
-          generationId,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_INTEGRATION_NAMESPACE,
-          CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
-          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
-        ) as { count?: number }
+        .get(...registry.params, generationId) as { count?: number }
     ).count ?? 0,
   );
   if (invalid !== 0)
@@ -4880,137 +4761,52 @@ function validateSelectedAssertionProvenance(
   generationId: number,
   cutoff: number,
 ): void {
+  const registry = canonicalSourceRouteRegistryCte();
   const invalidSource = Number(
     (
       db
         .prepare(
-          `SELECT COUNT(*) AS count
-    FROM projection_generation_transactions projected
-    JOIN projection_generations generation ON generation.generation_id = projected.generation_id
-    JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
-    LEFT JOIN assertions assertion ON assertion.revision_id = revision.revision_id AND assertion.origin = 'source'
-    WHERE projected.generation_id = ? AND NOT EXISTS (
-      SELECT 1 FROM assertion_provenance provenance
-      JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
-      JOIN source_records source_record ON source_record.source_record_id = provenance.source_record_id
-      JOIN source_captures capture ON capture.capture_id = source_record.capture_id
-      WHERE provenance.assertion_id = assertion.assertion_id
-        AND provenance.source_record_id = revision.source_record_id
-        AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
-        AND source_record.capture_id = revision.capture_id
-        AND provenance_commit.commit_sequence <= ?
-        AND provenance_commit.commit_kind = 'source_capture'
-        AND provenance_commit.authority_route = capture.authority_route
-        AND capture.commit_id = provenance.commit_id
-        AND (
-          capture.stream = ?
-          OR capture.stream = 'credit-card'
-          OR capture.stream = 'foreign-currency-deposit'
-          OR capture.stream = 'loan'
-          OR capture.stream = 'investment'
-          OR capture.stream = 'domestic-deposit'
+          `${registry.sql}
+SELECT COUNT(*) AS count
+FROM projection_generation_transactions projected
+JOIN transaction_revisions revision
+  ON revision.revision_id = projected.revision_id
+LEFT JOIN assertions assertion
+  ON assertion.revision_id = revision.revision_id
+  AND assertion.origin = 'source'
+WHERE projected.generation_id = ? AND NOT EXISTS (
+  SELECT 1
+  FROM assertion_provenance provenance
+  JOIN canonical_commits provenance_commit
+    ON provenance_commit.commit_id = provenance.commit_id
+  JOIN source_records source_record
+    ON source_record.source_record_id = provenance.source_record_id
+  JOIN source_captures capture
+    ON capture.capture_id = source_record.capture_id
+  JOIN source_authority_routes registered
+    ON registered.authority_route = capture.authority_route
+  WHERE provenance.assertion_id = assertion.assertion_id
+    AND provenance.source_record_id = revision.source_record_id
+    AND provenance.run_id IS NULL
+    AND provenance.coordinate_id IS NULL
+    AND source_record.capture_id = revision.capture_id
+    AND provenance_commit.commit_sequence <= ?
+    AND provenance_commit.commit_kind = 'source_capture'
+    AND provenance_commit.authority_route = capture.authority_route
+    AND capture.commit_id = provenance.commit_id
+    AND EXISTS (
+      SELECT 1
+      FROM registered_source_routes route
+      WHERE route.authority_route = capture.authority_route
+        AND route.integration_namespace = registered.integration_namespace
+        AND route.stream = capture.stream
+        AND route.stream = registered.stream
+        AND route.contract_version = registered.contract_version
+        AND route.completeness_rule_version = capture.completeness_rule_version
+    )
+)`,
         )
-        AND (
-          (capture.authority_route = ? AND capture.completeness_rule_version = ?)
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v1'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon')
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v2'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/canonical-v1'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
-            AND capture.stream = 'domestic-deposit'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
-            AND capture.stream = 'domestic-deposit'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
-            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
-          OR
-          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2')
-          OR
-          (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'post/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1')
-          OR
-          (capture.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
-            AND capture.completeness_rule_version LIKE 'foreign-currency/%')
-        )
-    )`,
-        )
-        .get(
-          generationId,
-          cutoff,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
-        ) as { count?: number }
+        .get(...registry.params, generationId, cutoff) as { count?: number }
     ).count ?? 0,
   );
   if (invalidSource !== 0)

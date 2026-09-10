@@ -24,6 +24,7 @@ import {
   type MaicoinAccountRecord,
   type MaicoinInvestmentCaptureBuildInput,
   type MaicoinPublicMarket,
+  type MaicoinStatementBatch,
   type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
@@ -108,12 +109,7 @@ type PriceQuote = {
   raw: unknown;
 };
 
-type StatementBatch = {
-  endpoint: string;
-  walletType: WalletType | null;
-  rowType: string;
-  rows: Record<string, unknown>[];
-};
+type StatementBatch = MaicoinStatementBatch;
 
 type StatementSpec = Omit<StatementBatch, "rows">;
 type StatementValueMap = Map<string, number | null>;
@@ -703,32 +699,32 @@ async function fetchStatement(
     ...walletTypes.map((walletType) => ({
       endpoint: `/api/v3/wallet/${walletType}/trades`,
       walletType,
-      rowType: "trade",
+      rowType: "trade" as const,
     })),
     {
       endpoint: "/api/v3/fund_transactions/deposits",
       walletType: null,
-      rowType: "deposit",
+      rowType: "deposit" as const,
     },
     {
       endpoint: "/api/v3/fund_transactions/withdrawals",
       walletType: null,
-      rowType: "withdrawal",
+      rowType: "withdrawal" as const,
     },
     {
       endpoint: "/api/v3/fund_transactions/transfers",
       walletType: null,
-      rowType: "transfer",
+      rowType: "transfer" as const,
     },
     {
       endpoint: "/api/v3/rewards",
       walletType: null,
-      rowType: "reward",
+      rowType: "reward" as const,
     },
     {
       endpoint: "/api/v3/converts",
       walletType: null,
-      rowType: "convert",
+      rowType: "convert" as const,
     },
   ];
 
@@ -1018,6 +1014,7 @@ export async function syncMaicoin(params: CliParams) {
         providerEmail: walletSelection.providerEmail,
         subAccount: credentials.subAccount,
         accountBatches,
+        statementBatches: statement,
         valuationQuotes,
       },
     );

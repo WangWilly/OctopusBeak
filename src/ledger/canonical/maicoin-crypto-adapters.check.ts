@@ -22,6 +22,7 @@ import {
   type MaicoinPublicMarket,
   type MaicoinQuoteComponent,
   type MaicoinProviderDate,
+  type MaicoinStatementBatch,
 } from "./maicoin-crypto-adapters.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 
@@ -429,6 +430,227 @@ test("holding-only crypto captures do not become generic financial transactions"
   );
   assert.equal(lineage.effectiveTimeEvidence?.sourceValue, providerDateHeader);
   store.close();
+});
+
+test("MAX statement families become stable canonical transactions with source descriptions", async () => {
+  const timestamp = (value: string) => Math.floor(Date.parse(value) / 1000);
+  const statementBatches: MaicoinStatementBatch[] = [
+    {
+      endpoint: "/api/v3/wallet/spot/trades",
+      walletType: "spot",
+      rowType: "trade",
+      rows: [
+        {
+          id: "trade-buy",
+          market: "btctwd",
+          side: "bid",
+          volume: "0.50000000",
+          funds: "15000.00",
+          created_at: timestamp("2026-08-01T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/wallet/m/trades",
+      walletType: "m",
+      rowType: "trade",
+      rows: [
+        {
+          id: "trade-sell",
+          market: "ethusdt",
+          side: "ask",
+          volume: "1.25000000",
+          funds: "100.00",
+          created_at: timestamp("2026-08-02T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/fund_transactions/deposits",
+      walletType: null,
+      rowType: "deposit",
+      rows: [
+        {
+          uuid: "deposit-btc",
+          currency: "BTC",
+          amount: "0.25000000",
+          created_at: timestamp("2026-08-03T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/fund_transactions/withdrawals",
+      walletType: null,
+      rowType: "withdrawal",
+      rows: [
+        {
+          uuid: "withdraw-eth",
+          currency: "ETH",
+          amount: "0.75000000",
+          created_at: timestamp("2026-08-04T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/fund_transactions/transfers",
+      walletType: null,
+      rowType: "transfer",
+      rows: [
+        {
+          sn: "transfer-in-twd",
+          currency: "TWD",
+          amount: "500.00",
+          side: "in",
+          created_at: timestamp("2026-08-05T01:02:03Z"),
+        },
+        {
+          sn: "transfer-out-btc",
+          currency: "BTC",
+          amount: "0.10000000",
+          side: "out",
+          created_at: timestamp("2026-08-06T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/rewards",
+      walletType: null,
+      rowType: "reward",
+      rows: [
+        {
+          uuid: "reward-btc",
+          currency: "BTC",
+          amount: "0.01000000",
+          note: "staking reward",
+          created_at: timestamp("2026-08-07T01:02:03Z"),
+        },
+      ],
+    },
+    {
+      endpoint: "/api/v3/converts",
+      walletType: null,
+      rowType: "convert",
+      rows: [
+        {
+          uuid: "convert-eth-usdt",
+          wallet_type: "m",
+          from_currency: "ETH",
+          from_amount: "0.50000000",
+          to_currency: "USDT",
+          to_amount: "75.00000000",
+          created_at: timestamp("2026-08-08T01:02:03Z"),
+        },
+      ],
+    },
+  ];
+  const buildInput = (captureId: string): MaicoinInvestmentCaptureBuildInput =>
+    input({
+      captureId,
+      accountBatches: [
+        {
+          walletType: "spot",
+          providerDate,
+          accounts: [
+            { currency: "BTC", balance: "1", locked: "0" },
+            { currency: "TWD", balance: "1000", locked: "0" },
+          ],
+        },
+        {
+          walletType: "m",
+          providerDate,
+          accounts: [
+            { currency: "ETH", balance: "2", locked: "0" },
+            { currency: "USDT", balance: "300", locked: "0" },
+          ],
+        },
+      ],
+      statementBatches,
+    });
+
+  const captures = buildMaicoinInvestmentCaptures(buildInput("events-1"));
+  assert.equal(captures.length, 2);
+  const spot = captures.find((capture) =>
+    capture.identity.accountKey ===
+      deriveMaicoinAccountKey("owner@example.test", "main", "spot")
+  );
+  const margin = captures.find((capture) =>
+    capture.identity.accountKey ===
+      deriveMaicoinAccountKey("owner@example.test", "main", "m")
+  );
+  assert.ok(spot);
+  assert.ok(margin);
+  assert.equal(spot.transactions.length, 5);
+  assert.equal(margin.transactions.length, 4);
+  assert.deepEqual(
+    spot.transactions.map((transaction) => [
+      transaction.action,
+      transaction.securityKey,
+      transaction.quantity,
+      transaction.cashEffect,
+      transaction.description,
+    ]),
+    [
+      ["buy", "maicoin:BTC", { coefficient: "50000000", scale: 8 }, { coefficient: "1500000", scale: 2, currency: "TWD" }, null],
+      ["corporate_action_in", "maicoin:BTC", { coefficient: "25000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+      ["corporate_action_in", "maicoin:TWD", { coefficient: "50000", scale: 2 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+      ["corporate_action_out", "maicoin:BTC", { coefficient: "10000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+      ["corporate_action_in", "maicoin:BTC", { coefficient: "1000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, "staking reward"],
+    ],
+  );
+  assert.deepEqual(
+    margin.transactions.map((transaction) => [
+      transaction.action,
+      transaction.securityKey,
+      transaction.quantity,
+      transaction.cashEffect,
+      transaction.description,
+    ]),
+    [
+      ["sell", "maicoin:ETH", { coefficient: "125000000", scale: 8 }, { coefficient: "10000", scale: 2, currency: "USDT" }, null],
+      ["corporate_action_out", "maicoin:ETH", { coefficient: "75000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+      ["corporate_action_out", "maicoin:ETH", { coefficient: "50000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+      ["corporate_action_in", "maicoin:USDT", { coefficient: "7500000000", scale: 8 }, { coefficient: "0", scale: 0, currency: "TWD" }, null],
+    ],
+  );
+  const rebuilt = buildMaicoinInvestmentCaptures(buildInput("events-2"));
+  assert.deepEqual(
+    rebuilt.flatMap((capture) => capture.transactions.map((row) => row.sourceRecordKey)),
+    captures.flatMap((capture) => capture.transactions.map((row) => row.sourceRecordKey)),
+  );
+  assert.deepEqual(
+    rebuilt.flatMap((capture) => capture.transactions.map((row) => row.transactionKey)),
+    captures.flatMap((capture) => capture.transactions.map((row) => row.transactionKey)),
+  );
+
+  const store = createCanonicalInvestmentStore(":memory:");
+  try {
+    await commitCanonicalInvestmentCaptureBatch(
+      store,
+      captures.map(admitCanonicalInvestmentCapture),
+    );
+    const persisted = store.db.prepare(`
+      SELECT a.source_account_key AS accountKey, revision.direction, revision.currency,
+             revision.amount_coefficient AS coefficient, revision.description
+        FROM financial_transactions transaction_row
+        JOIN financial_accounts a ON a.account_id = transaction_row.account_id
+        JOIN transaction_revisions revision ON revision.transaction_id = transaction_row.transaction_id
+       ORDER BY a.account_no, revision.effective_on, transaction_row.source_sequence
+    `).all() as Array<Record<string, unknown>>;
+    assert.equal(persisted.length, 9);
+    assert.equal(persisted.filter((row) => row.description === "staking reward").length, 1);
+    assert.equal(persisted.filter((row) => row.description === null).length, 8);
+    assert.equal(persisted.filter((row) => row.direction === "inflow").length, 5);
+    assert.equal(persisted.filter((row) => row.direction === "outflow").length, 4);
+    assert.deepEqual(
+      new Set(persisted.map((row) => row.accountKey)),
+      new Set([
+        deriveMaicoinAccountKey("owner@example.test", "main", "spot"),
+        deriveMaicoinAccountKey("owner@example.test", "main", "m"),
+      ]),
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test("canonical queries remain separated by provider email and subaccount", async () => {

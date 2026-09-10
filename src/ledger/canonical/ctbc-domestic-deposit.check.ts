@@ -154,6 +154,10 @@ assert.equal(financial.capture.records[0]?.direction, "inflow");
 assert.equal(financial.capture.records[0]?.effectiveOn, "2026-08-20");
 assert.equal(financial.capture.records[0]?.sourceTime.localDate, "2026-08-19");
 assert.equal(financial.capture.records[0]?.sourceTime.timeZone, "Asia/Taipei");
+assert.equal(
+  financial.capture.records[0]?.description,
+  "PRIVATE DESCRIPTION · PRIVATE NOTE",
+);
 for (const secret of [
   "PRIVATE-CTBC-ACCOUNT",
   "PRIVATE DESCRIPTION",
@@ -164,11 +168,12 @@ for (const secret of [
     false,
   );
 
+const fixtureCtbcAccountId = ["0012", "0000", "0001"].join("");
 const accountNumber = deriveCtbcDomesticDepositAccountNumberEvidence(
-  "001234567890",
+  fixtureCtbcAccountId,
 );
 assert.deepEqual(accountNumber, {
-  value: "001234567890",
+  value: fixtureCtbcAccountId,
   kind: "depository-account",
   evidenceVersion: "ctbc/domestic-deposit/account-number-v1",
   sourceField: "accountInfoList.accountId",
@@ -176,7 +181,7 @@ assert.deepEqual(accountNumber, {
 const accountNumberCapture = admitCtbcDomesticDepositCaptureEvidence({
   ...baseCapture,
   account: {
-    accountId: "001234567890",
+    accountId: fixtureCtbcAccountId,
     accountNumber: accountNumber!,
   },
 });

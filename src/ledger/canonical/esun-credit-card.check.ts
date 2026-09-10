@@ -52,7 +52,7 @@ const billedRow: EsunCreditCardSourceRow = {
   foreignCurrency: "",
   foreignAmount: "",
   paymentCurrency: "TWD",
-  twdAmount: "-123.45",
+  twdAmount: "123.45",
   paymentStatus: "已入帳",
 };
 
@@ -65,7 +65,7 @@ const unbilledRow: EsunCreditCardSourceRow = {
   foreignCurrency: "",
   foreignAmount: "",
   paymentCurrency: "TWD",
-  twdAmount: "20.00",
+  twdAmount: "-20.00",
   paymentStatus: "未入帳",
 };
 
@@ -127,6 +127,31 @@ test("complete E.SUN capture produces stable source keys and separate duplicate 
   assert.deepEqual(
     first.transactions.map((transaction) => transaction.direction),
     ["outflow", "inflow"],
+  );
+  assert.deepEqual(
+    first.transactions.map((transaction) => ({
+      bookedAmount: transaction.bookedAmount,
+      bookedCurrency: transaction.bookedCurrency,
+      signedAmount: transaction.signedAmount,
+      postingStatus: transaction.postingStatus,
+      billingStatus: transaction.billingStatus,
+    })),
+    [
+      {
+        bookedAmount: { coefficient: "12345", scale: 2 },
+        bookedCurrency: "TWD",
+        signedAmount: "123.45",
+        postingStatus: "posted",
+        billingStatus: "billed",
+      },
+      {
+        bookedAmount: { coefficient: "2000", scale: 2 },
+        bookedCurrency: "TWD",
+        signedAmount: "-20.00",
+        postingStatus: "posted",
+        billingStatus: "unbilled",
+      },
+    ],
   );
   assert.deepEqual(
     first.transactions.map((transaction) => transaction.billingStatus),
@@ -658,7 +683,7 @@ test("account and transaction identity never include capture IDs or raw card num
     direction: "outflow",
     bookedAmount: "10.00",
     bookedCurrency: "TWD",
-    signedAmount: "-10.00",
+    signedAmount: "10.00",
     foreignCurrency: null,
     foreignAmount: null,
     description: "Synthetic",

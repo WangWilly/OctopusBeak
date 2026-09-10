@@ -267,6 +267,10 @@ const firstAdmission = admitFubonDomesticDepositFinancialCapture({
 });
 assert.equal(firstAdmission.status, "admitted");
 assert.ok(firstAdmission.capture);
+assert.equal(
+  firstAdmission.capture.records[0]?.description,
+  "SYNTHETIC DEPOSIT · SYNTHETIC NOTE",
+);
 assert.equal(firstAdmission.capture.records.length, 1);
 assert.equal(firstAdmission.capture.records[0]?.direction, "inflow");
 assert.equal(

@@ -12,6 +12,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   canonicalSourceAdmissionCommitResult,
   createCanonicalSourceCaptureAdmission,
@@ -1150,6 +1151,7 @@ function financialRecord(
   const description = normalizedCell(values[5]);
   const checkNumber = normalizedCell(values[9]);
   const note = normalizedCell(values[10]);
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const contentHash = financialOpaque(
     "yuanta-observed-content-v2",
     ...normalizedYuantaRowForIdentity(values),
@@ -1205,6 +1207,7 @@ function financialRecord(
       amount,
       balanceAfter,
       currency: semantics.account.currency,
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: time.localDate,

@@ -2064,7 +2064,7 @@ function canonicalTransactionForRow(
     consumeDate,
     postingDate,
     postingStatus: "posted",
-    direction: booked.signed.startsWith("-") ? "outflow" : "inflow",
+    direction: booked.signed.startsWith("-") ? "inflow" : "outflow",
     bookedAmount: booked.amount,
     signedAmount: booked.signed,
     bookedCurrency: "TWD",

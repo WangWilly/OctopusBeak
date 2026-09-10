@@ -635,6 +635,10 @@ try {
       financialRecord.transactionDateTimeLocal,
       "2026-08-02T09:10:11",
     );
+    assert.equal(
+      financialRecord.description,
+      "PRIVATE DESCRIPTION · PRIVATE NOTE",
+    );
     assert.deepEqual(financialRecord.sourceTime, {
       localDate: "2026-08-02",
       localTime: "09:10:11",

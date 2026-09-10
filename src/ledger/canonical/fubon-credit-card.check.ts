@@ -716,8 +716,60 @@ test("posting date and exact sign/direction mapping are total", () => {
     () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ bookedAmount: "-1.00" })] })),
     /non-negative|amount/i,
   );
+  const positivePurchase = admitFubonCreditCardCapture(
+    capture({
+      transactions: [
+        transaction({
+          signedAmount: "123.45",
+          direction: "outflow",
+        }),
+        capture().transactions[1]!,
+      ],
+    }),
+  );
+  assert.deepEqual(
+    positivePurchase.transactions[0],
+    {
+      ...positivePurchase.transactions[0],
+      bookedAmount: { coefficient: "12345", scale: 2 },
+      bookedCurrency: "TWD",
+      direction: "outflow",
+      signedAmount: "123.45",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+  );
+  const negativePayment = admitFubonCreditCardCapture(
+    capture({
+      transactions: [
+        transaction({
+          signedAmount: "-1.00",
+          direction: "inflow",
+          bookedAmount: "1.00",
+          description: "SYNTHETIC PAYMENT",
+        }),
+        capture().transactions[1]!,
+      ],
+    }),
+  );
+  assert.deepEqual(
+    negativePayment.transactions[0],
+    {
+      ...negativePayment.transactions[0],
+      bookedAmount: { coefficient: "100", scale: 2 },
+      bookedCurrency: "TWD",
+      direction: "inflow",
+      signedAmount: "-1.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+  );
   assert.throws(
-    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "-1.00", direction: "inflow" })] })),
+    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "-1.00", direction: "outflow", bookedAmount: "1.00" })] })),
+    /sign|direction/i,
+  );
+  assert.throws(
+    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "1.00", direction: "inflow", bookedAmount: "1.00" })] })),
     /sign|direction/i,
   );
   assert.throws(

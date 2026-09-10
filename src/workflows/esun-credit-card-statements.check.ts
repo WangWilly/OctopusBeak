@@ -234,7 +234,7 @@ const billedRow: StatementRow = {
   foreignCurrency: "USD",
   foreignAmount: "10.00",
   paymentCurrency: "TWD",
-  twdAmount: "-123.45",
+  twdAmount: "123.45",
   paymentStatus: "billed",
   sourcePaymentStatus: "已入帳",
 };
@@ -246,7 +246,7 @@ const unbilledRow: StatementRow = {
   foreignCurrency: "",
   foreignAmount: "",
   paymentCurrency: "TWD",
-  twdAmount: "45.67",
+  twdAmount: "-45.67",
   paymentStatus: "unbilled",
   sourcePaymentStatus: "未入帳",
 };
@@ -326,6 +326,34 @@ assert.deepEqual(
       bookedCurrency: "TWD",
       billingStatus: "unbilled",
       direction: "inflow",
+    },
+  ],
+);
+assert.deepEqual(
+  canonicalCapture.transactions.map((transaction) => ({
+    direction: transaction.direction,
+    bookedAmount: transaction.bookedAmount,
+    bookedCurrency: transaction.bookedCurrency,
+    signedAmount: transaction.signedAmount,
+    postingStatus: transaction.postingStatus,
+    billingStatus: transaction.billingStatus,
+  })),
+  [
+    {
+      direction: "outflow",
+      bookedAmount: { coefficient: "12345", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "123.45",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      direction: "inflow",
+      bookedAmount: { coefficient: "4567", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "-45.67",
+      postingStatus: "posted",
+      billingStatus: "unbilled",
     },
   ],
 );

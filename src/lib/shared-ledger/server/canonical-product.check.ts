@@ -45,7 +45,7 @@ test("canonical product rows retain exact signed transaction and position values
             units: { coefficient: "1", scale: 0 },
           },
         ],
-        transactionCount: 1,
+        transactionCount: 2,
         observedAt: "2026-09-08T12:00:00.000Z",
         availability: "available",
       },
@@ -80,6 +80,16 @@ test("canonical product rows retain exact signed transaction and position values
         effectiveOn: "2026-09-07",
         description: "Synthetic outflow",
       },
+      {
+        id: "transaction-2",
+        accountId: "account-1",
+        amount: { coefficient: "1", scale: 0 },
+        currency: "USD",
+        direction: "inflow",
+        postingStatus: "posted",
+        effectiveOn: "2026-09-08",
+        description: null,
+      },
     ],
     sourceGaps: [],
     importedAt: "2026-09-08T12:00:00.000Z",
@@ -89,11 +99,14 @@ test("canonical product rows retain exact signed transaction and position values
   const product = mapCanonicalProduct(projection, "assets");
   assert.equal(product.accounts[0]?.label, "Synthetic investment");
   const transaction = product.transactionsByAccount["account-1"]?.[0];
+  assert.equal(transaction?.label, "Synthetic outflow");
   assert.deepEqual(transaction?.amountExact, {
     coefficient: `-${transactionCoefficient}`,
     scale: 2,
   });
   assert.equal(transaction?.amount, -90071992547409.92);
+  assert.equal(product.transactionsByAccount["account-1"]?.[1]?.label, "");
+  assert.notEqual(product.transactionsByAccount["account-1"]?.[1]?.label, "Canonical transaction");
 
   const position = product.positionsByAccount["account-1"]?.[0];
   assert.deepEqual(position?.valueExact, {

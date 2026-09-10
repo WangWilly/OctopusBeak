@@ -22,6 +22,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
   SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -965,6 +966,7 @@ function sinopacFinancialRecord(
     normalizedCell(values[7]),
     normalizedCell(values[8]),
   );
+  const description = combineDomesticDepositDescription(values[3], values[7]);
   return {
     diagnostics,
     record: {
@@ -995,6 +997,7 @@ function sinopacFinancialRecord(
       amount,
       balanceAfter,
       currency: "TWD",
+      description,
       direction,
       sourceTime: {
         localDate: transactionDate,

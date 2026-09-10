@@ -12,6 +12,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   canonicalSourceAdmissionCommitResult,
   createCanonicalSourceCaptureAdmission,
@@ -1592,6 +1593,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
     const balanceAfter = exactAmount(cells[5]);
     const direction = outflow ? "outflow" : inflow ? "inflow" : null;
     const time = sourceTime(cells, semantics.effectiveTime.timeZone);
+    const description = combineDomesticDepositDescription(cells[2], cells[6]);
     if (!amount) diagnostics.push("amount-invalid");
     if (!balanceAfter) diagnostics.push("balance-invalid");
     if (!time) diagnostics.push("source-time-invalid");
@@ -1652,6 +1654,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       amount,
       balanceAfter,
       currency: semantics.account.currency,
+      description,
       direction,
       sourceTime: time,
       effectiveOn: time.localDate,

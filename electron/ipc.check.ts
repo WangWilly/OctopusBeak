@@ -12,6 +12,27 @@ assert.equal(octopusBeakApiChannels.includes("settings:save"), true);
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
 assert.match(source, /ipcMain\.handle\("settings:save"/);
+assert.match(
+  source,
+  /createFinancialPageWorkerClient/,
+  "financial page loads must cross a worker boundary so projection reads cannot block Electron main",
+);
+assert.doesNotMatch(
+  source,
+  /ipcMain\.handle\("overview:load", \(\) =>\s*loadOverview/,
+  "overview projection must not execute synchronously on Electron main",
+);
+assert.doesNotMatch(
+  source,
+  /ipcMain\.handle\("assets:load", \(\) => loadAssets/,
+  "assets projection must not execute synchronously on Electron main",
+);
+assert.doesNotMatch(
+  source,
+  /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
+  "liabilities projection must not execute synchronously on Electron main",
+);
+assert.match(source, /return \{\s*close: \(\) => financialPages\.close\(\),?\s*\}/);
 assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
 assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);
@@ -43,6 +64,8 @@ assert.match(mainSource, /createExchangeRateScheduler/);
 assert.match(mainSource, /onSystemSettingsChanged: scheduler\.reschedule/);
 assert.match(mainSource, /scheduler\.start\(\)/);
 assert.match(mainSource, /scheduler\?\.stop\(\)/);
+assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc/);
+assert.match(mainSource, /ipcRegistration\?\.close\(\)/);
 assert.match(mainSource, /exchange-rate-scheduler-error/);
 
 for (const [channel, handler, service] of [

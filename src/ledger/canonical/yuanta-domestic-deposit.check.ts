@@ -368,6 +368,10 @@ assert.equal(
   admittedFinancial.capture.records[0]?.sourceTime.timeZone,
   "Asia/Taipei",
 );
+assert.equal(
+  admittedFinancial.capture.records[0]?.description,
+  "SYNTHETIC DESCRIPTION · SYNTHETIC NOTE",
+);
 assert.doesNotMatch(
   admittedFinancial.capture.records[0]?.compactJson ?? "",
   /123456|SYNTHETIC DESCRIPTION|SYNTHETIC NOTE/,

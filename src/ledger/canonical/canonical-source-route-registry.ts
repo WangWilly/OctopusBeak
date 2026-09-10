@@ -8,6 +8,12 @@ export type CanonicalSourceRouteRegistration = Readonly<{
   integrationNamespace: string;
   stream: string;
   contractVersions: readonly string[];
+  /**
+   * The source-capture completeness rule may use a route-specific name even
+   * when the persisted source-authority contract uses a shorter version.
+   * When omitted, the contract versions are also the completeness versions.
+   */
+  completenessRuleVersions?: readonly string[];
 }>;
 
 const registrations: readonly CanonicalSourceRouteRegistration[] = [
@@ -70,6 +76,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "fubon/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["fubon/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v1",
@@ -79,6 +86,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "yuanta/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v2",
@@ -88,6 +96,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v2",
       "yuanta/domestic-deposit/human-attested-v2",
     ],
+    completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v2"],
   },
   {
     routeKey: "hncb/domestic-deposit/human-attested-v1",
@@ -97,6 +106,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "hncb/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["hncb/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "ctbc/domestic-deposit/human-attested-v1",
@@ -106,6 +116,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "ctbc/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["ctbc/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "post/domestic-deposit/human-attested-v1",
@@ -115,6 +126,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "post/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["post/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "sinopac/domestic-deposit/human-attested-v1",
@@ -124,6 +136,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "sinopac/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["sinopac/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "fubon/credit-card/human-attested-v1",
@@ -184,6 +197,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "cathay",
     stream: "domestic-deposit",
     contractVersions: ["v1"],
+    completenessRuleVersions: ["cathay/domestic-deposit/v1"],
   },
   {
     routeKey: "cathay/foreign-currency/deposit/v1",
@@ -226,6 +240,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "linebank",
     stream: "domestic-deposit",
     contractVersions: ["human-attested-v13"],
+    completenessRuleVersions: ["linebank/domestic-deposit/human-attested-v13"],
   },
   {
     routeKey: "yuanta/foreign-currency/deposit/human-attested-v2",
@@ -397,6 +412,13 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
   Object.freeze({
     ...registration,
     contractVersions: Object.freeze([...registration.contractVersions]),
+    ...(registration.completenessRuleVersions
+      ? {
+          completenessRuleVersions: Object.freeze([
+            ...registration.completenessRuleVersions,
+          ]),
+        }
+      : {}),
   }),
 );
 
@@ -415,4 +437,11 @@ export function canonicalSourceRouteRegistration(
   routeKey: string,
 ): CanonicalSourceRouteRegistration | undefined {
   return byRoute.get(routeKey);
+}
+
+export function canonicalSourceRouteCompletenessRuleVersions(
+  routeKey: string,
+): readonly string[] {
+  const registration = canonicalSourceRouteRegistration(routeKey);
+  return registration?.completenessRuleVersions ?? registration?.contractVersions ?? [];
 }
