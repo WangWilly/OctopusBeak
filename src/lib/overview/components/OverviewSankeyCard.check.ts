@@ -20,9 +20,9 @@ test("overview Sankey card uses LayerChart Sankey with node and link tooltips", 
   assert.match(source, /function chartHeightFor\(nodes: OverviewSankeyGraphDto\["nodes"\]\)/);
   assert.match(source, /height=\{chartHeight\}/);
   assert.match(source, /\{#if nodeHeight >= 14\}/);
-  assert.match(source, /export let twdPerUnit = 1;/);
-  assert.match(source, /formatMoney\(\{ currency, value \}, \{ locale: \$locale \}\)/);
-  assert.match(source, /\$: displayGraph = twdPerUnit === 1 \? graph : \{[\s\S]*value: link\.value \/ twdPerUnit/);
+  assert.match(source, /formatMoney\(\{ currency: link\.currency \?\? currency, value: link\.value, exact: link\.exact \}, \{ locale: \$locale \}\)/);
+  assert.match(source, /export let exchangeRates: readonly ExchangeRateDto\[\] = \[\];/);
+  assert.match(source, /\$: displayGraph = displayOverviewSankeyGraph\(graph, currency, exchangeRates\);/);
   assert.match(source, /\$: chartGraph = selectedNode \? sankeyGraphFromNode\(selectedNode\) : displayGraph;/);
   assert.match(source, /onclick=\{\(\) => selectNode\(node\)\}/);
   assert.match(source, /selectedNode\?\.id === node\.id \|\| !node\.sourceLinks\?\.length/);

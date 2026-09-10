@@ -12,6 +12,7 @@ import {
   type GridState,
   type StatementRow,
   isEsunCompleteGrid,
+  parseEsunCurrentCreditCardUsedCreditHtml,
 } from "./esun-credit-card-statements.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
@@ -41,6 +42,35 @@ const credentials = {
   esun_password: "password-must-not-escape",
 };
 const managedSecret = "synthetic-esun-managed-secret";
+
+assert.deepEqual(
+  parseEsunCurrentCreditCardUsedCreditHtml(`
+    <table class="decoy"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>999</td><td>1</td></tr></table>
+    <p>查詢時間：2026/09/09 10:22:05</p>
+    <table id="fcm01006:grid_DataGridBody">
+      <tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr>
+      <tr><td>正卡</td><td>1,000</td><td>9,000</td></tr>
+      <tr><td>歸戶</td><td>12,345</td><td>87,655</td></tr>
+      <tr><td>指定額度</td><td>8,000</td><td></td></tr>
+    </table>
+  `),
+  {
+    usedCredit: "12345",
+    available: "87655",
+    sourceField: "已用額度",
+    queryTime: "2026/09/09 10:22:05",
+  },
+);
+assert.throws(
+  () =>
+    parseEsunCurrentCreditCardUsedCreditHtml(`
+      <p>查詢時間：2026/09/09 10:22:05</p>
+      <table id="fcm01006:grid_DataGridBody"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>1</td><td>2</td></tr></table>
+      <table id="fcm01006:grid_DataGridBody"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>3</td><td>4</td></tr></table>
+    `),
+  /ambiguous/u,
+);
+
 const identity = deriveEsunCanonicalHumanAttestation(
   credentials,
   managedSecret,
@@ -204,7 +234,7 @@ const billedRow: StatementRow = {
   foreignCurrency: "USD",
   foreignAmount: "10.00",
   paymentCurrency: "TWD",
-  twdAmount: "-123.45",
+  twdAmount: "123.45",
   paymentStatus: "billed",
   sourcePaymentStatus: "已入帳",
 };
@@ -216,7 +246,7 @@ const unbilledRow: StatementRow = {
   foreignCurrency: "",
   foreignAmount: "",
   paymentCurrency: "TWD",
-  twdAmount: "45.67",
+  twdAmount: "-45.67",
   paymentStatus: "unbilled",
   sourcePaymentStatus: "未入帳",
 };
@@ -296,6 +326,34 @@ assert.deepEqual(
       bookedCurrency: "TWD",
       billingStatus: "unbilled",
       direction: "inflow",
+    },
+  ],
+);
+assert.deepEqual(
+  canonicalCapture.transactions.map((transaction) => ({
+    direction: transaction.direction,
+    bookedAmount: transaction.bookedAmount,
+    bookedCurrency: transaction.bookedCurrency,
+    signedAmount: transaction.signedAmount,
+    postingStatus: transaction.postingStatus,
+    billingStatus: transaction.billingStatus,
+  })),
+  [
+    {
+      direction: "outflow",
+      bookedAmount: { coefficient: "12345", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "123.45",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      direction: "inflow",
+      bookedAmount: { coefficient: "4567", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "-45.67",
+      postingStatus: "posted",
+      billingStatus: "unbilled",
     },
   ],
 );

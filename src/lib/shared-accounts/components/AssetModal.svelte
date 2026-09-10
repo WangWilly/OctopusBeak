@@ -55,9 +55,17 @@
   }
 
   function selectedReturn(changeRows: AssetPositionDto[]) {
-    const value = changeRows.reduce((sum, row) => sum + row.value, 0);
+    const value = changeRows.reduce((sum, row) => sum + (row.value ?? 0), 0);
     const cost = changeRows.reduce((sum, row) => sum + (row.returnCostTwd ?? 0), 0);
     return cost > 0 ? `${(((value - cost) / cost) * 100).toFixed(2)}%` : "--";
+  }
+
+  function formatPositionValue(row: AssetPositionDto) {
+    return formatMoney({
+      currency: row.currency,
+      value: row.value ?? 0,
+      exact: row.valueExact ?? undefined,
+    });
   }
 
   function toggleExpanded(symbol: string) {
@@ -108,7 +116,7 @@
     selection: ReturnSelection,
   ) {
     if (key === "units") return numericText(row.units);
-    if (key === "value") return row.value;
+    if (key === "value") return row.value ?? Number.NEGATIVE_INFINITY;
     if (key === "change") return changeValue(rowChange(row, childrenBySymbol[row.symbol] ?? [], selection));
     return row[key];
   }
@@ -220,7 +228,13 @@
                   </div>
                 </td>
                 <td class="right num">{row.units}</td>
-                <td class="right money">{formatMoney({ currency: row.currency, value: row.value })}</td>
+                <td class="right money">
+                  {#if row.value === null && !row.valueExact}
+                    <span class="awaiting-value">{$t.positions.valueAwaiting}</span>
+                  {:else}
+                    {formatPositionValue(row)}
+                  {/if}
+                </td>
                 <td
                   class="right"
                   class:return-positive={isReturnMetric(row) && changeValue(change) > 0}
@@ -237,7 +251,13 @@
                       <span class="child-name">{child.name}</span>
                     </td>
                     <td class="right num">{child.units}</td>
-                    <td class="right money">{formatMoney({ currency: child.currency, value: child.value })}</td>
+                    <td class="right money">
+                      {#if child.value === null && !child.valueExact}
+                        <span class="awaiting-value">{$t.positions.valueAwaiting}</span>
+                      {:else}
+                        {formatPositionValue(child)}
+                      {/if}
+                    </td>
                     <td
                       class="right"
                       class:return-positive={isReturnMetric(child) && changeValue(child.change) > 0}
@@ -318,6 +338,12 @@
 
   .return-negative {
     color: var(--danger);
+  }
+
+  .awaiting-value {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
   }
 
   .return-controls {

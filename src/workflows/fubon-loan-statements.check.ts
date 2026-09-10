@@ -348,6 +348,12 @@ const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
     dateRange: { startDate: string; endDate: string };
   },
 ) => {
+  accountNumber?: {
+    value: string;
+    kind: "loan-account";
+    evidenceVersion: "fubon/loan/account-number-v1";
+    sourceField: "form1:loanAccountCombo option.text";
+  };
   completeness: { pageCount: number; terminal: true } | null;
   pages: ReadonlyArray<{
     pageOrdinal: number;
@@ -361,6 +367,18 @@ const extractFubonLoanAccountEvidence =
     optionValue: string,
     optionLabel: string,
   ) => string | null;
+const deriveFubonLoanAccountNumberEvidence =
+  module.deriveFubonLoanAccountNumberEvidence as (account: {
+    label: string;
+    value: string;
+  }) =>
+    | {
+        value: string;
+        kind: "loan-account";
+        evidenceVersion: "fubon/loan/account-number-v1";
+        sourceField: "form1:loanAccountCombo option.text";
+      }
+    | null;
 
 test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
@@ -386,6 +404,25 @@ test("extracts only a complete unmasked Fubon loan selector account", () => {
       "opaque-provider-option",
       "01234567890123 arbitrary suffix",
     ),
+    null,
+  );
+  assert.deepEqual(
+    deriveFubonLoanAccountNumberEvidence({
+      value: "opaque-provider-option",
+      label: "01234567890123 (學貸-留貸)",
+    }),
+    {
+      value: "01234567890123",
+      kind: "loan-account",
+      evidenceVersion: "fubon/loan/account-number-v1",
+      sourceField: "form1:loanAccountCombo option.text",
+    },
+  );
+  assert.equal(
+    deriveFubonLoanAccountNumberEvidence({
+      value: "opaque-provider-option",
+      label: "**********0123 (學貸-留貸)",
+    }),
     null,
   );
 });
@@ -670,7 +707,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
         },
       },
     ],
-    { label: "masked-loan", value: "opaque-loan" },
+    { label: "01234567890123 (學貸-留貸)", value: "opaque-loan" },
     {
       loanAccountLabels: [],
       queryItems: ["TRANSACTION_DETAIL_QUERY"],
@@ -681,6 +718,12 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
   );
 
   assert.equal(parsed.completeness?.pageCount, 2);
+  assert.deepEqual(parsed.accountNumber, {
+    value: "01234567890123",
+    kind: "loan-account",
+    evidenceVersion: "fubon/loan/account-number-v1",
+    sourceField: "form1:loanAccountCombo option.text",
+  });
   assert.deepEqual(
     parsed.pages.map((page) => [
       page.pageOrdinal,
@@ -725,6 +768,12 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
     null as never,
     {
       accountValue: "fubon-option-test",
+      accountNumber: {
+        value: "01234567890123",
+        kind: "loan-account",
+        evidenceVersion: "fubon/loan/account-number-v1",
+        sourceField: "form1:loanAccountCombo option.text",
+      } as const,
       sourceConnectionScope: "fubon-connection-test",
       observedAt: "2026-02-01T00:00:00.000Z",
       startDate: "2026-01-01",
@@ -774,6 +823,21 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
     (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
     "not-asserted",
   );
+  const identity = (
+    admittedCaptures[0] as {
+      identity: {
+        accountNo: string;
+        accountNumber?: unknown;
+      };
+    }
+  ).identity;
+  assert.match(identity.accountNo, /^sha256:/u);
+  assert.deepEqual(identity.accountNumber, {
+    value: "01234567890123",
+    kind: "loan-account",
+    evidenceVersion: "fubon/loan/account-number-v1",
+    sourceField: "form1:loanAccountCombo option.text",
+  });
 });
 
 test("emits non-sensitive bounded navigation stage telemetry", async () => {

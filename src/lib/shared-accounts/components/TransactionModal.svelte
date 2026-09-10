@@ -60,6 +60,13 @@
       sortDirection = key === "amount" ? "desc" : "asc";
     }
   }
+
+  function formatTransactionAmount(row: TransactionRowDto) {
+    return formatMoney(
+      { currency: row.currency, value: row.amount, exact: row.amountExact },
+      { signed: true },
+    );
+  }
 </script>
 
 <svelte:window on:keydown={closeOnEscape} />
@@ -115,7 +122,7 @@
                   class:amount-negative={row.amount < 0}
                   class:amount-settled={account?.kind === "credit-card" && row.type.toLowerCase() === "billed"}
                 >
-                  {formatMoney({ currency: row.currency, value: row.amount }, { signed: true })}
+                  {formatTransactionAmount(row)}
                 </td>
                 <td class="right">{row.note || "--"}</td>
               </tr>

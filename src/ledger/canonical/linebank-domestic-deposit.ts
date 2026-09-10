@@ -14,6 +14,7 @@ import {
   DOMESTIC_DEPOSIT_SOURCE_RECORD_STAGE,
   admitLineBankHumanAttestedV13Capture,
   admitDomesticDepositCapture,
+  combineDomesticDepositDescription,
   type DomesticDepositCapture,
   type DomesticDepositExactAmount,
   type DomesticDepositSourceRecord,
@@ -54,6 +55,16 @@ export const LINEBANK_DOMESTIC_DEPOSIT_TIME_EVIDENCE_VERSION =
 /** Returned instead of the source account values so diagnostics remain safe to log. */
 export const LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_KEY_DESCRIPTOR =
   "acctNbr+arrId" as const;
+
+/** Optional depository number evidence carried beside the opaque composite key. */
+export const LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "linebank/domestic-deposit/account-number-v1" as const;
+export type LineBankDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "transactions.content.acctNbr";
+}>;
 
 /**
  * Public evidence narrows currency only for the explicitly staged domestic
@@ -1089,6 +1100,8 @@ export type LineBankHumanAttestedV13Record = {
   amount: DomesticDepositExactAmount;
   balanceAfter: DomesticDepositExactAmount | null;
   currency: "TWD";
+  /** Source-provided transaction description and note, or null when absent. */
+  description?: string | null;
   cancellationFlags: { cncdTxYn: "N"; cnclTxYn: "N" };
 };
 
@@ -1099,6 +1112,7 @@ export type LineBankHumanAttestedV13Capture = {
   contractVersion: typeof LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION;
   identityEpoch: number;
   accountKey: string;
+  accountNumber?: LineBankDomesticDepositAccountNumberEvidence;
   scope: { startDate: string; endDate: string };
   pages: LineBankTransactionPage[];
   records: LineBankHumanAttestedV13Record[];
@@ -1297,6 +1311,11 @@ export function validateLineBankHumanAttestedV13Capture(
   const firstPage = pages[0];
   const expectedPageCapacity = firstPage?.pageCnt;
   const expectedTotal = firstPage?.totTxCnt;
+  const accountNumber =
+    firstPage?.source &&
+    sourceAccountIdentityStatus(input.account, firstPage.source) === "match"
+      ? deriveLineBankDomesticDepositAccountNumberEvidence(firstPage.source)
+      : null;
   if (
     !firstPage ||
     !Number.isSafeInteger(expectedPageCapacity) ||
@@ -1544,6 +1563,7 @@ export function validateLineBankHumanAttestedV13Capture(
       amount,
       balanceAfter,
       currency: "TWD",
+      description: linebankTransactionDescription(row),
       cancellationFlags: { cncdTxYn: "N", cnclTxYn: "N" },
     });
   }
@@ -1554,6 +1574,7 @@ export function validateLineBankHumanAttestedV13Capture(
     contractVersion: LINEBANK_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
     identityEpoch: input.identityEpoch,
     accountKey,
+    ...(accountNumber ? { accountNumber } : {}),
     scope: {
       startDate: clean(input.scope.startDate),
       endDate: clean(input.scope.endDate),
@@ -1672,6 +1693,25 @@ function candidateAccountKey(account: LineBankAccount): string {
   const acctNbr = clean(account.acctNbr);
   const arrId = clean(account.arrId);
   return acctNbr && arrId ? `${acctNbr}:${arrId}` : "";
+}
+
+/**
+ * LINE Bank's account list and transaction envelope both expose `acctNbr`.
+ * The transaction envelope is checked against the requested account before
+ * this evidence is attached, while `arrId` remains part of the stable opaque
+ * account key and is never discarded.
+ */
+export function deriveLineBankDomesticDepositAccountNumberEvidence(
+  account: LineBankAccount,
+): LineBankDomesticDepositAccountNumberEvidence | null {
+  const value = clean(account.acctNbr);
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: LINEBANK_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "transactions.content.acctNbr",
+  };
 }
 
 type SourceAccountIdentityStatus = "match" | "missing" | "mismatch";
@@ -2279,6 +2319,7 @@ function canonicalSourceRecord(
     amount,
     balanceAfter,
     currency: "TWD",
+    description: linebankTransactionDescription(row),
     cancellation: "N",
     cancellationFlags: { cncdTxYn: "N", cnclTxYn: "N" },
     provenance: {
@@ -2286,6 +2327,16 @@ function canonicalSourceRecord(
       matchingRuleVersion: key.matchingRuleVersion,
     },
   };
+}
+
+function linebankTransactionDescription(
+  row: LineBankTransactionRow,
+): string | null {
+  const noteParts = [row.txRmkCont, row.txMemoVal]
+    .map(clean)
+    .filter(Boolean);
+  const note = [...new Set(noteParts)].join(" ");
+  return combineDomesticDepositDescription(row.bizTxFuncTpNm, note);
 }
 
 function validateSourceAuthority(

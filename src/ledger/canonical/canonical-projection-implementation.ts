@@ -156,6 +156,478 @@ function rebuildFailure(
     throw new Error(`Injected projection rebuild failure at ${stage}.`);
 }
 
+function rebuildCathayCanonicalProjectionInTransaction(
+  db: DatabaseSync,
+  options: CanonicalProjectionRebuildOptions,
+): CanonicalProjectionRebuildResult {
+  rejectStrayProjectionGenerations(db);
+  const latest = db
+    .prepare(
+      "SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits",
+    )
+    .get() as { max_sequence?: number };
+  const currentKnowledgePoint = Number(latest.max_sequence ?? 0);
+  const cutoff = options.cutoff?.commitSequence ?? currentKnowledgePoint;
+  if (
+    !Number.isSafeInteger(cutoff) ||
+    cutoff < 0 ||
+    cutoff > currentKnowledgePoint
+  )
+    throw new Error(
+      "Projection rebuild cutoff must be a retained Canonical Knowledge Point.",
+    );
+  let active = db
+    .prepare(
+      "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1",
+    )
+    .get() as { generation_id?: number } | undefined;
+  // Source-only stores can legitimately have canonical commits without ever
+  // publishing a financial projection generation. Create an empty baseline
+  // generation with a rebuild commit so the normal shadow rebuild path can
+  // still validate and switch atomically. The baseline uses the rebuild
+  // provenance source, which does not require source evidence that may be
+  // intentionally removed by the caller's purge closure.
+  let latestCommitSequence = currentKnowledgePoint;
+  if (!active) {
+    const bootstrapCommitId = uuidV7();
+    const bootstrapCommitSequence = latestCommitSequence + 1;
+    db.prepare(
+      "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')",
+    ).run(
+      bootstrapCommitId,
+      bootstrapCommitSequence,
+      recordedAtUtcUs((options.clock ?? (() => new Date().toISOString()))()),
+    );
+    db.prepare(
+      `INSERT INTO projection_generations(
+         generation_id, status, build_cutoff_commit_sequence, rule_version,
+         created_commit_id, validated_commit_id, switched_commit_id
+       ) VALUES (1, 'active', ?, 'canonical/projection/v1', ?, ?, ?)`,
+    ).run(
+      cutoff,
+      bootstrapCommitId,
+      bootstrapCommitId,
+      bootstrapCommitId,
+    );
+    db.prepare(
+      "INSERT INTO active_projection_generation(singleton_id, generation_id, switched_commit_id) VALUES (1, 1, ?)",
+    ).run(bootstrapCommitId);
+    recordProjectionGenerationEvent(
+      db,
+      1,
+      "created",
+      "rebuild",
+      bootstrapCommitId,
+    );
+    recordProjectionGenerationEvent(
+      db,
+      1,
+      "validated",
+      "rebuild",
+      bootstrapCommitId,
+    );
+    recordProjectionGenerationEvent(
+      db,
+      1,
+      "switched",
+      "rebuild",
+      bootstrapCommitId,
+    );
+    latestCommitSequence = bootstrapCommitSequence;
+    active = { generation_id: 1 };
+  }
+  const previousGeneration = Number(active.generation_id);
+  const generation =
+    Number(
+      (
+        db
+          .prepare(
+            "SELECT COALESCE(MAX(generation_id), 0) AS generation_id FROM projection_generations",
+          )
+          .get() as { generation_id?: number }
+      ).generation_id ?? 0,
+    ) + 1;
+  const commitId = uuidV7();
+  const commitSequence = latestCommitSequence + 1;
+  db.prepare(
+    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')",
+  ).run(
+    commitId,
+    commitSequence,
+    recordedAtUtcUs((options.clock ?? (() => new Date().toISOString()))()),
+  );
+  db.prepare(
+    `INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
+    VALUES (?, 'building', ?, 'canonical/projection/v1', ?)`,
+  ).run(generation, cutoff, commitId);
+  recordProjectionGenerationEvent(
+    db,
+    generation,
+    "created",
+    "rebuild",
+    commitId,
+  );
+  rebuildFailure(options.injectFailure, [
+    "creation",
+    "after-generation-creation",
+  ]);
+  db.prepare(
+    `INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
+    SELECT ?, t.transaction_id, revision.revision_id, ?, revision.commit_id
+    FROM financial_transactions t JOIN transaction_revisions revision ON revision.transaction_id = t.transaction_id
+    JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+    JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
+    WHERE revision_commit.commit_sequence <= ?
+      AND NOT EXISTS (SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
+        WHERE newer.transaction_id = revision.transaction_id AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > revision_commit.commit_sequence)
+      AND COALESCE((SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
+        WHERE transition.assertion_id = source_assertion.assertion_id AND transition_commit.commit_sequence <= ?
+        ORDER BY transition_commit.commit_sequence DESC, transition.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'`,
+  ).run(generation, commitId, cutoff, cutoff, cutoff);
+  db.prepare(
+    `INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
+    SELECT generation_id, transaction_id, revision_id, projection_commit_id, 'rebuild'
+    FROM projection_generation_transactions WHERE generation_id = ?`,
+  ).run(generation);
+  refreshCanonicalCategorizationGeneration(db, {
+    generationId: generation,
+    projectionCommitId: commitId,
+    knowledgePoint: cutoff,
+  });
+  db.prepare(
+    `INSERT INTO current_loan_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, identity.account_id, ?, identity.created_commit_id
+     FROM loan_account_identities identity
+     JOIN canonical_commits created ON created.commit_id = identity.created_commit_id
+     WHERE identity.account_type = 'loan' AND identity.stream = 'loan'
+       AND created.commit_sequence <= ?`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_loan_balance_observations(
+       generation_id, account_id, balance_kind, observation_id, revision_id,
+       projection_commit_id, revision_commit_id
+     )
+     SELECT ?, ranked.account_id, ranked.balance_kind, ranked.observation_id,
+            ranked.revision_id, ?, ranked.commit_id
+     FROM (
+       SELECT observation.account_id, observation.balance_kind,
+              observation.observation_id, revision.revision_id, revision.commit_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY observation.account_id, observation.balance_kind
+                ORDER BY revision.effective_at DESC,
+                         revision_commit.commit_sequence DESC,
+                         COALESCE(balance_fact.occurrence_index, -1) DESC,
+                         balance_record.occurrence_key DESC,
+                         observation.observation_key DESC,
+                         hex(revision.revision_id) DESC
+              ) AS rank
+       FROM balance_observations observation
+       JOIN balance_observation_revisions revision
+         ON revision.observation_id = observation.observation_id
+       JOIN canonical_commits revision_commit
+         ON revision_commit.commit_id = revision.commit_id
+       JOIN source_records balance_record
+         ON balance_record.source_record_id = revision.source_record_id
+       LEFT JOIN loan_transaction_facts balance_fact
+         ON balance_fact.revision_id = (
+           SELECT transaction_revision.revision_id
+           FROM transaction_revisions transaction_revision
+           WHERE transaction_revision.source_record_id = revision.source_record_id
+           ORDER BY transaction_revision.revision_number DESC
+           LIMIT 1
+         )
+       WHERE revision_commit.commit_sequence <= ?
+     ) ranked WHERE ranked.rank = 1`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_depository_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created
+         ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'depository'
+        AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+        AND created.commit_sequence <= ?`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_depository_balance_observations(
+       generation_id, account_id, balance_kind, currency,
+       observation_id, revision_id, projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id, ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind,
+                revision.currency, observation.observation_id,
+                revision.revision_id, revision.commit_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind,
+                               revision.currency
+                  ORDER BY revision.effective_at DESC,
+                           revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC,
+                           hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision
+             ON revision.observation_id = observation.observation_id
+           JOIN canonical_commits revision_commit
+             ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account
+             ON account.account_id = observation.account_id
+           JOIN canonical_commits account_created
+             ON account_created.commit_id = account.created_commit_id
+          WHERE account.account_type = 'depository'
+            AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+            AND observation.balance_kind IN ('ledger','available')
+            AND account_created.commit_sequence <= ?
+            AND revision_commit.commit_sequence <= ?
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(generation, commitId, cutoff, cutoff);
+  db.prepare(
+    `INSERT INTO current_credit_card_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'credit'
+        AND account.stream = 'credit-card'
+        AND created.commit_sequence <= ?`,
+  ).run(generation, commitId, cutoff);
+  db.prepare(
+    `INSERT INTO current_credit_card_balance_observations(
+       generation_id, account_id, balance_kind, currency, observation_id, revision_id,
+       estimate_kind, estimate_basis, estimate_formula,
+       component_limit_coefficient, component_limit_scale,
+       component_available_coefficient, component_available_scale,
+       projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id,
+            selected.estimate_kind, selected.estimate_basis, selected.formula,
+            selected.component_limit_coefficient, selected.component_limit_scale,
+            selected.component_available_coefficient, selected.component_available_scale,
+            ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind, revision.currency,
+                observation.observation_id, revision.revision_id, revision.commit_id,
+                detail.estimate_kind, detail.estimate_basis, detail.formula,
+                detail.component_limit_coefficient, detail.component_limit_scale,
+                detail.component_available_coefficient, detail.component_available_scale,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind, revision.currency
+                  ORDER BY revision.effective_at DESC, revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC, hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision ON revision.observation_id = observation.observation_id
+           JOIN credit_card_balance_estimate_details detail ON detail.revision_id = revision.revision_id
+           JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account ON account.account_id = observation.account_id
+           JOIN canonical_commits account_created ON account_created.commit_id = account.created_commit_id
+          WHERE account.account_type = 'credit'
+            AND account.stream = 'credit-card'
+            AND observation.balance_kind = 'credit_used'
+            AND account_created.commit_sequence <= ?
+            AND revision_commit.commit_sequence <= ?
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(generation, commitId, cutoff, cutoff);
+  db.prepare(
+    `INSERT INTO current_loan_relations(
+       generation_id, relation_id, projection_commit_id, relation_commit_id
+     )
+     SELECT ?, relation.relation_id, ?, relation.commit_id
+     FROM transaction_relations relation
+     JOIN canonical_commits relation_commit
+       ON relation_commit.commit_id = relation.commit_id
+     WHERE relation_commit.commit_sequence <= ?
+       AND COALESCE((
+         SELECT lifecycle.event_kind
+           FROM loan_repayment_relation_events lifecycle
+           JOIN canonical_commits lifecycle_commit
+             ON lifecycle_commit.commit_id = lifecycle.commit_id
+          WHERE lifecycle.relation_id = relation.relation_id
+            AND lifecycle_commit.commit_sequence <= ?
+          ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
+          LIMIT 1
+       ), 'observed') NOT IN ('withdrawn', 'superseded')`,
+  ).run(generation, commitId, cutoff, cutoff);
+  db.prepare(
+    `INSERT INTO current_loan_repayment_settlement_groups(
+       generation_id, settlement_group_id, projection_commit_id
+     )
+     SELECT ?, group_row.settlement_group_id, ?
+     FROM loan_repayment_settlement_groups group_row
+     JOIN canonical_commits created_commit
+       ON created_commit.commit_id = group_row.created_commit_id
+     WHERE created_commit.commit_sequence <= ?
+       AND COALESCE((
+         SELECT lifecycle.event_kind
+           FROM loan_repayment_relation_events lifecycle
+           JOIN canonical_commits lifecycle_commit
+             ON lifecycle_commit.commit_id = lifecycle.commit_id
+          WHERE lifecycle.settlement_group_id = group_row.settlement_group_id
+            AND lifecycle_commit.commit_sequence <= ?
+          ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
+          LIMIT 1
+       ), 'observed') NOT IN ('withdrawn', 'superseded')`,
+  ).run(generation, commitId, cutoff, cutoff);
+  const insertField =
+    db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const generationTransactions = db
+    .prepare(
+      "SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ?",
+    )
+    .all(generation) as Array<Record<string, unknown>>;
+  let fieldCount = 0;
+  for (const transaction of generationTransactions) {
+    for (const field of ["display_name", "note"] as const) {
+      const selected =
+        selectAssertionAsOf(
+          db,
+          blob(transaction.transaction_id),
+          field,
+          cutoff,
+          "user",
+        ) ??
+        selectAssertionAsOf(
+          db,
+          blob(transaction.transaction_id),
+          field,
+          cutoff,
+          "derived",
+        );
+      if (!selected) continue;
+      const assertion = blob(selected.assertion_id);
+      insertField.run(
+        generation,
+        blob(transaction.transaction_id),
+        field,
+        selected.value_text,
+        selected.origin,
+        selected.origin === "derived" ? assertion : null,
+        selected.origin === "user" ? assertion : null,
+        commitId,
+      );
+      fieldCount += 1;
+    }
+  }
+  rebuildFailure(options.injectFailure, [
+    "population",
+    "after-generation-population",
+  ]);
+  const dangling = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM projection_generation_transactions projected
+    LEFT JOIN financial_transactions transaction_row ON transaction_row.transaction_id = projected.transaction_id
+    LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
+    WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`,
+        )
+        .get(generation) as { count?: number }
+    ).count ?? 0,
+  );
+  if (dangling !== 0)
+    throw new Error(
+      "Projection rebuild validation failed for references or exact arithmetic.",
+    );
+  validateGenerationTransactionIntegrity(db, generation, cutoff);
+  validateGenerationFieldCompleteness(db, generation, cutoff);
+  validateSelectedAssertionProvenance(db, generation, cutoff);
+  validateGenerationExactAmounts(db, generation);
+  validateCanonicalAuthorityRoutes(db, generation);
+  validateGenerationFieldIntegrity(db, generation);
+  validateGenerationLifecycleCoordinates(db, generation);
+  validateUserAssertionProvenanceAuthority(db);
+  const duplicate = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`,
+        )
+        .get(generation) as { count?: number }
+    ).count ?? 0,
+  );
+  if (duplicate !== 0)
+    throw new Error(
+      "Projection rebuild validation found duplicate transaction authority.",
+    );
+  rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
+  db.prepare(
+    "UPDATE projection_generations SET status = 'validated', validated_commit_id = ? WHERE generation_id = ?",
+  ).run(commitId, generation);
+  recordProjectionGenerationEvent(
+    db,
+    generation,
+    "validated",
+    "rebuild",
+    commitId,
+  );
+  validateProjectionGenerationProvenance(db, generation);
+  rebuildFailure(options.injectFailure, ["pre-switch"]);
+  db.prepare(
+    "UPDATE projection_generations SET status = 'retired' WHERE status = 'active'",
+  ).run();
+  db.prepare(
+    "UPDATE projection_generations SET status = 'active', switched_commit_id = ? WHERE generation_id = ?",
+  ).run(commitId, generation);
+  recordProjectionGenerationEvent(
+    db,
+    generation,
+    "switched",
+    "rebuild",
+    commitId,
+  );
+  db.prepare(
+    "UPDATE active_projection_generation SET generation_id = ?, switched_commit_id = ? WHERE singleton_id = 1",
+  ).run(generation, commitId);
+  db.prepare("DELETE FROM current_transactions").run();
+  db.prepare(
+    `INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id)
+    SELECT transaction_id, revision_id, ?, projection_commit_id, revision_commit_id FROM projection_generation_transactions WHERE generation_id = ?`,
+  ).run(commitId, generation);
+  db.prepare("DELETE FROM current_transaction_fields").run();
+  db.prepare(
+    `INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
+    SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, ? FROM projection_generation_transaction_fields WHERE generation_id = ?`,
+  ).run(commitId, generation);
+  db.prepare(
+    "INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id",
+  ).run(commitId);
+  // Enrichment is a Runtime-owned projection as well. Rebuild it from the
+  // immutable routed assertions in the same transaction so route changes,
+  // lifecycle cutoffs, and a failed generation switch cannot expose a
+  // mixed current state.
+  rebuildCanonicalEnrichmentProjection(db, commitId, cutoff);
+  validateProjectionGenerationProvenance(db, generation);
+  return {
+    status: "switched",
+    previousGeneration,
+    generation,
+    cutoffCommitSequence: cutoff,
+    commitSequence,
+    transactionCount: Number(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM projection_generation_transactions WHERE generation_id = ?",
+          )
+          .get(generation) as { count?: number }
+      ).count ?? 0,
+    ),
+    fieldCount,
+  };
+}
+
 function rebuildCathayCanonicalProjectionOnce(
   ledgerDir: string,
   options: CanonicalProjectionRebuildOptions,
@@ -165,329 +637,25 @@ function rebuildCathayCanonicalProjectionOnce(
   try {
     db.exec("BEGIN IMMEDIATE");
     inTransaction = true;
-    rejectStrayProjectionGenerations(db);
-    const latest = db
-      .prepare(
-        "SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits",
-      )
-      .get() as { max_sequence?: number };
-    const currentKnowledgePoint = Number(latest.max_sequence ?? 0);
-    const cutoff = options.cutoff?.commitSequence ?? currentKnowledgePoint;
-    if (
-      !Number.isSafeInteger(cutoff) ||
-      cutoff < 0 ||
-      cutoff > currentKnowledgePoint
-    )
-      throw new Error(
-        "Projection rebuild cutoff must be a retained Canonical Knowledge Point.",
-      );
-    const active = db
-      .prepare(
-        "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1",
-      )
-      .get() as { generation_id?: number } | undefined;
-    if (!active)
-      throw new Error("Projection rebuild requires an active generation.");
-    const previousGeneration = Number(active.generation_id);
-    const generation =
-      Number(
-        (
-          db
-            .prepare(
-              "SELECT COALESCE(MAX(generation_id), 0) AS generation_id FROM projection_generations",
-            )
-            .get() as { generation_id?: number }
-        ).generation_id ?? 0,
-      ) + 1;
-    const commitId = uuidV7();
-    const commitSequence = currentKnowledgePoint + 1;
-    db.prepare(
-      "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, 'canonical/projection/v1', 'projection_rebuild')",
-    ).run(
-      commitId,
-      commitSequence,
-      recordedAtUtcUs((options.clock ?? (() => new Date().toISOString()))()),
-    );
-    db.prepare(
-      `INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id)
-      VALUES (?, 'building', ?, 'canonical/projection/v1', ?)`,
-    ).run(generation, cutoff, commitId);
-    recordProjectionGenerationEvent(
-      db,
-      generation,
-      "created",
-      "rebuild",
-      commitId,
-    );
-    rebuildFailure(options.injectFailure, [
-      "creation",
-      "after-generation-creation",
-    ]);
-    db.prepare(
-      `INSERT INTO projection_generation_transactions(generation_id, transaction_id, revision_id, projection_commit_id, revision_commit_id)
-      SELECT ?, t.transaction_id, revision.revision_id, ?, revision.commit_id
-      FROM financial_transactions t JOIN transaction_revisions revision ON revision.transaction_id = t.transaction_id
-      JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
-      JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
-      WHERE revision_commit.commit_sequence <= ?
-        AND NOT EXISTS (SELECT 1 FROM transaction_revisions newer JOIN canonical_commits newer_commit ON newer_commit.commit_id = newer.commit_id
-          WHERE newer.transaction_id = revision.transaction_id AND newer_commit.commit_sequence <= ? AND newer_commit.commit_sequence > revision_commit.commit_sequence)
-        AND COALESCE((SELECT transition.event_kind FROM assertion_transitions transition JOIN canonical_commits transition_commit ON transition_commit.commit_id = transition.commit_id
-          WHERE transition.assertion_id = source_assertion.assertion_id AND transition_commit.commit_sequence <= ?
-          ORDER BY transition_commit.commit_sequence DESC, transition.event_id DESC LIMIT 1), 'observed') <> 'withdrawn'`,
-    ).run(generation, commitId, cutoff, cutoff, cutoff);
-    db.prepare(
-      `INSERT INTO projection_generation_transaction_selection(generation_id, transaction_id, revision_id, selection_commit_id, selection_kind)
-      SELECT generation_id, transaction_id, revision_id, projection_commit_id, 'rebuild'
-      FROM projection_generation_transactions WHERE generation_id = ?`,
-    ).run(generation);
-    refreshCanonicalCategorizationGeneration(db, {
-      generationId: generation,
-      projectionCommitId: commitId,
-      knowledgePoint: cutoff,
-    });
-    db.prepare(
-      `INSERT INTO current_loan_accounts(
-         generation_id, account_id, projection_commit_id, created_commit_id
-       )
-       SELECT ?, identity.account_id, ?, identity.created_commit_id
-       FROM loan_account_identities identity
-       JOIN canonical_commits created ON created.commit_id = identity.created_commit_id
-       WHERE identity.account_type = 'loan' AND identity.stream = 'loan'
-         AND created.commit_sequence <= ?`,
-    ).run(generation, commitId, cutoff);
-    db.prepare(
-      `INSERT INTO current_loan_balance_observations(
-         generation_id, account_id, balance_kind, observation_id, revision_id,
-         projection_commit_id, revision_commit_id
-       )
-       SELECT ?, ranked.account_id, ranked.balance_kind, ranked.observation_id,
-              ranked.revision_id, ?, ranked.commit_id
-       FROM (
-         SELECT observation.account_id, observation.balance_kind,
-                observation.observation_id, revision.revision_id, revision.commit_id,
-                ROW_NUMBER() OVER (
-                  PARTITION BY observation.account_id, observation.balance_kind
-                  ORDER BY revision.effective_at DESC,
-                           revision_commit.commit_sequence DESC,
-                           COALESCE(balance_fact.occurrence_index, -1) DESC,
-                           balance_record.occurrence_key DESC,
-                           observation.observation_key DESC,
-                           hex(revision.revision_id) DESC
-                ) AS rank
-         FROM balance_observations observation
-         JOIN balance_observation_revisions revision
-           ON revision.observation_id = observation.observation_id
-         JOIN canonical_commits revision_commit
-           ON revision_commit.commit_id = revision.commit_id
-         JOIN source_records balance_record
-           ON balance_record.source_record_id = revision.source_record_id
-         LEFT JOIN loan_transaction_facts balance_fact
-           ON balance_fact.revision_id = (
-             SELECT transaction_revision.revision_id
-             FROM transaction_revisions transaction_revision
-             WHERE transaction_revision.source_record_id = revision.source_record_id
-             ORDER BY transaction_revision.revision_number DESC
-             LIMIT 1
-           )
-         WHERE revision_commit.commit_sequence <= ?
-       ) ranked WHERE ranked.rank = 1`,
-    ).run(generation, commitId, cutoff);
-    db.prepare(
-      `INSERT INTO current_loan_relations(
-         generation_id, relation_id, projection_commit_id, relation_commit_id
-       )
-       SELECT ?, relation.relation_id, ?, relation.commit_id
-       FROM transaction_relations relation
-       JOIN canonical_commits relation_commit
-         ON relation_commit.commit_id = relation.commit_id
-       WHERE relation_commit.commit_sequence <= ?
-         AND COALESCE((
-           SELECT lifecycle.event_kind
-             FROM loan_repayment_relation_events lifecycle
-             JOIN canonical_commits lifecycle_commit
-               ON lifecycle_commit.commit_id = lifecycle.commit_id
-            WHERE lifecycle.relation_id = relation.relation_id
-              AND lifecycle_commit.commit_sequence <= ?
-            ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
-            LIMIT 1
-         ), 'observed') NOT IN ('withdrawn', 'superseded')`,
-    ).run(generation, commitId, cutoff, cutoff);
-    db.prepare(
-      `INSERT INTO current_loan_repayment_settlement_groups(
-         generation_id, settlement_group_id, projection_commit_id
-       )
-       SELECT ?, group_row.settlement_group_id, ?
-       FROM loan_repayment_settlement_groups group_row
-       JOIN canonical_commits created_commit
-         ON created_commit.commit_id = group_row.created_commit_id
-       WHERE created_commit.commit_sequence <= ?
-         AND COALESCE((
-           SELECT lifecycle.event_kind
-             FROM loan_repayment_relation_events lifecycle
-             JOIN canonical_commits lifecycle_commit
-               ON lifecycle_commit.commit_id = lifecycle.commit_id
-            WHERE lifecycle.settlement_group_id = group_row.settlement_group_id
-              AND lifecycle_commit.commit_sequence <= ?
-            ORDER BY lifecycle_commit.commit_sequence DESC, lifecycle.event_id DESC
-            LIMIT 1
-         ), 'observed') NOT IN ('withdrawn', 'superseded')`,
-    ).run(generation, commitId, cutoff, cutoff);
-    const insertField =
-      db.prepare(`INSERT INTO projection_generation_transaction_fields(generation_id, transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-    const generationTransactions = db
-      .prepare(
-        "SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ?",
-      )
-      .all(generation) as Array<Record<string, unknown>>;
-    let fieldCount = 0;
-    for (const transaction of generationTransactions) {
-      for (const field of ["display_name", "note"] as const) {
-        const selected =
-          selectAssertionAsOf(
-            db,
-            blob(transaction.transaction_id),
-            field,
-            cutoff,
-            "user",
-          ) ??
-          selectAssertionAsOf(
-            db,
-            blob(transaction.transaction_id),
-            field,
-            cutoff,
-            "derived",
-          );
-        if (!selected) continue;
-        const assertion = blob(selected.assertion_id);
-        insertField.run(
-          generation,
-          blob(transaction.transaction_id),
-          field,
-          selected.value_text,
-          selected.origin,
-          selected.origin === "derived" ? assertion : null,
-          selected.origin === "user" ? assertion : null,
-          commitId,
-        );
-        fieldCount += 1;
-      }
-    }
-    rebuildFailure(options.injectFailure, [
-      "population",
-      "after-generation-population",
-    ]);
-    const dangling = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count FROM projection_generation_transactions projected
-      LEFT JOIN financial_transactions transaction_row ON transaction_row.transaction_id = projected.transaction_id
-      LEFT JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
-      WHERE projected.generation_id = ? AND (transaction_row.transaction_id IS NULL OR revision.revision_id IS NULL OR revision.transaction_id <> projected.transaction_id)`,
-          )
-          .get(generation) as { count?: number }
-      ).count ?? 0,
-    );
-    if (dangling !== 0)
-      throw new Error(
-        "Projection rebuild validation failed for references or exact arithmetic.",
-      );
-    validateGenerationTransactionIntegrity(db, generation, cutoff);
-    validateGenerationFieldCompleteness(db, generation, cutoff);
-    validateSelectedAssertionProvenance(db, generation, cutoff);
-    validateGenerationExactAmounts(db, generation);
-    validateCanonicalAuthorityRoutes(db, generation);
-    validateGenerationFieldIntegrity(db, generation);
-    validateGenerationLifecycleCoordinates(db, generation);
-    validateUserAssertionProvenanceAuthority(db);
-    const duplicate = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count FROM (SELECT transaction_id FROM projection_generation_transactions WHERE generation_id = ? GROUP BY transaction_id HAVING COUNT(*) <> 1)`,
-          )
-          .get(generation) as { count?: number }
-      ).count ?? 0,
-    );
-    if (duplicate !== 0)
-      throw new Error(
-        "Projection rebuild validation found duplicate transaction authority.",
-      );
-    rebuildFailure(options.injectFailure, ["validation", "after-validation"]);
-    db.prepare(
-      "UPDATE projection_generations SET status = 'validated', validated_commit_id = ? WHERE generation_id = ?",
-    ).run(commitId, generation);
-    recordProjectionGenerationEvent(
-      db,
-      generation,
-      "validated",
-      "rebuild",
-      commitId,
-    );
-    validateProjectionGenerationProvenance(db, generation);
-    rebuildFailure(options.injectFailure, ["pre-switch"]);
-    db.prepare(
-      "UPDATE projection_generations SET status = 'retired' WHERE status = 'active'",
-    ).run();
-    db.prepare(
-      "UPDATE projection_generations SET status = 'active', switched_commit_id = ? WHERE generation_id = ?",
-    ).run(commitId, generation);
-    recordProjectionGenerationEvent(
-      db,
-      generation,
-      "switched",
-      "rebuild",
-      commitId,
-    );
-    db.prepare(
-      "UPDATE active_projection_generation SET generation_id = ?, switched_commit_id = ? WHERE singleton_id = 1",
-    ).run(generation, commitId);
-    db.prepare("DELETE FROM current_transactions").run();
-    db.prepare(
-      `INSERT INTO current_transactions(transaction_id, revision_id, commit_id, projection_commit_id, revision_commit_id)
-      SELECT transaction_id, revision_id, ?, projection_commit_id, revision_commit_id FROM projection_generation_transactions WHERE generation_id = ?`,
-    ).run(commitId, generation);
-    db.prepare("DELETE FROM current_transaction_fields").run();
-    db.prepare(
-      `INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, projection_commit_id)
-      SELECT transaction_id, field_name, value_text, origin, derived_assertion_id, user_assertion_id, ? FROM projection_generation_transaction_fields WHERE generation_id = ?`,
-    ).run(commitId, generation);
-    db.prepare(
-      "INSERT INTO current_projection_state(generation, commit_id) VALUES (1, ?) ON CONFLICT(generation) DO UPDATE SET commit_id = excluded.commit_id",
-    ).run(commitId);
-    // Enrichment is a Runtime-owned projection as well. Rebuild it from the
-    // immutable routed assertions in the same transaction so route changes,
-    // lifecycle cutoffs, and a failed generation switch cannot expose a
-    // mixed current state.
-    rebuildCanonicalEnrichmentProjection(db, commitId, cutoff);
-    validateProjectionGenerationProvenance(db, generation);
+    const result = rebuildCathayCanonicalProjectionInTransaction(db, options);
     db.exec("COMMIT");
     inTransaction = false;
-    return {
-      status: "switched",
-      previousGeneration,
-      generation,
-      cutoffCommitSequence: cutoff,
-      commitSequence,
-      transactionCount: Number(
-        (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM projection_generation_transactions WHERE generation_id = ?",
-            )
-            .get(generation) as { count?: number }
-        ).count ?? 0,
-      ),
-      fieldCount,
-    };
+    return result;
   } catch (error) {
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
   } finally {
     db.close();
   }
+}
+
+/** Rebuild the live projection while a caller-owned data transaction is open. */
+export function canonicalProjectionRuntimeRebuildInTransaction(
+  db: DatabaseSync,
+  options: CanonicalProjectionRebuildOptions = {},
+): CanonicalProjectionRebuildResult {
+  assertValidatedCanonicalDatabase(db);
+  return rebuildCathayCanonicalProjectionInTransaction(db, options);
 }
 
 export function canonicalProjectionRuntimeRebuildInternal(

@@ -20,13 +20,136 @@ import {
   sinopacPostSubmitDialogOwner,
   sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
+  buildSinopacCurrentDepositBalanceCapture,
 } from "./sinopac-statements.ts";
+import { parseSinopacCurrentDepositBalanceSnapshot } from "./sinopac-current-deposit-balances.ts";
 import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
   sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
+
+const sinopacBalanceResponse = {
+  url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
+  status: 200 as const,
+  method: "POST",
+  headers: {
+    "content-type": "application/json;charset=UTF-8",
+    "cache-control": "no-cache,no-store",
+    date: "Wed, 09 Sep 2026 02:00:45 GMT",
+  },
+};
+const sinopacBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
+  payload: [
+    {
+      SubInfo: [
+        {
+          AcctText: "新店分行活期儲蓄存款",
+          AcctValue: "14101800082221",
+          AcctValueFormat: "###-###-#######-#",
+          Curr: "TWD",
+          CurText: "新台幣",
+          AvailBalance: "0",
+          AvailBalInt: null,
+          MaxAvail: "1000",
+          OutStdLmt: "0",
+          FixBalance: "50",
+          NonTrxferFlg: "False",
+          Category: "1001",
+          DigiTalFg: "",
+        },
+      ],
+      Header: "SUCCESS",
+      Message: "",
+    },
+  ],
+  response: sinopacBalanceResponse,
+  observedAt: "2026-09-09T10:01:02.123+08:00",
+})[0]!;
+const sinopacForeignBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
+  payload: [
+    {
+      SubInfo: [
+        {
+          AcctText: "外幣活期存款",
+          AcctValue: "19901800595924",
+          AcctValueFormat: "###-###-#######-#",
+          Curr: "USD",
+          CurText: "美元",
+          AvailBalance: "123.450",
+          AvailBalInt: null,
+          MaxAvail: "125.000",
+          OutStdLmt: "0",
+          FixBalance: "0",
+          NonTrxferFlg: "False",
+          Category: "1001",
+          DigiTalFg: "",
+        },
+      ],
+      Header: "SUCCESS",
+      Message: "",
+    },
+  ],
+  response: sinopacBalanceResponse,
+  observedAt: "2026-09-09T10:01:02.123+08:00",
+})[0]!;
+const sinopacBalanceIdentity = {
+  identity: {
+    integrationNamespace: "sinopac",
+    sourceConnectionKey: "sha256:sinopac-connection",
+    identityEpochKey: "sha256:sinopac-epoch",
+    subjectDigest: "sha256:sinopac-subject",
+    accountNo: "14101800082221",
+    sourceAccountKey: "14101800082221",
+    stream: "domestic-deposit",
+  },
+  sourceCurrency: "TWD",
+};
+const sinopacCurrentCapture = buildSinopacCurrentDepositBalanceCapture(
+  sinopacBalanceRow,
+  sinopacBalanceIdentity,
+);
+assert.equal(sinopacCurrentCapture.observations.length, 1);
+assert.equal(sinopacCurrentCapture.observations[0]?.balanceKind, "ledger");
+assert.equal(sinopacCurrentCapture.observations[0]?.sourceField, "AvailBalance");
+assert.equal(
+  sinopacCurrentCapture.observations.some(
+    (observation) => observation.balanceKind === "available",
+  ),
+  false,
+);
+assert.equal(
+  (sinopacCurrentCapture.records[0]?.compact.providerFields as { fixBalance?: string })
+    .fixBalance,
+  "50",
+);
+assert.throws(
+  () =>
+    buildSinopacCurrentDepositBalanceCapture(sinopacBalanceRow, {
+      ...sinopacBalanceIdentity,
+      identity: {
+        ...sinopacBalanceIdentity.identity,
+        accountNo: "14101800082222",
+        sourceAccountKey: "14101800082222",
+      },
+    }),
+  /does not match/i,
+);
+assert.throws(
+  () =>
+    buildSinopacCurrentDepositBalanceCapture(sinopacForeignBalanceRow, {
+      ...sinopacBalanceIdentity,
+      identity: {
+        ...sinopacBalanceIdentity.identity,
+        accountNo: "19901800595924",
+        sourceAccountKey: "19901800595924",
+        stream: "foreign-currency-deposit",
+      },
+      sourceCurrency: "EUR",
+    }),
+  /currency does not match/i,
+);
 
 assert.deepEqual(
   sinopacQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -295,6 +418,10 @@ try {
     join(tmpdir(), "sinopac-workflow-financial-"),
   );
   try {
+    const numericAccounts = [
+      { DataText: "TWD numeric account", DataValue: "14101800082221", DisplayText: "TWD" },
+      { DataText: "USD numeric account", DataValue: "19901800595924", DisplayText: "USD" },
+    ];
     const financialResult = await runSinopacStatements(
       {} as never,
       {
@@ -303,10 +430,14 @@ try {
         accountFilters: [],
         currencyFilters: [],
       },
-      accounts,
+      numericAccounts,
       {
         canonicalSourceLedgerDir: sourceDir,
         canonicalFinancialLedgerDir: financialDir,
+        readCurrentDepositBalances: async () => [
+          sinopacBalanceRow,
+          sinopacForeignBalanceRow,
+        ],
         queryTransactions: async (account) => ({
           Header: "SUCCESS",
           SubInfo: [
@@ -352,18 +483,54 @@ try {
         2,
         "domestic and human-attested foreign SinoPac rows are admitted",
       );
+      const foreignSourceCaptures = financialStore.db
+        .prepare(
+          `SELECT authority_route, COUNT(*) AS count
+             FROM source_captures
+            WHERE stream = 'foreign-currency-deposit'
+            GROUP BY authority_route
+            ORDER BY authority_route`,
+        )
+        .all() as Array<{
+        authority_route?: unknown;
+        count?: number;
+      }>;
+      assert.deepEqual(
+        foreignSourceCaptures.map((capture) => [
+          String(capture.authority_route ?? ""),
+          Number(capture.count ?? 0),
+        ]),
+        [
+          ["sinopac/foreign-currency/current-balance-v1", 1],
+          ["sinopac/foreign-currency/deposit/human-attested-v1", 1],
+        ],
+        "SinoPac foreign currency retains separate transaction and current-balance authority routes",
+      );
+      const financialAccounts = financialStore.db
+        .prepare(
+          "SELECT source_account_key, account_no FROM financial_accounts ORDER BY source_account_key",
+        )
+        .all() as Array<{ source_account_key: string; account_no: string }>;
+      assert.deepEqual(
+        financialAccounts.map((account) => [
+          account.source_account_key,
+          account.account_no,
+        ]),
+        [
+          ["14101800082221", "14101800082221"],
+          ["19901800595924", "19901800595924"],
+        ],
+      );
       assert.equal(
         Number(
           (
             financialStore.db
-              .prepare(
-                "SELECT COUNT(*) AS count FROM source_captures WHERE stream = 'foreign-currency-deposit'",
-              )
+              .prepare("SELECT COUNT(*) AS count FROM balance_observations")
               .get() as { count?: number }
           ).count ?? 0,
         ),
-        1,
-        "SinoPac foreign currency uses the human-attested canonical contract",
+        2,
+        "SinoPac current balance rows attach to the admitted domestic and FX identities",
       );
     } finally {
       financialStore.close();
@@ -387,6 +554,7 @@ try {
       {
         canonicalSourceLedgerDir: sourceDir,
         canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+        readCurrentDepositBalances: async () => [],
         queryTransactions: async () => ({
           Header: "SUCCESS",
           SubInfo: [
@@ -471,6 +639,7 @@ try {
         {
           canonicalSourceLedgerDir: sourceDir,
           canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+          readCurrentDepositBalances: async () => [],
           queryTransactions: async () => ({
             Header: "SUCCESS",
             SubInfo: [
@@ -567,6 +736,7 @@ try {
           {
             canonicalSourceLedgerDir: sourceDir,
             canonicalFinancialLedgerDir: foreignCollisionDir,
+            readCurrentDepositBalances: async () => [],
             queryTransactions: async () => ({
               Header: "SUCCESS",
               SubInfo: [

@@ -101,6 +101,26 @@ test("admits only the live-verified Yuanta 00-plus-14 loan-account alias", () =>
 const token = (label: string): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(`relation-check:${label}`).digest("base64url")}`;
 
+/** Rewind a freshly bootstrapped database to the physical v23 source shape.
+ * Lowering user_version alone leaves the v26 split identifier columns in
+ * place, which is not a valid historical migration fixture. */
+function rewindCurrentDatabaseToV23PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    DELETE FROM schema_migrations WHERE version > 23;
+    PRAGMA user_version = 23;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function loanCapture(
   sourceConnectionKey: string,
   identityEpochKey: string,
@@ -412,11 +432,14 @@ test("v9 loan relation schema migrates transactionally and survives reopen", asy
       "counterparty_account_evidence_support",
       "transaction_counterparty_account_evidence",
     ]) downgraded.exec(`DROP TABLE ${table}`);
+    rewindCurrentDatabaseToV23PhysicalSchema(downgraded);
     downgraded.exec(`
+      PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits;
       DELETE FROM canonical_contract_purges;
       DELETE FROM schema_migrations WHERE version > 9;
       PRAGMA user_version = 9;
+      PRAGMA foreign_keys = ON;
     `);
     downgraded.close();
 

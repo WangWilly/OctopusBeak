@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "vite";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 const source = await readFile(
   new URL("./cathay-all-statements.ts", import.meta.url),
@@ -238,6 +242,187 @@ assert.deepEqual(allProductsOutput.downloads, [
   { type: "domestic", ...domesticDownload },
   { type: "foreign", ...foreignDownload },
 ]);
+
+const canonicalLedgerDirectory = await mkdtemp(
+  join(tmpdir(), "cathay-all-canonical-"),
+);
+const previousCanonicalLedgerDirectory =
+  process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
+process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR =
+  canonicalLedgerDirectory;
+const foreignCanonicalAccount = {
+  account: "CATHAY-FOREIGN-ALL-133",
+  currencyList: [{ currencyCode: "USD" }],
+};
+const foreignCanonicalStatement = {
+  currencyCode: "USD",
+  transferInfos: [
+    {
+      sequenceNumber: "1",
+      transferDate: "2026-09-07",
+      debitCreditType: "C",
+      amount: "10.00",
+      balance: "110.00",
+      exRate: "31.50",
+      memo: "foreign deposit",
+    },
+  ],
+};
+let foreignCanonicalAttempts = 0;
+let currentForeignBalanceCaptures = 0;
+const foreignCanonicalLifecycle: string[] = [];
+let foreignCanonicalOutput: Awaited<ReturnType<typeof runCathayAllStatements>>;
+try {
+  foreignCanonicalOutput = await runCathayAllStatements(
+    { page: { on: () => undefined }, session: "cathay-session" },
+    {
+      credentials: {},
+      statementTypes: ["foreign_currency"],
+      dateRange: "one_year",
+      accountFilters: [],
+      domesticAccountFilters: undefined,
+      foreignAccountFilters: undefined,
+      currencyFilters: [],
+      trustDevice: false,
+    },
+    {
+      signInCathay: async () => ({ usedExistingSession: true }),
+      createCathaySession: async () => ({}),
+      retryableStage: async (options: {
+        reset?: () => Promise<void>;
+        run: () => Promise<unknown>;
+      }) => {
+        try {
+          return await options.run();
+        } catch (error) {
+          await options.reset?.();
+          return options.run();
+        }
+      },
+      downloadCathayStatements: async () => [],
+      downloadCathayForeignStatements: async (
+        _page: unknown,
+        _dateRange: string,
+        _accountFilters: string[],
+        _currencyFilters: string[],
+        _session: unknown,
+        onStatement?: (
+          account: typeof foreignCanonicalAccount,
+          currency: string,
+          statement: typeof foreignCanonicalStatement,
+        ) => void,
+      ) => {
+        foreignCanonicalAttempts += 1;
+        assert.equal(typeof onStatement, "function");
+        onStatement?.(
+          foreignCanonicalAccount,
+          "USD",
+          foreignCanonicalStatement,
+        );
+        if (foreignCanonicalAttempts === 1)
+          throw new Error("transient Cathay foreign download failure");
+        return [foreignDownload];
+      },
+      captureCathayCurrentForeignDepositBalances: async (
+        _page: unknown,
+        captures: readonly unknown[],
+        ledgerDir: string | undefined,
+      ) => {
+        currentForeignBalanceCaptures += 1;
+        assert.equal(captures.length, 1);
+        assert.ok(ledgerDir);
+        const committedStore = createCanonicalSourceStore(
+          join(ledgerDir, "canonical.sqlite"),
+        );
+        try {
+          assert.equal(
+            Number(
+              (
+                committedStore.db
+                  .prepare("SELECT COUNT(*) AS count FROM financial_accounts")
+                  .get() as { count?: number }
+              ).count ?? 0,
+            ),
+            1,
+          );
+          foreignCanonicalLifecycle.push("foreign-account-commit-complete");
+        } finally {
+          committedStore.close();
+        }
+        return [];
+      },
+    },
+  );
+} finally {
+  if (previousCanonicalLedgerDirectory === undefined)
+    delete process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
+  else
+    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR =
+      previousCanonicalLedgerDirectory;
+}
+assert.equal(foreignCanonicalAttempts, 2);
+assert.equal(currentForeignBalanceCaptures, 1);
+assert.deepEqual(foreignCanonicalLifecycle, ["foreign-account-commit-complete"]);
+assert.equal(foreignCanonicalOutput.count, 1);
+const canonicalStore = createCanonicalSourceStore(
+  join(canonicalLedgerDirectory, "canonical.sqlite"),
+);
+try {
+  assert.equal(
+    Number(
+      (
+        canonicalStore.db
+          .prepare("SELECT COUNT(*) AS count FROM source_captures")
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    1,
+  );
+  assert.equal(
+    Number(
+      (
+        canonicalStore.db
+          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+          .get() as { count?: number }
+      ).count ?? 0,
+    ),
+    1,
+  );
+} finally {
+  canonicalStore.close();
+  await rm(canonicalLedgerDirectory, { recursive: true, force: true });
+}
+
+let canonicalCommitAttempts = 0;
+const canonicalCommitFailureOutput = await runCathayAllStatements(
+  { page: { on: () => undefined }, session: "cathay-session" },
+  {
+    credentials: {},
+    statementTypes: ["foreign_currency"],
+    dateRange: "one_year",
+    accountFilters: [],
+    domesticAccountFilters: undefined,
+    foreignAccountFilters: undefined,
+    currencyFilters: [],
+    trustDevice: false,
+  },
+  {
+    signInCathay: async () => ({ usedExistingSession: true }),
+    createCathaySession: async () => ({}),
+    retryableStage: async (options: { run: () => Promise<unknown> }) =>
+      options.run(),
+    downloadCathayStatements: async () => [],
+    downloadCathayForeignStatements: async () => [foreignDownload],
+    commitCathayForeignCanonicalCaptures: async () => {
+      canonicalCommitAttempts += 1;
+      throw new Error("canonical foreign commit unavailable");
+    },
+    captureCathayCurrentForeignDepositBalances: async () => [],
+  },
+);
+assert.equal(canonicalCommitAttempts, 1);
+assert.equal(canonicalCommitFailureOutput.count, 0);
+assert.deepEqual(canonicalCommitFailureOutput.downloads, []);
 
 const domesticFailureOutput = await runCathayAllStatements(
   { page: { on: () => undefined }, session: "cathay-session" },

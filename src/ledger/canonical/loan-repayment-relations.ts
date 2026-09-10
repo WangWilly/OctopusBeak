@@ -645,7 +645,7 @@ function accountFromScope(
       `SELECT account_id FROM capture_scopes
        WHERE capture_id = ? AND account_id IS NOT NULL
          AND source_connection_id = ? AND identity_epoch_id = ?
-         AND (? IS NULL OR account_no = ?)
+         AND (? IS NULL OR source_account_key = ?)
        ORDER BY scope_id LIMIT 1`,
     )
     .get(captureId, sourceConnectionId, identityEpochId, accountKey ?? null, accountKey ?? null) as
@@ -656,7 +656,7 @@ function accountFromScope(
   const account = db
     .prepare(
       `SELECT account_id FROM financial_accounts
-       WHERE source_connection_id = ? AND identity_epoch_id = ? AND account_no = ?`,
+       WHERE source_connection_id = ? AND identity_epoch_id = ? AND source_account_key = ?`,
     )
     .get(sourceConnectionId, identityEpochId, accountKey) as
     | { account_id?: unknown }
@@ -696,7 +696,7 @@ function captureContext(
     .prepare(
       `SELECT record.source_record_id, record.occurrence_key,
               revision.transaction_id, account.account_id, account.account_type,
-              account.stream, account.account_no,
+              account.stream, account.source_account_key AS account_no,
               revision.effective_on, revision.amount_coefficient,
               revision.amount_scale, revision.currency, revision.direction,
               loan_fact.event_kind
@@ -752,7 +752,7 @@ function captureContext(
     const replayedTransaction = db
       .prepare(
         `SELECT transaction_row.transaction_id, account.account_id,
-                account.account_type, account.stream, account.account_no,
+                account.account_type, account.stream, account.source_account_key AS account_no,
                 revision.effective_on, revision.amount_coefficient,
                 revision.amount_scale, revision.currency, revision.direction,
                 loan_fact.event_kind
@@ -1351,7 +1351,7 @@ function transactionRows(
               connection.integration_namespace, epoch.epoch_key,
               record.source_record_id, record.occurrence_key,
               transaction_row.transaction_id, transaction_row.account_id,
-              account.account_type, account.stream, account.account_no,
+              account.account_type, account.stream, account.source_account_key AS account_no,
               revision.effective_on, revision.amount_coefficient,
               revision.amount_scale, revision.currency, revision.direction,
               loan_fact.event_kind

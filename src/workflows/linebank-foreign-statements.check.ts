@@ -14,7 +14,7 @@ import {
 import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 
 const account = {
-  acctNbr: "LINE-FOREIGN-133",
+  acctNbr: "14101800082221",
   arrId: "ARR-133",
   acctNick: "外幣活存",
   currCd: "USD",
@@ -42,7 +42,7 @@ const input = buildLinebankForeignCurrencyCaptureInput({
           bizTxFuncTpNm: "foreign deposit",
         },
       ],
-      source: { acctNbr: "LINE-FOREIGN-133", arrId: "ARR-133", opnDtm: 133 },
+      source: { acctNbr: "14101800082221", arrId: "ARR-133", opnDtm: 133 },
       responseCode: "200",
     },
   ],
@@ -50,6 +50,13 @@ const input = buildLinebankForeignCurrencyCaptureInput({
 });
 assert.equal(input.records[0]!.currencyEvidence.currency, "USD");
 assert.equal(input.records[0]!.direction, "inflow");
+assert.deepEqual(input.accountNumber, {
+  value: "14101800082221",
+  kind: "depository-account",
+  evidenceVersion: "linebank/foreign-account/account-number-v1",
+  sourceField:
+    "GET /v1/account/common/payables content.dpstAcctList[].acctNbr",
+});
 assert.equal(
   admitForeignCurrencyDepositCapture(input).records[0]!.currency,
   "USD",
@@ -77,7 +84,7 @@ const distinctLinebankOccurrence = buildLinebankForeignCurrencyCaptureInput({
       crrnDpstNthCnt: 1,
       bizTxFuncTpNm: "foreign deposit",
     }],
-    source: { acctNbr: "LINE-FOREIGN-133", arrId: "ARR-133", opnDtm: 133 },
+    source: { acctNbr: "14101800082221", arrId: "ARR-133", opnDtm: 133 },
     responseCode: "200",
   }],
   captureOccurrenceId: "linebank-foreign-check-distinct-txdtm",
@@ -108,7 +115,7 @@ for (const directionCode of ["1", "2"] as const) {
           crrnDpstNthCnt: 1,
           bizTxFuncTpNm: "invalid signed inflow",
         }],
-        source: { acctNbr: "LINE-FOREIGN-133", arrId: "ARR-133", opnDtm: 133 },
+        source: { acctNbr: "14101800082221", arrId: "ARR-133", opnDtm: 133 },
         responseCode: "200",
       }],
       captureOccurrenceId: "linebank-foreign-sign-conflict",

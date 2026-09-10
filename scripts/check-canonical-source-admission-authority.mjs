@@ -25,6 +25,8 @@ const INTERNAL_OWNERS = new Set([
   "src/ledger/canonical/canonical-source-capture-admission.ts",
   "src/ledger/canonical/canonical-financial-deposit-writer.ts",
   "src/ledger/canonical/canonical-source-store.ts",
+  "src/ledger/canonical/current-deposit-balance-writer.ts",
+  "src/ledger/canonical/credit-card-current-balance-writer.ts",
 ]);
 
 const SOURCE_PERSISTENCE_OWNER =
@@ -37,6 +39,7 @@ const SCHEMA_MIGRATION_FUNCTIONS = new Set([
   "applyV8SourceEvidenceSchema",
   "migrateV3ToV4",
   "migrateV4ToV5",
+  "migrateV27ToV28",
 ]);
 
 const OWNED_SOURCE_TABLES = [

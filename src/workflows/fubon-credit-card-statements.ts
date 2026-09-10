@@ -2,7 +2,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Frame, Locator, Page } from "playwright";
+import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
@@ -20,6 +20,15 @@ import {
   normalizeFubonCreditCardPan,
   type FubonCreditCardPanFingerprintKey,
 } from "../ledger/canonical/fubon-credit-card-pan.ts";
+import {
+  admitCreditCardCurrentBalanceCapture,
+  canonicalCreditCardCurrentBalanceIdentity,
+  commitCreditCardCurrentBalanceCapture,
+  creditCardCurrentBalanceSourceRecord,
+  creditCardCurrentUsedAmountFromLimitAndAvailable,
+  type CreditCardCurrentBalanceObservationInput,
+  type CreditCardExactAmount,
+} from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -142,6 +151,49 @@ type StatementRowsResult = {
   paymentStatuses: PaymentStatus[];
   summaries: IssuerStatementSummary[];
 };
+
+export type FubonCurrentUsedCreditSnapshot = Readonly<{
+  limit: string;
+  available: string;
+  usedCredit: string;
+  sourceField: "正卡人信用額度-正卡人可用額度";
+  endpoint?: string;
+  httpDate?: string;
+  cacheControl?: string;
+}>;
+
+/** Sanitized current-credit transport/parser evidence; never includes page
+ * amounts, card masks, query values outside the public navigation contract, or
+ * response bodies. */
+export type FubonCurrentUsedCreditDiagnostic = Readonly<{
+  responseMatched: boolean;
+  responseStatus: number | null;
+  hostname: string | null;
+  path: string | null;
+  queryKeys: readonly string[];
+  publicQuery: Readonly<{
+    showLogin?: string;
+    menuId?: string;
+  }>;
+  hasHttpDate: boolean;
+  hasCacheControl: boolean;
+  tableCount: number;
+  approvedRootCount: number;
+  candidateTableCount: number;
+  matchingTableCount: number;
+  reason:
+    | "ready"
+    | "missing-table"
+    | "missing-response"
+    | "invalid-response-status"
+    | "missing-response-evidence"
+    | "parse-error";
+}>;
+
+type FubonCurrentUsedCreditReadResult = Readonly<{
+  snapshot?: FubonCurrentUsedCreditSnapshot;
+  diagnostic: FubonCurrentUsedCreditDiagnostic;
+}>;
 
 export type StatementSummary = {
   period: string;
@@ -583,6 +635,261 @@ async function openCreditCardFunctionPage(
   await clickLinkByClassOrText(page, classSelector, text);
 }
 
+function fubonEndpointDiagnostic(response: Response | null): Pick<
+  FubonCurrentUsedCreditDiagnostic,
+  | "responseMatched"
+  | "responseStatus"
+  | "hostname"
+  | "path"
+  | "queryKeys"
+  | "publicQuery"
+  | "hasHttpDate"
+  | "hasCacheControl"
+> {
+  if (!response) {
+    return {
+      responseMatched: false,
+      responseStatus: null,
+      hostname: null,
+      path: null,
+      queryKeys: [],
+      publicQuery: {},
+      hasHttpDate: false,
+      hasCacheControl: false,
+    };
+  }
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(response.url());
+  } catch {
+    parsed = undefined;
+  }
+  const publicQuery: { showLogin?: string; menuId?: string } = {};
+  if (parsed?.searchParams.has("showLogin"))
+    publicQuery.showLogin = parsed.searchParams.get("showLogin") ?? "";
+  if (parsed?.searchParams.has("menuId"))
+    publicQuery.menuId = parsed.searchParams.get("menuId") ?? "";
+  const headers = response.headers();
+  return {
+    responseMatched: true,
+    responseStatus: response.status(),
+    hostname: parsed?.hostname ?? null,
+    path: parsed?.pathname ?? null,
+    queryKeys: parsed ? [...new Set([...parsed.searchParams.keys()])].sort() : [],
+    publicQuery,
+    hasHttpDate: Boolean(headers.date),
+    hasCacheControl: Boolean(headers["cache-control"]),
+  };
+}
+
+/** Shape-only parser telemetry used to distinguish a route mismatch from a
+ * page/table mismatch without logging issuer values. */
+export function diagnoseFubonCurrentCreditCardUsedCreditHtml(
+  html: string,
+): Pick<
+  FubonCurrentUsedCreditDiagnostic,
+  "tableCount" | "approvedRootCount" | "candidateTableCount" | "matchingTableCount"
+> {
+  const tables = fubonHtmlTables(html);
+  const approvedRoots = tables.filter((table) =>
+    /(?:^|\s)CBO_totalTb(?:\s|$)/u.test(table.className),
+  );
+  const candidates = tables.filter((table) =>
+    approvedRoots.some(
+      (root) => table.start >= root.start && table.end <= root.end,
+    ),
+  );
+  const matching = candidates.filter((table) => {
+    const rows = fubonDirectTableRows(table, tables);
+    return (
+      rows.some((row) => row[0] === "正卡人信用額度") &&
+      rows.some((row) => row[0] === "正卡人可用額度")
+    );
+  });
+  return {
+    tableCount: tables.length,
+    approvedRootCount: approvedRoots.length,
+    candidateTableCount: candidates.length,
+    matchingTableCount: matching.length,
+  };
+}
+
+function fubonCurrentCreditDiagnostic(
+  html: string,
+  response: Response | null,
+  reason: FubonCurrentUsedCreditDiagnostic["reason"],
+): FubonCurrentUsedCreditDiagnostic {
+  let shape: Pick<
+    FubonCurrentUsedCreditDiagnostic,
+    "tableCount" | "approvedRootCount" | "candidateTableCount" | "matchingTableCount"
+  > = {
+    tableCount: 0,
+    approvedRootCount: 0,
+    candidateTableCount: 0,
+    matchingTableCount: 0,
+  };
+  try {
+    shape = diagnoseFubonCurrentCreditCardUsedCreditHtml(html);
+  } catch {
+    // The caller reports parse-error; keep this diagnostic bounded and safe.
+  }
+  return {
+    ...fubonEndpointDiagnostic(response),
+    ...shape,
+    reason,
+  };
+}
+
+async function readFubonCurrentUsedCredit(
+  page: Page,
+): Promise<FubonCurrentUsedCreditReadResult> {
+  const responsePromise = page
+    .waitForResponse(
+      (response) =>
+        response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
+        response.request().method() === "GET",
+      { timeout: 60_000 },
+    )
+    .catch(() => null);
+  await openCreditCardFunctionPage(page, "task_CCCQU002.menu_CCC0201", "帳務查詢");
+  const deadline = Date.now() + 60_000;
+  let scope: BrowserScope | undefined;
+  while (Date.now() < deadline && !scope) {
+    for (const candidate of [page, ...page.frames()]) {
+      if (await candidate.locator("table.CBO_totalTb").count().catch(() => 0)) {
+        scope = candidate;
+        break;
+      }
+    }
+    if (!scope) await page.waitForTimeout(250);
+  }
+  if (!scope) throw new Error("Fubon current credit balance table was not found.");
+  const html = await scope.locator("body").innerHTML();
+  const response = await responsePromise;
+  let parsed: FubonCurrentUsedCreditSnapshot | undefined;
+  try {
+    parsed = parseFubonCurrentCreditCardUsedCreditHtml(html);
+  } catch {
+    return {
+      diagnostic: fubonCurrentCreditDiagnostic(html, response, "parse-error"),
+    };
+  }
+  let reason: FubonCurrentUsedCreditDiagnostic["reason"] = "ready";
+  const endpoint = fubonEndpointDiagnostic(response);
+  if (!parsed) reason = "missing-table";
+  else if (!response) reason = "missing-response";
+  else if (response.status() !== 200) reason = "invalid-response-status";
+  else if (!endpoint.hasHttpDate || !endpoint.hasCacheControl)
+    reason = "missing-response-evidence";
+  const diagnostic = fubonCurrentCreditDiagnostic(html, response, reason);
+  if (reason !== "ready" || !parsed || !response) return { diagnostic };
+  const headers = response.headers();
+  return {
+    snapshot: {
+      ...parsed,
+      endpoint: response.url(),
+      httpDate: headers.date,
+      cacheControl: headers["cache-control"],
+    },
+    diagnostic,
+  };
+}
+
+function fubonCreditCurrentSnapshotDate(httpDate: string): string {
+  const milliseconds = Date.parse(httpDate);
+  if (!Number.isFinite(milliseconds)) throw new Error("Fubon credit current snapshot HTTP Date is invalid.");
+  return new Date(milliseconds).toISOString().slice(0, 10);
+}
+
+function fubonCreditCurrentSnapshotCapture(
+  capture: FubonCreditCardValidatedCapture,
+  snapshot: FubonCurrentUsedCreditSnapshot,
+): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
+  if (!snapshot.endpoint || !snapshot.httpDate || !snapshot.cacheControl)
+    throw new Error("Fubon current credit snapshot is missing response evidence.");
+  const effectiveAt = new Date(Date.parse(snapshot.httpDate)).toISOString();
+  const limit = fubonCreditExactAmount(snapshot.limit);
+  const available = fubonCreditExactAmount(snapshot.available);
+  const used = creditCardCurrentUsedAmountFromLimitAndAvailable(limit, available);
+  const sourceRecordKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["fubon-credit-current-used-credit-v1", capture.identity.accountNaturalKey, snapshot.httpDate]))
+    .digest("base64url")}`;
+  const providerKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["fubon-credit-current-used-credit-provider-v1", snapshot.endpoint]))
+    .digest("base64url")}`;
+  const time = {
+    effectiveAt,
+    effectiveTimeBasis: "provider-http-date" as const,
+    effectiveTimeRuleVersion: "fubon/credit-card/current-used-credit-v1",
+    sourceField: "HTTP Date" as const,
+    sourceValue: snapshot.httpDate,
+    contractVersion: "fubon/credit-card/current-used-credit-v1",
+  };
+  const estimate = {
+    kind: "estimate" as const,
+    basis: "credit-limit-minus-available" as const,
+    formula: "正卡人信用額度-正卡人可用額度",
+    limit,
+    available,
+  };
+  const observation: CreditCardCurrentBalanceObservationInput = {
+    observationKey: "issuer-aggregate",
+    balanceKind: "credit_used",
+    balance: used,
+    currency: "TWD",
+    time,
+    sourceRecordKey,
+    sourceField: snapshot.sourceField,
+    estimate,
+  };
+  return admitCreditCardCurrentBalanceCapture({
+    captureId: `${capture.captureId}:current-used-credit`,
+    authorityRoute: "fubon/credit-card/current-used-credit-v1",
+    contractVersion: "fubon/credit-card/current-used-credit-v1",
+    subjectDigest: capture.identity.accountNaturalKey,
+    identity: canonicalCreditCardCurrentBalanceIdentity({
+      integrationNamespace: "fubon",
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      sourceAccountKey: capture.identity.accountNaturalKey,
+    }),
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: fubonCreditCurrentSnapshotDate(snapshot.httpDate),
+      endDate: fubonCreditCurrentSnapshotDate(snapshot.httpDate),
+    },
+    providerResponse: {
+      endpoint: snapshot.endpoint,
+      status: 200,
+      cacheControl: snapshot.cacheControl,
+    },
+    pages: [{
+      pageOrdinal: 0,
+      responseCode: "200",
+      rowCount: 1,
+      terminal: true,
+      metadata: { sourceField: snapshot.sourceField, table: "CBO_totalTb:credit" },
+    }],
+    records: [creditCardCurrentBalanceSourceRecord({
+      sourceRecordKey,
+      providerKey,
+      sourceField: snapshot.sourceField,
+      balanceKind: "credit_used",
+      currency: "TWD",
+      value: used,
+      time,
+      estimate,
+      compact: {
+        provider: "fubon",
+        formula: estimate.formula,
+        limitText: snapshot.limit,
+        availableText: snapshot.available,
+      },
+    })],
+    observations: [observation],
+  });
+}
+
 async function openCreditCardLoginForm(page: Page) {
   await openFubonLoginForm(page);
 }
@@ -860,6 +1167,142 @@ function exactFubonAmount(value: string, label: string): { amount: string; signe
   if (!/^[+-]?\d+(?:\.\d+)?$/u.test(signed))
     throw new Error(`Fubon ${label} is not an exact source amount.`);
   return { amount: signed.replace(/^[+-]/u, ""), signed };
+}
+
+/**
+ * Read only the exact first-cell labels from the nested credit table.  The
+ * outer CBO_totalTb layout table is deliberately ignored, so repeated nested
+  * markup cannot double-count a component.
+ */
+type FubonHtmlTable = Readonly<{
+  start: number;
+  end: number;
+  html: string;
+  className: string;
+}>;
+
+function fubonHtmlAttribute(tag: string, name: string): string {
+  const match = tag.match(
+    new RegExp(`(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "iu"),
+  );
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
+}
+
+function fubonHtmlTables(html: string): FubonHtmlTable[] {
+  const tables: FubonHtmlTable[] = [];
+  const stack: Array<{ start: number; open: string }> = [];
+  for (const token of html.matchAll(/<\/?table\b[^>]*>/giu)) {
+    if (token.index === undefined) continue;
+    if (token[0].startsWith("</")) {
+      const open = stack.pop();
+      if (!open) throw new Error("Fubon current credit table markup is unbalanced.");
+      tables.push({
+        start: open.start,
+        end: token.index + token[0].length,
+        html: html.slice(open.start, token.index + token[0].length),
+        className: fubonHtmlAttribute(open.open, "class"),
+      });
+    } else {
+      stack.push({ start: token.index, open: token[0] });
+    }
+  }
+  if (stack.length > 0) throw new Error("Fubon current credit table markup is unbalanced.");
+  return tables.sort((left, right) => left.start - right.start);
+}
+
+function fubonDirectTableRows(table: FubonHtmlTable, allTables: readonly FubonHtmlTable[]): string[][] {
+  let direct = table.html;
+  const nestedTables = allTables
+    .filter((candidate) => candidate.start > table.start && candidate.end < table.end)
+    .filter((candidate) =>
+      !allTables.some(
+        (ancestor) =>
+          ancestor.start > table.start &&
+          ancestor.start < candidate.start &&
+          ancestor.end >= candidate.end,
+      ),
+    );
+  for (const nested of nestedTables
+    .sort((left, right) => right.start - left.start)) {
+    const localStart = nested.start - table.start;
+    const localEnd = nested.end - table.start;
+    direct = `${direct.slice(0, localStart)} ${direct.slice(localEnd)}`;
+  }
+  return [...direct.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu)].map((row) =>
+    [...row[0].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/giu)].map((cell) =>
+      cleanText(cell[1]?.replace(/<[^>]+>/gu, " ")),
+    ),
+  );
+}
+
+export function parseFubonCurrentCreditCardUsedCreditHtml(
+  html: string,
+): FubonCurrentUsedCreditSnapshot | undefined {
+  const tables = fubonHtmlTables(html);
+  const approvedRoots = tables.filter((table) =>
+    /(?:^|\s)CBO_totalTb(?:\s|$)/u.test(table.className),
+  );
+  const candidates = tables.filter((table) =>
+    approvedRoots.some((root) => table.start >= root.start && table.end <= root.end),
+  );
+  const matching = candidates.filter((table) => {
+    const rows = fubonDirectTableRows(table, tables);
+    return rows.some((row) => row[0] === "正卡人信用額度") &&
+      rows.some((row) => row[0] === "正卡人可用額度");
+  });
+  if (matching.length > 1)
+    throw new Error("Fubon current credit table is ambiguous.");
+  const table = matching[0];
+  if (!table) return undefined;
+  const rows = fubonDirectTableRows(table, tables);
+  const limitRows = rows.filter((row) => row[0] === "正卡人信用額度");
+  const availableRows = rows.filter((row) => row[0] === "正卡人可用額度");
+  if (limitRows.length !== 1 || availableRows.length !== 1)
+    throw new Error("Fubon current credit component rows are missing or ambiguous.");
+  const limit = exactFubonAmount(limitRows[0][1] ?? "", "credit limit").signed;
+  const availableAmount = exactFubonAmount(availableRows[0][1] ?? "", "available credit").signed;
+  return {
+    limit,
+    available: availableAmount,
+    usedCredit: subtractFubonDecimalText(limit, availableAmount),
+    sourceField: "正卡人信用額度-正卡人可用額度",
+  };
+}
+
+function fubonCreditExactAmount(value: string): CreditCardExactAmount {
+  const normalized = value.replaceAll(",", "");
+  const sign = normalized.startsWith("-") ? "-" : "";
+  const unsigned = normalized.replace(/^[+-]/u, "");
+  const [integer, fraction = ""] = unsigned.split(".");
+  const coefficient = `${sign}${integer.replace(/^0+(?=\d)/u, "") || "0"}${fraction}`;
+  return { coefficient: coefficient === "-0" ? "0" : coefficient, scale: fraction.length };
+}
+
+function subtractFubonDecimalText(left: string, right: string): string {
+  const parse = (value: string): { coefficient: bigint; scale: number } => {
+    const normalized = value.replaceAll(",", "");
+    const sign = normalized.startsWith("-") ? -1n : 1n;
+    const unsigned = normalized.replace(/^[+-]/u, "");
+    const [integer, fraction = ""] = unsigned.split(".");
+    return {
+      coefficient: sign * BigInt(`${integer}${fraction}` || "0"),
+      scale: fraction.length,
+    };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  let scale = Math.max(a.scale, b.scale);
+  let coefficient = a.coefficient * 10n ** BigInt(scale - a.scale) - b.coefficient * 10n ** BigInt(scale - b.scale);
+  if (coefficient === 0n) return "0";
+  const negative = coefficient < 0n;
+  if (negative) coefficient = -coefficient;
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  const digits = coefficient.toString().padStart(scale + 1, "0");
+  const split = scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+  return `${negative ? "-" : ""}${split}`;
 }
 
 function normalizedSummaryHeader(value: string): string {
@@ -1621,7 +2064,7 @@ function canonicalTransactionForRow(
     consumeDate,
     postingDate,
     postingStatus: "posted",
-    direction: booked.signed.startsWith("-") ? "outflow" : "inflow",
+    direction: booked.signed.startsWith("-") ? "inflow" : "outflow",
     bookedAmount: booked.amount,
     signedAmount: booked.signed,
     bookedCurrency: "TWD",
@@ -2135,6 +2578,19 @@ export async function runFubonCreditCardStatements(
     panFingerprintKey?: FubonCreditCardPanFingerprintKey;
   } = {},
 ): Promise<FubonCreditCardStatementsOutput> {
+  let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
+  try {
+    const currentCreditRead = await readFubonCurrentUsedCredit(page);
+    currentUsedCredit = currentCreditRead.snapshot;
+    console.log(
+      "fubon-credit-current-used-credit-diagnostic",
+      currentCreditRead.diagnostic,
+    );
+  } catch {
+    console.log("fubon-credit-current-used-credit-unavailable", {
+      reason: "optional-current-credit-estimate",
+    });
+  }
   await openStatementDetailsPage(page);
 
   const statementRows: CsvRow[] = [];
@@ -2248,6 +2704,13 @@ export async function runFubonCreditCardStatements(
     );
     try {
       await commitFubonCreditCardCaptureBatch(store, canonicalCaptures);
+      if (currentUsedCredit) {
+        const balanceCapture = fubonCreditCurrentSnapshotCapture(
+          canonicalCaptures[0]!,
+          currentUsedCredit,
+        );
+        await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
+      }
       canonicalAdmission = "admitted";
     } finally {
       store.close();

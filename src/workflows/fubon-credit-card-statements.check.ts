@@ -27,6 +27,8 @@ const {
   isFubonStatementSummaryRow,
   parseFubonStatementCardLabel,
   parseFubonSettledStatementSummary,
+  parseFubonCurrentCreditCardUsedCreditHtml,
+  diagnoseFubonCurrentCreditCardUsedCreditHtml,
   resolveFubonSettledStatementCycles,
 } =
   await import("./fubon-credit-card-statements.ts");
@@ -97,6 +99,48 @@ assert.equal(
 assert.equal(
   isFubonCreditCardStatementUnavailableText("帳單明細查詢"),
   false,
+);
+assert.deepEqual(
+  parseFubonCurrentCreditCardUsedCreditHtml(`
+    <table class="decoy"><tr><td>正卡人信用額度</td><td>9,000,000</td><td></td></tr><tr><td>正卡人可用額度</td><td>8,000,000</td><td></td></tr></table>
+    <table class="CBO_totalTb"><tr><td>
+      <table class="CBO_totalTb"><tr><td>額度</td><td></td><td></td></tr>
+        <tr><td>正卡人信用額度</td><td>1,000,000</td><td><a>明細</a></td></tr>
+        <tr><td>正卡人可用額度</td><td>999,999.50</td><td></td></tr>
+      </table>
+    </td></tr></table>
+  `),
+  {
+    limit: "1000000",
+    available: "999999.50",
+    usedCredit: "0.5",
+    sourceField: "正卡人信用額度-正卡人可用額度",
+  },
+);
+assert.throws(
+  () =>
+    parseFubonCurrentCreditCardUsedCreditHtml(`
+      <table class="CBO_totalTb">
+        <table class="CBO_totalTb"><tr><td>正卡人信用額度</td><td>1,000</td></tr><tr><td>正卡人可用額度</td><td>900</td></tr></table>
+        <table class="CBO_totalTb"><tr><td>正卡人信用額度</td><td>2,000</td></tr><tr><td>正卡人可用額度</td><td>1,900</td></tr></table>
+      </table>
+    `),
+  /ambiguous/u,
+);
+assert.deepEqual(
+  diagnoseFubonCurrentCreditCardUsedCreditHtml(`
+    <table class="decoy"><tr><td>正卡人信用額度</td><td>9,000,000</td></tr></table>
+    <table class="CBO_totalTb">
+      <tr><td>正卡人信用額度</td><td>1,000,000</td></tr>
+      <tr><td>正卡人可用額度</td><td>999,999.50</td></tr>
+    </table>
+  `),
+  {
+    tableCount: 2,
+    approvedRootCount: 1,
+    candidateTableCount: 1,
+    matchingTableCount: 1,
+  },
 );
 
 type PeriodMode = "available" | "no-record" | "temporarily-unavailable";
@@ -823,7 +867,50 @@ assert.equal(canonicalCaptures[0]?.instruments.length, 2);
 assert.equal(canonicalCaptures[0]?.statements.length, 5);
 assert.equal(canonicalCaptures[0]?.transactions.length, 3);
 assert.equal(canonicalCaptures[0]?.transactions[2]?.billingStatus, "unbilled");
-assert.equal(canonicalCaptures[0]?.transactions[2]?.direction, "outflow");
+assert.equal(canonicalCaptures[0]?.transactions[2]?.direction, "inflow");
+assert.deepEqual(
+  canonicalCaptures[0]?.transactions
+    .slice()
+    .sort((left, right) => left.description.localeCompare(right.description))
+    .map((transaction) => ({
+      description: transaction.description,
+      direction: transaction.direction,
+      bookedAmount: transaction.bookedAmount,
+      bookedCurrency: transaction.bookedCurrency,
+      signedAmount: transaction.signedAmount,
+      postingStatus: transaction.postingStatus,
+      billingStatus: transaction.billingStatus,
+    })),
+  [
+    {
+      description: "SYNTHETIC A",
+      direction: "outflow",
+      bookedAmount: { coefficient: "1000", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "10.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      description: "SYNTHETIC B",
+      direction: "outflow",
+      bookedAmount: { coefficient: "2000", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "20.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      description: "SYNTHETIC C",
+      direction: "inflow",
+      bookedAmount: { coefficient: "500", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "-5.00",
+      postingStatus: "posted",
+      billingStatus: "unbilled",
+    },
+  ],
+);
 assert.equal(canonicalCaptures[0]?.statements[0]?.transactionSourceKeys.length, 2);
 assert.ok(
   canonicalCaptures[0]?.instruments.every((instrument) =>

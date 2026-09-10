@@ -11,6 +11,14 @@ assert.equal(localeLabels["zh-TW"], "繁體中文");
 assert.equal(translations.en.settings.title, "Settings");
 assert.equal(translations["zh-TW"].settings.title, "設定");
 assert.equal(
+  translations.en.overview.currentPartial(20, 2),
+  "20 accounts are still waiting for a current value. 2 sources are not collected yet. Totals are partial.",
+);
+assert.equal(
+  translations["zh-TW"].overview.currentPartial(20, 2),
+  "20 個帳戶的目前金額或價值尚未觀測。 2 個來源尚未採集。 總額僅供部分參考。",
+);
+assert.equal(
   translations.en.automation.discardCredentialChanges,
   "Discard unsaved changes to sign-in details?",
 );

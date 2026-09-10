@@ -17,6 +17,15 @@ import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  buildLinebankCurrentDepositBalanceCaptures,
+} from "./linebank-current-deposit-canonical.ts";
+import {
+  parseLinebankApiJson,
+  parseLinebankCurrentDepositBalanceSnapshot,
+  type LineBankCurrentDepositBalanceRow,
+  type LineBankCurrentDepositResponseMetadata,
+} from "./linebank-current-deposit-balances.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -94,6 +103,30 @@ export type LineBankAccount = {
   currency?: string;
 };
 
+export const LINEBANK_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "linebank/foreign-account/account-number-v1" as const;
+
+export type LineBankAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof LINEBANK_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "GET /v1/account/common/payables content.dpstAcctList[].acctNbr";
+}>;
+
+export function deriveLinebankAccountNumberEvidence(
+  account: LineBankAccount,
+): LineBankAccountNumberEvidence | null {
+  const value = cleanText(account.acctNbr).normalize("NFKC");
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: LINEBANK_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField:
+      "GET /v1/account/common/payables content.dpstAcctList[].acctNbr",
+  };
+}
+
 /** The provider's account identity is a composite of the two source fields.
  * Keep the delimiter explicit so two different pairs cannot concatenate to the
  * same opaque key (for example, `12` + `3` versus `1` + `23`). */
@@ -140,8 +173,8 @@ export type LineBankTransactionSourceEnvelope = {
   acctNbr?: string;
   arrId?: string;
   acctNick?: string;
-  acctBal?: number;
-  wdrwAvblAmt?: number;
+  acctBal?: number | string;
+  wdrwAvblAmt?: number | string;
   acctColrTpCd?: string;
   acctColrTpVal?: string;
   acctCardImgUrl?: string | null;
@@ -714,6 +747,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
     throw new Error("LINE Bank foreign capture requires a source-proven currency.");
   const accountNo = linebankAccountKey(input.account);
   if (!accountNo) throw new Error("LINE Bank foreign account identity is incomplete.");
+  const accountNumber = deriveLinebankAccountNumberEvidence(input.account);
   linebankValidateTransactionPageSequence(input.pages, {
     requireComplete: true,
     expectedAccount: input.account,
@@ -743,6 +777,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
   return {
     source: "linebank",
     accountNo,
+    accountNumber,
     sourceConnectionKey: "linebank-foreign-current-login",
     identityEpochKey: String(identityEpoch),
     accountType: "depository",
@@ -991,18 +1026,24 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   });
 }
 
-class LineBankApiClient {
+export class LineBankApiClient {
   private page: Page;
 
   constructor(page: Page) {
     this.page = page;
   }
 
-  private async apiJson<T>(
+  private async apiResponse(
     path: string,
     options?: { body?: unknown },
-  ): Promise<T> {
-    return (await this.page.evaluate(
+  ): Promise<{
+    body: string;
+    url: string;
+    status: number;
+    method: string;
+    headers: Record<string, string>;
+  }> {
+    return await this.page.evaluate(
       async ({ path, body }) => {
         const headers = {
           accept: "application/json",
@@ -1022,22 +1063,85 @@ class LineBankApiClient {
           init.body = JSON.stringify(body);
         }
         const response = await fetch(path, init);
-        if (!response.ok) throw new Error(`${response.status} for ${path}`);
-        return await response.json();
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          responseHeaders[key] = value;
+        });
+        return {
+          body: await response.text(),
+          url: response.url,
+          status: response.status,
+          method: init.method ?? "GET",
+          headers: responseHeaders,
+        };
       },
       { path, body: options?.body },
-    )) as T;
+    );
+  }
+
+  private async apiJson<T>(
+    path: string,
+    options?: { body?: unknown },
+  ): Promise<T> {
+    const response = await this.apiResponse(path, options);
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(`${response.status} for ${path}`);
+    return parseLinebankApiJson<T>(response.body);
+  }
+
+  private async accountResponse(): Promise<{
+    accounts: LineBankAccount[];
+    response: LineBankCurrentDepositResponseMetadata;
+    rawBody: string;
+  }> {
+    const response = await this.apiResponse(ACCOUNTS_ENDPOINT);
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
+    const payload = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
+    if (payload.code !== "200") {
+      throw new Error(
+        `LINE Bank account list failed: ${payload.message ?? "unknown"}`,
+      );
+    }
+    if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
+      throw new Error("LINE Bank account list is incomplete.");
+    return {
+      accounts: payload.content.dpstAcctList,
+      response: {
+        url: response.url,
+        status: response.status,
+        method: response.method,
+        headers: response.headers,
+      },
+      rawBody: response.body,
+    };
   }
 
   async fetchAccounts(): Promise<LineBankAccount[]> {
-    const response =
-      await this.apiJson<LineBankAccountsResponse>(ACCOUNTS_ENDPOINT);
-    if (response.code !== "200") {
-      throw new Error(
-        `LINE Bank account list failed: ${response.message ?? "unknown"}`,
-      );
-    }
-    return response.content?.dpstAcctList ?? [];
+    const snapshot = await this.accountResponse();
+    // Parse the same response through the bounded current-balance contract so
+    // every account's available field is present and exact, even when a
+    // non-TWD account is excluded from this domestic route.
+    parseLinebankCurrentDepositBalanceSnapshot({
+      response: snapshot.response,
+      rawBody: snapshot.rawBody,
+      observedAt: new Date().toISOString(),
+    });
+    return snapshot.accounts;
+  }
+
+  async fetchAccountSnapshot(observedAt?: string): Promise<{
+    accounts: LineBankAccount[];
+    currentBalances: readonly LineBankCurrentDepositBalanceRow[];
+  }> {
+    const snapshot = await this.accountResponse();
+    const effectiveObservedAt = observedAt ?? new Date().toISOString();
+    const currentBalances = parseLinebankCurrentDepositBalanceSnapshot({
+      response: snapshot.response,
+      rawBody: snapshot.rawBody,
+      observedAt: effectiveObservedAt,
+    });
+    return { accounts: snapshot.accounts, currentBalances };
   }
 
   async fetchTransactionPages(
@@ -1215,8 +1319,9 @@ async function downloadLineBankStatements(
   const dateRange = resolveDateRange(input);
   const windows = linebankQueryWindows(dateRange);
   const apiClient = new LineBankApiClient(page);
+  const accountSnapshot = await apiClient.fetchAccountSnapshot();
   const accounts = filterAccounts(
-    await apiClient.fetchAccounts(),
+    accountSnapshot.accounts,
     input.accountFilters,
     input.currencyFilters,
   );
@@ -1226,10 +1331,17 @@ async function downloadLineBankStatements(
       "No LINE Bank accounts matched accountFilters/currencyFilters.",
     );
   }
+  const selectedAccountKeys = new Set(
+    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+  );
+  const currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
+    selectedAccountKeys.has(linebankAccountKey(row.account)),
+  );
 
   const downloads: LineBankDownload[] = [];
   const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
   const foreignCanonicalCaptures: ForeignCurrencyDepositCaptureInput[] = [];
+  let currentBalanceCaptureCount = 0;
   const captureOccurrenceId = randomUUID();
   for (const account of accounts) {
     const rows: LineBankStatementRow[] = [];
@@ -1299,6 +1411,33 @@ async function downloadLineBankStatements(
       store.close();
     }
   }
+  if (financialLedgerDir && currentBalanceRows.length > 0 && canonicalCaptures.length > 0) {
+    const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+      currentBalanceRows,
+      canonicalCaptures.map((capture) => ({
+        accountKey: capture.accountKey,
+        sourceConnection: capture.sourceConnection,
+        identityEpoch: capture.identityEpoch,
+        observedAt: capture.observedAt,
+      })),
+    );
+    const {
+      admitCurrentDepositBalanceCapture,
+      commitCurrentDepositBalanceCapture,
+    } = await import("../ledger/canonical/current-deposit-balance-writer.ts");
+    const store = createCanonicalSourceStore(
+      canonicalSqlitePath(financialLedgerDir),
+    );
+    try {
+      for (const capture of currentBalanceCaptures) {
+        const admitted = admitCurrentDepositBalanceCapture(capture);
+        await commitCurrentDepositBalanceCapture(store, admitted);
+      }
+      currentBalanceCaptureCount = currentBalanceCaptures.length;
+    } finally {
+      store.close();
+    }
+  }
 
   return {
     dateRange,
@@ -1307,7 +1446,7 @@ async function downloadLineBankStatements(
     canonicalCaptureCount:
       financialLedgerDir === undefined
         ? 0
-        : canonicalCaptures.length + foreignCanonicalCaptures.length,
+        : canonicalCaptures.length + foreignCanonicalCaptures.length + currentBalanceCaptureCount,
     downloads,
   };
 }

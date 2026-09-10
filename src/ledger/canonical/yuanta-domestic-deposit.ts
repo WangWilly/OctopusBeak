@@ -12,6 +12,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   canonicalSourceAdmissionCommitResult,
   createCanonicalSourceCaptureAdmission,
@@ -147,6 +148,7 @@ export type YuantaDomesticDepositCaptureEvidence = {
   account: {
     value: string;
     label: string;
+    accountNumber?: YuantaDomesticDepositAccountNumberEvidence;
   };
   queryRange: {
     /** The requested UI range, not a claim about provider semantics. */
@@ -202,6 +204,7 @@ export type YuantaDomesticDepositCaptureDiagnostic =
   | "row-time-invalid"
   | "row-amount-invalid"
   | "row-amount-conflict"
+  | "account-number-evidence-invalid"
   | "zero-result-authority-unproven"
   | "terminal-evidence-missing"
   | "provenance-invalid";
@@ -399,6 +402,20 @@ export function admitYuantaDomesticDepositCaptureEvidence(
     !normalizedCell(capture.account.label)
   )
     diagnostic(diagnostics, "account-invalid");
+  const accountNumber = capture.account?.accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "depository-account" ||
+      accountNumber.evidenceVersion !==
+        YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "#acctno option.value" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{6,24}$/.test(accountNumber.value) ||
+      accountNumber.value !== capture.account?.value)
+  )
+    diagnostic(diagnostics, "account-number-evidence-invalid");
   if (
     !capture.queryRange ||
     typeof capture.queryRange !== "object" ||
@@ -753,6 +770,20 @@ export const YUANTA_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND =
 export const YUANTA_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION =
   "yuanta/domestic-deposit/capture-evidence-v2/terminal-download" as const;
 
+/**
+ * Optional account-number evidence is separate from the opaque selector hash.
+ * It is emitted only when the selected option value is a complete unmasked
+ * number repeated in the provider-rendered account label.
+ */
+export const YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "yuanta/domestic-deposit/account-number-v1" as const;
+export type YuantaDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "#acctno option.value";
+}>;
+
 /** Legacy v1 identifiers remain available for read-only compatibility tests. */
 export const YUANTA_DOMESTIC_DEPOSIT_LEGACY_SOURCE_EVIDENCE_ROUTE =
   "yuanta/domestic-deposit/capture-evidence-v1" as const;
@@ -831,6 +862,7 @@ export type YuantaDomesticDepositFinancialSemantics = {
   evidenceVersion: typeof YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION;
   account: {
     accountNo: string;
+    accountNumber?: YuantaDomesticDepositAccountNumberEvidence;
     sourceConnectionKey: string;
     identityEpochKey: string;
     subjectDigest: string;
@@ -887,6 +919,9 @@ export function buildYuantaHumanAttestedFinancialSemantics(
     evidenceVersion: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
       ...identity,
+      ...(capture.account.accountNumber
+        ? { accountNumber: capture.account.accountNumber }
+        : {}),
       accountType: "depository",
       currency: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY,
     },
@@ -1116,6 +1151,7 @@ function financialRecord(
   const description = normalizedCell(values[5]);
   const checkNumber = normalizedCell(values[9]);
   const note = normalizedCell(values[10]);
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const contentHash = financialOpaque(
     "yuanta-observed-content-v2",
     ...normalizedYuantaRowForIdentity(values),
@@ -1171,6 +1207,7 @@ function financialRecord(
       amount,
       balanceAfter,
       currency: semantics.account.currency,
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: time.localDate,
@@ -1375,7 +1412,11 @@ function financialDiagnosticsFor(
       stream: "domestic-deposit",
       recordKind: "yuanta-domestic-deposit",
       subjectDigest: identity.subjectDigest,
+      sourceAccountKey: identity.accountNo,
       accountNo: identity.accountNo,
+      ...(semantics.account.accountNumber
+        ? { accountNumber: semantics.account.accountNumber }
+        : {}),
       accountType: semantics.account.accountType,
       currency: semantics.account.currency,
     },

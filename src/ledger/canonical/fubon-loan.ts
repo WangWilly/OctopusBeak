@@ -45,8 +45,19 @@ export type FubonLoanStatementRow = {
   balanceAfterTransaction: string;
 };
 
+export const FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "fubon/loan/account-number-v1" as const;
+
+export type FubonLoanAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "loan-account";
+  evidenceVersion: typeof FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "form1:loanAccountCombo option.text";
+}>;
+
 export type FubonLoanCaptureBuildInput = {
   accountValue: string;
+  accountNumber?: FubonLoanAccountNumberEvidence;
   sourceConnectionScope: string;
   observedAt: string;
   startDate: string;
@@ -229,6 +240,25 @@ export function admitFubonLoanCapture(
 ): LoanValidatedCapture {
   if (capture.sourceId !== "fubon")
     throw new Error("Fubon loan admission requires a Fubon capture.");
+  const accountNumber = (
+    capture.identity as LoanCaptureInput["identity"] & {
+      accountNumber?: unknown;
+    }
+  ).accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "loan-account" ||
+      accountNumber.evidenceVersion !==
+        FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "form1:loanAccountCombo option.text" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{14}$/.test(accountNumber.value))
+  )
+    throw new CanonicalLoanAdmissionError(
+      "Fubon loan account number evidence is invalid.",
+    );
   return admitCanonicalLoanCapture(capture);
 }
 
@@ -332,11 +362,14 @@ export function buildFubonLoanCapture(
   input: FubonLoanCaptureBuildInput,
 ): LoanCaptureInput {
   const rows = canonicalRows(input);
-  const identity = canonicalLoanSourceIdentity(
-    "fubon",
-    input.sourceConnectionScope,
-    input.accountValue,
-  );
+  const identity = {
+    ...canonicalLoanSourceIdentity(
+      "fubon",
+      input.sourceConnectionScope,
+      input.accountValue,
+    ),
+    ...(input.accountNumber ? { accountNumber: input.accountNumber } : {}),
+  };
   return createCanonicalLoanCapture({
     captureId: canonicalLoanToken(
       "fubon",

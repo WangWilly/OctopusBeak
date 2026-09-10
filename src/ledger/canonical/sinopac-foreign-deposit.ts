@@ -171,6 +171,7 @@ export function buildSinopacForeignCurrencyCaptureInput(
   return {
     source: "sinopac",
     accountNo,
+    accountNumber: capture.account.accountNumber ?? null,
     sourceConnectionKey: "sinopac-foreign-current-login",
     identityEpochKey:
       SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion,

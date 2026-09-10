@@ -8,7 +8,19 @@ const source = readFileSync(new URL("./AccountTable.svelte", import.meta.url), "
 test("unavailable account balances render explicit localized copy", () => {
   assert.equal(translations["zh-TW"].accounts.noAvailableData, "無可用資料");
   assert.match(source, /noAvailableData\}<\/span>\s*\{" · "\}\s*\{#if account\.dataIssueId\}/);
-  assert.match(source, /\{#if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
+  assert.match(source, /\{#if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
+});
+
+test("available-only account rows expose their balance basis", () => {
+  assert.match(source, /availableBalanceBasis = account\.amountLines\.some/);
+  assert.match(source, /trace\.balanceKind === "available"/);
+  assert.match(source, /\$t\.accounts\.availableBalanceBasis/);
+});
+
+test("credit-card current usage rows expose their estimate basis", () => {
+  assert.match(source, /estimatedCreditBasis = account\.amountLines\.some/);
+  assert.match(source, /trace\.estimateKind === "estimate"/);
+  assert.match(source, /\$t\.accounts\.creditCardEstimateBasis/);
 });
 
 test("unavailable accounts omit allocation and exposure values", () => {
@@ -30,4 +42,11 @@ test("account deep links select, scroll, and focus the exact rendered row", () =
 test("account deep links reset after focus is cleared", () => {
   assert.match(source, /focusAccountId !== handledFocusAccountId/);
   assert.match(source, /handledFocusAccountId = focusAccountId;\s*if \(focusAccountId\)/);
+});
+
+test("liability tables can filter investment-kind margin accounts and expose card statements", () => {
+  assert.match(source, /\{ id: "fund" as const, label: \$t\.accounts\.fund \}/);
+  assert.match(source, /\{ id: "brokerage" as const, label: \$t\.accounts\.brokerage \}/);
+  assert.match(source, /selectedAccount\.creditCard/);
+  assert.match(source, /CreditCardStatementsModal/);
 });

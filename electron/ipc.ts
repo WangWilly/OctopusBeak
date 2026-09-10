@@ -5,8 +5,9 @@ import {
   shell,
   type OpenDialogOptions,
 } from "electron";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { createDataIssueIpcHandlers } from "../src/lib/desktop/api.ts";
-import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import {
   automationCancel,
   cathayGmailOtpStatus,
@@ -46,15 +47,13 @@ import {
   updateHumanAssistanceContractForTask,
   updateHumanAssistanceCompletionForTask,
 } from "../src/lib/automation/server/human-session.ts";
-import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
-import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import {
-  loadSpending,
   updateSpendingItemCategory,
   updateSpendingTransactionOverride,
   type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
+import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
@@ -84,6 +83,9 @@ export function registerOctopusBeakIpc({
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
 } = {}) {
+  const financialPages = createFinancialPageWorkerClient(
+    new Worker(join(__dirname, "financial-page-worker.cjs")),
+  );
   const dataIssueHandlers = createDataIssueIpcHandlers({
     list: listDataIssues,
     create: createDataIssue,
@@ -114,13 +116,13 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => loadOverview());
-  ipcMain.handle("assets:load", () => loadAssets());
-  ipcMain.handle("liabilities:load", () => loadLiabilities());
+  ipcMain.handle("overview:load", () => financialPages.load("overview"));
+  ipcMain.handle("assets:load", () => financialPages.load("assets"));
+  ipcMain.handle("liabilities:load", () => financialPages.load("liabilities"));
   ipcMain.handle(
     "spending:load",
     (_event, input: SpendingLoadInput | undefined) =>
-      loadSpending(undefined, input),
+      financialPages.load("spending", input),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
@@ -357,4 +359,7 @@ export function registerOctopusBeakIpc({
   );
   ipcMain.handle("dataIssues:previewRestore", dataIssueHandlers.previewRestore);
   ipcMain.handle("dataIssues:confirmRestore", dataIssueHandlers.confirmRestore);
+  return {
+    close: () => financialPages.close(),
+  };
 }

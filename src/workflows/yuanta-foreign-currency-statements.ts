@@ -14,13 +14,30 @@ import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
+  YUANTA_ENTRY_URL,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
 import {
+  admitForeignCurrencyDepositCapture,
   commitForeignCurrencyDepositCaptureBatch,
   type ForeignCurrencyDepositCaptureInput,
   type ForeignCurrencyDepositCommitStore,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
+import {
+  readYuantaCurrentDepositBalances,
+  YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
+  type YuantaCurrentDepositBalanceRow,
+} from "./yuanta-current-deposit-balances.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCapture,
+  currentDepositSourceRecord,
+  currentDepositSourceRecordContentHash,
+  type CurrentDepositBalanceCaptureInput,
+  type CurrentDepositBalanceObservationInput,
+  type CurrentDepositExactAmount,
+  type CurrentDepositSourceRecordInput,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -39,6 +56,33 @@ type AccountOption = {
   label: string;
   value: string;
 };
+
+export const YUANTA_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "yuanta/foreign-account/account-number-v1" as const;
+
+export type YuantaForeignAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof YUANTA_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "#acctno option.value";
+}>;
+
+/**
+ * Yuanta's foreign-account selector value is the provider account field.
+ * Opaque selector tokens and masked values remain source keys only.
+ */
+export function deriveYuantaForeignAccountNumberEvidence(
+  accountValue: string,
+): YuantaForeignAccountNumberEvidence | null {
+  const value = accountValue.trim().normalize("NFKC");
+  if (!/^\d{6,24}$/u.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: YUANTA_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "#acctno option.value",
+  };
+}
 
 type CurrencyOption = {
   label: string;
@@ -115,6 +159,174 @@ type ForeignCurrencyTransactionRow = {
   sortTime: number | null;
 };
 
+type ExistingYuantaForeignFinancialCapture = Readonly<{
+  identity: Readonly<{
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    subjectDigest: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+  }>;
+}>;
+
+function yuantaForeignCurrentDepositOpaqueKey(
+  domain: string,
+  ...parts: readonly string[]
+): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(`${domain}\0`)
+    .update(parts.join("\0"))
+    .digest("base64url")}`;
+}
+
+/** Join an FX current-balance row to the existing multi-currency account
+ * admitted by the foreign transaction capture. */
+export function buildYuantaForeignCurrentDepositBalanceCapture(
+  row: YuantaCurrentDepositBalanceRow,
+  financialCapture: ExistingYuantaForeignFinancialCapture,
+): CurrentDepositBalanceCaptureInput {
+  if (row.kind !== "foreign" || row.stream !== "foreign-currency-deposit")
+    throw new Error("Yuanta foreign current-balance row has the wrong stream.");
+  const identity = financialCapture.identity;
+  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  if (sourceAccountKey !== row.sourceAccountKey)
+    throw new Error("Yuanta foreign current-balance row does not match an existing account.");
+  const records: CurrentDepositSourceRecordInput[] = [];
+  const observations: CurrentDepositBalanceObservationInput[] = [];
+  const amountPairs: readonly [
+    "ledger" | "available",
+    string,
+    CurrentDepositExactAmount,
+  ][] = [
+    ["ledger", "帳面餘額", row.ledger],
+    ["available", "可用餘額", row.available],
+  ];
+  for (const [balanceKind, sourceField, balance] of amountPairs) {
+    const sourceRecordKey = yuantaForeignCurrentDepositOpaqueKey(
+      "yuanta-foreign-current-deposit-source-record-v1",
+      sourceAccountKey,
+      row.currency,
+      balanceKind,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    );
+    const compact = {
+      accountNumber: row.accountNumber,
+      sourceAccountKey,
+      currency: row.currency,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+    };
+    const record = currentDepositSourceRecord({
+      sourceRecordKey,
+      providerKey: yuantaForeignCurrentDepositOpaqueKey(
+        "yuanta-foreign-current-deposit-provider-record-v1",
+        row.accountNumber,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+      ),
+      contentHash: "sha256:placeholder",
+      sourceField,
+      balanceKind,
+      currency: row.currency,
+      value: balance,
+      compact,
+    });
+    records.push({
+      ...record,
+      contentHash: currentDepositSourceRecordContentHash(record.compact),
+    });
+    observations.push({
+      observationKey: yuantaForeignCurrentDepositOpaqueKey(
+        "yuanta-foreign-current-deposit-observation-v1",
+        sourceAccountKey,
+      ),
+      balanceKind,
+      balance,
+      currency: row.currency,
+      time: {
+        effectiveAt: row.effectiveAt,
+        effectiveTimeBasis: "provider-http-date",
+        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+        sourceField: "HTTP Date",
+        sourceValue: row.providerHttpDate,
+        contractVersion: row.sourceEvidence.contractVersion,
+      },
+      sourceRecordKey,
+      sourceField,
+    });
+  }
+  const endpoint = `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`;
+  return {
+    captureId: randomUUID(),
+    authorityRoute: "yuanta/foreign-currency/current-balance-v1",
+    contractVersion: row.sourceEvidence.contractVersion,
+    subjectDigest: identity.subjectDigest,
+    identity: {
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      stream: "foreign-currency-deposit",
+      sourceAccountKey,
+    },
+    observedAt: row.observedAt,
+    scope: {
+      startDate: row.effectiveAt.slice(0, 10),
+      endDate: row.effectiveAt.slice(0, 10),
+    },
+    providerResponse: {
+      endpoint,
+      status: 200,
+      cacheControl: row.sourceEvidence.cacheControl,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
+        rowCount: records.length,
+        terminal: true,
+        metadata: {
+          source: "yuanta-current-deposit-summary",
+          sourceRowCount: 1,
+          balanceFieldCount: records.length,
+        },
+      },
+    ],
+    records,
+    observations,
+  };
+}
+
+export function indexYuantaForeignCurrentDepositFinancialCaptures(
+  financialCaptures: readonly ExistingYuantaForeignFinancialCapture[],
+): ReadonlyMap<string, ExistingYuantaForeignFinancialCapture> {
+  const existingBySourceAccount = new Map<
+    string,
+    ExistingYuantaForeignFinancialCapture
+  >();
+  for (const candidate of financialCaptures) {
+    const sourceAccountKey =
+      candidate.identity.sourceAccountKey ?? candidate.identity.accountNo;
+    const prior = existingBySourceAccount.get(sourceAccountKey);
+    if (
+      prior &&
+      (prior.identity.sourceConnectionKey !==
+        candidate.identity.sourceConnectionKey ||
+        prior.identity.identityEpochKey !== candidate.identity.identityEpochKey ||
+        prior.identity.subjectDigest !== candidate.identity.subjectDigest)
+    )
+      throw new Error(
+        "Yuanta foreign current deposit identities are ambiguous across financial captures.",
+      );
+    if (!prior) existingBySourceAccount.set(sourceAccountKey, candidate);
+  }
+  return existingBySourceAccount;
+}
+
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   one_week: "一週",
   one_month: "一個月",
@@ -179,6 +391,18 @@ export type YuantaForeignCurrencyResultClassification = {
   controlKinds: readonly YuantaForeignCurrencyControlKind[];
   noticeKinds: readonly ("provider-no-data" | "provider-error")[];
 };
+
+/**
+ * The provider can replace a complete result with a timestamp-only marker
+ * while its read-only query is still settling. Keep this distinct from the
+ * explicit no-data/error states so the caller may issue one bounded requery.
+ */
+class YuantaForeignCurrencyPendingResultError extends Error {
+  constructor() {
+    super("Could not find YuanTa foreign-currency CSV download link in any frame.");
+    this.name = "YuantaForeignCurrencyPendingResultError";
+  }
+}
 
 type YuantaForeignCurrencyControlKind =
   | "link"
@@ -1501,6 +1725,16 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
   }
 
   logYuantaForeignCurrencyResultObservation(lastObservations);
+  if (
+    lastObservations.some(
+      (observation) =>
+        observation.framePath === "fxtransactiondetails" &&
+        observation.resultPresent &&
+        observation.state === "pending",
+    )
+  ) {
+    throw new YuantaForeignCurrencyPendingResultError();
+  }
   throw new Error(
     "Could not find YuanTa foreign-currency CSV download link in any frame.",
   );
@@ -2025,11 +2259,18 @@ export async function readYuantaForeignCurrencyOptions(
   return filtered;
 }
 
-async function waitForCsvDownloadLink(page: Page): Promise<void> {
-  await findYuantaForeignCurrencyCsvDownloadControl(page);
-}
-
 const YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS = 3;
+const YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS = 1;
+const YUANTA_FOREIGN_CSV_PENDING_POLL_MS = 5_000;
+
+function isTerminalYuantaForeignCurrencyResultError(error: unknown): boolean {
+  return (
+    error instanceof StatementComponentAbsentError ||
+    (error instanceof Error &&
+      error.message ===
+        "YuanTa foreign-currency provider returned an explicit result error.")
+  );
+}
 
 /**
  * Re-validate the complete result/table/link fence for each native click.
@@ -2041,9 +2282,11 @@ const YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS = 3;
 export async function clickYuantaForeignCurrencyCsvDownloadControl(
   page: Page,
   timeoutMs = 60_000,
+  requery?: () => Promise<void>,
 ): Promise<Download> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
+  let requeryAttempts = 0;
 
   for (
     let attempt = 0;
@@ -2055,12 +2298,32 @@ export async function clickYuantaForeignCurrencyCsvDownloadControl(
 
     let target: YuantaForeignCurrencyCsvControlTarget;
     try {
+      const finderTimeoutMs =
+        requery && requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS
+          ? Math.min(remainingMs, YUANTA_FOREIGN_CSV_PENDING_POLL_MS)
+          : remainingMs;
       target = await findYuantaForeignCurrencyCsvDownloadControl(
         page,
-        remainingMs,
+        finderTimeoutMs,
       );
     } catch (error) {
+      if (isTerminalYuantaForeignCurrencyResultError(error)) throw error;
       lastError = error;
+      if (
+        requery &&
+        requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS &&
+        error instanceof YuantaForeignCurrencyPendingResultError
+      ) {
+        requeryAttempts += 1;
+        try {
+          await requery();
+        } catch (requeryError) {
+          if (isTerminalYuantaForeignCurrencyResultError(requeryError)) {
+            throw requeryError;
+          }
+          lastError = requeryError;
+        }
+      }
       continue;
     }
 
@@ -2072,6 +2335,20 @@ export async function clickYuantaForeignCurrencyCsvDownloadControl(
       lastError ??= new Error(
         "YuanTa foreign-currency CSV download control changed before click.",
       );
+      if (
+        requery &&
+        requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS
+      ) {
+        requeryAttempts += 1;
+        try {
+          await requery();
+        } catch (requeryError) {
+          if (isTerminalYuantaForeignCurrencyResultError(requeryError)) {
+            throw requeryError;
+          }
+          lastError = requeryError;
+        }
+      }
       continue;
     }
 
@@ -2122,7 +2399,6 @@ async function queryAccountCurrency(
     .selectOption(channelTypeValues[input.channelType]);
   await scope.locator("#submitbutton").click();
   await settleAfterNavigation(page);
-  await waitForCsvDownloadLink(page);
 }
 
 async function downloadTransactionRows(
@@ -2131,8 +2407,13 @@ async function downloadTransactionRows(
   accountValue: string,
   currencyLabel: string,
   currencyValue: string,
+  requery: () => Promise<void>,
 ): Promise<{ filename: string; rows: ForeignCurrencyTransactionRow[] }> {
-  const download = await clickYuantaForeignCurrencyCsvDownloadControl(page);
+  const download = await clickYuantaForeignCurrencyCsvDownloadControl(
+    page,
+    60_000,
+    requery,
+  );
 
   const filename = download.suggestedFilename();
   const content = await readBig5DownloadAsUtf8(download);
@@ -2225,6 +2506,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
   return {
     source: "yuanta",
     accountNo,
+    accountNumber: deriveYuantaForeignAccountNumberEvidence(accountNo),
     sourceConnectionKey: "yuanta-foreign-current-login",
     identityEpochKey: "yuanta-foreign-current-identity",
     accountType: "depository",
@@ -2324,6 +2606,7 @@ export async function commitYuantaForeignCurrencyCapture(
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
+  startUrl: YUANTA_ENTRY_URL,
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
   output: outputSchema,
@@ -2365,6 +2648,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
           account.value,
           currency.label,
           currency.value,
+          () => queryAccountCurrency(page, input, account, currency),
         );
         rows.push(...download.rows);
         sourceDownloads.push({
@@ -2421,8 +2705,47 @@ export default workflow("yuantaForeignCurrencyStatements", {
             credentials.yuanta_user_id ?? "",
           );
         });
-        await commitForeignCurrencyDepositCaptureBatch(financialStore, captures);
+        const admittedCaptures = captures.map((capture) =>
+          admitForeignCurrencyDepositCapture(capture),
+        );
+        await commitForeignCurrencyDepositCaptureBatch(
+          financialStore,
+          admittedCaptures,
+        );
         await runCanonicalInvestmentRelationFollowThrough(financialStore);
+        const authority = admittedCaptures[0]?.identity;
+        if (!authority)
+          throw new Error(
+            "Yuanta foreign financial admission produced no canonical identity.",
+          );
+        const currentRows = await readYuantaCurrentDepositBalances(
+          page,
+          "foreign",
+          {
+            observedAt: new Date().toISOString(),
+            financialAuthority: {
+              sourceConnectionKey: authority.sourceConnectionKey,
+              identityEpochKey: authority.identityEpochKey,
+              authorityClass: "existing-financial-admission",
+            },
+          },
+        );
+        const currentObservedAt = new Date().toISOString();
+        const existingBySourceAccount =
+          indexYuantaForeignCurrentDepositFinancialCaptures(admittedCaptures);
+        const currentCaptures = currentRows.map((unadjustedRow) => {
+          const row = { ...unadjustedRow, observedAt: currentObservedAt };
+          const matching = existingBySourceAccount.get(row.sourceAccountKey);
+          if (!matching)
+            throw new Error(
+              "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
+            );
+          return admitCurrentDepositBalanceCapture(
+            buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
+          );
+        });
+        for (const capture of currentCaptures)
+          await commitCurrentDepositBalanceCapture(financialStore, capture);
       } finally {
         financialStore.close();
       }

@@ -43,6 +43,7 @@ let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
+let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
@@ -56,9 +57,12 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   "sherpa-onnx-paraformer-zh-small",
 );
 const handleBeforeQuit = createBeforeQuitHandler({
-  cleanup: () => {
+  cleanup: async () => {
     scheduler?.stop();
-    return shutdownAutomationSessions();
+    await Promise.all([
+      ipcRegistration?.close(),
+      shutdownAutomationSessions(),
+    ]);
   },
   quit: () => app.quit(),
   timeoutMs: 5_000,
@@ -196,7 +200,9 @@ async function start() {
     },
     reportError: (error) => console.error("exchange-rate-scheduler-error", error),
   });
-  registerOctopusBeakIpc({ onSystemSettingsChanged: scheduler.reschedule });
+  ipcRegistration = registerOctopusBeakIpc({
+    onSystemSettingsChanged: scheduler.reschedule,
+  });
   scheduler.start();
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");

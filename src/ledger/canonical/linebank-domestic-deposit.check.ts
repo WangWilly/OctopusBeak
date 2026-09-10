@@ -40,12 +40,35 @@ import {
   linebankBuildSourceOccurrenceKey,
   linebankCompareSourceOccurrenceCaptures,
   validateLineBankCanonicalCapture,
+  deriveLineBankDomesticDepositAccountNumberEvidence,
   linebankValidateSourceOccurrenceCapture,
   linebankValidateZeroResultPage,
   preflightLineBankDomesticDeposit,
   validateLineBankHumanAttestedV13Capture,
   commitCanonicalLineBankFinancialCapture,
 } from "./linebank-domestic-deposit.ts";
+
+const fixtureAccountNumber = ["0012", "3456", "7890"].join("");
+
+assert.deepEqual(
+  deriveLineBankDomesticDepositAccountNumberEvidence({
+    acctNbr: fixtureAccountNumber,
+    arrId: "arr-001",
+  }),
+  {
+    value: fixtureAccountNumber,
+    kind: "depository-account",
+    evidenceVersion: "linebank/domestic-deposit/account-number-v1",
+    sourceField: "transactions.content.acctNbr",
+  },
+);
+assert.equal(
+  deriveLineBankDomesticDepositAccountNumberEvidence({
+    acctNbr: "****7890",
+    arrId: "arr-001",
+  }),
+  null,
+);
 import {
   commitCanonicalDomesticDeposit,
   createDomesticDepositStore,
@@ -1971,7 +1994,56 @@ assert.equal(admittedV13.capture?.providerGuaranteed, false);
 assert.equal(admittedV13.readiness, "canonical-live");
 assert.equal(admittedV13.liveValidation, "complete");
 assert.deepEqual(admittedV13.financialAdmissionBlockers, []);
-assert.equal(JSON.stringify(admittedV13).includes("SYNTHETIC"), false);
+assert.equal(
+  admittedV13.capture?.records[0]?.description,
+  "SYNTHETIC-EVENT-A · SYNTHETIC-NOTE-A",
+);
+assert.equal(
+  admittedV13.capture?.records[1]?.description,
+  "SYNTHETIC-EVENT-A · SYNTHETIC-NOTE-A",
+);
+
+const numberedLineBankAccount = "001234567890";
+const numberedLineBankSource = {
+  ...v13Source,
+  acctNbr: numberedLineBankAccount,
+};
+const numberedLineBankInput = {
+  ...v13Input,
+  captureId: "synthetic-v13-numbered-1",
+  account: {
+    ...v13Input.account,
+    acctNbr: numberedLineBankAccount,
+  },
+  pages: v13Input.pages.map((page) => ({
+    ...page,
+    source: numberedLineBankSource,
+  })),
+};
+const numberedLineBankAdmission =
+  validateLineBankHumanAttestedV13Capture(numberedLineBankInput);
+assert.equal(numberedLineBankAdmission.status, "admissible");
+assert.ok(numberedLineBankAdmission.capture);
+assert.deepEqual(numberedLineBankAdmission.capture.accountNumber, {
+  value: numberedLineBankAccount,
+  kind: "depository-account",
+  evidenceVersion: "linebank/domestic-deposit/account-number-v1",
+  sourceField: "transactions.content.acctNbr",
+});
+const numberedLineBankRepeat = validateLineBankHumanAttestedV13Capture({
+  ...numberedLineBankInput,
+  captureId: "synthetic-v13-numbered-2",
+  observedAt: "2026-07-07T00:00:00.000Z",
+});
+assert.equal(numberedLineBankRepeat.status, "admissible");
+assert.equal(
+  numberedLineBankRepeat.capture?.accountKey,
+  numberedLineBankAdmission.capture.accountKey,
+);
+assert.deepEqual(
+  numberedLineBankRepeat.capture?.accountNumber,
+  numberedLineBankAdmission.capture.accountNumber,
+);
 
 const observedEmptyRoleV13 = validateLineBankHumanAttestedV13Capture({
   ...v13Input,

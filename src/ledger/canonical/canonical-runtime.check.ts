@@ -23,6 +23,24 @@ const rebuildCathayCanonicalProjection = (
   options = {},
 ) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
 
+// Keep the legacy v7 migration fixtures physically coherent. Downgrading only
+// PRAGMA user_version would leave the v26 source-key/account-number split in
+// place, so the v7 migration would be testing an impossible partial schema.
+function rewindCurrentDatabaseToV23PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 const ledgerDir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-runtime-"));
 try {
   const first = await commitCathayDomesticDeposit(
@@ -1206,6 +1224,7 @@ for (const [label, corrupt] of [
   const { dir } = await makeFieldLedger("cathay-canonical-v7-chain-migration-");
   try {
     const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`PRAGMA foreign_keys = OFF;
       DROP TRIGGER IF EXISTS projection_generation_events_no_update;
       DROP TRIGGER IF EXISTS projection_generation_events_no_delete;
@@ -1275,6 +1294,7 @@ for (const [label, corrupt] of [
   );
   try {
     const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`PRAGMA foreign_keys = OFF;
       DROP TRIGGER IF EXISTS projection_generation_events_no_update;
       DROP TRIGGER IF EXISTS projection_generation_events_no_delete;

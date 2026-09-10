@@ -12,6 +12,7 @@
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
+  import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
   import TransactionModal from "./TransactionModal.svelte";
 
   type Filter = {
@@ -37,6 +38,7 @@
   let transactionsOpen = false;
   let positionsOpen = false;
   let historyOpen = false;
+  let statementsOpen = false;
   let sortKey: SortKey | null = null;
   let sortDirection: SortDirection = "asc";
   let sortColumns: SortColumn[] = [];
@@ -58,6 +60,8 @@
     { id: "all" as const, label: $t.accounts.allDebts },
     { id: "credit-card" as const, label: $t.accounts.creditCard },
     { id: "loan" as const, label: $t.accounts.loan },
+    { id: "fund" as const, label: $t.accounts.fund },
+    { id: "brokerage" as const, label: $t.accounts.brokerage },
     { id: "crypto" as const, label: $t.accounts.crypto },
     { id: "other" as const, label: $t.accounts.other },
   ] satisfies Filter[];
@@ -220,6 +224,9 @@
       <div class="action-group">
         <button class="button secondary" type="button" on:click={() => (transactionsOpen = true)}>{$t.accounts.tx}</button>
         <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        {#if selectedAccount.creditCard}
+          <button class="button secondary" type="button" on:click={() => (statementsOpen = true)}>{$t.accounts.statements}</button>
+        {/if}
         {#if mode === "asset" && selectedPositions.length > 0}
           <button class="button secondary" type="button" on:click={() => (positionsOpen = true)}>{$t.accounts.positions}</button>
         {/if}
@@ -278,6 +285,12 @@
           <tbody>
             {#each sorted as account}
               {@const percent = percentage(account)}
+              {@const availableBalanceBasis = account.amountLines.some((amount) =>
+                amount.traces?.some((trace) => trace.balanceKind === "available"),
+              )}
+              {@const estimatedCreditBasis = account.amountLines.some((amount) =>
+                amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+              )}
               <tr
                 class:selected={account.id === selectedAccountId}
                 class="account-card"
@@ -293,7 +306,9 @@
                 <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
                 <td class="right">
                   <strong class="money">
-                    {#if account.valueAvailability === "unavailable"}
+                    {#if account.valueAvailability === "awaiting"}
+                      <span>{$t.overview.currentAwaiting}</span>
+                    {:else if account.valueAvailability === "unavailable"}
                       <span>{$t.accounts.noAvailableData}</span>
                       {" · "}
                       {#if account.dataIssueId}
@@ -303,6 +318,12 @@
                       {formatAmountLines(account.amountLines)}
                     {/if}
                   </strong><br />
+                  {#if availableBalanceBasis}
+                    <span class="account-meta">{$t.accounts.availableBalanceBasis}</span><br />
+                  {/if}
+                  {#if estimatedCreditBasis}
+                    <span class="account-meta">{$t.accounts.creditCardEstimateBasis}</span><br />
+                  {/if}
                   <span class="account-meta">{$t.accounts.updated(account.lastUpdated ?? "--")}</span>
                 </td>
                 <td class="right">
@@ -329,6 +350,7 @@
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
 <AssetModal bind:open={positionsOpen} account={selectedAccount} rows={selectedPositions} />
 <AccountHistoryModal bind:open={historyOpen} account={selectedAccount} rows={selectedDailyHistory} />
+<CreditCardStatementsModal bind:open={statementsOpen} account={selectedAccount} />
 
 <style>
   .report-issue-button {

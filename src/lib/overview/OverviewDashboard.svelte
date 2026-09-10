@@ -12,6 +12,10 @@
   } from "$lib/overview/exchange-rate-display.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { historyPointKey, type SummaryMetricDto } from "$lib/shared-ledger/types.ts";
+  import {
+    safeSourceGapLabel,
+    sourceGapCounts,
+  } from "$lib/shared-ledger/account-display.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
@@ -38,10 +42,8 @@
   $: history = overview.dailyHistory;
   $: dailyCurrencies = dailyHistoryCurrencies(history);
   $: if (!dailyCurrencies.includes(dailyCurrency)) dailyCurrency = "TWD";
-  $: sankeyRatesByCurrency = new Map(overview.sankeyExchangeRates.map((rate) => [rate.currency, rate.twdPerUnit]));
   $: sankeyCurrencies = ["TWD", ...overview.sankeyExchangeRates.map((rate) => rate.currency)];
   $: if (!sankeyCurrencies.includes(sankeyCurrency)) sankeyCurrency = "TWD";
-  $: sankeyTwdPerUnit = sankeyRatesByCurrency.get(sankeyCurrency) ?? 1;
   $: convertedDailyHistory = convertDailyHistoryRows(
     history,
     overview.exchangeRates,
@@ -54,6 +56,16 @@
   ).rows;
   $: allDailyRatesMissing = allExchangeRatesMissing(twdDailyHistory);
   $: snapshotHistory = [...history].sort((left, right) => historyPointKey(left).localeCompare(historyPointKey(right))).slice(-30);
+  $: gapCounts = sourceGapCounts(overview.sourceGaps);
+  $: currentStateLabel = overview.availability === "unavailable"
+    ? $t.overview.currentUnavailable
+    : overview.sourceGaps.length > 0
+      ? $t.overview.currentPartial(gapCounts.currentValue, gapCounts.sourceNotCollected)
+      : overview.availability === "awaiting"
+        ? $t.overview.currentAwaiting
+        : overview.availability === "empty"
+          ? $t.overview.currentEmpty
+          : $t.overview.currentUnavailable;
 
   onMount(() => {
     const stored = localStorage.getItem(dailyCurrencyStorageKey);
@@ -117,6 +129,18 @@
   syncDataOnboarding="overview-imported"
 >
   <div class="content">
+    {#if overview.coverage !== "complete"}
+      <div class="projection-state" role="status" data-overview-state={overview.coverage}>
+        <span>{currentStateLabel}</span>
+        {#if overview.sourceGaps.length > 0}
+          <ul class="projection-gap-list" aria-label={$t.overview.sourceGapsAria}>
+            {#each overview.sourceGaps as gap}
+              <li>{safeSourceGapLabel(gap)}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
     <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
       <SummaryStrip {metrics} />
     </section>
@@ -140,12 +164,18 @@
           </label>
           <span class="chip">{$t.common.days30}</span>
         </div>
-        <div class="card pad">
-          <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
-          {#key snapshotCurrency}
-            <DailyHistoryTable rows={snapshotHistory} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
-          {/key}
-        </div>
+        {#if overview.historyAvailability === "unavailable"}
+          <div class="card pad projection-state history-state" role="status" data-overview-state="history-unavailable">
+            {$t.overview.historyUnavailable}
+          </div>
+        {:else}
+          <div class="card pad">
+            <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
+            {#key snapshotCurrency}
+              <DailyHistoryTable rows={snapshotHistory} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
+            {/key}
+          </div>
+        {/if}
       </article>
 
       <div class="overview-allocation-stack">
@@ -182,9 +212,13 @@
           </span>
         {/if}
       </div>
-      {#key dailyCurrency}
-        <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
-      {/key}
+      {#if overview.historyAvailability === "unavailable"}
+        <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
+      {:else}
+        {#key dailyCurrency}
+          <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
+        {/key}
+      {/if}
     </section>
 
     {#if overview.sankey}
@@ -213,7 +247,11 @@
           {/if}
         </div>
         <div class="card pad overview-sankey-panel">
-          <OverviewSankeyCard graph={overview.sankey} currency={sankeyCurrency} twdPerUnit={sankeyTwdPerUnit} />
+          <OverviewSankeyCard
+            graph={overview.sankey}
+            currency={sankeyCurrency}
+            exchangeRates={overview.sankeyExchangeRates}
+          />
         </div>
       </section>
     {/if}
@@ -240,4 +278,33 @@
   .sankey-card {
     margin-top: var(--space-4);
   }
+
+  .projection-state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--muted);
+    background: var(--surface-soft);
+  }
+
+  .history-state {
+    min-height: 5rem;
+    align-items: center;
+  }
+
+  .projection-gap-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text);
+    font-size: var(--font-size-sm);
+  }
+
 </style>

@@ -18,12 +18,16 @@ const {
   deriveYuantaCanonicalHumanAttestation,
   deriveYuantaProjectedInstrumentIdentity,
   diagnoseYuantaCreditCardHistoryHtml,
+  diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml,
+  findYuantaCreditCardSummaryLink,
   collectYuantaCreditCardHistorySummaries,
   hasUntraversedPager,
   isCreditCardProductAbsentText,
+  loadYuantaCreditCardSummaryPage,
   diagnoseYuantaCreditCardSummaryHtml,
   parseYuantaCreditCardSettledStatementSummaries,
   parseYuantaCreditCardSettledStatementHistoryPage,
+  parseYuantaCurrentCreditCardUsedCreditSummaryHtml,
   pauseBeforeYuantaCreditCardHistorySummaryParse,
   resolveYuantaSettledStatementCycles,
   toYuantaCanonicalCreditCardSourceRow,
@@ -38,6 +42,287 @@ const {
   yuantaInspectFirstHistorySummaryEnabled,
   YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV,
 } = await import("./yuanta-credit-card-statements.ts");
+
+const yuantaCurrentCredit = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(`
+  <table class="rwdTable">
+    <tr><th>信用額度</th><th>已使用額度</th><th>信用額度餘額</th><th>預借現金額度</th></tr>
+    <tr><td>100,000</td><td>12,345</td><td>87,655</td><td>20,000</td></tr>
+  </table>
+  <table class="rwdTable">
+    <tr><th>帳單結帳日</th><th>本月繳款期限</th><th>最近繳款日期</th><th>本期帳單金額</th></tr>
+    <tr><td>2026/09/01</td><td>2026/09/20</td><td></td><td>5,000</td></tr>
+  </table>
+`);
+assert.deepEqual(yuantaCurrentCredit, {
+  limit: "100000",
+  usedCredit: "12345",
+  available: "87655",
+  sourceField: "已使用額度",
+});
+const nestedYuantaCurrentCreditHtml = `
+  <table class="rwdTable decoy">
+    <tr><th>帳單結帳日</th><th>本月繳款期限</th></tr>
+    <tr><td>2026/09/01</td><td>2026/09/20</td></tr>
+  </table>
+  <table class="layout rwdTable">
+    <tr><td>
+      <table class="rwdTable">
+        <tr><th>信用額度</th><th>已使用額度</th><th>信用額度餘額</th><th>預借現金額度</th></tr>
+        <tr><td>200,000</td><td>12,300.50</td><td>187,699.50</td><td>40,000</td></tr>
+      </table>
+    </td></tr>
+  </table>
+`;
+assert.deepEqual(
+  parseYuantaCurrentCreditCardUsedCreditSummaryHtml(nestedYuantaCurrentCreditHtml),
+  {
+    limit: "200000",
+    usedCredit: "12300.50",
+    available: "187699.50",
+    sourceField: "已使用額度",
+  },
+);
+assert.deepEqual(
+  diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(nestedYuantaCurrentCreditHtml),
+  {
+    rwdTableCount: 3,
+    currentTableCandidateCount: 2,
+    currentTableMatchCount: 2,
+  },
+);
+assert.equal(
+  JSON.stringify(
+    diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(
+      nestedYuantaCurrentCreditHtml,
+    ),
+  ).includes("200000"),
+  false,
+);
+
+type SummaryLinkNode = {
+  scopeName: "fmenu" | "fmain";
+  text: string;
+  hasOnclickDecoy?: boolean;
+  visible: boolean;
+  clicked: boolean;
+};
+
+class SummaryLinkLocatorFixture {
+  private readonly nodes: readonly SummaryLinkNode[];
+  private readonly page: SummaryPageFixture;
+
+  constructor(
+    nodes: readonly SummaryLinkNode[],
+    page: SummaryPageFixture,
+  ) {
+    this.nodes = nodes;
+    this.page = page;
+  }
+
+  filter(options: { hasText: string | RegExp }): SummaryLinkLocatorFixture {
+    const pattern = options.hasText;
+    return new SummaryLinkLocatorFixture(
+      this.nodes.filter((node) =>
+        typeof pattern === "string"
+          ? node.text.includes(pattern)
+          : pattern.test(node.text),
+      ),
+      this.page,
+    );
+  }
+
+  nth(index: number): SummaryLinkLocatorFixture {
+    return new SummaryLinkLocatorFixture(
+      this.nodes[index] ? [this.nodes[index]!] : [],
+      this.page,
+    );
+  }
+
+  async count(): Promise<number> {
+    return this.nodes.length;
+  }
+
+  async isVisible(): Promise<boolean> {
+    return this.nodes[0]?.visible ?? false;
+  }
+
+  async click(): Promise<void> {
+    const node = this.nodes[0];
+    if (node) node.clicked = true;
+  }
+}
+
+class SummaryFrameFixture {
+  readonly name: "fmenu" | "fmain";
+  private readonly page: SummaryPageFixture;
+  private readonly nodes: readonly SummaryLinkNode[];
+
+  constructor(
+    name: "fmenu" | "fmain",
+    page: SummaryPageFixture,
+    nodes: readonly SummaryLinkNode[],
+  ) {
+    this.name = name;
+    this.page = page;
+    this.nodes = nodes;
+  }
+
+  locator(_selector: string): SummaryLinkLocatorFixture {
+    return new SummaryLinkLocatorFixture(this.nodes, this.page);
+  }
+
+  getByRole(
+    role: string,
+    options: { name: string; exact?: boolean },
+  ): SummaryLinkLocatorFixture {
+    if (role !== "link") return new SummaryLinkLocatorFixture([], this.page);
+    return new SummaryLinkLocatorFixture(
+      this.nodes.filter((node) =>
+        options.exact
+          ? node.text === options.name
+          : node.text.includes(options.name),
+      ),
+      this.page,
+    );
+  }
+}
+
+class SummaryPageFixture {
+  readonly hiddenMenuLink: SummaryLinkNode = {
+    scopeName: "fmenu",
+    text: "信用卡總覽",
+    hasOnclickDecoy: true,
+    visible: false,
+    clicked: false,
+  };
+  readonly visibleMainLink: SummaryLinkNode = {
+    scopeName: "fmain",
+    text: "信用卡總覽",
+    visible: true,
+    clicked: false,
+  };
+  readonly menuFrame = new SummaryFrameFixture(
+    "fmenu",
+    this,
+    [this.hiddenMenuLink],
+  );
+  readonly mainFrame = new SummaryFrameFixture(
+    "fmain",
+    this,
+    [this.visibleMainLink],
+  );
+
+  frame({ name }: { name: string }): SummaryFrameFixture | null {
+    return name === "fmain" ? this.mainFrame : null;
+  }
+
+  frames(): SummaryFrameFixture[] {
+    return [this.menuFrame, this.mainFrame];
+  }
+
+  locator(_selector: string): SummaryLinkLocatorFixture {
+    return new SummaryLinkLocatorFixture([], this);
+  }
+
+  getByRole(
+    _role: string,
+    _options: { name: string; exact?: boolean },
+  ): SummaryLinkLocatorFixture {
+    return new SummaryLinkLocatorFixture([], this);
+  }
+
+  async waitForTimeout(): Promise<void> {}
+}
+
+const summaryLinkFixture = new SummaryPageFixture();
+const visibleSummaryLink = await findYuantaCreditCardSummaryLink(
+  summaryLinkFixture as never,
+  250,
+);
+assert.ok(visibleSummaryLink);
+await visibleSummaryLink.click();
+assert.equal(summaryLinkFixture.hiddenMenuLink.clicked, false);
+assert.equal(summaryLinkFixture.visibleMainLink.clicked, true);
+assert.equal(summaryLinkFixture.visibleMainLink.hasOnclickDecoy, undefined);
+
+const responseBodyCurrentCreditHtml = `
+  <table class="rwdTable">
+    <tr><th>信用額度</th><th>已使用額度</th><th>信用額度餘額</th><th>預借現金額度</th></tr>
+    <tr><td>160,000</td><td>3,741</td><td>156,259</td><td>16,000</td></tr>
+  </table>
+`;
+let summaryClickArguments: unknown[] | undefined;
+let renderedDomRead = false;
+const responseBodyFixture = {
+  frames() {
+    return [
+      { url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardbillsquery" },
+      { url: () => "https://ebank.yuantabank.com.tw/nib/pages/vnib/feature-overview" },
+    ];
+  },
+  async waitForResponse(
+    predicate: (response: typeof responseBodyResponseFixture) => boolean,
+  ) {
+    assert.equal(predicate(responseBodyResponseFixture), true);
+    return responseBodyResponseFixture;
+  },
+  async waitForLoadState() {},
+  async waitForTimeout() {},
+  locator() {
+    renderedDomRead = true;
+    throw new Error("rendered frame never exposed the response table");
+  },
+};
+const responseBodyResponseFixture = {
+  url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+  request: () => ({ method: () => "POST" }),
+  status: () => 200,
+  headers: () => ({
+    date: "Thu, 10 Sep 2026 02:03:04 GMT",
+    "cache-control": "no-store",
+  }),
+  async text() {
+    return responseBodyCurrentCreditHtml;
+  },
+};
+const responseBodyLinkFixture = {
+  async click(...args: unknown[]) {
+    summaryClickArguments = args;
+  },
+};
+const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
+  responseBodyFixture as never,
+  responseBodyLinkFixture as never,
+);
+assert.deepEqual(summaryClickArguments, []);
+assert.equal(renderedDomRead, false);
+assert.equal(responseBodyLoaded.evidence.currentUsedCredit?.usedCredit, "3741");
+assert.deepEqual(responseBodyLoaded.evidence.diagnostic, {
+  stage: "ready",
+  htmlSource: "response-body",
+  rwdTableCount: 1,
+  currentTableCandidateCount: 1,
+  currentTableMatchCount: 1,
+  responseMatched: true,
+  responseStatus: 200,
+  responsePath: "/nib/tx/creditcardsummary",
+  responseMethod: "POST",
+  responseQueryKeys: [],
+  hasHttpDate: true,
+  hasCacheControl: true,
+  responseTableHeaders: [[
+    "信用額度",
+    "已使用額度",
+    "信用額度餘額",
+    "預借現金額度",
+  ]],
+  framePaths: [
+    "/nib/pages/vnib/feature-overview",
+    "/nib/tx/creditcardbillsquery",
+  ],
+  reason: "ready",
+});
+
 const {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
 } = await import("../ledger/canonical/yuanta-credit-card-human-attestation.ts");

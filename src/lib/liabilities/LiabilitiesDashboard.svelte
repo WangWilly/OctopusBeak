@@ -4,8 +4,10 @@
   import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
+  import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import {
     historyPointKey,
+    type AccountKind,
     type AccountRowDto,
     type CurrencyAmountDto,
     type SummaryMetricDto,
@@ -25,10 +27,16 @@
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let marginFilter: AccountKind | "all" = "all";
   let reportOpen = false;
   let reportAccount: AccountRowDto | null = null;
 
   $: liabilityAccounts = liabilities.accounts;
+  $: usesEstimatedCredit = liabilityAccounts.some((account) =>
+    account.amountLines.some((amount) =>
+      amount.traces?.some((trace) => trace.estimateKind === "estimate"),
+    ),
+  );
   $: metrics = buildMetrics(liabilityAccounts, $t);
   $: liabilityValue = metrics[0]?.amounts ?? [];
   $: sideValue = formatAmountLines(liabilityValue.slice(0, 1));
@@ -48,7 +56,6 @@
     currency: chartCurrency,
     mode: "liability",
   });
-
   function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
     const cardAccounts = accounts.filter((account) => account.kind === "credit-card");
@@ -147,8 +154,14 @@
   bind:search
 >
   <div class="content">
+    <ProjectionStateBanner projection={liabilities} />
     <section aria-label={$t.liabilities.metricsAria}>
       <SummaryStrip {metrics} />
+      {#if usesEstimatedCredit}
+        <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
+          {$t.overview.creditCardEstimateBasis}
+        </p>
+      {/if}
     </section>
 
     <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
@@ -186,6 +199,23 @@
       focusAccountId={focusAccountId}
       onReportDataIssue={openReport}
     />
+
+    {#if liabilities.marginAccounts.length > 0}
+      <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
+        <div class="panel-title">
+          <h2>{$t.liabilities.marginExposure}</h2>
+        </div>
+        <AccountTable
+          accounts={liabilities.marginAccounts}
+          mode="liability"
+          bind:search
+          bind:filter={marginFilter}
+          transactionsByAccount={liabilities.transactionsByAccount}
+          dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+          onReportDataIssue={openReport}
+        />
+      </section>
+    {/if}
   </div>
 </DashboardShell>
 

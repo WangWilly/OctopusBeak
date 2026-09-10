@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   admitDomesticDepositCapture,
+  combineDomesticDepositDescription,
   commitCanonicalDomesticDeposit as commitCanonicalDomesticDepositRaw,
   createDomesticDepositStore,
   queryCurrent,
@@ -16,6 +17,17 @@ import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
+
+assert.equal(
+  combineDomesticDepositDescription("  SUMMARY  ", "  NOTE  "),
+  "SUMMARY · NOTE",
+);
+assert.equal(
+  combineDomesticDepositDescription("SAME", " SAME "),
+  "SAME",
+);
+assert.equal(combineDomesticDepositDescription("SUMMARY", ""), "SUMMARY");
+assert.equal(combineDomesticDepositDescription(undefined, null), null);
 
 const commitCanonicalDomesticDeposit = async (
   store: ReturnType<typeof createDomesticDepositStore>,

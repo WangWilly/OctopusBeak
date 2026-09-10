@@ -11,7 +11,10 @@ import {
   openCanonicalDatabase,
 } from "./canonical-source-store.ts";
 import {
+  applyCanonicalTransactionTag,
+  commitCanonicalCounterpartyDisplay,
   commitCanonicalAutomaticEnrichmentRun,
+  createCanonicalTransactionTag,
 } from "./canonical-enrichment.ts";
 import {
   commitCanonicalUserCategorization,
@@ -221,6 +224,54 @@ function spending(state: FixtureState) {
 function matchesTransaction(transactionId: string, expectedId: string): boolean {
   return transactionId === expectedId.replaceAll("-", "");
 }
+
+test("Spending enrichment follows display and tag knowledge cutoffs", async () => {
+  const state = await fixture();
+  try {
+    const kind = await publishPurchaseKind(state);
+    const beforeUserValues = createCanonicalSpendingQuery(state.directory).historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: kind.commitSequence,
+    }).transactions.find((transaction) => matchesTransaction(transaction.transactionId, state.transactionId));
+    assert.equal(beforeUserValues?.display.status, "fallback");
+    assert.equal(beforeUserValues?.display.value, "Synthetic Cathay transfer description");
+    assert.deepEqual(beforeUserValues?.tags, []);
+
+    const display = await commitCanonicalCounterpartyDisplay(state.directory, {
+      transactionId: state.transactionId,
+      action: "override",
+      label: "Spending display",
+      userId: "spending-test-user",
+    });
+    const tag = await createCanonicalTransactionTag(state.directory, {
+      label: "Needs review",
+      userId: "spending-test-user",
+    });
+    await applyCanonicalTransactionTag(state.directory, {
+      tagId: tag.tagId,
+      transactionId: state.transactionId,
+      userId: "spending-test-user",
+    });
+
+    const historicalAfterDisplay = createCanonicalSpendingQuery(state.directory).historical({
+      sourceConnectionKey: state.sourceConnectionKey,
+      financialAt: "2026-12-31",
+      knowledgeAt: display.commitSequence,
+    }).transactions.find((transaction) => matchesTransaction(transaction.transactionId, state.transactionId));
+    assert.equal(historicalAfterDisplay?.display.value, "Spending display");
+    assert.deepEqual(historicalAfterDisplay?.tags, []);
+
+    const current = spending(state).transactions.find(
+      (transaction) => matchesTransaction(transaction.transactionId, state.transactionId),
+    );
+    assert.equal(current?.display.value, "Spending display");
+    assert.equal(current?.display.displayKind, "override");
+    assert.deepEqual(current?.tags.map((value) => value.label), ["Needs review"]);
+  } finally {
+    await discard(state.directory);
+  }
+});
 
 test("user categorization supersedes and clears atomically to the current automatic result", async () => {
   const state = await fixture();

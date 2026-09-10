@@ -21,7 +21,10 @@ import {
 } from "../ledger/canonical/investment-financial.ts";
 import {
   buildYuantaInvestmentCapture,
+  YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+  YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   type YuantaCanonicalInvestmentRow,
+  type YuantaTradeAccountNumberEvidence,
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
@@ -45,7 +48,7 @@ export {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 };
 
-const TRADE_LOGIN_URL =
+export const YUANTA_TRADE_LOGIN_URL =
   "https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020";
 
 export function yuantaTradeCaptchaCheckbox(page: Page) {
@@ -62,6 +65,23 @@ export function yuantaTradeCaptchaImages(modal: Locator) {
 
 export function yuantaTradeCaptchaSubmit(modal: Locator) {
   return modal.locator(YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR).first();
+}
+
+export function deriveYuantaTradeAccountNumberEvidence(
+  accountNumber: string,
+): YuantaTradeAccountNumberEvidence | null {
+  const value = accountNumber.trim().normalize("NFKC");
+  const isNumericAccount = /^\d{6,24}$/u.test(value);
+  const isBrokerageAccount = /^\d{3}C-\d{7}$/u.test(value);
+  if (!isNumericAccount && !isBrokerageAccount) return null;
+  return {
+    value,
+    kind: "brokerage-account",
+    evidenceVersion: isBrokerageAccount
+      ? YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION
+      : YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: isBrokerageAccount ? "BrkAccount_C50" : "CSV account_number",
+  };
 }
 
 export function yuantaTradeAudioAssistanceStage(
@@ -852,7 +872,7 @@ export async function fillTradeLoginForm(
   const userId = requireCredential(credentials, "yuanta_trade_user_id");
   const password = requireCredential(credentials, "yuanta_trade_password");
 
-  await page.goto(TRADE_LOGIN_URL, { waitUntil: "domcontentloaded" });
+  await page.goto(YUANTA_TRADE_LOGIN_URL, { waitUntil: "domcontentloaded" });
   await page.locator("#loginid").fill(userId);
   await page.locator("#loginPWD").fill(password);
   await page.locator("#loginPWD").blur();
@@ -1011,6 +1031,14 @@ export function normalizeTradeRows(
             "投資幣別",
           ]),
           action: rowValue(row, ["交易類別"]),
+          description: rowValue(row, [
+            "交易備註",
+            "備註",
+            "備註說明",
+            "描述",
+            "說明",
+            "交易摘要",
+          ]),
           source_transaction_reference: rowValue(row, [
             "交易序號",
             "委託書號",
@@ -1346,6 +1374,41 @@ function sourceDate(value: string): string {
     throw new Error("Yuanta Trade canonical source date is missing.");
   return normalized;
 }
+
+export function mapYuantaTradeCanonicalInvestmentRow(
+  accountNumber: string,
+  row: CsvRow,
+  rowKind: "holding" | "transaction",
+  occurrenceOrdinal: number,
+): YuantaCanonicalInvestmentRow {
+  const originalValue = row.market_value_original?.trim();
+  const twdValue = row.market_value_twd?.trim();
+  const originalCurrency = (
+    row.currency || row.settlement_currency || "TWD"
+  ).trim();
+
+  return {
+    sourceRecordKey: yuantaTradeCanonicalOccurrenceIdentity(
+      accountNumber,
+      rowKind,
+      row,
+      occurrenceOrdinal,
+    ),
+    producerSecurityId: row.product_code?.trim() ?? "",
+    securityName: row.product_name?.trim() || undefined,
+    ticker: row.product_code?.trim() || undefined,
+    currency: originalCurrency,
+    effectiveOn: sourceDate(row.as_of_date || row.trade_date || ""),
+    quantity: row.quantity ? exactAmount(row.quantity) : undefined,
+    description: row.description?.trim() || undefined,
+    valuation: originalValue
+      ? { ...exactAmount(originalValue), currency: originalCurrency }
+      : twdValue
+        ? { ...exactAmount(twdValue), currency: "TWD" }
+        : undefined,
+  };
+}
+
 export function explicitAction(value: string): InvestmentTransactionAction {
   const normalized = value.trim().toLocaleLowerCase("en-US");
   if (["b", "buy", "買進", "買入", "普通買進"].includes(normalized))
@@ -1418,6 +1481,9 @@ async function commitYuantaTradeCanonicalIfComplete(
   ];
   const captures: InvestmentValidatedCapture[] = [];
   for (const accountNumber of accountNumbers) {
+    const accountNumberEvidence = deriveYuantaTradeAccountNumberEvidence(
+      accountNumber!,
+    );
     const accountHoldings = holdingRows.filter(
       (row) => row.account_number?.trim() === accountNumber,
     );
@@ -1449,23 +1515,13 @@ async function commitYuantaTradeCanonicalIfComplete(
       row: CsvRow,
       rowKind: "holding" | "transaction",
       occurrenceOrdinal: number,
-    ): YuantaCanonicalInvestmentRow => ({
-      sourceRecordKey: yuantaTradeCanonicalOccurrenceIdentity(
+    ): YuantaCanonicalInvestmentRow =>
+      mapYuantaTradeCanonicalInvestmentRow(
         accountNumber!,
-        rowKind,
         row,
+        rowKind,
         occurrenceOrdinal,
-      ),
-      producerSecurityId: row.product_code?.trim() ?? "",
-      securityName: row.product_name?.trim() || undefined,
-      ticker: row.product_code?.trim() || undefined,
-      currency: (row.currency || row.settlement_currency || "TWD").trim(),
-      effectiveOn: sourceDate(row.as_of_date || row.trade_date || ""),
-      quantity: row.quantity ? exactAmount(row.quantity) : undefined,
-      valuation: row.market_value_twd
-        ? { ...exactAmount(row.market_value_twd), currency: "TWD" }
-        : undefined,
-    });
+      );
     const holdings = accountHoldings.map((row, index) =>
       mapRow(row, "holding", index),
     );
@@ -1508,6 +1564,9 @@ async function commitYuantaTradeCanonicalIfComplete(
         [sourceConnectionKey, accountNumber!],
       ),
       accountKey,
+      ...(accountNumberEvidence
+        ? { accountNumber: accountNumberEvidence }
+        : {}),
       reportingCurrency: "TWD",
       observedAt,
       sourceEffectiveOn: effectiveDates[0]!,
@@ -1528,6 +1587,7 @@ async function commitYuantaTradeCanonicalIfComplete(
 }
 
 export default workflow("yuantaTradeStatements", {
+  startUrl: YUANTA_TRADE_LOGIN_URL,
   credentials: [
     "yuanta_trade_user_id",
     "yuanta_trade_password",

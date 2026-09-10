@@ -847,9 +847,27 @@ test("cleanup failure makes a partial Libretto run failed", async () => {
   }
 });
 
-test("batch task startup uses two concurrent slots", () => {
+test("batch task startup uses one serialized slot", () => {
   const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
-  assert.match(source, /runWithConcurrency\(selectedTaskIds, 2,/);
+  assert.match(source, /runWithConcurrency\(selectedTaskIds, 1,/);
+});
+
+test("sync-all canonical writer tasks never overlap", async () => {
+  let active = 0;
+  let peak = 0;
+  const execute = async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    active -= 1;
+  };
+
+  await runAutomationBatch(
+    ["fubon-all-statements", "cathay-all-statements"],
+    execute,
+  );
+
+  assert.equal(peak, 1);
 });
 
 test("each sync-all batch attempts one import after its tasks settle", async () => {

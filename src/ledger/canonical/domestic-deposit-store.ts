@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import {
   createCanonicalSourceCaptureAdmission,
 } from "./canonical-source-capture-admission.ts";
-import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import type {
+  CanonicalSourceAccountNumber,
+  CanonicalSourceEvidence,
+} from "./canonical-source-evidence.ts";
 import {
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
@@ -91,6 +94,8 @@ export type DomesticDepositSourceRecord = {
   amount: DomesticDepositExactAmount;
   balanceAfter: DomesticDepositExactAmount;
   currency: "TWD";
+  /** Source-provided description and note, with no synthetic fallback text. */
+  description?: string | null;
   cancellation: "N";
   cancellationFlags: { cncdTxYn: "N"; cnclTxYn: "N" };
   provenance: { captureId: string; matchingRuleVersion: string };
@@ -103,6 +108,8 @@ export type DomesticDepositCapture = {
   contractVersion: string;
   identityEpoch: number;
   accountKey: string;
+  /** Optional explicit provider account-number evidence. */
+  accountNumber?: CanonicalSourceAccountNumber | null;
   scope: {
     startDate: string;
     endDate: string;
@@ -220,7 +227,7 @@ export type LineBankFinancialCommitResult = {
 export type DomesticDepositFinancialTransaction = {
   id: string;
   accountId: string;
-  accountNo: string;
+  accountNo: string | null;
   sourceOccurrenceKey: string;
   amount: DomesticDepositExactAmount;
   currency: string;
@@ -320,6 +327,22 @@ function opaqueToken(...parts: string[]): string {
     .update(parts.join("\u0000"))
     .digest("hex");
   return `sha256:${digest}`;
+}
+
+/**
+ * Preserve source transaction text without inventing a description. Empty
+ * parts are omitted, surrounding whitespace is trimmed, and an identical
+ * description/note is emitted only once.
+ */
+export function combineDomesticDepositDescription(
+  description: unknown,
+  note: unknown,
+): string | null {
+  const parts = [description, note]
+    .map((value) => String(value ?? "").trim())
+    .filter((value) => value.length > 0);
+  const uniqueParts = [...new Set(parts)];
+  return uniqueParts.length > 0 ? uniqueParts.join(" · ") : null;
 }
 
 function ensureOpen(store: DomesticDepositStore): void {
@@ -642,6 +665,7 @@ function stableRecordFingerprint(record: DomesticDepositSourceRecord): string {
     amount: record.amount,
     balanceAfter: record.balanceAfter,
     currency: record.currency,
+    description: record.description ?? null,
     cancellation: record.cancellation,
     cancellationFlags: record.cancellationFlags,
   });
@@ -678,6 +702,10 @@ function rowToRecord(row: Record<string, unknown>): DomesticDepositQueryRecord {
       scale: Number(row.balance_scale),
     },
     currency: "TWD",
+    description:
+      row.description === null || row.description === undefined
+        ? null
+        : String(row.description),
     cancellation: "N",
     cancellationFlags: { cncdTxYn: "N", cnclTxYn: "N" },
     provenance: {
@@ -715,12 +743,21 @@ function domesticCaptureEvidence(
     contractVersion: capture.contractVersion,
     subjectDigest: capture.accountKey,
     observedAt: capture.observedAt,
+    accountNumber: capture.accountNumber
+      ? {
+          value: capture.accountNumber.value,
+          kind: capture.accountNumber.kind,
+          evidenceVersion: capture.accountNumber.evidenceVersion,
+          sourceField: capture.accountNumber.sourceField,
+        }
+      : null,
     scope: {
       startDate: capture.scope.startDate,
       endDate: capture.scope.endDate,
       kind: "bounded-range",
       completeness: "single-page",
       ruleVersion: capture.scope.evidenceVersion,
+      sourceAccountKey: capture.accountKey,
     },
     pages: [
       {
@@ -926,6 +963,7 @@ function v13CompactRecord(
     amount: record.amount,
     balanceAfter: record.balanceAfter,
     currency: record.currency,
+    description: record.description ?? null,
     cancellation: "N",
     cancellationFlags: record.cancellationFlags,
     provenance: {
@@ -971,6 +1009,8 @@ function normalizeLineBankFinancialCapture(
       recordKind: LINEBANK_V13_RECORD_KIND,
       subjectDigest: capture.accountKey,
       accountNo: capture.accountKey,
+      sourceAccountKey: capture.accountKey,
+      accountNumber: capture.accountNumber ?? null,
       accountType: "depository",
       currency: "TWD",
     },
@@ -1034,6 +1074,7 @@ function normalizeLineBankFinancialCapture(
       amount: record.amount,
       balanceAfter: record.balanceAfter,
       currency: record.currency,
+      description: record.description ?? null,
       direction: record.direction,
       sourceTime: {
         localDate: record.sourceTime.localDate,
@@ -1075,13 +1116,17 @@ function hasFinancialEvidence(
   integrationNamespace = "linebank",
 ): boolean {
   return Boolean(
-    store.db
+      store.db
       .prepare(
         `SELECT 1 FROM source_captures capture
          JOIN source_connections connection
            ON connection.source_connection_id = capture.source_connection_id
          WHERE connection.integration_namespace = ?
-           AND capture.record_kind NOT LIKE '%source-record%' LIMIT 1`,
+           AND EXISTS (
+             SELECT 1 FROM financial_accounts account
+             WHERE account.created_commit_id = capture.commit_id
+           )
+         LIMIT 1`,
       )
       .get(integrationNamespace),
   );
@@ -1110,6 +1155,22 @@ function canonicalFinancialRows(
     ).value ?? 0,
   );
   const knowledgeAt = request.knowledgeAt ?? latestKnowledge;
+  const historicalAccountNumber = request.knowledgeAt !== undefined;
+  const accountNumberExpression = historicalAccountNumber
+    ? `(SELECT observation.identifier_value
+          FROM financial_account_identifier_observations observation
+          JOIN canonical_commits observation_commit
+            ON observation_commit.commit_id = observation.commit_id
+         WHERE observation.account_id = account.account_id
+           AND observation_commit.commit_sequence <= ?
+         ORDER BY observation_commit.commit_sequence DESC,
+                  observation.observed_at DESC,
+                  observation.observation_id DESC
+         LIMIT 1)`
+    : "account.account_no";
+  const accountNumberParameters: Array<number> = historicalAccountNumber
+    ? [knowledgeAt]
+    : [];
   const clauses = ["revision_commit.commit_sequence <= ?"];
   if (!request.includeWithdrawn)
     clauses.push(`COALESCE((
@@ -1130,7 +1191,7 @@ function canonicalFinancialRows(
     parameters.push(request.occurrenceKey);
   }
   if (request.accountKey !== undefined) {
-    clauses.push("account.account_no = ?");
+    clauses.push("account.source_account_key = ?");
     parameters.push(request.accountKey);
   }
   if (request.integrationNamespace !== undefined) {
@@ -1148,7 +1209,7 @@ function canonicalFinancialRows(
   const rows = store.db
     .prepare(
       `SELECT transaction_row.transaction_id, transaction_row.account_id,
-        account.account_no, transaction_row.source_sequence,
+        ${accountNumberExpression} AS account_no, transaction_row.source_sequence,
         revision.amount_coefficient, revision.amount_scale, revision.currency,
         revision.direction, revision.posting_status, revision.effective_on,
         revision.transaction_date_time_local, revision.effective_time_basis,
@@ -1171,13 +1232,13 @@ function canonicalFinancialRows(
              AND newer_commit.commit_sequence <= ?
              AND newer_commit.commit_sequence > revision_commit.commit_sequence
          )
-       ORDER BY account.account_no, revision.utc_instant_utc_us, transaction_row.source_sequence`,
+       ORDER BY account.source_account_key, revision.utc_instant_utc_us, transaction_row.source_sequence`,
     )
-    .all(...parameters, knowledgeAt) as Array<Record<string, unknown>>;
+    .all(...accountNumberParameters, ...parameters, knowledgeAt) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     id: idText(row.transaction_id),
     accountId: idText(row.account_id),
-    accountNo: String(row.account_no),
+    accountNo: row.account_no == null ? null : String(row.account_no),
     sourceOccurrenceKey: String(row.source_sequence),
     amount: {
       coefficient: String(row.amount_coefficient),

@@ -5,6 +5,7 @@ import { CANONICAL_SQLITE_FILE, blob } from "./canonical-schema-implementation.t
 import { openCanonicalDatabase } from "./canonical-database.ts";
 import {
   canonicalProjectionRuntimeRebuildInternal,
+  canonicalProjectionRuntimeRebuildInTransaction,
   canonicalProjectionRuntimeSyncInternal,
 } from "./canonical-projection-implementation.ts";
 import type {
@@ -52,12 +53,16 @@ const CANONICAL_PROJECTION_COMMIT_IMPACTS: Readonly<
 });
 
 const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
+  "financial-accounts",
   "transactions",
   "transaction-fields",
   "transaction-enrichment",
   "transaction-categorization",
   "loan-accounts",
   "loan-balances",
+  "overview-loan-balances",
+  "depository-balances",
+  "overview-depository-balances",
   "loan-relations",
   "loan-settlement-groups",
   "investment-accounts",
@@ -65,6 +70,9 @@ const CANONICAL_PROJECTION_FAMILIES = Object.freeze([
   "investment-transactions",
   "investment-margin-balances",
   "investment-funding-relations",
+  "credit-card-balances",
+  "overview-credit-card-balances",
+  "credit-card-statements",
 ] as const);
 
 export type CanonicalProjectionFamily =
@@ -112,6 +120,24 @@ export type CanonicalProjectionTransaction = Readonly<{
   description: string | null;
   projectionCommitId: string | null;
   revisionCommitId: string;
+}>;
+export type CanonicalProjectionFinancialAccount = Readonly<{
+  accountId: string;
+  sourceConnectionId: string;
+  identityEpochId: string;
+  sourceConnectionKey: string;
+  integrationNamespace: string;
+  stream: string;
+  sourceAccountKey: string;
+  accountNo: string | null;
+  /** Display-safe card instrument masks known at the projection cutoff. */
+  cardMasks: readonly string[];
+  accountType: "depository" | "credit" | "loan" | "investment" | "other";
+  investmentSubtype: string | null;
+  currency: string | null;
+  createdCommitId: string;
+  createdCommitSequence: number;
+  latestCaptureObservedAt: string | null;
 }>;
 export type CanonicalProjectionTransactionField = Readonly<{
   transactionId: string;
@@ -166,6 +192,47 @@ export type CanonicalProjectionLoanBalance = Readonly<{
   accountId: string;
   observationId: string;
   revisionId: string;
+  balanceKind: string;
+  coefficient: string;
+  scale: number;
+  currency: string;
+  effectiveAt: string;
+  observedAt: string;
+  projectionCommitId: string | null;
+  revisionCommitId: string | null;
+}>;
+export type CanonicalProjectionDepositoryBalance = Readonly<{
+  accountId: string;
+  observationId: string;
+  revisionId: string;
+  balanceKind: "ledger" | "available";
+  coefficient: string;
+  scale: number;
+  currency: string;
+  effectiveAt: string;
+  observedAt: string;
+  projectionCommitId: string | null;
+  revisionCommitId: string | null;
+}>;
+export type CanonicalProjectionCreditCardBalance = Readonly<{
+  accountId: string;
+  observationId: string;
+  revisionId: string;
+  balanceKind: "credit_used";
+  estimateKind: "estimate";
+  estimateBasis: "provider-used-credit" | "credit-limit-minus-available";
+  estimateFormula: string;
+  coefficient: string;
+  scale: number;
+  currency: string;
+  componentLimitCoefficient: string | null;
+  componentLimitScale: number | null;
+  componentAvailableCoefficient: string | null;
+  componentAvailableScale: number | null;
+  effectiveAt: string;
+  observedAt: string;
+  projectionCommitId: string | null;
+  revisionCommitId: string | null;
 }>;
 export type CanonicalProjectionLoanRelation = Readonly<{
   relationId: string;
@@ -185,6 +252,10 @@ export type CanonicalProjectionInvestmentHolding = Readonly<{
   accountId: string;
   securityId: string;
   securityKey: string;
+  securityName: string | null;
+  securityTicker: string | null;
+  securityCurrency: string;
+  securityType: string;
   measurementKey: string;
   revisionNumber: number;
   isCurrent: boolean;
@@ -215,11 +286,14 @@ export type CanonicalProjectionInvestmentTransaction = Readonly<{
 }>;
 export type CanonicalProjectionInvestmentMarginBalance = Readonly<{
   accountId: string;
+  observationId: string;
   balanceKind: string;
   coefficient: string;
   scale: number;
   currency: string;
   effectiveOn: string;
+  observedAt: string;
+  revisionCommitId: string | null;
 }>;
 export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
   relationId: string;
@@ -235,13 +309,38 @@ export type CanonicalProjectionInvestmentFundingRelation = Readonly<{
   sourceLinkageKey: string;
   investmentTransactionCount: number;
 }>;
+export type CanonicalProjectionCreditCardStatement = Readonly<{
+  accountId: string;
+  statementId: string;
+  statementKey: string;
+  statementRevisionId: string;
+  revisionNumber: number;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  balanceCoefficient: string;
+  balanceScale: number;
+  minimumCoefficient: string | null;
+  minimumScale: number | null;
+  transactionId: string | null;
+  transactionRevisionId: string | null;
+  sourceRecordId: string | null;
+}>;
 export type CanonicalProjectionFamilyRows = Readonly<{
+  "financial-accounts": CanonicalProjectionFinancialAccount;
   transactions: CanonicalProjectionTransaction;
   "transaction-fields": CanonicalProjectionTransactionField;
   "transaction-enrichment": CanonicalProjectionTransactionEnrichment;
   "transaction-categorization": CanonicalProjectionTransactionCategorization;
   "loan-accounts": CanonicalProjectionLoanAccount;
   "loan-balances": CanonicalProjectionLoanBalance;
+  "overview-loan-balances": CanonicalProjectionLoanBalance;
+  "depository-balances": CanonicalProjectionDepositoryBalance;
+  "overview-depository-balances": CanonicalProjectionDepositoryBalance;
+  "credit-card-balances": CanonicalProjectionCreditCardBalance;
+  "overview-credit-card-balances": CanonicalProjectionCreditCardBalance;
   "loan-relations": CanonicalProjectionLoanRelation;
   "loan-settlement-groups": CanonicalProjectionLoanSettlementGroup;
   "investment-accounts": CanonicalProjectionInvestmentAccount;
@@ -249,6 +348,7 @@ export type CanonicalProjectionFamilyRows = Readonly<{
   "investment-transactions": CanonicalProjectionInvestmentTransaction;
   "investment-margin-balances": CanonicalProjectionInvestmentMarginBalance;
   "investment-funding-relations": CanonicalProjectionInvestmentFundingRelation;
+  "credit-card-statements": CanonicalProjectionCreditCardStatement;
 }>;
 
 export type CanonicalProjectionSnapshot = Readonly<{
@@ -615,6 +715,133 @@ function refreshCurrentLoanBalanceProjection(
   );
 }
 
+/** Rebuild the current depository balance family from immutable evidence. */
+function refreshCurrentDepositoryBalanceProjection(
+  db: DatabaseSync,
+  values: Readonly<{
+    generationId: number;
+    projectionCommitId: Uint8Array;
+  }>,
+): void {
+  assertValidatedCanonicalDatabase(db);
+  db.prepare(
+    "DELETE FROM current_depository_accounts WHERE generation_id = ?",
+  ).run(values.generationId);
+  db.prepare(
+    `INSERT INTO current_depository_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'depository'
+        AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+     ON CONFLICT(generation_id, account_id) DO UPDATE SET
+       projection_commit_id = excluded.projection_commit_id,
+       created_commit_id = excluded.created_commit_id`,
+  ).run(values.generationId, values.projectionCommitId);
+  db.prepare(
+    "DELETE FROM current_depository_balance_observations WHERE generation_id = ?",
+  ).run(values.generationId);
+  db.prepare(
+    `INSERT INTO current_depository_balance_observations(
+       generation_id, account_id, balance_kind, currency,
+       observation_id, revision_id, projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id, ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind,
+                revision.currency, observation.observation_id,
+                revision.revision_id, revision.commit_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind,
+                               revision.currency
+                  ORDER BY revision.effective_at DESC,
+                           revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC,
+                           hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision
+             ON revision.observation_id = observation.observation_id
+           JOIN canonical_commits revision_commit
+             ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account
+             ON account.account_id = observation.account_id
+          WHERE account.account_type = 'depository'
+            AND account.stream IN ('domestic-deposit','foreign-currency-deposit')
+            AND observation.balance_kind IN ('ledger','available')
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(values.generationId, values.projectionCommitId);
+}
+
+/** Rebuild the issuer-aggregate credit-used estimate family from immutable evidence. */
+function refreshCurrentCreditCardBalanceProjection(
+  db: DatabaseSync,
+  values: Readonly<{
+    generationId: number;
+    projectionCommitId: Uint8Array;
+  }>,
+): void {
+  assertValidatedCanonicalDatabase(db);
+  db.prepare("DELETE FROM current_credit_card_accounts WHERE generation_id = ?").run(values.generationId);
+  db.prepare(
+    `INSERT INTO current_credit_card_accounts(
+       generation_id, account_id, projection_commit_id, created_commit_id
+     )
+     SELECT ?, account.account_id, ?, account.created_commit_id
+       FROM financial_accounts account
+       JOIN canonical_commits created ON created.commit_id = account.created_commit_id
+      WHERE account.account_type = 'credit'
+        AND account.stream = 'credit-card'
+     ON CONFLICT(generation_id, account_id) DO UPDATE SET
+       projection_commit_id = excluded.projection_commit_id,
+       created_commit_id = excluded.created_commit_id`,
+  ).run(values.generationId, values.projectionCommitId);
+  db.prepare("DELETE FROM current_credit_card_balance_observations WHERE generation_id = ?").run(values.generationId);
+  db.prepare(
+    `INSERT INTO current_credit_card_balance_observations(
+       generation_id, account_id, balance_kind, currency, observation_id, revision_id,
+       estimate_kind, estimate_basis, estimate_formula,
+       component_limit_coefficient, component_limit_scale,
+       component_available_coefficient, component_available_scale,
+       projection_commit_id, revision_commit_id
+     )
+     SELECT ?, selected.account_id, selected.balance_kind, selected.currency,
+            selected.observation_id, selected.revision_id,
+            selected.estimate_kind, selected.estimate_basis, selected.formula,
+            selected.component_limit_coefficient, selected.component_limit_scale,
+            selected.component_available_coefficient, selected.component_available_scale,
+            ?, selected.commit_id
+       FROM (
+         SELECT observation.account_id, observation.balance_kind,
+                revision.currency, observation.observation_id, revision.revision_id,
+                revision.commit_id, detail.estimate_kind, detail.estimate_basis,
+                detail.formula, detail.component_limit_coefficient,
+                detail.component_limit_scale, detail.component_available_coefficient,
+                detail.component_available_scale,
+                ROW_NUMBER() OVER (
+                  PARTITION BY observation.account_id, observation.balance_kind, revision.currency
+                  ORDER BY revision.effective_at DESC,
+                           revision_commit.commit_sequence DESC,
+                           revision.revision_number DESC,
+                           hex(revision.revision_id) DESC
+                ) AS rank
+           FROM balance_observations observation
+           JOIN balance_observation_revisions revision ON revision.observation_id = observation.observation_id
+           JOIN credit_card_balance_estimate_details detail ON detail.revision_id = revision.revision_id
+           JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+           JOIN financial_accounts account ON account.account_id = observation.account_id
+          WHERE account.account_type = 'credit'
+            AND account.stream = 'credit-card'
+            AND observation.balance_kind = 'credit_used'
+       ) selected
+      WHERE selected.rank = 1`,
+  ).run(values.generationId, values.projectionCommitId);
+}
+
 function refreshTransactionProjection(
   db: DatabaseSync,
   projectionCommitId: Uint8Array,
@@ -881,6 +1108,14 @@ function applyCommitInTransaction(
         "Canonical projection relation commit cannot skip unapplied financial commits.",
       );
     refreshLoanRelationProjection(db, token.commitId, targetSequence);
+    refreshCurrentDepositoryBalanceProjection(db, {
+      generationId: active.generationId,
+      projectionCommitId: token.commitId,
+    });
+    refreshCurrentCreditCardBalanceProjection(db, {
+      generationId: active.generationId,
+      projectionCommitId: token.commitId,
+    });
     db.prepare(
       "UPDATE projection_generations SET build_cutoff_commit_sequence = ? WHERE generation_id = ?",
     ).run(targetSequence, active.generationId);
@@ -897,6 +1132,14 @@ function applyCommitInTransaction(
     // idempotent while bringing those commit-owned extension facts into the
     // Runtime-owned projection.
     refreshLoanProjection(db, token.commitId, targetSequence);
+    refreshCurrentDepositoryBalanceProjection(db, {
+      generationId: activeGenerationState(db).generationId,
+      projectionCommitId: token.commitId,
+    });
+    refreshCurrentCreditCardBalanceProjection(db, {
+      generationId: activeGenerationState(db).generationId,
+      projectionCommitId: token.commitId,
+    });
     return;
   }
   if (
@@ -914,6 +1157,14 @@ function applyCommitInTransaction(
   refreshCanonicalEnrichmentProjection(db, token.commitId, targetSequence);
   markCurrentProjectionCommit(db, token.commitId);
   refreshLoanProjection(db, token.commitId, targetSequence);
+  refreshCurrentDepositoryBalanceProjection(db, {
+    generationId: activeCanonicalProjectionGeneration(db),
+    projectionCommitId: token.commitId,
+  });
+  refreshCurrentCreditCardBalanceProjection(db, {
+    generationId: activeCanonicalProjectionGeneration(db),
+    projectionCommitId: token.commitId,
+  });
 }
 
 /**
@@ -985,7 +1236,66 @@ function readFamily(
   const dateEnd = request.scope.endDate;
   const financialAt =
     request.kind === "historical" ? request.cutoff?.financialAt ?? null : null;
+  // `financial_accounts.account_no` is the current projection of the latest
+  // accepted provider identifier.  Historical reads must use the identifier
+  // observation that was known at the requested knowledge point, otherwise a
+  // number learned by a later capture leaks backwards into an earlier view.
+  const accountNumberAtKnowledge =
+    request.kind === "historical"
+      ? `(SELECT identifier_observation.identifier_value
+           FROM financial_account_identifier_observations identifier_observation
+           JOIN canonical_commits identifier_commit
+             ON identifier_commit.commit_id = identifier_observation.commit_id
+          WHERE identifier_observation.account_id = account.account_id
+            AND identifier_commit.commit_sequence <= ?
+          ORDER BY identifier_commit.commit_sequence DESC,
+                   identifier_observation.observed_at DESC,
+                   identifier_observation.observation_id DESC
+          LIMIT 1)`
+      : "account.account_no";
+  const accountNumberAtKnowledgeParameters: ProjectionSqlInput[] =
+    request.kind === "historical" ? [knowledgeAt] : [];
   switch (family) {
+    case "financial-accounts": {
+      const accountRows = rows(
+        db,
+        `SELECT account.account_id, account.source_connection_id,
+                account.identity_epoch_id, connection_scope.source_connection_key,
+                connection_scope.integration_namespace, account.stream,
+                account.source_account_key, ${accountNumberAtKnowledge} AS account_no, account.account_type, account.currency,
+                investment_account.account_subtype AS investment_subtype,
+                account.created_commit_id,
+                created.commit_sequence AS created_commit_sequence,
+                (SELECT MAX(capture.observed_at)
+                   FROM source_captures capture
+                   JOIN canonical_commits capture_commit
+                     ON capture_commit.commit_id = capture.commit_id
+                  WHERE capture.source_connection_id = account.source_connection_id
+                    AND capture.identity_epoch_id = account.identity_epoch_id
+                    AND capture.stream = account.stream
+                    AND (capture.source_account_key IS NULL OR capture.source_account_key = account.source_account_key)
+                    AND capture_commit.commit_sequence <= ?) AS latest_capture_observed_at
+           FROM financial_accounts account
+           JOIN source_connections connection_scope
+             ON connection_scope.source_connection_id = account.source_connection_id
+           JOIN canonical_commits created
+             ON created.commit_id = account.created_commit_id
+           LEFT JOIN investment_accounts investment_account
+             ON investment_account.account_id = account.account_id
+          WHERE created.commit_sequence <= ? ${scopedFilter("account")}
+          ORDER BY connection_scope.source_connection_key, account.stream,
+                   account.source_account_key, hex(account.account_id)`,
+        ...accountNumberAtKnowledgeParameters,
+        knowledgeAt,
+        knowledgeAt,
+        ...scopedParameters(),
+      );
+      const cardMasksByAccount = readCreditCardMasksAtKnowledge(db, knowledgeAt);
+      return accountRows.map((account) => ({
+        ...account,
+        card_masks: cardMasksByAccount.get(String(account.account_id)) ?? [],
+      }));
+    }
     case "transactions": {
       if (request.kind === "current" && generation !== null)
         return rows(
@@ -1022,7 +1332,7 @@ function readFamily(
       return rows(
         db,
         `SELECT transaction_row.transaction_id, transaction_row.account_id,
-                account.account_no, revision.revision_id,
+                ${accountNumberAtKnowledge} AS account_no, revision.revision_id,
                 revision.amount_coefficient, revision.amount_scale,
                 revision.currency, revision.direction, revision.posting_status,
                 revision.economic_status, revision.administrative_state,
@@ -1067,6 +1377,7 @@ function readFamily(
                 AND newer_commit.commit_sequence > revision_commit.commit_sequence
             )
           ORDER BY revision.effective_on, transaction_row.transaction_id`,
+        ...accountNumberAtKnowledgeParameters,
         knowledgeAt,
         ...scopedParameters(),
         ...transactionParameters(),
@@ -1613,7 +1924,8 @@ function readFamily(
                   projected.balance_kind, projected.observation_id,
                   projected.revision_id, projected.projection_commit_id,
                   projected.revision_commit_id, revision.balance_coefficient,
-                  revision.balance_scale, revision.currency, revision.effective_at
+                  revision.balance_scale, revision.currency, revision.effective_at,
+                  revision.observed_at
              FROM current_loan_balance_observations projected
              JOIN balance_observation_revisions revision ON revision.revision_id = projected.revision_id
              JOIN financial_accounts account ON account.account_id = projected.account_id
@@ -1635,7 +1947,7 @@ function readFamily(
                 observation.balance_kind, revision.revision_id,
                 revision.balance_coefficient, revision.balance_scale,
                 revision.currency, revision.effective_at,
-                revision.commit_id AS revision_commit_id
+                revision.observed_at, revision.commit_id AS revision_commit_id
            FROM balance_observations observation
            JOIN balance_observation_revisions revision
              ON revision.observation_id = observation.observation_id
@@ -1665,6 +1977,255 @@ function readFamily(
         dateStart ?? null,
         knowledgeAt,
         financialAt,
+      );
+    }
+    case "overview-loan-balances": {
+      if (request.kind !== "current" || generation === null) return [];
+      // Overview may use only a contract-approved liability balance. Selection
+      // is newest evidence per account/currency; the Runtime deliberately
+      // does not rank total versus principal because those kinds are not
+      // comparable without provider contract evidence.
+      return rows(
+        db,
+        `WITH selected AS (
+           SELECT projected.generation_id, projected.account_id,
+                  projected.balance_kind, projected.observation_id,
+                  projected.revision_id, projected.projection_commit_id,
+                  projected.revision_commit_id, revision.balance_coefficient,
+                  revision.balance_scale, revision.currency, revision.effective_at,
+                  revision.observed_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY projected.account_id, revision.currency
+                    ORDER BY revision.effective_at DESC,
+                             revision.observed_at DESC,
+                             revision_commit.commit_sequence DESC,
+                             hex(projected.observation_id) DESC
+                  ) AS selection_rank
+             FROM current_loan_balance_observations projected
+             JOIN balance_observation_revisions revision
+               ON revision.revision_id = projected.revision_id
+             JOIN canonical_commits revision_commit
+               ON revision_commit.commit_id = projected.revision_commit_id
+             JOIN financial_accounts account
+               ON account.account_id = projected.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE projected.generation_id = ? ${scopedFilter("account")}
+              AND projected.balance_kind IN (
+                'outstanding_total', 'loan_outstanding', 'outstanding_principal'
+              )
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+         )
+         SELECT generation_id, account_id, balance_kind, observation_id,
+                revision_id, projection_commit_id, revision_commit_id,
+                balance_coefficient, balance_scale, currency, effective_at,
+                observed_at
+           FROM selected
+          WHERE selection_rank = 1
+          ORDER BY effective_at, account_id`,
+        generation,
+        ...scopedParameters(),
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
+      );
+    }
+    case "depository-balances":
+    case "overview-depository-balances": {
+      const ledgerOnly = family === "overview-depository-balances";
+      const kinds = ledgerOnly ? "'ledger'" : "'ledger','available'";
+      if (request.kind === "current" && generation !== null)
+        return rows(
+          db,
+          `SELECT projected.generation_id, projected.account_id,
+                  projected.balance_kind, projected.currency,
+                  projected.observation_id, projected.revision_id,
+                  projected.projection_commit_id, projected.revision_commit_id,
+                  revision.balance_coefficient, revision.balance_scale,
+                  revision.effective_at, revision.observed_at
+             FROM current_depository_balance_observations projected
+             JOIN balance_observation_revisions revision
+               ON revision.revision_id = projected.revision_id
+             JOIN financial_accounts account
+               ON account.account_id = projected.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE projected.generation_id = ?
+              AND projected.balance_kind IN (${kinds})
+              ${scopedFilter("account")}
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+            ORDER BY revision.effective_at, projected.account_id,
+                     projected.balance_kind, projected.currency`,
+          generation,
+          ...scopedParameters(),
+          dateStart ?? null,
+          dateStart ?? null,
+          dateEnd ?? null,
+          dateEnd ?? null,
+        );
+      // Depository effective instants are stored with nine fractional digits.
+      // The public historical cutoff is a calendar date, so make its end of
+      // day explicit at the same precision before comparing TEXT timestamps.
+      // This keeps a value such as `.123456789Z` inside the requested date
+      // instead of relying on SQLite's lexical comparison with the bare date.
+      const depositoryFinancialAt = financialAt === null
+        ? null
+        : `${financialAt}T23:59:59.999999999Z`;
+      return rows(
+        db,
+        `WITH revisions AS (
+           SELECT observation.account_id, observation.balance_kind,
+                  revision.currency, observation.observation_id,
+                  revision.revision_id, revision.balance_coefficient,
+                  revision.balance_scale, revision.effective_at,
+                  revision.observed_at, revision.commit_id,
+                  revision_commit.commit_sequence,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY observation.observation_id
+                    ORDER BY revision.effective_at DESC,
+                             revision_commit.commit_sequence DESC,
+                             revision.revision_number DESC,
+                             hex(revision.revision_id) DESC
+                  ) AS observation_rank
+             FROM balance_observations observation
+             JOIN balance_observation_revisions revision
+               ON revision.observation_id = observation.observation_id
+             JOIN canonical_commits revision_commit
+               ON revision_commit.commit_id = revision.commit_id
+             JOIN financial_accounts account
+               ON account.account_id = observation.account_id
+             JOIN source_connections connection_scope
+               ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE revision_commit.commit_sequence <= ?
+              AND revision.effective_at <= ?
+              AND observation.balance_kind IN (${kinds})
+              ${scopedFilter("account")}
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+         ), selected AS (
+           SELECT revisions.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY revisions.account_id, revisions.balance_kind,
+                                 revisions.currency
+                    ORDER BY revisions.effective_at DESC,
+                             revisions.commit_sequence DESC,
+                             hex(revisions.observation_id) DESC,
+                             hex(revisions.revision_id) DESC
+                  ) AS selection_rank
+             FROM revisions
+            WHERE revisions.observation_rank = 1
+         )
+         SELECT account_id, balance_kind, currency, observation_id,
+                revision_id, balance_coefficient, balance_scale,
+                effective_at, observed_at, commit_id AS revision_commit_id
+           FROM selected
+          WHERE selection_rank = 1
+          ORDER BY effective_at, account_id, balance_kind, currency`,
+        knowledgeAt,
+        depositoryFinancialAt,
+        ...scopedParameters(),
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
+      );
+    }
+    case "credit-card-balances":
+    case "overview-credit-card-balances": {
+      if (request.kind === "current" && generation !== null)
+        return rows(
+          db,
+          `SELECT projected.generation_id, projected.account_id,
+                  projected.balance_kind, revision.currency,
+                  projected.observation_id, projected.revision_id,
+                  projected.estimate_kind, projected.estimate_basis,
+                  projected.estimate_formula, projected.component_limit_coefficient,
+                  projected.component_limit_scale, projected.component_available_coefficient,
+                  projected.component_available_scale, projected.projection_commit_id,
+                  projected.revision_commit_id, revision.balance_coefficient,
+                  revision.balance_scale, revision.effective_at, revision.observed_at
+             FROM current_credit_card_balance_observations projected
+             JOIN balance_observation_revisions revision ON revision.revision_id = projected.revision_id
+             JOIN financial_accounts account ON account.account_id = projected.account_id
+             JOIN source_connections connection_scope ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE projected.generation_id = ?
+              ${scopedFilter("account")}
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+            ORDER BY revision.effective_at, projected.account_id, projected.balance_kind, revision.currency`,
+          generation,
+          ...scopedParameters(),
+          dateStart ?? null,
+          dateStart ?? null,
+          dateEnd ?? null,
+          dateEnd ?? null,
+        );
+      const creditFinancialAt = financialAt === null
+        ? null
+        : `${financialAt}T23:59:59.999999999Z`;
+      return rows(
+        db,
+        `WITH revisions AS (
+           SELECT observation.account_id, observation.balance_kind,
+                  revision.currency, observation.observation_id,
+                  revision.revision_id, revision.balance_coefficient,
+                  revision.balance_scale, revision.effective_at, revision.observed_at,
+                  revision.commit_id, revision_commit.commit_sequence,
+                  detail.estimate_kind, detail.estimate_basis, detail.formula,
+                  detail.component_limit_coefficient, detail.component_limit_scale,
+                  detail.component_available_coefficient, detail.component_available_scale,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY observation.observation_id
+                    ORDER BY revision.effective_at DESC,
+                             revision_commit.commit_sequence DESC,
+                             revision.revision_number DESC,
+                             hex(revision.revision_id) DESC
+                  ) AS observation_rank
+             FROM balance_observations observation
+             JOIN balance_observation_revisions revision ON revision.observation_id = observation.observation_id
+             JOIN credit_card_balance_estimate_details detail ON detail.revision_id = revision.revision_id
+             JOIN canonical_commits revision_commit ON revision_commit.commit_id = revision.commit_id
+             JOIN financial_accounts account ON account.account_id = observation.account_id
+             JOIN source_connections connection_scope ON connection_scope.source_connection_id = account.source_connection_id
+            WHERE revision_commit.commit_sequence <= ?
+              AND revision.effective_at <= ?
+              AND account.account_type = 'credit'
+              AND account.stream = 'credit-card'
+              AND observation.balance_kind = 'credit_used'
+              ${scopedFilter("account")}
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) >= ?)
+              AND (? IS NULL OR substr(revision.effective_at, 1, 10) <= ?)
+         ), selected AS (
+           SELECT revisions.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY revisions.account_id, revisions.balance_kind, revisions.currency
+                    ORDER BY revisions.effective_at DESC,
+                             revisions.commit_sequence DESC,
+                             hex(revisions.observation_id) DESC,
+                             hex(revisions.revision_id) DESC
+                  ) AS selection_rank
+             FROM revisions
+            WHERE revisions.observation_rank = 1
+         )
+         SELECT account_id, balance_kind, currency, observation_id, revision_id,
+                estimate_kind, estimate_basis, formula AS estimate_formula,
+                component_limit_coefficient, component_limit_scale,
+                component_available_coefficient, component_available_scale,
+                balance_coefficient, balance_scale, effective_at, observed_at,
+                NULL AS projection_commit_id, commit_id AS revision_commit_id
+           FROM selected
+          WHERE selection_rank = 1
+          ORDER BY effective_at, account_id, balance_kind, currency`,
+        knowledgeAt,
+        creditFinancialAt,
+        ...scopedParameters(),
+        dateStart ?? null,
+        dateStart ?? null,
+        dateEnd ?? null,
+        dateEnd ?? null,
       );
     }
     case "loan-relations": {
@@ -1900,7 +2461,14 @@ function readFamily(
                 holding.cost_coefficient, holding.cost_scale, holding.cost_currency,
                 holding.effective_on, holding.observed_at, holding.lineage_json,
                 holding.is_current,
-                security.security_key
+                security.security_key,
+                COALESCE((SELECT name_observation.name
+                  FROM investment_security_name_observations name_observation
+                  JOIN canonical_commits name_commit ON name_commit.commit_id=name_observation.commit_id
+                  WHERE name_observation.security_id=security.security_id AND name_commit.commit_sequence <= ?
+                  ORDER BY name_commit.commit_sequence DESC,name_observation.rowid DESC LIMIT 1),security.name) AS security_name,
+                security.ticker AS security_ticker, security.currency AS security_currency,
+                security.security_type
            FROM (
              SELECT observation.*,
                ${
@@ -1927,6 +2495,7 @@ function readFamily(
           WHERE holding.selection_rank = 1 ${scopedFilter("holding")}
             AND (? IS NULL OR holding.effective_on >= ?)
           ORDER BY holding.effective_on, security.security_key`,
+        knowledgeAt,
         knowledgeAt,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
         request.kind === "historical" ? financialAt : dateEnd ?? null,
@@ -1964,18 +2533,39 @@ function readFamily(
         financialAt,
         financialAt,
       );
-    case "investment-margin-balances":
+    case "investment-margin-balances": {
       return rows(
         db,
-        `SELECT margin.account_id, margin.balance_kind, margin.coefficient,
-                margin.scale, margin.currency, margin.effective_on
-           FROM investment_margin_balance_observations margin
+        `WITH selected_margin AS (
+           SELECT margin.account_id, margin.observation_id, margin.balance_kind,
+                  margin.coefficient, margin.scale, margin.currency,
+                  margin.effective_on, margin.commit_id,
+                  capture.observed_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY margin.account_id, margin.balance_kind, margin.currency
+                    ORDER BY margin.effective_on DESC,
+                             margin_commit.commit_sequence DESC, margin.rowid DESC
+                  ) AS selection_rank
+             FROM investment_margin_balance_observations margin
+             JOIN canonical_commits margin_commit ON margin_commit.commit_id = margin.commit_id
+             JOIN investment_captures investment_capture
+               ON investment_capture.capture_id = margin.capture_id
+             JOIN source_captures capture
+               ON capture.capture_id = investment_capture.capture_id
+            WHERE margin_commit.commit_sequence <= ?
+         )
+         SELECT margin.account_id, margin.observation_id, margin.balance_kind,
+                margin.coefficient, margin.scale, margin.currency,
+                margin.effective_on, margin.observed_at,
+                margin.commit_id AS revision_commit_id
+           FROM selected_margin margin
            JOIN canonical_commits margin_commit ON margin_commit.commit_id = margin.commit_id
            JOIN source_connections connection_scope ON connection_scope.source_connection_id = (
              SELECT investment_account.source_connection_id FROM investment_accounts investment_account
               WHERE investment_account.account_id = margin.account_id
            )
-          WHERE margin_commit.commit_sequence <= ? ${scopedFilter("margin")}
+          WHERE ${request.kind === "current" ? "margin.selection_rank = 1 AND" : ""}
+            1 = 1 ${scopedFilter("margin")}
             AND (? IS NULL OR margin.effective_on >= ?)
             AND (? IS NULL OR margin.effective_on <= ?)
             AND (? IS NULL OR margin.effective_on <= ?)
@@ -1989,6 +2579,7 @@ function readFamily(
         financialAt,
         financialAt,
       );
+    }
     case "investment-funding-relations":
       return rows(
         db,
@@ -2033,6 +2624,139 @@ function readFamily(
         financialAt,
         knowledgeAt,
       );
+    case "credit-card-statements": {
+      const tableExists = (name: string) => Boolean(db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(name));
+      const neutralTables = [
+        "canonical_credit_card_statements",
+        "canonical_credit_card_statement_revisions",
+        "canonical_credit_card_statement_memberships",
+      ];
+      const fubonTables = [
+        "fubon_credit_statement_details",
+        "fubon_credit_statement_revision_details",
+        "fubon_credit_statement_membership_details",
+      ];
+      const hasNeutral = neutralTables.map(tableExists);
+      const hasFubon = fubonTables.map(tableExists);
+      const neutralComplete = hasNeutral.every(Boolean);
+      const fubonComplete = hasFubon.every(Boolean);
+      // The lifecycle initializes the neutral statement family on a writable
+      // open; the provider-specific Fubon family is initialized by its own
+      // extension readiness when that source is present. A read against a
+      // store that skipped the required readiness transition must fail
+      // closed, even when the profile has no credit account yet; returning an
+      // empty family would make missing schema indistinguishable from a
+      // legitimate empty profile.
+      if (
+        (!neutralComplete && !fubonComplete) ||
+        (hasNeutral.some(Boolean) && !neutralComplete) ||
+        (hasFubon.some(Boolean) && !fubonComplete)
+      )
+        throw new Error("Canonical credit-card statement projection is unavailable.");
+      const creditNamespaces = db.prepare(`
+        SELECT DISTINCT connection_scope.integration_namespace
+          FROM financial_accounts account
+          JOIN source_connections connection_scope
+            ON connection_scope.source_connection_id = account.source_connection_id
+         WHERE account.account_type = 'credit'
+      `).all() as Array<{ integration_namespace?: unknown }>;
+      const requiresFubon = creditNamespaces.some(
+        (row) => row.integration_namespace === "fubon",
+      );
+      const requiresNeutral = creditNamespaces.some(
+        (row) => row.integration_namespace !== "fubon",
+      );
+      if ((requiresFubon && !fubonComplete) || (requiresNeutral && !neutralComplete))
+        throw new Error("Canonical credit-card statement projection is unavailable.");
+      const sourceRows: string[] = [];
+      const sourceMemberships: string[] = [];
+      const sourceParameters: ProjectionSqlInput[] = [];
+      const addSource = (
+        family: "neutral" | "fubon",
+        tables: { statements: string; revisions: string; memberships: string },
+      ) => {
+        sourceRows.push(`
+          SELECT '${family}' AS family, statement.account_id,
+                 statement.statement_id, statement.statement_key,
+                 revision.statement_revision_id, revision.revision_number,
+                 revision.cycle_start, revision.cycle_end,
+                 revision.issue_date, revision.due_date, revision.currency,
+                 revision.balance_coefficient, revision.balance_scale,
+                 revision.minimum_coefficient, revision.minimum_scale,
+                 revision_commit.commit_sequence AS revision_commit_sequence,
+                 revision.rowid AS revision_rowid
+            FROM ${tables.statements} statement
+            JOIN ${tables.revisions} revision
+              ON revision.statement_id = statement.statement_id
+            JOIN source_captures capture
+              ON capture.capture_id = ${family === "neutral" ? "revision.created_capture_id" : "revision.capture_id"}
+            JOIN canonical_commits revision_commit
+              ON revision_commit.commit_id = capture.commit_id
+            JOIN financial_accounts account
+              ON account.account_id = statement.account_id
+            JOIN source_connections connection_scope
+              ON connection_scope.source_connection_id = account.source_connection_id
+           WHERE revision_commit.commit_sequence <= ?
+             ${scopedFilter("statement")}
+             AND (? IS NULL OR revision.cycle_end <= ?)`);
+        sourceParameters.push(
+          knowledgeAt,
+          ...scopedParameters(),
+          request.kind === "historical" ? financialAt : dateEnd ?? null,
+          request.kind === "historical" ? financialAt : dateEnd ?? null,
+        );
+        sourceMemberships.push(`
+          SELECT '${family}' AS family, statement_revision_id,
+                 transaction_id, transaction_revision_id, source_record_id
+            FROM ${tables.memberships}`);
+      };
+      if (neutralComplete)
+        addSource("neutral", {
+          statements: "canonical_credit_card_statements",
+          revisions: "canonical_credit_card_statement_revisions",
+          memberships: "canonical_credit_card_statement_memberships",
+        });
+      if (fubonComplete)
+        addSource("fubon", {
+          statements: "fubon_credit_statement_details",
+          revisions: "fubon_credit_statement_revision_details",
+          memberships: "fubon_credit_statement_membership_details",
+        });
+      return rows(
+        db,
+        `WITH statement_rows AS (
+           ${sourceRows.join("\n           UNION ALL")}
+         ), ranked AS (
+           SELECT statement_rows.*,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY statement_rows.family, statement_rows.statement_id
+                    ORDER BY statement_rows.revision_number DESC,
+                             statement_rows.revision_commit_sequence DESC,
+                             statement_rows.revision_rowid DESC
+                  ) AS selection_rank
+             FROM statement_rows
+         ), memberships AS (
+           ${sourceMemberships.join("\n           UNION ALL")}
+         )
+         SELECT ranked.account_id, ranked.statement_id, ranked.statement_key,
+                ranked.statement_revision_id, ranked.revision_number,
+                ranked.cycle_start, ranked.cycle_end, ranked.issue_date,
+                ranked.due_date, ranked.currency, ranked.balance_coefficient,
+                ranked.balance_scale, ranked.minimum_coefficient,
+                ranked.minimum_scale, memberships.transaction_id,
+                memberships.transaction_revision_id, memberships.source_record_id
+           FROM ranked
+           LEFT JOIN memberships
+             ON memberships.family = ranked.family
+            AND memberships.statement_revision_id = ranked.statement_revision_id
+          WHERE ranked.selection_rank = 1
+          ORDER BY ranked.account_id, ranked.cycle_end, ranked.statement_id,
+                   memberships.transaction_id`,
+        ...sourceParameters,
+      );
+    }
   }
 }
 
@@ -2047,12 +2771,115 @@ const nullableNumberValue = (
   key: string,
 ): number | null => (row[key] == null ? null : Number(row[key]));
 
+/**
+ * Card instruments are an extension of a financial account, but their masks
+ * still belong in the canonical financial-account projection. Resolve them
+ * through capture commits so a historical read cannot see a later mask.
+ * Fubon keeps the same evidence contract in its provider extension; that
+ * table is optional until the provider has produced a credit-card capture.
+ */
+function readCreditCardMasksAtKnowledge(
+  db: DatabaseSync,
+  knowledgeAt: number,
+): ReadonlyMap<string, readonly string[]> {
+  const tableNames = new Set(
+    (db
+      .prepare("SELECT name FROM sqlite_master WHERE type = ?")
+      .all("table") as Array<{ name?: unknown }>)
+      .map((row) => (typeof row.name === "string" ? row.name : "")),
+  );
+  if (
+    !tableNames.has("canonical_credit_card_instruments") ||
+    !tableNames.has("canonical_credit_card_instrument_evidence")
+  ) {
+    throw new Error(
+      "Canonical credit-card instrument projection tables are unavailable.",
+    );
+  }
+
+  const queries = [
+    `
+      SELECT lower(hex(instrument.account_id)) AS account_id,
+             instrument.card_mask AS card_mask
+        FROM canonical_credit_card_instruments instrument
+        JOIN canonical_credit_card_instrument_evidence evidence
+          ON evidence.instrument_id = instrument.instrument_id
+         AND evidence.account_id = instrument.account_id
+        JOIN source_captures capture
+          ON capture.capture_id = evidence.capture_id
+        JOIN canonical_commits evidence_commit
+          ON evidence_commit.commit_id = capture.commit_id
+       WHERE instrument.card_mask IS NOT NULL
+         AND trim(instrument.card_mask) <> ?
+         AND evidence_commit.commit_sequence <= ?`,
+  ];
+  const hasFubonExtension =
+    tableNames.has("fubon_credit_instrument_details") &&
+    tableNames.has("fubon_credit_instrument_role_evidence");
+  if (hasFubonExtension) {
+    queries.push(`
+      SELECT lower(hex(instrument.account_id)) AS account_id,
+             instrument.card_mask AS card_mask
+        FROM fubon_credit_instrument_details instrument
+        JOIN fubon_credit_instrument_role_evidence evidence
+          ON evidence.instrument_id = instrument.instrument_id
+         AND evidence.account_id = instrument.account_id
+        JOIN source_captures capture
+          ON capture.capture_id = evidence.capture_id
+        JOIN canonical_commits evidence_commit
+          ON evidence_commit.commit_id = capture.commit_id
+       WHERE instrument.card_mask IS NOT NULL
+         AND trim(instrument.card_mask) <> ?
+         AND evidence_commit.commit_sequence <= ?`);
+  } else if (
+    tableNames.has("fubon_credit_instrument_details") !==
+      tableNames.has("fubon_credit_instrument_role_evidence")
+  ) {
+    throw new Error("Fubon credit-card instrument evidence schema is incomplete.");
+  }
+
+  const rows = db.prepare(queries.join("\nUNION\n")).all(
+    ...queries.flatMap(() => ["", knowledgeAt]),
+  ) as Array<{ account_id?: unknown; card_mask?: unknown }>;
+  const result = new Map<string, string[]>();
+  for (const row of rows) {
+    const accountId = typeof row.account_id === "string" ? row.account_id : "";
+    const mask = typeof row.card_mask === "string" ? row.card_mask.trim() : "";
+    if (!accountId || !/^\*{4}\d{4}$/u.test(mask)) continue;
+    const masks = result.get(accountId) ?? [];
+    if (!masks.includes(mask)) masks.push(mask);
+    masks.sort();
+    result.set(accountId, masks);
+  }
+  return result;
+}
+
 function projectFamilyRows<Family extends CanonicalProjectionFamily>(
   family: Family,
   storageRows: readonly ProjectionStorageRow[],
 ): readonly CanonicalProjectionFamilyRows[Family][] {
   const projected = storageRows.map((row) => {
     switch (family) {
+      case "financial-accounts":
+        return {
+          accountId: textValue(row, "account_id"),
+          sourceConnectionId: textValue(row, "source_connection_id"),
+          identityEpochId: textValue(row, "identity_epoch_id"),
+          sourceConnectionKey: textValue(row, "source_connection_key"),
+          integrationNamespace: textValue(row, "integration_namespace"),
+          stream: textValue(row, "stream"),
+          sourceAccountKey: textValue(row, "source_account_key"),
+          accountNo: nullableTextValue(row, "account_no"),
+          cardMasks: Array.isArray(row.card_masks)
+            ? row.card_masks.filter((value): value is string => typeof value === "string")
+            : [],
+          accountType: textValue(row, "account_type") as CanonicalProjectionFinancialAccount["accountType"],
+          investmentSubtype: nullableTextValue(row, "investment_subtype"),
+          currency: nullableTextValue(row, "currency"),
+          createdCommitId: textValue(row, "created_commit_id"),
+          createdCommitSequence: Number(row.created_commit_sequence),
+          latestCaptureObservedAt: nullableTextValue(row, "latest_capture_observed_at"),
+        };
       case "transactions":
         return {
           transactionId: textValue(row, "transaction_id"),
@@ -2127,10 +2954,58 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
       case "loan-accounts":
         return { accountId: textValue(row, "account_id") };
       case "loan-balances":
+      case "overview-loan-balances":
         return {
           accountId: textValue(row, "account_id"),
           observationId: textValue(row, "observation_id"),
           revisionId: textValue(row, "revision_id"),
+          balanceKind: textValue(row, "balance_kind"),
+          coefficient: textValue(row, "balance_coefficient"),
+          scale: Number(row.balance_scale),
+          currency: textValue(row, "currency"),
+          effectiveAt: textValue(row, "effective_at"),
+          observedAt: textValue(row, "observed_at"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
+        };
+      case "depository-balances":
+      case "overview-depository-balances":
+        return {
+          accountId: textValue(row, "account_id"),
+          observationId: textValue(row, "observation_id"),
+          revisionId: textValue(row, "revision_id"),
+          balanceKind: textValue(row, "balance_kind") as "ledger" | "available",
+          coefficient: textValue(row, "balance_coefficient"),
+          scale: Number(row.balance_scale),
+          currency: textValue(row, "currency"),
+          effectiveAt: textValue(row, "effective_at"),
+          observedAt: textValue(row, "observed_at"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
+        };
+      case "credit-card-balances":
+      case "overview-credit-card-balances":
+        return {
+          accountId: textValue(row, "account_id"),
+          observationId: textValue(row, "observation_id"),
+          revisionId: textValue(row, "revision_id"),
+          balanceKind: textValue(row, "balance_kind") as "credit_used",
+          estimateKind: textValue(row, "estimate_kind") as "estimate",
+          estimateBasis: textValue(row, "estimate_basis") as
+            | "provider-used-credit"
+            | "credit-limit-minus-available",
+          estimateFormula: textValue(row, "estimate_formula"),
+          coefficient: textValue(row, "balance_coefficient"),
+          scale: Number(row.balance_scale),
+          currency: textValue(row, "currency"),
+          componentLimitCoefficient: nullableTextValue(row, "component_limit_coefficient"),
+          componentLimitScale: nullableNumberValue(row, "component_limit_scale"),
+          componentAvailableCoefficient: nullableTextValue(row, "component_available_coefficient"),
+          componentAvailableScale: nullableNumberValue(row, "component_available_scale"),
+          effectiveAt: textValue(row, "effective_at"),
+          observedAt: textValue(row, "observed_at"),
+          projectionCommitId: nullableTextValue(row, "projection_commit_id"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
         };
       case "loan-relations":
         return {
@@ -2152,6 +3027,10 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           accountId: textValue(row, "account_id"),
           securityId: textValue(row, "security_id"),
           securityKey: textValue(row, "security_key"),
+          securityName: nullableTextValue(row, "security_name"),
+          securityTicker: nullableTextValue(row, "security_ticker"),
+          securityCurrency: textValue(row, "security_currency"),
+          securityType: textValue(row, "security_type"),
           measurementKey: textValue(row, "measurement_key"),
           revisionNumber: Number(row.revision_number),
           isCurrent: Number(row.is_current) === 1,
@@ -2184,11 +3063,14 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
       case "investment-margin-balances":
         return {
           accountId: textValue(row, "account_id"),
+          observationId: textValue(row, "observation_id"),
           balanceKind: textValue(row, "balance_kind"),
           coefficient: textValue(row, "coefficient"),
           scale: Number(row.scale),
           currency: textValue(row, "currency"),
           effectiveOn: textValue(row, "effective_on"),
+          observedAt: textValue(row, "observed_at"),
+          revisionCommitId: nullableTextValue(row, "revision_commit_id"),
         };
       case "investment-funding-relations":
         return {
@@ -2204,6 +3086,26 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           direction: textValue(row, "direction"),
           sourceLinkageKey: textValue(row, "source_linkage_key"),
           investmentTransactionCount: Number(row.investment_transaction_count),
+        };
+      case "credit-card-statements":
+        return {
+          accountId: textValue(row, "account_id"),
+          statementId: textValue(row, "statement_id"),
+          statementKey: textValue(row, "statement_key"),
+          statementRevisionId: textValue(row, "statement_revision_id"),
+          revisionNumber: Number(row.revision_number),
+          cycleStart: textValue(row, "cycle_start"),
+          cycleEnd: textValue(row, "cycle_end"),
+          issueDate: textValue(row, "issue_date"),
+          dueDate: textValue(row, "due_date"),
+          currency: textValue(row, "currency"),
+          balanceCoefficient: textValue(row, "balance_coefficient"),
+          balanceScale: Number(row.balance_scale),
+          minimumCoefficient: nullableTextValue(row, "minimum_coefficient"),
+          minimumScale: nullableNumberValue(row, "minimum_scale"),
+          transactionId: nullableTextValue(row, "transaction_id"),
+          transactionRevisionId: nullableTextValue(row, "transaction_revision_id"),
+          sourceRecordId: nullableTextValue(row, "source_record_id"),
         };
     }
   });
@@ -2272,12 +3174,16 @@ function readSnapshotInTransaction(
         )
       : ([] as readonly CanonicalProjectionFamilyRows[Family][]);
   const families = {
+    "financial-accounts": familyRows("financial-accounts"),
     transactions: familyRows("transactions"),
     "transaction-fields": familyRows("transaction-fields"),
     "transaction-enrichment": familyRows("transaction-enrichment"),
     "transaction-categorization": familyRows("transaction-categorization"),
     "loan-accounts": familyRows("loan-accounts"),
     "loan-balances": familyRows("loan-balances"),
+    "overview-loan-balances": familyRows("overview-loan-balances"),
+    "depository-balances": familyRows("depository-balances"),
+    "overview-depository-balances": familyRows("overview-depository-balances"),
     "loan-relations": familyRows("loan-relations"),
     "loan-settlement-groups": familyRows("loan-settlement-groups"),
     "investment-accounts": familyRows("investment-accounts"),
@@ -2285,6 +3191,9 @@ function readSnapshotInTransaction(
     "investment-transactions": familyRows("investment-transactions"),
     "investment-margin-balances": familyRows("investment-margin-balances"),
     "investment-funding-relations": familyRows("investment-funding-relations"),
+    "credit-card-balances": familyRows("credit-card-balances"),
+    "overview-credit-card-balances": familyRows("overview-credit-card-balances"),
+    "credit-card-statements": familyRows("credit-card-statements"),
   };
   return freezeDeep({
     kind: request.kind,
@@ -2370,4 +3279,17 @@ export function createCanonicalProjectionRuntime(
     throw new Error("Canonical projection runtime database path is required.");
   if (typeof target !== "string") assertValidatedCanonicalDatabase(target);
   return createRuntime(target);
+}
+
+/**
+ * Rebuild the live projection inside a caller-owned lifecycle transaction.
+ * Contract Purge uses this seam after deleting its closure so the purge,
+ * generation switch, and disable marker commit as one unit.
+ */
+export function rebuildCanonicalProjectionInTransaction(
+  db: DatabaseSync,
+  options: CanonicalProjectionRebuildOptions = {},
+): CanonicalProjectionRebuildResult {
+  assertValidatedCanonicalDatabase(db);
+  return canonicalProjectionRuntimeRebuildInTransaction(db, options);
 }

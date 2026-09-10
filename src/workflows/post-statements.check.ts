@@ -24,6 +24,7 @@ import {
   submitPostLoginAndWait,
   withPostAssistanceDeadline,
 } from "./post-statements.ts";
+import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
 
 function fakeNoticePage(visible: boolean) {
   let clicks = 0;
@@ -434,6 +435,62 @@ const builtCapture = buildPostDomesticDepositCapture(
   "2026-08-24T10:11:12+08:00",
 );
 assert.equal(builtCapture.response.rows[0]?.directionFlag, "inflow");
+const builtAccountNumberCapture = buildPostDomesticDepositCapture(
+  {
+    accountId: "03115240529395",
+    queryPeriods: ["2026/02/01~2026/08/24"],
+    queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
+    httpStatus: 200,
+    itemShape: "array",
+    rows,
+  },
+  "2026-08-24T10:11:12+08:00",
+);
+assert.deepEqual(builtAccountNumberCapture.account.accountNumber, {
+  value: "03115240529395",
+  kind: "depository-account",
+  evidenceVersion: "post/domestic-deposit/account-number-v1",
+  sourceField: "request.body._USER_ID",
+});
+
+const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
+  payload: [
+    {
+      header: { EndBracket: false, OutputType: "Screen" },
+      body: {
+        itemList: [
+          {
+            ACT_TYPE: "PS",
+            ACT_NO: "03115240529395",
+            BAL: "12345",
+            PBA_CUT_BAL: "99999",
+            VISA_BAL: "77777",
+          },
+        ],
+      },
+    },
+    {
+      header: { EndBracket: false, OutputType: "EndBracket" },
+      body: { result: "success" },
+    },
+  ],
+  response: {
+    url: "https://ipost.post.gov.tw/pst/EsoafDispatcher",
+    status: 200,
+    method: "POST",
+    headers: {
+      date: "Wed, 09 Sep 2026 02:13:03 GMT",
+      "cache-control": "no-store,private,max-age=900",
+      "content-type": "application/json; charset=UTF-8",
+    },
+    requestPostData: JSON.stringify({
+      header: { TxnCode: "EB100103", BizCode: "getOverViewById" },
+      body: { pageCount: 50 },
+    }),
+  },
+  observedAt: "2026-08-24T10:12:13+08:00",
+});
+assert.equal(postCurrentBalanceRow.length, 1);
 
 const runDir = await mkdtemp(join(tmpdir(), "post-workflow-check-"));
 try {
@@ -520,17 +577,18 @@ try {
     canonicalSourceLedgerDir: financialRunDir,
     canonicalFinancialLedgerDir: financialRunDir,
     observedAt: "2026-08-24T10:12:13+08:00",
+    readCurrentDepositBalances: async () => postCurrentBalanceRow,
     collectStatements: async () => [
       {
-        accountId: "PRIVATE-ACCOUNT-FINANCIAL",
+        accountId: "03115240529395",
         queryPeriods: ["2026/02/01~2026/08/24"],
         queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
         httpStatus: 200,
         itemShape: "array",
         rows,
         download: {
-          account: "PRIVATE-ACCOUNT-FINANCIAL 郵局",
-          accountId: "PRIVATE-ACCOUNT-FINANCIAL",
+          account: "03115240529395 郵局",
+          accountId: "03115240529395",
           queryPeriods: ["2026/02/01~2026/08/24"],
           baseName: "private-financial",
           csvFilename: "private-financial.csv",
@@ -563,6 +621,24 @@ try {
       (
         db
           .prepare(
+            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/current-balance-v1'",
+          )
+          .get() as { count: number }
+      ).count,
+    ),
+    1,
+  );
+  const balanceRow = db
+    .prepare(
+      "SELECT balance_coefficient, balance_scale FROM balance_observation_revisions",
+    )
+    .get() as { balance_coefficient: string; balance_scale: number };
+  assert.deepEqual({ ...balanceRow }, { balance_coefficient: "12345", balance_scale: 0 });
+  assert.equal(
+    Number(
+      (
+        db
+          .prepare(
             "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/human-attested-v1'",
           )
           .get() as { count: number }
@@ -570,6 +646,13 @@ try {
     ),
     1,
   );
+  const accountIdentity = db
+    .prepare(
+      "SELECT source_account_key, account_no FROM financial_accounts WHERE stream = 'domestic-deposit'",
+    )
+    .get() as { source_account_key: string; account_no: string };
+  assert.equal(accountIdentity.source_account_key, "03115240529395");
+  assert.equal(accountIdentity.account_no, "03115240529395");
   db.close();
 } finally {
   await rm(financialRunDir, { recursive: true, force: true });

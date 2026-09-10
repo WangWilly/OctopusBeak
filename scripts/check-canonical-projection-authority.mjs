@@ -23,6 +23,8 @@ export const PROJECTION_STORAGE_IDENTIFIERS = Object.freeze([
   "current_loan_balance_observations",
   "current_loan_relations",
   "current_loan_repayment_settlement_groups",
+  "current_credit_card_accounts",
+  "current_credit_card_balance_observations",
 ]);
 
 // These names expose generation selection or projection-row mutation as a
@@ -45,6 +47,7 @@ export const PROJECTION_AUTHORITY_ESCAPE_IDENTIFIERS = Object.freeze([
   "removeCurrentLoanRelationProjection",
   "removeCurrentLoanSettlementGroupProjection",
   "refreshCurrentLoanBalanceProjection",
+  "refreshCurrentCreditCardBalanceProjection",
   "syncCanonicalProjectionFromCompatibility",
   "canonicalProjectionRuntimeRebuildInternal",
   "canonicalProjectionRuntimeSyncInternal",
@@ -58,6 +61,9 @@ export const PROJECTION_STORAGE_ALLOWLIST = Object.freeze([
   "src/ledger/canonical/canonical-projection-runtime.ts",
   "src/ledger/canonical/canonical-projection-implementation.ts",
   "src/ledger/canonical/canonical-categorization-projection.ts",
+  // Contract Purge computes and deletes its source-owned projection closure
+  // before delegating the generation rebuild through the Runtime seam.
+  "src/ledger/canonical/canonical-contract-purge-runtime.ts",
   "src/ledger/canonical/canonical-schema-lifecycle.ts",
 ]);
 
@@ -81,6 +87,12 @@ const SCHEMA_IMPLEMENTATION_CONTEXT_ALLOWLIST = new Set([
   "migrateV6ToV7",
   "validateGenerationExactAmounts",
   "validateCanonicalAuthorityRoutes",
+  "migrateV26ToV27",
+  "migrateV27ToV28",
+  "hasCanonicalCreditCardBalanceProjectionSchema",
+  "ensureCreditCardBalanceTimeSchema",
+  "validateCanonicalCreditCardBalanceSchema",
+  "validateCreditCardBalanceTimeSchema",
   "validateGenerationFieldIntegrity",
   "validateGenerationFieldCompleteness",
   "validateSelectedAssertionProvenance",
@@ -108,6 +120,7 @@ const SCHEMA_IMPLEMENTATION_CONTEXT_ALLOWLIST = new Set([
   "backfillLegacyLoanRelationResolutionCommitsV13",
   "validateCanonicalLoanRepaymentRelationSchema",
   "projectionGenerationEventDigest",
+  "createCanonicalSchemaLifecyclePlan",
 ]);
 
 const CONTRACT_PURGE_CONTEXT_ALLOWLIST = new Set([
