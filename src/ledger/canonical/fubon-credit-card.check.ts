@@ -25,6 +25,9 @@ import {
   commitFubonCreditCardCapture,
   ensureFubonCreditCardSchema,
 } from "./fubon-credit-card.ts";
+import { createCanonicalOverviewQuery } from "./canonical-overview-query.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+import { loadLiabilities } from "../../lib/liabilities/server/load-liabilities.ts";
 import {
   fubonCreditCardPanFingerprint,
   fubonCreditCardPanLast4,
@@ -394,6 +397,83 @@ test("one portfolio account persists multiple card instruments with display-safe
   }
 });
 
+test("financial-account card masks honor the projection knowledge cutoff", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    const baseline = await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(capture()),
+    );
+    const futureCapture = capture({
+      captureId: "capture-mask-future",
+      observedAt: "2026-08-26T00:00:00.000Z",
+      instruments: [
+        {
+          ...secondaryInstrument,
+          evidence: {
+            ...secondaryInstrument.evidence,
+            sourceRecordKey: "row-mask-future-a",
+          },
+        },
+      ],
+      transactions: [
+        transaction({
+          sourceRecordKey: "row-mask-future-a",
+          instrumentKey: secondaryInstrument.instrumentKey,
+          description: "SYNTHETIC FUTURE MASK",
+        }),
+        transaction({
+          sourceRecordKey: "row-mask-future-b",
+          instrumentKey: secondaryInstrument.instrumentKey,
+          consumeDate: "2026-08-20",
+          postingDate: "2026-08-21",
+          description: "SYNTHETIC FUTURE MASK UNBILLED",
+          billingStatus: "unbilled",
+          statementKey: undefined,
+        }),
+      ],
+      statements: [
+        {
+          ...capture().statements[0]!,
+          revisionKey: "statement-revision-mask-future",
+          transactionSourceKeys: ["row-mask-future-a"],
+        },
+      ],
+    });
+    const future = await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(futureCapture),
+    );
+    assert.ok(future.commitSequence > baseline.commitSequence);
+
+    const runtime = createCanonicalProjectionRuntime(store.db);
+    const historical = runtime.read({
+      kind: "historical",
+      families: ["financial-accounts"],
+      scope: { accountIds: [baseline.accountId] },
+      cutoff: {
+        financialAt: "2026-08-31",
+        knowledgeAt: baseline.commitSequence,
+      },
+    });
+    const current = runtime.read({
+      kind: "current",
+      families: ["financial-accounts"],
+      scope: { accountIds: [baseline.accountId] },
+    });
+    assert.deepEqual(
+      historical.families["financial-accounts"][0]?.cardMasks,
+      ["****1234"],
+    );
+    assert.deepEqual(
+      current.families["financial-accounts"][0]?.cardMasks,
+      ["****1234", "****5678"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("instrument mask column is added idempotently to a legacy extension table", () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-instrument-"));
   const databasePath = join(directory, "canonical.sqlite");
@@ -636,8 +716,60 @@ test("posting date and exact sign/direction mapping are total", () => {
     () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ bookedAmount: "-1.00" })] })),
     /non-negative|amount/i,
   );
+  const positivePurchase = admitFubonCreditCardCapture(
+    capture({
+      transactions: [
+        transaction({
+          signedAmount: "123.45",
+          direction: "outflow",
+        }),
+        capture().transactions[1]!,
+      ],
+    }),
+  );
+  assert.deepEqual(
+    positivePurchase.transactions[0],
+    {
+      ...positivePurchase.transactions[0],
+      bookedAmount: { coefficient: "12345", scale: 2 },
+      bookedCurrency: "TWD",
+      direction: "outflow",
+      signedAmount: "123.45",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+  );
+  const negativePayment = admitFubonCreditCardCapture(
+    capture({
+      transactions: [
+        transaction({
+          signedAmount: "-1.00",
+          direction: "inflow",
+          bookedAmount: "1.00",
+          description: "SYNTHETIC PAYMENT",
+        }),
+        capture().transactions[1]!,
+      ],
+    }),
+  );
+  assert.deepEqual(
+    negativePayment.transactions[0],
+    {
+      ...negativePayment.transactions[0],
+      bookedAmount: { coefficient: "100", scale: 2 },
+      bookedCurrency: "TWD",
+      direction: "inflow",
+      signedAmount: "-1.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+  );
   assert.throws(
-    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "-1.00", direction: "inflow" })] })),
+    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "-1.00", direction: "outflow", bookedAmount: "1.00" })] })),
+    /sign|direction/i,
+  );
+  assert.throws(
+    () => admitFubonCreditCardCapture(capture({ transactions: [transaction({ signedAmount: "1.00", direction: "inflow", bookedAmount: "1.00" })] })),
     /sign|direction/i,
   );
   assert.throws(
@@ -1304,6 +1436,45 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
           /^observed-source-order:\d+$/.test(row.sequence_lexeme ?? ""),
       ),
     );
+
+    const current = await createCanonicalOverviewQuery(directory).current();
+    const creditAccount = current.projection.accounts.find(
+      (account) => account.kind === "credit-card",
+    );
+    assert.ok(creditAccount, "Fubon credit account must be in the canonical projection");
+    const creditLabels = current.projection.accounts
+      .filter((account) => account.kind === "credit-card")
+      .map((account) => account.label)
+      .join(" ");
+    assert.match(creditLabels, /\*{4}1234/u);
+    assert.doesNotMatch(creditLabels, /\b\d{13,19}\b/u);
+    const statement = creditAccount.creditCard?.statements[0];
+    assert.ok(statement, "Fubon statement must be read through the typed runtime family");
+    assert.equal(statement.statementBalance.coefficient, "12345");
+    assert.equal(statement.statementBalance.scale, 2);
+    assert.equal(statement.minimumPayment?.coefficient, "1000");
+    assert.equal(statement.minimumPayment?.scale, 2);
+    assert.ok(statement.statementRevisionId.length > 0);
+    assert.equal(statement.memberships.length, 1);
+    assert.ok(statement.memberships[0]?.transactionId.length > 0);
+    assert.ok(statement.memberships[0]?.transactionRevisionId.length > 0);
+    assert.ok(statement.memberships[0]?.sourceRecordId.length > 0);
+
+    const liabilities = await loadLiabilities(directory, { expectedSources: [] });
+    const liabilityCard = liabilities.accounts.find((account) => account.id === creditAccount.id);
+    assert.ok(liabilityCard, "Fubon credit account must remain in the liabilities product");
+    const liabilityLabels = liabilities.accounts
+      .filter((account) => account.kind === "credit-card")
+      .map((account) => account.label)
+      .join(" ");
+    assert.match(liabilityLabels, /\*{4}1234/u);
+    assert.deepEqual(liabilityCard.amountLines, [], "statement totals must not become current balances");
+    assert.equal(liabilityCard.valueAvailability, "awaiting");
+    assert.equal(liabilityCard.creditCard?.statements[0]?.statementRevisionId, statement.statementRevisionId);
+    assert.equal(
+      liabilityCard.creditCard?.statements[0]?.memberships[0]?.transactionRevisionId,
+      statement.memberships[0]?.transactionRevisionId,
+    );
   } finally {
     store.close();
   }
@@ -1582,13 +1753,14 @@ test("generic current, historical, and lineage queries see Fubon after reopen", 
     store.db.prepare(
       `INSERT INTO financial_accounts(
         account_id, source_connection_id, identity_epoch_id, stream,
-        account_no, account_type, currency, created_commit_id
-      ) VALUES (?, ?, ?, 'domestic-deposit', ?, 'depository', 'TWD', ?)`,
+        source_account_key, account_no, account_type, currency, created_commit_id
+      ) VALUES (?, ?, ?, 'domestic-deposit', ?, ?, 'depository', 'TWD', ?)`,
     ).run(
       randomBytes(16),
       creditAccount.source_connection_id,
       creditAccount.identity_epoch_id,
       "mixed-fubon-domestic-account",
+      null,
       creditAccount.created_commit_id,
     );
 

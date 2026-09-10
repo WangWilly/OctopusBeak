@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
+  LineBankApiClient,
   linebankAccountCurrency,
   linebankAccountKey,
   linebankApiRowsToStatementRows,
@@ -23,6 +24,99 @@ import {
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
+
+const accountSnapshotEndpoint =
+  "https://accessibility.linebank.com.tw/v1/account/common/payables?featureTypeCode=01";
+const accountSnapshotBody = JSON.stringify({
+  code: "200",
+  message: "success",
+  content: {
+    dpstAcctList: [
+      {
+        acctNbr: "012345678901",
+        arrId: "arr-main",
+        acctNick: "main",
+        pdNm: "LINE Bank account",
+        currCd: "TWD",
+        wdrwAvblAmt: "100.00",
+      },
+    ],
+  },
+});
+const accountSnapshotHeaders = {
+  date: "Thu, 01 Jan 1970 10:00:01 GMT",
+  "cache-control": "no-cache, no-store, max-age=0, must-revalidate",
+  "content-type": "application/json;charset=UTF-8",
+};
+
+/**
+ * The provider response can finish after the local request starts.  Keep the
+ * fixture deterministic so the check catches sampling observedAt before the
+ * awaited response rather than merely asserting parser behavior.
+ */
+const delayedAccountSnapshotPage = {
+  async evaluate(
+    _expression: unknown,
+    argument: { path: string; body?: unknown },
+  ) {
+    assert.equal(argument.path, "/v1/account/common/payables?featureTypeCode=01");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Advance the synthetic clock to response completion.  The old client
+    // samples its default before this await; the fixed client samples after it.
+    SequencedDate.noArgumentValues.shift();
+    return {
+      body: accountSnapshotBody,
+      url: accountSnapshotEndpoint,
+      status: 200,
+      method: "GET",
+      headers: accountSnapshotHeaders,
+    };
+  },
+} as never;
+
+const OriginalDate = Date;
+class SequencedDate extends OriginalDate {
+  static noArgumentValues: string[] = [];
+
+  constructor(value?: string | number) {
+    super(
+      value === undefined
+        ? SequencedDate.noArgumentValues.shift()!
+        : value,
+    );
+  }
+}
+
+SequencedDate.noArgumentValues = [
+  "1970-01-01T10:00:00.000Z",
+  "1970-01-01T10:00:02.000Z",
+];
+globalThis.Date = SequencedDate as unknown as DateConstructor;
+try {
+  const snapshot = await new LineBankApiClient(
+    delayedAccountSnapshotPage,
+  ).fetchAccountSnapshot();
+  assert.equal(snapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
+} finally {
+  globalThis.Date = OriginalDate;
+}
+
+await assert.rejects(
+  () =>
+    new LineBankApiClient(delayedAccountSnapshotPage).fetchAccountSnapshot(
+      "1970-01-01T10:00:00.000Z",
+    ),
+  /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
+);
+
+const linebankWorkflowSource = await readFile(
+  new URL("./linebank-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(\)/u);
+assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
+assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
+assert.match(linebankWorkflowSource, /commitCurrentDepositBalanceCapture/u);
 
 assert.deepEqual(
   linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),

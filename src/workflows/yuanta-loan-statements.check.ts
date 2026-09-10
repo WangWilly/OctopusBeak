@@ -32,6 +32,7 @@ const {
   readYuantaLoanAccountOptions,
   parseYuantaLoanStatementRows,
   runYuantaLoanStatements,
+  deriveYuantaLoanAccountNumberEvidence,
   yuantaLoanSelectorAccountEvidence,
 } =
   await import("./yuanta-loan-statements.ts");
@@ -51,6 +52,25 @@ assert.deepEqual(
     sourceField: "貸款帳號",
     contractVersion: "yuanta/loan-statement-selector-account/v1",
   },
+);
+assert.deepEqual(
+  deriveYuantaLoanAccountNumberEvidence({
+    value: "12345678901234",
+    label: "秀朗 - 信貸中放 - 12345678901234",
+  }),
+  {
+    value: "12345678901234",
+    kind: "loan-account",
+    evidenceVersion: "yuanta/loan/account-number-v1",
+    sourceField: "#acctno option.value",
+  },
+);
+assert.equal(
+  deriveYuantaLoanAccountNumberEvidence({
+    value: "12345678901234",
+    label: "秀朗 - 信貸中放 - ******1234",
+  }),
+  null,
 );
 for (const account of [
   { value: "opaque-query-token", label: "房屋貸款" },
@@ -165,6 +185,12 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
     null as never,
     {
       accountValue: "yuanta-option-test",
+      accountNumber: {
+        value: "12345678901234",
+        kind: "loan-account",
+        evidenceVersion: "yuanta/loan/account-number-v1",
+        sourceField: "#acctno option.value",
+      } as const,
       sourceConnectionScope: "yuanta-connection-test",
       observedAt: "2026-02-01T00:00:00.000Z",
       startDate: "2026-01-01",
@@ -215,6 +241,21 @@ test("commits one canonical capture for a parsed Yuanta loan result", async () =
     (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
     "not-asserted",
   );
+  const identity = (
+    admittedCaptures[0] as {
+      identity: {
+        accountNo: string;
+        accountNumber?: unknown;
+      };
+    }
+  ).identity;
+  assert.match(identity.accountNo, /^sha256:/u);
+  assert.deepEqual(identity.accountNumber, {
+    value: "12345678901234",
+    kind: "loan-account",
+    evidenceVersion: "yuanta/loan/account-number-v1",
+    sourceField: "#acctno option.value",
+  });
 });
 
 test("Yuanta resolves only after a complete committed capture and preserves it when resolution fails", async () => {

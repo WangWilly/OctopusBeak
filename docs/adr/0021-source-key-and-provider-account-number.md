@@ -1,0 +1,7 @@
+# Separate source keys from provider account numbers
+
+Financial account identity is established by the source connection, identity epoch, stream, and contract-defined `source_account_key`; `account_no` is a nullable provider identifier that may be populated only by versioned source evidence for a complete account number. Historical projections expose an identifier only after the commit that recorded that evidence, so a later discovery cannot rewrite earlier knowledge. Credit-card masks remain properties of `CardInstrument` and do not become portfolio account numbers, while integrations such as MaiCoin leave `account_no` null when the provider exposes no supported account-number field.
+
+This separation keeps opaque provider keys stable without presenting hashes, masks, emails, wallet labels, or other operational selectors as bank account numbers. A source capture that supplies a changed identifier for an existing source key requires a versioned revision contract rather than silently overwriting the prior evidence.
+
+Current depository balances use the same source identity and knowledge cutoff. A provider snapshot records `ledger` and `available` as separate exact decimal observations, keyed by currency and the provider-reported effective instant. Equal measurements at the same instant may be deduplicated while a contradictory measurement is rejected; a later provider instant creates a new revision. The overview projection consumes `ledger` only, so available funds are never silently added to assets.

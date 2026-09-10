@@ -4,10 +4,7 @@ import {
   openLedgerDrizzle,
 } from "../../../ledger/db/client.ts";
 import * as schema from "../../../ledger/db/schema.ts";
-import type { SpendingCategory } from "../../spending/categories.ts";
-import type { SpendingReason, SpendingState } from "../../spending/model.ts";
 import {
-  activeImportSql,
   applyLedgerVisibility,
   loadActiveLedgerSupport,
   loadUnavailableAccountIssues,
@@ -23,6 +20,16 @@ import {
   createCathayCanonicalFinancialQuery as createCathayCanonicalQuery,
   type CathayCanonicalFinancialQuery,
 } from "../../../ledger/canonical/cathay-domestic-deposit.ts";
+import {
+  createCanonicalOverviewQuery,
+  type CanonicalOverviewExpectedSource,
+  type CanonicalOverviewProjection,
+  type CanonicalOverviewCurrentQueryResult,
+} from "../../../ledger/canonical/canonical-overview-query.ts";
+import {
+  createCanonicalSpendingQuery,
+  type CanonicalSpendingReport,
+} from "../../../ledger/canonical/canonical-categorization.ts";
 
 export type {
   CanonicalAmount,
@@ -42,6 +49,7 @@ export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
   product: "overview";
+  expectedSources?: readonly CanonicalOverviewExpectedSource[];
 };
 
 export type CurrentOverviewExchangeRateQueryRequest =
@@ -60,11 +68,19 @@ export type CurrentOverviewExchangeRateQueryRequest =
     lastDate: string;
   };
 
+export type CurrentCanonicalLedgerQueryRequest<
+  Product extends "assets" | "liabilities",
+> = {
+  kind: "current";
+  product: Product;
+  expectedSources?: readonly CanonicalOverviewExpectedSource[];
+};
+
 type CurrentRequestByProduct = {
-  assets: { kind: "current"; product: "assets" };
+  assets: CurrentCanonicalLedgerQueryRequest<"assets">;
   overview: CurrentOverviewLedgerQueryRequest | CurrentOverviewExchangeRateQueryRequest;
   spending: { kind: "current"; product: "spending" };
-  liabilities: { kind: "current"; product: "liabilities" };
+  liabilities: CurrentCanonicalLedgerQueryRequest<"liabilities">;
 };
 
 export type CurrentFinancialQueryRequest<Product extends FinancialProduct = FinancialProduct> =
@@ -106,54 +122,6 @@ export type ExchangeRateQueryRow = {
   twdPerUnit: number;
 };
 
-export type LegacySpendingInvoiceRow = {
-  invoice_key: string;
-  invoice_id: string;
-  issued_at: number | string | null;
-  invoice_amount: number | null;
-  seller_business_account_number: string | null;
-  seller_name: string | null;
-  seller_addr: string | null;
-  item_key: string | null;
-  item_sequence_number: number | null;
-  item_quantity: number | null;
-  item_unit_price: number | null;
-  item_paid_amount: number | null;
-  item_product_name: string | null;
-  category: SpendingCategory | null;
-};
-
-export type LegacySpendingAccountRow = {
-  statement_row_id: string;
-  bank: string;
-  account_number: string | null;
-  currency: string;
-  date: string;
-  transaction_time: string | null;
-  description: string | null;
-  note: string | null;
-  withdrawal_amount: number | null;
-  deposit_amount: number | null;
-};
-
-export type LegacySpendingCardPaymentRow = { date: string; twd_amount: number };
-
-export type LegacySpendingOverrideRow = {
-  statement_row_id: string;
-  state: SpendingState;
-  category: SpendingCategory | null;
-  automatic_state: SpendingState;
-  automatic_reason: SpendingReason | null;
-  updated_at: string;
-};
-
-export type LegacySpendingQueryData = {
-  invoices: LegacySpendingInvoiceRow[];
-  accountTransactions: LegacySpendingAccountRow[];
-  cardPayments: LegacySpendingCardPaymentRow[];
-  overrides: LegacySpendingOverrideRow[];
-};
-
 export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   status: "ok";
   kind: "current";
@@ -164,11 +132,22 @@ export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   unavailableAccounts: AccountRowDto[];
 };
 
+export type CurrentOverviewProjectionQueryResult = CanonicalOverviewCurrentQueryResult;
+
+export type CurrentCanonicalLedgerProjectionQueryResult<
+  Product extends "assets" | "liabilities",
+> = Readonly<{
+  status: "ok";
+  kind: "current";
+  product: Product;
+  projection: CanonicalOverviewProjection;
+}>;
+
 export type CurrentSpendingQueryResult = {
   status: "ok";
   kind: "current";
   product: "spending";
-  spending: LegacySpendingQueryData;
+  spending: CanonicalSpendingReport;
 };
 
 export type CurrentOverviewExchangeRateQueryResult = {
@@ -183,7 +162,9 @@ export type CurrentFinancialQueryResult<Product extends FinancialProduct = Finan
   Product extends "spending"
     ? CurrentSpendingQueryResult
     : Product extends "overview"
-      ? CurrentLedgerQueryResult<"overview"> | CurrentOverviewExchangeRateQueryResult
+      ? CurrentOverviewProjectionQueryResult | CurrentOverviewExchangeRateQueryResult
+      : Product extends "assets" | "liabilities"
+        ? CurrentCanonicalLedgerProjectionQueryResult<Product>
       : Product extends LedgerFinancialProduct
       ? CurrentLedgerQueryResult<Product>
       : never;
@@ -214,22 +195,17 @@ export type LineageFinancialQueryResult<Entry = never, SubjectKind extends strin
 
 export interface FinancialQueryBoundary {
   current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
-  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentLedgerQueryResult<"overview">>;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentOverviewProjectionQueryResult>;
   current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
-  current<Product extends LedgerFinancialProduct>(
-    request: CurrentFinancialQueryRequest<Product> & { product: Exclude<Product, "overview"> },
-  ): Promise<CurrentLedgerQueryResult<Product>>;
+  current(request: CurrentCanonicalLedgerQueryRequest<"assets">): Promise<CurrentCanonicalLedgerProjectionQueryResult<"assets">>;
+  current(request: CurrentCanonicalLedgerQueryRequest<"liabilities">): Promise<CurrentCanonicalLedgerProjectionQueryResult<"liabilities">>;
   historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>>;
   lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>>;
 }
 
-/**
- * Creates the product read boundary. The default implementation is deliberately
- * a legacy adapter; it preserves current ledger behavior while leaving the
- * Current/Historical/Lineage contract seam ready for a canonical store.
- */
+/** Creates the product read boundary. Overview is backed by Current Projection. */
 export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQueryBoundary {
-  return new LegacyFinancialQueryAdapter(ledgerDir);
+  return new ProductFinancialQueryAdapter(ledgerDir);
 }
 
 /** Canonical adapter factory kept alongside the phase-1 legacy boundary. */
@@ -241,7 +217,7 @@ export function createCathayCanonicalFinancialQuery(
   return createCathayCanonicalQuery(ledgerDir);
 }
 
-class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
+class LegacyFinancialQueryAdapter {
   private readonly ledgerDir: string;
 
   constructor(ledgerDir: string) {
@@ -258,7 +234,9 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
     request: CurrentFinancialQueryRequest,
   ): CurrentSpendingQueryResult
     | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct> | CurrentOverviewExchangeRateQueryResult> {
-    if (request.product === "spending") return this.readCurrentSpending();
+    if (request.product === "spending") {
+      throw new Error("Spending reads must use the canonical query boundary.");
+    }
     if (request.product === "overview" && "selection" in request) {
       return this.readCurrentOverviewExchangeRates(request);
     }
@@ -413,19 +391,87 @@ class LegacyFinancialQueryAdapter implements FinancialQueryBoundary {
     }
   }
 
-  private readCurrentSpending(): CurrentSpendingQueryResult {
-    const sqlite = openLedgerDatabase(this.ledgerDir);
-    try {
+}
+
+/**
+ * Routes all current product reads through the canonical Current Projection.
+ * Legacy tables remain available only to the compatibility adapter used by
+ * historical migration checks; product loaders never call it for current
+ * assets or liabilities.
+ */
+class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
+  private readonly ledgerDir: string;
+  private readonly legacy: LegacyFinancialQueryAdapter;
+  private readonly canonicalOverview: ReturnType<typeof createCanonicalOverviewQuery>;
+  private readonly canonicalSpending: ReturnType<typeof createCanonicalSpendingQuery>;
+
+  constructor(ledgerDir: string) {
+    this.ledgerDir = ledgerDir;
+    this.legacy = new LegacyFinancialQueryAdapter(ledgerDir);
+    this.canonicalOverview = createCanonicalOverviewQuery(ledgerDir);
+    this.canonicalSpending = createCanonicalSpendingQuery(ledgerDir);
+  }
+
+  current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
+  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentOverviewProjectionQueryResult>;
+  current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
+  current(request: CurrentCanonicalLedgerQueryRequest<"assets">): Promise<CurrentCanonicalLedgerProjectionQueryResult<"assets">>;
+  current(request: CurrentCanonicalLedgerQueryRequest<"liabilities">): Promise<CurrentCanonicalLedgerProjectionQueryResult<"liabilities">>;
+  current(
+    request: CurrentFinancialQueryRequest,
+  ): CurrentSpendingQueryResult | Promise<
+    CurrentOverviewProjectionQueryResult |
+    CurrentOverviewExchangeRateQueryResult |
+    CurrentCanonicalLedgerProjectionQueryResult<"assets" | "liabilities">
+  > {
+    if (request.product === "overview" && !("selection" in request)) {
+      if (!request.expectedSources?.length) return this.canonicalOverview.current();
+      return createCanonicalOverviewQuery(this.ledgerDir, {
+        expectedSources: request.expectedSources,
+      }).current();
+    }
+    if (request.product === "spending") {
       return {
         status: "ok",
         kind: "current",
         product: "spending",
-        spending: loadSpendingQueryData(sqlite),
+        spending: this.canonicalSpending.current(),
       };
-    } finally {
-      sqlite.close();
     }
+    if (request.product === "assets" || request.product === "liabilities") {
+      const projectionQuery = request.expectedSources?.length
+        ? createCanonicalOverviewQuery(this.ledgerDir, {
+          expectedSources: request.expectedSources,
+        })
+        : this.canonicalOverview;
+      return projectionQuery.current().then((result) => ({
+        ...result,
+        product: request.product,
+        projection: productProjectionState(result.projection),
+      }));
+    }
+    return this.legacy.current(request as CurrentOverviewExchangeRateQueryRequest);
   }
+
+  historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>> {
+    return this.legacy.historical(request);
+  }
+
+  lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>> {
+    return this.legacy.lineage(request);
+  }
+}
+
+function productProjectionState(
+  projection: CanonicalOverviewProjection,
+): CanonicalOverviewProjection {
+  if (
+    projection.availability === "awaiting" &&
+    projection.accounts.length === 0 &&
+    projection.sourceGaps.length === 0
+  )
+    return { ...projection, availability: "empty" };
+  return projection;
 }
 
 function currentLedgerResult<Product extends LedgerFinancialProduct>(
@@ -443,55 +489,4 @@ function currentLedgerResult<Product extends LedgerFinancialProduct>(
     unavailableAccountIssues,
     unavailableAccounts: unavailableAccountIssues.map(unavailableAccountFromIssue),
   };
-}
-
-function loadSpendingQueryData(db: ReturnType<typeof openLedgerDrizzle>["sqlite"]): LegacySpendingQueryData {
-  const invoices = db.prepare(`
-    SELECT
-      personal_invoices.invoice_key,
-      personal_invoices.invoice_id,
-      personal_invoices.issued_at,
-      personal_invoices.amount AS invoice_amount,
-      personal_invoices.seller_business_account_number,
-      personal_invoices.seller_name,
-      personal_invoices.seller_addr,
-      items.item_key,
-      items.item_sequence_number,
-      items.item_quantity,
-      items.item_unit_price,
-      items.item_paid_amount,
-      items.item_product_name,
-      items.category
-    FROM personal_invoices
-    LEFT JOIN personal_invoice_items AS items
-      ON items.invoice_key = personal_invoices.invoice_key
-      AND ${activeImportSql("personal_invoice_items", "items")}
-    WHERE personal_invoices.status = ?
-      AND ${activeImportSql("personal_invoices")}
-    ORDER BY personal_invoices.issued_at, personal_invoices.invoice_key,
-      items.item_sequence_number, items.item_key
-  `).all("confirmed") as LegacySpendingInvoiceRow[];
-  const accountTransactions = db.prepare(`
-    SELECT statement_row_id, bank, account_number, currency,
-      COALESCE(transaction_date, accounting_date) AS date,
-      transaction_time, description, note, withdrawal_amount, deposit_amount
-    FROM account_transactions
-    WHERE (withdrawal_amount > 0 OR deposit_amount > 0)
-      AND COALESCE(transaction_date, accounting_date) IS NOT NULL
-      AND ${activeImportSql("account_transactions")}
-    ORDER BY date, statement_row_id
-  `).all() as LegacySpendingAccountRow[];
-  const cardPayments = db.prepare(`
-    SELECT COALESCE(consume_date, posting_date) AS date, twd_amount
-    FROM credit_card_statement_lines
-    WHERE twd_amount < 0
-      AND COALESCE(consume_date, posting_date) IS NOT NULL
-      AND ${activeImportSql("credit_card_statement_lines")}
-  `).all() as LegacySpendingCardPaymentRow[];
-  const overrides = db.prepare(`
-    SELECT statement_row_id, state, category, automatic_state,
-      automatic_reason, updated_at
-    FROM spending_transaction_overrides
-  `).all() as LegacySpendingOverrideRow[];
-  return { invoices, accountTransactions, cardPayments, overrides };
 }

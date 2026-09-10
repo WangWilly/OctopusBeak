@@ -22,6 +22,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
   HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -165,6 +166,7 @@ export type HncbDomesticDepositCaptureEvidence = {
   account: {
     value: string;
     label: string;
+    accountNumber?: HncbDomesticDepositAccountNumberEvidence;
   };
   queryRange: {
     startDate: string;
@@ -183,6 +185,61 @@ export type HncbDomesticDepositCaptureEvidence = {
     downloadSelector: 'input[name="excel_download"]';
   };
 };
+
+export const HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "hncb/domestic-deposit/account-number-v1" as const;
+export const HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2 =
+  "hncb/domestic-deposit/account-number-v2" as const;
+
+export type HncbDomesticDepositAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion:
+    | typeof HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION
+    | typeof HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2;
+  sourceField:
+    | "select#acct1 option.value + workbook metadata 帳號"
+    | "select#acct1 option.value + option.text";
+}>;
+
+function accountDigits(value: string): string | null {
+  const normalized = value.trim().normalize("NFKC");
+  if (!/^[\d\s-]+$/.test(normalized)) return null;
+  const digits = normalized.replace(/[\s-]/g, "");
+  return /^\d{6,24}$/.test(digits) ? digits : null;
+}
+
+export function deriveHncbDomesticDepositAccountNumberEvidence(input: {
+  selectorValue: string;
+  workbookAccount?: string;
+  selectorLabel?: string;
+}): HncbDomesticDepositAccountNumberEvidence | null {
+  const selectorDigits = accountDigits(input.selectorValue);
+  if (!selectorDigits) return null;
+  if (input.workbookAccount !== undefined) {
+    const workbookDigits = accountDigits(input.workbookAccount);
+    if (!workbookDigits || selectorDigits !== workbookDigits) return null;
+    return {
+      value: selectorDigits,
+      kind: "depository-account",
+      evidenceVersion: HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+      sourceField: "select#acct1 option.value + workbook metadata 帳號",
+    };
+  }
+  const selectorText = input.selectorValue.trim().normalize("NFKC");
+  const selectorLabelText = (input.selectorLabel ?? "").trim().normalize("NFKC");
+  if (
+    !/^\d{6,24}$/.test(selectorText) ||
+    selectorText !== selectorLabelText
+  )
+    return null;
+  return {
+    value: selectorText,
+    kind: "depository-account",
+    evidenceVersion: HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2,
+    sourceField: "select#acct1 option.value + option.text",
+  };
+}
 
 export type HncbDomesticDepositValidatedEvidence =
   HncbDomesticDepositCaptureEvidence & {
@@ -361,6 +418,34 @@ export function admitHncbDomesticDepositCaptureEvidence(
     !normalizedCell(capture.account.value) ||
     typeof capture.account.label !== "string" ||
     !normalizedCell(capture.account.label)
+  )
+    diagnostic(diagnostics, "account-invalid");
+  const accountNumber = capture.account?.accountNumber;
+  const selectedAccountDigits = capture.account
+    ? accountDigits(capture.account.value)
+    : null;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "depository-account" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{6,24}$/.test(accountNumber.value) ||
+      (accountNumber.evidenceVersion ===
+        HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION
+        ? accountNumber.sourceField !==
+            "select#acct1 option.value + workbook metadata 帳號" ||
+          accountNumber.value !== selectedAccountDigits
+        : accountNumber.evidenceVersion ===
+            HNCB_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2
+          ? accountNumber.sourceField !==
+              "select#acct1 option.value + option.text" ||
+            accountNumber.value !== selectedAccountDigits ||
+            accountNumber.value !==
+              normalizedCell(capture.account?.value ?? "").normalize("NFKC") ||
+            accountNumber.value !==
+              normalizedCell(capture.account?.label ?? "").normalize("NFKC")
+          : true))
   )
     diagnostic(diagnostics, "account-invalid");
   if (
@@ -549,6 +634,7 @@ function sourceEvidenceForCapture(
     contractVersion: HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     subjectDigest: identity.subjectDigest,
     observedAt: capture.observedAt,
+    accountNumber: capture.account.accountNumber ?? null,
     scope: {
       startDate,
       endDate,
@@ -821,6 +907,7 @@ export type HncbDomesticDepositFinancialSemantics = {
   evidenceVersion: typeof HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION;
   account: {
     accountNo: string;
+    accountNumber?: HncbDomesticDepositAccountNumberEvidence;
     sourceConnectionKey: string;
     identityEpochKey: string;
     subjectDigest: string;
@@ -872,6 +959,9 @@ export function buildHncbHumanAttestedFinancialSemantics(
     evidenceVersion: HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
       accountNo: capture.account.value,
+      ...(capture.account.accountNumber
+        ? { accountNumber: capture.account.accountNumber }
+        : {}),
       sourceConnectionKey: identity.sourceConnectionKey,
       identityEpochKey: hncbHumanAttestedIdentityEpochKey(manifest),
       subjectDigest: identity.subjectDigest,
@@ -1039,6 +1129,7 @@ function hncbFinancialRecord(
   const description = normalizedCell(values[7]);
   const depositor = normalizedCell(values[8]);
   const note = normalizedCell(values[9]);
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const reference = normalizedCell(values[10]);
   const contentHash = hncbFinancialOpaque(
     "hncb-observed-content-v1",
@@ -1094,6 +1185,7 @@ function hncbFinancialRecord(
       amount,
       balanceAfter,
       currency: semantics.account.currency,
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: transactionDate,
@@ -1143,6 +1235,8 @@ function hncbFinancialDiagnosticsFor(
   const expectedEpoch = hncbHumanAttestedIdentityEpochKey(current);
   if (
     semantics.account.accountNo !== input.capture.account.value ||
+    (semantics.account.accountNumber?.value ?? null) !==
+      (input.capture.account.accountNumber?.value ?? null) ||
     semantics.account.sourceConnectionKey !== identity.sourceConnectionKey ||
     semantics.account.identityEpochKey !== expectedEpoch ||
     semantics.account.subjectDigest !== identity.subjectDigest
@@ -1269,6 +1363,9 @@ function hncbFinancialDiagnosticsFor(
       recordKind: "hncb-domestic-deposit",
       subjectDigest: identity.subjectDigest,
       accountNo: input.capture.account.value,
+      ...(input.capture.account.accountNumber
+        ? { accountNumber: input.capture.account.accountNumber }
+        : {}),
       accountType: semantics.account.accountType,
       currency: semantics.account.currency,
     },

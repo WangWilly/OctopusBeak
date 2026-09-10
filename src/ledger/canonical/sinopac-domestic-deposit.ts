@@ -22,6 +22,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
   SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -164,7 +165,12 @@ export type SinopacStatementCaptureEvidence = {
   product: "domestic-deposit" | "foreign-currency";
   providerGuaranteed: false;
   observedAt: string;
-  account: { value: string; label: string; currency: string };
+  account: {
+    value: string;
+    label: string;
+    currency: string;
+    accountNumber?: SinopacStatementAccountNumberEvidence;
+  };
   queryRange: { startDate: string; endDate: string };
   downloads: readonly SinopacStatementDownloadEvidence[];
   zeroResultAuthority?: "provider-explicit-no-data" | "unproven";
@@ -176,6 +182,29 @@ export type SinopacStatementCaptureEvidence = {
     transactionEndpoint: "ws_transdetailMerge.ashx";
   };
 };
+
+export const SINOPAC_STATEMENT_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "sinopac/statement/account-number-v1" as const;
+
+export type SinopacStatementAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof SINOPAC_STATEMENT_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "ws_debitacct.ashx SubInfo.DataValue";
+}>;
+
+export function deriveSinopacStatementAccountNumberEvidence(
+  accountValue: string,
+): SinopacStatementAccountNumberEvidence | null {
+  const value = accountValue.trim().normalize("NFKC");
+  if (!/^\d{6,24}$/.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: SINOPAC_STATEMENT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "ws_debitacct.ashx SubInfo.DataValue",
+  };
+}
 
 export type SinopacStatementValidatedCapture =
   SinopacStatementCaptureEvidence & {
@@ -370,6 +399,20 @@ export function admitSinopacStatementCaptureEvidence(
     !normalizedCell(capture.account.label) ||
     typeof capture.account.currency !== "string" ||
     !/^[A-Z]{3}$/.test(normalizedCell(capture.account.currency).toUpperCase())
+  )
+    diagnostic(diagnostics, "account-invalid");
+  const accountNumber = capture.account?.accountNumber;
+  if (
+    accountNumber !== undefined &&
+    (accountNumber === null ||
+      typeof accountNumber !== "object" ||
+      accountNumber.kind !== "depository-account" ||
+      accountNumber.evidenceVersion !==
+        SINOPAC_STATEMENT_ACCOUNT_NUMBER_EVIDENCE_VERSION ||
+      accountNumber.sourceField !== "ws_debitacct.ashx SubInfo.DataValue" ||
+      typeof accountNumber.value !== "string" ||
+      !/^\d{6,24}$/.test(accountNumber.value) ||
+      accountNumber.value !== capture.account?.value)
   )
     diagnostic(diagnostics, "account-invalid");
   if (
@@ -585,6 +628,7 @@ function sourceEvidenceForCapture(
     contractVersion: capture.evidenceVersion,
     subjectDigest: identity.subjectDigest,
     observedAt: capture.observedAt,
+    accountNumber: capture.account.accountNumber ?? null,
     scope: {
       startDate: sourceDate(capture.queryRange.startDate),
       endDate: sourceDate(capture.queryRange.endDate),
@@ -922,6 +966,7 @@ function sinopacFinancialRecord(
     normalizedCell(values[7]),
     normalizedCell(values[8]),
   );
+  const description = combineDomesticDepositDescription(values[3], values[7]);
   return {
     diagnostics,
     record: {
@@ -952,6 +997,7 @@ function sinopacFinancialRecord(
       amount,
       balanceAfter,
       currency: "TWD",
+      description,
       direction,
       sourceTime: {
         localDate: transactionDate,
@@ -1039,6 +1085,9 @@ export function admitSinopacDomesticDepositFinancialCapture(
       recordKind: "sinopac-domestic-deposit",
       subjectDigest: identity.subjectDigest,
       accountNo: input.capture.account.value,
+      ...(input.capture.account.accountNumber
+        ? { accountNumber: input.capture.account.accountNumber }
+        : {}),
       accountType: "depository",
       currency: "TWD",
     },

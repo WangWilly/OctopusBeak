@@ -4,6 +4,7 @@ import {
   requireCanonicalSourceText,
   requireCanonicalSourceToken,
   stableCanonicalSourceJson,
+  validateCanonicalSourceAccountNumber,
   type CanonicalSourceEvidence,
   type CanonicalSourceRecord,
 } from "./canonical-source-evidence.ts";
@@ -16,6 +17,9 @@ import {
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import { canonicalSourceRouteRegistration } from "./canonical-source-route-registry.ts";
+import {
+  assertCanonicalContractPurgeScopeEnabled,
+} from "./canonical-contract-purge-runtime.ts";
 
 /** The pre-admission shape submitted by a provider adapter. */
 export type CanonicalSourceCaptureAdmissionRequest = CanonicalSourceEvidence;
@@ -87,6 +91,13 @@ type RuntimeValidatedSourceEvidence = CanonicalSourceEvidence & {
   readonly [CANONICAL_SOURCE_RUNTIME_BRAND]: true;
 };
 
+export type CanonicalSourceCaptureAdmissionIdentityOptions = Readonly<{
+  /** A typed financial writer may reuse an existing plain provider identity.
+   * The persistence seam still requires a matching financial account; public
+   * admission never enables this option. */
+  allowExistingIdentityKeys?: boolean;
+}>;
+
 class CanonicalSourceConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -150,17 +161,25 @@ function assertCompactSourceValue(value: unknown, path: string): void {
   throw new Error(`${path} contains an unsupported value.`);
 }
 
-function validateSourceEvidence(evidence: CanonicalSourceEvidence): void {
+function validateSourceEvidence(
+  evidence: CanonicalSourceEvidence,
+  options: CanonicalSourceCaptureAdmissionIdentityOptions = {},
+): void {
   requireCanonicalSourceText(evidence.captureId, "Capture ID");
   requireCanonicalSourceText(
     evidence.integrationNamespace,
     "Integration namespace",
   );
-  requireCanonicalSourceToken(
-    evidence.sourceConnectionKey,
-    "Source connection key",
-  );
-  requireCanonicalSourceToken(evidence.identityEpoch, "Identity epoch");
+  if (options.allowExistingIdentityKeys) {
+    requireCanonicalSourceText(evidence.sourceConnectionKey, "Source connection key");
+    requireCanonicalSourceText(evidence.identityEpoch, "Identity epoch");
+  } else {
+    requireCanonicalSourceToken(
+      evidence.sourceConnectionKey,
+      "Source connection key",
+    );
+    requireCanonicalSourceToken(evidence.identityEpoch, "Identity epoch");
+  }
   requireCanonicalSourceText(evidence.stream, "Stream");
   requireCanonicalSourceText(evidence.recordKind, "Record kind");
   requireCanonicalSourceText(evidence.routeKey, "Authority route");
@@ -168,6 +187,17 @@ function validateSourceEvidence(evidence: CanonicalSourceEvidence): void {
   requireCanonicalSourceToken(evidence.subjectDigest, "Subject digest");
   if (!Number.isFinite(Date.parse(evidence.observedAt)))
     throw new Error("Observed at must be RFC3339.");
+  const sourceAccountKey =
+    evidence.scope.sourceAccountKey ?? evidence.scope.accountNo;
+  if (
+    evidence.scope.sourceAccountKey !== undefined &&
+    evidence.scope.accountNo !== undefined &&
+    evidence.scope.sourceAccountKey !== evidence.scope.accountNo
+  )
+    throw new Error("Source account key and compatibility accountNo disagree.");
+  if (sourceAccountKey !== undefined && sourceAccountKey !== null)
+    requireCanonicalSourceText(sourceAccountKey, "Source account key");
+  validateCanonicalSourceAccountNumber(evidence.accountNumber);
   const dateFormat = evidence.scope.dateFormat ?? "YYYYMMDD";
   if (dateFormat !== "YYYYMMDD" && dateFormat !== "YYYY-MM-DD")
     throw new Error("Source scope date format is unsupported.");
@@ -317,8 +347,9 @@ function validateAdditionalRecords(
 
 function admitSourceEvidence(
   evidence: CanonicalSourceEvidence,
+  options: CanonicalSourceCaptureAdmissionIdentityOptions = {},
 ): RuntimeValidatedSourceEvidence {
-  validateSourceEvidence(evidence);
+  validateSourceEvidence(evidence, options);
   Object.defineProperty(evidence, CANONICAL_SOURCE_RUNTIME_BRAND, {
     configurable: false,
     enumerable: false,
@@ -403,6 +434,7 @@ export type CanonicalSourceCaptureAdmissionTransactionCapability = object & {
   readonly admit: (
     request: CanonicalSourceCaptureAdmissionRequest,
     additionalRecords?: readonly EmbeddedCanonicalSourceRecord[],
+    options?: CanonicalSourceCaptureAdmissionIdentityOptions,
   ) => CanonicalSourceCaptureAdmissionTransactionResult;
   readonly persistLegacyCapture: (input: {
     captureId: Uint8Array;
@@ -410,6 +442,7 @@ export type CanonicalSourceCaptureAdmissionTransactionCapability = object & {
     identityEpochId: Uint8Array;
     authorityRoute: string;
     stream: string;
+    sourceAccountKey?: string | null;
     accountNo: string | null;
     observedAt: string;
     scopeStart: string;
@@ -442,6 +475,7 @@ export type CanonicalSourceCaptureAdmissionTransactionCapability = object & {
     sourceConnectionId: Uint8Array;
     identityEpochId: Uint8Array;
     accountId: Uint8Array;
+    sourceAccountKey?: string;
     accountNo: string;
     stream: string;
     scopeStart: string;
@@ -515,21 +549,22 @@ function mintTransactionCapability(
   const admit = (
     request: CanonicalSourceCaptureAdmissionRequest,
     additionalRecords: readonly EmbeddedCanonicalSourceRecord[] = [],
+    options: CanonicalSourceCaptureAdmissionIdentityOptions = {},
   ): CanonicalSourceCaptureAdmissionTransactionResult =>
-    admitWithinTransactionResult(store, request, capability, additionalRecords);
+    admitWithinTransactionResult(store, request, capability, additionalRecords, options);
   const persistLegacyCapture = (
     input: Parameters<CanonicalSourceCaptureAdmissionTransactionCapability["persistLegacyCapture"]>[0],
   ): void => {
     requireTransactionCapability(store, capability);
     store.db.prepare(
-      "INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO source_captures(capture_id, source_connection_id, identity_epoch_id, authority_route, stream, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       input.captureId,
       input.sourceConnectionId,
       input.identityEpochId,
       input.authorityRoute,
       input.stream,
-      input.accountNo,
+      input.sourceAccountKey ?? input.accountNo,
       input.observedAt,
       input.scopeStart,
       input.scopeEnd,
@@ -600,14 +635,14 @@ function mintTransactionCapability(
   ): void => {
     requireTransactionCapability(store, capability);
     store.db.prepare(
-      "INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+      "INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, source_account_key, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
     ).run(
       input.scopeId,
       input.captureId,
       input.sourceConnectionId,
       input.identityEpochId,
       input.accountId,
-      input.accountNo,
+      input.sourceAccountKey ?? input.accountNo,
       input.stream,
       input.scopeStart,
       input.scopeEnd,
@@ -900,13 +935,66 @@ function persistWithinTransaction(
   store: CanonicalSourceStore,
   evidence: RuntimeValidatedSourceEvidence,
   additionalRecords: readonly EmbeddedCanonicalSourceRecord[] = [],
+  options: CanonicalSourceCaptureAdmissionIdentityOptions = {},
 ): CanonicalSourceCaptureAdmissionTransactionResult {
   if (!isRuntimeValidatedEvidence(evidence))
     throw new CanonicalSourceConflictError(
       "Source evidence is not runtime-validated.",
     );
-  validateSourceEvidence(evidence);
+  validateSourceEvidence(evidence, options);
   const db = store.db;
+
+  if (options.allowExistingIdentityKeys) {
+    const registration = canonicalSourceRouteRegistration(evidence.routeKey);
+    if (
+      evidence.recordKind !== "current-deposit-balance" ||
+      (!evidence.routeKey.endsWith("/current-balance-v1") &&
+        evidence.routeKey !== "hncb/domestic-deposit/current-balance-overview-v1") ||
+      !registration ||
+      !registration.contractVersions.includes(evidence.contractVersion)
+    )
+      throw new CanonicalSourceConflictError(
+        "Plain source identity keys are restricted to registered current-balance routes.",
+      );
+    const sourceAccountKey = evidence.scope.sourceAccountKey ?? evidence.scope.accountNo;
+    const existingAccount = sourceAccountKey == null
+      ? undefined
+      : db.prepare(
+        `SELECT account.account_id
+           FROM financial_accounts account
+           JOIN source_connections connection_row
+             ON connection_row.source_connection_id = account.source_connection_id
+           JOIN identity_epochs epoch
+             ON epoch.identity_epoch_id = account.identity_epoch_id
+          WHERE connection_row.integration_namespace = ?
+            AND connection_row.source_connection_key = ?
+            AND epoch.epoch_key = ?
+            AND account.stream = ?
+            AND account.source_account_key = ?
+          LIMIT 1`,
+      ).get(
+        evidence.integrationNamespace,
+        evidence.sourceConnectionKey,
+        evidence.identityEpoch,
+        evidence.stream,
+        sourceAccountKey,
+      );
+    if (!existingAccount)
+      throw new CanonicalSourceConflictError(
+        "Plain source identity keys are allowed only for an existing financial account.",
+      );
+  }
+
+  // A committed source-scoped purge is a durable recollection fence. Check it
+  // inside the same lifecycle transaction that will create the capture so a
+  // restart cannot resurrect deleted financial evidence.
+  assertCanonicalContractPurgeScopeEnabled(db, {
+    integrationNamespace: evidence.integrationNamespace,
+    sourceConnectionKey: evidence.sourceConnectionKey,
+    stream: evidence.stream,
+    contractVersion: evidence.contractVersion,
+    identityEpoch: evidence.identityEpoch,
+  });
 
   if (
     db
@@ -1086,7 +1174,7 @@ function persistWithinTransaction(
   const actualSubjectId = blob(subject.source_subject_id);
 
   db.prepare(
-    `INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, source_subject_id, stream, record_kind, account_no, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
+    `INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, source_subject_id, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'contract-versioned-source-evidence', ?, ?)`,
   ).run(
     captureId,
@@ -1097,7 +1185,7 @@ function persistWithinTransaction(
     actualSubjectId,
     evidence.stream,
     evidence.recordKind,
-    evidence.scope.accountNo ?? null,
+    evidence.scope.sourceAccountKey ?? evidence.scope.accountNo ?? null,
     evidence.observedAt,
     evidence.scope.startDate,
     evidence.scope.endDate,
@@ -1117,7 +1205,7 @@ function persistWithinTransaction(
       .update(`${evidence.subjectDigest}\u0000${evidence.scope.ruleVersion}`)
       .digest("hex");
   db.prepare(
-    `INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, source_subject_id, account_no, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id)
+    `INSERT INTO capture_scopes(scope_id, capture_id, source_connection_id, identity_epoch_id, account_id, source_subject_id, source_account_key, stream, scope_start, scope_end, scope_kind, completeness, completeness_basis, completeness_rule_version, absence_authority, contract_fingerprint, preflight_fingerprint, page_count, terminal, commit_id)
      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
   ).run(
     scopeId,
@@ -1125,7 +1213,7 @@ function persistWithinTransaction(
     actualConnectionId,
     actualEpochId,
     actualSubjectId,
-    evidence.scope.accountNo ?? null,
+    evidence.scope.sourceAccountKey ?? evidence.scope.accountNo ?? null,
     evidence.stream,
     evidence.scope.startDate,
     evidence.scope.endDate,
@@ -1365,13 +1453,14 @@ function admitWithinTransactionResult(
   request: CanonicalSourceCaptureAdmissionRequest,
   capability: unknown,
   additionalRecords: readonly EmbeddedCanonicalSourceRecord[] = [],
+  options: CanonicalSourceCaptureAdmissionIdentityOptions = {},
 ): CanonicalSourceCaptureAdmissionTransactionResult {
   try {
     requireTransactionCapability(store, capability);
     routeError(request);
-    const admitted = admitSourceEvidence(request);
+    const admitted = admitSourceEvidence(request, options);
     validateAdditionalRecords(admitted, additionalRecords);
-    return persistWithinTransaction(store, admitted, additionalRecords);
+    return persistWithinTransaction(store, admitted, additionalRecords, options);
   } catch (error) {
     throw classifyAdmissionError(error);
   }
@@ -1407,7 +1496,7 @@ export function createCanonicalSourceCaptureAdmission(
         );
       try {
         requests.forEach(routeError);
-        const admitted = requests.map(admitSourceEvidence);
+        const admitted = requests.map((request) => admitSourceEvidence(request));
         const results = await persistBatchStandalone(store, admitted);
         return results.map((result) => result.receipt);
       } catch (error) {

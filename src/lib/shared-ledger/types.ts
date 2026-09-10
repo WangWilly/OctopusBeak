@@ -1,6 +1,35 @@
 export type CurrencyAmountDto = {
   currency: string;
   value: number;
+  /** Exact canonical value retained beside the presentation number. */
+  exact?: {
+    coefficient: string;
+    scale: number;
+  };
+  /** Canonical observation lineage for authoritative amounts. */
+  traces?: readonly {
+    kind: string;
+    accountId: string;
+    observationId?: string;
+    revisionId?: string;
+    securityId?: string;
+    balanceKind?: "ledger" | "available";
+    sourceField?: string;
+    estimateKind?: "estimate";
+    estimateBasis?: "provider-used-credit" | "credit-limit-minus-available";
+    estimateFormula?: string;
+    componentLimit?: { coefficient: string; scale: number };
+    componentAvailable?: { coefficient: string; scale: number };
+    effectiveAt?: string;
+    observedAt?: string;
+    knowledgePoint?: number;
+  }[];
+  /** FX evidence used when a display total is converted. */
+  conversion?: {
+    fromCurrency: string;
+    rateDate: string;
+    twdPerUnit: number;
+  };
 };
 
 export type ExchangeRateDto = {
@@ -54,11 +83,68 @@ export type AccountRowDto = {
   kind: AccountKind;
   typeLabel: string;
   amountLines: CurrencyAmountDto[];
+  marginAmountLines?: CurrencyAmountDto[];
   transactionCount: number;
   assetPositionCount: number;
   lastUpdated: string | null;
-  valueAvailability: "available" | "unavailable";
+  valueAvailability: "available" | "awaiting" | "unavailable";
   dataIssueId?: string;
+  canonicalAccountId?: string;
+  creditCard?: CreditCardAccountDto;
+};
+
+export type CreditCardStatementMembershipDto = {
+  transactionId: string;
+  transactionRevisionId: string;
+  sourceRecordId: string;
+};
+
+export type CreditCardStatementDto = {
+  statementId: string;
+  statementRevisionId: string;
+  statementKey: string;
+  revisionNumber: number;
+  cycleStart: string;
+  cycleEnd: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  statementBalance: CurrencyAmountDto;
+  minimumPayment: CurrencyAmountDto | null;
+  memberships: CreditCardStatementMembershipDto[];
+};
+
+export type CreditCardBalanceDto = {
+  balanceKind: "credit_used";
+  estimateKind: "estimate";
+  estimateBasis: "provider-used-credit" | "credit-limit-minus-available";
+  estimateFormula: string;
+  amount: CurrencyAmountDto;
+  componentLimit: { coefficient: string; scale: number } | null;
+  componentAvailable: { coefficient: string; scale: number } | null;
+};
+
+export type CreditCardAccountDto = {
+  statements: CreditCardStatementDto[];
+  currentUsedCredit?: CreditCardBalanceDto;
+};
+
+export type ProductSourceGapDto = {
+  accountId: string;
+  sourceConnectionKey: string;
+  sourceAccountKey?: string;
+  accountNo: string | null;
+  integrationNamespace?: string;
+  stream?: string;
+  label?: string;
+  reason: "current-value-not-observed" | "source-not-collected" | "canonical-read-unavailable";
+};
+
+export type CurrentProjectionStateDto = {
+  availability: "empty" | "awaiting" | "available" | "unavailable";
+  coverage: "complete" | "partial" | "awaiting" | "unavailable";
+  sourceGaps: ProductSourceGapDto[];
+  importedAt: string | null;
 };
 
 export type TransactionRowDto = {
@@ -67,6 +153,11 @@ export type TransactionRowDto = {
   label: string;
   type: string;
   amount: number;
+  /** Exact signed canonical amount retained beside the presentation number. */
+  amountExact?: {
+    coefficient: string;
+    scale: number;
+  };
   currency: string;
   note: string | null;
 };
@@ -77,7 +168,13 @@ export type AssetPositionDto = {
   symbol: string;
   name: string;
   units: string;
-  value: number;
+  value: number | null;
+  /** Exact canonical valuation retained beside the presentation number. */
+  valueExact?: {
+    coefficient: string;
+    scale: number;
+  } | null;
+  valueAvailability?: "available" | "awaiting";
   currency: string;
   change: string;
   metricLabel?: string;

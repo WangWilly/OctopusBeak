@@ -194,6 +194,9 @@ function semanticsFor(
     evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
     account: {
       ...identity,
+      ...(capture.account.accountNumber
+        ? { accountNumber: capture.account.accountNumber }
+        : {}),
       accountType: "depository",
       currency: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY,
     },
@@ -264,6 +267,10 @@ const firstAdmission = admitFubonDomesticDepositFinancialCapture({
 });
 assert.equal(firstAdmission.status, "admitted");
 assert.ok(firstAdmission.capture);
+assert.equal(
+  firstAdmission.capture.records[0]?.description,
+  "SYNTHETIC DEPOSIT · SYNTHETIC NOTE",
+);
 assert.equal(firstAdmission.capture.records.length, 1);
 assert.equal(firstAdmission.capture.records[0]?.direction, "inflow");
 assert.equal(
@@ -274,6 +281,122 @@ assert.equal(
   JSON.stringify(firstAdmission.capture).includes("****0001"),
   false,
 );
+
+const numberedCapture = admittedCapture(
+  "123456789012",
+  "123456789012 (012)",
+);
+const numberedCaptureWithEvidence = {
+  ...numberedCapture,
+  account: {
+    ...numberedCapture.account,
+    accountNumber: {
+      value: "123456789012",
+      kind: "depository-account" as const,
+      evidenceVersion: "fubon/domestic-deposit/account-number-v1" as const,
+      sourceField: "form1:comboAccount option.value" as const,
+    },
+  },
+  pages: numberedCapture.pages.map((page) => ({
+    ...page,
+    selectedAccount: {
+      ...page.selectedAccount,
+      accountNumber: {
+        value: "123456789012",
+        kind: "depository-account" as const,
+        evidenceVersion: "fubon/domestic-deposit/account-number-v1" as const,
+        sourceField: "form1:comboAccount option.value" as const,
+      },
+    },
+  })),
+};
+const numberedStructural = admitFubonDomesticDepositCaptureEvidence(
+  numberedCaptureWithEvidence,
+);
+assert.equal(numberedStructural.status, "admissible");
+assert.ok(numberedStructural.capture);
+const numberedAdmission = admitFubonDomesticDepositFinancialCapture({
+  capture: numberedStructural.capture,
+  captureId: "fubon-human-attested-numbered",
+  semantics: semanticsFor(numberedStructural.capture),
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(numberedAdmission.status, "admitted");
+assert.ok(numberedAdmission.capture);
+assert.equal(
+  numberedAdmission.capture.identity.accountNo,
+  deriveFubonDomesticDepositAccountIdentity(numberedStructural.capture.account)
+    .accountNo,
+);
+assert.equal(
+  numberedAdmission.capture.identity.sourceAccountKey,
+  numberedAdmission.capture.identity.accountNo,
+);
+assert.deepEqual(numberedAdmission.capture.identity.accountNumber, {
+  value: "123456789012",
+  kind: "depository-account",
+  evidenceVersion: "fubon/domestic-deposit/account-number-v1",
+  sourceField: "form1:comboAccount option.value",
+});
+
+const compositeAccountNumber = "01234567890123";
+const compositeAccountValue = `123-00${compositeAccountNumber}-TWD-01`;
+const compositeCapture = captureFor(
+  compositeAccountValue,
+  `${compositeAccountNumber} (SYNTHETIC-BRANCH)`,
+  {
+    account: {
+      value: compositeAccountValue,
+      label: `${compositeAccountNumber} (SYNTHETIC-BRANCH)`,
+      branchName: "012",
+      accountNumber: {
+        value: compositeAccountNumber,
+        kind: "depository-account",
+        evidenceVersion: "fubon/domestic-deposit/account-number-v2",
+        sourceField: "form1:comboAccount option.value + option.text",
+      },
+    },
+  },
+);
+const compositeStructural = admitFubonDomesticDepositCaptureEvidence(
+  compositeCapture,
+);
+assert.equal(compositeStructural.status, "admissible");
+assert.ok(compositeStructural.capture);
+const compositeAdmission = admitFubonDomesticDepositFinancialCapture({
+  capture: compositeStructural.capture,
+  captureId: "fubon-human-attested-composite-numbered",
+  semantics: semanticsFor(compositeStructural.capture),
+  humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(compositeAdmission.status, "admitted");
+assert.deepEqual(compositeAdmission.capture?.identity.accountNumber, {
+  value: compositeAccountNumber,
+  kind: "depository-account",
+  evidenceVersion: "fubon/domestic-deposit/account-number-v2",
+  sourceField: "form1:comboAccount option.value + option.text",
+});
+const mismatchedComposite = admitFubonDomesticDepositCaptureEvidence(
+  captureFor(
+    compositeAccountValue.replace("00", "99"),
+    `${compositeAccountNumber} (SYNTHETIC-BRANCH)`,
+    {
+      account: {
+        value: compositeAccountValue.replace("00", "99"),
+        label: `${compositeAccountNumber} (SYNTHETIC-BRANCH)`,
+        branchName: "012",
+        accountNumber: {
+          value: compositeAccountNumber,
+          kind: "depository-account",
+          evidenceVersion: "fubon/domestic-deposit/account-number-v2",
+          sourceField: "form1:comboAccount option.value + option.text",
+        },
+      },
+    },
+  ),
+);
+assert.equal(mismatchedComposite.status, "rejected");
+assert.ok(mismatchedComposite.diagnostics.includes("account-number-evidence-invalid"));
 
 // The provider can render a different non-empty note for the same transaction
 // when that transaction is observed through two overlapping query windows.

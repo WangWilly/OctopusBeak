@@ -22,6 +22,18 @@ export type CanonicalSchemaMigration = {
   readonly id: string;
   readonly fromVersion: number;
   readonly toVersion: number;
+  /** Explicit column-renames for a reviewed immutable-table rebuild.  The
+   * renamed value is compared across the transition; other columns remain
+   * byte-for-byte row-preserved. */
+  readonly immutableTableColumnRenames?: readonly Readonly<{
+    table: string;
+    renames: readonly Readonly<{ from: string; to: string }>[];
+  }>[];
+  /** Immutable financial tables that this transition explicitly creates and
+   * populates from reviewed pre-transition evidence.  Inserts are permitted
+   * only into the newly-created table during this migration; later updates
+   * and deletes remain denied by the historical migration guard. */
+  readonly immutableDataCopyTables?: readonly string[];
   readonly apply: (
     db: DatabaseSync,
     context: { fromVersion: number; targetVersion: number },
@@ -117,6 +129,15 @@ export type CanonicalSchemaLifecycleOptions = CanonicalRuntimeOptions & {
 
 const VALIDATED_DATABASES = new WeakSet<object>();
 const VALIDATED_REPAIRERS = new WeakMap<object, (id: string) => void>();
+const VALIDATED_DATA_TRANSITIONERS = new WeakMap<
+  object,
+  <T>(operation: (db: DatabaseSync) => T) => T
+>();
+const VALIDATED_CONTRACT_PURGE_TRANSITIONERS = new WeakMap<
+  object,
+  <T>(operation: (db: DatabaseSync) => T) => T
+>();
+const VALIDATED_SCRUBBERS = new WeakMap<object, () => void>();
 const MIGRATION_DATABASES = new WeakMap<object, DatabaseSync>();
 const MIGRATION_REGISTRIES = new WeakSet<object>();
 const MIGRATION_REGISTRY_STEPS = new WeakMap<
@@ -363,8 +384,11 @@ const CORE_TRIGGER_TARGETS = new Set([
  */
 const IMMUTABLE_FINANCIAL_DATA_TABLES = new Set([
   "financial_accounts",
+  "financial_account_identifier_observations",
   "financial_transactions",
   "transaction_revisions",
+  "balance_observations",
+  "balance_observation_revisions",
 ]);
 
 const SQLITE_SCHEMA_ACTIONS = new Set([
@@ -539,7 +563,10 @@ function assertSynchronousLifecycleCallback(
  * trigger bodies, so this closes the direct, prepared, and trigger-mediated
  * forms of the same escape.
  */
-function createHistoricalMigrationAuthorizer(): Parameters<
+function createHistoricalMigrationAuthorizer(
+  db: DatabaseSync,
+  immutableDataCopyTables: ReadonlySet<string> = new Set(),
+): Parameters<
   DatabaseSync["setAuthorizer"]
 >[0] {
   // SQLite reports the physical row removal performed by DROP TABLE as a
@@ -547,6 +574,14 @@ function createHistoricalMigrationAuthorizer(): Parameters<
   // schema-driven deletion; a standalone DELETE against a financial table
   // remains denied.
   const pendingDroppedTables = new Set<string>();
+  const preExistingImmutableDataCopyTables = new Set(
+    [...immutableDataCopyTables].filter((table) =>
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table),
+    ),
+  );
+  const createdImmutableDataCopyTables = new Set<string>();
   return (actionCode, arg1, arg2, dbName): number => {
     if (dbName !== null && dbName !== "main" && dbName !== "temp")
       return constants.SQLITE_DENY;
@@ -592,8 +627,14 @@ function createHistoricalMigrationAuthorizer(): Parameters<
         pendingDroppedTables.delete(table)
       )
         return constants.SQLITE_OK;
-      if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table))
+      if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table)) {
+        if (
+          actionCode === constants.SQLITE_INSERT &&
+          createdImmutableDataCopyTables.has(table)
+        )
+          return constants.SQLITE_OK;
         return constants.SQLITE_DENY;
+      }
       // SQLite emits bookkeeping writes to sqlite_master/sqlite_sequence for
       // DDL.  Other tables are the explicitly reviewed legacy backfill
       // surface (metadata, provenance, projection state, and staging).
@@ -603,6 +644,15 @@ function createHistoricalMigrationAuthorizer(): Parameters<
       const table = String(arg1 ?? "");
       if (IMMUTABLE_FINANCIAL_DATA_TABLES.has(table))
         pendingDroppedTables.add(table);
+      return constants.SQLITE_OK;
+    }
+    if (actionCode === constants.SQLITE_CREATE_TABLE) {
+      const table = String(arg1 ?? "");
+      if (
+        immutableDataCopyTables.has(table) &&
+        !preExistingImmutableDataCopyTables.has(table)
+      )
+        createdImmutableDataCopyTables.add(table);
       return constants.SQLITE_OK;
     }
     if (SQLITE_SCHEMA_ACTIONS.has(actionCode)) return constants.SQLITE_OK;
@@ -1031,6 +1081,53 @@ function assertMigrationDescriptor(step: CanonicalSchemaMigration): void {
     step.toVersion <= step.fromVersion
   )
     throw new Error(`Canonical schema migration ${step.id} has an invalid version range.`);
+  if (step.immutableTableColumnRenames !== undefined) {
+    if (!Array.isArray(step.immutableTableColumnRenames))
+      throw new Error(`Canonical schema migration ${step.id} has invalid immutable table transforms.`);
+    const tables = new Set<string>();
+    for (const transform of step.immutableTableColumnRenames) {
+      if (
+        typeof transform.table !== "string" ||
+        !REPAIR_IDENTIFIER.test(transform.table) ||
+        tables.has(transform.table) ||
+        !IMMUTABLE_FINANCIAL_DATA_TABLES.has(transform.table) ||
+        !Array.isArray(transform.renames) ||
+        transform.renames.length === 0
+      )
+        throw new Error(`Canonical schema migration ${step.id} has invalid immutable table transforms.`);
+      tables.add(transform.table);
+      const from = new Set<string>();
+      const to = new Set<string>();
+      for (const rename of transform.renames) {
+        if (
+          typeof rename.from !== "string" ||
+          typeof rename.to !== "string" ||
+          !REPAIR_IDENTIFIER.test(rename.from) ||
+          !REPAIR_IDENTIFIER.test(rename.to) ||
+          from.has(rename.from) ||
+          to.has(rename.to)
+        )
+          throw new Error(`Canonical schema migration ${step.id} has invalid immutable column rename.`);
+        from.add(rename.from);
+        to.add(rename.to);
+      }
+    }
+  }
+  if (step.immutableDataCopyTables !== undefined) {
+    if (!Array.isArray(step.immutableDataCopyTables))
+      throw new Error(`Canonical schema migration ${step.id} has invalid immutable data-copy tables.`);
+    const tables = new Set<string>();
+    for (const table of step.immutableDataCopyTables) {
+      if (
+        typeof table !== "string" ||
+        !REPAIR_IDENTIFIER.test(table) ||
+        tables.has(table) ||
+        !IMMUTABLE_FINANCIAL_DATA_TABLES.has(table)
+      )
+        throw new Error(`Canonical schema migration ${step.id} has invalid immutable data-copy table.`);
+      tables.add(table);
+    }
+  }
 }
 
 /** Create the immutable versioned migration registry used by every lifecycle. */
@@ -1129,7 +1226,13 @@ function runCanonicalSchemaMigrationRegistry(
       MIGRATION_DATABASES.get(db) ?? db,
       () => active,
     );
-    setLifecycleAuthorizer(db, createHistoricalMigrationAuthorizer());
+    setLifecycleAuthorizer(
+      db,
+      createHistoricalMigrationAuthorizer(
+        db,
+        new Set(step.immutableDataCopyTables ?? []),
+      ),
+    );
     try {
       const result = step.apply(guardedDb, {
         fromVersion: before,
@@ -1177,6 +1280,12 @@ function assertHistoricalFinancialRowsPreserved(
   step: CanonicalSchemaMigration,
   before: ReadonlyMap<string, RepairTableSnapshot>,
 ): void {
+  const transforms = new Map(
+    (step.immutableTableColumnRenames ?? []).map((transform) => [
+      transform.table,
+      new Map(transform.renames.map((rename) => [rename.from, rename.to])),
+    ]),
+  );
   for (const [name, table] of before) {
     if (relationExistsForRepair(db, name) !== "table")
       throw new Error(
@@ -1189,15 +1298,62 @@ function assertHistoricalFinancialRowsPreserved(
         }>
       ).map((column) => String(column.name ?? "")),
     );
-    if (table.columns.some((column) => !afterColumns.has(column)))
+    const transform = transforms.get(name);
+    if (transform !== undefined) {
+      const mappedColumns = table.columns.map(
+        (column) => transform.get(column) ?? column,
+      );
+      if (new Set(mappedColumns).size !== mappedColumns.length)
+        throw new Error(
+          `Canonical schema migration ${step.id} has an immutable column rename alias collision in ${name}.`,
+        );
+    }
+    if (
+      table.columns.some((column) =>
+        !afterColumns.has(transform?.get(column) ?? column),
+      )
+    )
       throw new Error(
         `Canonical schema migration ${step.id} removed financial columns from ${name}.`,
       );
-    if (repairRowsDigest(db, name, table.columns) !== table.digest)
+    if (
+      transform === undefined
+        ? repairRowsDigest(db, name, table.columns) !== table.digest
+        : repairRowsDigestWithColumnRenames(db, name, table.columns, transform) !==
+          table.digest
+    )
       throw new Error(
         `Canonical schema migration ${step.id} changed or lost financial rows in ${name}.`,
       );
   }
+}
+
+function repairRowsDigestWithColumnRenames(
+  db: DatabaseSync,
+  table: string,
+  beforeColumns: readonly string[],
+  renames: ReadonlyMap<string, string>,
+): string {
+  const afterColumns = beforeColumns.map((column) => renames.get(column) ?? column);
+  const rows = db
+    .prepare(
+      `SELECT ${afterColumns
+        .map((column, index) => `${quoteIdentifier(column)} AS ${quoteIdentifier(beforeColumns[index]!)}`)
+        .join(", ")} FROM ${quoteIdentifier(table)}`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const encodedRows = rows
+    .map((row) =>
+      beforeColumns
+        .map((column) => repairValueKey(row[column]))
+        .join("\u0001"),
+    )
+    .sort();
+  return createHash("sha256")
+    .update(beforeColumns.join("\u0000"))
+    .update("\u0002")
+    .update(encodedRows.join("\u0002"))
+    .digest("hex");
 }
 
 /**
@@ -1868,6 +2024,14 @@ function createCurrentVersionMigrationAuthorizer(
         allowed.has(arg2 ?? "")
       )
         return constants.SQLITE_OK;
+      if (
+        actionCode === constants.SQLITE_DROP_INDEX &&
+        objectName.startsWith("sqlite_autoindex_") &&
+        [...allowed].some((table) =>
+          objectName.startsWith(`sqlite_autoindex_${table}_`),
+        )
+      )
+        return constants.SQLITE_OK;
       // Rebuilding a declared table may drop and recreate its existing
       // indexes. The object must already belong to an allowlisted table; a
       // callback cannot use this convenience to touch another relation.
@@ -2499,6 +2663,57 @@ export function runCanonicalSchemaRepair(
   repair(id);
 }
 
+/**
+ * Run a domain-owned hard data transition on a lifecycle-created database.
+ * The database capability itself intentionally does not expose transaction
+ * control; this narrow seam lets a domain module request the lifecycle's
+ * deferred-FK transaction without gaining schema or pragma authority.
+ */
+export function runCanonicalDataTransition<T>(
+  db: DatabaseSync,
+  operation: (db: DatabaseSync) => T,
+): T {
+  const transition = VALIDATED_DATA_TRANSITIONERS.get(db);
+  if (!transition)
+    throw new Error(
+      "Canonical data transition requires a lifecycle-created database.",
+    );
+  return transition(operation);
+}
+
+/**
+ * Run the source-contract purge transition with its narrowly scoped delete
+ * capability enabled.  The capability is intentionally separate from the
+ * ordinary data-transition seam: immutable user-tag records keep their
+ * normal no-delete trigger, while the owned assertion link can be removed
+ * only by the lifecycle-owned purge operation.
+ */
+export function runCanonicalContractPurgeDataTransition<T>(
+  db: DatabaseSync,
+  operation: (db: DatabaseSync) => T,
+): T {
+  const transition = VALIDATED_CONTRACT_PURGE_TRANSITIONERS.get(db);
+  if (!transition)
+    throw new Error(
+      "Canonical contract purge requires a lifecycle-created database.",
+    );
+  return transition(operation);
+}
+
+/**
+ * Run the small local post-commit scrub permitted for a validated store. The
+ * native connection is temporarily detached from the normal authorizer only
+ * for the fixed secure-delete, WAL checkpoint, and VACUUM sequence.
+ */
+export function runCanonicalLocalScrub(db: DatabaseSync): void {
+  const scrub = VALIDATED_SCRUBBERS.get(db);
+  if (!scrub)
+    throw new Error(
+      "Canonical local scrub requires a lifecycle-created database.",
+    );
+  scrub();
+}
+
 function validatedDatabaseCapability(
   db: DatabaseSync,
   close: () => void,
@@ -2592,6 +2807,7 @@ export class ValidatedCanonicalStore {
   readonly #raw: DatabaseSync;
   readonly #release: () => void;
   #closed = false;
+  #contractPurgeDeleteMode = false;
 
   constructor(
     token: typeof CONSTRUCTION_TOKEN,
@@ -2609,6 +2825,10 @@ export class ValidatedCanonicalStore {
     this.openedFromVersion = openedFromVersion;
     this.#raw = db;
     this.#release = release;
+    this.#raw.function(
+      "canonical_purge_delete_allowed",
+      () => (this.#contractPurgeDeleteMode ? 1 : 0),
+    );
     this.db = validatedDatabaseCapability(db, () => this.close(), (id) => {
       // A repair may have committed its savepoint before its exclusive lease
       // was downgraded. Validate only after the repair runner returns, so a
@@ -2624,6 +2844,49 @@ export class ValidatedCanonicalStore {
         throw error;
       }
     });
+    VALIDATED_DATA_TRANSITIONERS.set(this.db, (operation) =>
+      this.runDataTransition(operation),
+    );
+    VALIDATED_CONTRACT_PURGE_TRANSITIONERS.set(this.db, (operation) =>
+      this.runContractPurgeDataTransition(operation),
+    );
+    VALIDATED_SCRUBBERS.set(this.db, () => {
+      if (this.#closed) throw new Error("Validated canonical store is closed.");
+      this.#raw.setAuthorizer(null);
+      let configuredBusyTimeout = 0;
+      try {
+        configuredBusyTimeout = Number(
+          (
+            this.#raw.prepare("PRAGMA busy_timeout").get() as {
+              timeout?: unknown;
+            }
+          ).timeout ?? 0,
+        );
+        // A scrub is resumable operational work. Ask SQLite to report a busy
+        // WAL reader immediately so the caller can leave the durable marker
+        // pending instead of blocking the canonical writer for its normal
+        // thirty-second mutation timeout.
+        this.#raw.exec("PRAGMA busy_timeout = 0");
+        this.#raw.exec("PRAGMA secure_delete = ON");
+        const checkpoint = (): void => {
+          const result = this.#raw
+            .prepare("PRAGMA wal_checkpoint(TRUNCATE)")
+            .get() as { busy?: unknown } | undefined;
+          if (Number(result?.busy ?? 0) !== 0)
+            throw new Error("Canonical local scrub WAL checkpoint is busy.");
+        };
+        checkpoint();
+        this.#raw.exec("VACUUM");
+        // VACUUM may append a fresh WAL frame. Do not report completion while
+        // that frame is still retained by an external reader.
+        checkpoint();
+      } finally {
+        this.#raw.exec(
+          `PRAGMA busy_timeout = ${Math.max(0, Math.floor(configuredBusyTimeout))}`,
+        );
+        installValidatedDatabaseAuthorizer(this.#raw);
+      }
+    });
     lease?.onLost(() => {
       // A failed shared-to-exclusive transition cannot leave an otherwise
       // live handle running without its schema guard. Close the native
@@ -2632,6 +2895,9 @@ export class ValidatedCanonicalStore {
       this.#closed = true;
       VALIDATED_DATABASES.delete(this.db);
       VALIDATED_REPAIRERS.delete(this.db);
+      VALIDATED_DATA_TRANSITIONERS.delete(this.db);
+      VALIDATED_CONTRACT_PURGE_TRANSITIONERS.delete(this.db);
+      VALIDATED_SCRUBBERS.delete(this.db);
       try {
         this.#raw.close();
       } catch {
@@ -2646,6 +2912,9 @@ export class ValidatedCanonicalStore {
     this.#closed = true;
     VALIDATED_DATABASES.delete(this.db);
     VALIDATED_REPAIRERS.delete(this.db);
+    VALIDATED_DATA_TRANSITIONERS.delete(this.db);
+    VALIDATED_CONTRACT_PURGE_TRANSITIONERS.delete(this.db);
+    VALIDATED_SCRUBBERS.delete(this.db);
     try {
       this.#raw.close();
     } finally {
@@ -2698,6 +2967,25 @@ export class ValidatedCanonicalStore {
       installValidatedDatabaseAuthorizer(this.#raw);
       this.#raw.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  /**
+   * The purge is still an ordinary lifecycle transaction.  This wrapper only
+   * enables the trigger's lifecycle-registered function for the duration of
+   * that transaction, so a caller cannot turn the immutable tag tables into
+   * a general deletion API.
+   */
+  runContractPurgeDataTransition<T>(operation: (db: DatabaseSync) => T): T {
+    if (this.#closed)
+      throw new Error("Validated canonical store is closed.");
+    if (this.#contractPurgeDeleteMode)
+      throw new Error("Canonical contract purge transition is already active.");
+    this.#contractPurgeDeleteMode = true;
+    try {
+      return this.runDataTransition(operation);
+    } finally {
+      this.#contractPurgeDeleteMode = false;
     }
   }
 

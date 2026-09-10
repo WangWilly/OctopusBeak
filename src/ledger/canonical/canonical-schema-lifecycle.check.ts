@@ -549,6 +549,100 @@ test("historical migrations cannot mutate canonical financial fact rows", async 
   }
 });
 
+test("immutable financial column renames reject changed, lost, or aliased rows", async () => {
+  const cases = [
+    {
+      label: "changed",
+      copy: `INSERT INTO financial_accounts_widened(account_id, source_account_key)
+        SELECT account_id, CASE WHEN account_id = 1 THEN 'changed' ELSE account_no END
+        FROM financial_accounts`,
+      expected: /changed or lost financial rows/i,
+    },
+    {
+      label: "lost",
+      copy: `INSERT INTO financial_accounts_widened(account_id, source_account_key)
+        SELECT account_id, account_no FROM financial_accounts WHERE account_id = 1`,
+      expected: /changed or lost financial rows/i,
+    },
+    {
+      label: "alias",
+      copy: `CREATE TABLE financial_accounts_widened(account_id INTEGER PRIMARY KEY);
+        INSERT INTO financial_accounts_widened(account_id)
+          SELECT account_id FROM financial_accounts`,
+      expected: /alias collision/i,
+    },
+  ] as const;
+  for (const { label, copy, expected } of cases) {
+    const directory = await mkdtemp(
+      join(tmpdir(), `canonical-lifecycle-immutable-rename-${label}-`),
+    );
+    const path = join(directory, "canonical.sqlite");
+    try {
+      const seed = new DatabaseSync(path);
+      seed.exec(`
+        CREATE TABLE financial_accounts(account_id INTEGER PRIMARY KEY, account_no TEXT NOT NULL);
+        INSERT INTO financial_accounts(account_id, account_no)
+          VALUES (1, 'original'), (2, 'second');
+      `);
+      seed.close();
+      assert.throws(
+        () =>
+          openCanonicalSchemaLifecycle(path, {
+            currentVersion: 1,
+            migrations: createCanonicalSchemaMigrationRegistry(1, [
+              {
+                id: `test/immutable-rename-${label}`,
+                fromVersion: 0,
+                toVersion: 1,
+                immutableTableColumnRenames: [
+                  {
+                    table: "financial_accounts",
+                    renames: [
+                      {
+                        from: "account_no",
+                        to: label === "alias" ? "account_id" : "source_account_key",
+                      },
+                    ],
+                  },
+                ],
+                apply(candidate) {
+                  if (label !== "alias")
+                    candidate.exec(
+                      "CREATE TABLE financial_accounts_widened(account_id INTEGER PRIMARY KEY, source_account_key TEXT NOT NULL);",
+                    );
+                  candidate.exec(copy);
+                  candidate.exec(
+                    "DROP TABLE financial_accounts; ALTER TABLE financial_accounts_widened RENAME TO financial_accounts; PRAGMA user_version = 1",
+                  );
+                },
+              },
+            ]),
+            validate() {},
+          }),
+        expected,
+        label,
+      );
+      const unchanged = new DatabaseSync(path);
+      try {
+        assert.equal(
+          Number(unchanged.prepare("PRAGMA user_version").get()?.user_version),
+          0,
+          label,
+        );
+        assert.equal(
+          Number(unchanged.prepare("SELECT COUNT(*) AS count FROM financial_accounts").get()?.count),
+          2,
+          label,
+        );
+      } finally {
+        unchanged.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("historical migration capabilities and prepared statements are revoked on return", async () => {
   const directory = await mkdtemp(
     join(tmpdir(), "canonical-lifecycle-migration-revoked-"),

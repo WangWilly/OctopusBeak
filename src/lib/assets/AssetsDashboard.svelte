@@ -4,6 +4,7 @@
   import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
+  import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import {
     historyPointKey,
     type AccountKind,
@@ -56,7 +57,6 @@
     currency: chartCurrency,
     mode: "asset",
   });
-
   function buildMetrics(accounts: AccountRowDto[], dictionary: Translation): SummaryMetricDto[] {
     const largest = largestAccount(accounts);
     const bankAccounts = accounts.filter((account) => account.kind === "bank");
@@ -150,6 +150,7 @@
   bind:search
 >
   <div class="content">
+    <ProjectionStateBanner projection={assets} />
     <section aria-label={$t.assets.metricsAria}>
       <SummaryStrip {metrics} />
     </section>

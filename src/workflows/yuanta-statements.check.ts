@@ -12,6 +12,7 @@ import type {
 import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repayment-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
+import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-domestic-deposit.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -34,6 +35,8 @@ registerHooks({
 });
 
 const {
+  buildYuantaCapture,
+  deriveYuantaDomesticDepositAccountNumberEvidence,
   deriveYuantaDomesticDepositQueryRange,
   dismissYuantaBankNotice,
   readYuantaDepositAccountOptions,
@@ -42,6 +45,56 @@ const {
   yuantaLoanAccountEvidenceFromTransactionNote,
   yuantaObservedAt,
 } = await import("./yuanta-statements.ts");
+
+assert.deepEqual(
+  deriveYuantaDomesticDepositAccountNumberEvidence({
+    value: "0012345678901234",
+    label: "臺幣活期存款 0012345678901234",
+  }),
+  {
+    value: "0012345678901234",
+    kind: "depository-account",
+    evidenceVersion: "yuanta/domestic-deposit/account-number-v1",
+    sourceField: "#acctno option.value",
+  },
+);
+assert.equal(
+  deriveYuantaDomesticDepositAccountNumberEvidence({
+    value: "0012345678901234",
+    label: "臺幣活期存款 ****1234",
+  }),
+  null,
+);
+
+const workflowNumberedCapture = buildYuantaCapture(
+  {
+    value: "0012345678901234",
+    label: "臺幣活期存款 0012345678901234",
+  },
+  deriveYuantaDomesticDepositQueryRange(
+    "one_month",
+    "2026-08-21T12:00:00+08:00",
+  ),
+  "2026-08-21T12:00:00+08:00",
+  {
+    filename: "synthetic-yuanta.csv",
+    rows: [],
+    source: {
+      filename: "synthetic-yuanta.csv",
+      byteLength: 0,
+      contentDigest: "sha256:synthetic-yuanta" as const,
+      columnNames: [],
+      rows: [],
+      terminal: true,
+    },
+  },
+);
+assert.deepEqual(workflowNumberedCapture.account.accountNumber, {
+  value: "0012345678901234",
+  kind: "depository-account",
+  evidenceVersion: "yuanta/domestic-deposit/account-number-v1",
+  sourceField: "#acctno option.value",
+});
 
 assert.deepEqual(
   yuantaLoanAccountEvidenceFromTransactionNote("0012345678901234", 7),
@@ -326,6 +379,29 @@ const workflowDownload = {
     YUANTA_RELATION_EVIDENCE_FIXTURES_V1.exactCounterpartyAccount,
   ],
 };
+const workflowCurrentSourceAccountKey = deriveYuantaDomesticDepositAccountKey(
+  workflowAccount.value,
+);
+const workflowCurrentBalanceRow = {
+  source: "yuanta" as const,
+  kind: "domestic" as const,
+  stream: "domestic-deposit" as const,
+  accountNumber: workflowAccount.value,
+  sourceAccountKey: workflowCurrentSourceAccountKey,
+  currency: "TWD",
+  available: { coefficient: "800", scale: 2, sourceLexeme: "800.00" },
+  ledger: { coefficient: "900", scale: 2, sourceLexeme: "900.00" },
+  effectiveAt: "2026-08-21T01:00:00.000Z",
+  providerHttpDate: "Fri, 21 Aug 2026 01:00:00 GMT",
+  observedAt: "2026-08-21T09:00:00+08:00",
+  sourceEvidence: {
+    endpoint: "/nib/tx/finance_overview_for_summary" as const,
+    method: "POST" as const,
+    status: 200 as const,
+    cacheControl: "no-store",
+    contractVersion: "yuanta/current-deposit-balance-v1" as const,
+  },
+};
 const nextDayAccountingWorkflowDownload = {
   ...workflowDownload,
   rows: [
@@ -544,6 +620,7 @@ try {
       queryAccount: async () => undefined,
       downloadStatementRows: async () => nextDayAccountingWorkflowDownload,
       writeBankTransactionsFile: writeWorkflowFile as never,
+      readCurrentDepositBalances: async () => [],
     },
   );
   assert.equal(boundaryOutput.admissions[0]?.status, "financial-admitted");
@@ -657,6 +734,7 @@ try {
       sourceConnectionScope: stableConnectionScope,
       sourceConnectionKey: stableConnectionKey,
       resolveRelations: resolveYuantaRelations,
+      readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
     },
   );
   assert.equal(financialOutput.admissions[0]?.status, "financial-admitted");
@@ -683,9 +761,27 @@ try {
     );
     assert.equal(
       financialStore.db
-        .prepare("SELECT COUNT(*) AS count FROM source_captures")
+        .prepare("SELECT COUNT(*) AS count FROM balance_observation_revisions")
         .get()?.count,
-      1,
+      2,
+      "current balance observations must not create transaction rows",
+    );
+    assert.deepEqual(
+      (
+        financialStore.db
+          .prepare(
+            "SELECT record_kind, COUNT(*) AS count FROM source_captures GROUP BY record_kind ORDER BY record_kind",
+          )
+          .all() as Array<{ record_kind?: unknown; count?: unknown }>
+      ).map((row) => ({
+        record_kind: row.record_kind,
+        count: row.count,
+      })),
+      [
+        { record_kind: "current-deposit-balance", count: 1 },
+        { record_kind: "yuanta-domestic-deposit", count: 1 },
+      ],
+      "statement and current-balance captures must remain separately identifiable",
     );
     const evidence = queryCounterpartyAccountEvidence(financialStore);
     assert.equal(evidence.length, 1);
@@ -698,9 +794,19 @@ try {
       "provider-detail-counterparty-account",
     );
     const financialCurrent = queryCanonicalSourceCurrent(financialStore);
-    assert.equal(financialCurrent.records.length, 1);
+    assert.deepEqual(
+      financialCurrent.records
+        .map((record) => record.identity.recordKind)
+        .sort(),
+      [
+        "current-deposit-balance",
+        "current-deposit-balance",
+        "yuanta-domestic-deposit",
+      ],
+      "current query must retain the statement record and both balance fields",
+    );
     const financialHistorical = queryCanonicalSourceHistorical(financialStore);
-    assert.equal(financialHistorical.records.length, 1);
+    assert.equal(financialHistorical.records.length, 3);
     const financialObservation = financialCurrent.observations[0]!;
     const financialLineage = queryCanonicalSourceLineage(financialStore, {
       ...financialObservation.identity,
@@ -797,6 +903,7 @@ try {
           ? secondWorkflowDownload
           : workflowDownload,
       writeBankTransactionsFile: writeWorkflowFile as never,
+      readCurrentDepositBalances: async () => [],
     },
   );
   assert.equal(multiAccountOutput.admissions.length, 2);

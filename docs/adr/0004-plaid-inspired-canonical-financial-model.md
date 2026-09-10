@@ -199,6 +199,10 @@ A Holding Observation is a source-reported evidence checkpoint for a Security he
 
 A Holding Observation requires at least one usable quantity or valuation. The current holding is a projection from the latest valid observation; OctopusBeak does not synthesize daily snapshots when the source provides no observation.
 
+Yuanta Security names use the versioned `<source>/security-name/source-reported-v1` contract. A provider may report different display labels for the same producer Security ID across holdings, trade reports, or collections. The adapter's selected source row supplies the name and Source Record lineage; this is descriptive evidence, not a new asset identity. Each admitted Capture appends a typed name observation with its Canonical Commit and Source Record. Missing names do not withdraw prior names. Current queries select the latest committed name; Historical queries use the knowledge-time cutoff because the provider does not establish a separate financial effective date for a label. Existing immutable Security names remain the baseline for earlier knowledge. Producer identity, ticker, currency, and security type retain their existing strict admission checks.
+
+Schema v25 adds the name-observation table without rewriting existing Security rows or inventing historical observations. Name observations commit and roll back with their Capture, reject updates and ordinary deletes, and participate in scoped Contract Purge through their real foreign keys.
+
 BTC, ETH, and similar assets are Securities referenced by crypto Holding Observations rather than Financial Accounts. Provider wallet labels create separate Financial Accounts only when independent ledger, balance, transaction-scope, or wallet identity is established.
 
 ## Plaid alignment classification

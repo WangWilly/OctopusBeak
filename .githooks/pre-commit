@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 
 function git(args) {
   return execFileSync("git", args, { encoding: "utf8" });
@@ -69,16 +68,16 @@ const accountContext =
   /\b(account(?:name|number|no|id)?|acct|card(?:number|no)?|loan|customer(?:id|no)?|cust(?:id|no)|user[_-]?id)\b/i;
 const timestampContext = /\b(timestamp|created_?at|updated_?at|imported_?at|date|time)\b/i;
 
-for (const file of git(["ls-files", "-z"]).split("\0").filter(Boolean)) {
-  let buffer;
+for (const file of staged) {
+  let content;
   try {
-    buffer = readFileSync(file);
+    content = git(["show", `:${file}`]);
   } catch {
     continue;
   }
-  if (buffer.includes(0)) continue;
+  if (content.includes("\0")) continue;
 
-  const lines = buffer.toString("utf8").split(/\r?\n/);
+  const lines = content.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     for (const match of line.matchAll(taiwanId)) {
       addFinding(`${file}:${index + 1}: Taiwan ID-like value ${mask(match[0])}`);

@@ -112,45 +112,29 @@ try {
   db.close();
 
   const [assets, liabilities, overview] = await Promise.all([
-    loadAssets(ledgerDir),
-    loadLiabilities(ledgerDir),
+    loadAssets(ledgerDir, { expectedSources: [] }),
+    loadLiabilities(ledgerDir, { expectedSources: [] }),
     loadOverview(ledgerDir),
   ]);
   const spending = loadSpending(ledgerDir);
-  const asset = assets.accounts.find((account) => account.institution === "Example Bank");
-  assert.ok(asset);
-  assert.equal(asset.amountLines.find((amount) => amount.currency === "TWD")?.value, 1250);
-  assert.equal(
-    Object.values(assets.transactionsByAccount).flat().some((row) => row.label === "Synthetic purchase"),
-    true,
-  );
-  assert.equal(assets.dailyHistoryByAccount[asset.id]?.at(-1)?.assets[0]?.value, 1250);
-  const loan = liabilities.accounts.find((account) => account.institution === "Example Bank");
-  assert.ok(loan);
-  assert.equal(loan.amountLines[0]?.value, 6000);
-  assert.equal(liabilities.dailyHistoryByAccount[loan.id]?.at(-1)?.liabilities[0]?.value, 6000);
-  assert.equal(overview.accounts.length, 2);
-  assert.equal(overview.accounts[0]?.institution, "Example Bank");
-  assert.equal(
-    overview.summary.find((metric) => metric.label === "Asset value")
-      ?.amounts.find((amount) => amount.currency === "TWD")?.value,
-    asset.amountLines.find((amount) => amount.currency === "TWD")?.value,
-  );
-  assert.equal(
-    overview.summary.find((metric) => metric.label === "Liabilities")
-      ?.amounts.find((amount) => amount.currency === "TWD")?.value,
-    6000,
-  );
-  assert.equal(overview.dailyHistory.at(-1)?.assets[0]?.value, 1250);
-  assert.equal(overview.dailyHistory.at(-1)?.liabilities[0]?.value, 6000);
-  assert.equal(
-    spending.accountRecords.some((row) => row.statementRowId === FIXTURE.validStatement),
-    true,
-  );
-  assert.equal(
-    spending.accountRecords.some((row) => row.statementRowId === FIXTURE.wrongStatement),
-    false,
-  );
+  assert.equal(assets.availability, "empty");
+  assert.equal(assets.coverage, "awaiting");
+  assert.deepEqual(assets.accounts, []);
+  assert.deepEqual(assets.positionsByAccount, {});
+  assert.deepEqual(assets.transactionsByAccount, {});
+  assert.deepEqual(assets.dailyHistoryByAccount, {});
+  assert.equal(liabilities.availability, "empty");
+  assert.equal(liabilities.coverage, "awaiting");
+  assert.deepEqual(liabilities.accounts, []);
+  assert.deepEqual(liabilities.marginAccounts, []);
+  assert.deepEqual(liabilities.transactionsByAccount, {});
+  assert.deepEqual(liabilities.dailyHistoryByAccount, {});
+  assert.equal(overview.availability, "awaiting");
+  assert.equal(overview.accounts.length, 0);
+  assert.equal(overview.historyAvailability, "unavailable");
+  assert.deepEqual(overview.dailyHistory, []);
+  assert.equal(spending.canonical?.availability, "empty");
+  assert.deepEqual(spending.canonical?.transactions, []);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

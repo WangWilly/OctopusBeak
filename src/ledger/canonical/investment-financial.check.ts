@@ -65,6 +65,38 @@ const YUANTA_SETTLEMENT_MARKET_EVIDENCE = {
     YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
 } as const;
 
+/** Rewind a freshly bootstrapped database to the physical v15 shape before
+ * exercising the historical migration chain. A user_version downgrade alone
+ * would retain v26 columns/tables and test an invalid partial schema. */
+function rewindInvestmentDatabaseToV15PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    DROP TABLE IF EXISTS investment_funding_relation_events;
+    DROP TABLE IF EXISTS investment_funding_relation_members;
+    DROP TABLE IF EXISTS investment_funding_relations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE investment_accounts DROP COLUMN account_subtype;
+    ALTER TABLE investment_securities DROP COLUMN security_type;
+    ALTER TABLE investment_holding_observations DROP COLUMN cost_coefficient;
+    ALTER TABLE investment_holding_observations DROP COLUMN cost_scale;
+    ALTER TABLE investment_holding_observations DROP COLUMN cost_currency;
+    DELETE FROM canonical_contract_purge_commits
+     WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
+    DELETE FROM canonical_contract_purges
+     WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
+    DELETE FROM schema_migrations WHERE version > 15;
+    PRAGMA user_version = 15;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function fixture(
   captureId = "yuanta-trade-sanitized-1",
 ): InvestmentCaptureInput {
@@ -202,6 +234,12 @@ function depositCapture(
       recordKind: "fubon-domestic-deposit",
       subjectDigest: token(`${sourceIdentityLabel}:subject`),
       accountNo: SYNTHETIC_SOURCE_LINKED_ACCOUNT,
+      accountNumber: {
+        value: SYNTHETIC_SOURCE_LINKED_ACCOUNT,
+        kind: "depository-account",
+        evidenceVersion: "fubon/domestic-deposit/account-number-v1",
+        sourceField: "form1:comboAccount option.value",
+      },
       accountType: "depository",
       currency: "TWD",
     },
@@ -289,6 +327,12 @@ function yuantaForeignSettlementCaptureRows(
   return admitForeignCurrencyDepositCapture({
     source: "yuanta",
     accountNo,
+    accountNumber: {
+      value: accountNo,
+      kind: "depository-account",
+      evidenceVersion: "yuanta/foreign-account/account-number-v1",
+      sourceField: "#acctno option.value",
+    },
     sourceConnectionKey:
       options.sourceConnectionKey ?? token("yuanta-bank-connection"),
     identityEpochKey: token("yuanta-bank-epoch"),
@@ -2301,18 +2345,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
     const initial = createCanonicalInvestmentStore(path);
     initial.close();
     const legacy = new DatabaseSync(path);
-    legacy.exec(`
-      DELETE FROM canonical_contract_purge_commits
-       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
-      DELETE FROM canonical_contract_purges
-       WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';
-      DELETE FROM schema_migrations WHERE version>15;
-      DROP TABLE investment_funding_relation_events;
-      DROP TABLE investment_funding_relation_members;
-      DROP TABLE investment_funding_relations;
-      DELETE FROM schema_migrations WHERE version=16;
-      PRAGMA user_version=15;
-    `);
+    rewindInvestmentDatabaseToV15PhysicalSchema(legacy);
     legacy.close();
 
     const migrated = createCanonicalInvestmentStore(path);

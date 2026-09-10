@@ -1,8 +1,8 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Frame, Locator, Page } from "playwright";
+import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
@@ -13,6 +13,14 @@ import {
   type YuantaCreditCardStatementSummary,
   type YuantaCreditCardValidatedCapture,
 } from "../ledger/canonical/yuanta-credit-card.ts";
+import {
+  admitCreditCardCurrentBalanceCapture,
+  canonicalCreditCardCurrentBalanceIdentity,
+  commitCreditCardCurrentBalanceCapture,
+  creditCardCurrentBalanceSourceRecord,
+  type CreditCardExactAmount,
+  type CreditCardCurrentBalanceObservationInput,
+} from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -124,7 +132,67 @@ export type YuantaCreditCardSummaryPageEvidence = {
 export type YuantaCreditCardSummaryTraversal = {
   summaries: YuantaCreditCardIssuerSummary[];
   pages: YuantaCreditCardSummaryPageEvidence[];
+  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
+  currentUsedCreditDiagnostic?: YuantaCurrentUsedCreditDiagnostic;
 };
+
+export type YuantaCurrentUsedCreditSnapshot = Readonly<{
+  limit: string;
+  usedCredit: string;
+  available: string;
+  sourceField: "已使用額度";
+  endpoint?: string;
+  httpDate?: string;
+  cacheControl?: string;
+}>;
+
+/**
+ * Sanitized evidence for an optional current-used-credit read.  This keeps a
+ * missing live snapshot visible in workflow telemetry without retaining the
+ * issuer amounts, card masks, response body, or any other page content.
+ */
+export type YuantaCurrentUsedCreditDiagnostic = Readonly<{
+  stage: "response-wait" | "response-body-read" | "dom-read" | "ready";
+  htmlSource: "response-body" | "rendered-dom" | null;
+  responseMatched: boolean;
+  responseStatus: number | null;
+  responsePath: string | null;
+  responseMethod: string | null;
+  responseQueryKeys: readonly string[];
+  hasHttpDate: boolean;
+  hasCacheControl: boolean;
+  responseTableHeaders: readonly (readonly string[])[];
+  framePaths: readonly string[];
+  rwdTableCount: number;
+  currentTableCandidateCount: number;
+  currentTableMatchCount: number;
+  reason:
+    | "ready"
+    | "missing-current-table"
+    | "missing-response"
+    | "invalid-response-status"
+    | "missing-response-evidence"
+    | "parse-error";
+}>;
+
+type YuantaCreditSummaryNavigationFailureReason =
+  | "credit-card-summary-link-not-visible-after-feature-overview"
+  | "summary-page-not-ready";
+
+class YuantaCreditSummaryNavigationError extends Error {
+  readonly diagnosticReason: YuantaCreditSummaryNavigationFailureReason;
+  readonly diagnostic?: YuantaCurrentUsedCreditDiagnostic;
+
+  constructor(
+    reason: YuantaCreditSummaryNavigationFailureReason,
+    diagnostic?: YuantaCurrentUsedCreditDiagnostic,
+  ) {
+    super("YuanTa credit-card current-summary navigation did not reach the reviewed page.");
+    this.name = "YuantaCreditSummaryNavigationError";
+    this.diagnosticReason = reason;
+    this.diagnostic = diagnostic;
+  }
+}
 
 export type YuantaCreditCardHistorySettledSummaryPage = {
   sourceKey: typeof YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY;
@@ -521,6 +589,54 @@ async function firstVisibleLocator(
   throw new Error(`Could not find a visible ${description}.`);
 }
 
+/**
+ * YuanTa renders a copy of the menu in fmenu while the usable controls live
+ * in fmain.  Search fmain first and test visibility on every candidate so a
+ * hidden fmenu match cannot prevent the visible fmain control from winning.
+ */
+async function firstVisibleYuantaScopedLocator(
+  page: Page,
+  locatorFor: (scope: BrowserScope) => Locator,
+  _description: string,
+  timeoutMs = 5_000,
+): Promise<Locator | null> {
+  const findVisible = async (scope: BrowserScope): Promise<Locator | null> => {
+    const locator = locatorFor(scope);
+    const count = await locator.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      if (await candidate.isVisible().catch(() => false)) return candidate;
+    }
+    return null;
+  };
+
+  // Keep the known content frame authoritative for its whole bounded wait.
+  // A hidden fmenu clone must not win while fmain is still rendering.
+  const fmain = page.frame({ name: "fmain" });
+  if (fmain) {
+    const fmainDeadline = Date.now() + timeoutMs;
+    while (Date.now() < fmainDeadline) {
+      const candidate = await findVisible(fmain);
+      if (candidate) return candidate;
+      await page.waitForTimeout(250);
+    }
+  }
+
+  const fallbackDeadline = Date.now() + timeoutMs;
+  while (Date.now() < fallbackDeadline) {
+    const scopes = [
+      ...page.frames().filter((frame) => frame !== fmain),
+      page,
+    ];
+    for (const scope of scopes) {
+      const candidate = await findVisible(scope);
+      if (candidate) return candidate;
+    }
+    await page.waitForTimeout(250);
+  }
+  return null;
+}
+
 async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
     // YuanTa keeps timers alive; selector waits below confirm readiness.
@@ -827,6 +943,8 @@ async function waitForYuantaCreditCardSummary(
 
 const yuantaSummaryResultText =
   /結帳日|帳單結帳日|本期結帳日|繳款截止日|繳款期限|本期應繳/u;
+const yuantaCurrentCreditResultText =
+  /信用額度|已使用額度|信用額度餘額/u;
 
 async function findYuantaSummaryPagerControl(
   scope: BrowserScope,
@@ -859,12 +977,22 @@ async function readYuantaSummaryHtml(
   previousHtml?: string,
 ): Promise<string> {
   const deadline = Date.now() + 60_000;
+  const preferredFrame = page.frame({ name: "fmain" });
+  const scopes = [
+    ...(preferredFrame ? [preferredFrame] : []),
+    ...page.frames().filter((frame) => frame !== preferredFrame),
+    page,
+  ];
   while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
+    for (const scope of scopes) {
       const bodyText = cleanText(
         await scope.locator("body").innerText().catch(() => ""),
       );
-      if (!yuantaSummaryResultText.test(bodyText)) continue;
+      if (
+        !yuantaSummaryResultText.test(bodyText) &&
+        !yuantaCurrentCreditResultText.test(bodyText)
+      )
+        continue;
       const html = await scope.locator("body").innerHTML().catch(() => "");
       if (html && (previousHtml === undefined || html !== previousHtml))
         return html;
@@ -874,71 +1002,367 @@ async function readYuantaSummaryHtml(
   throw new Error("Timed out waiting for the next YuanTa credit-card summary page.");
 }
 
-async function submitCreditCardSummary(
+async function findYuantaVisibleTextControl(
   page: Page,
-): Promise<YuantaCreditCardSummaryTraversal> {
-  const summarySelector =
-    'a[onclick*="creditcardsummary"], a[onclick*="menuaction"][onclick*="creditcardsummary"]';
-  const summaryScope = await findScopeWithLocator(
+  pattern: RegExp,
+  description: string,
+  timeoutMs = 5_000,
+): Promise<Locator | null> {
+  let link = await firstVisibleYuantaScopedLocator(
     page,
-    (scope) => scope.locator(summarySelector).filter({ hasText: /信用卡總覽/u }),
+    (candidate) => candidate.getByRole("link", { name: pattern }),
+    description,
+    timeoutMs,
+  );
+  if (link) return link;
+
+  link = await firstVisibleYuantaScopedLocator(
+    page,
+    (candidate) => candidate.getByText(pattern),
+    `${description} text control`,
+    timeoutMs,
+  );
+  return link;
+}
+
+export async function findYuantaCreditCardSummaryLink(
+  page: Page,
+  timeoutMs = 5_000,
+): Promise<Locator | null> {
+  return await firstVisibleYuantaScopedLocator(
+    page,
+    (candidate) =>
+      candidate.getByRole("link", { name: "信用卡總覽", exact: true }),
     "YuanTa credit card summary link",
-    5_000,
-  ).catch(() => null);
-  if (summaryScope) {
-    const link = await firstVisibleLocator(
-      summaryScope
-        .locator(summarySelector)
-        .filter({ hasText: /信用卡總覽/u }),
-      "YuanTa credit card summary link",
-      5_000,
-    ).catch(() => null);
-    if (link) {
-      await link.click({ force: true });
+    timeoutMs,
+  );
+}
+
+/** Open the provider's reviewed feature-overview route before selecting the
+ * visible credit-card summary link.  The combined workflow often leaves the
+ * frame on the historical-bills page, where the direct menu action can take a
+ * long time to settle without loading the current-limit table. */
+async function openYuantaFeatureOverview(page: Page): Promise<boolean> {
+  const featureOverviewPattern = /功\s*能\s*總\s*覽/u;
+  let link = await findYuantaVisibleTextControl(
+    page,
+    featureOverviewPattern,
+    "YuanTa feature overview link",
+  );
+  if (!link) {
+    // The combined workflow may leave fmain on creditcardbillsquery.  Return
+    // to the reviewed signed-in home page through its visible 首頁 control,
+    // then select 功 能 總 覽 from that page.
+    const homeLink = await findYuantaVisibleTextControl(
+      page,
+      /^首頁$/u,
+      "YuanTa home link",
+    );
+    if (homeLink) {
+      await homeLink.click({ force: true });
       await settleAfterNavigation(page);
-      const firstHtml = await readYuantaSummaryHtml(page);
-      let currentHtml = firstHtml;
-      return await traverseYuantaCreditCardSettledStatementSummaryPages(
-        firstHtml,
-        async (_request) => {
-          const scope = await waitForYuantaCreditCardSummary(page);
-          const pager = await findYuantaSummaryPagerControl(scope);
-          if (!pager)
-            throw new Error(
-              "YuanTa settled statement pagination control disappeared before traversal.",
-            );
-          await pager.click({ force: true });
-          await settleAfterNavigation(page);
-          const nextHtml = await readYuantaSummaryHtml(page, currentHtml);
-          currentHtml = nextHtml;
-          return nextHtml;
-        },
+      link = await findYuantaVisibleTextControl(
+        page,
+        featureOverviewPattern,
+        "YuanTa feature overview link",
+        15_000,
       );
     }
   }
+  if (!link) return false;
 
-  await runYuantaMenuAction(
-    page,
-    "creditcardsummary",
-    "menu_creditcardsummary",
-  );
-  const firstHtml = await readYuantaSummaryHtml(page);
-  let currentHtml = firstHtml;
-  return await traverseYuantaCreditCardSettledStatementSummaryPages(
-    firstHtml,
-    async (_request) => {
-      const scope = await waitForYuantaCreditCardSummary(page);
-      const pager = await findYuantaSummaryPagerControl(scope);
-      if (!pager)
-        throw new Error(
-          "YuanTa settled statement pagination control disappeared before traversal.",
-        );
-      await pager.click({ force: true });
-      await settleAfterNavigation(page);
-      const nextHtml = await readYuantaSummaryHtml(page, currentHtml);
-      currentHtml = nextHtml;
-      return nextHtml;
+  await link.click({ force: true });
+  await settleAfterNavigation(page);
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    for (const scope of [page.frame({ name: "fmain" }), ...page.frames(), page]) {
+      if (!scope) continue;
+      const pathname = (() => {
+        try {
+          return new URL(scope.url()).pathname;
+        } catch {
+          return "";
+        }
+      })();
+      const hasSummaryLink =
+        (await scope
+          .getByRole("link", { name: "信用卡總覽", exact: true })
+          .count()
+          .catch(() => 0)) > 0;
+      if (pathname === "/nib/pages/vnib/feature-overview" || hasSummaryLink)
+        return true;
+    }
+    await page.waitForTimeout(250);
+  }
+  return false;
+}
+
+function yuantaResponsePath(response: Response | null): string | null {
+  if (!response) return null;
+  try {
+    return new URL(response.url()).pathname;
+  } catch {
+    return null;
+  }
+}
+
+function yuantaResponseQueryKeys(response: Response | null): string[] {
+  if (!response) return [];
+  try {
+    return [...new Set(new URL(response.url()).searchParams.keys())].sort();
+  } catch {
+    return [];
+  }
+}
+
+function yuantaFramePaths(page: Page): string[] {
+  const paths = page.frames().flatMap((frame) => {
+    try {
+      return [new URL(frame.url()).pathname];
+    } catch {
+      return [];
+    }
+  });
+  return [...new Set(paths)].sort();
+}
+
+function yuantaRwdTableHeaders(html: string): string[][] {
+  return balancedHtmlElements(html, "table")
+    .filter((tableHtml) =>
+      /<table\b[^>]*class=["'][^"']*\brwdTable\b[^"']*["'][^>]*>/iu.test(
+        tableHtml,
+      ),
+    )
+    .slice(0, 8)
+    .map((tableHtml) =>
+      [...tableHtml.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/giu)]
+        .slice(0, 8)
+        .map((match) => cleanText(stripHtml(match[1] ?? ""))),
+    );
+}
+
+type YuantaCurrentCreditEvidenceContext = Readonly<{
+  stage: YuantaCurrentUsedCreditDiagnostic["stage"];
+  htmlSource: YuantaCurrentUsedCreditDiagnostic["htmlSource"];
+  responseTableHeaders: readonly (readonly string[])[];
+  framePaths: readonly string[];
+}>;
+
+function currentYuantaCreditEvidence(
+  html: string,
+  response: Response | null,
+  context: YuantaCurrentCreditEvidenceContext,
+): {
+  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
+  diagnostic: YuantaCurrentUsedCreditDiagnostic;
+} {
+  const shape = diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(html);
+  const headers = response?.headers() ?? {};
+  const hasHttpDate = Boolean(headers.date);
+  const hasCacheControl = Boolean(headers["cache-control"]);
+  let parsed: YuantaCurrentUsedCreditSnapshot | undefined;
+  try {
+    parsed = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(html);
+  } catch {
+    parsed = undefined;
+  }
+  let reason: YuantaCurrentUsedCreditDiagnostic["reason"] = "ready";
+  if (!parsed)
+    reason =
+      shape.currentTableCandidateCount > 0
+        ? "parse-error"
+        : "missing-current-table";
+  else if (!response) reason = "missing-response";
+  else if (response.status() !== 200) reason = "invalid-response-status";
+  else if (!hasHttpDate || !hasCacheControl)
+    reason = "missing-response-evidence";
+
+  const diagnostic: YuantaCurrentUsedCreditDiagnostic = {
+    stage: context.stage,
+    htmlSource: context.htmlSource,
+    ...shape,
+    responseMatched: response !== null,
+    responseStatus: response?.status() ?? null,
+    responsePath: yuantaResponsePath(response),
+    responseMethod: response?.request().method() ?? null,
+    responseQueryKeys: yuantaResponseQueryKeys(response),
+    hasHttpDate,
+    hasCacheControl,
+    responseTableHeaders: context.responseTableHeaders,
+    framePaths: context.framePaths,
+    reason,
+  };
+  if (reason !== "ready" || !parsed || !response) return { diagnostic };
+  return {
+    currentUsedCredit: {
+      ...parsed,
+      endpoint: response.url(),
+      httpDate: headers.date,
+      cacheControl: headers["cache-control"],
     },
+    diagnostic,
+  };
+}
+
+export async function loadYuantaCreditCardSummaryPage(
+  page: Page,
+  link?: Locator,
+): Promise<{
+  firstHtml: string;
+  response: Response | null;
+  evidence: ReturnType<typeof currentYuantaCreditEvidence>;
+}> {
+  const responsePromise = page
+    .waitForResponse(
+      (response) =>
+        response.url().includes("/nib/tx/creditcardsummary") &&
+        response.request().method() === "POST",
+      { timeout: 30_000 },
+    )
+    .catch(() => null);
+  if (link) {
+    await link.click();
+    await settleAfterNavigation(page);
+  } else {
+    await runYuantaMenuAction(
+      page,
+      "creditcardsummary",
+      "menu_creditcardsummary",
+    );
+  }
+  const response = await responsePromise;
+  const framePaths = yuantaFramePaths(page);
+  let responseHtml = "";
+  if (response) responseHtml = await response.text().catch(() => "");
+  const responseTableHeaders = yuantaRwdTableHeaders(responseHtml);
+  const responseShape =
+    diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(responseHtml);
+  if (responseShape.currentTableCandidateCount > 0) {
+    return {
+      firstHtml: responseHtml,
+      response,
+      evidence: currentYuantaCreditEvidence(responseHtml, response, {
+        stage: "ready",
+        htmlSource: "response-body",
+        responseTableHeaders,
+        framePaths,
+      }),
+    };
+  }
+
+  let firstHtml: string;
+  try {
+    firstHtml = await readYuantaSummaryHtml(page);
+  } catch {
+    throw new YuantaCreditSummaryNavigationError(
+      "summary-page-not-ready",
+      currentYuantaCreditEvidence(responseHtml, response, {
+        stage: response ? "dom-read" : "response-wait",
+        htmlSource: responseHtml ? "response-body" : null,
+        responseTableHeaders,
+        framePaths,
+      }).diagnostic,
+    );
+  }
+  return {
+    firstHtml,
+    response,
+    evidence: currentYuantaCreditEvidence(firstHtml, response, {
+      stage: "ready",
+      htmlSource: "rendered-dom",
+      responseTableHeaders,
+      framePaths,
+    }),
+  };
+}
+
+async function traverseYuantaSummaryWithCurrentEvidence(
+  page: Page,
+  firstHtml: string,
+  evidence: ReturnType<typeof currentYuantaCreditEvidence>,
+): Promise<YuantaCreditCardSummaryTraversal> {
+  let currentHtml = firstHtml;
+  try {
+    const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
+      firstHtml,
+      async (_request) => {
+        const scope = await waitForYuantaCreditCardSummary(page);
+        const pager = await findYuantaSummaryPagerControl(scope);
+        if (!pager)
+          throw new Error(
+            "YuanTa settled statement pagination control disappeared before traversal.",
+          );
+        await pager.click({ force: true });
+        await settleAfterNavigation(page);
+        const nextHtml = await readYuantaSummaryHtml(page, currentHtml);
+        currentHtml = nextHtml;
+        return nextHtml;
+      },
+    );
+    return {
+      ...traversal,
+      currentUsedCreditDiagnostic: evidence.diagnostic,
+      ...(evidence.currentUsedCredit
+        ? { currentUsedCredit: evidence.currentUsedCredit }
+        : {}),
+    };
+  } catch (error) {
+    if (!(error instanceof YuantaCreditCardSummaryParseError)) throw error;
+    // The settled-summary page is an optional cross-check.  Keep a valid
+    // current-used-credit evidence read even when the bank changes that table
+    // independently of the historical statement parser.
+    console.log("yuanta-credit-card-settled-summary-unavailable", {
+      reason: "optional-cross-check-diagnostic",
+      diagnostic: error.diagnostic,
+    });
+    return {
+      summaries: [],
+      pages: [],
+      currentUsedCreditDiagnostic: evidence.diagnostic,
+      ...(evidence.currentUsedCredit
+        ? { currentUsedCredit: evidence.currentUsedCredit }
+        : {}),
+    };
+  }
+}
+
+async function submitCreditCardSummary(
+  page: Page,
+): Promise<YuantaCreditCardSummaryTraversal> {
+  let link = await findYuantaCreditCardSummaryLink(page);
+  let navigationRoute:
+    | "visible-summary-link"
+    | "feature-overview-visible-summary-link"
+    | "menuaction-fallback" = link
+    ? "visible-summary-link"
+    : "menuaction-fallback";
+  if (!link) {
+    const openedFeatureOverview = await openYuantaFeatureOverview(page);
+    if (openedFeatureOverview) {
+      link = await findYuantaCreditCardSummaryLink(page, 15_000);
+      if (link) navigationRoute = "feature-overview-visible-summary-link";
+      else
+        throw new YuantaCreditSummaryNavigationError(
+          "credit-card-summary-link-not-visible-after-feature-overview",
+        );
+    }
+  }
+
+  console.log("yuanta-credit-card-summary-navigation", {
+    route: navigationRoute,
+  });
+
+  let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
+  try {
+    loaded = await loadYuantaCreditCardSummaryPage(page, link ?? undefined);
+  } catch (error) {
+    if (error instanceof YuantaCreditSummaryNavigationError) throw error;
+    throw new YuantaCreditSummaryNavigationError("summary-page-not-ready");
+  }
+  return await traverseYuantaSummaryWithCurrentEvidence(
+    page,
+    loaded.firstHtml,
+    loaded.evidence,
   );
 }
 
@@ -1016,6 +1440,24 @@ function htmlElements(html: string, tag: string): string[] {
   ].map((match) => match[0]);
 }
 
+/** Extract balanced elements when nested provider markup is present. */
+function balancedHtmlElements(html: string, tag: string): string[] {
+  const elements: string[] = [];
+  const stack: number[] = [];
+  const tokenPattern = new RegExp(`<\\/?${tag}\\b[^>]*>`, "gi");
+  for (const token of html.matchAll(tokenPattern)) {
+    if (token.index === undefined) continue;
+    if (/^<\//u.test(token[0])) {
+      const start = stack.pop();
+      if (start !== undefined)
+        elements.push(html.slice(start, token.index + token[0].length));
+    } else {
+      stack.push(token.index);
+    }
+  }
+  return elements;
+}
+
 function htmlBlocksByClass(html: string, className: string): string[] {
   const starts = [
     ...html.matchAll(
@@ -1054,11 +1496,192 @@ function parseHtmlRowsFromString(tableHtml: string): string[][] {
 }
 
 function parseRwdTablesFromHtml(html: string): string[][][] {
-  return [
-    ...html.matchAll(
-      /<table\b[^>]*class=["'][^"']*\brwdTable\b[^"']*["'][^>]*>[\s\S]*?<\/table>/gi,
-    ),
-  ].map((match) => parseHtmlRowsFromString(match[0]));
+  return balancedHtmlElements(html, "table")
+    .filter((tableHtml) =>
+      /<table\b[^>]*class=["'][^"']*\brwdTable\b[^"']*["'][^>]*>/iu.test(
+        tableHtml,
+      ),
+    )
+    .map((tableHtml) => parseHtmlRowsFromString(tableHtml));
+}
+
+function issuerAmountText(value: string | undefined, label: string): string {
+  const text = cleanText(value ?? "").replaceAll(",", "");
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(text))
+    throw new Error(`Yuanta ${label} is not an exact decimal amount.`);
+  return text;
+}
+
+const YUANTA_CURRENT_CREDIT_HEADERS = [
+  "信用額度",
+  "已使用額度",
+  "信用額度餘額",
+  "預借現金額度",
+] as const;
+
+function yuantaCurrentCreditHeaderIndex(row: readonly string[]): number {
+  return row.length >= YUANTA_CURRENT_CREDIT_HEADERS.length &&
+    YUANTA_CURRENT_CREDIT_HEADERS.every(
+      (header, index) => cleanText(row[index]) === header,
+    )
+    ? 0
+    : -1;
+}
+
+/**
+ * Parse only the first credit-limit table; statement tables are unrelated.
+ * The header match is exact so a nearby statement table cannot supply a
+ * current-used-credit value by accident.
+ */
+export function parseYuantaCurrentCreditCardUsedCreditSummaryHtml(
+  html: string,
+): YuantaCurrentUsedCreditSnapshot | undefined {
+  for (const table of parseRwdTablesFromHtml(html)) {
+    const headerIndex = table.findIndex(
+      (row) => yuantaCurrentCreditHeaderIndex(row) >= 0,
+    );
+    if (headerIndex < 0) continue;
+    const values = table[headerIndex + 1];
+    if (!values || values.length < YUANTA_CURRENT_CREDIT_HEADERS.length)
+      continue;
+    return {
+      limit: issuerAmountText(values[0], "credit limit"),
+      usedCredit: issuerAmountText(values[1], "used credit"),
+      available: issuerAmountText(values[2], "available credit"),
+      sourceField: "已使用額度",
+    };
+  }
+  return undefined;
+}
+
+/** Return shape-only telemetry for a current-used-credit parser attempt. */
+export function diagnoseYuantaCurrentCreditCardUsedCreditSummaryHtml(
+  html: string,
+): Pick<
+  YuantaCurrentUsedCreditDiagnostic,
+  "rwdTableCount" | "currentTableCandidateCount" | "currentTableMatchCount"
+> {
+  const tables = parseRwdTablesFromHtml(html);
+  let currentTableCandidateCount = 0;
+  let currentTableMatchCount = 0;
+  for (const table of tables) {
+    const headerIndex = table.findIndex(
+      (row) => yuantaCurrentCreditHeaderIndex(row) >= 0,
+    );
+    if (headerIndex < 0) continue;
+    currentTableCandidateCount += 1;
+    const values = table[headerIndex + 1];
+    if (values && values.length >= YUANTA_CURRENT_CREDIT_HEADERS.length)
+      currentTableMatchCount += 1;
+  }
+  return {
+    rwdTableCount: tables.length,
+    currentTableCandidateCount,
+    currentTableMatchCount,
+  };
+}
+
+function issuerExactAmount(value: string): CreditCardExactAmount {
+  const normalized = value.replaceAll(",", "");
+  const [integer, fraction = ""] = normalized.split(".");
+  const sign = integer.startsWith("-") ? "-" : "";
+  const unsigned = integer.replace(/^-?/u, "").replace(/^0+(?=\d)/u, "") || "0";
+  const coefficient = `${sign}${unsigned}${fraction}`;
+  return {
+    coefficient: coefficient === "-0" ? "0" : coefficient,
+    scale: fraction.length,
+  };
+}
+
+function yuantaCreditCurrentSnapshotDate(httpDate: string): string {
+  const milliseconds = Date.parse(httpDate);
+  if (!Number.isFinite(milliseconds)) throw new Error("Yuanta credit current snapshot HTTP Date is invalid.");
+  return new Date(milliseconds).toISOString().slice(0, 10);
+}
+
+function yuantaCreditCurrentSnapshotCapture(
+  capture: YuantaCreditCardValidatedCapture,
+  snapshot: YuantaCurrentUsedCreditSnapshot,
+): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
+  if (!snapshot.endpoint || !snapshot.httpDate || !snapshot.cacheControl)
+    throw new Error("Yuanta current credit snapshot is missing response evidence.");
+  const effectiveAt = new Date(Date.parse(snapshot.httpDate)).toISOString();
+  const used = issuerExactAmount(snapshot.usedCredit);
+  const sourceRecordKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["yuanta-credit-current-used-credit-v1", capture.identity.accountNaturalKey, snapshot.httpDate]))
+    .digest("base64url")}`;
+  const providerKey = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["yuanta-credit-current-used-credit-provider-v1", snapshot.endpoint]))
+    .digest("base64url")}`;
+  const time = {
+    effectiveAt,
+    effectiveTimeBasis: "provider-http-date" as const,
+    effectiveTimeRuleVersion: "yuanta/credit-card/current-used-credit-v1",
+    sourceField: "HTTP Date" as const,
+    sourceValue: snapshot.httpDate,
+    contractVersion: "yuanta/credit-card/current-used-credit-v1",
+  };
+  const estimate = {
+    kind: "estimate" as const,
+    basis: "provider-used-credit" as const,
+    formula: "provider-reported-used-credit",
+  };
+  const observation: CreditCardCurrentBalanceObservationInput = {
+    observationKey: "issuer-aggregate",
+    balanceKind: "credit_used",
+    balance: used,
+    currency: "TWD",
+    time,
+    sourceRecordKey,
+    sourceField: snapshot.sourceField,
+    estimate,
+  };
+  return admitCreditCardCurrentBalanceCapture({
+    captureId: `${capture.captureId}:current-used-credit`,
+    authorityRoute: "yuanta/credit-card/current-used-credit-v1",
+    contractVersion: "yuanta/credit-card/current-used-credit-v1",
+    subjectDigest: capture.identity.accountNaturalKey,
+    identity: canonicalCreditCardCurrentBalanceIdentity({
+      integrationNamespace: "yuanta",
+      sourceConnectionKey: capture.identity.sourceConnectionKey,
+      identityEpochKey: capture.identity.identityEpochKey,
+      sourceAccountKey: capture.identity.accountNaturalKey,
+    }),
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: yuantaCreditCurrentSnapshotDate(snapshot.httpDate),
+      endDate: yuantaCreditCurrentSnapshotDate(snapshot.httpDate),
+    },
+    providerResponse: {
+      endpoint: snapshot.endpoint,
+      status: 200,
+      cacheControl: snapshot.cacheControl,
+    },
+    pages: [{
+      pageOrdinal: 0,
+      responseCode: "200",
+      rowCount: 1,
+      terminal: true,
+      metadata: { sourceField: snapshot.sourceField, table: "rwdTable:first-credit-limit" },
+    }],
+    records: [creditCardCurrentBalanceSourceRecord({
+      sourceRecordKey,
+      providerKey,
+      sourceField: snapshot.sourceField,
+      balanceKind: "credit_used",
+      currency: "TWD",
+      value: used,
+      time,
+      estimate,
+      compact: {
+        provider: "yuanta",
+        limit: snapshot.limit,
+        usedCredit: snapshot.usedCredit,
+        available: snapshot.available,
+      },
+    })],
+    observations: [observation],
+  });
 }
 
 function parseMonthOptionsFromHtml(html: string): MonthOption[] {
@@ -4847,6 +5470,7 @@ export default workflow("yuantaCreditCardStatements", {
 
     let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
     let statementSummaries: YuantaCreditCardStatementSummary[] = [];
+    let currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined;
     if (input.includeSummary) {
       issuerSummaries = collectYuantaCreditCardHistorySummaries(
         billedHistoryPages,
@@ -4868,20 +5492,47 @@ export default workflow("yuantaCreditCardStatements", {
       let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
       try {
         summaryTraversal = await submitCreditCardSummary(page);
+        currentUsedCredit = summaryTraversal.currentUsedCredit;
         console.log(
           "yuanta-credit-card-summary-diagnostic",
           diagnoseYuantaCreditCardSummaryTraversal(summaryTraversal),
         );
+        if (!currentUsedCredit)
+          console.log(
+            "yuanta-credit-card-current-used-credit-unavailable",
+            summaryTraversal.currentUsedCreditDiagnostic ?? {
+              reason: "optional-current-credit-estimate",
+            },
+          );
       } catch (error) {
-        if (error instanceof YuantaCreditCardSummaryParseError)
+        if (error instanceof YuantaCreditCardSummaryParseError) {
           console.log(
             "yuanta-credit-card-summary-diagnostic",
             error.diagnostic,
           );
-        else
-          console.log("yuanta-credit-card-summary-unavailable", {
-            reason: "optional-cross-check-diagnostic",
+          console.log("yuanta-credit-card-current-used-credit-unavailable", {
+            reason: "summary-parse-error",
           });
+        } else {
+          const reason =
+            error instanceof YuantaCreditSummaryNavigationError
+              ? error.diagnosticReason
+              : "summary-route-error";
+          console.log("yuanta-credit-card-summary-unavailable", {
+            reason,
+            ...(error instanceof YuantaCreditSummaryNavigationError &&
+            error.diagnostic
+              ? { diagnostic: error.diagnostic }
+              : {}),
+          });
+          console.log("yuanta-credit-card-current-used-credit-unavailable", {
+            reason,
+            ...(error instanceof YuantaCreditSummaryNavigationError &&
+            error.diagnostic
+              ? { diagnostic: error.diagnostic }
+              : {}),
+          });
+        }
       }
       completedCreditCardSteps += 1;
       console.log("yuanta-credit-card-summary-complete", {
@@ -4970,6 +5621,13 @@ export default workflow("yuantaCreditCardStatements", {
         );
         try {
           await commitYuantaCreditCardCaptureBatch(store, canonicalCaptures);
+          if (currentUsedCredit) {
+            const balanceCapture = yuantaCreditCurrentSnapshotCapture(
+              canonicalCaptures[0]!,
+              currentUsedCredit,
+            );
+            await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
+          }
           canonicalAdmission = "admitted";
           canonicalCaptureCount = canonicalCaptures.length;
         } finally {

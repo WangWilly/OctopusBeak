@@ -11,14 +11,24 @@ import {
   signInCathay,
 } from "./cathay-statements.js";
 import {
+  admitForeignCurrencyDepositCapture,
   commitForeignCurrencyDepositCaptureBatch,
   type ForeignCurrencyDepositCaptureInput,
-  type ForeignCurrencyDepositCommitStore,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
+import {
+  buildCathayCurrentDepositBalanceCaptures,
+  commitCathayCurrentDepositBalanceCaptures,
+} from "./cathay-current-deposit-canonical.ts";
+import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
+import type {
+  CurrentDepositBalanceCaptureInput,
+  CurrentDepositBalanceCommitResult,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
@@ -93,6 +103,29 @@ type CathayApiResponse<T> = {
   returnDesc?: string;
 };
 
+type CathayJsonParseContext = { source: string };
+
+/**
+ * Parse a provider JSON response without converting numeric tokens through a
+ * binary JavaScript number first.  The reviver's third argument is the source
+ * lexeme, so values such as 10.00 and 31.50 remain exact decimal strings for
+ * canonical admission.
+ */
+export function parseCathayApiJson<T>(source: string): T {
+  const reviver = function (
+    this: unknown,
+    _key: string,
+    value: unknown,
+  ): unknown {
+    const context = arguments[2] as CathayJsonParseContext | undefined;
+    if (typeof value !== "number") return value;
+    if (!context || typeof context.source !== "string")
+      throw new Error("Cathay API numeric response lacks lexical evidence.");
+    return context.source;
+  };
+  return JSON.parse(source, reviver) as T;
+}
+
 type CathayForeignCurrency = {
   currencyCode?: string;
   currency?: string;
@@ -105,6 +138,16 @@ type CathayForeignAccount = {
   nickName?: string | null;
   demandType?: string;
 };
+
+export const CATHAY_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
+  "cathay/foreign-account/account-number-v1" as const;
+
+export type CathayForeignAccountNumberEvidence = Readonly<{
+  value: string;
+  kind: "depository-account";
+  evidenceVersion: typeof CATHAY_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION;
+  sourceField: "R_ACCT_Q_DetailAccount content.detailAccounts[].account";
+}>;
 
 type CathayForeignTransferInfo = {
   sequenceNumber?: number | string;
@@ -124,6 +167,12 @@ type CathayForeignTransferResult = {
   /** Set only when the successful provider response explicitly covers this currency. */
   zeroResultAuthority?: "provider-explicit-no-data";
 };
+
+export type CathayForeignStatementObserver = (
+  account: CathayForeignAccount,
+  currency: string,
+  statement: CathayForeignTransferResult,
+) => void;
 
 const statementHeaders = [
   "帳務日期",
@@ -149,6 +198,24 @@ function toAsciiDigits(value: string): string {
 
 function digitsOnly(value: string): string {
   return toAsciiDigits(value).replace(/\D/g, "");
+}
+
+/**
+ * The foreign-account API returns the provider account field directly.  Keep
+ * opaque or masked values as source keys only; they do not satisfy the
+ * account-number identifier contract.
+ */
+export function deriveCathayForeignAccountNumberEvidence(
+  accountNumber: string,
+): CathayForeignAccountNumberEvidence | null {
+  const value = cleanText(accountNumber).normalize("NFKC");
+  if (!/^\d{6,24}$/u.test(value)) return null;
+  return {
+    value,
+    kind: "depository-account",
+    evidenceVersion: CATHAY_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "R_ACCT_Q_DetailAccount content.detailAccounts[].account",
+  };
 }
 
 function maskAccountLabel(value: string): string {
@@ -346,10 +413,10 @@ function exactCathayAmount(value: number | string | null | undefined, label: str
     throw new Error(`Cathay foreign row is missing ${label}.`);
   if (typeof value === "number")
     throw new Error(`Cathay foreign ${label} must remain an exact decimal string.`);
-  const normalized = String(value).replace(/[ ,]/g, "");
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
+  const source = String(value);
+  if (!/^(?:0|[1-9]\d*|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/u.test(source))
     throw new Error(`Cathay foreign ${label} is not an exact decimal.`);
-  return normalized;
+  return source.replaceAll(",", "");
 }
 
 function cathaySequence(value: number | string | undefined): string {
@@ -406,6 +473,7 @@ export function buildCathayForeignCurrencyCaptureInput(
   return {
     source: "cathay",
     accountNo: account.account,
+    accountNumber: deriveCathayForeignAccountNumberEvidence(account.account),
     sourceConnectionKey: "cathay-foreign-current-login",
     identityEpochKey: "cathay-foreign-current-identity",
     accountType: "depository",
@@ -446,6 +514,150 @@ export function buildCathayForeignCurrencyCaptureInput(
       };
     }),
   };
+}
+
+export type CathayForeignCanonicalCaptureCollector = Readonly<{
+  captureOccurrenceId: string;
+  captures: readonly ForeignCurrencyDepositCaptureInput[];
+  reset: () => void;
+  onStatement: CathayForeignStatementObserver;
+}>;
+
+export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
+  /** Focused-check seam; production uses the authenticated UI reader. */
+  readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
+  /** Focused-check seam; production uses the canonical current-balance writer. */
+  commitCurrentDepositBalances?: typeof commitCathayCurrentDepositBalanceCaptures;
+}>;
+
+/** Keep provider collection and canonical admission on one reusable seam.
+ * Retries reset the pending batch before recollecting; only a successfully
+ * completed attempt is committed by the workflow that owns the retry. */
+export function createCathayForeignCanonicalCaptureCollector(
+  dateRange: CathayForeignDateRange,
+  captureOccurrenceId = randomUUID(),
+): CathayForeignCanonicalCaptureCollector {
+  const captures: ForeignCurrencyDepositCaptureInput[] = [];
+  return {
+    captureOccurrenceId,
+    captures,
+    reset: () => {
+      captures.length = 0;
+    },
+    onStatement: (account, currency, statement) => {
+      if (
+        (statement.transferInfos?.length ?? 0) > 0 ||
+        statement.zeroResultAuthority === "provider-explicit-no-data"
+      ) {
+        captures.push(
+          buildCathayForeignCurrencyCaptureInput(
+            account,
+            currency,
+            dateRange,
+            statement,
+            new Date().toISOString(),
+            captureOccurrenceId,
+            statement.zeroResultAuthority,
+          ),
+        );
+      }
+    },
+  };
+}
+
+export async function commitCathayForeignCanonicalCaptures(
+  financialLedgerDir: string | undefined,
+  captures: readonly ForeignCurrencyDepositCaptureInput[],
+) {
+  if (!financialLedgerDir || captures.length === 0) return [];
+  const financialStore = createCanonicalSourceStore(
+    canonicalSqlitePath(financialLedgerDir),
+  );
+  try {
+    return await commitForeignCurrencyDepositCaptureBatch(
+      financialStore,
+      captures,
+    );
+  } finally {
+    financialStore.close();
+  }
+}
+
+/** Capture current FX balances only after the statement capture has admitted the
+ * existing account identity. The provider response is grouped by account so
+ * multiple currencies remain one canonical depository identity. */
+export async function captureCathayCurrentForeignDepositBalances(
+  page: Page,
+  accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
+  financialLedgerDir: string | undefined,
+  options: CathayCurrentForeignDepositBalanceCaptureOptions = {},
+): Promise<readonly CurrentDepositBalanceCommitResult[]> {
+  if (accountCaptures.length === 0) return [];
+  if (!financialLedgerDir) {
+    throw new Error(
+      "Cathay current foreign balance capture requires the canonical financial ledger directory.",
+    );
+  }
+  const identities = new Map<
+    string,
+    Readonly<{
+      sourceConnectionKey: string;
+      identityEpochKey: string;
+      subjectDigest: string;
+    }>
+  >();
+  for (const capture of accountCaptures) {
+    const admitted = admitForeignCurrencyDepositCapture(capture);
+    identities.set(capture.accountNo, {
+      sourceConnectionKey: admitted.identity.sourceConnectionKey,
+      identityEpochKey: admitted.identity.identityEpochKey,
+      subjectDigest: admitted.identity.subjectDigest,
+    });
+  }
+  const currentRows = await (
+    options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
+  )(page, "foreign", {});
+  const selectedRows = currentRows.filter((row) =>
+    identities.has(row.sourceAccountKey),
+  );
+  if (selectedRows.length === 0) {
+    throw new Error(
+      "Cathay current foreign balance response did not contain an admitted account.",
+    );
+  }
+  const missingAccountKeys = [...identities.keys()].filter(
+    (accountKey) =>
+      !selectedRows.some((row) => row.sourceAccountKey === accountKey),
+  );
+  if (missingAccountKeys.length > 0) {
+    throw new Error(
+      "Cathay current foreign balance response omitted an admitted account.",
+    );
+  }
+  const rowsByAccount = new Map<string, CathayCurrentDepositBalanceRow[]>();
+  for (const row of selectedRows) {
+    const accountRows = rowsByAccount.get(row.sourceAccountKey) ?? [];
+    accountRows.push(row);
+    rowsByAccount.set(row.sourceAccountKey, accountRows);
+  }
+  const captures: CurrentDepositBalanceCaptureInput[] = [];
+  for (const [accountKey, rows] of rowsByAccount) {
+    const identity = identities.get(accountKey)!;
+    const observedAt = rows[0]!.observedAt;
+    captures.push(
+      ...buildCathayCurrentDepositBalanceCaptures(rows, {
+        ...identity,
+        observedAt,
+        scopeDate: observedAt.slice(0, 10),
+      }),
+    );
+  }
+  return await (
+    options.commitCurrentDepositBalances ?? commitCathayCurrentDepositBalanceCaptures
+  )(
+    financialLedgerDir,
+    captures,
+  );
 }
 
 class CathayForeignApiClient {
@@ -534,7 +746,7 @@ class CathayForeignApiClient {
     session: Pick<CathaySession, "jwtToken">,
     body: unknown,
   ): Promise<CathayApiResponse<T>> {
-    const result = (await this.page.evaluate(
+    const responseText = (await this.page.evaluate(
       async ({ path, token, body }) => {
         const response = await fetch(path, {
           method: "POST",
@@ -547,10 +759,11 @@ class CathayForeignApiClient {
           body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error(`${response.status} for ${path}`);
-        return await response.json();
+        return await response.text();
       },
       { path, token: session.jwtToken, body },
-    )) as CathayApiResponse<T>;
+    )) as string;
+    const result = parseCathayApiJson<CathayApiResponse<T>>(responseText);
 
     if (!result.success) {
       throw new Error(
@@ -644,11 +857,7 @@ export async function downloadCathayForeignStatements(
   accountFilters: string[],
   currencyFilters: string[],
   cathaySession?: CathaySession,
-  onStatement?: (
-    account: CathayForeignAccount,
-    currency: string,
-    statement: CathayForeignTransferResult,
-  ) => void,
+  onStatement?: CathayForeignStatementObserver,
 ): Promise<CathayForeignStatementDownload[]> {
   await openForeignStatementsPage(page);
 
@@ -704,48 +913,27 @@ export default workflow("cathayForeignStatements", {
     });
 
     await signInCathay(ctx, input.credentials, input.trustDevice);
-    const foreignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
-    const captureOccurrenceId = randomUUID();
+    const canonicalCollector = createCathayForeignCanonicalCaptureCollector(
+      input.dateRange,
+    );
     const downloads = await downloadCathayForeignStatements(
       page,
       input.dateRange,
       input.accountFilters,
       input.currencyFilters,
       undefined,
-      (account, currency, statement) => {
-        if (
-          (statement.transferInfos?.length ?? 0) > 0 ||
-          statement.zeroResultAuthority === "provider-explicit-no-data"
-        )
-          foreignCaptures.push(
-            buildCathayForeignCurrencyCaptureInput(
-              account,
-              currency,
-              input.dateRange,
-              statement,
-              new Date().toISOString(),
-              captureOccurrenceId,
-              statement.zeroResultAuthority,
-            ),
-          );
-      },
+      canonicalCollector.onStatement,
     );
 
-    const financialLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-    if (financialLedgerDir && foreignCaptures.length > 0) {
-      const financialStore = createCanonicalSourceStore(
-        canonicalSqlitePath(financialLedgerDir),
-      );
-      try {
-        await commitForeignCurrencyDepositCaptureBatch(
-          financialStore,
-          foreignCaptures,
-        );
-      } finally {
-        financialStore.close();
-      }
-    }
+    await commitCathayForeignCanonicalCaptures(
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+      canonicalCollector.captures,
+    );
+    await captureCathayCurrentForeignDepositBalances(
+      page,
+      canonicalCollector.captures,
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+    );
 
     return {
       dateRange: input.dateRange,

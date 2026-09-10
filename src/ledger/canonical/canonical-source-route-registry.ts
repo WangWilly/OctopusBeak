@@ -8,6 +8,12 @@ export type CanonicalSourceRouteRegistration = Readonly<{
   integrationNamespace: string;
   stream: string;
   contractVersions: readonly string[];
+  /**
+   * The source-capture completeness rule may use a route-specific name even
+   * when the persisted source-authority contract uses a shorter version.
+   * When omitted, the contract versions are also the completeness versions.
+   */
+  completenessRuleVersions?: readonly string[];
 }>;
 
 const registrations: readonly CanonicalSourceRouteRegistration[] = [
@@ -70,6 +76,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "fubon/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["fubon/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v1",
@@ -79,6 +86,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "yuanta/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v2",
@@ -88,6 +96,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v2",
       "yuanta/domestic-deposit/human-attested-v2",
     ],
+    completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v2"],
   },
   {
     routeKey: "hncb/domestic-deposit/human-attested-v1",
@@ -97,6 +106,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "hncb/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["hncb/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "ctbc/domestic-deposit/human-attested-v1",
@@ -106,6 +116,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "ctbc/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["ctbc/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "post/domestic-deposit/human-attested-v1",
@@ -115,6 +126,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "post/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["post/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "sinopac/domestic-deposit/human-attested-v1",
@@ -124,6 +136,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "human-attested-v1",
       "sinopac/domestic-deposit/human-attested-v1",
     ],
+    completenessRuleVersions: ["sinopac/domestic-deposit/human-attested-v1"],
   },
   {
     routeKey: "fubon/credit-card/human-attested-v1",
@@ -162,16 +175,59 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     contractVersions: ["yuanta/credit-card/human-attested-v2"],
   },
   {
+    routeKey: "yuanta/credit-card/current-used-credit-v1",
+    integrationNamespace: "yuanta",
+    stream: "credit-card",
+    contractVersions: ["yuanta/credit-card/current-used-credit-v1"],
+  },
+  {
+    routeKey: "esun/credit-card/current-used-credit-v1",
+    integrationNamespace: "esun",
+    stream: "credit-card",
+    contractVersions: ["esun/credit-card/current-used-credit-v1"],
+  },
+  {
+    routeKey: "fubon/credit-card/current-used-credit-v1",
+    integrationNamespace: "fubon",
+    stream: "credit-card",
+    contractVersions: ["fubon/credit-card/current-used-credit-v1"],
+  },
+  {
     routeKey: "cathay/domestic-deposit/v1",
     integrationNamespace: "cathay",
     stream: "domestic-deposit",
     contractVersions: ["v1"],
+    completenessRuleVersions: ["cathay/domestic-deposit/v1"],
   },
   {
     routeKey: "cathay/foreign-currency/deposit/v1",
     integrationNamespace: "cathay",
     stream: "foreign-currency-deposit",
     contractVersions: ["foreign-currency/cathay/v1"],
+  },
+  {
+    routeKey: "cathay/domestic-deposit/current-balance-v1",
+    integrationNamespace: "cathay",
+    stream: "domestic-deposit",
+    contractVersions: ["cathay/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "cathay/foreign-currency/current-balance-v1",
+    integrationNamespace: "cathay",
+    stream: "foreign-currency-deposit",
+    contractVersions: ["cathay/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "ctbc/domestic-deposit/current-balance-v1",
+    integrationNamespace: "ctbc",
+    stream: "domestic-deposit",
+    contractVersions: ["ctbc/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "linebank/domestic-deposit/current-balance-v1",
+    integrationNamespace: "linebank",
+    stream: "domestic-deposit",
+    contractVersions: ["linebank/current-deposit-balance-v1"],
   },
   {
     routeKey: "linebank/foreign-currency/deposit/v1",
@@ -184,12 +240,61 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "linebank",
     stream: "domestic-deposit",
     contractVersions: ["human-attested-v13"],
+    completenessRuleVersions: ["linebank/domestic-deposit/human-attested-v13"],
   },
   {
     routeKey: "yuanta/foreign-currency/deposit/human-attested-v2",
     integrationNamespace: "yuanta",
     stream: "foreign-currency-deposit",
     contractVersions: ["foreign-currency/yuanta/human-attested-v2"],
+  },
+  {
+    routeKey: "yuanta/domestic-deposit/current-balance-v1",
+    integrationNamespace: "yuanta",
+    stream: "domestic-deposit",
+    contractVersions: ["yuanta/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "yuanta/foreign-currency/current-balance-v1",
+    integrationNamespace: "yuanta",
+    stream: "foreign-currency-deposit",
+    contractVersions: ["yuanta/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "fubon/domestic-deposit/current-balance-v1",
+    integrationNamespace: "fubon",
+    stream: "domestic-deposit",
+    contractVersions: ["fubon/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "hncb/domestic-deposit/current-balance-v1",
+    integrationNamespace: "hncb",
+    stream: "domestic-deposit",
+    contractVersions: ["hncb/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "hncb/domestic-deposit/current-balance-overview-v1",
+    integrationNamespace: "hncb",
+    stream: "domestic-deposit",
+    contractVersions: ["hncb/current-deposit-balance-overview-v1"],
+  },
+  {
+    routeKey: "sinopac/domestic-deposit/current-balance-v1",
+    integrationNamespace: "sinopac",
+    stream: "domestic-deposit",
+    contractVersions: ["sinopac/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "sinopac/foreign-currency/current-balance-v1",
+    integrationNamespace: "sinopac",
+    stream: "foreign-currency-deposit",
+    contractVersions: ["sinopac/current-deposit-balance-v1"],
+  },
+  {
+    routeKey: "post/domestic-deposit/current-balance-v1",
+    integrationNamespace: "post",
+    stream: "domestic-deposit",
+    contractVersions: ["post/current-deposit-balance-v1"],
   },
   {
     routeKey: "sinopac/foreign-currency/deposit/human-attested-v1",
@@ -307,6 +412,13 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
   Object.freeze({
     ...registration,
     contractVersions: Object.freeze([...registration.contractVersions]),
+    ...(registration.completenessRuleVersions
+      ? {
+          completenessRuleVersions: Object.freeze([
+            ...registration.completenessRuleVersions,
+          ]),
+        }
+      : {}),
   }),
 );
 
@@ -325,4 +437,11 @@ export function canonicalSourceRouteRegistration(
   routeKey: string,
 ): CanonicalSourceRouteRegistration | undefined {
   return byRoute.get(routeKey);
+}
+
+export function canonicalSourceRouteCompletenessRuleVersions(
+  routeKey: string,
+): readonly string[] {
+  const registration = canonicalSourceRouteRegistration(routeKey);
+  return registration?.completenessRuleVersions ?? registration?.contractVersions ?? [];
 }

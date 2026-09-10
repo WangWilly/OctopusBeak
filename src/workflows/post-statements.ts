@@ -16,6 +16,7 @@ import {
   commitPostDomesticDepositSourceEvidenceBatch,
   isPostSourceOnlyFinancialDiagnostic,
   POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
+  derivePostDomesticDepositAccountNumberEvidence,
   type PostDomesticDepositCaptureEvidence,
   type PostDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/post-domestic-deposit.ts";
@@ -26,6 +27,16 @@ import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  buildPostCurrentDepositBalanceCapture,
+  indexPostCurrentDepositFinancialCaptures,
+  readPostCurrentDepositBalances,
+  type ExistingPostCurrentDepositFinancialCapture,
+} from "./post-current-deposit-balances.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCapture,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -138,6 +149,7 @@ export type PostStatementsRunDependencies = {
     page: Page,
     telemetry: boolean,
   ) => Promise<PostCollectedStatement[]>;
+  readCurrentDepositBalances?: typeof readPostCurrentDepositBalances;
   canonicalSourceLedgerDir?: string;
   canonicalFinancialLedgerDir?: string;
   observedAt?: string;
@@ -791,13 +803,19 @@ export function buildPostDomesticDepositCapture(
   statement: PostQueriedStatement,
   observedAt: string,
 ): PostDomesticDepositCaptureEvidence {
+  const accountNumber = derivePostDomesticDepositAccountNumberEvidence(
+    statement.accountId,
+  );
   return {
     evidenceVersion: POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
     source: "post",
     product: "domestic-deposit",
     providerGuaranteed: false,
     observedAt,
-    account: { value: statement.accountId },
+    account: {
+      value: statement.accountId,
+      ...(accountNumber ? { accountNumber } : {}),
+    },
     queryRange: statement.queryRange,
     response: {
       httpStatus: statement.httpStatus,
@@ -871,6 +889,8 @@ export async function runPostStatements(
         }
       : null;
   const financialUsesSourceStore = financialStore === store;
+  const readCurrent =
+    overrides.readCurrentDepositBalances ?? readPostCurrentDepositBalances;
   const captureEntries = captures.map((capture, index) => ({
     capture,
     captureId: postCaptureId(observedAt, index),
@@ -908,6 +928,40 @@ export async function runPostStatements(
           financialInputs,
         );
         status = "financial-admitted";
+
+        // The overview response is staged only after every ordinary Post
+        // statement capture has crossed financial admission.  Each PS row
+        // must join an existing financial identity by its exact ACT_NO; the
+        // current overview can never create a new account.
+        const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] =
+          admissions.map((admission) => {
+            if (!admission.capture)
+              throw new Error("Post financial admission lost its canonical identity.");
+            return {
+              identity: admission.capture.identity,
+            };
+          });
+        const currentRows = await readCurrent(page, {});
+        indexPostCurrentDepositFinancialCaptures(financialCaptures);
+        for (const row of currentRows) {
+          const matching = financialCaptures.find((candidate) => {
+            const identity = candidate.identity;
+            return (
+              identity.stream === row.stream &&
+              (identity.sourceAccountKey ?? identity.accountNo) === row.sourceAccountKey
+            );
+          });
+          if (!matching)
+            throw new Error(
+              "Post current deposit snapshot contains an account without an existing admitted identity.",
+            );
+          await commitCurrentDepositBalanceCapture(
+            financialStore!,
+            admitCurrentDepositBalanceCapture(
+              buildPostCurrentDepositBalanceCapture(row, matching),
+            ),
+          );
+        }
       }
     }
   } finally {

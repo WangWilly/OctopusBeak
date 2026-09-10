@@ -545,8 +545,8 @@ function validateTransaction(
   if (
     parsedSigned &&
     (parsedSigned.sign === "zero" ||
-      (parsedSigned.sign === "negative" && record.direction !== "outflow") ||
-      (parsedSigned.sign === "positive" && record.direction !== "inflow"))
+      (parsedSigned.sign === "negative" && record.direction !== "inflow") ||
+      (parsedSigned.sign === "positive" && record.direction !== "outflow"))
   )
     fail("Signed amount conflicts with transaction direction.");
   validateDirection(record.direction);
@@ -874,7 +874,7 @@ function sourceRowSignedAmount(row: EsunCreditCardSourceRow): {
   if (signed.sign === "zero") fail("E.SUN zero-value rows cannot establish direction.");
   return {
     signed,
-    direction: signed.sign === "negative" ? "outflow" : "inflow",
+    direction: signed.sign === "negative" ? "inflow" : "outflow",
   };
 }
 

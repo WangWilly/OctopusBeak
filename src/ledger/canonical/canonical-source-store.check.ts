@@ -95,6 +95,26 @@ function markSyntheticFixtureAsSchemaV20(path: string): void {
   db.close();
 }
 
+/** Rewind a freshly bootstrapped database to the physical v23 shape before
+ * testing the v23 migration boundary.  A user_version downgrade alone would
+ * leave v26 columns and make the fixture exercise an invalid partial schema. */
+function rewindCurrentDatabaseToV23PhysicalSchema(db: DatabaseSync): void {
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER IF EXISTS investment_security_names_no_update;
+    DROP TRIGGER IF EXISTS investment_security_names_no_delete;
+    DROP TABLE IF EXISTS investment_security_name_observations;
+    DROP TABLE IF EXISTS financial_account_identifier_observations;
+    ALTER TABLE financial_accounts DROP COLUMN account_no;
+    ALTER TABLE financial_accounts RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE source_captures RENAME COLUMN source_account_key TO account_no;
+    ALTER TABLE capture_scopes RENAME COLUMN source_account_key TO account_no;
+    DELETE FROM schema_migrations WHERE version > 23;
+    PRAGMA user_version = 23;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 async function seedRetiredFubonV18BridgeFixture(
   mutate?: (db: DatabaseSync) => void,
 ): Promise<{ directory: string; path: string }> {
@@ -103,6 +123,7 @@ async function seedRetiredFubonV18BridgeFixture(
   const current = createCanonicalSourceStore(path);
   current.close();
   const db = new DatabaseSync(path);
+  rewindCurrentDatabaseToV23PhysicalSchema(db);
   db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
   try {
     db.exec(`
@@ -226,6 +247,31 @@ test("production schema registry declares every published version transition", (
         fromVersion: 22,
         toVersion: 23,
       },
+      {
+        id: "canonical/v23-v24/runtime-contract-purge-tag-delete-guard/v1",
+        fromVersion: 23,
+        toVersion: 24,
+      },
+      {
+        id: "canonical/v24-v25/security-name-observations/v1",
+        fromVersion: 24,
+        toVersion: 25,
+      },
+      {
+        id: "canonical/v25-v26/account-source-identifier/v1",
+        fromVersion: 25,
+        toVersion: 26,
+      },
+      {
+        id: "canonical/v26-v27/current-depository-balance/v1",
+        fromVersion: 26,
+        toVersion: 27,
+      },
+      {
+        id: "canonical/v27-v28/current-credit-card-used-credit/v1",
+        fromVersion: 27,
+        toVersion: 28,
+      },
     ],
   );
   assert.equal(steps[0]!.toVersion, 1);
@@ -234,9 +280,9 @@ test("production schema registry declares every published version transition", (
   assert.ok(Object.isFrozen(steps));
   assert.equal(
     createHash("sha256")
-      .update(JSON.stringify(steps))
+      .update(JSON.stringify(steps.filter(step => step.toVersion <= 24)))
       .digest("hex"),
-    "b18477083e71a42d1c942856a450b996389d2c0a1b6050e726dc83c4d2e9b38c",
+    "9d70ef9b4112f8a32d49b44a1973b54f5409087e37e2f4a3e38b487724aa3c7e",
     "published migration ids and version ordering are immutable during the architecture refactor",
   );
   assert.deepEqual(
@@ -247,6 +293,9 @@ test("production schema registry declares every published version transition", (
       "canonical/time-observation-schema/v1",
       "canonical/account-currency-schema/v1",
       "canonical/fubon-credit-card-extension-compatibility/v1",
+      "canonical/runtime-contract-purge-audit/v1",
+      "canonical/current-depository-balance-schema/v1",
+      "canonical/current-credit-card-balance-schema/v1",
     ],
   );
   assert.deepEqual(
@@ -254,10 +303,12 @@ test("production schema registry declares every published version transition", (
     [
       "canonical/foreign-currency-conversion-schema/v1",
       "canonical/credit-card-extension/v1",
+      "canonical/credit-card-runtime-readiness/v1",
       "canonical/fubon-credit-card-extension/v1",
       "canonical/attestation/cathay-events/v1",
       "canonical/attestation/ctbc-events/v1",
       "canonical/attestation/esun-credit-card-events/v1",
+      "canonical/attestation/esun-credit-card-runtime-readiness/v1",
       "canonical/attestation/fubon-credit-card-events/v1",
       "canonical/attestation/fubon-events/v1",
       "canonical/attestation/hncb-events/v1",
@@ -267,6 +318,108 @@ test("production schema registry declares every published version transition", (
       "canonical/attestation/yuanta-events/v1",
     ],
   );
+});
+
+test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-purge-migration-"));
+  const path = join(directory, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP TRIGGER transaction_tag_assertion_values_no_delete;
+      CREATE TRIGGER transaction_tag_assertion_values_no_delete
+      BEFORE DELETE ON transaction_tag_assertion_values
+      BEGIN
+        SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
+      END;
+      ALTER TABLE canonical_runtime_contract_purges
+        DROP COLUMN disabled_scopes_json;
+      INSERT INTO canonical_runtime_contract_purges(
+        purge_id, audit_version, reason, scope_json, deleted_row_count,
+        deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      ) VALUES (
+        'runtime:contract-purge:11111111-1111-4111-8111-111111111111',
+        1, '餘額 新臺幣 5000',
+        '{"integrationNamespace":"fubon","sourceConnectionKey":"sha256:legacy","stream":"loan","contractVersion":"loan/canonical/v2.fubon","identityEpoch":"sha256:legacy-epoch"}',
+        1, '{}', 'sha256:legacy-fingerprint', 1
+      );
+      DELETE FROM schema_migrations WHERE version = 24;
+      PRAGMA user_version = 23;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    const migrated = createCanonicalSourceStore(path);
+    try {
+      assert.equal(
+        Number((migrated.db.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version),
+        CANONICAL_SOURCE_SCHEMA_VERSION,
+      );
+      const marker = migrated.db
+        .prepare("SELECT reason, disabled_scopes_json FROM canonical_runtime_contract_purges")
+        .get() as { reason?: unknown; disabled_scopes_json?: unknown };
+      assert.equal(marker.reason, "Source contract invalidated.");
+      assert.deepEqual(JSON.parse(String(marker.disabled_scopes_json)), [
+        {
+          integrationNamespace: "fubon",
+          sourceConnectionKey: "sha256:legacy",
+          stream: "loan",
+          contractVersion: "loan/canonical/v2.fubon",
+          identityEpoch: "sha256:legacy-epoch",
+        },
+      ]);
+      const trigger = migrated.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'transaction_tag_assertion_values_no_delete'",
+        )
+        .get() as { sql?: unknown };
+      assert.match(String(trigger.sql), /canonical_purge_delete_allowed\s*\(\s*\)/iu);
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("v23 to v24 rejects a broad runtime marker instead of creating a wildcard fence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-broad-marker-"));
+  const path = join(directory, "canonical.sqlite");
+  try {
+    const current = createCanonicalSourceStore(path);
+    current.close();
+    const legacy = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
+    legacy.exec(`
+      PRAGMA foreign_keys = OFF;
+      ALTER TABLE canonical_runtime_contract_purges
+        DROP COLUMN disabled_scopes_json;
+      INSERT INTO canonical_runtime_contract_purges(
+        purge_id, audit_version, reason, scope_json, deleted_row_count,
+        deleted_table_counts_json, closure_fingerprint, applied_at_utc_us
+      ) VALUES (
+        'runtime:contract-purge:22222222-2222-4222-8222-222222222222',
+        1, 'Source contract invalidated.',
+        '{"integrationNamespace":"fubon","sourceConnectionKey":"sha256:broad"}',
+        1, '{}', 'sha256:broad-fingerprint', 1
+      );
+      DELETE FROM schema_migrations WHERE version = 24;
+      PRAGMA user_version = 23;
+      PRAGMA foreign_keys = ON;
+    `);
+    legacy.close();
+
+    assert.throws(
+      () => createCanonicalSourceStore(path),
+      /lacks an exact recollection fence/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("retired Fubon recovery policy accepts only exact writable pending-v20 state", () => {
@@ -1099,6 +1252,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
     // Reconstruct the exact shape of a real v10 database that predates the
     // additive payload column while retaining the rest of the v10 schema.
     const legacy = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`
       ALTER TABLE institution_repayment_note_evidence
         DROP COLUMN date_contract_json;
@@ -1173,7 +1327,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", "INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (24, 0)", /migration metadata/i],
+    ["extra", `INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (${CANONICAL_SOURCE_SCHEMA_VERSION + 1}, 0)`, /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(
@@ -1216,6 +1370,7 @@ test("v10 to v11 rolls back the additive payload when a later schema check fails
     current.close();
 
     const legacy = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`
       ALTER TABLE institution_repayment_note_evidence
         DROP COLUMN date_contract_json;
@@ -1543,6 +1698,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
     legacy.close();
 
     const downgrade = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(downgrade);
     downgrade.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits;
@@ -1913,6 +2069,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
     // source-connection purge, then a card recollection happened under the
     // wrapped product key. Its audit table still has the old v11-only CHECK.
     const historical = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(historical);
     historical.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
@@ -2186,6 +2343,7 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
     legacy.close();
 
     const historical = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(historical);
     historical.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
@@ -2452,6 +2610,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
 
     // Reconstruct a v16 database before the market-v2 migration existed.
     const historical = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(historical);
     historical.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
@@ -2666,6 +2825,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
     // The production boundary: a v18 database contains a live trade capture
     // written before source-content-v3. Upgrade must remove just that scope.
     const v18 = new DatabaseSync(path);
+    rewindCurrentDatabaseToV23PhysicalSchema(v18);
     v18.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
@@ -3541,6 +3701,7 @@ test("v8 to v9 rebuilds the source assertion compatibility view", async () => {
       seeded.close();
 
       const legacy = new DatabaseSync(path);
+      rewindCurrentDatabaseToV23PhysicalSchema(legacy);
       legacy.exec("PRAGMA foreign_keys = OFF");
       legacy.exec("DROP VIEW source_assertions");
       if (defect === "malformed")
@@ -3847,6 +4008,7 @@ test("source assertion compatibility views enforce origin and provenance semanti
         CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
       );
       const legacy = new DatabaseSync(path);
+      rewindCurrentDatabaseToV23PhysicalSchema(legacy);
       const revision = legacy
         .prepare(
           "SELECT revision_id, transaction_id, source_record_id, commit_id FROM transaction_revisions LIMIT 1",
@@ -4644,8 +4806,9 @@ test("a v19 investment schema gains crypto account, security, and cost fields", 
   try {
     const current = createCanonicalSourceStore(path);
     current.close();
-    const legacy = new DatabaseSync(path);
-    legacy.exec(`
+      const legacy = new DatabaseSync(path);
+      rewindCurrentDatabaseToV23PhysicalSchema(legacy);
+      legacy.exec(`
       PRAGMA foreign_keys = OFF;
       ALTER TABLE investment_accounts DROP COLUMN account_subtype;
       ALTER TABLE investment_securities DROP COLUMN security_type;
@@ -4692,8 +4855,9 @@ test("a genuine v15 investment schema migrates through v21 before crypto validat
   try {
     const current = createCanonicalSourceStore(path);
     current.close();
-    const legacy = new DatabaseSync(path);
-    legacy.exec(`
+      const legacy = new DatabaseSync(path);
+      rewindCurrentDatabaseToV23PhysicalSchema(legacy);
+      legacy.exec(`
       PRAGMA foreign_keys = OFF;
       DELETE FROM canonical_contract_purge_commits
        WHERE purge_id = 'yuanta-trade-investment/source-occurrence-content-v3:v19';

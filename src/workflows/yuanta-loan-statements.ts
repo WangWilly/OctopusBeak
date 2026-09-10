@@ -15,8 +15,10 @@ import {
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import {
+  YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   buildYuantaLoanCapture,
   persistYuantaLoanCapture,
+  type YuantaLoanAccountNumberEvidence,
   type YuantaLoanCaptureBuildInput,
   type YuantaLoanStatementRow,
 } from "../ledger/canonical/yuanta-loan.ts";
@@ -991,6 +993,26 @@ export async function readYuantaLoanAccountOptions(
   return availableAccounts;
 }
 
+export function deriveYuantaLoanAccountNumberEvidence(
+  account: LoanAccountOption,
+): YuantaLoanAccountNumberEvidence | null {
+  const valueDigits = account.value.trim();
+  const labelRuns =
+    toAsciiDigits(account.label).match(/(?<!\d)\d{14}(?!\d)/gu) ?? [];
+  if (
+    !/^\d{14}$/u.test(valueDigits) ||
+    labelRuns.length !== 1 ||
+    labelRuns[0] !== valueDigits
+  )
+    return null;
+  return {
+    value: valueDigits,
+    kind: "loan-account",
+    evidenceVersion: YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+    sourceField: "#acctno option.value",
+  };
+}
+
 /**
  * The live loan statement form exposes the full 14-digit loan account in
  * both the option label and option value.  Requiring both representations to
@@ -999,21 +1021,15 @@ export async function readYuantaLoanAccountOptions(
 export function yuantaLoanSelectorAccountEvidence(
   account: LoanAccountOption,
 ): YuantaCounterpartyAccountEvidence {
-  const valueDigits = account.value;
-  const labelRuns =
-    toAsciiDigits(account.label).match(/(?<!\d)\d{14}(?!\d)/gu) ?? [];
-  if (
-    !/^\d{14}$/u.test(valueDigits) ||
-    labelRuns.length !== 1 ||
-    labelRuns[0] !== valueDigits
-  ) {
+  const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
+  if (!accountNumber) {
     throw new Error(
       "Yuanta loan selector did not expose one matching full 14-digit account.",
     );
   }
   return {
     rowOrdinal: 0,
-    accountValue: valueDigits,
+    accountValue: accountNumber.value,
     role: "beneficiary",
     purpose: "loan_repayment",
     scope: "loan_contract",
@@ -1304,8 +1320,10 @@ export async function runYuantaLoanStatements(
         account: maskedAccount,
         rowCount: accountRows.length,
       });
+      const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
       const captureInput: YuantaLoanCaptureBuildInput = {
         accountValue: account.value,
+        ...(accountNumber ? { accountNumber } : {}),
         sourceConnectionScope,
         observedAt: observedAt(),
         startDate: canonicalRange.startDate,

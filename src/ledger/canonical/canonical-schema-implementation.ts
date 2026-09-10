@@ -19,7 +19,10 @@ import {
   ensureFubonCreditCardSchema,
   validateFubonCreditCardSchema,
 } from "./fubon-credit-card-schema.ts";
-import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES } from "./foreign-currency-deposit-authorities.ts";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  canonicalSourceRouteCompletenessRuleVersions,
+} from "./canonical-source-route-registry.ts";
 import {
   CANONICAL_SOURCE_ADMISSION,
   CANONICAL_SOURCE_STAGE,
@@ -824,6 +827,7 @@ BEFORE UPDATE ON transaction_tag_assertion_values
 BEGIN SELECT RAISE(ABORT, 'transaction tag values are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS transaction_tag_assertion_values_no_delete
 BEFORE DELETE ON transaction_tag_assertion_values
+WHEN canonical_purge_delete_allowed() = 0
 BEGIN SELECT RAISE(ABORT, 'transaction tag values cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS user_tags_no_update
 BEFORE UPDATE ON user_tags
@@ -902,7 +906,10 @@ function ensureCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
   );
 }
 
-function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
+function validateCanonicalDisplayAndTagsSchema(
+  db: DatabaseSync,
+  options: { requirePurgeDeleteGuard?: boolean } = {},
+): void {
   const required: Record<string, readonly string[]> = {
     canonical_grouped_role_contracts: [
       "producer_id", "producer_version", "contract_version", "admission_policy", "origin",
@@ -998,12 +1005,26 @@ function validateCanonicalDisplayAndTagsSchema(db: DatabaseSync): void {
     "counterparty_display_assertion_values_origin_guard",
     "counterparty_display_assertion_values_binding_guard",
     "transaction_tag_assertion_origin_guard",
+    "transaction_tag_assertion_values_no_delete",
     "user_tags_no_update",
     "user_tag_label_revisions_no_update",
     "user_tag_status_revisions_no_update",
   ]) {
     if (!triggerExists(db, trigger))
       throw new Error(`Canonical display/tag trigger ${trigger} is missing.`);
+  }
+  if (options.requirePurgeDeleteGuard !== false) {
+    const tagDeleteTrigger = db
+      .prepare(
+        `SELECT sql FROM sqlite_master
+          WHERE type = 'trigger'
+            AND name = 'transaction_tag_assertion_values_no_delete'`,
+      )
+      .get() as { sql?: unknown } | undefined;
+    if (!/canonical_purge_delete_allowed\s*\(\s*\)/iu.test(String(tagDeleteTrigger?.sql ?? "")))
+      throw new Error(
+        "Canonical transaction tag delete guard is missing its purge capability.",
+      );
   }
   const expectedGroupedContracts = [
     [
@@ -1862,7 +1883,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
 
 export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
 
-export const CANONICAL_SCHEMA_VERSION = 23;
+export const CANONICAL_SCHEMA_VERSION = 28;
 
 type CanonicalId = Buffer;
 
@@ -3800,200 +3821,78 @@ function validateGenerationExactAmounts(
   }
 }
 
+function canonicalSourceRouteRegistryCte(): {
+  sql: string;
+  params: string[];
+} {
+  const rows = CANONICAL_SOURCE_ROUTE_REGISTRY.flatMap((registration) => {
+    const completenessRuleVersions =
+      canonicalSourceRouteCompletenessRuleVersions(registration.routeKey);
+    return registration.contractVersions.flatMap((contractVersion) =>
+      completenessRuleVersions.map((completenessRuleVersion) => [
+        registration.routeKey,
+        registration.integrationNamespace,
+        registration.stream,
+        contractVersion,
+        completenessRuleVersion,
+      ] as const),
+    );
+  });
+  if (rows.length === 0)
+    throw new Error("Canonical source-route registry must not be empty.");
+
+  return {
+    sql: `WITH registered_source_routes(
+  authority_route,
+  integration_namespace,
+  stream,
+  contract_version,
+  completeness_rule_version
+) AS (
+  VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}
+)`,
+    params: rows.flatMap((row) => [...row]),
+  };
+}
+
 function validateCanonicalAuthorityRoutes(
   db: DatabaseSync,
   generationId: number,
 ): void {
+  const registry = canonicalSourceRouteRegistryCte();
   const invalid = Number(
     (
       db
         .prepare(
-          `SELECT COUNT(*) AS count FROM projection_generation_transactions projected
-    WHERE projected.generation_id = ? AND NOT EXISTS (
-      SELECT 1 FROM transaction_revisions revision
-      JOIN source_captures capture ON capture.capture_id = revision.capture_id
-      JOIN assertions source_assertion ON source_assertion.revision_id = revision.revision_id AND source_assertion.origin = 'source'
-      JOIN source_authority_routes registered ON registered.authority_route = capture.authority_route
-      WHERE revision.revision_id = projected.revision_id AND revision.transaction_id = projected.transaction_id
-        AND (
-          (capture.stream = ? AND registered.stream = ?)
-          OR (capture.stream = 'credit-card' AND registered.stream = 'credit-card')
-          OR (capture.stream = 'foreign-currency-deposit' AND registered.stream = 'foreign-currency-deposit')
-          OR (capture.stream = 'loan' AND registered.stream = 'loan')
-          OR (capture.stream = 'investment' AND registered.stream = 'investment')
-          OR (capture.stream = 'domestic-deposit' AND registered.stream = 'domestic-deposit')
+          `${registry.sql}
+SELECT COUNT(*) AS count
+FROM projection_generation_transactions projected
+WHERE projected.generation_id = ? AND NOT EXISTS (
+  SELECT 1
+  FROM transaction_revisions revision
+  JOIN source_captures capture ON capture.capture_id = revision.capture_id
+  JOIN assertions source_assertion
+    ON source_assertion.revision_id = revision.revision_id
+    AND source_assertion.origin = 'source'
+  JOIN source_authority_routes registered
+    ON registered.authority_route = capture.authority_route
+  JOIN registered_source_routes route
+    ON route.authority_route = capture.authority_route
+    AND route.integration_namespace = registered.integration_namespace
+    AND route.stream = capture.stream
+    AND route.stream = registered.stream
+    AND route.contract_version = registered.contract_version
+    AND route.completeness_rule_version = capture.completeness_rule_version
+  WHERE revision.revision_id = projected.revision_id
+    AND revision.transaction_id = projected.transaction_id
+    AND source_assertion.producer_id = capture.authority_route
+    AND source_assertion.rule_lineage IN (
+      capture.authority_route,
+      revision.semantic_rule_version
+    )
+)`,
         )
-        AND source_assertion.producer_id = capture.authority_route
-        AND source_assertion.rule_lineage IN (capture.authority_route, revision.semantic_rule_version)
-        AND (
-          (capture.authority_route = ?
-            AND capture.completeness_rule_version = ?
-            AND registered.integration_namespace = ?
-            AND registered.contract_version = ?)
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v1'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/canonical/v1.fubon')
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v2'
-            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/canonical/v2.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/canonical-v1'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta'
-            AND capture.stream = 'loan' AND registered.stream = 'loan'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'loan/canonical/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon'
-            AND capture.stream = 'domestic-deposit'
-            AND registered.stream = 'domestic-deposit'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'loan/counterpart/v1.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta'
-            AND capture.stream = 'domestic-deposit'
-            AND registered.stream = 'domestic-deposit'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'loan/counterpart/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'fubon/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version = 'fubon/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'esun'
-            AND registered.contract_version = 'esun/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'esun'
-            AND registered.contract_version = 'esun/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'yuanta/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND registered.stream = 'credit-card'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'yuanta/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND registered.stream = 'investment'
-            AND registered.integration_namespace = 'yuanta-fund'
-            AND registered.contract_version = 'yuanta-fund/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND registered.stream = 'investment'
-            AND registered.integration_namespace = 'yuanta-trade'
-            AND registered.contract_version = 'yuanta-trade/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-fund'
-            AND registered.contract_version = 'yuanta-fund/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND registered.stream = 'investment-margin'
-            AND registered.integration_namespace = 'yuanta-trade'
-            AND registered.contract_version = 'yuanta-trade/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
-            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13'
-            AND registered.integration_namespace = 'linebank'
-            AND registered.contract_version = 'human-attested-v13')
-          OR
-          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'fubon'
-            AND registered.contract_version IN (
-              'human-attested-v1',
-              'fubon/domestic-deposit/human-attested-v1'
-            ))
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2'
-            AND registered.integration_namespace = 'yuanta'
-            AND registered.contract_version = 'human-attested-v2')
-          OR
-          (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'hncb'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'ctbc'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'sinopac'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.authority_route = 'post/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1'
-            AND registered.integration_namespace = 'post'
-            AND registered.contract_version = 'human-attested-v1')
-          OR
-          (capture.stream = 'foreign-currency-deposit'
-            AND registered.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
-            AND capture.completeness_rule_version LIKE 'foreign-currency/%'
-            AND registered.contract_version = capture.completeness_rule_version)
-        )
-    )`,
-        )
-        .get(
-          generationId,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_INTEGRATION_NAMESPACE,
-          CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
-          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
-        ) as { count?: number }
+        .get(...registry.params, generationId) as { count?: number }
     ).count ?? 0,
   );
   if (invalid !== 0)
@@ -4862,137 +4761,52 @@ function validateSelectedAssertionProvenance(
   generationId: number,
   cutoff: number,
 ): void {
+  const registry = canonicalSourceRouteRegistryCte();
   const invalidSource = Number(
     (
       db
         .prepare(
-          `SELECT COUNT(*) AS count
-    FROM projection_generation_transactions projected
-    JOIN projection_generations generation ON generation.generation_id = projected.generation_id
-    JOIN transaction_revisions revision ON revision.revision_id = projected.revision_id
-    LEFT JOIN assertions assertion ON assertion.revision_id = revision.revision_id AND assertion.origin = 'source'
-    WHERE projected.generation_id = ? AND NOT EXISTS (
-      SELECT 1 FROM assertion_provenance provenance
-      JOIN canonical_commits provenance_commit ON provenance_commit.commit_id = provenance.commit_id
-      JOIN source_records source_record ON source_record.source_record_id = provenance.source_record_id
-      JOIN source_captures capture ON capture.capture_id = source_record.capture_id
-      WHERE provenance.assertion_id = assertion.assertion_id
-        AND provenance.source_record_id = revision.source_record_id
-        AND provenance.run_id IS NULL AND provenance.coordinate_id IS NULL
-        AND source_record.capture_id = revision.capture_id
-        AND provenance_commit.commit_sequence <= ?
-        AND provenance_commit.commit_kind = 'source_capture'
-        AND provenance_commit.authority_route = capture.authority_route
-        AND capture.commit_id = provenance.commit_id
-        AND (
-          capture.stream = ?
-          OR capture.stream = 'credit-card'
-          OR capture.stream = 'foreign-currency-deposit'
-          OR capture.stream = 'loan'
-          OR capture.stream = 'investment'
-          OR capture.stream = 'domestic-deposit'
+          `${registry.sql}
+SELECT COUNT(*) AS count
+FROM projection_generation_transactions projected
+JOIN transaction_revisions revision
+  ON revision.revision_id = projected.revision_id
+LEFT JOIN assertions assertion
+  ON assertion.revision_id = revision.revision_id
+  AND assertion.origin = 'source'
+WHERE projected.generation_id = ? AND NOT EXISTS (
+  SELECT 1
+  FROM assertion_provenance provenance
+  JOIN canonical_commits provenance_commit
+    ON provenance_commit.commit_id = provenance.commit_id
+  JOIN source_records source_record
+    ON source_record.source_record_id = provenance.source_record_id
+  JOIN source_captures capture
+    ON capture.capture_id = source_record.capture_id
+  JOIN source_authority_routes registered
+    ON registered.authority_route = capture.authority_route
+  WHERE provenance.assertion_id = assertion.assertion_id
+    AND provenance.source_record_id = revision.source_record_id
+    AND provenance.run_id IS NULL
+    AND provenance.coordinate_id IS NULL
+    AND source_record.capture_id = revision.capture_id
+    AND provenance_commit.commit_sequence <= ?
+    AND provenance_commit.commit_kind = 'source_capture'
+    AND provenance_commit.authority_route = capture.authority_route
+    AND capture.commit_id = provenance.commit_id
+    AND EXISTS (
+      SELECT 1
+      FROM registered_source_routes route
+      WHERE route.authority_route = capture.authority_route
+        AND route.integration_namespace = registered.integration_namespace
+        AND route.stream = capture.stream
+        AND route.stream = registered.stream
+        AND route.contract_version = registered.contract_version
+        AND route.completeness_rule_version = capture.completeness_rule_version
+    )
+)`,
         )
-        AND (
-          (capture.authority_route = ? AND capture.completeness_rule_version = ?)
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v1'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.fubon')
-          OR
-          (capture.authority_route = 'fubon/loan/canonical-v2'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v2.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/canonical-v1'
-            AND capture.stream = 'loan'
-            AND capture.completeness_rule_version = 'loan/canonical/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/loan/counterpart-deposit-v1'
-            AND capture.stream = 'domestic-deposit'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.fubon')
-          OR
-          (capture.authority_route = 'yuanta/loan/counterpart-deposit-v1'
-            AND capture.stream = 'domestic-deposit'
-            AND capture.completeness_rule_version = 'loan/counterpart/v1.yuanta')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'fubon/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'fubon/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'esun/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'esun/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v1'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/credit-card/human-attested-v2'
-            AND capture.stream = 'credit-card'
-            AND capture.completeness_rule_version = 'yuanta/credit-card/human-attested-v2')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/canonical-v1'
-            AND capture.stream = 'investment'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-fund/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-fund/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'yuanta-trade/investment/margin-credit-canonical-v1'
-            AND capture.stream = 'investment-margin'
-            AND capture.completeness_rule_version = 'yuanta-trade/investment/margin-credit-canonical-v1')
-          OR
-          (capture.authority_route = 'linebank/domestic-deposit/human-attested-v13'
-            AND capture.completeness_rule_version = 'linebank/domestic-deposit/human-attested-v13')
-          OR
-          (capture.authority_route = 'fubon/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'fubon/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'yuanta/domestic-deposit/human-attested-v2'
-            AND capture.completeness_rule_version = 'yuanta/domestic-deposit/human-attested-v2')
-          OR
-          (capture.authority_route = 'hncb/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'hncb/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'ctbc/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'ctbc/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'sinopac/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'sinopac/domestic-deposit/human-attested-v1')
-          OR
-          (capture.authority_route = 'post/domestic-deposit/human-attested-v1'
-            AND capture.completeness_rule_version = 'post/domestic-deposit/human-attested-v1')
-          OR
-          (capture.stream = 'foreign-currency-deposit'
-            AND capture.authority_route IN (${FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES.map(() => "?").join(", ")})
-            AND capture.completeness_rule_version LIKE 'foreign-currency/%')
-        )
-    )`,
-        )
-        .get(
-          generationId,
-          cutoff,
-          CATHAY_DOMESTIC_DEPOSIT_STREAM,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-          ...FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_ROUTES,
-        ) as { count?: number }
+        .get(...registry.params, generationId, cutoff) as { count?: number }
     ).count ?? 0,
   );
   if (invalidSource !== 0)
@@ -5213,6 +5027,29 @@ function isValidUserAssertionProvenanceEvidence(
   );
 }
 
+function canonicalRuntimePurgeCommitHasEvidence(
+  db: DatabaseSync,
+  commitId: CanonicalId,
+): boolean {
+  return (
+    relationType(db, "canonical_runtime_contract_purge_commits") === "table" &&
+    Boolean(
+      db
+        .prepare(
+          `SELECT 1
+             FROM canonical_runtime_contract_purge_commits purge
+            WHERE purge.commit_id = ?
+              AND EXISTS (
+                SELECT 1 FROM canonical_runtime_contract_purges audit
+                 WHERE audit.purge_id = purge.purge_id
+              )
+            LIMIT 1`,
+        )
+        .get(commitId),
+    )
+  );
+}
+
 function canonicalCommitHasEvidence(
   db: DatabaseSync,
   commitKind: string,
@@ -5242,9 +5079,8 @@ function canonicalCommitHasEvidence(
     // closure while preserving its commit as immutable projection history.
     // The purge audit is then the retained canonical evidence for that
     // historical routine event; do not rewrite the guarded event chain.
-    return (
-      relationType(db, "canonical_contract_purge_commits") === "table" &&
-      Boolean(
+    return Boolean(
+      (relationType(db, "canonical_contract_purge_commits") === "table" &&
         db
           .prepare(
             `SELECT 1
@@ -5256,8 +5092,8 @@ function canonicalCommitHasEvidence(
                 )
               LIMIT 1`,
           )
-          .get(commitId),
-      )
+          .get(commitId)) ||
+      canonicalRuntimePurgeCommitHasEvidence(db, commitId),
     );
   }
   if (commitKind === "derived_import") {
@@ -5277,7 +5113,7 @@ function canonicalCommitHasEvidence(
            SELECT 1 FROM enrichment_runs WHERE commit_id = ? LIMIT 1`,
         )
         .get(commitId, commitId),
-    );
+    ) || canonicalRuntimePurgeCommitHasEvidence(db, commitId);
   }
   if (commitKind === "user_assertion") {
     if (
@@ -5306,6 +5142,7 @@ function canonicalCommitHasEvidence(
         .get(commitId, commitId, commitId, commitId) as unknown)
     )
       return true;
+    if (canonicalRuntimePurgeCommitHasEvidence(db, commitId)) return true;
     const provenanceRows = db
       .prepare(
         `SELECT assertion_id FROM assertion_provenance
@@ -5333,7 +5170,7 @@ function canonicalCommitHasEvidence(
         )
         .get(commitId, commitId, commitId),
     );
-    if (!relationEvidence) return false;
+    if (!relationEvidence) return canonicalRuntimePurgeCommitHasEvidence(db, commitId);
     // Relation commits became generation Knowledge Points only after the
     // Projection Runtime began recording them. Legacy relation facts remain
     // valid immutable history without retroactively widening an older
@@ -5346,7 +5183,7 @@ function canonicalCommitHasEvidence(
               AND event_source = 'routine' LIMIT 1`,
         )
         .get(commitId),
-    );
+    ) || canonicalRuntimePurgeCommitHasEvidence(db, commitId);
   }
   return false;
 }
@@ -5416,6 +5253,8 @@ const CANONICAL_FINANCIAL_PROJECTION_TABLES = [
   "projection_generation_transaction_selection",
   "projection_generation_transaction_fields",
   "projection_generation_transaction_categorizations",
+  "current_credit_card_accounts",
+  "current_credit_card_balance_observations",
 ] as const;
 
 function nonEmptyFinancialProjectionTables(db: DatabaseSync): string[] {
@@ -6292,6 +6131,7 @@ function validateFinancialAccountCurrencyLifecycleSchema(
     "source_connection_id",
     "identity_epoch_id",
     "stream",
+    "source_account_key",
     "account_no",
     "account_type",
     "currency",
@@ -6303,6 +6143,56 @@ function validateFinancialAccountCurrencyLifecycleSchema(
   if (Number(currency?.notnull ?? 1) !== 0)
     throw new Error(
       "Canonical financial account currency column must be nullable.",
+    );
+  const sourceAccountKey = canonicalTableColumns(db, "financial_accounts").find(
+    (column) => String(column.name ?? "") === "source_account_key",
+  );
+  if (Number(sourceAccountKey?.notnull ?? 0) !== 1)
+    throw new Error(
+      "Canonical financial account source key column must be non-nullable.",
+    );
+  const accountNumber = canonicalTableColumns(db, "financial_accounts").find(
+    (column) => String(column.name ?? "") === "account_no",
+  );
+  if (Number(accountNumber?.notnull ?? 1) !== 0)
+    throw new Error(
+      "Canonical financial account number column must be nullable.",
+    );
+  requireCanonicalTable(db, "financial_account_identifier_observations", [
+    "observation_id",
+    "account_id",
+    "capture_id",
+    "source_record_id",
+    "commit_id",
+    "identifier_kind",
+    "identifier_value",
+    "evidence_version",
+    "source_field",
+    "observed_at",
+  ]);
+  const identifierObservationTriggers = db
+    .prepare(
+      `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND name IN (
+           'financial_account_identifier_observations_no_update',
+           'financial_account_identifier_observations_no_delete'
+         )`,
+    )
+    .all() as Array<{ name?: unknown; sql?: unknown }>;
+  if (
+    identifierObservationTriggers.length !== 2 ||
+    identifierObservationTriggers.some((trigger) => {
+      const name = String(trigger.name ?? "");
+      const sql = String(trigger.sql ?? "");
+      return name.endsWith("_no_update")
+        ? !/BEFORE\s+UPDATE\s+ON\s+financial_account_identifier_observations/iu.test(sql) ||
+            !/immutable/iu.test(sql)
+        : !/BEFORE\s+DELETE\s+ON\s+financial_account_identifier_observations/iu.test(sql) ||
+            !/canonical_purge_delete_allowed\s*\(\s*\)/iu.test(sql);
+    })
+  )
+    throw new Error(
+      "Canonical financial account identifier observation immutability triggers are missing.",
     );
 }
 
@@ -6379,7 +6269,7 @@ function validateCanonicalCaptureScopeLifecycleSchema(
     "identity_epoch_id",
     "account_id",
     "source_subject_id",
-    "account_no",
+    "source_account_key",
     "stream",
     "scope_start",
     "scope_end",
@@ -7240,7 +7130,11 @@ function validateV8SourceEvidenceSchema(db: DatabaseSync): void {
       throw new Error(`Canonical schema v8 table ${table} is missing.`);
   }
   const columns: Record<string, string[]> = {
-    source_captures: ["capture_key", "source_subject_id", "record_kind"],
+    source_captures: [
+      "capture_key",
+      "source_subject_id",
+      "record_kind",
+    ],
     capture_scopes: ["source_subject_id"],
     capture_scope_pages: ["response_code", "metadata_json"],
     source_records: [
@@ -7267,6 +7161,30 @@ function validateV8SourceEvidenceSchema(db: DatabaseSync): void {
           `Canonical schema v8 column ${table}.${column} is missing.`,
         );
   }
+  const sourceCaptureColumns = new Set(
+    (
+      db.prepare("PRAGMA table_info(source_captures)").all() as Array<{
+        name?: string;
+      }>
+    ).map((row) => row.name),
+  );
+  const captureScopeColumns = new Set(
+    (
+      db.prepare("PRAGMA table_info(capture_scopes)").all() as Array<{
+        name?: string;
+      }>
+    ).map((row) => row.name),
+  );
+  if (
+    !sourceCaptureColumns.has("source_account_key") &&
+    !sourceCaptureColumns.has("account_no")
+  )
+    throw new Error("Canonical source capture source key column is missing.");
+  if (
+    !captureScopeColumns.has("source_account_key") &&
+    !captureScopeColumns.has("account_no")
+  )
+    throw new Error("Canonical capture scope source key column is missing.");
   for (const index of [
     "idx_source_subjects_identity",
     "idx_source_records_occurrence",
@@ -8694,6 +8612,66 @@ function widenCanonicalContractPurgeAuditForV19(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Runtime Contract Purges have a different lifecycle from the historical
+ * migration audits above. Keep their durable disable marker in its own table
+ * so the published schema_version check remains a closed record of v11/v12/
+ * v14/v17/v19 migrations.
+ */
+function ensureCanonicalRuntimeContractPurgeAuditSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS canonical_runtime_contract_purges (
+      purge_id TEXT PRIMARY KEY CHECK(purge_id LIKE 'runtime:contract-purge:%'),
+      audit_version INTEGER NOT NULL CHECK(audit_version = 1),
+      reason TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      disabled_scopes_json TEXT NOT NULL DEFAULT '[]',
+      deleted_row_count INTEGER NOT NULL CHECK(deleted_row_count >= 0),
+      deleted_table_counts_json TEXT NOT NULL,
+      closure_fingerprint TEXT NOT NULL,
+      applied_at_utc_us INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_canonical_runtime_contract_purges_scope
+      ON canonical_runtime_contract_purges(scope_json, applied_at_utc_us, purge_id);
+    CREATE TABLE IF NOT EXISTS canonical_runtime_contract_purge_commits (
+      purge_id TEXT NOT NULL REFERENCES canonical_runtime_contract_purges(purge_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(purge_id, commit_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_canonical_runtime_contract_purge_commits_commit
+      ON canonical_runtime_contract_purge_commits(commit_id, purge_id);
+  `);
+}
+
+function validateCanonicalRuntimeContractPurgeAuditSchema(
+  db: DatabaseSync,
+): void {
+  if (relationType(db, "canonical_runtime_contract_purges") !== "table")
+    throw new Error("Canonical runtime Contract Purge audit table is missing.");
+  if (relationType(db, "canonical_runtime_contract_purge_commits") !== "table")
+    throw new Error("Canonical runtime Contract Purge commit audit table is missing.");
+  const columns = new Set(
+    (db
+      .prepare("PRAGMA table_info(canonical_runtime_contract_purges)")
+      .all() as Array<{ name?: unknown }>).map((column) => String(column.name ?? "")),
+  );
+  for (const required of [
+    "purge_id",
+    "audit_version",
+    "reason",
+    "scope_json",
+    "disabled_scopes_json",
+    "deleted_row_count",
+    "deleted_table_counts_json",
+    "closure_fingerprint",
+    "applied_at_utc_us",
+  ])
+    if (!columns.has(required))
+      throw new Error(
+        `Canonical runtime Contract Purge audit column ${required} is missing.`,
+      );
+}
+
 export const SCHEMA_V15_INVESTMENTS = `
 CREATE TABLE IF NOT EXISTS investment_captures (
   capture_id BLOB PRIMARY KEY REFERENCES source_captures(capture_id),
@@ -9560,11 +9538,910 @@ function migrateV22ToV23(
   `);
   if (injectMigrationFailure === "v22-v23-after-display-tags")
     throw new Error("Injected v22-v23 migration failure after display/tag schema.");
-  validateCanonicalDisplayAndTagsSchema(db);
+  validateCanonicalDisplayAndTagsSchema(db, { requirePurgeDeleteGuard: false });
   db.prepare(
     "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (23, ?)",
   ).run(currentUtcMicros());
   db.exec("PRAGMA user_version = 23");
+}
+
+/**
+ * v24 publishes the lifecycle-owned purge delete guard. This is a schema
+ * transition rather than a current-version repair because the trigger targets
+ * a published canonical table. Existing runtime purge markers are retained;
+ * their historical scope is accepted only when it already records every
+ * admitted connection/epoch/stream/version dimension. A broad marker cannot
+ * be upgraded into an exact fence after its source rows have been deleted, so
+ * migration fails closed instead of preserving a wildcard recollection ban.
+ */
+function migrateV23ToV24(db: DatabaseSync): void {
+  const canonicalPurgeAuditReason = "Source contract invalidated.";
+  ensureCanonicalRuntimeContractPurgeAuditSchema(db);
+  const columns = new Set(
+    (
+      db
+        .prepare("PRAGMA table_info(canonical_runtime_contract_purges)")
+        .all() as Array<{ name?: unknown }>
+    ).map((column) => String(column.name ?? "")),
+  );
+  if (!columns.has("disabled_scopes_json")) {
+    db.exec(
+      "ALTER TABLE canonical_runtime_contract_purges ADD COLUMN disabled_scopes_json TEXT NOT NULL DEFAULT '[]'",
+    );
+  }
+  const rows = db
+    .prepare(
+      "SELECT purge_id, scope_json FROM canonical_runtime_contract_purges",
+    )
+    .all() as Array<{ purge_id?: unknown; scope_json?: unknown }>;
+  const update = db.prepare(
+    "UPDATE canonical_runtime_contract_purges SET reason = ?, disabled_scopes_json = ? WHERE purge_id = ?",
+  );
+  for (const row of rows) {
+    let scope: unknown;
+    try {
+      scope = JSON.parse(String(row.scope_json ?? ""));
+    } catch (error) {
+      throw new Error("Canonical runtime Contract Purge marker is malformed.", {
+        cause: error,
+      });
+    }
+    if (!scope || typeof scope !== "object" || Array.isArray(scope))
+      throw new Error("Canonical runtime Contract Purge marker is malformed.");
+    const scopeRecord = scope as Record<string, unknown>;
+    for (const key of [
+      "integrationNamespace",
+      "sourceConnectionKey",
+      "stream",
+      "contractVersion",
+      "identityEpoch",
+    ]) {
+      if (typeof scopeRecord[key] !== "string" || scopeRecord[key].trim() === "")
+        throw new Error(
+          "Canonical runtime Contract Purge marker lacks an exact recollection fence.",
+        );
+    }
+    update.run(
+      canonicalPurgeAuditReason,
+      JSON.stringify([scope]),
+      String(row.purge_id ?? ""),
+    );
+  }
+  db.exec(`
+    DROP TRIGGER IF EXISTS transaction_tag_assertion_values_no_delete;
+    CREATE TRIGGER transaction_tag_assertion_values_no_delete
+    BEFORE DELETE ON transaction_tag_assertion_values
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'transaction tag values cannot be deleted');
+    END;
+  `);
+  validateCanonicalDisplayAndTagsSchema(db);
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (24, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 24");
+}
+
+/** Source labels are observations; identity rows and historical evidence stay immutable. */
+function migrateV24ToV25(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS investment_security_name_observations (
+      security_id BLOB NOT NULL REFERENCES investment_securities(security_id),
+      capture_id BLOB NOT NULL REFERENCES investment_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      contract_version TEXT NOT NULL CHECK(contract_version IN (
+        'yuanta-trade/security-name/source-reported-v1','yuanta-fund/security-name/source-reported-v1')),
+      name TEXT NOT NULL,
+      PRIMARY KEY(security_id,capture_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS investment_security_names_no_update
+    BEFORE UPDATE ON investment_security_name_observations
+    BEGIN SELECT RAISE(ABORT, 'Security name observations are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS investment_security_names_no_delete
+    BEFORE DELETE ON investment_security_name_observations
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Security name observations cannot be deleted'); END;
+  `);
+  db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at_utc_us) VALUES(25,?)").run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 25");
+}
+
+/** Split the stable provider source key from an optional provider-supported
+ * account number.  The old account_no columns were source keys in this
+ * schema; their values are retained verbatim as source_account_key.  Only
+ * source keys observed through the reviewed, versioned depository contracts
+ * below are copied into the new nullable account_no column.  No user account
+ * value is embedded in this migration. */
+function migrateV25ToV26(db: DatabaseSync): void {
+  const hasColumn = (table: string, column: string): boolean =>
+    (
+      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+        name?: unknown;
+      }>
+    ).some((row) => String(row.name ?? "") === column);
+  const alreadyLegacy =
+    ["source_captures", "capture_scopes", "financial_accounts"].every(
+      (table) => hasColumn(table, "account_no") && !hasColumn(table, "source_account_key"),
+    );
+  if (!alreadyLegacy)
+    throw new Error("Canonical v25 financial account identifier migration found a partially split source schema.");
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TEMP TABLE account_number_migration_contracts (
+        integration_namespace TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        authority_route TEXT NOT NULL,
+        contract_version TEXT NOT NULL,
+        min_digits INTEGER NOT NULL,
+        max_digits INTEGER NOT NULL,
+        PRIMARY KEY(integration_namespace, stream, authority_route, contract_version)
+      );
+      INSERT INTO account_number_migration_contracts(
+        integration_namespace, stream, authority_route, contract_version,
+        min_digits, max_digits
+      ) VALUES
+        ('cathay', 'domestic-deposit', 'cathay/domestic-deposit/v1', 'v1', 6, 24),
+        ('ctbc', 'domestic-deposit', 'ctbc/domestic-deposit/human-attested-v1', 'human-attested-v1', 6, 24),
+        ('hncb', 'domestic-deposit', 'hncb/domestic-deposit/human-attested-v1', 'human-attested-v1', 6, 24),
+        ('post', 'domestic-deposit', 'post/domestic-deposit/human-attested-v1', 'human-attested-v1', 6, 24),
+        ('sinopac', 'domestic-deposit', 'sinopac/domestic-deposit/human-attested-v1', 'human-attested-v1', 6, 24),
+        ('sinopac', 'foreign-currency-deposit', 'sinopac/foreign-currency/deposit/human-attested-v1', 'foreign-currency/sinopac/human-attested-v1', 6, 24),
+        ('yuanta', 'foreign-currency-deposit', 'yuanta/foreign-currency/deposit/human-attested-v2', 'foreign-currency/yuanta/human-attested-v2', 6, 24);
+
+      DROP TRIGGER IF EXISTS fubon_credit_role_evidence_scope_guard;
+      DROP TRIGGER IF EXISTS fubon_credit_summary_evidence_scope_guard;
+
+      CREATE TABLE source_captures_widened (
+        capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16),
+        capture_key TEXT UNIQUE,
+        source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+        identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+        authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+        source_subject_id BLOB REFERENCES source_subjects(source_subject_id),
+        stream TEXT NOT NULL, record_kind TEXT NOT NULL DEFAULT 'cathay-domestic-deposit', source_account_key TEXT,
+        observed_at TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
+        completeness TEXT NOT NULL CHECK(completeness IN ('complete-range','single-page')),
+        completeness_basis TEXT NOT NULL, completeness_rule_version TEXT NOT NULL,
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+      );
+      INSERT INTO source_captures_widened(
+        capture_id, capture_key, source_connection_id, identity_epoch_id,
+        authority_route, source_subject_id, stream, record_kind,
+        source_account_key, observed_at, scope_start, scope_end,
+        completeness, completeness_basis, completeness_rule_version, commit_id
+      ) SELECT
+        capture_id, capture_key, source_connection_id, identity_epoch_id,
+        authority_route, source_subject_id, stream, record_kind,
+        account_no, observed_at, scope_start, scope_end,
+        completeness, completeness_basis, completeness_rule_version, commit_id
+      FROM source_captures;
+
+      CREATE TABLE financial_accounts_widened (
+        account_id BLOB PRIMARY KEY CHECK(length(account_id) = 16),
+        source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+        identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+        stream TEXT NOT NULL, source_account_key TEXT NOT NULL,
+        account_no TEXT,
+        account_type TEXT NOT NULL CHECK(account_type IN ('depository','credit','loan','investment','other')),
+        currency TEXT,
+        created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        UNIQUE(source_connection_id, identity_epoch_id, stream, source_account_key)
+      );
+      INSERT INTO financial_accounts_widened(
+        account_id, source_connection_id, identity_epoch_id, stream,
+        source_account_key, account_no, account_type, currency, created_commit_id
+      ) SELECT
+        account.account_id, account.source_connection_id, account.identity_epoch_id,
+        account.stream,
+        account.account_no,
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM source_captures observed_capture
+          JOIN source_authority_routes observed_route
+            ON observed_route.authority_route = observed_capture.authority_route
+          JOIN account_number_migration_contracts contract
+            ON contract.integration_namespace = connection_row.integration_namespace
+           AND contract.stream = account.stream
+           AND contract.authority_route = observed_capture.authority_route
+           AND contract.contract_version = observed_route.contract_version
+          WHERE observed_capture.source_connection_id = account.source_connection_id
+            AND observed_capture.identity_epoch_id = account.identity_epoch_id
+            AND observed_capture.stream = account.stream
+            AND observed_capture.account_no = account.account_no
+            AND account.account_no NOT GLOB '*[^0-9]*'
+            AND length(account.account_no) BETWEEN contract.min_digits AND contract.max_digits
+        ) THEN account.account_no ELSE NULL END,
+        account.account_type, account.currency, account.created_commit_id
+      FROM financial_accounts account
+      JOIN source_connections connection_row
+        ON connection_row.source_connection_id = account.source_connection_id
+      ;
+
+      CREATE TABLE capture_scopes_widened (
+        scope_id BLOB PRIMARY KEY CHECK(length(scope_id) = 16),
+        capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+        identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+        account_id BLOB REFERENCES financial_accounts(account_id),
+        source_subject_id BLOB REFERENCES source_subjects(source_subject_id),
+        source_account_key TEXT, stream TEXT NOT NULL, scope_start TEXT NOT NULL, scope_end TEXT NOT NULL,
+        scope_kind TEXT NOT NULL CHECK(scope_kind IN ('bounded-range','point-in-time')),
+        completeness TEXT NOT NULL CHECK(completeness IN ('complete-range','single-page')),
+        completeness_basis TEXT NOT NULL, completeness_rule_version TEXT NOT NULL,
+        absence_authority TEXT CHECK(absence_authority IN ('comparable-complete-range', 'provider-explicit-no-data')),
+        contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL,
+        page_count INTEGER NOT NULL CHECK(page_count > 0), terminal INTEGER NOT NULL CHECK(terminal IN (0,1)),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        CHECK(account_id IS NOT NULL OR source_subject_id IS NOT NULL),
+        UNIQUE(scope_id, capture_id), UNIQUE(scope_id, account_id), UNIQUE(scope_id, source_subject_id),
+        UNIQUE(capture_id, account_id, scope_start, scope_end),
+        UNIQUE(capture_id, source_subject_id, scope_start, scope_end)
+      );
+      INSERT INTO capture_scopes_widened(
+        scope_id, capture_id, source_connection_id, identity_epoch_id,
+        account_id, source_subject_id, source_account_key, stream, scope_start, scope_end,
+        scope_kind, completeness, completeness_basis, completeness_rule_version,
+        absence_authority, contract_fingerprint, preflight_fingerprint,
+        page_count, terminal, commit_id
+      ) SELECT
+        scope_id, capture_id, source_connection_id, identity_epoch_id,
+        account_id, source_subject_id, account_no, stream, scope_start, scope_end,
+        scope_kind, completeness, completeness_basis, completeness_rule_version,
+        absence_authority, contract_fingerprint, preflight_fingerprint,
+        page_count, terminal, commit_id
+      FROM capture_scopes;
+
+      DROP TABLE capture_scopes;
+      DROP TABLE source_captures;
+      DROP TABLE financial_accounts;
+      ALTER TABLE source_captures_widened RENAME TO source_captures;
+      ALTER TABLE financial_accounts_widened RENAME TO financial_accounts;
+      ALTER TABLE capture_scopes_widened RENAME TO capture_scopes;
+      CREATE INDEX idx_capture_scopes_account_time
+        ON capture_scopes(source_connection_id, identity_epoch_id, account_id, scope_start, scope_end, commit_id);
+
+      CREATE TABLE financial_account_identifier_observations (
+        observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+        account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+        capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        source_record_id BLOB REFERENCES source_records(source_record_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        identifier_kind TEXT NOT NULL CHECK(identifier_kind IN (
+          'depository-account','loan-account','brokerage-account',
+          'credit-portfolio-account','platform-account'
+        )),
+        identifier_value TEXT NOT NULL,
+        evidence_version TEXT NOT NULL,
+        source_field TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        UNIQUE(account_id, capture_id, identifier_kind, identifier_value)
+      );
+      CREATE TRIGGER financial_account_identifier_observations_no_update
+      BEFORE UPDATE ON financial_account_identifier_observations
+      BEGIN
+        SELECT RAISE(ABORT, 'Financial account identifier observations are immutable');
+      END;
+      CREATE TRIGGER financial_account_identifier_observations_no_delete
+      BEFORE DELETE ON financial_account_identifier_observations
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'Financial account identifier observations cannot be deleted');
+      END;
+      CREATE INDEX idx_financial_account_identifier_observations_account
+        ON financial_account_identifier_observations(account_id, observed_at, observation_id);
+
+      INSERT INTO financial_account_identifier_observations(
+        observation_id, account_id, capture_id, source_record_id, commit_id,
+        identifier_kind, identifier_value, evidence_version, source_field, observed_at
+      ) SELECT
+        randomblob(16), account.account_id, capture.capture_id, NULL,
+        capture.commit_id, 'depository-account', account.account_no,
+        'canonical/v25-v26/legacy-provider-account-number/v1',
+        'legacy-financial_accounts.account_no', capture.observed_at
+      FROM financial_accounts account
+      JOIN source_connections connection_row
+        ON connection_row.source_connection_id = account.source_connection_id
+      JOIN source_captures capture
+        ON capture.source_connection_id = account.source_connection_id
+       AND capture.identity_epoch_id = account.identity_epoch_id
+       AND capture.stream = account.stream
+       AND capture.source_account_key = account.source_account_key
+       AND EXISTS (
+         SELECT 1
+         FROM source_authority_routes observed_route
+         JOIN account_number_migration_contracts contract
+           ON contract.integration_namespace = connection_row.integration_namespace
+          AND contract.stream = account.stream
+          AND contract.authority_route = capture.authority_route
+          AND contract.contract_version = observed_route.contract_version
+         WHERE observed_route.authority_route = capture.authority_route
+           AND account.source_account_key NOT GLOB '*[^0-9]*'
+           AND length(account.source_account_key) BETWEEN contract.min_digits AND contract.max_digits
+       )
+       ;
+      DROP TABLE account_number_migration_contracts;
+    `);
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (26, ?)",
+    ).run(currentUtcMicros());
+    db.exec("PRAGMA user_version = 26");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** Expand the shared balance evidence spine for provider current snapshots.
+ * Existing loan rows remain byte-for-byte identifiable: observation/revision
+ * ids, account links, commit links, amounts, and effective times are copied
+ * without rewriting.  The added currency column defaults legacy observations
+ * to TWD, while the revision table is rebuilt only to widen its provider
+ * evidence checks and retain the endpoint/response lineage used by current
+ * balance captures. */
+function migrateV26ToV27(db: DatabaseSync): void {
+  // v26's balance_observations table was loan-only.  It must be rebuilt as a
+  // single atomic schema transition: ALTER TABLE can add the currency column,
+  // but it cannot widen the existing balance_kind CHECK constraint.  Keeping
+  // the temporary names private also leaves every published foreign-key name
+  // unchanged when the final relations are installed.
+  const observationSql = String(
+    (
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'balance_observations'",
+      ).get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  const needsObservationRebuild =
+    !columnExists(db, "balance_observations", "balance_currency") ||
+    !/['"]ledger['"]/iu.test(observationSql) ||
+    !/['"]available['"]/iu.test(observationSql);
+  if (needsObservationRebuild) {
+    const legacyCurrencyExpression = columnExists(db, "balance_observations", "balance_currency")
+      ? "balance_currency"
+      : "'TWD'";
+    db.exec(`
+      CREATE TABLE balance_observations_v27 (
+        observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+        account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+        observation_key TEXT NOT NULL,
+        balance_kind TEXT NOT NULL CHECK(balance_kind IN (
+          'loan_outstanding','outstanding_principal','outstanding_total',
+          'ledger','available'
+        )),
+        balance_currency TEXT NOT NULL DEFAULT 'TWD'
+          CHECK(length(balance_currency) = 3 AND balance_currency GLOB '[A-Z][A-Z][A-Z]'),
+        created_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        UNIQUE(account_id, created_capture_id, observation_key, balance_kind, balance_currency)
+      );
+      INSERT INTO balance_observations_v27(
+        observation_id, account_id, observation_key, balance_kind,
+        balance_currency, created_capture_id, created_commit_id
+      )
+      SELECT observation_id, account_id, observation_key, balance_kind,
+             COALESCE(${legacyCurrencyExpression}, 'TWD'), created_capture_id, created_commit_id
+        FROM balance_observations;
+      DROP TABLE balance_observations;
+      ALTER TABLE balance_observations_v27 RENAME TO balance_observations;
+    `);
+  } else if (!columnExists(db, "balance_observations", "balance_currency")) {
+    db.exec(
+      "ALTER TABLE balance_observations ADD COLUMN balance_currency TEXT NOT NULL DEFAULT 'TWD'",
+    );
+  }
+
+  const revisionColumns = new Set(
+    (db.prepare("PRAGMA table_info(balance_observation_revisions)").all() as Array<{ name?: unknown }>)
+      .map((row) => String(row.name ?? "")),
+  );
+  if (!revisionColumns.has("effective_time_evidence_endpoint")) {
+    db.exec(`
+      CREATE TABLE balance_observation_revisions_v27 (
+        revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+        observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+        source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+        capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+        balance_coefficient TEXT NOT NULL,
+        balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
+        currency TEXT NOT NULL CHECK(length(currency) = 3 AND currency GLOB '[A-Z][A-Z][A-Z]'),
+        effective_at TEXT NOT NULL,
+        effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('source-reported','provider-http-date','provider-system-time')),
+        effective_time_rule_version TEXT NOT NULL,
+        effective_time_evidence_source_record_key TEXT NOT NULL,
+        effective_time_evidence_source_field TEXT NOT NULL,
+        effective_time_evidence_value TEXT NOT NULL,
+        effective_time_evidence_contract_version TEXT NOT NULL,
+        effective_time_evidence_endpoint TEXT NOT NULL DEFAULT 'legacy/loan',
+        effective_time_evidence_response_status INTEGER NOT NULL DEFAULT 200 CHECK(effective_time_evidence_response_status = 200),
+        effective_time_evidence_cache_policy TEXT NOT NULL DEFAULT 'legacy',
+        observed_at TEXT NOT NULL,
+        UNIQUE(observation_id, revision_number)
+      );
+      INSERT INTO balance_observation_revisions_v27(
+        revision_id, observation_id, source_record_id, capture_id, commit_id,
+        revision_number, balance_coefficient, balance_scale, currency,
+        effective_at, effective_time_basis, effective_time_rule_version,
+        effective_time_evidence_source_record_key,
+        effective_time_evidence_source_field,
+        effective_time_evidence_value,
+        effective_time_evidence_contract_version,
+        observed_at
+      )
+      SELECT revision_id, observation_id, source_record_id, capture_id, commit_id,
+        revision_number, balance_coefficient, balance_scale, currency,
+        effective_at, effective_time_basis, effective_time_rule_version,
+        effective_time_evidence_source_record_key,
+        effective_time_evidence_source_field,
+        effective_time_evidence_value,
+        effective_time_evidence_contract_version,
+        observed_at
+      FROM balance_observation_revisions;
+      DROP TABLE balance_observation_revisions;
+      ALTER TABLE balance_observation_revisions_v27 RENAME TO balance_observation_revisions;
+      CREATE INDEX idx_balance_observation_revisions_current
+        ON balance_observation_revisions(observation_id, commit_id, effective_at);
+    `);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_balance_observations_identity
+      ON balance_observations(account_id, balance_kind, balance_currency, observation_key);
+    CREATE TRIGGER IF NOT EXISTS balance_observations_no_update
+    BEFORE UPDATE ON balance_observations
+    BEGIN SELECT RAISE(ABORT, 'Balance observations are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observations_no_delete
+    BEFORE DELETE ON balance_observations
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Balance observations cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observation_revisions_no_update
+    BEFORE UPDATE ON balance_observation_revisions
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observation_revisions_no_delete
+    BEFORE DELETE ON balance_observation_revisions
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions cannot be deleted'); END;
+
+    CREATE TABLE IF NOT EXISTS current_depository_accounts (
+      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(generation_id, account_id)
+    );
+    CREATE TABLE IF NOT EXISTS current_depository_balance_observations (
+      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      balance_kind TEXT NOT NULL CHECK(balance_kind IN ('ledger','available')),
+      currency TEXT NOT NULL CHECK(length(currency) = 3 AND currency GLOB '[A-Z][A-Z][A-Z]'),
+      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+      revision_id BLOB NOT NULL REFERENCES balance_observation_revisions(revision_id),
+      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(generation_id, account_id, balance_kind, currency)
+    );
+    CREATE INDEX IF NOT EXISTS idx_current_depository_balance_account
+      ON current_depository_balance_observations(account_id, generation_id, balance_kind, currency);
+  `);
+
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (27, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 27");
+}
+
+/**
+ * v28 adds the credit-card current-used-credit evidence kind and its
+ * estimate-only projection/detail tables.  The shared balance observations
+ * remain the immutable source of amount and time; the detail row records the
+ * estimate contract and (for Fubon) the two operands used by the formula.
+ */
+function migrateV27ToV28(db: DatabaseSync): void {
+  const revisionSql = String(
+    (
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'balance_observation_revisions'",
+      ).get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (revisionSql && !/'provider-query-time'/iu.test(revisionSql)) {
+    db.exec(`
+      CREATE TABLE balance_observation_revisions_v28 (
+        revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+        observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+        source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+        capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+        balance_coefficient TEXT NOT NULL,
+        balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
+        currency TEXT NOT NULL CHECK(length(currency) = 3 AND currency GLOB '[A-Z][A-Z][A-Z]'),
+        effective_at TEXT NOT NULL,
+        effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN (
+          'source-reported','provider-http-date','provider-system-time','provider-query-time'
+        )),
+        effective_time_rule_version TEXT NOT NULL,
+        effective_time_evidence_source_record_key TEXT NOT NULL,
+        effective_time_evidence_source_field TEXT NOT NULL,
+        effective_time_evidence_value TEXT NOT NULL,
+        effective_time_evidence_contract_version TEXT NOT NULL,
+        effective_time_evidence_endpoint TEXT NOT NULL DEFAULT 'legacy/loan',
+        effective_time_evidence_response_status INTEGER NOT NULL DEFAULT 200 CHECK(effective_time_evidence_response_status = 200),
+        effective_time_evidence_cache_policy TEXT NOT NULL DEFAULT 'legacy',
+        observed_at TEXT NOT NULL,
+        UNIQUE(observation_id, revision_number)
+      );
+      INSERT INTO balance_observation_revisions_v28(
+        revision_id, observation_id, source_record_id, capture_id, commit_id,
+        revision_number, balance_coefficient, balance_scale, currency,
+        effective_at, effective_time_basis, effective_time_rule_version,
+        effective_time_evidence_source_record_key,
+        effective_time_evidence_source_field,
+        effective_time_evidence_value,
+        effective_time_evidence_contract_version,
+        effective_time_evidence_endpoint,
+        effective_time_evidence_response_status,
+        effective_time_evidence_cache_policy,
+        observed_at
+      )
+      SELECT revision_id, observation_id, source_record_id, capture_id, commit_id,
+        revision_number, balance_coefficient, balance_scale, currency,
+        effective_at, effective_time_basis, effective_time_rule_version,
+        effective_time_evidence_source_record_key,
+        effective_time_evidence_source_field,
+        effective_time_evidence_value,
+        effective_time_evidence_contract_version,
+        effective_time_evidence_endpoint,
+        effective_time_evidence_response_status,
+        effective_time_evidence_cache_policy,
+        observed_at
+      FROM balance_observation_revisions;
+      DROP TABLE balance_observation_revisions;
+      ALTER TABLE balance_observation_revisions_v28 RENAME TO balance_observation_revisions;
+      CREATE INDEX idx_balance_observation_revisions_current
+        ON balance_observation_revisions(observation_id, commit_id, effective_at);
+    `);
+  }
+  const observationSql = String(
+    (
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'balance_observations'",
+      ).get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+  if (!/'credit_used'/iu.test(observationSql)) {
+    db.exec(`
+      CREATE TABLE balance_observations_v28 (
+        observation_id BLOB PRIMARY KEY CHECK(length(observation_id) = 16),
+        account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+        observation_key TEXT NOT NULL,
+        balance_kind TEXT NOT NULL CHECK(balance_kind IN (
+          'loan_outstanding','outstanding_principal','outstanding_total',
+          'ledger','available','credit_used'
+        )),
+        balance_currency TEXT NOT NULL DEFAULT 'TWD'
+          CHECK(length(balance_currency) = 3 AND balance_currency GLOB '[A-Z][A-Z][A-Z]'),
+        created_capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+        created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+        UNIQUE(account_id, created_capture_id, observation_key, balance_kind, balance_currency)
+      );
+      INSERT INTO balance_observations_v28(
+        observation_id, account_id, observation_key, balance_kind,
+        balance_currency, created_capture_id, created_commit_id
+      ) SELECT observation_id, account_id, observation_key, balance_kind,
+               balance_currency, created_capture_id, created_commit_id
+          FROM balance_observations;
+      DROP TABLE balance_observations;
+      ALTER TABLE balance_observations_v28 RENAME TO balance_observations;
+    `);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_balance_observations_identity
+      ON balance_observations(account_id, balance_kind, balance_currency, observation_key);
+    CREATE INDEX IF NOT EXISTS idx_balance_observation_revisions_current
+      ON balance_observation_revisions(observation_id, commit_id, effective_at);
+    CREATE TRIGGER IF NOT EXISTS balance_observations_no_update
+    BEFORE UPDATE ON balance_observations
+    BEGIN SELECT RAISE(ABORT, 'Balance observations are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observations_no_delete
+    BEFORE DELETE ON balance_observations
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Balance observations cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observation_revisions_no_update
+    BEFORE UPDATE ON balance_observation_revisions
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS balance_observation_revisions_no_delete
+    BEFORE DELETE ON balance_observation_revisions
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions cannot be deleted'); END;
+
+    CREATE TABLE IF NOT EXISTS credit_card_balance_estimate_details (
+      revision_id BLOB PRIMARY KEY REFERENCES balance_observation_revisions(revision_id),
+      estimate_kind TEXT NOT NULL CHECK(estimate_kind = 'estimate'),
+      estimate_basis TEXT NOT NULL CHECK(estimate_basis IN (
+        'provider-used-credit', 'credit-limit-minus-available'
+      )),
+      formula TEXT NOT NULL,
+      component_limit_coefficient TEXT,
+      component_limit_scale INTEGER CHECK(component_limit_scale IS NULL OR component_limit_scale >= 0),
+      component_available_coefficient TEXT,
+      component_available_scale INTEGER CHECK(component_available_scale IS NULL OR component_available_scale >= 0),
+      CHECK((component_limit_coefficient IS NULL AND component_limit_scale IS NULL
+             AND component_available_coefficient IS NULL AND component_available_scale IS NULL)
+         OR (component_limit_coefficient IS NOT NULL AND component_limit_scale IS NOT NULL
+             AND component_available_coefficient IS NOT NULL AND component_available_scale IS NOT NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_card_balance_estimate_basis
+      ON credit_card_balance_estimate_details(estimate_basis, revision_id);
+    CREATE TRIGGER IF NOT EXISTS credit_card_balance_estimate_details_no_update
+    BEFORE UPDATE ON credit_card_balance_estimate_details
+    BEGIN SELECT RAISE(ABORT, 'Credit-card balance estimate details are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS credit_card_balance_estimate_details_no_delete
+    BEFORE DELETE ON credit_card_balance_estimate_details
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Credit-card balance estimate details cannot be deleted'); END;
+
+    CREATE TABLE IF NOT EXISTS current_credit_card_accounts (
+      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(generation_id, account_id)
+    );
+    CREATE TABLE IF NOT EXISTS current_credit_card_balance_observations (
+      generation_id INTEGER NOT NULL REFERENCES projection_generations(generation_id),
+      account_id BLOB NOT NULL REFERENCES financial_accounts(account_id),
+      balance_kind TEXT NOT NULL CHECK(balance_kind = 'credit_used'),
+      currency TEXT NOT NULL CHECK(length(currency) = 3 AND currency GLOB '[A-Z][A-Z][A-Z]'),
+      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+      revision_id BLOB NOT NULL REFERENCES balance_observation_revisions(revision_id),
+      estimate_kind TEXT NOT NULL CHECK(estimate_kind = 'estimate'),
+      estimate_basis TEXT NOT NULL CHECK(estimate_basis IN (
+        'provider-used-credit', 'credit-limit-minus-available'
+      )),
+      estimate_formula TEXT NOT NULL,
+      component_limit_coefficient TEXT,
+      component_limit_scale INTEGER CHECK(component_limit_scale IS NULL OR component_limit_scale >= 0),
+      component_available_coefficient TEXT,
+      component_available_scale INTEGER CHECK(component_available_scale IS NULL OR component_available_scale >= 0),
+      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      revision_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(generation_id, account_id, balance_kind, currency),
+      CHECK((component_limit_coefficient IS NULL AND component_limit_scale IS NULL
+             AND component_available_coefficient IS NULL AND component_available_scale IS NULL)
+         OR (component_limit_coefficient IS NOT NULL AND component_limit_scale IS NOT NULL
+             AND component_available_coefficient IS NOT NULL AND component_available_scale IS NOT NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_current_credit_card_balance_account
+      ON current_credit_card_balance_observations(account_id, generation_id, balance_kind, currency);
+  `);
+
+  db.prepare(
+    "INSERT OR REPLACE INTO schema_migrations(version, applied_at_utc_us) VALUES (28, ?)",
+  ).run(currentUtcMicros());
+  db.exec("PRAGMA user_version = 28");
+}
+
+function creditCardBalanceRevisionSchemaSql(db: DatabaseSync): string {
+  return String(
+    (
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'balance_observation_revisions'",
+      ).get() as { sql?: unknown } | undefined
+    )?.sql ?? "",
+  );
+}
+
+function hasCanonicalCreditCardBalanceProjectionSchema(db: DatabaseSync): boolean {
+  return relationType(db, "current_credit_card_accounts") === "table";
+}
+
+/**
+ * v28 current-version compatibility widening for databases that were opened
+ * before the E.SUN issuer query-time contract was added.  This is deliberately
+ * a lifecycle-owned table rebuild: existing revision rows are copied byte for
+ * byte, and the source schema version remains 28 because this is an additive
+ * contract repair rather than a new financial fact version.
+ */
+function ensureCreditCardBalanceTimeSchema(db: DatabaseSync): void {
+  if (/'provider-query-time'/iu.test(creditCardBalanceRevisionSchemaSql(db))) return;
+  if (relationType(db, "balance_observation_revisions_widened") === "table")
+    throw new Error("Canonical credit-card balance time widening has ambiguous staging state.");
+  const execute = (sql: string): void => {
+    try {
+      db.exec(sql);
+    } catch (error) {
+      throw new Error(
+        `Canonical credit-card balance time widening failed at ${sql.trim().split(/\s+/u).slice(0, 6).join(" ")}.`,
+        { cause: error },
+      );
+    }
+  };
+  execute(`
+    CREATE TABLE balance_observation_revisions_widened (
+      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+      observation_id BLOB NOT NULL REFERENCES balance_observations(observation_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+      balance_coefficient TEXT NOT NULL,
+      balance_scale INTEGER NOT NULL CHECK(balance_scale >= 0),
+      currency TEXT NOT NULL CHECK(length(currency) = 3 AND currency GLOB '[A-Z][A-Z][A-Z]'),
+      effective_at TEXT NOT NULL,
+      effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN (
+        'source-reported','provider-http-date','provider-system-time','provider-query-time'
+      )),
+      effective_time_rule_version TEXT NOT NULL,
+      effective_time_evidence_source_record_key TEXT NOT NULL,
+      effective_time_evidence_source_field TEXT NOT NULL,
+      effective_time_evidence_value TEXT NOT NULL,
+      effective_time_evidence_contract_version TEXT NOT NULL,
+      effective_time_evidence_endpoint TEXT NOT NULL DEFAULT 'legacy/loan',
+      effective_time_evidence_response_status INTEGER NOT NULL DEFAULT 200 CHECK(effective_time_evidence_response_status = 200),
+      effective_time_evidence_cache_policy TEXT NOT NULL DEFAULT 'legacy',
+      observed_at TEXT NOT NULL,
+      UNIQUE(observation_id, revision_number)
+    );
+  `);
+  execute(`
+    INSERT INTO balance_observation_revisions_widened(
+      revision_id, observation_id, source_record_id, capture_id, commit_id,
+      revision_number, balance_coefficient, balance_scale, currency,
+      effective_at, effective_time_basis, effective_time_rule_version,
+      effective_time_evidence_source_record_key,
+      effective_time_evidence_source_field,
+      effective_time_evidence_value,
+      effective_time_evidence_contract_version,
+      effective_time_evidence_endpoint,
+      effective_time_evidence_response_status,
+      effective_time_evidence_cache_policy,
+      observed_at
+    )
+    SELECT revision_id, observation_id, source_record_id, capture_id, commit_id,
+      revision_number, balance_coefficient, balance_scale, currency,
+      effective_at, effective_time_basis, effective_time_rule_version,
+      effective_time_evidence_source_record_key,
+      effective_time_evidence_source_field,
+      effective_time_evidence_value,
+      effective_time_evidence_contract_version,
+      effective_time_evidence_endpoint,
+      effective_time_evidence_response_status,
+      effective_time_evidence_cache_policy,
+      observed_at
+    FROM balance_observation_revisions;
+  `);
+  execute(`DROP INDEX IF EXISTS idx_balance_observation_revisions_current`);
+  execute(`DROP TABLE balance_observation_revisions`);
+  execute(`ALTER TABLE balance_observation_revisions_widened RENAME TO balance_observation_revisions`);
+  execute(`
+    CREATE INDEX idx_balance_observation_revisions_current
+      ON balance_observation_revisions(observation_id, commit_id, effective_at);
+    CREATE TRIGGER balance_observation_revisions_no_update
+    BEFORE UPDATE ON balance_observation_revisions
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions are immutable'); END;
+    CREATE TRIGGER balance_observation_revisions_no_delete
+    BEFORE DELETE ON balance_observation_revisions
+    WHEN canonical_purge_delete_allowed() = 0
+    BEGIN SELECT RAISE(ABORT, 'Balance observation revisions cannot be deleted'); END;
+  `);
+}
+
+function validateCanonicalCreditCardBalanceSchema(db: DatabaseSync): void {
+  requireCanonicalTable(db, "balance_observations", [
+    "observation_id", "account_id", "observation_key", "balance_kind",
+    "balance_currency", "created_capture_id", "created_commit_id",
+  ]);
+  for (const table of [
+    "credit_card_balance_estimate_details",
+    "current_credit_card_accounts",
+    "current_credit_card_balance_observations",
+  ])
+    if (relationType(db, table) !== "table")
+      throw new Error(`Canonical credit-card balance table ${table} is missing.`);
+  requireCanonicalTable(db, "credit_card_balance_estimate_details", [
+    "revision_id", "estimate_kind", "estimate_basis", "formula",
+    "component_limit_coefficient", "component_limit_scale",
+    "component_available_coefficient", "component_available_scale",
+  ]);
+  requireCanonicalTable(db, "current_credit_card_accounts", [
+    "generation_id", "account_id", "projection_commit_id", "created_commit_id",
+  ]);
+  requireCanonicalTable(db, "current_credit_card_balance_observations", [
+    "generation_id", "account_id", "balance_kind", "currency",
+    "observation_id", "revision_id", "estimate_kind", "estimate_basis",
+    "estimate_formula", "component_limit_coefficient", "component_limit_scale",
+    "component_available_coefficient", "component_available_scale",
+    "projection_commit_id", "revision_commit_id",
+  ]);
+  const triggerNames = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name?: unknown }>)
+      .map((row) => String(row.name ?? "")),
+  );
+  for (const name of [
+    "balance_observations_no_update",
+    "balance_observations_no_delete",
+    "balance_observation_revisions_no_update",
+    "balance_observation_revisions_no_delete",
+    "credit_card_balance_estimate_details_no_update",
+    "credit_card_balance_estimate_details_no_delete",
+  ])
+    if (!triggerNames.has(name))
+      throw new Error(`Canonical credit-card balance guard ${name} is missing.`);
+}
+
+function validateCreditCardBalanceTimeSchema(db: DatabaseSync): void {
+  if (!/'provider-query-time'/iu.test(creditCardBalanceRevisionSchemaSql(db)))
+    throw new Error("Canonical credit-card balance revision time schema is missing provider-query-time.");
+}
+
+function validateCanonicalDepositoryBalanceSchema(db: DatabaseSync): void {
+  requireCanonicalTable(db, "balance_observations", [
+    "observation_id",
+    "account_id",
+    "observation_key",
+    "balance_kind",
+    "balance_currency",
+    "created_capture_id",
+    "created_commit_id",
+  ]);
+  requireCanonicalTable(db, "balance_observation_revisions", [
+    "revision_id",
+    "observation_id",
+    "source_record_id",
+    "capture_id",
+    "commit_id",
+    "revision_number",
+    "balance_coefficient",
+    "balance_scale",
+    "currency",
+    "effective_at",
+    "effective_time_basis",
+    "effective_time_rule_version",
+    "effective_time_evidence_source_record_key",
+    "effective_time_evidence_source_field",
+    "effective_time_evidence_value",
+    "effective_time_evidence_contract_version",
+    "effective_time_evidence_endpoint",
+    "effective_time_evidence_response_status",
+    "effective_time_evidence_cache_policy",
+    "observed_at",
+  ]);
+  requireCanonicalTable(db, "current_depository_accounts", [
+    "generation_id",
+    "account_id",
+    "projection_commit_id",
+    "created_commit_id",
+  ]);
+  requireCanonicalTable(db, "current_depository_balance_observations", [
+    "generation_id",
+    "account_id",
+    "balance_kind",
+    "currency",
+    "observation_id",
+    "revision_id",
+    "projection_commit_id",
+    "revision_commit_id",
+  ]);
+  const triggerNames = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name?: unknown }>)
+      .map((row) => String(row.name ?? "")),
+  );
+  for (const name of [
+    "balance_observations_no_update",
+    "balance_observations_no_delete",
+    "balance_observation_revisions_no_update",
+    "balance_observation_revisions_no_delete",
+  ])
+    if (!triggerNames.has(name))
+      throw new Error(`Canonical depository balance guard ${name} is missing.`);
 }
 
 type CanonicalAttestationColumn = {
@@ -10058,6 +10935,14 @@ function canonicalAttestationSchemaRepairs(): readonly CanonicalSchemaRepair[] {
 export function createCanonicalSchemaLifecyclePlan(
   options: CanonicalDatabaseOptions = {},
 ): CanonicalSchemaLifecyclePlan {
+  // E.SUN collection runs in a child process while the desktop retains a
+  // shared runtime lease. Install its required physical extensions before
+  // returning the first runtime handle, not during the first financial commit.
+  // New repair IDs preserve the existing on-demand repair contracts.
+  const runtimeReadinessRepairs = new Map([
+    ["canonical/credit-card-extension/v1", "canonical/credit-card-runtime-readiness/v1"],
+    ["canonical/attestation/esun-credit-card-events/v1", "canonical/attestation/esun-credit-card-runtime-readiness/v1"],
+  ]);
   const freshBootstrapMarker = "canonical_fresh_v7_bootstrap";
   const advanceFreshBootstrap = (db: DatabaseSync, version: number): boolean => {
     if (!tableExists(db, freshBootstrapMarker)) return false;
@@ -10288,6 +11173,52 @@ export function createCanonicalSchemaLifecyclePlan(
         migrateV22ToV23(db, options.injectMigrationFailure);
       },
     },
+    {
+      id: "canonical/v23-v24/runtime-contract-purge-tag-delete-guard/v1",
+      fromVersion: 23,
+      toVersion: 24,
+      apply(db) {
+        migrateV23ToV24(db);
+      },
+    },
+    {
+      id: "canonical/v24-v25/security-name-observations/v1",
+      fromVersion: 24,
+      toVersion: 25,
+      apply(db) { migrateV24ToV25(db); },
+    },
+    {
+      id: "canonical/v25-v26/account-source-identifier/v1",
+      fromVersion: 25,
+      toVersion: 26,
+      immutableTableColumnRenames: [
+        {
+          table: "financial_accounts",
+          renames: [{ from: "account_no", to: "source_account_key" }],
+        },
+      ],
+      immutableDataCopyTables: [
+        "financial_account_identifier_observations",
+      ],
+      apply(db) { migrateV25ToV26(db); },
+    },
+    {
+      id: "canonical/v26-v27/current-depository-balance/v1",
+      fromVersion: 26,
+      toVersion: 27,
+      immutableDataCopyTables: [
+        "balance_observations",
+        "balance_observation_revisions",
+      ],
+      apply(db) { migrateV26ToV27(db); },
+    },
+    {
+      id: "canonical/v27-v28/current-credit-card-used-credit/v1",
+      fromVersion: 27,
+      toVersion: 28,
+      immutableDataCopyTables: ["balance_observations"],
+      apply(db) { migrateV27ToV28(db); },
+    },
     ],
   );
   return {
@@ -10421,8 +11352,88 @@ export function createCanonicalSchemaLifecyclePlan(
           validateFubonCreditCardSchema(db);
         },
       },
+      {
+        id: "canonical/runtime-contract-purge-audit/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "canonical_runtime_contract_purges",
+          "idx_canonical_runtime_contract_purges_scope",
+          "canonical_runtime_contract_purge_commits",
+          "idx_canonical_runtime_contract_purge_commits_commit",
+        ],
+        applies: (db) =>
+          relationType(db, "canonical_runtime_contract_purges") !== "table",
+        apply(db) {
+          ensureCanonicalRuntimeContractPurgeAuditSchema(db);
+        },
+        validate(db) {
+          validateCanonicalRuntimeContractPurgeAuditSchema(db);
+        },
+      },
+      {
+        id: "canonical/current-depository-balance-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "balance_observations",
+          "balance_observation_revisions",
+          "idx_balance_observations_identity",
+          "balance_observations_no_update",
+          "balance_observations_no_delete",
+          "balance_observation_revisions_no_update",
+          "balance_observation_revisions_no_delete",
+          "current_depository_accounts",
+          "current_depository_balance_observations",
+          "idx_current_depository_balance_account",
+        ],
+        applies: (db, context) =>
+          context.fromVersion < CANONICAL_SCHEMA_VERSION &&
+          relationType(db, "current_depository_accounts") !== "table",
+        apply(db) {
+          migrateV26ToV27(db);
+        },
+        validate(db) {
+          validateCanonicalDepositoryBalanceSchema(db);
+        },
+      },
+      {
+        id: "canonical/current-credit-card-balance-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          "balance_observations",
+          "balance_observation_revisions_v28",
+          "balance_observation_revisions_widened",
+          "balance_observation_revisions",
+          "idx_balance_observations_identity",
+          "idx_balance_observation_revisions_current",
+          "balance_observations_no_update",
+          "balance_observations_no_delete",
+          "balance_observation_revisions_no_update",
+          "balance_observation_revisions_no_delete",
+          "credit_card_balance_estimate_details",
+          "idx_credit_card_balance_estimate_basis",
+          "credit_card_balance_estimate_details_no_update",
+          "credit_card_balance_estimate_details_no_delete",
+          "current_credit_card_accounts",
+          "current_credit_card_balance_observations",
+          "idx_current_credit_card_balance_account",
+        ],
+        allowedDataCopyObjects: ["balance_observation_revisions_widened"],
+        applies: (db, context) =>
+          (context.fromVersion < CANONICAL_SCHEMA_VERSION &&
+            !hasCanonicalCreditCardBalanceProjectionSchema(db)) ||
+          !/'provider-query-time'/iu.test(creditCardBalanceRevisionSchemaSql(db)),
+        apply(db) {
+          if (!hasCanonicalCreditCardBalanceProjectionSchema(db))
+            migrateV27ToV28(db);
+          ensureCreditCardBalanceTimeSchema(db);
+        },
+        validate(db) {
+          validateCanonicalCreditCardBalanceSchema(db);
+          validateCreditCardBalanceTimeSchema(db);
+        },
+      },
     ],
-    repairs: [
+    repairs: ([
       {
         id: "canonical/foreign-currency-conversion-schema/v1",
         version: CANONICAL_SCHEMA_VERSION,
@@ -10501,7 +11512,18 @@ export function createCanonicalSchemaLifecyclePlan(
         },
       },
       ...canonicalAttestationSchemaRepairs(),
-    ],
+    ] satisfies CanonicalSchemaRepair[]).flatMap((repair) => {
+      const readinessId = runtimeReadinessRepairs.get(repair.id);
+      if (!readinessId) return [repair];
+      return [repair, {
+        ...repair,
+        id: readinessId,
+        allowOnDemand: false,
+        runOnCurrentVersion: true,
+        precondition: (db, context) =>
+          repair.precondition(db, { ...context, explicitRequest: true }),
+      } satisfies CanonicalSchemaRepair];
+    }),
     validateBeforeRepairs(db) {
       validateCanonicalSchemaMigrationMetadata(db);
       validateReadOnlyDatabase(db, {
@@ -10532,6 +11554,7 @@ export function createCanonicalSchemaLifecyclePlan(
         "source_connection_id",
         "identity_epoch_id",
         "stream",
+        "source_account_key",
         "account_no",
         "account_type",
         "currency",
@@ -10593,7 +11616,8 @@ function validateReadOnlyDatabase(
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   if (tableExists(db, "transaction_categorization_values"))
     validateCanonicalCategorizationSchema(db);
-  if (tableExists(db, "user_tags")) validateCanonicalDisplayAndTagsSchema(db);
+  if (tableExists(db, "user_tags"))
+    validateCanonicalDisplayAndTagsSchema(db, { requirePurgeDeleteGuard: false });
   // The lifecycle validates the physical audit schema only. Whether a
   // versioned financial/source cleanup has been applied is a data-transition
   // concern checked after a validated handle exists.
@@ -10793,7 +11817,7 @@ function validateReadOnlyDatabase(
     ],
     source_captures: [
       "capture_key",
-      "account_no",
+      "source_account_key",
       "source_subject_id",
       "record_kind",
       "completeness_basis",
@@ -10801,6 +11825,7 @@ function validateReadOnlyDatabase(
     ],
     capture_scopes: [
       "source_subject_id",
+      "source_account_key",
       "scope_kind",
       "contract_fingerprint",
       "preflight_fingerprint",
@@ -11224,12 +12249,17 @@ export function validateCanonicalDatabaseAfterLifecycle(
 ): void {
   validateCanonicalSchemaMigrationMetadata(db);
   validateReadOnlyDatabase(db, options);
+  for (const name of ["investment_security_name_observations", "investment_security_names_no_update", "investment_security_names_no_delete"]) {
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE name=?").get(name))
+      throw new Error(`Canonical Security name schema ${name} is missing.`);
+  }
   validateV8SourceEvidenceSchema(db);
   validateCanonicalCompatibilityViews(db);
   validateCanonicalCaptureScopeLifecycleSchema(db);
   validateFinancialAccountCurrencyLifecycleSchema(db);
   validateCanonicalFinancialRevisionLifecycleSchema(db);
   validateCanonicalTimeObservationLifecycleSchema(db);
+  validateCanonicalDepositoryBalanceSchema(db);
   validateForeignCurrencyConversionLifecycleSchema(db);
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   validateCanonicalCategorizationSchema(db);
@@ -11267,6 +12297,7 @@ export {
   validateFinancialAccountCurrencyLifecycleSchema,
   validateCanonicalFinancialRevisionLifecycleSchema,
   validateCanonicalTimeObservationLifecycleSchema,
+  validateCanonicalDepositoryBalanceSchema,
   validateForeignCurrencyConversionLifecycleSchema,
   hasCanonicalCreditCardExtension,
   hasFubonCreditCardExtension,
