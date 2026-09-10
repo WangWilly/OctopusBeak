@@ -268,6 +268,81 @@ test("Current Overview uses exact current holding valuation and exposes its trac
   }
 });
 
+test("Current Overview exposes investment transactions once with source descriptions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-overview-investment-transactions-"));
+  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  try {
+    const capture = investmentFixture();
+    capture.transactions.push(
+      {
+        sourceRecordKey: token("overview-investment-transaction-with-description"),
+        transactionKey: token("overview-investment-transaction-with-description-key"),
+        securityKey: "yuanta-trade:BTC",
+        action: "buy",
+        quantity: { coefficient: "2", scale: 0 },
+        cashEffect: { coefficient: "100", scale: 0, currency: "USD" },
+        effectiveOn: "2026-08-28",
+        description: "Provider investment memo",
+        fundingEvidence: {
+          kind: "unresolved",
+          sourceRecordKey: token("overview-investment-transaction-with-description"),
+        },
+      },
+      {
+        sourceRecordKey: token("overview-investment-transaction-without-description"),
+        transactionKey: token("overview-investment-transaction-without-description-key"),
+        securityKey: "yuanta-trade:BTC",
+        action: "sell",
+        quantity: { coefficient: "1", scale: 0 },
+        cashEffect: { coefficient: "50", scale: 0, currency: "USD" },
+        effectiveOn: "2026-08-29",
+        description: null,
+        fundingEvidence: {
+          kind: "unresolved",
+          sourceRecordKey: token("overview-investment-transaction-without-description"),
+        },
+      },
+    );
+    await commitCanonicalInvestmentCapture(
+      store,
+      admitCanonicalInvestmentCapture(capture),
+    );
+    store.close();
+
+    const current = await createCanonicalOverviewQuery(directory).current();
+    const account = current.projection.accounts.find((row) => row.kind === "crypto");
+    assert.ok(account);
+    const rows = current.projection.transactions.filter(
+      (transaction) => transaction.accountId === account.id,
+    );
+    assert.equal(rows.length, 3);
+    assert.equal(new Set(rows.map((transaction) => transaction.id)).size, rows.length);
+    assert.deepEqual(
+      rows.map((transaction) => ({
+        date: transaction.effectiveOn,
+        description: transaction.description,
+        direction: transaction.direction,
+        currency: transaction.currency,
+      })),
+      [
+        { date: "2026-08-28", description: "Provider investment memo", direction: "outflow", currency: "USD" },
+        { date: "2026-08-29", description: null, direction: "inflow", currency: "USD" },
+        { date: "2026-08-30", description: null, direction: "outflow", currency: "USD" },
+      ],
+    );
+    assert.equal(account.transactionCount, 3);
+
+    const assets = await loadAssets(directory, { expectedSources: [] });
+    assert.deepEqual(
+      assets.transactionsByAccount[account.id]?.map((transaction) => transaction.label),
+      ["Provider investment memo", "", ""],
+    );
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Current liabilities keep margin-only exposure visible without inventing a loan", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-margin-only-"));
   const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));

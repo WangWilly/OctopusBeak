@@ -305,21 +305,79 @@ test("accepts only an unmasked numeric brokerage account from CSV account_number
 });
 
 test("accepts the live YuanTa C-format brokerage account from BrkAccount_C50", () => {
-  assert.deepEqual(
-    deriveYuantaTradeAccountNumberEvidence("123C-0000001"),
-    {
-      value: "123C-0000001",
-      kind: "brokerage-account",
-      evidenceVersion: YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
-      sourceField: "BrkAccount_C50",
-    },
-  );
+  for (const accountNumber of ["123C-0000001", "984C-0209947", "984C-0209948"]) {
+    assert.deepEqual(
+      deriveYuantaTradeAccountNumberEvidence(accountNumber),
+      {
+        value: accountNumber,
+        kind: "brokerage-account",
+        evidenceVersion: YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+        sourceField: "BrkAccount_C50",
+      },
+    );
+  }
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123c-0000001"), null);
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123C00000001"), null);
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123C-000001"), null);
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123C-00000001"), null);
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123C-******1"), null);
   assert.equal(deriveYuantaTradeAccountNumberEvidence("123C-00000HASH"), null);
+});
+
+test("normalizes both affected C-format accounts from source trade rows", () => {
+  const rows = normalizeTradeRows(
+    [
+      {
+        reportType: "StockTrade",
+        url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+        title: "",
+        currentAssetType: "Stock",
+        currentTradeType: "StockTrade",
+        currentFinanceType: null,
+        queryDateType: null,
+        startDate: "2026/08/01",
+        endDate: "2026/08/31",
+        subCategory: null,
+        accountOptions: [],
+        summaryRows: [],
+        grids: [
+          {
+            gridId: "gridStock",
+            category: "Stock",
+            columns: [],
+            rows: [
+              {
+                交易日期: "2026/08/29",
+                交易帳號: "984C-0209947",
+                股票代號: "2330",
+                交易幣別: "TWD",
+                交易類別: "買進",
+                股數: "10",
+                交割金額: "1000",
+                交易備註: "memo-947",
+              },
+              {
+                交易日期: "2026/08/28",
+                交易帳號: "984C-0209948",
+                股票代號: "2317",
+                交易幣別: "TWD",
+                交易類別: "賣出",
+                股數: "20",
+                交割金額: "2000",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    { startDate: "2026/08/01", endDate: "2026/08/31" },
+  );
+  assert.deepEqual(rows.map((row) => row.account_number), [
+    "984C-0209947",
+    "984C-0209948",
+  ]);
+  assert.equal(rows[0]?.description, "memo-947");
+  assert.equal(rows[1]?.description, "");
 });
 
 test("leaves YuanTa funding evidence unresolved for an unsupported market", () => {
@@ -583,6 +641,38 @@ test("maps Yuanta holdings to their source-reported currency and value", () => {
     currency: "USD",
   });
   assert.equal(mapped.currency, "USD");
+});
+
+test("retains a Yuanta trade memo and leaves an absent memo empty", () => {
+  const withMemo = mapYuantaTradeCanonicalInvestmentRow(
+    "984C-0209947",
+    {
+      trade_date: "2026/08/29",
+      product_code: "SPY",
+      currency: "USD",
+      action: "買進",
+      quantity: "1",
+      settlement_amount: "100",
+      description: " source memo ",
+    },
+    "transaction",
+    0,
+  );
+  const withoutMemo = mapYuantaTradeCanonicalInvestmentRow(
+    "984C-0209948",
+    {
+      trade_date: "2026/08/29",
+      product_code: "SPY",
+      currency: "USD",
+      action: "買進",
+      quantity: "1",
+      settlement_amount: "100",
+    },
+    "transaction",
+    0,
+  );
+  assert.equal(withMemo.description, "source memo");
+  assert.equal(withoutMemo.description, undefined);
 });
 
 test("falls back to TWD for Yuanta holdings without an original value", () => {

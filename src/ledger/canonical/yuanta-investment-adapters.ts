@@ -19,6 +19,8 @@ export type YuantaCanonicalInvestmentRow = {
   valuation?: InvestmentMoney;
   action?: InvestmentTransactionAction;
   cashEffect?: InvestmentMoney;
+  /** Provider memo/description; null means the source did not provide one. */
+  description?: string | null;
   fundingEvidence?: InvestmentFundingEvidence;
   effectiveTimeEvidence?: {
     sourceField: string;
@@ -150,6 +152,7 @@ export function buildYuantaInvestmentCapture(
         quantity: row.quantity,
         cashEffect: row.cashEffect,
         effectiveOn: row.effectiveOn,
+        description: row.description?.trim() || null,
         fundingEvidence: {
           ...(row.fundingEvidence ?? {
             kind: "unresolved" as const,

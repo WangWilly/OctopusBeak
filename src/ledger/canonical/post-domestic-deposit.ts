@@ -21,6 +21,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
@@ -569,6 +570,7 @@ function postFinancialRecord(
   }
   const description = cells[3] ?? "";
   const note = cells[7] ?? "";
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const coreKey = postDigest(
     "post-observed-composite-fence-v1",
     subjectDigest,
@@ -611,6 +613,7 @@ function postFinancialRecord(
       amount,
       balanceAfter,
       currency: POST_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY,
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: transactionDate,

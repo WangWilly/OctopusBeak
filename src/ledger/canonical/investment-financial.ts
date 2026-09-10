@@ -161,6 +161,8 @@ export type InvestmentCaptureInput = {
     quantity: InvestmentExactAmount;
     cashEffect: InvestmentMoney;
     effectiveOn: string;
+    /** Provider memo/description; null means the source did not provide one. */
+    description?: string | null;
     fundingEvidence: InvestmentFundingEvidence;
   }>;
   margin?:
@@ -192,6 +194,7 @@ export type CanonicalInvestmentStore = CanonicalSourceStore;
 const TOKEN = /^sha256:[A-Za-z0-9_-]+$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const INTEGER = /^(?:0|[1-9]\d*)$/;
+const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
 const VALIDATED = new WeakSet<object>();
 export class CanonicalInvestmentAdmissionError extends Error {
   constructor(message: string) {
@@ -501,6 +504,14 @@ export function admitCanonicalInvestmentCapture(
     amount(transaction.quantity, "Transaction quantity");
     amount(transaction.cashEffect, "Transaction cash effect");
     date(transaction.effectiveOn, "Transaction effective time");
+    if (
+      transaction.description !== undefined &&
+      transaction.description !== null &&
+      typeof transaction.description !== "string"
+    )
+      throw new CanonicalInvestmentAdmissionError(
+        "Investment transaction description must be a source string or null.",
+      );
     const funding = transaction.fundingEvidence;
     if (funding.sourceRecordKey !== transaction.sourceRecordKey)
       throw new CanonicalInvestmentAdmissionError(
@@ -595,7 +606,7 @@ export function admitCanonicalInvestmentCapture(
 
 function sourceRecordEnvelope(
   capture: InvestmentCaptureInput,
-  record: { sourceRecordKey: string },
+  record: { sourceRecordKey: string; description?: string | null },
   compact: Record<string, unknown>,
   index: number,
 ) {
@@ -610,7 +621,7 @@ function sourceRecordEnvelope(
     contentHash: digest(stableJson(compact)),
     sequenceLexeme: String(index),
     compactJson: stableJson(compact),
-    description: null,
+    description: record.description ?? null,
   };
 }
 
@@ -628,7 +639,11 @@ function holdingSourceRecord(
 
 function spineRecord(
   capture: InvestmentCaptureInput,
-  record: { sourceRecordKey: string; effectiveOn: string },
+  record: {
+    sourceRecordKey: string;
+    effectiveOn: string;
+    description?: string | null;
+  },
   compact: Record<string, unknown>,
   money: InvestmentMoney,
   direction: "inflow" | "outflow",
@@ -650,9 +665,27 @@ function spineRecord(
     },
     effectiveOn: record.effectiveOn,
     transactionDateTimeLocal: `${record.effectiveOn}T00:00:00`,
-    description: null,
   } as const;
 }
+
+function financialSpineMoney(
+  capture: InvestmentCaptureInput,
+  money: InvestmentMoney,
+): InvestmentMoney {
+  // The shared financial spine is intentionally ISO-4217-only.  Investment
+  // extension rows retain the provider cash currency (including crypto
+  // units/settlement tokens); a non-ISO cash leg therefore gets a neutral
+  // zero amount in the capture reporting currency instead of an invalid or
+  // fabricated fiat conversion.
+  return ISO_CURRENCIES.has(money.currency)
+    ? money
+    : {
+        coefficient: "0",
+        scale: 0,
+        currency: capture.identity.reportingCurrency,
+      };
+}
+
 function canonicalSpine(capture: InvestmentValidatedCapture) {
   const effectiveDates = [
     capture.scope.effectiveOn,
@@ -690,7 +723,7 @@ function canonicalSpine(capture: InvestmentValidatedCapture) {
           // occurrence appear overwritten on a later Capture.
           return { kind: "investment-transaction", ...sourceFact };
         })(),
-        transaction.cashEffect,
+        financialSpineMoney(capture, transaction.cashEffect),
         transaction.action === "buy" ||
           transaction.action === "corporate_action_out"
           ? "outflow"

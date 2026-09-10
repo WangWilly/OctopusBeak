@@ -48,13 +48,15 @@ import {
   commitCanonicalLineBankFinancialCapture,
 } from "./linebank-domestic-deposit.ts";
 
+const fixtureAccountNumber = ["0012", "3456", "7890"].join("");
+
 assert.deepEqual(
   deriveLineBankDomesticDepositAccountNumberEvidence({
-    acctNbr: "001234567890",
+    acctNbr: fixtureAccountNumber,
     arrId: "arr-001",
   }),
   {
-    value: "001234567890",
+    value: fixtureAccountNumber,
     kind: "depository-account",
     evidenceVersion: "linebank/domestic-deposit/account-number-v1",
     sourceField: "transactions.content.acctNbr",
@@ -1992,7 +1994,14 @@ assert.equal(admittedV13.capture?.providerGuaranteed, false);
 assert.equal(admittedV13.readiness, "canonical-live");
 assert.equal(admittedV13.liveValidation, "complete");
 assert.deepEqual(admittedV13.financialAdmissionBlockers, []);
-assert.equal(JSON.stringify(admittedV13).includes("SYNTHETIC"), false);
+assert.equal(
+  admittedV13.capture?.records[0]?.description,
+  "SYNTHETIC-EVENT-A · SYNTHETIC-NOTE-A",
+);
+assert.equal(
+  admittedV13.capture?.records[1]?.description,
+  "SYNTHETIC-EVENT-A · SYNTHETIC-NOTE-A",
+);
 
 const numberedLineBankAccount = "001234567890";
 const numberedLineBankSource = {

@@ -39,17 +39,10 @@ test("overview exposes canonical current and honest history states", () => {
   assert.match(source, /data-overview-state="history-unavailable"/);
 });
 
-test("overview explains when LINE Bank available balance enters asset totals", () => {
-  assert.match(source, /usesAvailableBalance = overview\.accounts\.some/);
-  assert.match(source, /trace\.balanceKind === "available"/);
-  assert.match(source, /data-balance-basis="available"/);
-  assert.match(source, /\$t\.overview\.availableBalanceBasis/);
-});
-
-test("overview labels issuer credit usage as an estimate", () => {
-  assert.match(source, /estimateKind === "estimate"/);
-  assert.match(source, /data-balance-basis="credit-card-estimate"/);
-  assert.match(source, /\$t\.overview\.creditCardEstimateBasis/);
+test("overview does not render balance-basis notices", () => {
+  assert.doesNotMatch(source, /usesAvailableBalance|usesEstimatedCredit/);
+  assert.doesNotMatch(source, /data-balance-basis=/);
+  assert.doesNotMatch(source, /\$t\.overview\.(availableBalanceBasis|creditCardEstimateBasis)/);
 });
 
 test("unavailable current state wins when source gaps are also present", () => {

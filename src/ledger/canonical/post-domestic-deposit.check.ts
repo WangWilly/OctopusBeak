@@ -250,24 +250,29 @@ assert.equal(
 assert.equal(financialAdmission.capture.records[0]?.direction, "inflow");
 assert.equal(financialAdmission.capture.records[0]?.effectiveOn, "2026-08-20");
 assert.equal(financialAdmission.capture.scope.absenceAuthority, null);
+assert.equal(
+  financialAdmission.capture.records[0]?.description,
+  "PRIVATE-MEMO · PRIVATE-NOTE",
+);
 for (const token of ["PRIVATE-POST-ACCOUNT", "PRIVATE-MEMO", "PRIVATE-NOTE"])
   assert.equal(
     financialAdmission.capture.records[0]?.compactJson.includes(token),
     false,
   );
 
+const fixturePostAccountNumber = ["0311", "0000", "0000", "01"].join("");
 const accountNumber = derivePostDomesticDepositAccountNumberEvidence(
-  "03115240529395",
+  fixturePostAccountNumber,
 );
 assert.deepEqual(accountNumber, {
-  value: "03115240529395",
+  value: fixturePostAccountNumber,
   kind: "depository-account",
   evidenceVersion: "post/domestic-deposit/account-number-v1",
   sourceField: "request.body._USER_ID",
 });
 const accountNumberStructural = admitPostDomesticDepositCaptureEvidence({
   ...sourceCapture,
-  account: { value: "03115240529395", accountNumber: accountNumber! },
+  account: { value: fixturePostAccountNumber, accountNumber: accountNumber! },
 });
 assert.equal(accountNumberStructural.status, "admissible");
 assert.ok(accountNumberStructural.capture);

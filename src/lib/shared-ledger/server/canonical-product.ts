@@ -65,7 +65,7 @@ export function mapCanonicalProduct(
     rows.push({
       date: transaction.effectiveOn,
       occurredAtUtc: null,
-      label: transaction.description ?? "Canonical transaction",
+      label: transaction.description ?? "",
       type: transaction.direction,
       amount: exactAmountToNumber(amountExact),
       amountExact,

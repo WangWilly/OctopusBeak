@@ -22,6 +22,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
   HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -1128,6 +1129,7 @@ function hncbFinancialRecord(
   const description = normalizedCell(values[7]);
   const depositor = normalizedCell(values[8]);
   const note = normalizedCell(values[9]);
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const reference = normalizedCell(values[10]);
   const contentHash = hncbFinancialOpaque(
     "hncb-observed-content-v1",
@@ -1183,6 +1185,7 @@ function hncbFinancialRecord(
       amount,
       balanceAfter,
       currency: semantics.account.currency,
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: transactionDate,

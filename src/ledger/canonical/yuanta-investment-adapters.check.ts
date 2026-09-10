@@ -117,6 +117,51 @@ test("admits the live YuanTa C-format brokerage account into the investment iden
   );
 });
 
+test("admits both affected 984C brokerage accounts with dated trade evidence", () => {
+  for (const accountNumber of ["984C-0209947", "984C-0209948"]) {
+    const capture = buildYuantaInvestmentCapture({
+      sourceId: "yuanta-trade",
+      captureId: `c-format-${accountNumber}`,
+      sourceConnectionKey: token("a"),
+      identityEpochKey: token("b"),
+      accountKey: token(accountNumber === "984C-0209947" ? "c" : "e"),
+      accountNumber: {
+        value: accountNumber,
+        kind: "brokerage-account",
+        evidenceVersion: YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+        sourceField: "BrkAccount_C50",
+      },
+      reportingCurrency: "TWD",
+      observedAt: "2026-08-31T12:00:00.000Z",
+      sourceEffectiveOn: "2026-08-30",
+      holdings: [
+        {
+          sourceRecordKey: token(`${accountNumber}-holding`),
+          producerSecurityId: "US:SPY",
+          currency: "USD",
+          effectiveOn: "2026-08-30",
+          quantity: { coefficient: "2", scale: 0 },
+        },
+      ],
+      transactions: [
+        {
+          sourceRecordKey: token(`${accountNumber}-trade`),
+          producerSecurityId: "US:SPY",
+          currency: "USD",
+          effectiveOn: "2026-08-29",
+          action: "buy",
+          quantity: { coefficient: "1", scale: 0 },
+          cashEffect: { coefficient: "100", scale: 2, currency: "USD" },
+        },
+      ],
+    });
+    const admitted = admitCanonicalInvestmentCapture(capture);
+    assert.equal(admitted.identity.accountNumber?.value, accountNumber);
+    assert.equal(admitted.transactions.length, 1);
+    assert.equal(admitted.transactions[0]?.description, null);
+  }
+});
+
 test("Yuanta repeated holdings accept a source display-name change without changing Security identity", async () => {
   const directory = mkdtempSync(join(tmpdir(), "yuanta-security-name-"));
   const path = join(directory, "canonical.sqlite");

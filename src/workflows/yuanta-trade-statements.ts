@@ -1031,6 +1031,14 @@ export function normalizeTradeRows(
             "投資幣別",
           ]),
           action: rowValue(row, ["交易類別"]),
+          description: rowValue(row, [
+            "交易備註",
+            "備註",
+            "備註說明",
+            "描述",
+            "說明",
+            "交易摘要",
+          ]),
           source_transaction_reference: rowValue(row, [
             "交易序號",
             "委託書號",
@@ -1392,6 +1400,7 @@ export function mapYuantaTradeCanonicalInvestmentRow(
     currency: originalCurrency,
     effectiveOn: sourceDate(row.as_of_date || row.trade_date || ""),
     quantity: row.quantity ? exactAmount(row.quantity) : undefined,
+    description: row.description?.trim() || undefined,
     valuation: originalValue
       ? { ...exactAmount(originalValue), currency: originalCurrency }
       : twdValue

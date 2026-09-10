@@ -37,8 +37,16 @@
     writeFirstRunWelcomeState,
     type FirstRunWelcomeState,
   } from "$lib/welcome/state.ts";
+  import { createRouteLoadCache } from "./route-loader.ts";
 
   type RouteId = OnboardingRoute;
+  type RouteData = {
+    overview: OverviewPageDto;
+    assets: AssetsPageDto;
+    liabilities: LiabilitiesPageDto;
+    spending: SpendingPageDto;
+    automation: AutomationDesktopModel;
+  };
   type LoadState<T> =
     | { status: "loading" }
     | { status: "error"; message: string }
@@ -58,6 +66,7 @@
   let completingFirstRunWelcome = false;
   let overviewLoadedForImportFinishedAt: string | null = null;
   let overviewReloading = false;
+  const routeDataCache = createRouteLoadCache<RouteData>();
 
   function factsForOnboarding(
     nextRoute: RouteId,
@@ -103,8 +112,10 @@
     && !overviewReloading
     && automation.status === "ready"
     && completedImportFinishedAt(automation.data.automation.tasks)
+      !== overviewLoadedForImportFinishedAt
   ) {
-    void loadRoute("overview");
+    routeDataCache.clearAll();
+    void loadRoute("overview", { force: true });
   }
 
   function normalizeRoute() {
@@ -211,11 +222,12 @@
 
     try {
       const [automationData, overviewData] = await Promise.all([
-        window.octopusBeak.automation.load(),
-        window.octopusBeak.overview.load(),
+        routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
+        routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
       ]);
       automation = { status: "ready", data: automationData };
       overview = { status: "ready", data: overviewData };
+      overviewLoadedForImportFinishedAt = completedImportFinishedAt(automationData.automation.tasks);
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
         welcomeState: null,
         onboardingState: null,
@@ -228,20 +240,47 @@
     }
   }
 
-  async function loadRoute(next: RouteId) {
+  async function loadRoute(next: RouteId, options: { force?: boolean } = {}) {
     const importFinishedAt = next === "overview" && automation.status === "ready"
       ? completedImportFinishedAt(automation.data.automation.tasks)
       : null;
     if (next === "overview") overviewReloading = true;
     try {
       if (next === "overview") {
-        overview = { status: "ready", data: await window.octopusBeak.overview.load() };
+        overview = {
+          status: "ready",
+          data: await routeDataCache.load(
+            "overview",
+            () => window.octopusBeak.overview.load(),
+            options,
+          ),
+        };
         overviewLoadedForImportFinishedAt = importFinishedAt;
       }
-      if (next === "assets") assets = { status: "ready", data: await window.octopusBeak.assets.load() };
-      if (next === "liabilities") liabilities = { status: "ready", data: await window.octopusBeak.liabilities.load() };
-      if (next === "spending") spending = { status: "ready", data: await window.octopusBeak.spending.load() };
-      if (next === "automation") automation = { status: "ready", data: await window.octopusBeak.automation.load() };
+      if (next === "assets") {
+        assets = {
+          status: "ready",
+          data: await routeDataCache.load("assets", () => window.octopusBeak.assets.load(), options),
+        };
+      }
+      if (next === "liabilities") {
+        liabilities = {
+          status: "ready",
+          data: await routeDataCache.load("liabilities", () => window.octopusBeak.liabilities.load(), options),
+        };
+      }
+      if (next === "spending") {
+        spending = {
+          status: "ready",
+          data: await routeDataCache.load("spending", () => window.octopusBeak.spending.load(), options),
+        };
+      }
+      if (next === "automation") {
+        automation = {
+          status: "ready",
+          data: await routeDataCache.load("automation", () => window.octopusBeak.automation.load(), options),
+        };
+      }
     } catch (error) {
       const failed = { status: "error" as const, message: message(error) };
       if (next === "overview") overview = failed;
@@ -300,7 +339,7 @@
     <AutomationDashboard
       automation={automation.data.automation}
       credentialGroups={automation.data.credentialGroups}
-      reload={() => loadRoute("automation")}
+      reload={() => loadRoute("automation", { force: true })}
       onboardingSourceSelection={onboardingStep === "credentials"}
       onboardingSingleSource={shouldNarrowOnboardingSources(
         onboardingFacts,
@@ -333,7 +372,7 @@
     onFinish={finishOnboarding}
     onAddSource={addOnboardingSource}
     onBack={backOnboarding}
-    onRetryTarget={() => loadRoute(route)}
+    onRetryTarget={() => loadRoute(route, { force: true })}
     compact={onboardingCompact}
   />
 {/if}

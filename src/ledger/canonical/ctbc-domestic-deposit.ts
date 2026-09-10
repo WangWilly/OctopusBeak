@@ -21,6 +21,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
@@ -609,6 +610,7 @@ function financialRecord(
     };
   const description = cells[3] ?? "";
   const note = cells[7] ?? "";
+  const displayDescription = combineDomesticDepositDescription(description, note);
   const core = digest(
     "ctbc-observed-composite-fence-v1",
     subjectDigest,
@@ -652,6 +654,7 @@ function financialRecord(
       amount,
       balanceAfter,
       currency: "TWD",
+      description: displayDescription,
       direction,
       sourceTime: {
         localDate: transactionDate,

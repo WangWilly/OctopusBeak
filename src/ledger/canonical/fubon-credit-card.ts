@@ -654,8 +654,8 @@ function validateTransaction(
     const sign = signedAmount(record.signedAmount).sign;
     if (
       sign === "zero" ||
-      (sign === "negative" && record.direction !== "outflow") ||
-      (sign === "positive" && record.direction !== "inflow")
+      (sign === "negative" && record.direction !== "inflow") ||
+      (sign === "positive" && record.direction !== "outflow")
     )
       fail("Signed amount conflicts with transaction direction.");
   }

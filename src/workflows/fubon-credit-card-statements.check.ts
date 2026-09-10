@@ -867,7 +867,50 @@ assert.equal(canonicalCaptures[0]?.instruments.length, 2);
 assert.equal(canonicalCaptures[0]?.statements.length, 5);
 assert.equal(canonicalCaptures[0]?.transactions.length, 3);
 assert.equal(canonicalCaptures[0]?.transactions[2]?.billingStatus, "unbilled");
-assert.equal(canonicalCaptures[0]?.transactions[2]?.direction, "outflow");
+assert.equal(canonicalCaptures[0]?.transactions[2]?.direction, "inflow");
+assert.deepEqual(
+  canonicalCaptures[0]?.transactions
+    .slice()
+    .sort((left, right) => left.description.localeCompare(right.description))
+    .map((transaction) => ({
+      description: transaction.description,
+      direction: transaction.direction,
+      bookedAmount: transaction.bookedAmount,
+      bookedCurrency: transaction.bookedCurrency,
+      signedAmount: transaction.signedAmount,
+      postingStatus: transaction.postingStatus,
+      billingStatus: transaction.billingStatus,
+    })),
+  [
+    {
+      description: "SYNTHETIC A",
+      direction: "outflow",
+      bookedAmount: { coefficient: "1000", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "10.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      description: "SYNTHETIC B",
+      direction: "outflow",
+      bookedAmount: { coefficient: "2000", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "20.00",
+      postingStatus: "posted",
+      billingStatus: "billed",
+    },
+    {
+      description: "SYNTHETIC C",
+      direction: "inflow",
+      bookedAmount: { coefficient: "500", scale: 2 },
+      bookedCurrency: "TWD",
+      signedAmount: "-5.00",
+      postingStatus: "posted",
+      billingStatus: "unbilled",
+    },
+  ],
+);
 assert.equal(canonicalCaptures[0]?.statements[0]?.transactionSourceKeys.length, 2);
 assert.ok(
   canonicalCaptures[0]?.instruments.every((instrument) =>

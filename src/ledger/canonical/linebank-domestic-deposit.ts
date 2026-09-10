@@ -14,6 +14,7 @@ import {
   DOMESTIC_DEPOSIT_SOURCE_RECORD_STAGE,
   admitLineBankHumanAttestedV13Capture,
   admitDomesticDepositCapture,
+  combineDomesticDepositDescription,
   type DomesticDepositCapture,
   type DomesticDepositExactAmount,
   type DomesticDepositSourceRecord,
@@ -1099,6 +1100,8 @@ export type LineBankHumanAttestedV13Record = {
   amount: DomesticDepositExactAmount;
   balanceAfter: DomesticDepositExactAmount | null;
   currency: "TWD";
+  /** Source-provided transaction description and note, or null when absent. */
+  description?: string | null;
   cancellationFlags: { cncdTxYn: "N"; cnclTxYn: "N" };
 };
 
@@ -1560,6 +1563,7 @@ export function validateLineBankHumanAttestedV13Capture(
       amount,
       balanceAfter,
       currency: "TWD",
+      description: linebankTransactionDescription(row),
       cancellationFlags: { cncdTxYn: "N", cnclTxYn: "N" },
     });
   }
@@ -2315,6 +2319,7 @@ function canonicalSourceRecord(
     amount,
     balanceAfter,
     currency: "TWD",
+    description: linebankTransactionDescription(row),
     cancellation: "N",
     cancellationFlags: { cncdTxYn: "N", cnclTxYn: "N" },
     provenance: {
@@ -2322,6 +2327,16 @@ function canonicalSourceRecord(
       matchingRuleVersion: key.matchingRuleVersion,
     },
   };
+}
+
+function linebankTransactionDescription(
+  row: LineBankTransactionRow,
+): string | null {
+  const noteParts = [row.txRmkCont, row.txMemoVal]
+    .map(clean)
+    .filter(Boolean);
+  const note = [...new Set(noteParts)].join(" ");
+  return combineDomesticDepositDescription(row.bizTxFuncTpNm, note);
 }
 
 function validateSourceAuthority(

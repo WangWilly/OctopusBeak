@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { canonicalSqlitePath, openCanonicalDatabase } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
   type CanonicalProjectionCreditCardBalance,
   type CanonicalProjectionDepositoryBalance,
   type CanonicalProjectionFinancialAccount,
+  type CanonicalProjectionInvestmentTransaction,
   type CanonicalProjectionInvestmentHolding,
   type CanonicalProjectionSnapshot,
 } from "./canonical-projection-runtime.ts";
@@ -284,6 +286,7 @@ export function createCanonicalOverviewQuery(
               "overview-credit-card-balances",
               "investment-accounts",
               "investment-holdings",
+              "investment-transactions",
               "investment-margin-balances",
               "credit-card-statements",
             ],
@@ -292,6 +295,10 @@ export function createCanonicalOverviewQuery(
           return mapProjection(
             snapshot,
             expectedSources,
+            readInvestmentTransactionDescriptions(
+              opened,
+              snapshot.families["investment-transactions"],
+            ),
           );
         });
         return result(projection);
@@ -334,21 +341,13 @@ function unavailableProjection(
 function mapProjection(
   snapshot: CanonicalProjectionSnapshot,
   expectedSources: readonly CanonicalOverviewExpectedSource[],
+  investmentDescriptions: ReadonlyMap<string, string | null> = new Map(),
 ): CanonicalOverviewProjection {
   const accountRows = snapshot.families["financial-accounts"];
-  const transactions = snapshot.families.transactions.map((transaction) => ({
-    id: transaction.transactionId,
-    accountId: transaction.accountId,
-    amount: {
-      coefficient: transaction.amountCoefficient,
-      scale: transaction.amountScale,
-    },
-    currency: transaction.currency,
-    direction: transaction.direction,
-    postingStatus: transaction.postingStatus,
-    effectiveOn: transaction.effectiveOn,
-    description: transaction.description,
-  } satisfies CanonicalOverviewTransaction));
+  const transactions = mapProjectionTransactions(
+    snapshot,
+    investmentDescriptions,
+  );
   if (accountRows.length === 0) {
     const sourceGaps = expectedSources.map((source) =>
       expectedSourceGap(source, "source-not-collected"),
@@ -365,7 +364,7 @@ function mapProjection(
   }
 
   const transactionsByAccount = new Map<string, number>();
-  for (const transaction of snapshot.families.transactions)
+  for (const transaction of transactions)
     transactionsByAccount.set(
       transaction.accountId,
       (transactionsByAccount.get(transaction.accountId) ?? 0) + 1,
@@ -502,6 +501,88 @@ function mapProjection(
     importedAt,
     knowledgePoint: snapshot.knowledgePoint,
   };
+}
+
+function readInvestmentTransactionDescriptions(
+  db: DatabaseSync,
+  transactions: readonly CanonicalProjectionInvestmentTransaction[],
+): ReadonlyMap<string, string | null> {
+  const transactionIds = [...new Set(transactions.map((transaction) => transaction.transactionId))];
+  if (transactionIds.length === 0) return new Map();
+  const placeholders = transactionIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT lower(hex(investment_transaction.transaction_id)) AS transaction_id,
+              source_record.description
+         FROM investment_transactions investment_transaction
+         JOIN source_records source_record
+           ON source_record.source_record_id = investment_transaction.source_record_id
+        WHERE lower(hex(investment_transaction.transaction_id)) IN (${placeholders})`,
+    )
+    .all(...transactionIds) as Array<{
+      transaction_id?: unknown;
+      description?: unknown;
+    }>;
+  return new Map(
+    rows.map((row) => [
+      String(row.transaction_id),
+      typeof row.description === "string" ? row.description : null,
+    ]),
+  );
+}
+
+function mapProjectionTransactions(
+  snapshot: CanonicalProjectionSnapshot,
+  investmentDescriptions: ReadonlyMap<string, string | null>,
+): readonly CanonicalOverviewTransaction[] {
+  const byId = new Map<string, CanonicalOverviewTransaction>();
+  for (const transaction of snapshot.families.transactions) {
+    byId.set(transaction.transactionId, {
+      id: transaction.transactionId,
+      accountId: transaction.accountId,
+      amount: {
+        coefficient: transaction.amountCoefficient,
+        scale: transaction.amountScale,
+      },
+      currency: transaction.currency,
+      direction: transaction.direction,
+      postingStatus: transaction.postingStatus,
+      effectiveOn: transaction.effectiveOn,
+      description: transaction.description,
+    });
+  }
+  for (const transaction of snapshot.families["investment-transactions"]) {
+    const existing = byId.get(transaction.transactionId);
+    const description = existing?.description ??
+      investmentDescriptions.get(transaction.transactionId) ?? null;
+    if (existing) {
+      if (existing.description !== description)
+        byId.set(transaction.transactionId, { ...existing, description });
+      continue;
+    }
+    byId.set(transaction.transactionId, {
+      id: transaction.transactionId,
+      accountId: transaction.accountId,
+      amount: {
+        coefficient: transaction.cashCoefficient,
+        scale: transaction.cashScale,
+      },
+      currency: transaction.cashCurrency,
+      direction: investmentTransactionDirection(transaction.action),
+      postingStatus: "posted",
+      effectiveOn: transaction.effectiveOn,
+      description,
+    });
+  }
+  return [...byId.values()].sort((left, right) =>
+    left.effectiveOn.localeCompare(right.effectiveOn) || left.id.localeCompare(right.id),
+  );
+}
+
+function investmentTransactionDirection(action: string): "inflow" | "outflow" {
+  return action === "buy" || action === "corporate_action_out"
+    ? "outflow"
+    : "inflow";
 }
 
 function mapCreditCardStatements(

@@ -214,7 +214,11 @@ export async function runAutomationBatch(
     (taskId) => taskId !== "import-downloads-csv",
   );
   const errors: unknown[] = [];
-  await runWithConcurrency(selectedTaskIds, 2, execute).catch((error) => {
+  // Each automation workflow can open the canonical database in its own
+  // Libretto process. Keep the batch on one slot so those processes never
+  // contend for the lifecycle's exclusive path lease while a capture is
+  // being admitted or the projection is rebuilt.
+  await runWithConcurrency(selectedTaskIds, 1, execute).catch((error) => {
     errors.push(error);
   });
   if (
