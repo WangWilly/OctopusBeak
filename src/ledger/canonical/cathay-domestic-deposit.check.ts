@@ -539,7 +539,7 @@ try {
   const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
   try {
     for (const [table, expected] of [
-      ["canonical_commits", 1],
+      ["canonical_commits", 2],
       ["source_connections", 1],
       ["identity_epochs", 1],
       ["source_captures", 1],
@@ -790,7 +790,7 @@ try {
       repeatDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      6,
+      12,
     );
   } finally {
     repeatDb.close();
@@ -832,6 +832,8 @@ try {
     "source_records",
     "transaction_revisions",
     "transaction_time_observations",
+    "enrichment_run_outputs",
+    "enrichment_taxonomy_assertion_values",
     "assertion_provenance",
     "source_record_scopes",
   ]) {
@@ -893,7 +895,7 @@ try {
   const boundaryQuery = createBoundaryCanonicalQuery(ledgerDir);
   assert.equal(
     (await boundaryQuery.current({ kind: "current" })).commitSequence,
-    repeated.commitSequence,
+    repeated.commitSequence + 1,
   );
 
   assert.equal(
@@ -950,7 +952,7 @@ try {
     assert.equal(
       multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
         ?.count,
-      1,
+      2,
     );
     assert.equal(
       multiDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -1037,7 +1039,7 @@ try {
     ...syncInput([syncPage(), syncPage(secondAccount, secondRaw)]),
     observedAt: "2026-08-18T00:00:00+08:00",
   });
-  assert.equal(repeated.commitSequence, 2);
+  assert.equal(repeated.commitSequence, 3);
   const repeatedDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
   try {
     assert.equal(
@@ -1066,7 +1068,7 @@ try {
       repeatedDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      12,
+      24,
     );
   } finally {
     repeatedDb.close();
@@ -1187,7 +1189,7 @@ try {
       provenanceOnlyV4Migrated
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      6,
+      12,
     );
     assert.equal(
       provenanceOnlyV4Migrated
@@ -1283,15 +1285,28 @@ try {
         "SELECT commit_id FROM current_projection_state WHERE generation = 1",
       )
       .get() as Record<string, unknown>;
-    assert.deepEqual(
-      Buffer.from(migratedProjection.projection_commit_id as Uint8Array),
-      Buffer.from(migratedState.commit_id as Uint8Array),
-    );
+    const projectionRow = restoredMigrationDb
+      .prepare(
+        "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?",
+      )
+      .get(migratedProjection.projection_commit_id as Uint8Array) as
+      | { commit_sequence?: unknown }
+      | undefined;
+    const stateRow = restoredMigrationDb
+      .prepare(
+        "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?",
+      )
+      .get(migratedState.commit_id as Uint8Array) as
+      | { commit_sequence?: unknown }
+      | undefined;
+    const projectionSequence = Number(projectionRow?.commit_sequence);
+    const stateSequence = Number(stateRow?.commit_sequence);
+    assert.equal(stateSequence >= projectionSequence, true);
     assert.notDeepEqual(
       Buffer.from(migratedProjection.revision_commit_id as Uint8Array),
       Buffer.from(migratedProjection.projection_commit_id as Uint8Array),
     );
-    assert.equal(restoration.commitSequence, 3);
+    assert.equal(restoration.commitSequence, 4);
   } finally {
     restoredMigrationDb.close();
   }
@@ -1501,7 +1516,7 @@ try {
   );
   assert.equal(
     (await withdrawnQuery.current({ kind: "current" })).commitSequence,
-    restored.commitSequence,
+    restored.commitSequence + 1,
   );
   const restoredProjectionDb = openCanonicalDatabase(lifecycleDir, {
     readOnly: true,
@@ -1521,10 +1536,25 @@ try {
       Buffer.from(projection.commit_id as Uint8Array),
       Buffer.from(projection.projection_commit_id as Uint8Array),
     );
-    assert.deepEqual(
-      Buffer.from(projection.commit_id as Uint8Array),
-      Buffer.from(projectionState.commit_id as Uint8Array),
+    const projectionCommitSequence = Number(
+      (
+        restoredProjectionDb
+          .prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?")
+          .get(projection.commit_id as Uint8Array) as
+          | { commit_sequence?: unknown }
+          | undefined
+      )?.commit_sequence,
     );
+    const projectionStateSequence = Number(
+      (
+        restoredProjectionDb
+          .prepare("SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?")
+          .get(projectionState.commit_id as Uint8Array) as
+          | { commit_sequence?: unknown }
+          | undefined
+      )?.commit_sequence,
+    );
+    assert.equal(projectionStateSequence >= projectionCommitSequence, true);
     assert.notDeepEqual(
       Buffer.from(projection.revision_commit_id as Uint8Array),
       Buffer.from(projection.projection_commit_id as Uint8Array),
@@ -1775,7 +1805,7 @@ try {
           "SELECT COUNT(*) AS count FROM assertions WHERE origin = 'derived'",
         )
         .get()?.count,
-      1,
+      4,
     );
     assert.equal(
       sharedSpineAfterFirst
@@ -1783,7 +1813,7 @@ try {
           "SELECT COUNT(*) AS count FROM assertion_transitions WHERE event_kind = 'observed'",
         )
         .get()?.count,
-      source.transactions.length + 1,
+      source.transactions.length * 2 + 1,
     );
     assert.equal(
       sharedSpineAfterFirst
@@ -3091,7 +3121,7 @@ try {
       contendedDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      6,
+      12,
     );
   } finally {
     contendedDb.close();

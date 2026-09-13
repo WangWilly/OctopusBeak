@@ -302,6 +302,8 @@ test("production schema registry declares every published version transition", (
     (plan.repairs ?? []).map(({ id }) => id),
     [
       "canonical/foreign-currency-conversion-schema/v1",
+      "canonical/einvoice-schema/v1",
+      "canonical/spending-recognition/v1",
       "canonical/credit-card-extension/v1",
       "canonical/credit-card-runtime-readiness/v1",
       "canonical/fubon-credit-card-extension/v1",

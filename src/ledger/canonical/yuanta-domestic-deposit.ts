@@ -12,6 +12,9 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   canonicalSourceAdmissionCommitResult,
@@ -1516,7 +1519,15 @@ export async function commitCanonicalYuantaDomesticDepositCapture(
     store.db,
     input.capture.observedAt,
   );
-  return commitCanonicalFinancialDepositCapture(store, admission.capture);
+  return commitCanonicalFinancialDepositCapture(
+    store,
+    admission.capture,
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
+  );
 }
 
 export function isYuantaSourceOnlyFinancialDiagnostic(

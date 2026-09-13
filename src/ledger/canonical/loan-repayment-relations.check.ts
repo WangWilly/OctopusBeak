@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+import { queryCanonicalSpendingCurrentFromDatabase } from "./canonical-categorization.ts";
 import {
   CANONICAL_SOURCE_SCHEMA_VERSION,
   createCanonicalSourceStore,
@@ -27,6 +28,10 @@ import {
   type CanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
+  BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+} from "./transaction-taxonomy.ts";
 import {
   admitCounterpartyAccountEvidence,
   counterpartyAccountDigest,
@@ -336,6 +341,55 @@ async function commitPair(
   return { store, loan, deposit };
 }
 
+function currentKindForDescription(
+  store: ReturnType<typeof createCanonicalSourceStore>,
+  sourceConnectionKey: string,
+  description: string,
+): string | null {
+  const projection = createCanonicalProjectionRuntime(store.db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment"],
+    scope: { sourceConnectionKey },
+  });
+  const transaction = projection.families.transactions.find(
+    (row) => row.description === description,
+  );
+  if (!transaction) return null;
+  return (
+    projection.families["transaction-enrichment"].find(
+      (row) =>
+        row.transactionId === transaction.transactionId &&
+        row.fieldName === "kind",
+    )?.taxonomyCode ?? null
+  );
+}
+
+function currentKindForSourceRecord(
+  store: ReturnType<typeof createCanonicalSourceStore>,
+  sourceConnectionKey: string,
+  sourceRecordKey: string,
+): string | null {
+  const row = store.db
+    .prepare(
+      `SELECT lower(hex(transaction_id)) AS transaction_id
+         FROM financial_transactions
+        WHERE source_sequence = ?`,
+    )
+    .get(sourceRecordKey) as { transaction_id?: string } | undefined;
+  if (!row?.transaction_id) return null;
+  const projection = createCanonicalProjectionRuntime(store.db).read({
+    kind: "current",
+    families: ["transaction-enrichment"],
+    scope: { sourceConnectionKey },
+  });
+  return (
+    projection.families["transaction-enrichment"].find(
+      (entry) =>
+        entry.transactionId === row.transaction_id && entry.fieldName === "kind",
+    )?.taxonomyCode ?? null
+  );
+}
+
 function evidenceInput(
   captureId: string,
   sourceRecordKey: string,
@@ -604,6 +658,28 @@ test("resolver admits direct exact transfer counterpart across independent captu
     assert.equal(first.exactRelationIds.length, 1);
     assert.ok(first.resolutionId);
     assert.equal(queryCurrentLoanRepaymentRelations(pair.store).length, 1);
+    assert.equal(
+      currentKindForDescription(
+        pair.store,
+        sourceConnectionKey,
+        "relation check deposit outflow 0",
+      ),
+      "payment.loan",
+    );
+    const spendingAfterRelation = queryCanonicalSpendingCurrentFromDatabase(
+      pair.store.db,
+    );
+    const depositTransaction = spendingAfterRelation.transactions.find(
+      (transaction) => transaction.description === "relation check deposit outflow 0",
+    );
+    assert.equal(depositTransaction?.kind, "payment.loan");
+    assert.equal(
+      spendingAfterRelation.includedTransactions.some(
+        (transaction) => transaction.description === "relation check deposit outflow 0",
+      ),
+      false,
+      "an active loan repayment is excluded from Spending immediately",
+    );
     const resolutionCommit = pair.store.db
       .prepare(
         `SELECT canonical_commit.commit_sequence,
@@ -750,6 +826,247 @@ test("resolver admits direct exact transfer counterpart across independent captu
   } finally {
     const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
     if (!storeClosed) pair.store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("resolver-driven group withdrawal refreshes loan kind and Spending without recapture", async () => {
+  const sourceConnectionKey = token("withdrawal-kind-connection");
+  const pair = await commitPair(
+    sourceConnectionKey,
+    token("withdrawal-kind-deposit-epoch"),
+    "withdrawal-kind",
+    2,
+  );
+  const replacementLoan = loanCapture(
+    sourceConnectionKey,
+    token("withdrawal-kind-replacement-loan-epoch"),
+    "withdrawal-kind-replacement-loan",
+  );
+  const replacementDeposit = depositCapture(
+    sourceConnectionKey,
+    token("withdrawal-kind-replacement-deposit-epoch"),
+    "withdrawal-kind-replacement-deposit",
+  );
+  try {
+    // The replacement captures already exist before relation resolution. The
+    // second resolver pass changes only source-backed relation evidence, so
+    // the kind refresh below proves that no new bank capture is required.
+    await commitCanonicalLoanCapture(pair.store, replacementLoan);
+    await commitCanonicalFinancialDepositCapture(pair.store, replacementDeposit);
+
+    const accountValue = "withdrawal-kind-account";
+    for (const record of pair.deposit.records)
+      await persistCounterpartyAccountEvidence(
+        pair.store,
+        evidenceInput(
+          pair.deposit.captureId,
+          record.occurrenceKey,
+          sourceConnectionKey,
+          pair.deposit.identity.identityEpochKey,
+          accountValue,
+        ),
+      );
+    for (const record of pair.loan.records)
+      await persistCounterpartyAccountEvidence(
+        pair.store,
+        evidenceInput(
+          pair.loan.captureId,
+          record.sourceRecordKey,
+          sourceConnectionKey,
+          pair.loan.identity.identityEpochKey,
+          accountValue,
+        ),
+      );
+
+    const initial = await resolveLoanRepaymentRelations(pair.store, {
+      sourceConnectionKey,
+      integrationNamespace: "fubon",
+    });
+    assert.equal(initial.settlementGroupIds.length, 1);
+    assert.equal(
+      currentKindForSourceRecord(
+        pair.store,
+        sourceConnectionKey,
+        pair.deposit.records[0]!.occurrenceKey,
+      ),
+      "payment.loan",
+    );
+    const initialSpending = queryCanonicalSpendingCurrentFromDatabase(
+      pair.store.db,
+    );
+    const oldDepositIds = pair.deposit.records.map((record) => {
+      const row = pair.store.db
+        .prepare(
+          "SELECT lower(hex(transaction_id)) AS transaction_id FROM financial_transactions WHERE source_sequence = ?",
+        )
+        .get(record.occurrenceKey) as { transaction_id?: string } | undefined;
+      assert.ok(row?.transaction_id);
+      return row.transaction_id;
+    });
+    assert.equal(
+      oldDepositIds.some((transactionId) =>
+        initialSpending.includedTransactions.some(
+          (transaction) => transaction.transactionId === transactionId,
+        ),
+      ),
+      false,
+      "an active repayment group is excluded from Spending",
+    );
+
+    // There is no public evidence-revocation operation yet. Model the source
+    // correction by removing the stale transaction-scoped assertions only;
+    // the resolver must create the withdrawal event itself.
+    const staleRecordKeys = [
+      ...pair.deposit.records.map((record) => record.occurrenceKey),
+      ...pair.loan.records.map((record) => record.sourceRecordKey),
+    ];
+    const placeholders = staleRecordKeys.map(() => "?").join(",");
+    pair.store.db.exec("BEGIN IMMEDIATE");
+    try {
+      pair.store.db
+        .prepare(
+          `DELETE FROM counterparty_account_evidence_support
+             WHERE evidence_id IN (
+               SELECT evidence_id
+                 FROM transaction_counterparty_account_evidence
+                WHERE transaction_id IN (
+                  SELECT transaction_id
+                    FROM financial_transactions
+                   WHERE source_sequence IN (${placeholders})
+                )
+             )`,
+        )
+        .run(...staleRecordKeys);
+      pair.store.db
+        .prepare(
+          `DELETE FROM transaction_counterparty_account_evidence
+           WHERE transaction_id IN (
+             SELECT transaction_id
+               FROM financial_transactions
+              WHERE source_sequence IN (${placeholders})
+           )`,
+        )
+        .run(...staleRecordKeys);
+      pair.store.db.exec("COMMIT");
+    } catch (error) {
+      pair.store.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    for (const [capture, records, epoch] of [
+      [
+        replacementDeposit,
+        replacementDeposit.records,
+        replacementDeposit.identity.identityEpochKey,
+      ] as const,
+    ])
+      for (const record of records)
+        await persistCounterpartyAccountEvidence(
+          pair.store,
+          evidenceInput(
+            capture.captureId,
+            record.occurrenceKey,
+            sourceConnectionKey,
+            epoch,
+            accountValue,
+          ),
+        );
+    for (const record of replacementLoan.records)
+      await persistCounterpartyAccountEvidence(
+        pair.store,
+        evidenceInput(
+          replacementLoan.captureId,
+          record.sourceRecordKey,
+          sourceConnectionKey,
+          replacementLoan.identity.identityEpochKey,
+          accountValue,
+        ),
+      );
+
+    const withdrawn = await resolveLoanRepaymentRelations(pair.store, {
+      sourceConnectionKey,
+      integrationNamespace: "fubon",
+    });
+    assert.equal(withdrawn.outcome, "changed");
+    assert.equal(withdrawn.exactRelationIds.length, 1);
+    assert.equal(queryCurrentLoanRepaymentSettlementGroups(pair.store).length, 0);
+    assert.equal(
+      (pair.store.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM loan_repayment_relation_events WHERE event_kind = 'withdrawn'",
+        )
+        .get() as { count?: number }).count,
+      1,
+    );
+    const relationKindRuns = pair.store.db
+      .prepare(
+        `SELECT producer_version, rule_lineage
+           FROM enrichment_runs
+          WHERE producer_id = ?
+          ORDER BY rowid`,
+      )
+      .all(BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID) as Array<{
+      producer_version?: string;
+      rule_lineage?: string;
+    }>;
+    assert.ok(relationKindRuns.length >= 2);
+    assert.ok(
+      relationKindRuns.every(
+        (run) => run.producer_version === BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+      ),
+      "relation refreshes stay within the current producer version",
+    );
+    assert.ok(
+      new Set(relationKindRuns.map((run) => run.rule_lineage)).size >= 2,
+      "relation state changes produce distinct enrichment lineage",
+    );
+    assert.equal(
+      currentKindForSourceRecord(
+        pair.store,
+        sourceConnectionKey,
+        pair.deposit.records[0]!.occurrenceKey,
+      ),
+      "purchase",
+    );
+    assert.equal(
+      currentKindForSourceRecord(
+        pair.store,
+        sourceConnectionKey,
+        replacementDeposit.records[0]!.occurrenceKey,
+      ),
+      "payment.loan",
+    );
+    const spendingAfterWithdrawal = queryCanonicalSpendingCurrentFromDatabase(
+      pair.store.db,
+    );
+    assert.equal(
+      oldDepositIds.every((transactionId) =>
+        spendingAfterWithdrawal.includedTransactions.some(
+          (transaction) => transaction.transactionId === transactionId,
+        ),
+      ),
+      true,
+      "a withdrawn repayment is included in Spending as purchase",
+    );
+    const replacementRow = pair.store.db
+      .prepare(
+        "SELECT lower(hex(transaction_id)) AS transaction_id FROM financial_transactions WHERE source_sequence = ?",
+      )
+      .get(replacementDeposit.records[0]!.occurrenceKey) as {
+      transaction_id?: string;
+    } | undefined;
+    assert.ok(replacementRow?.transaction_id);
+    assert.equal(
+      spendingAfterWithdrawal.includedTransactions.some(
+        (transaction) => transaction.transactionId === replacementRow.transaction_id,
+      ),
+      false,
+      "the replacement active repayment remains excluded from Spending",
+    );
+  } finally {
+    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

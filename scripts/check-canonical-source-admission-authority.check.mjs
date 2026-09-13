@@ -34,6 +34,13 @@ test("source admission authority rejects legacy and unauthorized internal caller
           "const productWriterArrow = () => db.prepare('INSERT INTO source_records(source_record_id) VALUES (?)');",
         ].join("\n"),
       },
+      {
+        path: "src/ledger/canonical/einvoice.ts",
+        source: [
+          "CanonicalSourceCaptureAdmissionTransactionResult;",
+          "withCanonicalSourceCaptureAdmissionTransaction(store, operation);",
+        ].join("\n"),
+      },
     ]),
     [
       {

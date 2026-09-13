@@ -12,6 +12,9 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "assets:load",
   "liabilities:load",
   "spending:load",
+  "spending:confirmCandidate",
+  "spending:denyCandidate",
+  "spending:revokeLink",
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
   "automation:load",
@@ -33,26 +36,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
   "automation:forceQuit",
-  "dataIssues:list",
-  "dataIssues:create",
-  "dataIssues:load",
-  "dataIssues:startDiagnosis",
-  "dataIssues:previewExclusion",
-  "dataIssues:confirmExclusion",
-  "dataIssues:previewRestore",
-  "dataIssues:confirmRestore",
 ]);
-
-for (const channel of [
-  "dataIssues:list",
-  "dataIssues:create",
-  "dataIssues:load",
-  "dataIssues:startDiagnosis",
-  "dataIssues:previewExclusion",
-  "dataIssues:confirmExclusion",
-  "dataIssues:previewRestore",
-  "dataIssues:confirmRestore",
-] as const) assert.ok(octopusBeakApiChannels.includes(channel));
 
 import type { OctopusBeakApi } from "./api.ts";
 

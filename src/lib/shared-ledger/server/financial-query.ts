@@ -1,21 +1,11 @@
+import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
+import { channel } from "node:diagnostics_channel";
+import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import {
-  DEFAULT_LEDGER_DIR,
-  openLedgerDatabase,
-  openLedgerDrizzle,
-} from "../../../ledger/db/client.ts";
-import * as schema from "../../../ledger/db/schema.ts";
-import {
-  applyLedgerVisibility,
-  loadActiveLedgerSupport,
-  loadUnavailableAccountIssues,
-} from "../../data-issues/server/ledger-visibility.ts";
-import {
-  emptyLedgerQueryData,
-  unavailableAccountFromIssue,
-  type LedgerQueryData,
-  type UnavailableAccountIssue,
-} from "./accounts.ts";
-import type { AccountRowDto } from "../types.ts";
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../../../ledger/canonical/canonical-source-store.ts";
 import {
   createCathayCanonicalFinancialQuery as createCathayCanonicalQuery,
   type CathayCanonicalFinancialQuery,
@@ -28,8 +18,24 @@ import {
 } from "../../../ledger/canonical/canonical-overview-query.ts";
 import {
   createCanonicalSpendingQuery,
+  queryCanonicalSpendingCurrentFromDatabase,
   type CanonicalSpendingReport,
 } from "../../../ledger/canonical/canonical-categorization.ts";
+import {
+  queryCanonicalEInvoiceCurrent,
+  queryCanonicalEInvoiceCurrentFromDatabase,
+  type CanonicalEInvoiceView,
+} from "../../../ledger/canonical/einvoice.ts";
+import { withCanonicalSnapshot } from "../../../ledger/canonical/canonical-runtime.ts";
+import type { SpendingPair } from "../../../ledger/canonical/spending-recognition.ts";
+import {
+  emptyPurchaseReport,
+  queryPurchaseLineage,
+  queryPurchaseReport,
+  queryPurchaseReportFromDatabase,
+  type PurchaseLineage,
+  type PurchaseReport,
+} from "../../../ledger/canonical/spending-purchase-report.ts";
 
 export type {
   CanonicalAmount,
@@ -112,8 +118,8 @@ export type UnsupportedFinancialQueryResult<Kind extends "historical" | "lineage
   status: "unsupported";
   kind: Kind;
   reason: Kind extends "historical"
-    ? "legacy-adapter-does-not-support-historical-queries"
-    : "legacy-adapter-does-not-support-lineage-queries";
+    ? "canonical-historical-query-not-available"
+    : "canonical-lineage-query-not-available";
 };
 
 export type ExchangeRateQueryRow = {
@@ -126,10 +132,8 @@ export type CurrentLedgerQueryResult<Product extends LedgerFinancialProduct> = {
   status: "ok";
   kind: "current";
   product: Product;
-  /** Legacy rows after the established active-lineage visibility rules. */
-  ledger: LedgerQueryData;
-  unavailableAccountIssues: UnavailableAccountIssue[];
-  unavailableAccounts: AccountRowDto[];
+  /** Retained as a compatibility type; product reads use the projection below. */
+  projection: CanonicalOverviewProjection;
 };
 
 export type CurrentOverviewProjectionQueryResult = CanonicalOverviewCurrentQueryResult;
@@ -148,6 +152,22 @@ export type CurrentSpendingQueryResult = {
   kind: "current";
   product: "spending";
   spending: CanonicalSpendingReport;
+  invoices: readonly CanonicalEInvoiceView[];
+  purchaseReport: PurchaseReport;
+};
+
+export type HistoricalSpendingQueryResult = HistoricalFinancialProjection<PurchaseReport> & {
+  product: "spending";
+};
+
+export type HistoricalSpendingQueryRequest = Readonly<{
+  kind: "historical";
+  product: "spending";
+  cutoff: Readonly<{ financialAt: string; knowledgeAt: number }>;
+}>;
+
+export type LineageSpendingQueryResult = LineageFinancialProjection<PurchaseLineage, "spending-pair" | "refund"> & {
+  product: "spending";
 };
 
 export type CurrentOverviewExchangeRateQueryResult = {
@@ -201,14 +221,44 @@ export interface FinancialQueryBoundary {
   current(request: CurrentCanonicalLedgerQueryRequest<"liabilities">): Promise<CurrentCanonicalLedgerProjectionQueryResult<"liabilities">>;
   historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>>;
   lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>>;
+  spendingHistorical(request: HistoricalSpendingQueryRequest): Promise<HistoricalSpendingQueryResult>;
+  spendingLineage(request: LineageFinancialQueryRequest & { product: "spending" }): Promise<LineageSpendingQueryResult>;
 }
 
 /** Creates the product read boundary. Overview is backed by Current Projection. */
 export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQueryBoundary {
-  return new ProductFinancialQueryAdapter(ledgerDir);
+  return new CanonicalFinancialQueryAdapter(ledgerDir);
 }
 
-/** Canonical adapter factory kept alongside the phase-1 legacy boundary. */
+/**
+ * Read the complete current Spending boundary from a caller-owned database.
+ * The snapshot ends before this function returns, so a command may safely use
+ * the same validated store for its following recognition mutation.
+ */
+export function queryCurrentSpendingFromDatabase(db: DatabaseSync): CurrentSpendingQueryResult {
+  return withCanonicalSnapshot(db, () => {
+    const spending = queryCanonicalSpendingCurrentFromDatabase(db);
+    const invoices = queryCanonicalEInvoiceCurrentFromDatabase(db).invoices;
+    const purchaseReport = queryPurchaseReportFromDatabase(
+      db,
+      { kind: "current" },
+      {
+        invoices,
+        transactions: spending.includedTransactions,
+      },
+    );
+    return {
+      status: "ok" as const,
+      kind: "current" as const,
+      product: "spending" as const,
+      spending,
+      invoices,
+      purchaseReport,
+    };
+  });
+}
+
+/** Canonical adapter factory for source-specific contract consumers. */
 export type CanonicalFinancialQueryBoundary = CathayCanonicalFinancialQuery;
 
 export function createCathayCanonicalFinancialQuery(
@@ -217,197 +267,16 @@ export function createCathayCanonicalFinancialQuery(
   return createCathayCanonicalQuery(ledgerDir);
 }
 
-class LegacyFinancialQueryAdapter {
-  private readonly ledgerDir: string;
-
-  constructor(ledgerDir: string) {
-    this.ledgerDir = ledgerDir;
-  }
-
-  current(request: CurrentFinancialQueryRequest<"spending">): CurrentSpendingQueryResult;
-  current(request: CurrentOverviewLedgerQueryRequest): Promise<CurrentLedgerQueryResult<"overview">>;
-  current(request: CurrentOverviewExchangeRateQueryRequest): Promise<CurrentOverviewExchangeRateQueryResult>;
-  current<Product extends LedgerFinancialProduct>(
-    request: CurrentFinancialQueryRequest<Product>,
-  ): Promise<CurrentLedgerQueryResult<Product>>;
-  current(
-    request: CurrentFinancialQueryRequest,
-  ): CurrentSpendingQueryResult
-    | Promise<CurrentLedgerQueryResult<LedgerFinancialProduct> | CurrentOverviewExchangeRateQueryResult> {
-    if (request.product === "spending") {
-      throw new Error("Spending reads must use the canonical query boundary.");
-    }
-    if (request.product === "overview" && "selection" in request) {
-      return this.readCurrentOverviewExchangeRates(request);
-    }
-    if (request.product === "assets") return this.readCurrentAssets();
-    if (request.product === "overview") return this.readCurrentOverview();
-    return this.readCurrentLiabilities();
-  }
-
-  private async readCurrentOverviewExchangeRates(
-    request: CurrentOverviewExchangeRateQueryRequest,
-  ): Promise<CurrentOverviewExchangeRateQueryResult> {
-    if (request.currencies.length === 0) {
-      return {
-        status: "ok",
-        kind: "current",
-        product: "overview",
-        selection: request.selection,
-        exchangeRates: [],
-      };
-    }
-    const sqlite = openLedgerDatabase(this.ledgerDir);
-    try {
-      const placeholders = request.currencies.map(() => "?").join(", ");
-      if (request.selection === "latest") {
-        const exchangeRates = (sqlite.prepare(`
-          SELECT rate.rate_date AS rateDate, rate.currency, rate.twd_per_unit AS twdPerUnit
-          FROM exchange_rates AS rate
-          WHERE rate.currency IN (${placeholders})
-            AND rate.rate_date = (
-              SELECT MAX(rate_date)
-              FROM exchange_rates AS current_rate
-              WHERE current_rate.currency = rate.currency
-            )
-          ORDER BY rate.currency
-        `).all(...request.currencies) as ExchangeRateQueryRow[]).map((rate) => ({ ...rate }));
-        return { status: "ok", kind: "current", product: "overview", selection: "latest", exchangeRates };
-      }
-      const exchangeRates = (sqlite.prepare(`
-        SELECT
-          rate_date AS rateDate,
-          currency,
-          twd_per_unit AS twdPerUnit
-        FROM exchange_rates AS rate
-        WHERE currency IN (${placeholders})
-          AND rate_date <= ?
-          AND (
-            rate_date >= ?
-            OR rate_date = (
-              SELECT MAX(rate_date)
-              FROM exchange_rates AS prior
-              WHERE prior.currency = rate.currency
-                AND prior.rate_date < ?
-            )
-          )
-        ORDER BY currency, rate_date
-      `).all(...request.currencies, request.lastDate, request.firstDate, request.firstDate) as ExchangeRateQueryRow[])
-        .map((rate) => ({ ...rate }));
-      return { status: "ok", kind: "current", product: "overview", selection: "history", exchangeRates };
-    } finally {
-      sqlite.close();
-    }
-  }
-
-  async historical(
-    _request: HistoricalFinancialQueryRequest,
-  ): Promise<HistoricalFinancialQueryResult<never>> {
-    return {
-      status: "unsupported",
-      kind: "historical",
-      reason: "legacy-adapter-does-not-support-historical-queries",
-    };
-  }
-
-  async lineage(
-    _request: LineageFinancialQueryRequest,
-  ): Promise<LineageFinancialQueryResult<never>> {
-    return {
-      status: "unsupported",
-      kind: "lineage",
-      reason: "legacy-adapter-does-not-support-lineage-queries",
-    };
-  }
-
-  private async readCurrentAssets(): Promise<CurrentLedgerQueryResult<"assets">> {
-    const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
-    try {
-      const data: LedgerQueryData = {
-        ...emptyLedgerQueryData(),
-        sourceFiles: await db.select().from(schema.sourceFileImports).all(),
-        sourceRowLineage: await db.select().from(schema.sourceRowLineage).all(),
-        accountTransactions: await db.select().from(schema.accountTransactions).all(),
-        foreignCurrencyTransactions: await db.select().from(schema.foreignCurrencyTransactions).all(),
-        creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
-        creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
-        fundHoldings: await db.select().from(schema.fundHoldings).all(),
-        fundBuyTransactions: await db.select().from(schema.fundBuyTransactions).all(),
-        fundRedemptionTransactions: await db.select().from(schema.fundRedemptionTransactions).all(),
-        fundCashDividends: await db.select().from(schema.fundCashDividends).all(),
-        fundConversionTransactions: await db.select().from(schema.fundConversionTransactions).all(),
-        brokerageHoldings: await db.select().from(schema.brokerageHoldings).all(),
-        brokerageTradeTransactions: await db.select().from(schema.brokerageTradeTransactions).all(),
-        maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
-        maicoinStatementRows: await db.select().from(schema.maicoinStatementRows).all(),
-      };
-      return currentLedgerResult(sqlite, "assets", data);
-    } finally {
-      sqlite.close();
-    }
-  }
-
-  private async readCurrentOverview(): Promise<CurrentLedgerQueryResult<"overview">> {
-    const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
-    try {
-      const data: LedgerQueryData = {
-        ...emptyLedgerQueryData(),
-        sourceFiles: await db.select().from(schema.sourceFileImports).all(),
-        sourceRowLineage: await db.select().from(schema.sourceRowLineage).all(),
-        accountTransactions: await db.select().from(schema.accountTransactions).all(),
-        foreignCurrencyTransactions: await db.select().from(schema.foreignCurrencyTransactions).all(),
-        creditCardStatementLines: await db.select().from(schema.creditCardStatementLines).all(),
-        creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
-        creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
-        creditCardSnapshots: await db.select().from(schema.creditCardSnapshots).all(),
-        loanTransactions: await db.select().from(schema.loanTransactions).all(),
-        fundHoldings: await db.select().from(schema.fundHoldings).all(),
-        brokerageHoldings: await db.select().from(schema.brokerageHoldings).all(),
-        maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
-        maicoinStatementRows: await db.select().from(schema.maicoinStatementRows).all(),
-      };
-      return currentLedgerResult(sqlite, "overview", data);
-    } finally {
-      sqlite.close();
-    }
-  }
-
-  private async readCurrentLiabilities(): Promise<CurrentLedgerQueryResult<"liabilities">> {
-    const { db, sqlite } = openLedgerDrizzle(this.ledgerDir);
-    try {
-      const data: LedgerQueryData = {
-        ...emptyLedgerQueryData(),
-        sourceFiles: await db.select().from(schema.sourceFileImports).all(),
-        creditCardStatementLines: await db.select().from(schema.creditCardStatementLines).all(),
-        creditCardCaptures: await db.select().from(schema.creditCardCaptures).all(),
-        creditCardCaptureEntries: await db.select().from(schema.creditCardCaptureEntries).all(),
-        creditCardSnapshots: await db.select().from(schema.creditCardSnapshots).all(),
-        loanTransactions: await db.select().from(schema.loanTransactions).all(),
-        maicoinAccountSnapshots: await db.select().from(schema.maicoinAccountSnapshots).all(),
-      };
-      return currentLedgerResult(sqlite, "liabilities", data);
-    } finally {
-      sqlite.close();
-    }
-  }
-
-}
-
 /**
  * Routes all current product reads through the canonical Current Projection.
- * Legacy tables remain available only to the compatibility adapter used by
- * historical migration checks; product loaders never call it for current
- * assets or liabilities.
  */
-class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
+class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
   private readonly ledgerDir: string;
-  private readonly legacy: LegacyFinancialQueryAdapter;
   private readonly canonicalOverview: ReturnType<typeof createCanonicalOverviewQuery>;
   private readonly canonicalSpending: ReturnType<typeof createCanonicalSpendingQuery>;
 
   constructor(ledgerDir: string) {
     this.ledgerDir = ledgerDir;
-    this.legacy = new LegacyFinancialQueryAdapter(ledgerDir);
     this.canonicalOverview = createCanonicalOverviewQuery(ledgerDir);
     this.canonicalSpending = createCanonicalSpendingQuery(ledgerDir);
   }
@@ -431,12 +300,24 @@ class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
       }).current();
     }
     if (request.product === "spending") {
-      return {
-        status: "ok",
-        kind: "current",
-        product: "spending",
-        spending: this.canonicalSpending.current(),
-      };
+      const databasePath = canonicalSqlitePath(this.ledgerDir);
+      if (!existsSync(databasePath)) {
+        return {
+          status: "ok",
+          kind: "current",
+          product: "spending",
+          spending: this.canonicalSpending.current(),
+          invoices: [],
+          purchaseReport: emptyPurchaseReport("current"),
+        };
+      }
+      channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
+      const store = createCanonicalSourceStore(databasePath);
+      try {
+        return queryCurrentSpendingFromDatabase(store.db);
+      } finally {
+        store.close();
+      }
     }
     if (request.product === "assets" || request.product === "liabilities") {
       const projectionQuery = request.expectedSources?.length
@@ -450,16 +331,82 @@ class ProductFinancialQueryAdapter implements FinancialQueryBoundary {
         projection: productProjectionState(result.projection),
       }));
     }
-    return this.legacy.current(request as CurrentOverviewExchangeRateQueryRequest);
+    // Exchange rates are not part of the canonical projection yet. Returning
+    // an empty result keeps the existing product contract explicit instead of
+    // reopening the retired financial database.
+    const exchangeRateRequest = request as CurrentOverviewExchangeRateQueryRequest;
+    return Promise.resolve({
+      status: "ok",
+      kind: "current",
+      product: "overview",
+      selection: exchangeRateRequest.selection,
+      exchangeRates: [],
+    } as CurrentOverviewExchangeRateQueryResult);
   }
 
-  historical(request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>> {
-    return this.legacy.historical(request);
+  async historical(_request: HistoricalFinancialQueryRequest): Promise<HistoricalFinancialQueryResult<never>> {
+    return {
+      status: "unsupported",
+      kind: "historical",
+      reason: "canonical-historical-query-not-available",
+    };
   }
 
-  lineage(request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>> {
-    return this.legacy.lineage(request);
+  async lineage(_request: LineageFinancialQueryRequest): Promise<LineageFinancialQueryResult<never>> {
+    return {
+      status: "unsupported",
+      kind: "lineage",
+      reason: "canonical-lineage-query-not-available",
+    };
   }
+
+  async spendingHistorical(request: HistoricalSpendingQueryRequest): Promise<HistoricalSpendingQueryResult> {
+    const report = purchaseReport(this.ledgerDir, { kind: "historical", financialAt: request.cutoff.financialAt, knowledgeAt: request.cutoff.knowledgeAt });
+    return { status: "ok", kind: "historical", product: "spending", cutoff: { kind: "both", financialAt: request.cutoff.financialAt, knowledgeAt: String(request.cutoff.knowledgeAt) }, projection: report };
+  }
+
+  async spendingLineage(request: LineageFinancialQueryRequest & { product: "spending" }): Promise<LineageSpendingQueryResult> {
+    const lineage = purchaseLineage(this.ledgerDir, spendingLineageSubject(request.subject));
+    return { status: "ok", kind: "lineage", product: "spending", subject: request.subject as LineageSubject<"spending-pair" | "refund">, lineage: [lineage] };
+  }
+}
+
+function currentCanonicalEInvoices(ledgerDir: string): readonly CanonicalEInvoiceView[] {
+  const databasePath = canonicalSqlitePath(ledgerDir);
+  if (!existsSync(databasePath)) return [];
+  const store = createCanonicalSourceStore(databasePath);
+  try { return queryCanonicalEInvoiceCurrent(store).invoices; }
+  finally { store.close(); }
+}
+
+function purchaseReport(
+  ledgerDir: string,
+  request: Parameters<typeof queryPurchaseReport>[1],
+): PurchaseReport {
+  const databasePath = canonicalSqlitePath(ledgerDir);
+  if (!existsSync(databasePath)) return emptyPurchaseReport(request.kind, request.knowledgeAt ?? 0, request.financialAt ?? null);
+  const store = createCanonicalSourceStore(databasePath);
+  try {
+    return queryPurchaseReport(store, request);
+  } finally {
+    store.close();
+  }
+}
+
+function spendingLineageSubject(subject: LineageSubject): SpendingPair | Readonly<{ stableRefundKey: string }> {
+  if (subject.kind === "refund") return { stableRefundKey: subject.id };
+  if (subject.kind !== "spending-pair") throw new Error("Spending lineage subject kind is invalid.");
+  const [invoiceId, transactionId, extra] = subject.id.split("/");
+  if (!invoiceId || !transactionId || extra) throw new Error("Spending pair lineage id must be invoiceId/transactionId.");
+  return { invoiceId, transactionId };
+}
+
+function purchaseLineage(ledgerDir: string, subject: ReturnType<typeof spendingLineageSubject>): PurchaseLineage {
+  const databasePath = canonicalSqlitePath(ledgerDir);
+  if (!existsSync(databasePath)) return { kind: "lineage", subject, invoice: null, recognition: [], refunds: [] };
+  const store = createCanonicalSourceStore(databasePath);
+  try { return queryPurchaseLineage(store, subject); }
+  finally { store.close(); }
 }
 
 function productProjectionState(
@@ -472,21 +419,4 @@ function productProjectionState(
   )
     return { ...projection, availability: "empty" };
   return projection;
-}
-
-function currentLedgerResult<Product extends LedgerFinancialProduct>(
-  sqlite: ReturnType<typeof openLedgerDrizzle>["sqlite"],
-  product: Product,
-  data: LedgerQueryData,
-): CurrentLedgerQueryResult<Product> {
-  const support = loadActiveLedgerSupport(sqlite);
-  const unavailableAccountIssues = loadUnavailableAccountIssues(sqlite, data, support);
-  return {
-    status: "ok",
-    kind: "current",
-    product,
-    ledger: applyLedgerVisibility(data, support),
-    unavailableAccountIssues,
-    unavailableAccounts: unavailableAccountIssues.map(unavailableAccountFromIssue),
-  };
 }

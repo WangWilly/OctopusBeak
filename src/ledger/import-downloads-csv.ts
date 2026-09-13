@@ -16,12 +16,9 @@ import {
 } from "./content-hash.ts";
 import {
   createSourceCsvParser,
-  personalInvoiceFields,
-  personalInvoiceItemFields,
   type SourceMetadata,
   type TypedStatementTable,
 } from "./source-csv-parsers.ts";
-import { classifyPersonalInvoiceItem } from "../lib/spending/categories.ts";
 import { creditCardContentKey } from "./credit-card-identity.ts";
 import {
   assignOccurrenceIndexes,
@@ -301,45 +298,6 @@ export function insertRecord(
   }
 }
 
-const PERSONAL_INVOICE_UPDATE_COLUMNS = [
-  "source_file_id",
-  "import_run_id",
-  "source_relative_path",
-  "source_row_index",
-  "source_hash",
-  "content_hash",
-  "raw_payload_json",
-  "imported_at",
-  "carrier_customized_name",
-  "issued_at",
-  "invoice_id",
-  "amount",
-  "status",
-  "rebated",
-  "seller_business_account_number",
-  "seller_name",
-  "seller_addr",
-  "buyer_business_account_number",
-] as const;
-
-const PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS = [
-  // Category is a user-editable classification and must survive reimports.
-  "source_file_id",
-  "import_run_id",
-  "source_relative_path",
-  "source_row_index",
-  "source_hash",
-  "content_hash",
-  "raw_payload_json",
-  "imported_at",
-  "invoice_key",
-  "item_sequence_number",
-  "item_quantity",
-  "item_unit_price",
-  "item_paid_amount",
-  "item_product_name",
-] as const;
-
 const SOURCE_FILE_UPDATE_COLUMNS = [
   "source_file_id",
   "import_run_id",
@@ -534,61 +492,6 @@ function insertSourceRowLineage(
     );
 }
 
-function insertPersonalInvoiceStatementRow(
-  db: LedgerDatabase,
-  sourceFileRecord: Record<string, unknown>,
-  row: {
-    sourceRowIndex: number;
-    rawPayload: Record<string, string>;
-    rawRowHash?: string;
-    sourceHash?: string;
-    contentHash?: string;
-  },
-) {
-  const commonFields = commonTypedRowFields(sourceFileRecord, row);
-  const invoiceFields = personalInvoiceFields(row.rawPayload);
-  const itemFields = personalInvoiceItemFields(row.rawPayload);
-  const existingInvoice = db.prepare(`
-    SELECT statement_row_id FROM personal_invoices WHERE invoice_key = ?
-  `).get(invoiceFields.invoice_key) as { statement_row_id: string } | undefined;
-  const existingItem = db.prepare(`
-    SELECT statement_row_id FROM personal_invoice_items WHERE item_key = ?
-  `).get(itemFields.item_key) as { statement_row_id: string } | undefined;
-  upsertRecord(
-    db,
-    "personal_invoices",
-    {
-      ...commonFields,
-      ...invoiceFields,
-    },
-    "invoice_key",
-    PERSONAL_INVOICE_UPDATE_COLUMNS,
-  );
-  upsertRecord(
-    db,
-    "personal_invoice_items",
-    {
-      ...commonFields,
-      ...itemFields,
-      category: classifyPersonalInvoiceItem({
-        productName: row.rawPayload.item_product_name ?? "",
-        sellerName: row.rawPayload.seller_name ?? "",
-        sellerAddr: row.rawPayload.seller_addr ?? "",
-      }),
-    },
-    "item_key",
-    PERSONAL_INVOICE_ITEM_UPDATE_COLUMNS,
-  );
-  insertSourceRowLineage(
-    db, sourceFileRecord, row, "personal_invoices",
-    existingInvoice?.statement_row_id ?? String(commonFields.statement_row_id), "upserted",
-  );
-  insertSourceRowLineage(
-    db, sourceFileRecord, row, "personal_invoice_items",
-    existingItem?.statement_row_id ?? String(commonFields.statement_row_id), "upserted",
-  );
-}
-
 function insertTypedStatementRow(
   db: LedgerDatabase,
   sourceFileRecord: Record<string, unknown>,
@@ -602,10 +505,6 @@ function insertTypedStatementRow(
 ): "inserted" | "duplicate" | "upserted" {
   const bank = String(sourceFileRecord.bank ?? "");
   const product = String(sourceFileRecord.product ?? "");
-  if (bank === "einvoice" && product === "personal-invoices") {
-    insertPersonalInvoiceStatementRow(db, sourceFileRecord, row);
-    return "upserted";
-  }
   const sourceRelativePath = String(sourceFileRecord.sourceRelativePath ?? "");
   const headers = Array.isArray(sourceFileRecord.headers)
     ? (sourceFileRecord.headers as string[])
@@ -1199,6 +1098,10 @@ export async function importDownloadsCsv(rawInput: Record<string, unknown>) {
     for (const sourceFile of await listCsvFiles(downloadsDir)) {
       const context = inferContext(sourceFile, downloadsDir);
       if (!matchesFilters(context, input)) continue;
+      // E-Invoice writes directly to canonical storage. Historical CSV output
+      // from that workflow is retired and must never enter the generic ledger.
+      if (context.bank === "einvoice" && context.product === "personal-invoices")
+        continue;
 
       activeSourceFile = sourceFile;
       scannedCsvFiles += 1;

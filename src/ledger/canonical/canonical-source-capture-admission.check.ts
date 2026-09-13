@@ -95,6 +95,58 @@ test("Canonical Source Capture Admission admits one request through its public s
   }
 });
 
+test("Canonical Source Capture Admission preserves empty HTTP 204 evidence and rejects 204 rows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-204-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const admission = createCanonicalSourceCaptureAdmission(store);
+    const empty204 = {
+      ...request("capture-204-empty"),
+      pages: [{
+        pageOrdinal: 0,
+        responseCode: "204" as const,
+        rowCount: 0,
+        terminal: true,
+        metadata: { response: "no-content" },
+      }],
+      records: [],
+    };
+    await admission.admit(empty204);
+    const page = store.db
+      .prepare(
+        `SELECT response_code, row_count
+           FROM capture_scope_pages page
+           JOIN capture_scopes scope ON scope.scope_id = page.scope_id
+           JOIN source_captures capture ON capture.capture_id = scope.capture_id
+          WHERE capture.capture_key = ?`,
+      )
+      .get("capture-204-empty") as Record<string, unknown>;
+    assert.deepEqual(
+      { responseCode: String(page.response_code), rowCount: Number(page.row_count) },
+      { responseCode: "204", rowCount: 0 },
+    );
+    await assert.rejects(
+      admission.admit({
+        ...request("capture-204-with-row"),
+        pages: [{
+          pageOrdinal: 0,
+          responseCode: "204",
+          rowCount: 1,
+          terminal: true,
+          metadata: { response: "invalid-no-content" },
+        }],
+      }),
+      (error: unknown) =>
+        error instanceof CanonicalSourceCaptureAdmissionError &&
+        error.reason === "invalid-evidence" &&
+        /204.*must not claim rows/iu.test(error.message),
+    );
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Canonical Source Capture Admission exposes stable typed route failures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-errors-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));

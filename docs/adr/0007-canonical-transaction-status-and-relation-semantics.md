@@ -1,5 +1,8 @@
 # Canonical transaction status and relation semantics
 
+Accepted amendment: [ADR 0024](./0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements.
+
+
 Status: accepted
 
 OctopusBeak classifies transaction posting by account-ledger booking and keeps economic relations separate from source and projection lifecycle. [ADR 0008](./0008-source-scoped-lineage-and-strict-canonical-admission.md) amends this decision by requiring total `pending | posted` mappings, rejecting unresolved required semantics, forbidding user-confirmed financial relations, and removing canonical match candidates.

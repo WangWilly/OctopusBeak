@@ -1,51 +1,33 @@
-import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 import { openCanonicalDatabase } from "../src/ledger/canonical/canonical-database.ts";
+import {
+  initializeCanonicalRuntime,
+  type CanonicalResetDatabaseHandle,
+  type CanonicalResetSeams,
+} from "./canonical-reset.ts";
 
-type StartupDatabaseHandle = { close: () => void };
+export type StartupLedgerSeams = CanonicalResetSeams;
 
-export type StartupLedgerSeams = {
-  beforeOpen: () => void;
-  open: (dir?: string) => StartupDatabaseHandle;
-  openCanonical: (dir?: string) => StartupDatabaseHandle;
-};
-
-function resolveLegacyLedgerDir(explicitDir?: string): string {
-  return (
-    explicitDir ??
-    process.env.OCTOPUSBEAK_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    "data/ledger"
-  );
-}
-
-function resolveCanonicalLedgerDir(
-  explicitDir: string | undefined,
-  legacyDir: string,
-): string {
-  if (explicitDir !== undefined) return explicitDir;
-  return (
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR ??
-    legacyDir
-  );
-}
-
-export function migrateLedgerBeforeWindow(
-  ledgerDir?: string,
+/**
+ * Initialize and validate the canonical financial store before the renderer,
+ * scheduler, or any financial query boundary can be created.
+ */
+export function initializeCanonicalRuntimeBeforeWindow(
+  userData: string = process.env.OCTOPUSBEAK_USER_DATA ?? process.cwd(),
   seams: StartupLedgerSeams = {
-    beforeOpen: () => {},
-    open: (dir?: string) => openLedgerDatabase(dir),
-    openCanonical: (dir?: string) => openCanonicalDatabase(dir ?? "data/ledger"),
+    openCanonical: (ledgerDir) => {
+      const db = openCanonicalDatabase(ledgerDir);
+      const handle: CanonicalResetDatabaseHandle = {
+        close: () => db.close(),
+      };
+      return handle;
+    },
   },
 ) {
-  const legacyLedgerDir = resolveLegacyLedgerDir(ledgerDir);
-  const canonicalLedgerDir = resolveCanonicalLedgerDir(
-    ledgerDir,
-    legacyLedgerDir,
-  );
-  seams.beforeOpen();
-  const legacyDb = seams.open(legacyLedgerDir);
-  legacyDb.close();
-  const canonicalDb = seams.openCanonical(canonicalLedgerDir);
-  canonicalDb.close();
+  return initializeCanonicalRuntime({
+    userData,
+    canonicalLedgerDir:
+      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+    seams,
+  });
 }

@@ -27,6 +27,14 @@ import {
   idToString,
   uuidV7,
 } from "./canonical-schema-implementation.ts";
+import {
+  E_INVOICE_CONTRACT_VERSION,
+  E_INVOICE_CURRENCY_AUTHORITY,
+  E_INVOICE_ROUTE,
+  commitCanonicalEInvoiceCapture,
+  queryCanonicalEInvoiceCurrent,
+  type CanonicalEInvoiceCaptureInput,
+} from "./einvoice.ts";
 
 type FixtureState = Readonly<{
   directory: string;
@@ -224,6 +232,97 @@ function spending(state: FixtureState) {
 function matchesTransaction(transactionId: string, expectedId: string): boolean {
   return transactionId === expectedId.replaceAll("-", "");
 }
+
+test("E-Invoice-only canonical data leaves transaction Spending empty", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-spending-einvoice-only-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const input: CanonicalEInvoiceCaptureInput = {
+    captureId: "spending-einvoice-only",
+    sourceConnectionKey: "sha256:spending-einvoice-connection",
+    identityEpoch: "sha256:spending-einvoice-epoch",
+    subjectDigest: "sha256:spending-einvoice-subject",
+    observedAt: "2026-09-01T08:00:00Z",
+    scope: {
+      startDate: "2026-09-01",
+      endDate: "2026-09-01",
+      kind: "point-in-time",
+      completeness: "single-page",
+      invoiceCompleteness: "complete",
+      itemCompleteness: "complete",
+    },
+    pages: [{
+      pageOrdinal: 0,
+      responseCode: "200",
+      rowCount: 1,
+      terminal: true,
+      metadata: { fixture: "spending-einvoice-only" },
+    }],
+    invoices: [{
+      stableInvoiceKey: "AA00000001:2026-09-01",
+      sourceRevisionKey: "revision-1",
+      revisionNumber: 1,
+      revisionKind: "issued",
+      sourceIdentifiers: { invoiceNumber: "AA00000001" },
+      seller: { taxId: "12345678", name: "Invoice-only seller" },
+      total: {
+        coefficient: "100",
+        scale: 0,
+        currency: "TWD",
+        currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY,
+      },
+      occurrence: {
+        value: "2026-09-01",
+        precision: "date",
+        timeZone: "Asia/Taipei",
+        origin: "source-reported",
+      },
+      items: [{
+        sequence: 1,
+        completeness: "complete",
+        name: "Invoice-only item",
+        quantity: { coefficient: "1", scale: 0 },
+        unitPrice: {
+          coefficient: "100",
+          scale: 0,
+          currency: "TWD",
+          currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY,
+        },
+        amount: {
+          coefficient: "100",
+          scale: 0,
+          currency: "TWD",
+          currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY,
+        },
+      }],
+      authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+      provenance: { kind: "fixture", reference: "spending-einvoice-only" },
+    }],
+  };
+  try {
+    const committed = await commitCanonicalEInvoiceCapture(store, input);
+    assert.equal(queryCanonicalEInvoiceCurrent(store).invoices.length, 1);
+    store.close();
+    const query = createCanonicalSpendingQuery(directory);
+    const current = query.current();
+    assert.equal(current.knowledgePoint, committed.knowledgeAt);
+    assert.deepEqual(current.transactions, []);
+    assert.deepEqual(current.includedTransactions, []);
+    assert.equal(current.totalStatus, "complete");
+    const historical = query.historical({
+      financialAt: "2026-09-01",
+      knowledgeAt: committed.knowledgeAt,
+    });
+    assert.deepEqual(historical.transactions, []);
+    assert.equal(historical.knowledgePoint, committed.knowledgeAt);
+  } finally {
+    try {
+      store.close();
+    } catch {
+      // The public Spending reader requires releasing this writable handle.
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Spending enrichment follows display and tag knowledge cutoffs", async () => {
   const state = await fixture();
@@ -909,12 +1008,10 @@ test("spending report publishes gross posted outflow scope and reports semantic 
     assert.deepEqual(report.unclassifiedByCurrency, [
       { currency: "TWD", coefficient: "300", scale: 0, count: 1 },
     ]);
-    assert.equal(report.reportEligibility.status, "incomplete");
-    assert.equal(report.reportEligibility.gapCount, 2);
-    assert.deepEqual(report.reportEligibility.gapAmountByCurrency, [
-      { currency: "TWD", coefficient: "13300", scale: 0, count: 2 },
-    ]);
-    assert.equal(report.totalStatus, "incomplete");
+    assert.equal(report.reportEligibility.status, "complete");
+    assert.equal(report.reportEligibility.gapCount, 0);
+    assert.deepEqual(report.reportEligibility.gapAmountByCurrency, []);
+    assert.equal(report.totalStatus, "complete");
     assert.equal(
       report.includedTransactions[0]?.categorization.mode,
       "absent",
@@ -925,8 +1022,18 @@ test("spending report publishes gross posted outflow scope and reports semantic 
       financialAt: "2026-12-31",
       knowledgeAt: state.captureCommitSequence,
     });
-    assert.equal(beforePurchase.includedTransactions.length, 0);
-    assert.equal(beforePurchase.reportEligibility.gapCount, 3);
+    assert.equal(beforePurchase.kind, "historical");
+    assert.equal(beforePurchase.knowledgePoint, state.captureCommitSequence);
+    assert.equal(beforePurchase.includedTransactions.length, 1);
+    assert.equal(
+      matchesTransaction(
+        beforePurchase.includedTransactions[0]?.transactionId ?? "",
+        state.transactionId,
+      ),
+      true,
+    );
+    assert.equal(beforePurchase.includedTransactions[0]?.kind, "purchase");
+    assert.equal(beforePurchase.reportEligibility.gapCount, 0);
   } finally {
     await discard(state.directory);
   }

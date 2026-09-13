@@ -7,3 +7,8 @@ assert.match(
   source,
   /try\s*{\s*prepareLibrettoRunCdpPatch\(\);\s*}\s*catch\s*\(error\)\s*{\s*console\.warn\("libretto-run-cdp-patch-failed", error\);\s*}/,
 );
+assert.match(source, /initializeCanonicalRuntimeBeforeWindow\(userData\)/);
+assert.doesNotMatch(
+  source,
+  /openLedgerDatabase|migrateLedgerBeforeWindow|recoverAbandonedAutomationSessions|hasSuccessfulTaskRunSince/,
+);

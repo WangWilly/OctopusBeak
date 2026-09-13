@@ -38,6 +38,7 @@ import {
   yuantaHumanAttestedV2IdentityEpochKey,
   yuantaHumanAttestedIdentityEpochKey,
 } from "./yuanta-human-attestation.ts";
+import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
   createCanonicalSourceStore,
@@ -50,6 +51,9 @@ import {
 } from "./canonical-financial-deposit-writer.ts";
 import { buildYuantaDomesticDepositReadinessFromLedger } from "./advertised-domestic-deposit-readiness.ts";
 import { recordInitialYuantaHumanAttestationIfMissing } from "./yuanta-human-attestation.ts";
+import {
+  BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+} from "./transaction-taxonomy.ts";
 
 const stableYuantaConnectionScope = "YUANTA-USER-001\u0000YUANTA-LOGIN-001";
 const stableYuantaConnectionKey = deriveSourceConnectionIdentityKey(
@@ -898,6 +902,163 @@ restoreYuantaHumanAttestedV2(
   "2026-08-26T00:00:00.000Z",
   "adapter test restore",
 );
+
+const yuantaCreditCardTupleRows = [
+  [
+    "臺幣活期存款 123456",
+    "123456",
+    "20260802",
+    "20260802",
+    "09:10:11",
+    "行動轉出 · 06600000102281740 7097230279900200",
+    "3765",
+    "",
+    "5000",
+    "",
+    "",
+  ],
+  [
+    "臺幣活期存款 123456",
+    "123456",
+    "20260803",
+    "20260803",
+    "09:10:12",
+    "行動轉出 · 06600000102281740",
+    "100",
+    "",
+    "4900",
+    "",
+    "",
+  ],
+  [
+    "臺幣活期存款 123456",
+    "123456",
+    "20260804",
+    "20260804",
+    "09:10:13",
+    "行動轉出 · 06600000102281740 7097230279900201",
+    "101",
+    "",
+    "4799",
+    "",
+    "",
+  ],
+  [
+    "臺幣活期存款 123456",
+    "123456",
+    "20260805",
+    "20260805",
+    "09:10:14",
+    "行動轉出 · 12345678901234567 7097230279900200",
+    "102",
+    "",
+    "4697",
+    "",
+    "",
+  ],
+  [
+    "臺幣活期存款 123456",
+    "123456",
+    "20260818",
+    "20260818",
+    "13:42:03",
+    "轉帳支取 · 7013196970300100 YT95 FS01150344 約定申購 08015 174 FISB",
+    "481389",
+    "",
+    "1000",
+    "",
+    "",
+  ],
+];
+const yuantaCreditCardTupleEvidence = admitYuantaDomesticDepositCaptureEvidence({
+  ...sourceCapture,
+  downloads: [
+    {
+      ...sourceCapture.downloads[0]!,
+      filename: "yuanta-credit-card-tuple.csv",
+      terminal: true,
+      rows: yuantaCreditCardTupleRows.map((values, rowOrdinal) => ({
+        rowOrdinal,
+        values,
+      })),
+    },
+  ],
+});
+assert.equal(yuantaCreditCardTupleEvidence.status, "admissible");
+assert.ok(yuantaCreditCardTupleEvidence.capture);
+const yuantaCreditCardTupleManifest = getYuantaHumanAttestedV2Manifest();
+const yuantaCreditCardTupleAdmission =
+  admitYuantaDomesticDepositFinancialCapture({
+    capture: yuantaCreditCardTupleEvidence.capture,
+    captureId: "yuanta-credit-card-tuple-capture",
+    humanAttestation: yuantaCreditCardTupleManifest,
+    semantics: buildYuantaHumanAttestedFinancialSemantics(
+      yuantaCreditCardTupleEvidence.capture,
+      yuantaCreditCardTupleManifest,
+      stableYuantaConnectionKey,
+    ),
+  });
+assert.equal(yuantaCreditCardTupleAdmission.status, "admitted");
+assert.ok(yuantaCreditCardTupleAdmission.capture);
+const yuantaCreditCardTupleStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitCanonicalYuantaDomesticDepositCapture(
+    yuantaCreditCardTupleStore,
+    {
+      capture: yuantaCreditCardTupleEvidence.capture,
+      captureId: "yuanta-credit-card-tuple-capture",
+      humanAttestation: yuantaCreditCardTupleManifest,
+      semantics: buildYuantaHumanAttestedFinancialSemantics(
+        yuantaCreditCardTupleEvidence.capture,
+        yuantaCreditCardTupleManifest,
+        stableYuantaConnectionKey,
+      ),
+    },
+  );
+  const current = createCanonicalProjectionRuntime(
+    yuantaCreditCardTupleStore.db,
+  ).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment"],
+    scope: { sourceConnectionKey: stableYuantaConnectionKey },
+  });
+  const account = [...current.families.transactions]
+    .sort((left, right) => left.effectiveOn.localeCompare(right.effectiveOn))
+    .map((transaction) => {
+      const kind = current.families["transaction-enrichment"].find(
+        (row) =>
+          row.transactionId === transaction.transactionId &&
+          row.fieldName === "kind",
+      );
+      return {
+        description: transaction.description,
+        kind: kind?.taxonomyCode,
+        producerVersion: kind?.producerVersion,
+        routeId: kind?.routeId,
+      };
+    });
+  assert.deepEqual(account.map((row) => row.kind), [
+    "purchase",
+    "purchase",
+    "purchase",
+    "purchase",
+    "investment.trade.buy",
+  ]);
+  assert.ok(
+    account.every(
+      (row) =>
+        row.producerVersion ===
+        BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+    ),
+    "fresh Yuanta capture uses the current bank kind producer",
+  );
+  assert.ok(
+    account.every((row) => row.routeId?.includes("/kind-enrichment/v4/kind")),
+    "fresh Yuanta capture uses the v4 kind route",
+  );
+} finally {
+  yuantaCreditCardTupleStore.close();
+}
 
 const shapeCaptures = [
   {

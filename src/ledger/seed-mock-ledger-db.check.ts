@@ -14,21 +14,14 @@ assert.equal(spending.canonical?.availability, "empty");
 assert.deepEqual(spending.canonical?.transactions, []);
 
 const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-const invoiceCounts = db.prepare(`
-  SELECT
-    COUNT(*) AS total,
-    SUM(CASE WHEN status = 'voided' THEN 1 ELSE 0 END) AS voided
-  FROM personal_invoices
-`).get() as { total: number; voided: number };
 const automationStatuses = db.prepare(`
   SELECT DISTINCT status FROM automation_task_runs ORDER BY status
 `).all() as Array<{ status: string }>;
 const typedCounts = db.prepare(`
   SELECT
     (SELECT COUNT(*) FROM account_transactions) AS accounts,
-    (SELECT COUNT(*) FROM brokerage_holdings) AS brokerage,
-    (SELECT COUNT(*) FROM personal_invoice_items) AS invoice_items
-`).get() as { accounts: number; brokerage: number; invoice_items: number };
+    (SELECT COUNT(*) FROM brokerage_holdings) AS brokerage
+`).get() as { accounts: number; brokerage: number };
 const csvProjections = [
   "account_transactions",
   "foreign_currency_transactions",
@@ -43,8 +36,6 @@ const csvProjections = [
   "brokerage_asset_summaries",
   "brokerage_trade_transactions",
   "unsupported_statement_rows",
-  "personal_invoices",
-  "personal_invoice_items",
 ] as const;
 for (const projection of csvProjections) {
   const typed = db.prepare(`SELECT COUNT(*) AS count FROM ${projection}`).get() as { count: number };
@@ -62,12 +53,9 @@ const accountSource = db.prepare(`
 `).get("account.2026-06-27") as { row_count: number };
 db.close();
 
-assert.equal(invoiceCounts.voided, 1);
-assert.ok(invoiceCounts.total > 0);
-assert.deepEqual(automationStatuses.map((row) => row.status), ["completed", "failed"]);
+assert.deepEqual(automationStatuses.map((row) => row.status), ["completed"]);
 assert.ok(typedCounts.accounts > 0);
 assert.ok(typedCounts.brokerage > 0);
-assert.ok(typedCounts.invoice_items > 0);
 assert.equal(accountSource.row_count, 8);
 
 assert.throws(

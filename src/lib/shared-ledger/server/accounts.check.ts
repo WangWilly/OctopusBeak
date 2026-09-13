@@ -6,7 +6,6 @@ import {
   emptyLedgerQueryData,
   totalsForAccounts,
   type LedgerQueryData,
-  unavailableAccountFromIssue,
 } from "./accounts.ts";
 import { buildDailyHistoryByAccount } from "../../overview/server/daily-history.ts";
 
@@ -16,27 +15,6 @@ type CreditCardSnapshot = LedgerQueryData["creditCardSnapshots"][number];
 type LoanTransaction = LedgerQueryData["loanTransactions"][number];
 type MaicoinAccountSnapshot = LedgerQueryData["maicoinAccountSnapshots"][number];
 type MaicoinStatementRow = LedgerQueryData["maicoinStatementRows"][number];
-
-const unavailableAccount = unavailableAccountFromIssue({
-  dataIssueId: "issue-a",
-  accountId: "loan-example-0420",
-  accountLabel: "Example Bank loan ****0420",
-  accountContext: {
-    institution: "Example Bank",
-    product: "loan-statements",
-    group: "liability",
-    kind: "loan",
-    typeLabel: "Loan",
-  },
-});
-assert.deepEqual(unavailableAccount.amountLines, []);
-assert.equal(unavailableAccount.valueAvailability, "unavailable");
-assert.deepEqual(totalsForAccounts([unavailableAccount]), {
-  assets: {},
-  liabilities: {},
-  investments: {},
-  net: {},
-});
 
 function foreignRow(
   sourceRowIndex: number,

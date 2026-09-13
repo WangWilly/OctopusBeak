@@ -28,6 +28,9 @@ const api: OctopusBeakApi = {
   },
   spending: {
     load: (input) => ipcRenderer.invoke("spending:load", input),
+    confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
+    denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
+    revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),
     updateItemCategory: (input) => ipcRenderer.invoke("spending:updateItemCategory", input),
     updateTransactionOverride: (input) => ipcRenderer.invoke("spending:updateTransactionOverride", input),
   },
@@ -51,16 +54,6 @@ const api: OctopusBeakApi = {
     viewerInput: (taskId, input) => ipcRenderer.invoke("automation:viewerInput", taskId, input),
     viewerCompletionCheck: (taskId) => ipcRenderer.invoke("automation:viewerCompletionCheck", taskId),
     forceQuit: (taskId) => ipcRenderer.invoke("automation:forceQuit", taskId),
-  },
-  dataIssues: {
-    list: () => ipcRenderer.invoke("dataIssues:list"),
-    create: (input) => ipcRenderer.invoke("dataIssues:create", input),
-    load: (dataIssueId) => ipcRenderer.invoke("dataIssues:load", dataIssueId),
-    startDiagnosis: (dataIssueId) => ipcRenderer.invoke("dataIssues:startDiagnosis", dataIssueId),
-    previewExclusion: (input) => ipcRenderer.invoke("dataIssues:previewExclusion", input),
-    confirmExclusion: (input) => ipcRenderer.invoke("dataIssues:confirmExclusion", input),
-    previewRestore: (dataIssueId) => ipcRenderer.invoke("dataIssues:previewRestore", dataIssueId),
-    confirmRestore: (input) => ipcRenderer.invoke("dataIssues:confirmRestore", input),
   },
 };
 

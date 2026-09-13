@@ -1,5 +1,8 @@
 # Canonical financial storage specification
 
+Accepted amendment: [ADR 0024](../adr/0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements. [Revised ADR 0009](../adr/0009-reset-legacy-financial-data-before-canonical-collection.md) replaces quarantine and delayed cleanup with a direct canonical-only reset for a product with no existing users.
+
+
 Status: implementation-ready planning specification
 
 This specification resolves GitHub issue 124. It translates ADRs 0004–0010 and the root glossary into a first-version physical storage and query boundary. It specifies table responsibilities, mandatory constraints, transaction boundaries, and verification criteria; exact SQL names may change during implementation only when the same guarantees remain mechanically enforceable. The typed enrichment extensions to this storage boundary are defined by [Transaction taxonomy and enrichment specification](./transaction-taxonomy-and-enrichment.md) and ADR 0011.

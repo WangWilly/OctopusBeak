@@ -146,7 +146,8 @@ type SourceDownloadMetadata = {
   accountValue: string;
   account: string;
   currency: string;
-  filename: string;
+  /** Null when the provider explicitly returned an empty result. */
+  filename: string | null;
   rowCount: number;
 };
 
@@ -371,8 +372,9 @@ function cleanText(value: string | null | undefined): string {
  * Result-page contract for the Yuanta foreign-currency statement endpoint.
  *
  * The provider has changed the markup around this control before. Keep the
- * contract structural and versioned: the timestamp result marker, a nearby
- * non-empty statement table, and one explicit CSV link must all be present.
+ * contract structural and versioned: a non-empty result needs the timestamp
+ * marker, a nearby statement table, and one explicit CSV link; an empty
+ * result is represented by the provider's `table#tabtable` no-data marker.
  * Raw result markup is never emitted by the workflow.
  */
 export const YUANTA_FOREIGN_RESULT_RULE_VERSION =
@@ -620,6 +622,15 @@ function isCsvDownloadLabel(value: string): boolean {
   return hasCsv && hasDownloadVerb;
 }
 
+/**
+ * The foreign statement page uses this exact provider action for its
+ * transaction export. Other bank pages contain unrelated CSV links in the
+ * shared shell, so a label alone is not enough to identify this control.
+ */
+function isYuantaForeignCurrencyTransactionCsvAction(value: string): boolean {
+  return /(?:^|[;\s])getDownload\s*\(\s*["']csv["']\s*\)/iu.test(value);
+}
+
 type YuantaForeignCurrencyControlCandidate = {
   tagName: string;
   type: string;
@@ -672,7 +683,12 @@ function isExplicitYuantaForeignCurrencyCsvLinkElement(
     htmlAttribute(element, "data-command"),
     htmlAttribute(element, "download"),
   ].join(" ");
-  return isCsvDownloadLabel(labelEvidence);
+  return (
+    isCsvDownloadLabel(labelEvidence) &&
+    isYuantaForeignCurrencyTransactionCsvAction(
+      htmlAttribute(element, "onclick"),
+    )
+  );
 }
 
 const diagnosticControlKinds = [
@@ -1057,11 +1073,21 @@ function yuantaForeignCurrencyAssociationKey(
   const tablePath = structuralPathFromAncestor(tableContext, ancestor);
   const linkPath = structuralPathFromAncestor(linkContext, ancestor);
   if (!tablePath || !linkPath) return null;
+  // The DOM shape and the onclick action are stable across account queries,
+  // so bind the target to the current statement table's content as well. The
+  // digest is internal only; keeping the raw table text out of the key and
+  // diagnostics avoids leaking transaction values while still making a
+  // re-rendered previous result fail closed.
+  const tableContentDigest = createHash("sha256")
+    .update(htmlNodeText(tableContext.element))
+    .digest("hex")
+    .slice(0, 16);
   return [
     "yuanta-foreign-csv-association-v1",
     structuralElementIdentity(ancestor),
     tablePath,
     linkPath,
+    tableContentDigest,
   ].join("|");
 }
 
@@ -1070,6 +1096,25 @@ function isContainedBy(
   ancestor: HtmlElement,
 ): boolean {
   return context.element === ancestor || context.ancestors.includes(ancestor);
+}
+
+function isYuantaForeignCurrencyStatementAssociationAncestor(
+  ancestor: HtmlElement,
+  table: HtmlElement,
+): boolean {
+  if (htmlAttribute(table, "id").toLowerCase() === "tabtable") return true;
+  const marker = normalizedProviderLabel(
+    [
+      htmlAttribute(ancestor, "id"),
+      htmlAttribute(ancestor, "class"),
+      htmlAttribute(ancestor, "data-section"),
+      htmlAttribute(ancestor, "data-panel"),
+    ].join(" "),
+  );
+  // The shared page shell can also contain CSV links. Require the common
+  // table/link container to identify the statement area before associating a
+  // download action with transaction rows.
+  return /(?:foreign|statement|transaction|tabtable|fx)/u.test(marker);
 }
 
 function findYuantaForeignCurrencyTableMatches(
@@ -1118,6 +1163,14 @@ function findYuantaForeignCurrencyTableMatches(
     const tableContext = ancestorCandidates[0]!;
     const ancestor = nearestCommonElementAncestor(linkContext, tableContext);
     if (!ancestor) continue;
+    if (
+      !isYuantaForeignCurrencyStatementAssociationAncestor(
+        ancestor,
+        tableContext.element,
+      )
+    ) {
+      continue;
+    }
     const associationKey = yuantaForeignCurrencyAssociationKey(
       tableContext,
       linkContext,
@@ -1182,6 +1235,18 @@ function providerNoticeKinds(
     isYuantaForeignCurrencyProviderNoticeElement,
   );
   const kinds = new Set<"provider-no-data" | "provider-error">();
+  // The live foreign-statement page reports an empty query in the transaction
+  // table itself (`#tabtable`), rather than in an alert/message element. This
+  // check must run before the structured-notice filter below, which
+  // deliberately ignores tables so transaction descriptions cannot become
+  // provider errors.
+  if (
+    [result, ...htmlDescendants(result)].some(
+      isYuantaForeignCurrencyNoDataTable,
+    )
+  ) {
+    kinds.add("provider-no-data");
+  }
   for (const notice of notices) {
     // A result/message wrapper around a transaction table is not itself a
     // provider notice. Inspect only structured notices that cannot contain
@@ -1197,11 +1262,7 @@ function providerNoticeKinds(
       ].join(" "),
     );
     const text = normalizedProviderLabel(htmlNodeText(notice));
-    if (
-      /(?:查無(?:交易|資料|紀錄)|無(?:可用)?(?:交易|資料|紀錄)|沒有(?:交易|資料|紀錄)|nodata|norecords|notransactions|noresult|emptyresult)/u.test(
-        `${state}${text}`,
-      )
-    ) {
+    if (isYuantaForeignCurrencyNoDataText(`${state}${text}`)) {
       kinds.add("provider-no-data");
     }
     if (
@@ -1218,6 +1279,20 @@ function providerNoticeKinds(
 function isTableElement(element: HtmlElement): boolean {
   return ["table", "thead", "tbody", "tfoot", "tr", "td", "th"].includes(
     element.tagName,
+  );
+}
+
+function isYuantaForeignCurrencyNoDataText(value: string): boolean {
+  return /(?:查無(?:交易|資料|紀錄)|無(?:可用)?(?:交易|資料|紀錄)|沒有(?:交易|資料|紀錄)|nodata|norecords|notransactions|noresult|emptyresult)/u.test(
+    normalizedProviderLabel(value),
+  );
+}
+
+function isYuantaForeignCurrencyNoDataTable(element: HtmlElement): boolean {
+  return (
+    element.tagName === "table" &&
+    htmlAttribute(element, "id").toLowerCase() === "tabtable" &&
+    isYuantaForeignCurrencyNoDataText(htmlNodeText(element))
   );
 }
 
@@ -1279,15 +1354,28 @@ function classifyYuantaForeignCurrencyResultElement(
 function combineYuantaForeignCurrencyResultClassifications(
   classifications: readonly YuantaForeignCurrencyResultClassification[],
 ): YuantaForeignCurrencyResultClassification {
-  const ready = classifications.find(
-    (classification) => classification.state === "download-ready",
-  );
   const noticeKinds = [
     ...new Set(classifications.flatMap((classification) => classification.noticeKinds)),
   ];
   const controlKinds = [
     ...new Set(classifications.flatMap((classification) => classification.controlKinds)),
   ];
+  // An explicit empty result wins over a stale ready container that Yuanta
+  // may leave in the DOM while replacing the previous query. Returning the
+  // old CSV control here would re-import the prior account's transactions.
+  if (classifications.some((classification) => classification.state === "provider-no-data")) {
+    return {
+      state: "provider-no-data",
+      hasResult: true,
+      csvControlCount: 0,
+      controlKinds,
+      noticeKinds,
+    };
+  }
+
+  const ready = classifications.find(
+    (classification) => classification.state === "download-ready",
+  );
   if (ready) {
     return {
       state: "download-ready",
@@ -1325,7 +1413,11 @@ export function classifyYuantaForeignCurrencyResultMarkup(
   html: string,
 ): YuantaForeignCurrencyResultClassification {
   const classifications = parseHtmlFragment(html)
-    .filter(isResultContainer)
+    .filter(
+      (element) =>
+        isResultContainer(element) ||
+        isYuantaForeignCurrencyNoDataTable(element),
+    )
     .map(classifyYuantaForeignCurrencyResultElement);
   return combineYuantaForeignCurrencyResultClassifications(classifications);
 }
@@ -1336,6 +1428,9 @@ const yuantaForeignResultSelectors = [
   "#result",
   "#resultContainer",
   "#resultArea",
+  // The live provider uses this table as the empty-result marker when a
+  // selected account has no transactions in the requested range.
+  "#tabtable",
   '[data-result-container]',
   '[data-result]',
   ".resultdiv",
@@ -1550,9 +1645,13 @@ type YuantaForeignCurrencyCsvFrameTarget = {
 };
 
 type YuantaForeignCurrencyCsvControlTarget = {
+  kind: "download";
   scope: BrowserScope;
   control: Locator;
   refresh: () => Promise<Locator | null>;
+} | {
+  kind: "empty";
+  reason: "provider-explicit-no-data";
 };
 
 async function refreshYuantaForeignCurrencyCsvControl(
@@ -1633,6 +1732,7 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
         result: Locator;
         classification: YuantaForeignCurrencyResultClassification;
         diagnostics: YuantaForeignCurrencyResultDiagnostics;
+        visible: boolean | null;
       }> = [];
       for (const result of results) {
         const markup = await result
@@ -1648,10 +1748,13 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
             markup,
             visibility,
           ),
+          visible,
         });
       }
       const classification = combineYuantaForeignCurrencyResultClassifications(
-        resultClassifications.map(({ classification: resultState }) => resultState),
+        resultClassifications
+          .filter(({ visible }) => visible !== false)
+          .map(({ classification: resultState }) => resultState),
       );
       observations.push({
         ...frameRoute,
@@ -1676,6 +1779,14 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
         readyResultFound = true;
       }
       if (frameRoute.framePath === "fxtransactiondetails") {
+        // A new empty query can briefly coexist with the previous timestamp,
+        // transaction table, and CSV link in the frame. Resolve the provider
+        // no-data state before looking for a control so the old link can never
+        // win that poll.
+        if (classification.state === "provider-no-data") {
+          providerNoData = true;
+          continue;
+        }
         const frameMarkup = await readYuantaForeignCurrencyFrameMarkup(scope);
         if (
           frameMarkup &&
@@ -1687,6 +1798,7 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
           );
           if (control) {
             return {
+              kind: "download" as const,
               scope,
               control: control.control,
               refresh: () =>
@@ -1700,22 +1812,22 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
         }
         if (classification.state !== "download-ready") {
           providerError ||= classification.state === "provider-error";
-          providerNoData ||= classification.state === "provider-no-data";
         }
       }
     }
 
     lastObservations = observations;
+    if (providerNoData) {
+      logYuantaForeignCurrencyResultObservation(observations);
+      return {
+        kind: "empty",
+        reason: "provider-explicit-no-data",
+      };
+    }
     if (!readyResultFound && providerError) {
       logYuantaForeignCurrencyResultObservation(observations);
       throw new Error(
         "YuanTa foreign-currency provider returned an explicit result error.",
-      );
-    }
-    if (!readyResultFound && providerNoData) {
-      logYuantaForeignCurrencyResultObservation(observations);
-      throw new StatementComponentAbsentError(
-        "YuanTa foreign-currency provider returned no transaction data.",
       );
     }
 
@@ -1737,6 +1849,80 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
   }
   throw new Error(
     "Could not find YuanTa foreign-currency CSV download link in any frame.",
+  );
+}
+
+/**
+ * Return a bounded digest of the currently visible provider result. The
+ * digest is used as a temporal fence around a new query; raw result markup is
+ * never logged or returned to callers.
+ */
+export async function readYuantaForeignCurrencyResultFingerprint(
+  page: Page,
+): Promise<string> {
+  const fingerprints: string[] = [];
+  for (const scope of [page, ...page.frames()]) {
+    const route = frameRouteObservation(scope);
+    if (route.framePath !== "fxtransactiondetails") continue;
+    const results = await findYuantaForeignCurrencyResults(scope);
+    const resultClassifications: YuantaForeignCurrencyResultClassification[] = [];
+    for (const result of results) {
+      if (!(await result.isVisible().catch(() => false))) continue;
+      const markup = await result
+        .evaluate((element) => element.outerHTML)
+        .catch(() => "");
+      if (!markup) continue;
+      resultClassifications.push(
+        classifyYuantaForeignCurrencyResultMarkup(markup),
+      );
+    }
+    const classification = combineYuantaForeignCurrencyResultClassifications(
+      resultClassifications,
+    );
+    if (!classification.hasResult) continue;
+
+    // Exclude the provider's query timestamp from the fence. It can change
+    // before the previous account's table is replaced; only the semantic
+    // result state and statement-table association may release the old CSV.
+    const frameMarkup = await readYuantaForeignCurrencyFrameMarkup(scope);
+    const tableMatches = frameMarkup
+      ? findYuantaForeignCurrencyTableMatches(frameMarkup)
+      : { matches: [] };
+    const tableSignature = tableMatches.matches
+      .map((match) => match.associationKey)
+      .sort()
+      .join(",");
+    const semanticSignature = `${classification.state}|${classification.csvControlCount}|${tableSignature}`;
+    const digest = createHash("sha256")
+      .update(semanticSignature)
+      .digest("hex")
+      .slice(0, 24);
+    fingerprints.push(`${route.framePathHash}:${digest}`);
+  }
+  return fingerprints.sort().join("|");
+}
+
+/**
+ * Wait until the provider has visibly replaced the result observed before a
+ * query submission. This prevents a prior account's ready CSV control from
+ * being accepted during the short interval before the new query renders.
+ */
+export async function waitForYuantaForeignCurrencyResultTransition(
+  page: Page,
+  previousFingerprint: string,
+  timeoutMs = 60_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const currentFingerprint =
+      await readYuantaForeignCurrencyResultFingerprint(page);
+    if (currentFingerprint !== previousFingerprint) return;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0)
+      await page.waitForTimeout(Math.min(250, remainingMs));
+  }
+  throw new Error(
+    "YuanTa foreign-currency query did not produce a fresh result state.",
   );
 }
 
@@ -2052,6 +2238,19 @@ async function settleAfterNavigation(page: Page): Promise<void> {
   await page.waitForTimeout(750);
 }
 
+async function settleYuantaForeignCurrencyScopeNavigation(
+  page: Page,
+  scope: BrowserScope,
+): Promise<void> {
+  // The account selector lives in the transaction frame. A page-level load
+  // state can already be idle while that frame is still replacing its form,
+  // so wait on both scopes before reacquiring any controls.
+  await scope.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {
+    // A provider frame may detach during the account-driven navigation.
+  });
+  await settleAfterNavigation(page);
+}
+
 async function openForeignCurrencyDetailsPage(
   page: Page,
 ): Promise<BrowserScope> {
@@ -2166,10 +2365,19 @@ async function chooseDateRange(
 async function waitForCurrencyOptions(
   page: Page,
   scope: BrowserScope,
+  expectedAccountValue?: string,
   timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (
+      expectedAccountValue !== undefined &&
+      (await readYuantaForeignCurrencySelectedAccount(scope)) !==
+        expectedAccountValue
+    ) {
+      await page.waitForTimeout(250);
+      continue;
+    }
     if (
       await hasAttachedLocator(scope.locator('select[name="currency"] option'))
     ) {
@@ -2180,13 +2388,97 @@ async function waitForCurrencyOptions(
   throw new Error("Timed out waiting for YuanTa currency options.");
 }
 
+async function readYuantaForeignCurrencySelectedAccount(
+  scope: BrowserScope,
+): Promise<string | null> {
+  const selector = scope.locator("#acctno");
+  try {
+    const value = await selector.inputValue();
+    return value.trim();
+  } catch {
+    return selector
+      .evaluate((element) => {
+        if (!(element instanceof HTMLSelectElement)) return null;
+        return element.value;
+      })
+      .catch(() => null);
+  }
+}
+
+function yuantaForeignCurrencyAccountSelectionError(
+  account: AccountOption,
+  selected: string | null,
+  phase: string,
+): Error {
+  const requested = maskAccountLabel(account.value);
+  const observed = selected ? maskAccountLabel(selected) : "unavailable";
+  return new Error(
+    `Could not prove YuanTa foreign-currency account selection ${phase} (requested ${requested}, observed ${observed}).`,
+  );
+}
+
+async function assertYuantaForeignCurrencyAccountSelection(
+  scope: BrowserScope,
+  account: AccountOption,
+  phase: string,
+): Promise<void> {
+  if (!(await hasAttachedLocator(scope.locator("#acctno")))) {
+    throw yuantaForeignCurrencyAccountSelectionError(account, null, phase);
+  }
+  const selected = await readYuantaForeignCurrencySelectedAccount(scope);
+  if (selected !== account.value) {
+    throw yuantaForeignCurrencyAccountSelectionError(account, selected, phase);
+  }
+}
+
+async function waitForYuantaForeignCurrencyAccountSelection(
+  page: Page,
+  account: AccountOption,
+  timeoutMs = 15_000,
+): Promise<BrowserScope> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const scope of [page, ...page.frames()]) {
+      if (!(await hasAttachedLocator(scope.locator("#acctno")))) continue;
+      if ((await readYuantaForeignCurrencySelectedAccount(scope)) === account.value) {
+        return scope;
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+
+  throw yuantaForeignCurrencyAccountSelectionError(account, null, "after account change");
+}
+
 async function selectAccount(
   page: Page,
   account: AccountOption,
 ): Promise<void> {
-  const scope = await findScopeWithSelector(page, "#acctno");
-  await scope.locator("#acctno").selectOption(account.value);
-  await waitForCurrencyOptions(page, scope);
+  const originalScope = await findScopeWithSelector(page, "#acctno");
+  await originalScope.locator("#acctno").selectOption(account.value);
+  await settleYuantaForeignCurrencyScopeNavigation(page, originalScope);
+
+  // Always reacquire the form after account-driven navigation. The old frame
+  // can still expose its currency options while the provider is switching to
+  // the requested account.
+  const currentScope = await waitForYuantaForeignCurrencyAccountSelection(
+    page,
+    account,
+  );
+  await waitForCurrencyOptions(page, currentScope, account.value);
+  await assertYuantaForeignCurrencyAccountSelection(
+    currentScope,
+    account,
+    "after currency options settle",
+  );
+}
+
+/** Public browser seam used by deterministic workflow checks. */
+export async function selectYuantaForeignCurrencyAccount(
+  page: Page,
+  account: { label: string; value: string },
+): Promise<void> {
+  await selectAccount(page, account);
 }
 
 export async function readYuantaForeignCurrencyAccountOptions(
@@ -2283,7 +2575,7 @@ export async function clickYuantaForeignCurrencyCsvDownloadControl(
   page: Page,
   timeoutMs = 60_000,
   requery?: () => Promise<void>,
-): Promise<Download> {
+): Promise<Download | null> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   let requeryAttempts = 0;
@@ -2325,6 +2617,13 @@ export async function clickYuantaForeignCurrencyCsvDownloadControl(
         }
       }
       continue;
+    }
+
+    if (target.kind === "empty") {
+      // An explicit provider empty result is a successful per-account query.
+      // There is deliberately no click and therefore no opportunity to reuse
+      // a download control or file from the preceding account.
+      return null;
     }
 
     const control = await target.refresh().catch((error: unknown) => {
@@ -2391,14 +2690,51 @@ async function queryAccountCurrency(
 ): Promise<void> {
   await selectAccount(page, account);
 
-  const scope = await findScopeWithSelector(page, "#acctno");
-  await scope.locator('select[name="currency"]').selectOption(currency.value);
+  const currencyScope = await findScopeWithSelector(page, "#acctno");
+  await assertYuantaForeignCurrencyAccountSelection(
+    currencyScope,
+    account,
+    "before setting currency",
+  );
+  await currencyScope
+    .locator('select[name="currency"]')
+    .selectOption(currency.value);
   await chooseDateRange(page, input);
-  await scope
+
+  const channelScope = await findScopeWithSelector(page, "#acctno");
+  await assertYuantaForeignCurrencyAccountSelection(
+    channelScope,
+    account,
+    "before setting channel",
+  );
+  await channelScope
     .locator("#channelType")
     .selectOption(channelTypeValues[input.channelType]);
-  await scope.locator("#submitbutton").click();
+
+  const submitScope = await findScopeWithSelector(page, "#acctno");
+  await assertYuantaForeignCurrencyAccountSelection(
+    submitScope,
+    account,
+    "immediately before submit",
+  );
+  const previousResultFingerprint =
+    await readYuantaForeignCurrencyResultFingerprint(page);
+  await submitScope.locator("#submitbutton").click();
   await settleAfterNavigation(page);
+  await waitForYuantaForeignCurrencyResultTransition(
+    page,
+    previousResultFingerprint,
+  );
+
+  const resultBindingScope = await waitForYuantaForeignCurrencyAccountSelection(
+    page,
+    account,
+  );
+  await assertYuantaForeignCurrencyAccountSelection(
+    resultBindingScope,
+    account,
+    "before result binding",
+  );
 }
 
 async function downloadTransactionRows(
@@ -2408,12 +2744,16 @@ async function downloadTransactionRows(
   currencyLabel: string,
   currencyValue: string,
   requery: () => Promise<void>,
-): Promise<{ filename: string; rows: ForeignCurrencyTransactionRow[] }> {
+): Promise<{ filename: string | null; rows: ForeignCurrencyTransactionRow[] }> {
   const download = await clickYuantaForeignCurrencyCsvDownloadControl(
     page,
     60_000,
     requery,
   );
+
+  if (!download) {
+    return { filename: null, rows: [] };
+  }
 
   const filename = download.suggestedFilename();
   const content = await readBig5DownloadAsUtf8(download);

@@ -3,10 +3,6 @@ import test from "node:test";
 import {
   createSourceCsvParser,
   normalizeCurrencyCode,
-  personalInvoiceFields,
-  personalInvoiceItemFields,
-  personalInvoiceItemKey,
-  personalInvoiceKey,
   sqliteAmount,
 } from "./source-csv-parsers.ts";
 
@@ -160,116 +156,14 @@ assert.equal(
   "foreign_currency_transactions",
 );
 
-const einvoicePayload = {
-  carrier_customized_name: "mobile barcode",
-  issued_at: "1783065600",
-  invoice_id: "AB12345678",
-  amount: "129",
-  status: "confirmed",
-  rebated: "false",
-  seller_business_account_number: "24536806",
-  seller_name: "Store",
-  seller_addr: "Taipei",
-  buyer_business_account_number: "",
-  item_sequence_number: "001",
-  item_quantity: "2",
-  item_unit_price: "50",
-  item_paid_amount: "100",
-  item_product_name: "Coffee",
-};
-
-const einvoiceParser = createSourceCsvParser({
-  bank: "einvoice",
-  product: "personal-invoices",
-  sourceRelativePath: "einvoice-personal-invoices/example.csv",
-  metadata: null,
-  headers: Object.keys(einvoicePayload),
-});
-assert.equal(einvoiceParser.table, "personal_invoice_items");
 assert.equal(
-  personalInvoiceKey(einvoicePayload),
-  "AB12345678|1783065600|24536806",
-);
-assert.equal(
-  personalInvoiceItemKey(einvoicePayload),
-  "AB12345678|1783065600|24536806|1",
-);
-assert.deepEqual(personalInvoiceFields(einvoicePayload), {
-  invoice_key: "AB12345678|1783065600|24536806",
-  carrier_customized_name: "mobile barcode",
-  issued_at: 1783065600,
-  invoice_id: "AB12345678",
-  amount: 129,
-  status: "confirmed",
-  rebated: 0,
-  seller_business_account_number: "24536806",
-  seller_name: "Store",
-  seller_addr: "Taipei",
-  buyer_business_account_number: "",
-});
-assert.deepEqual(personalInvoiceItemFields(einvoicePayload), {
-  item_key: "AB12345678|1783065600|24536806|1",
-  invoice_key: "AB12345678|1783065600|24536806",
-  item_sequence_number: 1,
-  item_quantity: 2,
-  item_unit_price: 50,
-  item_paid_amount: 100,
-  item_product_name: "Coffee",
-});
-assert.deepEqual(einvoiceParser.parseRow(einvoicePayload), {
-  item_key: "AB12345678|1783065600|24536806|1",
-  invoice_key: "AB12345678|1783065600|24536806",
-  item_sequence_number: 1,
-  item_quantity: 2,
-  item_unit_price: 50,
-  item_paid_amount: 100,
-  item_product_name: "Coffee",
-});
-
-const zeroSequencePayload = {
-  ...einvoicePayload,
-  item_sequence_number: "0",
-};
-assert.equal(
-  personalInvoiceItemKey(zeroSequencePayload),
-  "AB12345678|1783065600|24536806|0",
-);
-assert.equal(
-  personalInvoiceItemFields(zeroSequencePayload).item_sequence_number,
-  0,
-);
-
-for (const invalidSequence of ["-1", "1.5", "item-1"]) {
-  assert.throws(
-    () => personalInvoiceItemFields({
-      ...einvoicePayload,
-      item_sequence_number: invalidSequence,
-    }),
-    /expected a non-negative decimal integer/,
-  );
-}
-
-for (const blankSequence of ["", "   "]) {
-  assert.throws(
-    () => einvoiceParser.parseRow({
-      ...einvoicePayload,
-      item_sequence_number: blankSequence,
-    }),
-    /item_sequence_number is required/,
-  );
-}
-
-const missingSequencePayload: Record<string, string> = { ...einvoicePayload };
-delete missingSequencePayload.item_sequence_number;
-assert.throws(
-  () => einvoiceParser.parseRow(missingSequencePayload),
-  /item_sequence_number is required/,
-);
-
-assert.throws(
-  () => personalInvoiceItemFields({
-    ...einvoicePayload,
-    item_sequence_number: "9007199254740992",
-  }),
-  /exceeds the safe integer range/,
+  createSourceCsvParser({
+    bank: "einvoice",
+    product: "personal-invoices",
+    sourceRelativePath: "einvoice-personal-invoices/retired.csv",
+    metadata: null,
+    headers: ["invoice_id"],
+  }).table,
+  "unsupported_statement_rows",
+  "legacy E-Invoice CSV must not have a typed replay parser",
 );

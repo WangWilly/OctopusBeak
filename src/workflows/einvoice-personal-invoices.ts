@@ -1,5 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID, createHash } from "node:crypto";
 import {
   librettoAuthenticate,
   pause,
@@ -12,6 +11,23 @@ import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+} from "../ledger/canonical/canonical-source-store.ts";
+import { openCanonicalDatabase } from "../ledger/canonical/canonical-database.ts";
+import {
+  commitCanonicalEInvoiceCapture,
+  E_INVOICE_CONTRACT_VERSION,
+  E_INVOICE_CURRENCY_AUTHORITY,
+  E_INVOICE_ROUTE,
+  type CanonicalEInvoiceCaptureInput,
+  type CanonicalEInvoiceInput,
+  type CanonicalEInvoiceItemInput,
+  type CanonicalEInvoiceOccurrence,
+} from "../ledger/canonical/einvoice.ts";
+import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
 const SEARCH_URL =
@@ -41,6 +57,7 @@ type InvoiceListEntry = {
 };
 
 type InvoiceListResponse = {
+  httpStatus: 200 | 204;
   totalElements: number;
   totalPages: number;
   size: number;
@@ -64,7 +81,7 @@ type InvoiceHeader = {
 type InvoiceItem = {
   sequenceNumber?: string | null;
   item?: string | null;
-  quantity?: string | null;
+  quantity?: string | number | null;
   unitPrice?: string | null;
   amount?: string | null;
 };
@@ -76,65 +93,69 @@ type InvoiceDetailResponse = {
   content: InvoiceItem[];
 };
 
-type PurchasedItemRow = {
-  carrier_customized_name: string;
-  issued_at: string;
-  invoice_id: string;
-  amount: string;
-  status: string;
-  rebated: string;
-  seller_business_account_number: string;
-  seller_name: string;
-  seller_addr: string;
-  buyer_business_account_number: string;
-  item_sequence_number: string;
-  item_quantity: string;
-  item_unit_price: string;
-  item_paid_amount: string;
-  item_product_name: string;
-};
+export function validatePaginationEnvelope(
+  label: string,
+  value: Readonly<{
+    totalElements: number;
+    totalPages: number;
+    size: number;
+    content: readonly unknown[];
+  }>,
+): void {
+  if (!Number.isSafeInteger(value.totalElements) || value.totalElements < 0)
+    throw new Error(`${label} totalElements is invalid.`);
+  if (!Number.isSafeInteger(value.totalPages) || value.totalPages < 0)
+    throw new Error(`${label} totalPages is invalid.`);
+  if (!Number.isSafeInteger(value.size) || value.size < 0)
+    throw new Error(`${label} page size is invalid.`);
+  if (value.totalElements === 0) {
+    if (value.content.length !== 0)
+      throw new Error(`${label} returned rows for an empty result.`);
+    return;
+  }
+  if (value.totalPages < 1 || value.content.length === 0)
+    throw new Error(`${label} pagination metadata is incomplete.`);
+  if (value.size > 0 && value.content.length > value.size)
+    throw new Error(`${label} returned more rows than its declared page size.`);
+}
 
-const inputSchema = z.object({});
+export type InvoiceCaptureRecord = Readonly<{
+  month: YearMonth;
+  listPageIndex: number;
+  entry: InvoiceListEntry;
+  header: InvoiceHeader;
+  items: readonly InvoiceItem[];
+  itemCompleteness: "complete" | "incomplete";
+}>;
 
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
+const inputSchema = z.object({
+  /** Override only for isolated checks; desktop supplies LEDGER_DIR. */
+  canonicalLedgerDir: z.string().optional(),
 });
 
 const outputSchema = z.object({
   usedExistingSession: z.boolean(),
   invoiceCount: z.number().int().nonnegative(),
-  itemRowCount: z.number().int().nonnegative(),
+  itemCount: z.number().int().nonnegative(),
   months: z.array(z.string()),
-  file: tableFileSchema,
+  captureId: z.string(),
+  knowledgeAt: z.number().int().nonnegative(),
+  commit: z.object({
+    status: z.literal("committed"),
+    captureId: z.string(),
+    knowledgeAt: z.number().int().nonnegative(),
+    sourceRecordIds: z.array(z.string()),
+    invoiceCount: z.number().int().nonnegative(),
+    insertedInvoiceCount: z.number().int().nonnegative(),
+    insertedRevisionCount: z.number().int().nonnegative(),
+    observedDuplicateCount: z.number().int().nonnegative(),
+    itemCount: z.number().int().nonnegative(),
+  }),
 });
 
 type Input = z.infer<typeof inputSchema> & {
   credentials: EinvoiceCredentials;
 };
-type TableFile = z.infer<typeof tableFileSchema>;
-
-const csvHeaders: (keyof PurchasedItemRow)[] = [
-  "carrier_customized_name",
-  "issued_at",
-  "invoice_id",
-  "amount",
-  "status",
-  "rebated",
-  "seller_business_account_number",
-  "seller_name",
-  "seller_addr",
-  "buyer_business_account_number",
-  "item_sequence_number",
-  "item_quantity",
-  "item_unit_price",
-  "item_paid_amount",
-  "item_product_name",
-];
 
 function requireCredential(
   credentials: EinvoiceCredentials,
@@ -154,14 +175,6 @@ function cleanText(value: string | number | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 function monthLabel(month: YearMonth): string {
@@ -209,7 +222,7 @@ function parsePickerMonth(text: string): YearMonth {
   return { year: Number(match[2]), month: Number(match[1]) };
 }
 
-function invoiceStatus(
+export function invoiceStatus(
   entry: InvoiceListEntry,
   header: InvoiceHeader,
 ): string {
@@ -236,60 +249,222 @@ function invoiceStatus(
   return candidates[0] ?? "";
 }
 
-function buyerId(value: string | null | undefined): string {
-  const cleaned = cleanText(value);
-  return /^0+$/.test(cleaned) ? "" : cleaned;
+function opaqueDigest(domain: string, ...parts: readonly string[]): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update([domain, ...parts].join("\u0000"), "utf8")
+    .digest("base64url")}`;
 }
 
-function issuedAt(header: InvoiceHeader): string {
-  if (header.invoiceInstantDate) {
-    return String(Math.floor(Date.parse(header.invoiceInstantDate) / 1000));
-  }
-  const date = cleanText(header.invoiceDate);
-  const time = cleanText(header.invoiceTime) || "00:00:00";
-  const match = date.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (!match) return "";
-  return String(
-    Math.floor(
-      Date.parse(`${match[1]}-${match[2]}-${match[3]}T${time}+08:00`) / 1000,
-    ),
+function exactDecimal(
+  value: string | number | null | undefined,
+  label: string,
+): { coefficient: string; scale: number } | null {
+  const normalized = cleanText(value);
+  if (!normalized) return null;
+  const match = normalized.match(
+    /^([+-]?)(?:(\d{1,3}(?:,\d{3})+)|(\d+))(?:\.(\d+))?$/u,
   );
+  if (!match) throw new Error(`E-Invoice ${label} is not an exact decimal.`);
+  const integer = (match[2] ?? match[3])!.replaceAll(",", "").replace(/^0+(?=\d)/u, "");
+  const fraction = match[4] ?? "";
+  const digits = `${integer}${fraction}`.replace(/^0+(?=\d)/u, "");
+  const coefficient = digits === "0" ? "0" : `${match[1] === "+" ? "" : match[1]}${digits}`;
+  return { coefficient, scale: fraction.length };
 }
 
-function purchasedItemRows(
-  entry: InvoiceListEntry,
-  header: InvoiceHeader,
-  items: InvoiceItem[],
-): PurchasedItemRow[] {
-  const base = {
-    carrier_customized_name: cleanText(entry.carrierName),
-    issued_at: issuedAt(header),
-    invoice_id: cleanText(entry.invoiceNumber),
-    amount: cleanText(header.totalAmount ?? entry.totalAmount),
-    status: invoiceStatus(entry, header),
-    rebated: String(["Y", "1", "true"].includes(cleanText(header.alwFlag))),
-    seller_business_account_number: cleanText(header.sellerId),
-    seller_name: cleanText(header.sellerName),
-    seller_addr: cleanText(header.sellerAddress),
-    buyer_business_account_number: buyerId(header.buyerId ?? entry.buyerId),
+function money(
+  value: string | number | null | undefined,
+  label: string,
+): NonNullable<CanonicalEInvoiceInput["total"]> | null {
+  const exact = exactDecimal(value, label);
+  return exact
+    ? {
+      ...exact,
+      currency: "TWD",
+      currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY,
+    }
+    : null;
+}
+
+function positiveInteger(value: string | number | null | undefined): number | null {
+  const normalized = cleanText(value);
+  if (!normalized) return null;
+  if (!/^\d+$/u.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
+}
+
+function canonicalDateParts(
+  value: string,
+): { date: string; time: string | null; precision: "date" | "minute" | "second" } | null {
+  const normalized = value.trim().replaceAll("/", "-").replace(/\s+/gu, "T");
+  const match = normalized.match(
+    /^(\d{4})-?(\d{2})-?(\d{2})(?:T(\d{2}):?(\d{2})(?::?(\d{2}))?)?/u,
+  );
+  if (!match) return null;
+  const date = `${match[1]}-${match[2]}-${match[3]}`;
+  const calendar = new Date(`${date}T00:00:00Z`);
+  if (calendar.toISOString().slice(0, 10) !== date) return null;
+  if (match[4] === undefined) return { date, time: null, precision: "date" };
+  const time = `${match[4]}:${match[5]}` + (match[6] === undefined ? "" : `:${match[6]}`);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  return {
+    date,
+    time,
+    precision: match[6] === undefined ? "minute" : "second",
   };
-
-  const rows = items.length ? items : [{}];
-  return rows.map((item, index) => ({
-    ...base,
-    item_sequence_number: cleanText(item.sequenceNumber) || String(index + 1),
-    item_quantity: cleanText(item.quantity),
-    item_unit_price: cleanText(item.unitPrice),
-    item_paid_amount: cleanText(item.amount),
-    item_product_name: cleanText(item.item),
-  }));
 }
 
-function invoiceRowsToCsv(rows: PurchasedItemRow[]): string {
-  return rowsToCsv([
-    csvHeaders,
-    ...rows.map((row) => csvHeaders.map((header) => row[header])),
-  ]);
+export function canonicalOccurrence(
+  header: InvoiceHeader,
+): CanonicalEInvoiceOccurrence {
+  const sourceValue = cleanText(header.invoiceInstantDate);
+  const dateValue = cleanText(header.invoiceDate);
+  const timeValue = cleanText(header.invoiceTime);
+  const sourceParts = sourceValue
+    ? canonicalDateParts(sourceValue)
+    : canonicalDateParts(`${dateValue}${timeValue ? `T${timeValue}` : ""}`);
+  if (sourceParts) {
+    return {
+      value: sourceParts.time ? `${sourceParts.date}T${sourceParts.time}` : sourceParts.date,
+      precision: sourceParts.precision,
+      timeZone: "Asia/Taipei",
+      origin: "source-reported",
+    };
+  }
+  throw new Error("E-Invoice source did not provide a valid purchase date.");
+}
+
+function statusKind(status: string): "issued" | "revised" | "revoked" {
+  const normalized = status.trim().toLocaleLowerCase("en-US");
+  if (
+    normalized === "voided" ||
+    normalized === "revoked" ||
+    normalized === "cancelled" ||
+    normalized === "canceled" ||
+    status === "已作廢"
+  ) return "revoked";
+  if (normalized === "confirmed") return "issued";
+  throw new Error(`E-Invoice source status ${status || "(missing)"} is not admitted by the current contract.`);
+}
+
+function canonicalItem(
+  source: InvoiceItem,
+  index: number,
+  sequence: number = index + 1,
+  sequenceFallback = false,
+): { item: CanonicalEInvoiceItemInput; completeness: "complete" | "incomplete" } {
+  const name = cleanText(source.item) || null;
+  const quantity = exactDecimal(source.quantity, `item ${index + 1} quantity`);
+  const unitPrice = money(source.unitPrice, `item ${index + 1} unit price`);
+  const amount = money(source.amount, `item ${index + 1} amount`);
+  if (!name && !quantity && !unitPrice && !amount)
+    throw new Error(`E-Invoice item ${index + 1} has no source facts.`);
+  const completeness = name && quantity && unitPrice && amount ? "complete" : "incomplete";
+  const providerSequence = cleanText(source.sequenceNumber) || null;
+  return {
+    item: {
+      sequence,
+      completeness,
+      name,
+      quantity,
+      unitPrice,
+      amount,
+      sourceFacts: {
+        providerItemOrdinal: index + 1,
+        ...(providerSequence === null ? {} : { providerSequenceRaw: providerSequence }),
+        ...(sequenceFallback ? { providerSequenceFallback: true } : {}),
+      },
+    },
+    completeness,
+  };
+}
+
+function canonicalItemSequences(
+  items: readonly InvoiceItem[],
+): { sequences: readonly number[]; usesProviderSequences: boolean } {
+  const providerSequences = items.map((item) => positiveInteger(item.sequenceNumber));
+  const allPositiveSafeIntegers = providerSequences.every(
+    (sequence): sequence is number => sequence !== null,
+  );
+  const unique = allPositiveSafeIntegers && new Set(providerSequences).size === providerSequences.length;
+  return {
+    sequences: unique
+      ? providerSequences
+      : items.map((_item, index) => index + 1),
+    usesProviderSequences: unique,
+  };
+}
+
+export function mapCanonicalEInvoiceRecord(
+  record: InvoiceCaptureRecord,
+): CanonicalEInvoiceInput {
+  const entry = record.entry;
+  const header = record.header;
+  const status = invoiceStatus(entry, header);
+  const revisionKind = statusKind(status);
+  // The three existing provider payloads expose a lifecycle status but no
+  // revision sequence. Confirmed and voided are therefore the only admitted
+  // lifecycle facts; voided is the one source-proven successor state.
+  const revisionNumber = revisionKind === "revoked" ? 2 : 1;
+  const invoiceNumber = cleanText(entry.invoiceNumber);
+  const sellerTaxId = cleanText(header.sellerId);
+  if (!invoiceNumber) throw new Error("E-Invoice invoice number is required.");
+  if (!sellerTaxId) throw new Error(`E-Invoice ${invoiceNumber} seller tax ID is required.`);
+  const randomNumber = null;
+  const stableInvoiceKey = `provider:${invoiceNumber}:${sellerTaxId}`;
+  const providerRowKey = cleanText(entry.token);
+  if (!providerRowKey) throw new Error(`E-Invoice ${invoiceNumber} provider row key is required.`);
+  const sourceRevisionKey = `provider-revision:${opaqueDigest(
+    "einvoice-revision",
+    stableInvoiceKey,
+    status,
+    String(revisionNumber),
+  )}`;
+  const occurrence = canonicalOccurrence(header);
+  const itemSequencePlan = canonicalItemSequences(record.items);
+  const items = revisionKind === "revoked"
+    ? []
+    : record.items.map((item, index) => canonicalItem(
+      item,
+      index,
+      itemSequencePlan.sequences[index]!,
+      !itemSequencePlan.usesProviderSequences,
+    ).item);
+  const itemCompleteness = items.length === 0
+    ? "complete"
+    : items.every((item) => item.completeness === "complete")
+      ? "complete"
+      : "incomplete";
+  if (record.itemCompleteness === "incomplete" && itemCompleteness === "complete") {
+    throw new Error(`E-Invoice ${invoiceNumber} item completeness was overstated.`);
+  }
+  const reference = `provider-record:${opaqueDigest("einvoice-provider-record", providerRowKey)}`;
+  return {
+    stableInvoiceKey,
+    sourceRevisionKey,
+    revisionNumber,
+    revisionKind,
+    sourceIdentifiers: { invoiceNumber, randomNumber },
+    seller: { taxId: sellerTaxId, name: cleanText(header.sellerName) || null },
+    total: revisionKind === "revoked"
+      ? null
+      : money(header.totalAmount ?? entry.totalAmount, `invoice ${invoiceNumber} total`),
+    occurrence,
+    items,
+    authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+    provenance: {
+      kind: revisionKind === "revoked" ? "provider-revocation" : "provider-record",
+      reference,
+      sourceField: header.invoiceStrStatus ? "invoiceStrStatus" : entry.invoiceStrStatus ? "invoiceStrStatus" : "extStatus",
+    },
+    ...(revisionKind === "revoked"
+      ? { revocationReason: `provider-status:${status || "voided"}` }
+      : {}),
+  };
 }
 
 async function isSignedIn(page: Page): Promise<boolean> {
@@ -356,7 +531,9 @@ async function signInEinvoice(
 ): Promise<void> {
   const { page, session } = ctx;
 
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  if (!page.url().startsWith(LOGIN_URL)) {
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+  }
   await page.locator("#mobile_phone").waitFor({ state: "visible" });
   await page
     .locator("#mobile_phone")
@@ -428,13 +605,16 @@ export async function waitForListResponse(
   );
   if (response.status() === 204) {
     return {
+      httpStatus: 204,
       totalElements: 0,
       totalPages: 0,
       size: 0,
       content: [],
     };
   }
-  return (await response.json()) as InvoiceListResponse;
+  if (response.status() !== 200)
+    throw new Error(`E-Invoice list request failed with HTTP ${response.status()}.`);
+  return { ...(await response.json()) as Omit<InvoiceListResponse, "httpStatus">, httpStatus: 200 };
 }
 
 async function waitForInvoiceResponses(
@@ -457,6 +637,8 @@ async function waitForInvoiceResponses(
     headerPromise,
     detailPromise,
   ]);
+  if (headerResponse.status() !== 200 || detailResponse.status() !== 200)
+    throw new Error(`E-Invoice detail request failed with HTTP ${headerResponse.status()}/${detailResponse.status()}.`);
   return {
     header: (await headerResponse.json()) as InvoiceHeader,
     details: (await detailResponse.json()) as InvoiceDetailResponse,
@@ -470,6 +652,8 @@ async function waitForDetailResponse(page: Page): Promise<InvoiceDetailResponse>
       candidate.request().method() === "POST",
     { timeout: 60_000 },
   );
+  if (response.status() !== 200)
+    throw new Error(`E-Invoice item page request failed with HTTP ${response.status()}.`);
   return (await response.json()) as InvoiceDetailResponse;
 }
 
@@ -533,12 +717,13 @@ export async function closeInvoiceDetailModal(page: Page): Promise<void> {
 async function readInvoiceRows(
   page: Page,
   entry: InvoiceListEntry,
-): Promise<PurchasedItemRow[]> {
+): Promise<{ header: InvoiceHeader; items: readonly InvoiceItem[]; itemCompleteness: "complete" | "incomplete" }> {
   await closeInvoiceDetailModal(page);
   const responses = waitForInvoiceResponses(page);
   try {
     await page.locator(`a[title="${entry.invoiceNumber}"]`).first().click();
     let { header, details } = await responses;
+    validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail`, details);
 
     if (details.totalElements > details.content.length) {
       const visibleModal = page.locator(".modal.show .modal-content").first();
@@ -546,9 +731,33 @@ async function readInvoiceRows(
       await visibleModal.locator("select#SelectSizes").first().selectOption("100");
       await visibleModal.locator('button[title="執行"]').nth(1).click();
       details = await detailPromise;
+      validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail`, details);
     }
 
-    return purchasedItemRows(entry, header, details.content);
+    const detailPages = [details];
+    const totalPages = Math.max(1, details.totalPages);
+    for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
+      const visibleModal = page.locator(".modal.show .modal-content").first();
+      const detailPromise = waitForDetailResponse(page);
+      await visibleModal.locator("select#SelectPages").first().selectOption(String(pageIndex));
+      await visibleModal.locator('button[title="執行"]').first().click();
+      const detailPage = await detailPromise;
+      validatePaginationEnvelope(`E-Invoice ${entry.invoiceNumber} detail page ${pageIndex}`, detailPage);
+      if (detailPage.totalElements !== details.totalElements || detailPage.totalPages !== details.totalPages)
+        throw new Error(`E-Invoice ${entry.invoiceNumber} detail pagination changed during collection.`);
+      detailPages.push(detailPage);
+    }
+    const items = detailPages.flatMap((pageResult) => pageResult.content);
+    if (items.length !== details.totalElements)
+      throw new Error(`E-Invoice ${entry.invoiceNumber} detail pagination was incomplete.`);
+    const completeness = items.length === 0 || items.every((item, index) => {
+      try {
+        return canonicalItem(item, index).completeness === "complete";
+      } catch {
+        return false;
+      }
+    }) ? "complete" : "incomplete";
+    return { header, items, itemCompleteness: completeness };
   } finally {
     await closeInvoiceDetailModal(page);
   }
@@ -556,64 +765,170 @@ async function readInvoiceRows(
 
 async function readVisibleListRows(
   page: Page,
+  month: YearMonth,
+  listPageIndex: number,
   list: InvoiceListResponse,
-): Promise<PurchasedItemRow[]> {
-  const rows: PurchasedItemRow[] = [];
+): Promise<InvoiceCaptureRecord[]> {
+  const rows: InvoiceCaptureRecord[] = [];
   for (const entry of list.content) {
-    rows.push(...(await readInvoiceRows(page, entry)));
+    const result = await readInvoiceRows(page, entry);
+    rows.push({
+      month,
+      listPageIndex,
+      entry,
+      header: result.header,
+      items: result.items,
+      itemCompleteness: result.itemCompleteness,
+    });
   }
   return rows;
 }
 
 async function readAllInvoices(page: Page): Promise<{
-  rows: PurchasedItemRow[];
+  records: InvoiceCaptureRecord[];
+  pages: Array<{ month: YearMonth; pageIndex: number; list: InvoiceListResponse }>;
   months: string[];
   invoiceCount: number;
 }> {
-  const rows: PurchasedItemRow[] = [];
+  const records: InvoiceCaptureRecord[] = [];
+  const pages: Array<{ month: YearMonth; pageIndex: number; list: InvoiceListResponse }> = [];
   let invoiceCount = 0;
   const months = availableInvoiceMonths();
 
   for (const month of months) {
     console.log(`einvoice-search-month: ${monthLabel(month)}`);
     let list = await searchMonth(page, month);
+    validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
     if (list.totalElements > list.content.length) {
       list = await setResultPageSize100(page);
+      validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
     }
 
+    const totalPages = Math.max(1, list.totalPages);
+    pages.push({ month, pageIndex: 0, list });
     invoiceCount += list.totalElements;
-    rows.push(...(await readVisibleListRows(page, list)));
+    records.push(...(await readVisibleListRows(page, month, 0, list)));
 
-    for (let pageIndex = 1; pageIndex < list.totalPages; pageIndex += 1) {
+    let fetchedCount = list.content.length;
+    for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
       const pageList = await selectResultPage(page, pageIndex);
-      rows.push(...(await readVisibleListRows(page, pageList)));
+      validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list page ${pageIndex}`, pageList);
+      if (pageList.totalElements !== list.totalElements || pageList.totalPages !== list.totalPages)
+        throw new Error(`E-Invoice ${monthLabel(month)} list pagination changed during collection.`);
+      pages.push({ month, pageIndex, list: pageList });
+      fetchedCount += pageList.content.length;
+      records.push(...(await readVisibleListRows(page, month, pageIndex, pageList)));
     }
+    if (fetchedCount !== list.totalElements)
+      throw new Error(`E-Invoice ${monthLabel(month)} list pagination was incomplete.`);
   }
 
-  return { rows, months: months.map(monthLabel), invoiceCount };
+  return { records, pages, months: months.map(monthLabel), invoiceCount };
 }
 
-async function writeInvoicesFile(rows: PurchasedItemRow[]): Promise<TableFile> {
-  const dir = join(process.cwd(), "downloads", "einvoice-personal-invoices");
-  await mkdir(dir, { recursive: true });
+function parseMonthLabel(value: string): YearMonth {
+  const match = value.match(/^(\d{4})-(\d{2})$/u);
+  if (!match) throw new Error(`Invalid E-Invoice month label: ${value}`);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) throw new Error(`Invalid E-Invoice month label: ${value}`);
+  return { year: Number(match[1]), month };
+}
 
-  const baseName = `einvoice-personal-invoices-${Date.now()}`;
-  const csvFilename = `${baseName}.csv`;
-  const csvPath = join(dir, csvFilename);
-  await writeFile(csvPath, invoiceRowsToCsv(rows), "utf8");
-
-  const csvStat = await stat(csvPath);
+export function buildCanonicalEInvoiceCapture(
+  result: Readonly<{
+    records: readonly InvoiceCaptureRecord[];
+    pages: readonly { month: YearMonth; pageIndex: number; list: InvoiceListResponse }[];
+    months: readonly string[];
+  }>,
+  credentials: EinvoiceCredentials,
+  options: Readonly<{
+    captureId?: string;
+    observedAt?: string;
+    today?: Date;
+  }> = {},
+): CanonicalEInvoiceCaptureInput {
+  if (result.months.length === 0) throw new Error("E-Invoice capture requires at least one month.");
+  const firstMonth = parseMonthLabel(result.months[0]!);
+  const lastMonth = parseMonthLabel(result.months.at(-1)!);
+  const sourceConnectionKey = deriveSourceConnectionIdentityKey("einvoice", {
+    phone: requireCredential(credentials, "einvoice_phone_number"),
+  });
+  const identityEpoch = opaqueDigest(
+    "einvoice-identity-epoch",
+    sourceConnectionKey,
+    "personal-invoices-v1",
+  );
+  const subjectDigest = opaqueDigest(
+    "einvoice-subject",
+    sourceConnectionKey,
+    identityEpoch,
+    "personal-invoices",
+  );
+  const observedAt = options.observedAt ?? new Date().toISOString();
+  const captureId = options.captureId ?? `einvoice-capture:${randomUUID()}`;
+  const pages = result.pages.map((page, pageOrdinal) => ({
+    pageOrdinal,
+    responseCode: String(page.list.httpStatus) as "200" | "204",
+    rowCount: page.list.content.length,
+    terminal: pageOrdinal === result.pages.length - 1,
+    metadata: {
+      provider: "einvoice.nat.gov.tw",
+      month: monthLabel(page.month),
+      pageIndex: page.pageIndex,
+      totalElements: page.list.totalElements,
+      totalPages: page.list.totalPages,
+      size: page.list.size,
+    },
+  }));
+  const itemCompleteness = result.records.every(
+    (record) => record.itemCompleteness === "complete",
+  ) ? "complete" : "incomplete";
   return {
-    baseName,
-    rowCount: rows.length,
-    headers: csvHeaders,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
+    captureId,
+    sourceConnectionKey,
+    identityEpoch,
+    subjectDigest,
+    observedAt,
+    scope: {
+      startDate: `${monthLabel(firstMonth)}-01`,
+      endDate: `${monthLabel(lastMonth)}-${String(monthEndDay(lastMonth, options.today)).padStart(2, "0")}`,
+      kind: "bounded-range",
+      completeness: "complete-range",
+      invoiceCompleteness: "complete",
+      itemCompleteness,
+      absenceAuthority: "comparable-complete-range",
+    },
+    pages,
+    invoices: result.records.map(mapCanonicalEInvoiceRecord),
   };
 }
 
+function configuredCanonicalLedgerDir(explicit: string | undefined): string {
+  return explicit?.trim() ||
+    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR?.trim() ||
+    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR?.trim() ||
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+    process.env.LEDGER_DIR?.trim() ||
+    DEFAULT_LEDGER_DIR;
+}
+
+export async function commitCanonicalCapture(
+  capture: CanonicalEInvoiceCaptureInput,
+  ledgerDir: string,
+) {
+  // The source store validates the schema, while product reads also require an
+  // active canonical projection generation. Initialize both on a fresh ledger.
+  openCanonicalDatabase(ledgerDir).close();
+  const store = createCanonicalSourceStore(canonicalSqlitePath(ledgerDir));
+  try {
+    return await commitCanonicalEInvoiceCapture(store, capture);
+  } finally {
+    store.close();
+  }
+}
+
 export default workflow("einvoicePersonalInvoices", {
+  startUrl: LOGIN_URL,
   credentials: ["einvoice_phone_number", "einvoice_password"],
   input: inputSchema,
   output: outputSchema,
@@ -629,16 +944,22 @@ export default workflow("einvoicePersonalInvoices", {
 
     console.log("automation-progress: 20");
     const result = await readAllInvoices(ctx.page);
+    const capture = buildCanonicalEInvoiceCapture(result, input.credentials);
     console.log("automation-progress: 90");
-    const file = await writeInvoicesFile(result.rows);
+    const commit = await commitCanonicalCapture(
+      capture,
+      configuredCanonicalLedgerDir(input.canonicalLedgerDir),
+    );
     console.log("automation-progress: 100");
 
     return {
       usedExistingSession: authResult.usedProfile,
       invoiceCount: result.invoiceCount,
-      itemRowCount: result.rows.length,
+      itemCount: commit.itemCount,
       months: result.months,
-      file,
+      captureId: commit.captureId,
+      knowledgeAt: commit.knowledgeAt,
+      commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
     };
   },
 });

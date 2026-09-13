@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS fubon_credit_transaction_details (
   capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
   instrument_id BLOB NOT NULL REFERENCES fubon_credit_instrument_details(instrument_id),
   billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
+  consume_date TEXT,
+  posting_date TEXT,
+  effective_date_basis TEXT CHECK(effective_date_basis IS NULL OR effective_date_basis IN ('consume-date','posting-date-fallback')),
   statement_key TEXT,
   PRIMARY KEY(revision_id, source_record_id)
 );
@@ -186,6 +189,17 @@ BEGIN
   SELECT RAISE(ABORT, 'Fubon statement summary evidence crosses capture or account scope');
 END;
   `);
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(fubon_credit_transaction_details)").all() as Array<{ name?: string }>).map((column) => column.name),
+  );
+  for (const [column, definition] of [
+    ["consume_date", "TEXT"],
+    ["posting_date", "TEXT"],
+    ["effective_date_basis", "TEXT"],
+  ] as const) {
+    if (!columns.has(column))
+      db.exec(`ALTER TABLE fubon_credit_transaction_details ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function validateFubonCreditCardSchema(db: DatabaseSync): void {
@@ -218,6 +232,9 @@ export function validateFubonCreditCardSchema(db: DatabaseSync): void {
       "capture_id",
       "instrument_id",
       "billing_status",
+      "consume_date",
+      "posting_date",
+      "effective_date_basis",
       "statement_key",
     ],
     fubon_credit_statement_details: [

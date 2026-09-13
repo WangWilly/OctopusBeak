@@ -13,6 +13,7 @@ import {
   type YuantaCreditCardStatementSummary,
   type YuantaCreditCardValidatedCapture,
 } from "../ledger/canonical/yuanta-credit-card.ts";
+import { refreshCanonicalBankTransactionKindsAfterCreditCardCapture } from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
@@ -5621,6 +5622,7 @@ export default workflow("yuantaCreditCardStatements", {
         );
         try {
           await commitYuantaCreditCardCaptureBatch(store, canonicalCaptures);
+          refreshCanonicalBankTransactionKindsAfterCreditCardCapture(store.db);
           if (currentUsedCredit) {
             const balanceCapture = yuantaCreditCurrentSnapshotCapture(
               canonicalCaptures[0]!,

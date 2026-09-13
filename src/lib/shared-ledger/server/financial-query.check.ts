@@ -41,16 +41,8 @@ assert.equal("overviewExchangeRates" in boundary, false);
 const boundarySource = readFileSync(join(here, "financial-query.ts"), "utf8");
 assert.doesNotMatch(boundarySource, /projection:\s*unknown/);
 assert.doesNotMatch(boundarySource, /lineage:\s*unknown/);
-for (const [reader, forbidden] of [
-  ["readCurrentAssets", /exchange_rates|loadSpendingQueryData/],
-  ["readCurrentLiabilities", /exchange_rates|loadSpendingQueryData/],
-  ["readCurrentOverview", /fundBuyTransactions|fundRedemptionTransactions|brokerageTradeTransactions|loadSpendingQueryData/],
-] as const) {
-  const start = boundarySource.indexOf(`private async ${reader}`);
-  const end = boundarySource.indexOf("\n  private ", start + 1);
-  assert.ok(start >= 0, `${reader} must be a private product reader`);
-  assert.doesNotMatch(boundarySource.slice(start, end < 0 ? undefined : end), forbidden);
-}
+assert.doesNotMatch(boundarySource, /LegacyFinancialQueryAdapter|openLedger(?:Database|Drizzle)/);
+assert.doesNotMatch(boundarySource, /ledger\/db\/schema|data-issues\/server/);
 assert.match(boundarySource, /request\.product === "assets" \|\| request\.product === "liabilities"/);
 assert.match(boundarySource, /createCanonicalOverviewQuery\(this\.ledgerDir/);
 
@@ -67,7 +59,7 @@ const historicalContract: HistoricalFinancialQueryResult<never> = await boundary
 assert.deepEqual(historicalContract, {
   status: "unsupported",
   kind: "historical",
-  reason: "legacy-adapter-does-not-support-historical-queries",
+  reason: "canonical-historical-query-not-available",
 });
 const lineageContract: LineageFinancialQueryResult<never> = await boundary.lineage({
   kind: "lineage",
@@ -77,7 +69,7 @@ const lineageContract: LineageFinancialQueryResult<never> = await boundary.linea
 assert.deepEqual(lineageContract, {
   status: "unsupported",
   kind: "lineage",
-  reason: "legacy-adapter-does-not-support-lineage-queries",
+  reason: "canonical-lineage-query-not-available",
 });
 
 const latestExchangeRates = await boundary.current({
@@ -88,6 +80,7 @@ const latestExchangeRates = await boundary.current({
 });
 assert.equal(latestExchangeRates.product, "overview");
 assert.equal(latestExchangeRates.selection, "latest");
+assert.deepEqual(latestExchangeRates.exchangeRates, []);
 
 const historicalExchangeRates = await boundary.current({
   kind: "current",
@@ -99,6 +92,7 @@ const historicalExchangeRates = await boundary.current({
 });
 assert.equal(historicalExchangeRates.product, "overview");
 assert.equal(historicalExchangeRates.selection, "history");
+assert.deepEqual(historicalExchangeRates.exchangeRates, []);
 
 const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "financial-query-boundary-"));
 try {
@@ -118,6 +112,9 @@ try {
   assert.deepEqual(liabilities.projection.accounts, []);
   const spending = productQuery.current({ kind: "current", product: "spending" });
   assert.equal(spending.product, "spending");
+  assert.deepEqual(spending.invoices, []);
+  assert.deepEqual(spending.purchaseReport.records, []);
+  assert.equal(spending.purchaseReport.totalStatus, "complete");
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
