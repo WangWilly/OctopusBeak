@@ -1,5 +1,8 @@
 # Source-scoped lineage and strict canonical admission
 
+Accepted amendment: [ADR 0024](./0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements.
+
+
 Status: accepted
 
 OctopusBeak admits canonical financial data only through total, versioned integration contracts; keeps identity source-scoped and immutable; and preserves append-only Source, Derived, and User Assertion lineage without conflict states or manual financial correction. This sacrifices cross-source reconciliation, permissive ingestion, raw replay, and repair-in-place so current and historical projections never depend on guessed identity, time, status, or precedence.

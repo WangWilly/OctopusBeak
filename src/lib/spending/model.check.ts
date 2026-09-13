@@ -432,6 +432,28 @@ const compatibilityModel = buildSpendingModel({
   counterpartDeposits: [depositRow("98765", 99, "2026-02-01")],
   selectedMonth: "2026-02",
 });
+
+const incompleteItemModel = buildSpendingModel({
+  invoices: [{
+    ...compatibilityInvoice,
+    invoiceKey: "incomplete-item-amount",
+    invoiceId: "INCOMPLETE01",
+    amount: 77,
+    items: [{
+      ...compatibilityInvoice.items[0],
+      itemKey: "incomplete-item-amount-row",
+      paidAmount: null,
+      completeness: "incomplete",
+    }],
+  }],
+  selectedMonth: "2026-02",
+});
+assert.equal(incompleteItemModel.selectedMonthSummary.total, 77);
+assert.equal(
+  Object.values(incompleteItemModel.monthlyRows[0]!.invoice).every(Number.isFinite),
+  true,
+  "a source-missing item amount must remain null without poisoning invoice totals",
+);
 assert.deepEqual(
   compatibilityModel.accountRecords.map((record) => [
     record.statementRowId,

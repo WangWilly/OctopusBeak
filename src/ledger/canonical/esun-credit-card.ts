@@ -6,6 +6,7 @@ import {
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import {
   ensureCanonicalCreditCardSchema,
   persistCanonicalCreditCardExtensions,
@@ -77,7 +78,7 @@ export type EsunCreditCardTransactionInput = {
   occurrenceIndex: number;
   instrumentKey: string;
   /** The provider's card-consumption date; E.SUN exposes date precision. */
-  consumeDate: string;
+  consumeDate?: string | null;
   /** E.SUN has no separate posting date. The builder uses consumeDate as a
    * date-only posting anchor while retaining the explicit posted status. */
   postingDate?: string | null;
@@ -161,12 +162,14 @@ export type EsunCreditCardCaptureInput = {
 
 export type EsunCreditCardAdmittedTransaction = Omit<
   EsunCreditCardTransactionInput,
-  "bookedAmount" | "foreignAmount" | "postingDate" | "postingStatus" | "sourceKey"
+  "bookedAmount" | "foreignAmount" | "consumeDate" | "postingDate" | "postingStatus" | "sourceKey"
 > & {
   sourceKey: `sha256:${string}`;
   bookedAmount: EsunCreditCardExactAmount;
   foreignAmount: EsunCreditCardExactAmount | null;
+  consumeDate: string | null;
   postingDate: string;
+  effectiveDateBasis: "consume-date" | "posting-date-fallback";
   postingStatus: "posted";
   normalizedDescription: string;
 };
@@ -448,7 +451,7 @@ export function buildEsunCreditCardTransactionSourceKey(
     "esun-credit-card-transaction-v1",
     accountKey,
     text(record.instrumentKey, "Card instrument key"),
-    sourceDate(record.consumeDate, "Consume date"),
+    record.consumeDate ? sourceDate(record.consumeDate, "Consume date") : null,
     record.postingDate ? sourceDate(record.postingDate, "Posting date") : null,
     record.direction,
     amount.coefficient,
@@ -525,10 +528,19 @@ function validateTransaction(
     fail("Transaction occurrence index must be a non-negative integer.");
   const instrumentKey = text(record.instrumentKey, "Card instrument key");
   if (!instruments.has(instrumentKey)) fail("Transaction references an unknown card instrument.");
-  const consumeDate = validDate(record.consumeDate, "Consume date");
-  const postingDate = record.postingDate
+  const suppliedConsumeDate = record.consumeDate == null || record.consumeDate.trim() === ""
+    ? null
+    : validDate(record.consumeDate, "Consume date");
+  const suppliedPostingDate = record.postingDate
     ? validDate(record.postingDate, "Posting date")
-    : consumeDate;
+    : null;
+  const consumeDate = suppliedConsumeDate ?? suppliedPostingDate;
+  const postingDate = suppliedPostingDate ?? suppliedConsumeDate;
+  if (!consumeDate || !postingDate)
+    fail("E.SUN transaction requires a consume date or posting date.");
+  const effectiveDateBasis = suppliedConsumeDate
+    ? "consume-date" as const
+    : "posting-date-fallback" as const;
   if (record.postingStatus === "pending")
     fail("E.SUN credit-card capture requires a resolved posted status.");
   const bookedCurrency = currency(record.bookedCurrency, "Booked currency");
@@ -570,6 +582,7 @@ function validateTransaction(
     instrumentKey,
     consumeDate,
     postingDate,
+    effectiveDateBasis,
     postingStatus: "posted" as const,
     bookedAmount,
     bookedCurrency,
@@ -695,7 +708,8 @@ function validateStatement(
     if (!transaction) fail("Statement membership references an unknown source record.");
     if (transaction.billingStatus !== "billed")
       fail("Statement membership cannot reference an unbilled transaction.");
-    if (transaction.consumeDate < cycleStart || transaction.consumeDate > cycleEnd)
+    const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
+    if (effectiveDate < cycleStart || effectiveDate > cycleEnd)
       fail("Statement membership crosses issuer cycle dates.");
   }
   return {
@@ -975,10 +989,12 @@ function buildSettledStatements(
     if (cycleStart > cycleEnd)
       fail("E.SUN statement cycle start must not follow its cycle end.");
     const memberKeys = transactions
-      .filter((transaction) =>
-        transaction.billingStatus === "billed" &&
-        transaction.consumeDate >= cycleStart &&
-        transaction.consumeDate <= cycleEnd)
+      .filter((transaction) => {
+        const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
+        return transaction.billingStatus === "billed" &&
+          effectiveDate !== undefined && effectiveDate !== null &&
+          effectiveDate >= cycleStart && effectiveDate <= cycleEnd;
+      })
       .map((transaction) => transaction.sourceRecordKey);
     return {
       statementKey,
@@ -1209,6 +1225,9 @@ export function esunNeutralCreditCardCapture(
       sourceKey: transaction.sourceKey,
       instrumentKey: transaction.instrumentKey,
       billingStatus: transaction.billingStatus,
+      consumeDate: transaction.consumeDate,
+      postingDate: transaction.postingDate,
+      effectiveDateBasis: transaction.effectiveDateBasis,
       ...(transaction.statementKey === undefined
         ? {}
         : { statementKey: transaction.statementKey }),
@@ -1266,6 +1285,7 @@ function esunCanonicalSpineCapture(
       throw new EsunCreditCardAdmissionError(
         "E.SUN transaction instrument is missing from the validated capture.",
       );
+    const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
     const compact = JSON.stringify({
       sourceRecordKey: transaction.sourceRecordKey,
       occurrenceIndex: transaction.occurrenceIndex,
@@ -1293,15 +1313,15 @@ function esunCanonicalSpineCapture(
       currency: transaction.bookedCurrency,
       direction: transaction.direction,
       sourceTime: {
-        localDate: transaction.postingDate,
+        localDate: effectiveDate,
         localTime: "00:00:00",
         timeZone: "Asia/Taipei",
-        epochMilliseconds: Date.parse(`${transaction.postingDate}T00:00:00+08:00`),
+        epochMilliseconds: Date.parse(`${effectiveDate}T00:00:00+08:00`),
         precision: "date" as const,
         timeOrigin: "defaulted_local_midnight" as const,
       },
-      effectiveOn: transaction.postingDate,
-      transactionDateTimeLocal: `${transaction.postingDate}T00:00:00`,
+      effectiveOn: effectiveDate,
+      transactionDateTimeLocal: `${effectiveDate}T00:00:00`,
       description: transaction.description,
       ...(transaction.foreignAmount && transaction.foreignCurrency
         ? {
@@ -1509,6 +1529,10 @@ export async function commitEsunCreditCardCaptureBatch(
       persistCanonicalCreditCardExtensions(
         db,
         captures.map((capture) => esunNeutralCreditCardCaptureForCommit(db, capture)),
+      );
+      commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction(
+        db,
+        captures.map((capture) => capture.captureId),
       );
     },
   );

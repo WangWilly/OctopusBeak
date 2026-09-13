@@ -5,20 +5,16 @@ import type {
   AutomationTaskHistoryRow,
   CathayGmailOtpStatus,
 } from "$lib/automation/types.ts";
-import type {
-  ConfirmExclusionInput,
-  ConfirmRestoreInput,
-  DataIssueCreateInput,
-  DataIssueDetailDto,
-  DataIssueListItemDto,
-  ExclusionPreviewDto,
-  PreviewExclusionInput,
-  RestorePreviewDto,
-} from "$lib/data-issues/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type { SpendingCategory } from "$lib/spending/categories.ts";
-import type { SpendingPageDto } from "$lib/spending/model.ts";
+import type {
+  SpendingCandidateActionInput,
+  SpendingConfirmActionInput,
+  SpendingLinkActionInput,
+  SpendingPageDto,
+  SpendingPurchaseActionResult,
+} from "$lib/spending/model.ts";
 import type {
   SpendingLoadInput,
   SpendingOverrideUpdate,
@@ -81,30 +77,6 @@ export type ViewerInputResult = {
   resumed: boolean;
 };
 
-export type DataIssueDesktopService = {
-  list(): DataIssueListItemDto[];
-  create(input: DataIssueCreateInput): DataIssueDetailDto;
-  load(dataIssueId: string): DataIssueDetailDto;
-  startDiagnosis(dataIssueId: string): DataIssueDetailDto;
-  previewExclusion(input: PreviewExclusionInput): ExclusionPreviewDto;
-  confirmExclusion(input: ConfirmExclusionInput): DataIssueDetailDto;
-  previewRestore(dataIssueId: string): RestorePreviewDto;
-  confirmRestore(input: ConfirmRestoreInput): DataIssueDetailDto;
-};
-
-export function createDataIssueIpcHandlers(service: DataIssueDesktopService) {
-  return {
-    list: (_event: unknown) => service.list(),
-    create: (_event: unknown, input: DataIssueCreateInput) => service.create(input),
-    load: (_event: unknown, dataIssueId: string) => service.load(dataIssueId),
-    startDiagnosis: (_event: unknown, dataIssueId: string) => service.startDiagnosis(dataIssueId),
-    previewExclusion: (_event: unknown, input: PreviewExclusionInput) => service.previewExclusion(input),
-    confirmExclusion: (_event: unknown, input: ConfirmExclusionInput) => service.confirmExclusion(input),
-    previewRestore: (_event: unknown, dataIssueId: string) => service.previewRestore(dataIssueId),
-    confirmRestore: (_event: unknown, input: ConfirmRestoreInput) => service.confirmRestore(input),
-  };
-}
-
 export function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
@@ -129,6 +101,9 @@ export type OctopusBeakApi = {
   };
   spending: {
     load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+    confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
+    denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
+    revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
     updateItemCategory(input: { itemKey: string; category: SpendingCategory }): Promise<{ ok: true }>;
     updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
@@ -153,16 +128,6 @@ export type OctopusBeakApi = {
     viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
   };
-  dataIssues: {
-    list(): Promise<DataIssueListItemDto[]>;
-    create(input: DataIssueCreateInput): Promise<DataIssueDetailDto>;
-    load(dataIssueId: string): Promise<DataIssueDetailDto>;
-    startDiagnosis(dataIssueId: string): Promise<DataIssueDetailDto>;
-    previewExclusion(input: PreviewExclusionInput): Promise<ExclusionPreviewDto>;
-    confirmExclusion(input: ConfirmExclusionInput): Promise<DataIssueDetailDto>;
-    previewRestore(dataIssueId: string): Promise<RestorePreviewDto>;
-    confirmRestore(input: ConfirmRestoreInput): Promise<DataIssueDetailDto>;
-  };
 };
 
 export const octopusBeakApiChannels = [
@@ -172,6 +137,9 @@ export const octopusBeakApiChannels = [
   "assets:load",
   "liabilities:load",
   "spending:load",
+  "spending:confirmCandidate",
+  "spending:denyCandidate",
+  "spending:revokeLink",
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
   "automation:load",
@@ -193,14 +161,6 @@ export const octopusBeakApiChannels = [
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
   "automation:forceQuit",
-  "dataIssues:list",
-  "dataIssues:create",
-  "dataIssues:load",
-  "dataIssues:startDiagnosis",
-  "dataIssues:previewExclusion",
-  "dataIssues:confirmExclusion",
-  "dataIssues:previewRestore",
-  "dataIssues:confirmRestore",
 ] as const;
 
 export type OctopusBeakApiChannel = typeof octopusBeakApiChannels[number];

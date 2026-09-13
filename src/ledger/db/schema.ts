@@ -93,21 +93,9 @@ export const sourceRowLineage = sqliteTable("source_row_lineage", {
   check("ck_source_row_lineage_outcome", sql`${table.outcome} IN ('inserted','duplicate','upserted')`),
 ]);
 
-export const dataIssues = sqliteTable("data_issues", {
-  dataIssueId: text("data_issue_id").primaryKey(),
-  accountId: text("account_id").notNull(),
-  accountLabel: text("account_label").notNull(),
-  accountContextJson: text("account_context_json").notNull(),
-  fieldKey: text("field_key").notNull(),
-  reportedValue: real("reported_value").notNull(),
-  currency: text("currency").notNull(),
-  dataDate: text("data_date"),
-  note: text("note").notNull(),
-  status: text("status").notNull(),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-}, (table) => [check("ck_data_issues_status", sql`${table.status} IN ('pending','investigating','resolved','restored')`)]);
-
+// Import corrections remain available to the CSV importer until its replacement
+// workflow lands. This table is intentionally independent of the retired Data
+// Issues product surface and has no corresponding UI or query fallback here.
 export const disabledImportSources = sqliteTable("disabled_import_sources", {
   disabledImportSourceId: text("disabled_import_source_id").primaryKey(),
   dataIssueId: text("data_issue_id").notNull(),
@@ -129,20 +117,6 @@ export const disabledImportSources = sqliteTable("disabled_import_sources", {
     table.state,
   ),
   check("ck_disabled_import_sources_state", sql`${table.state} IN ('active','restored')`),
-]);
-
-export const dataIssueEvents = sqliteTable("data_issue_events", {
-  dataIssueEventId: text("data_issue_event_id").primaryKey(),
-  dataIssueId: text("data_issue_id").notNull(),
-  eventType: text("event_type").notNull(),
-  stage: text("stage").notNull(),
-  outcome: text("outcome").notNull(),
-  summary: text("summary").notNull(),
-  detailsJson: text("details_json").notNull(),
-  createdAt: text("created_at").notNull(),
-}, (table) => [
-  index("idx_data_issue_events_case_time").on(table.dataIssueId, table.createdAt),
-  check("ck_data_issue_events_outcome", sql`${table.outcome} IN ('succeeded','blocked','failed')`),
 ]);
 
 export const accountTransactions = sqliteTable("account_transactions", {

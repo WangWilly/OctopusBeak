@@ -11,9 +11,11 @@
     CanonicalSpendingAmountDto,
     CanonicalSpendingRecordDto,
     CanonicalSpendingView,
+    SpendingInvoiceDto,
   } from "../model.ts";
 
   export let spending: CanonicalSpendingView;
+  export let invoices: readonly SpendingInvoiceDto[] = [];
 
   let selectedMonth: string | undefined;
   let selectedCategory: string | null | undefined;
@@ -24,9 +26,17 @@
     selectedMonth = undefined;
     selectedCategory = undefined;
   }
-  $: months = [...new Set(spending.transactions
-    .filter((record) => record.inclusion !== "excluded")
-    .map((record) => record.date.slice(0, 7)))].sort();
+  $: invoiceMonths = invoices.map((invoice) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+  }).format(new Date(invoice.issuedAt * 1000)));
+  $: months = [...new Set([
+    ...spending.transactions
+      .filter((record) => record.inclusion !== "excluded")
+      .map((record) => record.date.slice(0, 7)),
+    ...invoiceMonths,
+  ])].sort();
   $: activeMonth = selectedMonth ?? spending.selectedMonth ?? months.at(-1) ?? null;
   $: activeCategory = selectedCategory === undefined ? spending.selectedCategory : selectedCategory;
   $: period = scopeCanonicalSpendingView(spending, activeMonth);
@@ -55,9 +65,31 @@
   $: visibleCategoryTotals = activeCategory
     ? categoryTotals.filter((row) => row.code === activeCategory)
     : categoryTotals;
+  $: visibleInvoices = invoices.filter((invoice) =>
+    activeMonth === null || invoiceMonths[invoices.indexOf(invoice)] === activeMonth,
+  );
 
   function amountText(amount: CanonicalSpendingAmountDto) {
     return formatMoney(amount, { locale: $locale });
+  }
+
+  function invoiceAmountText(invoice: SpendingInvoiceDto) {
+    return formatMoney({ currency: "TWD", value: invoice.amount }, { locale: $locale });
+  }
+
+  function invoiceItemAmountText(item: SpendingInvoiceDto["items"][number]) {
+    if (item.paidAmount === null)
+      return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
+    return formatMoney({ currency: "TWD", value: item.paidAmount }, { locale: $locale });
+  }
+
+  function invoiceDateText(invoice: SpendingInvoiceDto) {
+    return new Intl.DateTimeFormat($locale, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: "Asia/Taipei",
+    }).format(new Date(invoice.issuedAt * 1000));
   }
 
   function monthLabel(month: string) {
@@ -181,6 +213,51 @@
       </div>
     </section>
 
+    {#if invoices.length > 0}
+      <section class="card canonical-invoices-card" data-einvoice-section>
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">{$locale === "zh-TW" ? "電子發票" : "E-Invoices"}</p>
+            <h2>{$locale === "zh-TW" ? "購買明細" : "Purchase records"}</h2>
+          </div>
+          <span class="panel-meta">{visibleInvoices.length} {$locale === "zh-TW" ? "筆" : "records"}</span>
+        </div>
+        <p class="panel-meta canonical-invoices-note">
+          {$locale === "zh-TW"
+            ? "電子發票先以獨立來源顯示；與銀行交易的配對與去重由後續流程處理。"
+            : "E-Invoices are shown as a separate source until transaction pairing and deduplication are available."}
+        </p>
+        <div class="canonical-invoice-list">
+          {#each visibleInvoices as invoice (invoice.invoiceKey)}
+            <article class="canonical-invoice" data-einvoice-record>
+              <div class="canonical-invoice-main">
+                <strong>{invoice.sellerName ?? invoice.invoiceId}</strong>
+                <span>{invoiceDateText(invoice)} · {invoice.invoiceId}</span>
+                {#if invoice.items.some((item) => item.completeness === "incomplete")}
+                  <span class="canonical-invoice-incomplete" data-einvoice-item-status>
+                    {$locale === "zh-TW" ? "品項資料不完整" : "Item data incomplete"}
+                  </span>
+                {/if}
+                <div class="canonical-invoice-items">
+                  {#each invoice.items as item (item.itemKey)}
+                    <span>
+                      {item.productName ?? ($locale === "zh-TW" ? "未提供品項名稱" : "Item name unavailable")}
+                      · <span data-sensitive>{invoiceItemAmountText(item)}</span>
+                    </span>
+                  {:else}
+                    <span>{$locale === "zh-TW" ? "未提供品項明細" : "No item details provided"}</span>
+                  {/each}
+                </div>
+              </div>
+              <strong class="money" data-sensitive>{invoiceAmountText(invoice)}</strong>
+            </article>
+          {:else}
+            <span class="panel-meta">{$locale === "zh-TW" ? "此月份沒有電子發票" : "No E-Invoices in this month."}</span>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     {#if months.length > 0}
       <div class="canonical-month-tabs" role="group" aria-label={$locale === "zh-TW" ? "月份" : "Month"}>
         {#each months as month}
@@ -283,6 +360,7 @@
   .canonical-gap-card,
   .canonical-summary-card,
   .canonical-chart-card,
+  .canonical-invoices-card,
   .canonical-records-card {
     min-width: 0;
     padding: var(--space-5);
@@ -329,6 +407,7 @@
 
   .canonical-amount-list,
   .canonical-chart,
+  .canonical-invoice-list,
   .canonical-record-list {
     display: grid;
     gap: var(--space-3);
@@ -419,6 +498,41 @@
 
   .canonical-records-card .panel-title {
     margin-bottom: var(--space-4);
+  }
+
+  .canonical-invoices-note {
+    margin: calc(var(--space-3) * -1) 0 var(--space-3);
+  }
+
+  .canonical-invoice {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .canonical-invoice-main {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  .canonical-invoice-main > span,
+  .canonical-invoice-items {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .canonical-invoice-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .canonical-invoice-incomplete {
+    color: var(--danger, #b42318) !important;
   }
 
   .canonical-filter-row {

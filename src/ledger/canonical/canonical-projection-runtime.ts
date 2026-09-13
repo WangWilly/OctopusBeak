@@ -117,6 +117,12 @@ export type CanonicalProjectionTransaction = Readonly<{
   economicStatus: string;
   administrativeState: string;
   effectiveOn: string;
+  /** Issuer-reported consumption date for credit-card purchases. */
+  consumeDate: string | null;
+  /** Issuer posting date retained as secondary evidence. */
+  postingDate: string | null;
+  /** Which typed date supplies the canonical effective date. */
+  effectiveDateBasis: "consume-date" | "posting-date-fallback" | null;
   description: string | null;
   projectionCommitId: string | null;
   revisionCommitId: string;
@@ -2760,6 +2766,65 @@ function readFamily(
   }
 }
 
+type TransactionDateFact = Readonly<{
+  consume_date: string | null;
+  posting_date: string | null;
+  effective_date_basis: "consume-date" | "posting-date-fallback" | null;
+}>;
+
+/**
+ * Date facts live in the provider-neutral credit-card extensions rather than
+ * in source payloads. The shared transaction projection remains the read
+ * authority; this small lookup only decorates the already-selected revision
+ * rows with typed issuer dates.
+ */
+function attachTransactionDateFacts(
+  db: DatabaseSync,
+  storageRows: readonly ProjectionStorageRow[],
+): ProjectionStorageRow[] {
+  const revisionIds = storageRows
+    .map((row) => String(row.revision_id ?? ""))
+    .filter((value) => /^[0-9a-f]{32}$/iu.test(value));
+  if (revisionIds.length === 0) return [...storageRows];
+  const placeholders = revisionIds.map(() => "?").join(",");
+  const parameters = revisionIds.map((value) => Buffer.from(value, "hex"));
+  const facts = new Map<string, TransactionDateFact>();
+  const tableNames = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name?: unknown }>)
+      .map((row) => String(row.name ?? "")),
+  );
+  for (const table of [
+    "canonical_credit_card_transaction_details",
+    "fubon_credit_transaction_details",
+  ]) {
+    if (!tableNames.has(table)) continue;
+    const rows = db.prepare(`SELECT lower(hex(revision_id)) AS revision_id,
+                                    consume_date, posting_date, effective_date_basis
+                               FROM ${table}
+                              WHERE revision_id IN (${placeholders})`).all(...parameters) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const revisionId = String(row.revision_id ?? "");
+      if (!revisionId) continue;
+      facts.set(revisionId, {
+        consume_date: typeof row.consume_date === "string" ? row.consume_date : null,
+        posting_date: typeof row.posting_date === "string" ? row.posting_date : null,
+        effective_date_basis: row.effective_date_basis === "consume-date" || row.effective_date_basis === "posting-date-fallback"
+          ? row.effective_date_basis
+          : null,
+      });
+    }
+  }
+  return storageRows.map((row) => {
+    const fact = facts.get(String(row.revision_id ?? ""));
+    return {
+      ...row,
+      consume_date: fact?.consume_date ?? null,
+      posting_date: fact?.posting_date ?? null,
+      effective_date_basis: fact?.effective_date_basis ?? null,
+    };
+  });
+}
+
 const textValue = (row: ProjectionStorageRow, key: string): string =>
   String(row[key]);
 const nullableTextValue = (
@@ -2894,6 +2959,11 @@ function projectFamilyRows<Family extends CanonicalProjectionFamily>(
           economicStatus: textValue(row, "economic_status"),
           administrativeState: textValue(row, "administrative_state"),
           effectiveOn: textValue(row, "effective_on"),
+          consumeDate: nullableTextValue(row, "consume_date"),
+          postingDate: nullableTextValue(row, "posting_date"),
+          effectiveDateBasis: row.effective_date_basis === "consume-date" || row.effective_date_basis === "posting-date-fallback"
+            ? row.effective_date_basis
+            : null,
           description: nullableTextValue(row, "description"),
           projectionCommitId: nullableTextValue(row, "projection_commit_id"),
           revisionCommitId:
@@ -3164,13 +3234,24 @@ function readSnapshotInTransaction(
     requested.has(family)
       ? projectFamilyRows(
           family,
-          readFamily(
-            db,
-            family,
-            request,
-            knowledgeAt,
-            active?.generationId ?? null,
-          ),
+          family === "transactions"
+            ? attachTransactionDateFacts(
+                db,
+                readFamily(
+                  db,
+                  family,
+                  request,
+                  knowledgeAt,
+                  active?.generationId ?? null,
+                ),
+              )
+            : readFamily(
+                db,
+                family,
+                request,
+                knowledgeAt,
+                active?.generationId ?? null,
+              ),
         )
       : ([] as readonly CanonicalProjectionFamilyRows[Family][]);
   const families = {

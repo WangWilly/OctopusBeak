@@ -5,7 +5,6 @@ import {
 } from "../source-csv-parsers.ts";
 import { contentHashForRow, hashBytes, stableStringify } from "../content-hash.ts";
 import { creditCardSemanticKey } from "../credit-card-identity.ts";
-import { classifyPersonalInvoiceItem } from "../../lib/spending/categories.ts";
 import { sourceTransactionAtUtc } from "../source-timezones.ts";
 import { sourceVersionKey } from "../source-version.ts";
 import type { LedgerDatabase } from "./client.ts";
@@ -324,7 +323,6 @@ function createTypedStatementSchema(db: LedgerDatabase) {
     );
   `);
 
-  createPersonalInvoiceStatementTables(db);
 
   for (const table of TYPED_STATEMENT_TABLES) {
     createTypedStatementIndexesFor(db, table);
@@ -335,190 +333,6 @@ function createTypedStatementIndexesFor(db: LedgerDatabase, table: string) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source_file_id ON ${table}(source_file_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_import_run_id ON ${table}(import_run_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_source ON ${table}(source_relative_path, source_row_index)`);
-}
-
-function createPersonalInvoiceStatementTables(db: LedgerDatabase) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS personal_invoices (
-      ${COMMON_ROW_COLUMNS},
-      invoice_key TEXT NOT NULL UNIQUE,
-      carrier_customized_name TEXT,
-      issued_at INTEGER,
-      invoice_id TEXT NOT NULL,
-      amount REAL,
-      status TEXT,
-      rebated INTEGER NOT NULL DEFAULT 0,
-      seller_business_account_number TEXT,
-      seller_name TEXT,
-      seller_addr TEXT,
-      buyer_business_account_number TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_personal_invoices_invoice_id
-      ON personal_invoices(invoice_id);
-    CREATE INDEX IF NOT EXISTS idx_personal_invoices_issued_at
-      ON personal_invoices(issued_at);
-    CREATE INDEX IF NOT EXISTS idx_personal_invoices_seller
-      ON personal_invoices(seller_business_account_number);
-
-    CREATE TABLE IF NOT EXISTS personal_invoice_items (
-      ${COMMON_ROW_COLUMNS},
-      item_key TEXT NOT NULL UNIQUE,
-      invoice_key TEXT NOT NULL,
-      item_sequence_number INTEGER
-        CHECK (
-          item_sequence_number IS NULL
-          OR (
-            typeof(item_sequence_number) = 'integer'
-            AND item_sequence_number >= 0
-          )
-        ),
-      item_quantity REAL,
-      item_unit_price REAL,
-      item_paid_amount REAL,
-      item_product_name TEXT,
-      category TEXT NOT NULL DEFAULT 'other'
-        CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other')),
-      FOREIGN KEY (invoice_key) REFERENCES personal_invoices(invoice_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_personal_invoice_items_invoice_key
-      ON personal_invoice_items(invoice_key);
-    CREATE INDEX IF NOT EXISTS idx_personal_invoice_items_product_name
-      ON personal_invoice_items(item_product_name);
-  `);
-}
-
-function addPersonalInvoiceStatementTables(db: LedgerDatabase) {
-  createPersonalInvoiceStatementTables(db);
-  createTypedStatementIndexesFor(db, "personal_invoices");
-  createTypedStatementIndexesFor(db, "personal_invoice_items");
-}
-
-function normalizePersonalInvoiceItemSequenceNumbers(db: LedgerDatabase) {
-  const sequenceColumn = (
-    db.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
-      name: string;
-      type: string;
-    }>
-  ).find((column) => column.name === "item_sequence_number");
-  if (!sequenceColumn) {
-    throw new Error(
-      "Missing personal_invoice_items.item_sequence_number column",
-    );
-  }
-  if (sequenceColumn.type.toUpperCase() === "INTEGER") return;
-
-  const invalid = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM personal_invoice_items
-    WHERE item_sequence_number IS NOT NULL
-      AND TRIM(item_sequence_number) <> ''
-      AND (
-        TRIM(item_sequence_number) GLOB '*[^0-9]*'
-        OR CAST(TRIM(item_sequence_number) AS INTEGER) > 9007199254740991
-      )
-  `).get() as { count: number };
-  if (invalid.count > 0) {
-    throw new Error(
-      "Cannot normalize personal_invoice_items.item_sequence_number: "
-        + `${invalid.count} invalid value(s)`,
-    );
-  }
-
-  db.exec(`
-    DROP INDEX IF EXISTS idx_personal_invoice_items_invoice_key;
-    DROP INDEX IF EXISTS idx_personal_invoice_items_product_name;
-    ALTER TABLE personal_invoice_items
-      RENAME TO personal_invoice_items_legacy;
-  `);
-  createPersonalInvoiceStatementTables(db);
-  db.exec(`
-    WITH normalized AS (
-      SELECT
-        legacy.*,
-        legacy.rowid AS legacy_rowid,
-        CASE
-          WHEN legacy.item_sequence_number IS NULL
-            OR TRIM(legacy.item_sequence_number) = ''
-            THEN NULL
-          ELSE CAST(TRIM(legacy.item_sequence_number) AS INTEGER)
-        END AS normalized_sequence,
-        CASE
-          WHEN legacy.item_sequence_number IS NULL
-            OR TRIM(legacy.item_sequence_number) = ''
-            THEN legacy.item_key
-          ELSE legacy.invoice_key || '|'
-            || CAST(CAST(TRIM(legacy.item_sequence_number) AS INTEGER) AS TEXT)
-        END AS normalized_item_key
-      FROM personal_invoice_items_legacy AS legacy
-    ), ranked AS (
-      SELECT
-        normalized.*,
-        ROW_NUMBER() OVER (
-          PARTITION BY normalized_item_key
-          ORDER BY imported_at DESC, source_row_index DESC,
-            created_at DESC, legacy_rowid DESC
-        ) AS canonical_rank
-      FROM normalized
-    )
-    INSERT INTO personal_invoice_items (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at, item_key,
-      invoice_key, item_sequence_number, item_quantity, item_unit_price,
-      item_paid_amount, item_product_name
-    )
-    SELECT
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at,
-      normalized_item_key, invoice_key, normalized_sequence, item_quantity,
-      item_unit_price, item_paid_amount, item_product_name
-    FROM ranked
-    WHERE canonical_rank = 1;
-
-    DROP TABLE personal_invoice_items_legacy;
-  `);
-  createTypedStatementIndexesFor(db, "personal_invoice_items");
-}
-
-function addPersonalInvoiceItemCategories(db: LedgerDatabase) {
-  const categoryColumn = (
-    db.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
-      name: string;
-    }>
-  ).find((column) => column.name === "category");
-  if (!categoryColumn) {
-    db.exec(`
-      ALTER TABLE personal_invoice_items
-        ADD COLUMN category TEXT NOT NULL DEFAULT 'other'
-        CHECK (category IN ('food', 'daily', 'transport', 'shopping', 'home', 'leisure', 'other'));
-    `);
-  }
-
-  const items = db.prepare(`
-    SELECT
-      items.item_key,
-      items.item_product_name AS product_name,
-      invoices.seller_name,
-      invoices.seller_addr
-    FROM personal_invoice_items AS items
-    JOIN personal_invoices AS invoices USING (invoice_key)
-  `).all() as Array<{
-    item_key: string;
-    product_name: string | null;
-    seller_name: string | null;
-    seller_addr: string | null;
-  }>;
-  const updateCategory = db.prepare(
-    "UPDATE personal_invoice_items SET category = ? WHERE item_key = ?",
-  );
-  for (const item of items) {
-    updateCategory.run(classifyPersonalInvoiceItem({
-      productName: item.product_name ?? "",
-      sellerName: item.seller_name ?? "",
-      sellerAddr: item.seller_addr ?? "",
-    }), item.item_key);
-  }
 }
 
 function createDashboardIndexes(db: LedgerDatabase) {
@@ -805,9 +619,6 @@ function createAutomationTaskPrerequisiteNotices(db: LedgerDatabase) {
 
 function physicallyDeduplicateStatementRows(db: LedgerDatabase) {
   for (const table of TYPED_STATEMENT_TABLES) {
-    if (
-      table === "personal_invoices" || table === "personal_invoice_items"
-    ) continue;
     db.exec(`
       DELETE FROM ${table}
       WHERE statement_row_id IN (
@@ -1356,7 +1167,7 @@ function createSpendingTransactionOverrides(db: LedgerDatabase) {
   `);
 }
 
-function createPersistentDataIssues(db: LedgerDatabase) {
+function createSourceFileImports(db: LedgerDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS source_file_imports (
       source_file_id TEXT NOT NULL,
@@ -1373,27 +1184,12 @@ function createPersistentDataIssues(db: LedgerDatabase) {
       record_json TEXT NOT NULL,
       PRIMARY KEY (source_file_id, import_run_id)
     );
-    CREATE TABLE IF NOT EXISTS data_issues (
-      data_issue_id TEXT PRIMARY KEY,
-      account_id TEXT NOT NULL,
-      account_label TEXT NOT NULL,
-      account_context_json TEXT NOT NULL,
-      field_key TEXT NOT NULL,
-      reported_value REAL NOT NULL,
-      currency TEXT NOT NULL,
-      data_date TEXT,
-      note TEXT NOT NULL,
-      status TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      CONSTRAINT ck_data_issues_status
-        CHECK (status IN ('pending','investigating','resolved','restored'))
-    );
     CREATE TABLE IF NOT EXISTS disabled_import_sources (
       disabled_import_source_id TEXT PRIMARY KEY,
       data_issue_id TEXT NOT NULL,
       source_file_id TEXT NOT NULL,
       import_run_id TEXT NOT NULL,
+      source_version_key TEXT NOT NULL,
       reason TEXT NOT NULL,
       state TEXT NOT NULL,
       disabled_at TEXT NOT NULL,
@@ -1402,22 +1198,10 @@ function createPersistentDataIssues(db: LedgerDatabase) {
       CONSTRAINT ck_disabled_import_sources_state
         CHECK (state IN ('active','restored'))
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_disabled_import_source_scope
-      ON disabled_import_sources(source_file_id, import_run_id);
-    CREATE TABLE IF NOT EXISTS data_issue_events (
-      data_issue_event_id TEXT PRIMARY KEY,
-      data_issue_id TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      stage TEXT NOT NULL,
-      outcome TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      details_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      CONSTRAINT ck_data_issue_events_outcome
-        CHECK (outcome IN ('succeeded','blocked','failed'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_data_issue_events_case_time
-      ON data_issue_events(data_issue_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_disabled_import_source_case_version
+      ON disabled_import_sources(data_issue_id, source_version_key);
+    CREATE INDEX IF NOT EXISTS disabled_import_sources_version_state_idx
+      ON disabled_import_sources(source_version_key, state);
     INSERT OR IGNORE INTO source_file_imports (
       source_file_id, import_run_id, source_relative_path, source_file_hash,
       source_file_bytes, source_file_modified_at, imported_at, bank, product,
@@ -1499,8 +1283,6 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     FROM source_file_imports
     ORDER BY imported_at, source_file_id, import_run_id
   `).all() as LegacySourceImport[];
-  const issueCount = count("data_issues");
-  const eventCount = count("data_issue_events");
   const typedCounts = new Map(TYPED_STATEMENT_TABLES.map((table) => [
     table,
     count(table),
@@ -1567,20 +1349,6 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
         CONSTRAINT ck_source_row_lineage_outcome
         CHECK (outcome IN ('inserted','duplicate','upserted')),
       created_at TEXT NOT NULL
-    );
-    CREATE TABLE disabled_import_sources_v26 (
-      disabled_import_source_id TEXT PRIMARY KEY,
-      data_issue_id TEXT NOT NULL,
-      source_file_id TEXT NOT NULL,
-      import_run_id TEXT NOT NULL,
-      source_version_key TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      state TEXT NOT NULL,
-      disabled_at TEXT NOT NULL,
-      restored_at TEXT,
-      preview_token TEXT NOT NULL,
-      CONSTRAINT ck_disabled_import_sources_state
-        CHECK (state IN ('active','restored'))
     );
   `);
 
@@ -1735,65 +1503,6 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     );
   }
 
-  const insertExclusion = db.prepare(`
-    INSERT INTO disabled_import_sources_v26 (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      source_version_key, reason, state, disabled_at, restored_at, preview_token
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const legacyExclusions = db.prepare(`
-    SELECT disabled_import_source_id, data_issue_id, source_file_id,
-      import_run_id, reason, state, disabled_at, restored_at, preview_token
-    FROM disabled_import_sources
-    ORDER BY state = 'active' DESC, disabled_at DESC,
-      disabled_import_source_id DESC
-  `).all() as Array<{
-    disabled_import_source_id: string;
-    data_issue_id: string;
-    source_file_id: string;
-    import_run_id: string;
-    reason: string;
-    state: string;
-    disabled_at: string;
-    restored_at: string | null;
-    preview_token: string;
-  }>;
-  const exclusionGroups = new Map<string, {
-    row: (typeof legacyExclusions)[number];
-    sourceVersionKey: string;
-  }>();
-  for (const row of legacyExclusions) {
-    const source = sourceVersionsByScope.get(scopeKey(
-      row.source_file_id,
-      row.import_run_id,
-    ));
-    if (!source) {
-      throw new Error("SOURCE_VERSION_SCOPE_UNRESOLVED: disabled_import_sources");
-    }
-    const groupKey = JSON.stringify([row.data_issue_id, source.sourceVersionKey]);
-    if (!exclusionGroups.has(groupKey)) {
-      exclusionGroups.set(groupKey, {
-        row,
-        sourceVersionKey: source.sourceVersionKey,
-      });
-    }
-  }
-  for (const exclusion of exclusionGroups.values()) {
-    const row = exclusion.row;
-    insertExclusion.run(
-      row.disabled_import_source_id,
-      row.data_issue_id,
-      row.source_file_id,
-      row.import_run_id,
-      exclusion.sourceVersionKey,
-      row.reason,
-      row.state,
-      row.disabled_at,
-      row.state === "active" ? null : row.restored_at,
-      row.preview_token,
-    );
-  }
-
   for (const table of TYPED_STATEMENT_TABLES) {
     const rows = db.prepare(`
       SELECT statement_row_id, source_file_id, import_run_id FROM ${table}
@@ -1862,20 +1571,15 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
     || sourceBounds.first_seen_at !== expectedFirstSeen
     || sourceBounds.last_seen_at !== expectedLastSeen
     || count("source_row_lineage_v26") !== lineageGroups.size
-    || count("disabled_import_sources_v26") !== exclusionGroups.size
-    || count("data_issues") !== issueCount
-    || count("data_issue_events") !== eventCount
   ) {
     throw new Error("SOURCE_VERSION_COUNT_MISMATCH");
   }
 
   db.exec(`
     DROP TABLE source_row_lineage;
-    DROP TABLE disabled_import_sources;
     DROP TABLE source_file_imports;
     ALTER TABLE source_file_imports_v26 RENAME TO source_file_imports;
     ALTER TABLE source_row_lineage_v26 RENAME TO source_row_lineage;
-    ALTER TABLE disabled_import_sources_v26 RENAME TO disabled_import_sources;
     CREATE UNIQUE INDEX uq_source_file_imports_version
       ON source_file_imports(source_version_key);
     CREATE UNIQUE INDEX uq_source_row_lineage_version_row_projection
@@ -1884,10 +1588,6 @@ function canonicalizeSourceVersions(db: LedgerDatabase) {
       ON source_row_lineage(projection_table, statement_row_id);
     CREATE INDEX source_row_lineage_active_support_idx
       ON source_row_lineage(projection_table, statement_row_id, source_version_key);
-    CREATE UNIQUE INDEX uq_disabled_import_source_case_version
-      ON disabled_import_sources(data_issue_id, source_version_key);
-    CREATE INDEX disabled_import_sources_version_state_idx
-      ON disabled_import_sources(source_version_key, state);
   `);
 }
 
@@ -1964,21 +1664,6 @@ const migrations: LedgerMigration[] = [
     up: addAutomationTaskRunsStartedAtIndex,
   },
   {
-    version: 9,
-    name: "personal_invoice_statement_tables",
-    up: addPersonalInvoiceStatementTables,
-  },
-  {
-    version: 10,
-    name: "normalized_personal_invoice_item_sequence_numbers",
-    up: normalizePersonalInvoiceItemSequenceNumbers,
-  },
-  {
-    version: 11,
-    name: "personal_invoice_item_categories",
-    up: addPersonalInvoiceItemCategories,
-  },
-  {
     version: 12,
     name: "physical_content_hash_deduplication",
     up: physicallyDeduplicateStatementRows,
@@ -2040,8 +1725,8 @@ const migrations: LedgerMigration[] = [
   },
   {
     version: 24,
-    name: "persistent_data_issues",
-    up: createPersistentDataIssues,
+    name: "source_file_imports",
+    up: createSourceFileImports,
   },
   {
     version: 25,

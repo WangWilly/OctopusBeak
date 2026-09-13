@@ -4,7 +4,6 @@
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
-  import DataIssuesDashboard from "$lib/data-issues/DataIssuesDashboard.svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -53,7 +52,6 @@
     | { status: "ready"; data: T };
 
   let route: RouteId = "overview";
-  let dataIssueId: string | null = null;
   let focusAccountId: string | null = null;
   let initialized = false;
   let overview: LoadState<OverviewPageDto> = { status: "loading" };
@@ -120,15 +118,14 @@
 
   function normalizeRoute() {
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
-    route = ["overview", "assets", "liabilities", "spending", "automation", "data-issues", "settings"].includes(next) ? next as RouteId : "overview";
-    const acceptsId = route === "assets" || route === "liabilities" || route === "data-issues";
+    route = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next) ? next as RouteId : "overview";
+    const acceptsId = route === "assets" || route === "liabilities";
     let id: string | null = null;
     try {
       id = acceptsId && encodedId ? decodeURIComponent(encodedId) : null;
     } catch {
       id = null;
     }
-    dataIssueId = route === "data-issues" ? id : null;
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
     if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
@@ -353,8 +350,6 @@
   {/if}
   {#if automation.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
   {#if automation.status === "error"}<p class="status">{automation.message}</p>{/if}
-{:else if route === "data-issues"}
-  <DataIssuesDashboard issueId={dataIssueId} />
 {:else}
   <SettingsPage
     onboardingStatus={onboardingState?.status ?? null}

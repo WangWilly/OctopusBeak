@@ -27,6 +27,9 @@ const INTERNAL_OWNERS = new Set([
   "src/ledger/canonical/canonical-source-store.ts",
   "src/ledger/canonical/current-deposit-balance-writer.ts",
   "src/ledger/canonical/credit-card-current-balance-writer.ts",
+  // E-Invoice is a typed source adapter: it owns its document tables while
+  // the generic Source Capture Admission remains the only source-table writer.
+  "src/ledger/canonical/einvoice.ts",
 ]);
 
 const SOURCE_PERSISTENCE_OWNER =

@@ -1,7 +1,30 @@
+import { existsSync } from "node:fs";
+import { channel } from "node:diagnostics_channel";
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
+import {
+  canonicalSqlitePath,
+  createCanonicalSourceStore,
+  type CanonicalSourceStore,
+} from "../../../ledger/canonical/canonical-source-store.ts";
+import {
+  confirmSpendingDedupLink,
+  denySpendingDedupCandidate,
+  querySpendingRecognition,
+  recordSpendingMatchCandidate,
+  revokeSpendingDedupLink,
+} from "../../../ledger/canonical/spending-recognition.ts";
+import {
+  composePurchaseReport,
+  evaluateSpendingMatchCandidates,
+  type PurchaseReport,
+} from "../../../ledger/canonical/spending-purchase-report.ts";
 import type { SpendingCategory } from "../categories.ts";
 import type {
+  SpendingCandidateActionInput,
+  SpendingConfirmActionInput,
+  SpendingLinkActionInput,
   SpendingPageDto,
+  SpendingPurchaseActionResult,
   SpendingReason,
   SpendingState,
   CanonicalSpendingAmountDto,
@@ -9,20 +32,22 @@ import type {
   CanonicalSpendingRecordDto,
   CanonicalSpendingView,
 } from "../model.ts";
-import { activeImportSql } from "../../data-issues/server/ledger-visibility.ts";
+import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
 import {
   createFinancialQuery,
+  queryCurrentSpendingFromDatabase,
+  type CurrentSpendingQueryResult,
 } from "../../shared-ledger/server/financial-query.ts";
 import { exactToNumber } from "../../shared-money/exact.ts";
 import type {
   CanonicalSpendingReport,
   CanonicalSpendingTransaction,
 } from "../../../ledger/canonical/canonical-categorization.ts";
+import type { CanonicalEInvoiceView } from "../../../ledger/canonical/einvoice.ts";
 import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
 } from "../../../ledger/canonical/transaction-taxonomy.ts";
-
-export { activeImportSql };
+import type { SpendingInvoiceDto, SpendingItemDto } from "../model.ts";
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -38,6 +63,13 @@ export type SpendingLoadInput = {
   selectedMonth?: string;
   selectedCategory?: SpendingCategory | string;
 };
+
+const LOCAL_SPENDING_USER_ID = "local-user";
+const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");
+const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
+
+export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
+export type SpendingLinkRevokeInput = SpendingLinkActionInput;
 
 function taxonomyLabels(
   code: string | null | undefined,
@@ -106,6 +138,8 @@ function canonicalCategory(
 function canonicalRecord(
   transaction: CanonicalSpendingTransaction,
 ): CanonicalSpendingRecordDto {
+  const dateBasis = transaction.effectiveDateBasis ??
+    (transaction.stream === "credit-card" ? "posting-date-fallback" : "effective-date");
   return {
     transactionId: transaction.transactionId,
     accountId: transaction.accountId,
@@ -114,6 +148,9 @@ function canonicalRecord(
     integrationNamespace: transaction.integrationNamespace,
     stream: transaction.stream,
     date: transaction.effectiveOn,
+    dateBasis,
+    consumeDate: transaction.consumeDate ?? null,
+    postingDate: transaction.postingDate ?? null,
     description: transaction.description,
     amount: canonicalAmount(transaction.amount),
     kind: transaction.kind,
@@ -185,20 +222,379 @@ function canonicalView(
   };
 }
 
+function occurrenceUnixSeconds(invoice: CanonicalEInvoiceView): number {
+  const occurrence = invoice.revision.occurrence;
+  const time = occurrence.precision === "date"
+    ? "T00:00:00"
+    : occurrence.precision === "minute"
+      ? ":00"
+      : "";
+  const parsed = Date.parse(`${occurrence.value}${time}+08:00`);
+  if (!Number.isFinite(parsed))
+    throw new Error(`Canonical E-Invoice ${invoice.revision.invoiceNumber} has an invalid occurrence.`);
+  return Math.floor(parsed / 1000);
+}
+
+function invoiceItem(
+  item: CanonicalEInvoiceView["revision"]["items"][number],
+): SpendingItemDto {
+  return {
+    itemKey: item.itemId,
+    sequence: item.sequence,
+    quantity: item.quantity ? exactToNumber(item.quantity) : null,
+    unitPrice: item.unitPrice ? exactToNumber(item.unitPrice) : null,
+    paidAmount: item.amount ? exactToNumber(item.amount) : null,
+    productName: item.name,
+    // Spending has no category evidence for E-Invoice items yet. Keep the
+    // existing DTO shape while exposing that this is not a full allocation.
+    category: "other",
+    completeness: item.completeness,
+  };
+}
+
+function currentSpendingInvoices(
+  invoices: readonly CanonicalEInvoiceView[],
+): SpendingInvoiceDto[] {
+  return invoices
+    .filter((invoice) => invoice.revision.state !== "revoked" && invoice.revision.total !== null)
+    .map((invoice) => ({
+      invoiceKey: invoice.stableInvoiceKey,
+      invoiceId: invoice.revision.invoiceNumber,
+      issuedAt: occurrenceUnixSeconds(invoice),
+      amount: exactToNumber(invoice.revision.total!),
+      sellerBusinessAccountNumber: invoice.revision.seller.taxId,
+      sellerName: invoice.revision.seller.name,
+      sellerAddr: null,
+      items: invoice.revision.items.map(invoiceItem),
+      revisionKind: invoice.revision.revisionKind === "revised" ? "revised" : "issued",
+    }));
+}
+
+function pairKey(invoiceId: string, transactionId: string): string {
+  return `${invoiceId}/${transactionId}`;
+}
+
+/**
+ * Candidate hints are deliberately kept ephemeral until a person acts on one.
+ * This lets the report show both sides of a possible duplicate without
+ * creating canonical history merely by opening the Spending page.
+ */
+function purchaseReportWithEphemeralCandidates(
+  query: CurrentSpendingQueryResult,
+  report: PurchaseReport = query.purchaseReport,
+): PurchaseReport {
+  const activeLinkPairs = new Set(
+    report.records
+      .filter((record) => record.basis === "linked" && record.link)
+      .map((record) => pairKey(record.link!.invoiceId, record.link!.transactionId)),
+  );
+  const durableByPair = new Map(
+    report.candidates.map((candidate) => [pairKey(candidate.invoiceId, candidate.transactionId), candidate]),
+  );
+  const inferred = evaluateSpendingMatchCandidates(query.invoices, query.spending.includedTransactions)
+    .filter((candidate) => !activeLinkPairs.has(pairKey(candidate.invoiceId, candidate.transactionId)))
+    .map((candidate) => {
+      const durable = durableByPair.get(pairKey(candidate.invoiceId, candidate.transactionId));
+      if (durable && durable.status !== "candidate") return null;
+      return durable ?? {
+        invoiceId: candidate.invoiceId,
+        transactionId: candidate.transactionId,
+        candidateId: candidate.candidateKey,
+        algorithm: candidate.algorithm,
+        algorithmVersion: candidate.algorithmVersion,
+        similarityEvidence: candidate.similarityEvidence,
+        status: "candidate" as const,
+      };
+    })
+    .filter((candidate): candidate is typeof report.candidates[number] => candidate !== null);
+  const candidates = [...report.candidates];
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (const candidate of inferred) {
+    if (!known.has(candidate.candidateId)) candidates.push(candidate);
+  }
+  const pendingPairs = new Set(
+    candidates
+      .filter((candidate) => candidate.status === "candidate")
+      .map((candidate) => pairKey(candidate.invoiceId, candidate.transactionId)),
+  );
+  const candidateIdsByInvoice = new Map<string, string[]>();
+  const candidateIdsByTransaction = new Map<string, string[]>();
+  for (const candidate of candidates) {
+    if (candidate.status !== "candidate") continue;
+    (candidateIdsByInvoice.get(candidate.invoiceId) ?? candidateIdsByInvoice.set(candidate.invoiceId, []).get(candidate.invoiceId)!)
+      .push(candidate.candidateId);
+    (candidateIdsByTransaction.get(candidate.transactionId) ?? candidateIdsByTransaction.set(candidate.transactionId, []).get(candidate.transactionId)!)
+      .push(candidate.candidateId);
+  }
+  const records = report.records.map((record) => {
+    const invoiceId = record.invoice?.invoiceId;
+    const transactionId = record.transaction?.transactionId;
+    const candidateIds = [
+      ...(invoiceId ? candidateIdsByInvoice.get(invoiceId) ?? [] : []),
+      ...(transactionId ? candidateIdsByTransaction.get(transactionId) ?? [] : []),
+    ];
+    if (candidateIds.length === 0) return record;
+    return {
+      ...record,
+      candidateIds: Object.freeze([...new Set([...record.candidateIds, ...candidateIds])]),
+      possibleDuplicate: pendingPairs.has(pairKey(invoiceId ?? "", transactionId ?? "")) || candidateIds.length > 0,
+    };
+  });
+  return Object.freeze({
+    ...report,
+    records: Object.freeze(records),
+    totalStatus: records.some((record) => record.possibleDuplicate)
+      ? "includes-pending-confirmation"
+      : report.totalStatus,
+    candidates: Object.freeze(candidates),
+  });
+}
+
+function currentSpendingQuery(ledgerDir: string): CurrentSpendingQueryResult {
+  fullProjectionDiagnostics.publish({ ledgerDir });
+  return createFinancialQuery(ledgerDir).current({ kind: "current", product: "spending" });
+}
+
+function currentSpendingQueryFromStore(
+  store: CanonicalSourceStore,
+  ledgerDir: string,
+): CurrentSpendingQueryResult {
+  fullProjectionDiagnostics.publish({ ledgerDir });
+  return queryCurrentSpendingFromDatabase(store.db);
+}
+
+function recordStore(ledgerDir: string) {
+  const databasePath = canonicalSqlitePath(ledgerDir);
+  if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+  storeOpenDiagnostics.publish({ ledgerDir });
+  return createCanonicalSourceStore(databasePath);
+}
+
+function pageFromQuery(
+  query: CurrentSpendingQueryResult,
+  purchaseReport: PurchaseReport = query.purchaseReport,
+  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
+): SpendingPageDto {
+  return {
+    canonical: canonicalView(query.spending, selectedMonth, selectedCategory),
+    purchaseReport: purchaseReportWithEphemeralCandidates(query, purchaseReport),
+    invoices: currentSpendingInvoices(query.invoices),
+  };
+}
+
+/**
+ * Relation decisions do not change invoice or transaction facts. Recompose the
+ * returned report from the immutable facts already read for validation and the
+ * newly committed recognition snapshot, instead of running the full Spending
+ * projection a second time.
+ */
+function actionResultAfterRecognitionMutation(
+  query: CurrentSpendingQueryResult,
+  store: CanonicalSourceStore,
+): SpendingPurchaseActionResult {
+  const before = purchaseReportWithEphemeralCandidates(query);
+  const recognition = querySpendingRecognition(store);
+  const purchaseReport = composePurchaseReport({
+    request: { kind: "current" },
+    knowledgeAt: recognition.knowledgeAt,
+    invoices: query.invoices,
+    transactions: query.spending.includedTransactions,
+    recognition,
+  });
+  const after = purchaseReportWithEphemeralCandidates(query, purchaseReport);
+  return { patch: createSpendingPurchaseReportPatch(before, after) };
+}
+
+function requiredActionText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${label} is required.`);
+  return value.trim();
+}
+
+function candidateActionValue(input: unknown): SpendingCandidateDecisionInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new TypeError("Spending candidate action must be an object.");
+  const value = input as Record<string, unknown>;
+  if (value.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
+  return { kind: "candidate", candidateId: requiredActionText(value.candidateId, "Candidate id") };
+}
+
+function confirmActionValue(input: unknown): SpendingConfirmActionInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new TypeError("Spending confirmation must be an object.");
+  const value = input as Record<string, unknown>;
+  if (value.kind === "candidate") return candidateActionValue(input);
+  if (value.kind !== "direct") throw new TypeError("Spending confirmation kind is invalid.");
+  return {
+    kind: "direct",
+    invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
+    transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+  };
+}
+
+function linkActionValue(input: unknown): SpendingLinkRevokeInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new TypeError("Spending link action must be an object.");
+  const value = input as Record<string, unknown>;
+  return {
+    invoiceId: requiredActionText(value.invoiceId, "Invoice id"),
+    transactionId: requiredActionText(value.transactionId, "Transaction id"),
+  };
+}
+
+function resolveCandidate(
+  query: ReturnType<typeof currentSpendingQuery>,
+  candidateId: string,
+) {
+  const listed = query.purchaseReport.candidates.filter((candidate) => candidate.candidateId === candidateId);
+  const deterministic = evaluateSpendingMatchCandidates(query.invoices, query.spending.includedTransactions);
+  const ephemeral = deterministic.filter((candidate) => candidate.candidateKey === candidateId);
+  if (listed.length > 1 || ephemeral.length > 1 || (listed.length === 0 && ephemeral.length === 0))
+    throw new Error(listed.length + ephemeral.length === 0
+      ? "Spending candidate is stale or missing."
+      : "Spending candidate is ambiguous.");
+  const selected = listed[0];
+  if (selected && selected.status !== "candidate") throw new Error("Spending candidate is no longer pending.");
+  const match = selected
+    ? deterministic.filter((candidate) => candidate.invoiceId === selected.invoiceId && candidate.transactionId === selected.transactionId)
+    : ephemeral;
+  if (match.length !== 1) throw new Error(match.length === 0
+    ? "Spending candidate no longer matches current canonical facts."
+    : "Spending candidate is ambiguous.");
+  return { ...match[0]!, durableCandidate: selected ?? null };
+}
+
+function decisionEvidence(candidate: ReturnType<typeof resolveCandidate>) {
+  return {
+    candidateKey: candidate.candidateKey,
+    algorithm: candidate.algorithm,
+    algorithmVersion: candidate.algorithmVersion,
+    similarityEvidence: candidate.similarityEvidence,
+    decisionOrigin: "local-user",
+  } as const;
+}
+
+function decideCandidate(
+  input: unknown,
+  ledgerDir: string,
+  kind: "confirmed" | "denied",
+): SpendingPurchaseActionResult {
+  const action = candidateActionValue(input);
+  const store = recordStore(ledgerDir);
+  try {
+    const query = currentSpendingQueryFromStore(store, ledgerDir);
+    const candidate = resolveCandidate(query, action.candidateId);
+    const materialized = recordSpendingMatchCandidate(store, candidate);
+    const evidence = decisionEvidence(candidate);
+    const decision = {
+      decisionKey: `spending/user/${kind}/${candidate.candidateKey}`,
+      invoiceId: candidate.invoiceId,
+      transactionId: candidate.transactionId,
+      origin: { kind: "user" as const, userId: LOCAL_SPENDING_USER_ID },
+      evidenceKnowledgeSequence: Math.max(query.purchaseReport.knowledgeAt, materialized.commitSequence),
+      evidence,
+    };
+    if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
+    else denySpendingDedupCandidate(store, decision);
+    return actionResultAfterRecognitionMutation(query, store);
+  } finally {
+    store.close();
+  }
+}
+
+export function confirmSpendingCandidate(
+  input: SpendingConfirmActionInput,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): SpendingPurchaseActionResult {
+  const action = confirmActionValue(input);
+  if (action.kind === "candidate") return decideCandidate(action, ledgerDir, "confirmed");
+  const store = recordStore(ledgerDir);
+  try {
+    const query = currentSpendingQueryFromStore(store, ledgerDir);
+    const invoice = query.purchaseReport.records.find((record) =>
+      record.basis === "invoice" && record.invoice?.invoiceId === action.invoiceIdentityId,
+    );
+    const payment = query.purchaseReport.records.find((record) =>
+      record.basis === "bank-transaction" && record.transaction?.transactionId === action.transactionIdentityId,
+    );
+    if (!invoice?.invoice) throw new Error("Spending invoice selection is stale, linked, revoked, or missing.");
+    if (!payment?.transaction) throw new Error("Spending payment selection is stale, linked, or ineligible.");
+    confirmSpendingDedupLink(store, {
+      invoiceIdentityId: action.invoiceIdentityId,
+      transactionIdentityId: action.transactionIdentityId,
+      decisionKey: `spending/user/direct/${action.invoiceIdentityId}/${action.transactionIdentityId}/${query.purchaseReport.knowledgeAt}`,
+      userId: LOCAL_SPENDING_USER_ID,
+      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
+      evidence: {
+        decisionOrigin: "explicit-user-selection",
+        invoice: {
+          identityId: action.invoiceIdentityId,
+          sourceRecordId: invoice.invoice.revision.sourceRecordId,
+          date: invoice.occurrence.value,
+          amount: invoice.amount,
+          label: invoice.description,
+        },
+        payment: {
+          identityId: action.transactionIdentityId,
+          sourceConnectionKey: payment.transaction.sourceConnectionKey,
+          date: payment.transaction.effectiveOn,
+          consumeDate: payment.transaction.consumeDate ?? null,
+          postingDate: payment.transaction.postingDate ?? null,
+          dateBasis: payment.transaction.effectiveDateBasis ?? "effective-date",
+          amount: payment.amount,
+          label: payment.description,
+        },
+      },
+    });
+    return actionResultAfterRecognitionMutation(query, store);
+  } finally {
+    store.close();
+  }
+}
+
+export function denySpendingCandidate(
+  input: SpendingCandidateDecisionInput,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): SpendingPurchaseActionResult {
+  return decideCandidate(input, ledgerDir, "denied");
+}
+
+export function revokeSpendingLink(
+  input: SpendingLinkRevokeInput,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): SpendingPurchaseActionResult {
+  const action = linkActionValue(input);
+  const store = recordStore(ledgerDir);
+  try {
+    const query = currentSpendingQueryFromStore(store, ledgerDir);
+    const linked = query.purchaseReport.records.find((record) =>
+      record.basis === "linked" &&
+      record.link?.invoiceId === action.invoiceId &&
+      record.link?.transactionId === action.transactionId,
+    );
+    if (!linked?.link) throw new Error("Spending link is stale, missing, or inactive.");
+    revokeSpendingDedupLink(store, {
+      decisionKey: `spending/user/revoke/${action.invoiceId}/${action.transactionId}/${query.purchaseReport.knowledgeAt}`,
+      invoiceId: action.invoiceId,
+      transactionId: action.transactionId,
+      origin: { kind: "user", userId: LOCAL_SPENDING_USER_ID },
+      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
+      evidence: {
+        reason: "user-revoked-link",
+        priorEventId: linked.link.eventId,
+      },
+    });
+    return actionResultAfterRecognitionMutation(query, store);
+  } finally {
+    store.close();
+  }
+}
+
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
   { selectedMonth, selectedCategory }: SpendingLoadInput = {},
 ): SpendingPageDto {
-  const { spending } = createFinancialQuery(ledgerDir).current({
-    kind: "current",
-    product: "spending",
-  });
-  const canonical = canonicalView(
-    spending,
-    selectedMonth,
-    selectedCategory,
-  );
-  return { canonical };
+  const query = currentSpendingQuery(ledgerDir);
+  return pageFromQuery(query, query.purchaseReport, { selectedMonth, selectedCategory });
 }
 
 export function updateSpendingTransactionOverride(

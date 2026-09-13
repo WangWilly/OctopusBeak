@@ -2,15 +2,43 @@ import {
   SPENDING_CATEGORY_IDS,
   type SpendingCategory,
 } from "./categories.ts";
+import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
+
+/**
+ * The purchase-basis report is the active Spending contract.  It stays as a
+ * canonical typed report instead of flattening exact money or source evidence
+ * into presentation-only numbers.
+ */
+export type SpendingPurchaseReportDto = PurchaseReport;
+
+export type SpendingCandidateActionInput = Readonly<{
+  kind: "candidate";
+  candidateId: string;
+}>;
+
+export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly<{
+  kind: "direct";
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+}>;
+
+export type SpendingLinkActionInput = Readonly<{
+  invoiceId: string;
+  transactionId: string;
+}>;
 
 export type SpendingItemDto = {
   itemKey: string;
   sequence: number | null;
   quantity: number | null;
   unitPrice: number | null;
-  paidAmount: number;
+  /** Null means the provider returned the item without an amount. */
+  paidAmount: number | null;
   productName: string | null;
   category: SpendingCategory;
+  /** Provider completeness is visible until a future enrichment classifies it. */
+  completeness?: "complete" | "incomplete";
 };
 
 export type SpendingInvoiceDto = {
@@ -22,6 +50,8 @@ export type SpendingInvoiceDto = {
   sellerName: string | null;
   sellerAddr: string | null;
   items: SpendingItemDto[];
+  /** Current canonical invoice revision kind, for source-aware UI diagnostics. */
+  revisionKind?: "issued" | "revised";
 };
 
 export type SpendingState = "included" | "excluded" | "pending";
@@ -158,6 +188,10 @@ export type SpendingModel = {
  * the compatibility model builder and are not emitted by the product loader. */
 export type SpendingPageDto = {
   canonical: CanonicalSpendingView;
+  /** Purchase-basis canonical report used by the active Spending page. */
+  purchaseReport: SpendingPurchaseReportDto;
+  /** Compatibility projection kept for existing non-product fixtures. */
+  invoices: readonly SpendingInvoiceDto[];
 };
 
 export type CanonicalSpendingAmountDto = {
@@ -198,6 +232,10 @@ export type CanonicalSpendingRecordDto = {
   integrationNamespace: string;
   stream: string;
   date: string;
+  /** Effective purchase date basis exposed for source-aware Spending UI. */
+  dateBasis: "consume-date" | "posting-date-fallback" | "effective-date";
+  consumeDate: string | null;
+  postingDate: string | null;
   description: string | null;
   amount: CanonicalSpendingAmountDto;
   kind: string | null;
@@ -405,8 +443,10 @@ export function buildSpendingModel(
     let itemTotal = 0;
 
     for (const item of invoice.items) {
-      amounts[item.category] += item.paidAmount;
-      itemTotal += item.paidAmount;
+      if (item.paidAmount !== null) {
+        amounts[item.category] += item.paidAmount;
+        itemTotal += item.paidAmount;
+      }
       categories.add(item.category);
     }
 

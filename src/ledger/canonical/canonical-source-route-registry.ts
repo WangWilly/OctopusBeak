@@ -303,6 +303,17 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     contractVersions: ["foreign-currency/sinopac/human-attested-v1"],
   },
 
+  // E-Invoice canonical capture.  This route is provider-neutral because the
+  // Taiwan E-Invoice authority is the contract boundary; connection identity
+  // and subject scope remain per provider login/subject in each capture.
+  {
+    routeKey: "einvoice/personal-invoices/canonical-v1",
+    integrationNamespace: "einvoice",
+    stream: "personal-invoices",
+    contractVersions: ["einvoice/personal-invoices/canonical-v1"],
+    completenessRuleVersions: ["einvoice/personal-invoices/completeness-v1"],
+  },
+
   // Investment and loan writers retain the same canonical source envelope.
   {
     routeKey: "yuanta-fund/investment/canonical-v1",

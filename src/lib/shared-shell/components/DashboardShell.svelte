@@ -17,7 +17,7 @@
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
-  export let active: "overview" | "assets" | "liabilities" | "spending" | "automation" | "data-issues" | "settings" = "overview";
+  export let active: "overview" | "assets" | "liabilities" | "spending" | "automation" | "settings" = "overview";
   export let eyebrow = "Overview";
   export let title = "Portfolio";
   export let sideLabel = "Net position";
@@ -158,12 +158,6 @@
       label: $t.nav.automation,
       href: "#/automation",
       path: "M5 4h14v2H5V4Zm2 4h10v2H7V8Zm-2 4h14v8H5v-8Zm2 2v4h10v-4H7Z",
-    },
-    {
-      id: "data-issues",
-      label: $t.nav.dataIssues,
-      href: "#/data-issues",
-      path: "M12 2 1 21h22L12 2Zm0 5.5 6.5 11H5.5L12 7.5ZM11 11v4h2v-4h-2Zm0 5.5v2h2v-2h-2Z",
     },
     {
       id: "settings",

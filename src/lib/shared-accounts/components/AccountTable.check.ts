@@ -7,8 +7,8 @@ const source = readFileSync(new URL("./AccountTable.svelte", import.meta.url), "
 
 test("unavailable account balances render explicit localized copy", () => {
   assert.equal(translations["zh-TW"].accounts.noAvailableData, "無可用資料");
-  assert.match(source, /noAvailableData\}<\/span>\s*\{" · "\}\s*\{#if account\.dataIssueId\}/);
-  assert.match(source, /\{#if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
+  assert.match(source, /\{#if account\.valueAvailability === "awaiting"\}[\s\S]*\$t\.overview\.currentAwaiting[\s\S]*\{:else if account\.valueAvailability === "unavailable"\}[\s\S]*\$t\.accounts\.noAvailableData[\s\S]*\{:else\}\s*\{formatAmountLines\(account\.amountLines\)\}\s*\{\/if\}/);
+  assert.doesNotMatch(source, /data-issues|dataIssueId/);
 });
 
 test("available-only account rows expose their balance basis", () => {
@@ -27,9 +27,8 @@ test("unavailable accounts omit allocation and exposure values", () => {
   assert.match(source, /<td class="right">\s*\{#if account\.valueAvailability === "available"\}\s*<span class="account-meta">\{percent\}%<\/span>[\s\S]*?<div class="row-bar"/);
 });
 
-test("unavailable accounts keep their issue backlink but omit the rejected report action", () => {
-  assert.match(source, /\{#if onReportDataIssue && selectedAccount\.valueAvailability === "available"\}/);
-  assert.match(source, /account\.valueAvailability === "unavailable"[\s\S]*#\/data-issues\/\$\{account\.dataIssueId\}/);
+test("account actions do not expose a data issue reporting surface", () => {
+  assert.doesNotMatch(source, /onReportDataIssue|report-issue|data-issues|dataIssueId/);
 });
 
 test("account deep links select, scroll, and focus the exact rendered row", () => {

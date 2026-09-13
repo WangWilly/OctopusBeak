@@ -26,6 +26,9 @@ import {
   withCanonicalSourceCaptureAdmissionExistingTransaction,
 } from "./canonical-source-capture-admission.ts";
 import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
+import {
   CATHAY_INTEGRATION_NAMESPACE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -1755,6 +1758,10 @@ function commitCathayDomesticDepositSyncOnce(
       commitId,
       kind: "source_capture",
     });
+    commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+      db,
+      [idToString(captureId)],
+    );
     db.exec("COMMIT");
     inTransaction = false;
     return {

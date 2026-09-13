@@ -18,18 +18,6 @@ assert.deepEqual(
   ["electron"],
   "sandboxed preload must stay self-contained after bundling",
 );
-for (const method of [
-  ["list", "dataIssues:list"],
-  ["create", "dataIssues:create"],
-  ["load", "dataIssues:load"],
-  ["startDiagnosis", "dataIssues:startDiagnosis"],
-  ["previewExclusion", "dataIssues:previewExclusion"],
-  ["confirmExclusion", "dataIssues:confirmExclusion"],
-  ["previewRestore", "dataIssues:previewRestore"],
-  ["confirmRestore", "dataIssues:confirmRestore"],
-]) {
-  assert.match(source, new RegExp(`${method[0]}: .*ipcRenderer\\.invoke\\("${method[1]}"`));
-}
 for (const [method, channel] of [
   ["cathayGmailOtpStatus", "automation:cathayGmailOtpStatus"],
   ["enableCathayGmailOtp", "automation:enableCathayGmailOtp"],

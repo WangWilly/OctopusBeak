@@ -35,6 +35,7 @@ import {
   type CanonicalProjectionTransactionEnrichment,
   type CanonicalProjectionTransactionCategorization,
   type CanonicalProjectionTransaction,
+  type CanonicalProjectionSnapshot,
 } from "./canonical-projection-runtime.ts";
 import {
   readCanonicalTransactionTags,
@@ -900,10 +901,11 @@ function validateOutputCompatibility(
     throw new Error(`Producer output ${field}:${value} is not declared in the persisted taxonomy package.`);
 }
 
-function commitAutomaticEnrichmentRunOnce(
-  ledgerDir: string,
+function commitAutomaticEnrichmentRunInDatabase(
+  db: DatabaseSync,
   rawInput: CanonicalEnrichmentRunInput,
   clock: () => string,
+  manageTransaction: boolean,
 ): CanonicalEnrichmentCommitResult {
   if (rawInput.complete === false || (rawInput.status !== undefined && rawInput.status !== "complete"))
     throw new Error("Only a complete successful enrichment run may mutate canonical data.");
@@ -911,11 +913,12 @@ function commitAutomaticEnrichmentRunOnce(
   const producerVersion = rawInput.producerVersion?.trim() || CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION;
   const ruleLineage = requireText(rawInput.ruleLineage, "Enrichment rule lineage");
   if (!Array.isArray(rawInput.outputs)) throw new Error("Enrichment outputs are required.");
-  const db = openCanonicalDatabase(ledgerDir);
   let inTransaction = false;
   try {
-    db.exec("BEGIN IMMEDIATE");
-    inTransaction = true;
+    if (manageTransaction) {
+      db.exec("BEGIN IMMEDIATE");
+      inTransaction = true;
+    }
     const commitSequence = Number((db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as { value?: unknown }).value ?? 0) + 1;
     const commitId = uuidV7();
     const declaredSubjects = declaredSubjectScope(rawInput);
@@ -1354,8 +1357,10 @@ function commitAutomaticEnrichmentRunOnce(
       }
     }
     createCanonicalProjectionRuntime(db).applyCommit({ commitId, kind: "derived_import" });
-    db.exec("COMMIT");
-    inTransaction = false;
+    if (manageTransaction) {
+      db.exec("COMMIT");
+      inTransaction = false;
+    }
     return {
       status: "committed",
       runId: idToString(runId),
@@ -1367,6 +1372,17 @@ function commitAutomaticEnrichmentRunOnce(
   } catch (error) {
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
+  }
+}
+
+function commitAutomaticEnrichmentRunOnce(
+  ledgerDir: string,
+  rawInput: CanonicalEnrichmentRunInput,
+  clock: () => string,
+): CanonicalEnrichmentCommitResult {
+  const db = openCanonicalDatabase(ledgerDir);
+  try {
+    return commitAutomaticEnrichmentRunInDatabase(db, rawInput, clock, true);
   } finally {
     db.close();
   }
@@ -1383,6 +1399,22 @@ export function commitCanonicalAutomaticEnrichmentRun(
     () => commitAutomaticEnrichmentRunOnce(ledgerDir, input, clock),
     options.runtime,
   );
+}
+
+/**
+ * Commit an automatic enrichment run inside an already-open canonical source
+ * capture transaction.  Source adapters use this seam when the enrichment is
+ * a required part of admission: a failed Kind run then rolls back the source
+ * capture instead of leaving a successfully committed transaction without a
+ * Kind assertion.
+ */
+export function commitCanonicalAutomaticEnrichmentRunInTransaction(
+  db: DatabaseSync,
+  input: CanonicalEnrichmentRunInput,
+  options: { clock?: () => string } = {},
+): CanonicalEnrichmentCommitResult {
+  const clock = options.clock ?? (() => new Date().toISOString());
+  return commitAutomaticEnrichmentRunInDatabase(db, input, clock, false);
 }
 
 export const commitCanonicalEnrichmentRun = commitCanonicalAutomaticEnrichmentRun;
@@ -1589,6 +1621,7 @@ function categoryFromRuntimeRows(
   userRows: readonly CanonicalProjectionTransactionCategorization[],
   db: DatabaseSync,
   knowledgeAt?: number,
+  provenanceByAssertion?: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
 ): CanonicalEnrichmentCategoryResult {
   const kindCode = kind?.taxonomyCode ?? kind?.value ?? null;
   const transactionRows = userRows.filter(
@@ -1725,7 +1758,8 @@ function categoryFromRuntimeRows(
   ) {
     const automaticResult = resultFromRuntimeRow(
       automatic,
-      outputProvenance(db, automatic.assertionId, knowledgeAt),
+      provenanceByAssertion?.get(automatic.assertionId) ??
+        outputProvenance(db, automatic.assertionId, knowledgeAt),
     );
     if (automaticResult.status === "supported")
       return { ...automaticResult, mode: "single" };
@@ -1826,6 +1860,19 @@ function counterpartySelectionRank(kind: string | null | undefined, row: DbRow):
   return roleRank * 10_000 + producerRank;
 }
 
+function sortCounterpartyRows(
+  rows: DbRow[],
+  kindCode: string | null = null,
+): DbRow[] {
+  return rows.sort((left, right) => {
+    const role = counterpartySelectionRank(kindCode, left) - counterpartySelectionRank(kindCode, right);
+    if (role !== 0) return role;
+    const key = String(left.participationKey ?? "").localeCompare(String(right.participationKey ?? ""));
+    if (key !== 0) return key;
+    return Buffer.from(blob(left.participationId)).compare(Buffer.from(blob(right.participationId)));
+  });
+}
+
 /**
  * Read every active participation in the selected typed role assertion. The
  * participation key is producer-owned and is only a deterministic tie-break;
@@ -1913,13 +1960,305 @@ function selectedCounterpartyRows(
      ORDER BY participation.role_code, participation.participation_key,
               participation.participation_id
   `).all(cutoff, cutoff, transactionId, assertionParameter, cutoff, cutoff, cutoff) as DbRow[];
-  return rows.sort((left, right) => {
-    const role = counterpartySelectionRank(kindCode, left) - counterpartySelectionRank(kindCode, right);
-    if (role !== 0) return role;
-    const key = String(left.participationKey ?? "").localeCompare(String(right.participationKey ?? ""));
-    if (key !== 0) return key;
-    return Buffer.from(blob(left.participationId)).compare(Buffer.from(blob(right.participationId)));
-  });
+  return sortCounterpartyRows(rows, kindCode);
+}
+
+const CURRENT_ENRICHMENT_BATCH_SIZE = 400;
+
+function currentTransactionKey(value: string | Uint8Array): string {
+  return normalizedCanonicalId(typeof value === "string" ? value : idToString(blob(value)));
+}
+
+function appendCurrentRows<T>(
+  target: Map<string, T[]>,
+  key: string,
+  value: T,
+): void {
+  const values = target.get(key) ?? [];
+  values.push(value);
+  target.set(key, values);
+}
+
+function currentCounterpartyRowsByTransaction(
+  db: DatabaseSync,
+  transactionIds: readonly string[],
+  cutoff: number,
+  kindByTransaction: ReadonlyMap<string, string | null>,
+): ReadonlyMap<string, readonly DbRow[]> {
+  const result = new Map<string, DbRow[]>();
+  for (let offset = 0; offset < transactionIds.length; offset += CURRENT_ENRICHMENT_BATCH_SIZE) {
+    const chunk = transactionIds.slice(offset, offset + CURRENT_ENRICHMENT_BATCH_SIZE);
+    const ids = chunk.map((value) => canonicalStoredId(value, "Transaction ID"));
+    const rows = db.prepare(`
+      SELECT participation.participation_id AS participationId,
+             participation.participation_key AS participationKey,
+             participation.role_code AS role,
+             participation.observed_name AS observedName,
+             participation.observed_reference AS observedReference,
+             participation.source_classification_scheme AS sourceClassificationScheme,
+             participation.source_classification_code AS sourceClassificationCode,
+             participation.origin,
+             participation.route_id AS routeId,
+             participation.assertion_id AS assertionId,
+             participation.producer_id AS producerId,
+             participation.producer_version AS producerVersion,
+             participation.provenance_json AS provenanceJson,
+             participation.transaction_id AS transactionId,
+             reference.reference_id AS referenceId,
+             reference.producer_namespace AS producerNamespace,
+             reference.producer_entity_key AS producerEntityKey,
+             (SELECT revision.display_name
+                FROM counterparty_reference_revisions revision
+                JOIN canonical_commits revision_commit
+                  ON revision_commit.commit_id = revision.created_commit_id
+               WHERE revision.reference_id = reference.reference_id
+                 AND revision_commit.commit_sequence <= ?
+               ORDER BY revision_commit.commit_sequence DESC, revision.rowid DESC
+               LIMIT 1) AS referenceDisplayName,
+             (SELECT revision.legal_name
+                FROM counterparty_reference_revisions revision
+                JOIN canonical_commits revision_commit
+                  ON revision_commit.commit_id = revision.created_commit_id
+               WHERE revision.reference_id = reference.reference_id
+                 AND revision_commit.commit_sequence <= ?
+               ORDER BY revision_commit.commit_sequence DESC, revision.rowid DESC
+               LIMIT 1) AS referenceLegalName,
+             typed.taxonomy_id AS taxonomyId,
+             typed.taxonomy_version AS taxonomyVersion,
+             typed.taxonomy_dimension AS taxonomyDimension,
+             typed.taxonomy_code AS taxonomyCode
+        FROM current_counterparty_participations participation
+        JOIN assertions role_assertion
+          ON role_assertion.assertion_id = participation.assertion_id
+         AND role_assertion.transaction_id = participation.transaction_id
+         AND role_assertion.field_name = 'counterparty_role'
+        LEFT JOIN counterparty_references reference
+          ON reference.reference_id = participation.reference_id
+        JOIN counterparty_participation_taxonomy_values typed
+          ON typed.participation_id = participation.participation_id
+         AND typed.transaction_id = participation.transaction_id
+         AND typed.assertion_id = participation.assertion_id
+       WHERE participation.transaction_id IN (${ids.map(() => "?").join(",")})
+         AND (SELECT commit_sequence FROM canonical_commits
+                WHERE commit_id = participation.projection_commit_id) <= ?
+         AND (SELECT commit_sequence FROM canonical_commits
+                WHERE commit_id = role_assertion.created_commit_id) <= ?
+         AND COALESCE((SELECT event_kind
+                         FROM assertion_transitions event
+                         JOIN canonical_commits event_commit
+                           ON event_commit.commit_id = event.commit_id
+                        WHERE event.assertion_id = role_assertion.assertion_id
+                          AND event_commit.commit_sequence <= ?
+                        ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+                        LIMIT 1), 'observed') NOT IN ('withdrawn','superseded')
+       ORDER BY participation.transaction_id, participation.role_code,
+                participation.participation_key, participation.participation_id
+    `).all(
+      cutoff,
+      cutoff,
+      ...ids,
+      cutoff,
+      cutoff,
+      cutoff,
+    ) as DbRow[];
+    for (const row of rows) {
+      const key = currentTransactionKey(blob(row.transactionId));
+      appendCurrentRows(result, key, row);
+    }
+  }
+  for (const [key, rows] of result)
+    result.set(key, sortCounterpartyRows(rows, kindByTransaction.get(key) ?? null));
+  return result;
+}
+
+function currentUserDisplaysByTransaction(
+  db: DatabaseSync,
+  transactionIds: readonly string[],
+  cutoff: number,
+): ReadonlyMap<string, readonly CanonicalUserCounterpartyDisplay[]> {
+  const result = new Map<string, CanonicalUserCounterpartyDisplay[]>();
+  for (let offset = 0; offset < transactionIds.length; offset += CURRENT_ENRICHMENT_BATCH_SIZE) {
+    const chunk = transactionIds.slice(offset, offset + CURRENT_ENRICHMENT_BATCH_SIZE);
+    const ids = chunk.map((value) => canonicalStoredId(value, "Transaction ID"));
+    const rows = db.prepare(`
+      WITH latest_events AS (
+        SELECT event.assertion_id, event.event_kind,
+               ROW_NUMBER() OVER (
+                 PARTITION BY event.assertion_id
+                 ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+               ) AS event_rank
+          FROM assertion_transitions event
+          JOIN canonical_commits event_commit
+            ON event_commit.commit_id = event.commit_id
+         WHERE event_commit.commit_sequence <= ?
+      )
+      SELECT assertion.assertion_id, assertion.transaction_id,
+             assertion.producer_id AS user_id,
+             value.display_kind, value.reference_id, value.participation_key,
+             value.label, created.commit_sequence AS created_sequence
+        FROM assertions assertion
+        JOIN counterparty_display_assertion_values value
+          ON value.assertion_id = assertion.assertion_id
+         AND value.transaction_id = assertion.transaction_id
+        JOIN canonical_commits created
+          ON created.commit_id = assertion.created_commit_id
+        JOIN latest_events event
+          ON event.assertion_id = assertion.assertion_id
+         AND event.event_rank = 1
+       WHERE assertion.transaction_id IN (${ids.map(() => "?").join(",")})
+         AND assertion.field_name = 'counterparty_display'
+         AND assertion.origin = 'user'
+         AND created.commit_sequence <= ?
+         AND event.event_kind NOT IN ('withdrawn','superseded')
+    `).all(cutoff, ...ids, cutoff) as DbRow[];
+    for (const row of rows) {
+      const key = currentTransactionKey(blob(row.transaction_id));
+      appendCurrentRows(result, key, {
+        assertionId: idToString(blob(row.assertion_id)),
+        userId: String(row.user_id ?? ""),
+        displayKind: String(row.display_kind) as "override" | "reference_alias",
+        referenceId: row.reference_id === null || row.reference_id === undefined
+          ? null
+          : idToString(blob(row.reference_id)),
+        participationKey: row.participation_key === null || row.participation_key === undefined
+          ? null
+          : String(row.participation_key),
+        label: String(row.label),
+        commitSequence: Number(row.created_sequence),
+      });
+    }
+  }
+  return result;
+}
+
+function currentAutomaticDisplaysByParticipation(
+  db: DatabaseSync,
+  transactionIds: readonly string[],
+  cutoff: number,
+): ReadonlyMap<string, DbRow> {
+  const result = new Map<string, DbRow>();
+  for (let offset = 0; offset < transactionIds.length; offset += CURRENT_ENRICHMENT_BATCH_SIZE) {
+    const chunk = transactionIds.slice(offset, offset + CURRENT_ENRICHMENT_BATCH_SIZE);
+    const ids = chunk.map((value) => canonicalStoredId(value, "Transaction ID"));
+    const rows = db.prepare(`
+      WITH latest_outputs AS (
+        SELECT output.rowid AS output_rowid, output.assertion_id,
+               output.output_state, output.route_id, output.provenance_json,
+               output.run_id, output.commit_id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY output.assertion_id
+                 ORDER BY output_commit.commit_sequence DESC, output.rowid DESC
+               ) AS output_rank
+          FROM enrichment_run_outputs output
+          JOIN canonical_commits output_commit
+            ON output_commit.commit_id = output.commit_id
+         WHERE output.transaction_id IN (${ids.map(() => "?").join(",")})
+           AND output_commit.commit_sequence <= ?
+      ), latest_events AS (
+        SELECT event.assertion_id, event.event_kind,
+               ROW_NUMBER() OVER (
+                 PARTITION BY event.assertion_id
+                 ORDER BY event_commit.commit_sequence DESC, event.rowid DESC
+               ) AS event_rank
+          FROM assertion_transitions event
+          JOIN canonical_commits event_commit
+            ON event_commit.commit_id = event.commit_id
+         WHERE event_commit.commit_sequence <= ?
+      ), ranked_displays AS (
+        SELECT value.transaction_id, value.participation_id,
+               value.assertion_id, value.label, value.origin,
+               output.route_id, run.producer_id, run.producer_version,
+               output.provenance_json, created.commit_sequence,
+               value.reference_id, value.participation_key, value.rowid AS value_rowid,
+               ROW_NUMBER() OVER (
+                 PARTITION BY value.transaction_id, value.participation_id
+                 ORDER BY created.commit_sequence DESC, value.rowid DESC
+               ) AS display_rank
+          FROM counterparty_display_assertion_values value
+          JOIN assertions assertion
+            ON assertion.assertion_id = value.assertion_id
+           AND assertion.transaction_id = value.transaction_id
+           AND assertion.field_name = 'counterparty_display'
+          JOIN canonical_commits created
+            ON created.commit_id = value.created_commit_id
+          JOIN latest_outputs output
+            ON output.assertion_id = value.assertion_id
+           AND output.output_rank = 1
+           AND output.output_state = 'supported'
+          JOIN enrichment_runs run ON run.run_id = output.run_id
+          LEFT JOIN latest_events event
+            ON event.assertion_id = value.assertion_id
+           AND event.event_rank = 1
+         WHERE value.transaction_id IN (${ids.map(() => "?").join(",")})
+           AND value.origin IN ('source','derived')
+           AND value.participation_id IS NOT NULL
+           AND created.commit_sequence <= ?
+           AND COALESCE(event.event_kind, 'observed') NOT IN ('withdrawn','superseded')
+      )
+      SELECT transaction_id, participation_id, assertion_id, label, origin,
+             route_id, producer_id, producer_version, provenance_json,
+             commit_sequence, reference_id, participation_key
+        FROM ranked_displays
+       WHERE display_rank = 1
+    `).all(
+      ...ids,
+      cutoff,
+      cutoff,
+      ...ids,
+      cutoff,
+    ) as DbRow[];
+    for (const row of rows) {
+      const key = `${currentTransactionKey(blob(row.transaction_id))}:${idToString(blob(row.participation_id))}`;
+      result.set(key, row);
+    }
+  }
+  return result;
+}
+
+function currentTagsByTransaction(
+  db: DatabaseSync,
+  transactionIds: readonly string[],
+  cutoff: number,
+): ReadonlyMap<string, readonly CanonicalTransactionTagView[]> {
+  const result = new Map<string, CanonicalTransactionTagView[]>();
+  for (let offset = 0; offset < transactionIds.length; offset += CURRENT_ENRICHMENT_BATCH_SIZE) {
+    const chunk = transactionIds.slice(offset, offset + CURRENT_ENRICHMENT_BATCH_SIZE);
+    const ids = chunk.map((value) => canonicalStoredId(value, "Transaction ID"));
+    const rows = db.prepare(`
+      SELECT current_tag.transaction_id, current_tag.tag_id, current_tag.assertion_id,
+             current_tag.user_id, current_tag.display_label,
+             current_tag.normalized_label,
+             assertion_commit.commit_sequence AS created_sequence
+        FROM current_transaction_tags current_tag
+        JOIN assertions assertion
+          ON assertion.assertion_id = current_tag.assertion_id
+         AND assertion.transaction_id = current_tag.transaction_id
+        JOIN canonical_commits assertion_commit
+          ON assertion_commit.commit_id = assertion.created_commit_id
+        JOIN canonical_commits projection_commit
+          ON projection_commit.commit_id = current_tag.projection_commit_id
+       WHERE current_tag.transaction_id IN (${ids.map(() => "?").join(",")})
+         AND projection_commit.commit_sequence <= ?
+       ORDER BY current_tag.transaction_id, current_tag.tag_id
+    `).all(...ids, cutoff) as DbRow[];
+    for (const row of rows) {
+      const key = currentTransactionKey(blob(row.transaction_id));
+      appendCurrentRows(result, key, {
+        tagId: idToString(blob(row.tag_id)),
+        userId: String(row.user_id),
+        label: String(row.display_label),
+        normalizedLabel: String(row.normalized_label),
+        lifecycle: "active" as const,
+        assertionId: idToString(blob(row.assertion_id)),
+        origin: "user" as const,
+        provenance: {
+          commitSequence: Number(row.created_sequence),
+          assertionId: idToString(blob(row.assertion_id)),
+        },
+      });
+    }
+  }
+  return result;
 }
 
 function userDisplayResult(
@@ -1957,11 +2296,15 @@ function sourceDescriptionFallback(
   transactionId: Uint8Array,
   cutoff: number,
   revisionId?: string,
+  sourceDescriptionsByRevision?: ReadonlyMap<string, DbRow>,
 ): CanonicalEnrichmentFieldResult {
   const revisionParameter = revisionId
     ? canonicalStoredId(revisionId, "Revision ID")
     : null;
-  const row = revisionParameter
+  const preloaded = revisionId
+    ? sourceDescriptionsByRevision?.get(normalizedCanonicalId(revisionId))
+    : undefined;
+  const row = preloaded ?? (revisionParameter
     ? db.prepare(`
         SELECT source_assertion.assertion_id, revision.revision_id,
                revision.source_record_id, revision.description,
@@ -1991,7 +2334,7 @@ function sourceDescriptionFallback(
            AND revision_commit.commit_sequence <= ?
          ORDER BY revision_commit.commit_sequence DESC, revision.revision_number DESC
          LIMIT 1
-      `).get(transactionId, cutoff) as DbRow | undefined;
+      `).get(transactionId, cutoff) as DbRow | undefined);
   const description = row?.description === null || row?.description === undefined
     ? ""
     : String(row.description);
@@ -2073,6 +2416,13 @@ function selectedAutomaticDisplay(
      LIMIT 1
   `).get(cutoff, cutoff, transactionId, sqliteValue(selected.participationId), cutoff, cutoff) as DbRow | undefined;
   if (!row) return null;
+  return automaticDisplayResult(selected, row);
+}
+
+function automaticDisplayResult(
+  selected: DbRow,
+  row: DbRow,
+): CanonicalEnrichmentFieldResult {
   return {
     status: "supported",
     value: String(row.label),
@@ -2108,8 +2458,18 @@ function selectedCounterpartyDisplay(
   counterparties: readonly DbRow[],
   automatic: CanonicalProjectionTransactionEnrichment | undefined,
   sourceRevisionId?: string,
+  sourceDescriptionsByRevision?: ReadonlyMap<string, DbRow>,
+  currentLookups?: Readonly<{
+    userDisplaysByTransaction: ReadonlyMap<string, readonly CanonicalUserCounterpartyDisplay[]>;
+    automaticDisplaysByParticipation: ReadonlyMap<string, DbRow>;
+  }>,
 ): CanonicalEnrichmentFieldResult {
-  const userDisplays = [...readCanonicalUserCounterpartyDisplays(db, transactionId, cutoff)]
+  const transactionKey = currentTransactionKey(transactionId);
+  const userDisplays = [
+    ...(currentLookups
+      ? currentLookups.userDisplaysByTransaction.get(transactionKey) ?? []
+      : readCanonicalUserCounterpartyDisplays(db, transactionId, cutoff)),
+  ]
     .sort((left, right) => right.commitSequence - left.commitSequence || left.assertionId.localeCompare(right.assertionId));
   const override = userDisplays.find((row) => row.displayKind === "override");
   if (override) return userDisplayResult(override);
@@ -2125,9 +2485,16 @@ function selectedCounterpartyDisplay(
     );
     if (alias) return userDisplayResult(alias);
   }
-  const routed = selectedAutomaticDisplay(db, transactionId, cutoff, selected);
+  const automaticRow = selected?.participationId && currentLookups
+    ? currentLookups.automaticDisplaysByParticipation.get(
+      `${transactionKey}:${idToString(blob(selected.participationId))}`,
+    )
+    : undefined;
+  const routed = currentLookups
+    ? (automaticRow ? automaticDisplayResult(selected, automaticRow) : null)
+    : selectedAutomaticDisplay(db, transactionId, cutoff, selected);
   if (routed) return routed;
-  return sourceDescriptionFallback(db, transactionId, cutoff, sourceRevisionId);
+  return sourceDescriptionFallback(db, transactionId, cutoff, sourceRevisionId, sourceDescriptionsByRevision);
 }
 
 function latestKnowledgePoint(db: DatabaseSync): number {
@@ -2161,11 +2528,8 @@ function queryParametersForScope(
   return { clauses, parameters };
 }
 
-function currentTransactionRows(
-  db: DatabaseSync,
-  request: CanonicalEnrichmentQueryRequest,
-): DbRow[] {
-  const projectionScope = {
+function currentProjectionScope(request: CanonicalEnrichmentQueryRequest) {
+  return {
     ...(request.sourceConnectionKey
       ? { sourceConnectionKey: request.sourceConnectionKey }
       : {}),
@@ -2174,12 +2538,18 @@ function currentTransactionRows(
       : {}),
     ...(request.financialAt ? { endDate: request.financialAt } : {}),
   };
-  const projection = createCanonicalProjectionRuntime(db).read({
+}
+
+function currentTransactionRows(
+  db: DatabaseSync,
+  request: CanonicalEnrichmentQueryRequest,
+  projectedOverride?: readonly CanonicalProjectionTransaction[],
+): DbRow[] {
+  const projected = projectedOverride ?? createCanonicalProjectionRuntime(db).read({
     kind: "current",
     families: ["transactions"],
-    scope: projectionScope,
-  });
-  const projected = projection.families.transactions;
+    scope: currentProjectionScope(request),
+  }).families.transactions;
   if (projected.length === 0) return [];
   const projectionIds = projected.map((row) => {
     const normalized = row.transactionId.replaceAll("-", "");
@@ -2255,38 +2625,140 @@ function transactionRows(
   });
 }
 
-function currentTransaction(
+function currentOutputProvenance(
+  db: DatabaseSync,
+  enrichmentRows: readonly CanonicalProjectionTransactionEnrichment[],
+): ReadonlyMap<string, Readonly<Record<string, unknown>>> {
+  const assertionIds = [...new Set(enrichmentRows.map((row) => row.assertionId))];
+  if (assertionIds.length === 0) return new Map();
+  const result = new Map<string, Readonly<Record<string, unknown>>>();
+  // Keep each statement below SQLite's conservative 999 variable limit. A
+  // source can legitimately have more than one assertion per transaction.
+  for (let offset = 0; offset < assertionIds.length; offset += 500) {
+    const chunk = assertionIds.slice(offset, offset + 500);
+    const rows = db.prepare(`
+      SELECT lower(hex(output.assertion_id)) AS assertion_id, output.provenance_json
+        FROM enrichment_run_outputs output
+       WHERE output.rowid IN (
+         SELECT MAX(latest.rowid)
+           FROM enrichment_run_outputs latest
+          WHERE latest.assertion_id IN (${chunk.map(() => "?").join(",")})
+          GROUP BY latest.assertion_id
+       )
+    `).all(...chunk.map((value) => canonicalStoredId(value, "Assertion ID"))) as DbRow[];
+    for (const row of rows)
+      result.set(String(row.assertion_id), parseProvenance(row.provenance_json));
+  }
+  return result;
+}
+
+function currentSourceDescriptions(
+  db: DatabaseSync,
+  transactions: readonly CanonicalProjectionTransaction[],
+  cutoff: number,
+): ReadonlyMap<string, DbRow> {
+  const revisionIds = [...new Set(transactions.map((row) => row.revisionId))];
+  const result = new Map<string, DbRow>();
+  for (let offset = 0; offset < revisionIds.length; offset += 500) {
+    const chunk = revisionIds.slice(offset, offset + 500);
+    const rows = db.prepare(`
+      SELECT revision.revision_id,
+             source_assertion.assertion_id, revision.source_record_id,
+             revision.description, revision.commit_id,
+             revision_commit.commit_sequence
+        FROM transaction_revisions revision
+        JOIN canonical_commits revision_commit
+          ON revision_commit.commit_id = revision.commit_id
+        LEFT JOIN source_assertions source_assertion
+          ON source_assertion.revision_id = revision.revision_id
+         AND source_assertion.transaction_id = revision.transaction_id
+       WHERE revision.revision_id IN (${chunk.map(() => "?").join(",")})
+         AND revision_commit.commit_sequence <= ?
+    `).all(
+      ...chunk.map((value) => canonicalStoredId(value, "Revision ID")),
+      cutoff,
+    ) as DbRow[];
+    for (const row of rows)
+      result.set(idToString(blob(row.revision_id)).replaceAll("-", "").toLowerCase(), row);
+  }
+  return result;
+}
+
+type CurrentEnrichmentLookups = Readonly<{
+  knowledgePoint: number;
+  counterpartiesByTransaction: ReadonlyMap<string, readonly DbRow[]>;
+  userDisplaysByTransaction: ReadonlyMap<string, readonly CanonicalUserCounterpartyDisplay[]>;
+  automaticDisplaysByParticipation: ReadonlyMap<string, DbRow>;
+  tagsByTransaction: ReadonlyMap<string, readonly CanonicalTransactionTagView[]>;
+}>;
+
+function currentEnrichmentLookups(
+  db: DatabaseSync,
+  transactions: readonly DbRow[],
+  projection: Pick<CanonicalProjectionSnapshot, "families">,
+  cutoff: number,
+): CurrentEnrichmentLookups {
+  const transactionIds = transactions.map((row) => idToString(blob(row.transaction_id)));
+  const kindByTransaction = new Map<string, string | null>();
+  for (const row of projection.families["transaction-enrichment"]) {
+    if (row.fieldName !== "kind") continue;
+    kindByTransaction.set(
+      currentTransactionKey(row.transactionId),
+      row.taxonomyCode ?? row.value ?? null,
+    );
+  }
+  return {
+    knowledgePoint: cutoff,
+    counterpartiesByTransaction: currentCounterpartyRowsByTransaction(
+      db,
+      transactionIds,
+      cutoff,
+      kindByTransaction,
+    ),
+    userDisplaysByTransaction: currentUserDisplaysByTransaction(db, transactionIds, cutoff),
+    automaticDisplaysByParticipation: currentAutomaticDisplaysByParticipation(db, transactionIds, cutoff),
+    tagsByTransaction: currentTagsByTransaction(db, transactionIds, cutoff),
+  };
+}
+
+function currentTransactionFromProjection(
   db: DatabaseSync,
   transactionId: Uint8Array,
+  projection: Pick<CanonicalProjectionSnapshot, "families">,
+  provenanceByAssertion?: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  sourceDescriptionsByRevision?: ReadonlyMap<string, DbRow>,
+  currentLookups?: CurrentEnrichmentLookups,
 ): CanonicalEnrichmentTransaction {
   const transactionIdText = idToString(transactionId);
-  const projection = createCanonicalProjectionRuntime(db).read({
-    kind: "current",
-    families: ["transactions", "transaction-enrichment", "transaction-categorization"],
-    scope: { transactionIds: [transactionIdText] },
-  });
   const transactionKey = transactionIdText.replaceAll("-", "").toLowerCase();
   const transaction = projection.families.transactions.find(
     (row) => row.transactionId.replaceAll("-", "").toLowerCase() === transactionKey,
   );
   if (!transaction)
     throw new Error("Canonical projection returned an unknown transaction subject.");
-  const enrichmentRows = projection.families["transaction-enrichment"];
+  const enrichmentRows = projection.families["transaction-enrichment"].filter(
+    (row) => row.transactionId.replaceAll("-", "").toLowerCase() === transactionKey,
+  );
   const categorizationRows = projection.families["transaction-categorization"];
   const byField = new Map(
     enrichmentRows.map((row) => [row.fieldName, row]),
   );
   const roleAssertion = byField.get("counterparty_role");
-  const cutoff = latestKnowledgePoint(db);
+  const cutoff = currentLookups?.knowledgePoint ?? latestKnowledgePoint(db);
   const kindCode = byField.get("kind")?.taxonomyCode ?? byField.get("kind")?.value ?? null;
   const counterparts = roleAssertion
-      ? selectedCounterpartyRows(db, transactionId, roleAssertion.assertionId, cutoff, kindCode, true)
+    ? currentLookups
+      ? (currentLookups.counterpartiesByTransaction.get(transactionKey) ?? []).filter(
+        (row) => currentTransactionKey(blob(row.assertionId)) === currentTransactionKey(roleAssertion.assertionId),
+      )
+      : selectedCounterpartyRows(db, transactionId, roleAssertion.assertionId, cutoff, kindCode, true)
     : [];
   return {
     transactionId: idToString(transactionId),
     kind: resultFromRuntimeRow(
       byField.get("kind"),
-      outputProvenance(db, byField.get("kind")?.assertionId),
+      provenanceByAssertion?.get(byField.get("kind")?.assertionId ?? "") ??
+        outputProvenance(db, byField.get("kind")?.assertionId),
     ),
     category: categoryFromRuntimeRows(
       transaction,
@@ -2294,6 +2766,8 @@ function currentTransaction(
       byField.get("category"),
       categorizationRows,
       db,
+      undefined,
+      provenanceByAssertion,
     ),
     display: selectedCounterpartyDisplay(
       db,
@@ -2302,6 +2776,8 @@ function currentTransaction(
       counterparts,
       byField.get("counterparty_display"),
       transaction.revisionId,
+      sourceDescriptionsByRevision,
+      currentLookups,
     ),
     counterparties: counterparts.map((row) => ({
       participationKey: String(row.participationKey ?? ""),
@@ -2326,8 +2802,23 @@ function currentTransaction(
       producerVersion: String(row.producerVersion ?? ""),
       provenance: parseProvenance(row.provenanceJson),
     })),
-    tags: readCanonicalTransactionTags(db, transactionId, cutoff, true),
+    tags: currentLookups
+      ? currentLookups.tagsByTransaction.get(transactionKey) ?? []
+      : readCanonicalTransactionTags(db, transactionId, cutoff, true),
   };
+}
+
+function currentTransaction(
+  db: DatabaseSync,
+  transactionId: Uint8Array,
+): CanonicalEnrichmentTransaction {
+  const transactionIdText = idToString(transactionId);
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment", "transaction-categorization"],
+    scope: { transactionIds: [transactionIdText] },
+  });
+  return currentTransactionFromProjection(db, transactionId, projection);
 }
 
 function historicalTransaction(
@@ -2588,10 +3079,41 @@ function lineageRows(
   return result;
 }
 
-function queryCurrent(db: DatabaseSync, request: CanonicalEnrichmentQueryRequest): CanonicalEnrichmentQueryResult {
-  const rows = transactionRows(db, request, "current");
+function queryCurrent(
+  db: DatabaseSync,
+  request: CanonicalEnrichmentQueryRequest,
+  projectionOverride?: CanonicalProjectionSnapshot,
+): CanonicalEnrichmentQueryResult {
+  const projection = projectionOverride ?? createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment", "transaction-categorization"],
+    scope: currentProjectionScope(request),
+  });
+  const rows = currentTransactionRows(db, request, projection.families.transactions);
   const knowledgePoint = latestKnowledgePoint(db);
-  return { kind: "current", knowledgePoint, financialAt: request.financialAt ?? null, transactions: rows.map((row) => currentTransaction(db, blob(row.transaction_id))) };
+  const provenanceByAssertion = currentOutputProvenance(
+    db,
+    projection.families["transaction-enrichment"],
+  );
+  const sourceDescriptionsByRevision = currentSourceDescriptions(
+    db,
+    projection.families.transactions,
+    knowledgePoint,
+  );
+  const lookups = currentEnrichmentLookups(db, rows, projection, knowledgePoint);
+  return {
+    kind: "current",
+    knowledgePoint,
+    financialAt: request.financialAt ?? null,
+    transactions: rows.map((row) => currentTransactionFromProjection(
+      db,
+      blob(row.transaction_id),
+      projection,
+      provenanceByAssertion,
+      sourceDescriptionsByRevision,
+      lookups,
+    )),
+  };
 }
 
 /**
@@ -2603,8 +3125,9 @@ function queryCurrent(db: DatabaseSync, request: CanonicalEnrichmentQueryRequest
 export function queryCanonicalEnrichmentCurrentFromDatabase(
   db: DatabaseSync,
   request: CanonicalEnrichmentQueryRequest = {},
+  projectionOverride?: CanonicalProjectionSnapshot,
 ): CanonicalEnrichmentQueryResult {
-  return queryCurrent(db, request);
+  return queryCurrent(db, request, projectionOverride);
 }
 
 /**

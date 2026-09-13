@@ -6,6 +6,7 @@ import {
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import {
   ensureCanonicalCreditCardSchema,
   persistCanonicalCreditCardExtensions,
@@ -52,7 +53,7 @@ export type YuantaCreditCardTransactionInput = {
   sourceRecordKey: string;
   occurrenceIndex: number;
   instrumentKey: string;
-  consumeDate: string;
+  consumeDate?: string | null;
   postingDate: string;
   postingStatus?: "posted";
   direction: "inflow" | "outflow";
@@ -149,11 +150,13 @@ export type YuantaCreditCardCaptureInput = {
 
 export type YuantaCreditCardAdmittedTransaction = Omit<
   YuantaCreditCardTransactionInput,
-  "bookedAmount" | "foreignAmount" | "sourceKey" | "postingStatus"
+  "bookedAmount" | "foreignAmount" | "sourceKey" | "postingStatus" | "consumeDate"
 > & {
   sourceKey: `sha256:${string}`;
   bookedAmount: YuantaCreditCardExactAmount;
   foreignAmount: YuantaCreditCardExactAmount | null;
+  consumeDate: string | null;
+  effectiveDateBasis: "consume-date" | "posting-date-fallback";
   postingStatus: "posted";
   normalizedDescription: string;
 };
@@ -362,7 +365,9 @@ export function buildYuantaCreditCardTransactionSourceKey(
   return digest("yuanta-credit-card-transaction-v2", [
     accountKey,
     text(record.instrumentKey, "Card instrument key"),
-    validDate(record.consumeDate, "Consume date"),
+    record.consumeDate == null || record.consumeDate.trim() === ""
+      ? null
+      : validDate(record.consumeDate, "Consume date"),
     validDate(record.postingDate, "Posting date"),
     record.direction,
     amount.coefficient,
@@ -588,8 +593,13 @@ function validateTransaction(
   const instrumentKey = text(record.instrumentKey, "Card instrument key");
   if (!instruments.has(instrumentKey))
     fail("Transaction references an unknown card instrument.");
-  const consumeDate = validDate(record.consumeDate, "Consume date");
   const postingDate = validDate(record.postingDate, "Posting date");
+  const consumeDate = record.consumeDate == null || record.consumeDate.trim() === ""
+    ? null
+    : validDate(record.consumeDate, "Consume date");
+  const effectiveDateBasis = consumeDate === null
+    ? "posting-date-fallback" as const
+    : "consume-date" as const;
   if (record.postingStatus !== undefined && record.postingStatus !== "posted")
     fail("Yuanta credit-card transactions must be posted.");
   const bookedAmount = exactAmount(record.bookedAmount, "Booked amount");
@@ -628,6 +638,7 @@ function validateTransaction(
     instrumentKey,
     consumeDate,
     postingDate,
+    effectiveDateBasis,
     bookedAmount,
     bookedCurrency,
     description,
@@ -1006,6 +1017,9 @@ export function yuantaNeutralCreditCardCapture(
       sourceKey: transaction.sourceKey,
       instrumentKey: transaction.instrumentKey,
       billingStatus: transaction.billingStatus,
+      consumeDate: transaction.consumeDate,
+      postingDate: transaction.postingDate,
+      effectiveDateBasis: transaction.effectiveDateBasis,
       ...(transaction.statementKey
         ? { statementKey: transaction.statementKey }
         : {}),
@@ -1077,6 +1091,7 @@ function yuantaCanonicalSpineCapture(
       throw new YuantaCreditCardAdmissionError(
         "Yuanta transaction instrument is missing from the validated capture.",
       );
+    const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
     // Billing status and issuer statement linkage are lifecycle evidence,
     // not immutable transaction content. They are persisted by the
     // credit-card extension so an unbilled transaction can later become
@@ -1111,17 +1126,17 @@ function yuantaCanonicalSpineCapture(
       currency: transaction.bookedCurrency,
       direction: transaction.direction,
       sourceTime: {
-        localDate: transaction.postingDate,
+        localDate: effectiveDate,
         localTime: "00:00:00",
         timeZone: "Asia/Taipei",
         epochMilliseconds: Date.parse(
-          `${transaction.postingDate}T00:00:00+08:00`,
+          `${effectiveDate}T00:00:00+08:00`,
         ),
         precision: "date" as const,
         timeOrigin: "defaulted_local_midnight" as const,
       },
-      effectiveOn: transaction.postingDate,
-      transactionDateTimeLocal: `${transaction.postingDate}T00:00:00`,
+      effectiveOn: effectiveDate,
+      transactionDateTimeLocal: `${effectiveDate}T00:00:00`,
       description: transaction.description,
       ...(transaction.foreignAmount && transaction.foreignCurrency
         ? {
@@ -1294,6 +1309,10 @@ export async function commitYuantaCreditCardCaptureBatch(
       persistCanonicalCreditCardExtensions(
         db,
         captures.map(yuantaNeutralCreditCardCapture),
+      );
+      commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction(
+        db,
+        captures.map((capture) => capture.captureId),
       );
     },
   );

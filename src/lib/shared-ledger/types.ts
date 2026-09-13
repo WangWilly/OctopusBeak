@@ -88,7 +88,6 @@ export type AccountRowDto = {
   assetPositionCount: number;
   lastUpdated: string | null;
   valueAvailability: "available" | "awaiting" | "unavailable";
-  dataIssueId?: string;
   canonicalAccountId?: string;
   creditCard?: CreditCardAccountDto;
 };

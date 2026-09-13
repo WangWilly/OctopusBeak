@@ -60,3 +60,24 @@ test("closing the worker rejects pending and future page requests deterministica
     { message: "Financial page worker is closed." },
   );
 });
+
+test("Spending decisions use the worker boundary without blocking the caller", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page }) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 180) {}
+      parentPort.postMessage({ id, ok: true, value: { patch: { kind: "spending-purchase-report-patch" } } });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const startedAt = performance.now();
+    const action = client.confirmCandidate({ kind: "candidate", candidateId: "candidate" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    assert.ok(performance.now() - startedAt < 100);
+    assert.deepEqual(await action, { patch: { kind: "spending-purchase-report-patch" } });
+  } finally {
+    await client.close();
+  }
+});

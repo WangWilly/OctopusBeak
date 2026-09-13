@@ -7,7 +7,6 @@ import {
 } from "electron";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { createDataIssueIpcHandlers } from "../src/lib/desktop/api.ts";
 import {
   automationCancel,
   cathayGmailOtpStatus,
@@ -57,16 +56,6 @@ import { createFinancialPageWorkerClient } from "./financial-page-worker-client.
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
-  confirmDataIssueExclusion,
-  confirmDataIssueRestore,
-  createDataIssue,
-  listDataIssues,
-  loadDataIssue,
-  previewDataIssueExclusion,
-  previewDataIssueRestore,
-  startDataIssueDiagnosis,
-} from "../src/lib/data-issues/server/store.ts";
-import {
   systemSettings,
   validateSystemSettings,
   type SystemSettingsDto,
@@ -86,16 +75,6 @@ export function registerOctopusBeakIpc({
   const financialPages = createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
-  const dataIssueHandlers = createDataIssueIpcHandlers({
-    list: listDataIssues,
-    create: createDataIssue,
-    load: loadDataIssue,
-    startDiagnosis: startDataIssueDiagnosis,
-    previewExclusion: previewDataIssueExclusion,
-    confirmExclusion: confirmDataIssueExclusion,
-    previewRestore: previewDataIssueRestore,
-    confirmRestore: confirmDataIssueRestore,
-  });
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -123,6 +102,15 @@ export function registerOctopusBeakIpc({
     "spending:load",
     (_event, input: SpendingLoadInput | undefined) =>
       financialPages.load("spending", input),
+  );
+  ipcMain.handle("spending:confirmCandidate", (_event, input) =>
+    financialPages.confirmCandidate(input),
+  );
+  ipcMain.handle("spending:denyCandidate", (_event, input) =>
+    financialPages.denyCandidate(input),
+  );
+  ipcMain.handle("spending:revokeLink", (_event, input) =>
+    financialPages.revokeLink(input),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
@@ -345,20 +333,6 @@ export function registerOctopusBeakIpc({
     await forceQuitHumanSessionForTask(taskId);
     return { ok: true as const, closed: true };
   });
-  ipcMain.handle("dataIssues:list", dataIssueHandlers.list);
-  ipcMain.handle("dataIssues:create", dataIssueHandlers.create);
-  ipcMain.handle("dataIssues:load", dataIssueHandlers.load);
-  ipcMain.handle("dataIssues:startDiagnosis", dataIssueHandlers.startDiagnosis);
-  ipcMain.handle(
-    "dataIssues:previewExclusion",
-    dataIssueHandlers.previewExclusion,
-  );
-  ipcMain.handle(
-    "dataIssues:confirmExclusion",
-    dataIssueHandlers.confirmExclusion,
-  );
-  ipcMain.handle("dataIssues:previewRestore", dataIssueHandlers.previewRestore);
-  ipcMain.handle("dataIssues:confirmRestore", dataIssueHandlers.confirmRestore);
   return {
     close: () => financialPages.close(),
   };

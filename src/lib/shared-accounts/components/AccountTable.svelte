@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { TriangleAlert } from "@lucide/svelte";
   import { tick } from "svelte";
   import { t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
@@ -30,7 +29,6 @@
   export let search = "";
   export let mode: "asset" | "liability" = "asset";
   export let focusAccountId: string | null = null;
-  export let onReportDataIssue: ((account: AccountRowDto) => void) | null = null;
 
   export let filter: AccountKind | "all" = "all";
   let selectedAccountId: string | null = null;
@@ -230,17 +228,6 @@
         {#if mode === "asset" && selectedPositions.length > 0}
           <button class="button secondary" type="button" on:click={() => (positionsOpen = true)}>{$t.accounts.positions}</button>
         {/if}
-        {#if onReportDataIssue && selectedAccount.valueAvailability === "available"}
-          <button
-            class="button secondary report-issue-button"
-            type="button"
-            aria-label={$t.dataIssues.reportProblem}
-            title={$t.dataIssues.reportProblem}
-            on:click={() => onReportDataIssue?.(selectedAccount)}
-          >
-            <TriangleAlert size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
-        {/if}
       </div>
     </div>
   {/if}
@@ -310,10 +297,6 @@
                       <span>{$t.overview.currentAwaiting}</span>
                     {:else if account.valueAvailability === "unavailable"}
                       <span>{$t.accounts.noAvailableData}</span>
-                      {" · "}
-                      {#if account.dataIssueId}
-                        <a href={`#/data-issues/${account.dataIssueId}`}>{$t.dataIssues.viewIssue}</a>
-                      {/if}
                     {:else}
                       {formatAmountLines(account.amountLines)}
                     {/if}
@@ -353,12 +336,6 @@
 <CreditCardStatementsModal bind:open={statementsOpen} account={selectedAccount} />
 
 <style>
-  .report-issue-button {
-    width: 38px;
-    min-width: 38px;
-    padding-inline: 0;
-  }
-
   .sort-button {
     width: 100%;
     min-height: 52px;

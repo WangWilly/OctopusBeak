@@ -22,6 +22,9 @@ import {
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 
 export {
   admitCanonicalFinancialDepositCapture,
@@ -1096,6 +1099,11 @@ export async function commitCanonicalLineBankFinancialCapture(
   return commitCanonicalFinancialDepositCapture(
     store.sourceStore,
     normalizeLineBankFinancialCapture(capture),
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
   );
 }
 
@@ -1108,6 +1116,11 @@ export async function commitCanonicalLineBankFinancialCaptureBatch(
   return commitCanonicalFinancialDepositCaptureBatch(
     store.sourceStore,
     captures.map(normalizeLineBankFinancialCapture),
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
   );
 }
 

@@ -6778,6 +6778,403 @@ function ensureForeignCurrencyConversionSchema(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * E-Invoice is a source-owned document stream.  The source envelope remains
+ * the admission boundary, while these typed tables retain the document
+ * identity, append-only revisions, item facts, and their observation/event
+ * lineage.  None of these tables model a bank account or payment transaction.
+ */
+function ensureCanonicalEInvoiceSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS einvoice_captures (
+      capture_id BLOB PRIMARY KEY CHECK(length(capture_id) = 16) REFERENCES source_captures(capture_id),
+      capture_key TEXT NOT NULL UNIQUE,
+      scope_id BLOB NOT NULL REFERENCES capture_scopes(scope_id),
+      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+      source_subject_id BLOB NOT NULL REFERENCES source_subjects(source_subject_id),
+      authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+      contract_version TEXT NOT NULL,
+      stream TEXT NOT NULL CHECK(stream = 'personal-invoices'),
+      record_kind TEXT NOT NULL CHECK(record_kind = 'personal-invoice'),
+      scope_start TEXT NOT NULL,
+      scope_end TEXT NOT NULL,
+      scope_kind TEXT NOT NULL CHECK(scope_kind IN ('bounded-range','point-in-time')),
+      scope_completeness TEXT NOT NULL CHECK(scope_completeness IN ('complete-range','single-page')),
+      invoice_completeness TEXT NOT NULL CHECK(invoice_completeness IN ('complete','incomplete')),
+      item_completeness TEXT NOT NULL CHECK(item_completeness IN ('complete','incomplete')),
+      page_count INTEGER NOT NULL CHECK(page_count >= 1),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(capture_id, scope_id)
+    );
+    CREATE TABLE IF NOT EXISTS einvoice_invoices (
+      invoice_id BLOB PRIMARY KEY CHECK(length(invoice_id) = 16),
+      source_connection_id BLOB NOT NULL REFERENCES source_connections(source_connection_id),
+      identity_epoch_id BLOB NOT NULL REFERENCES identity_epochs(identity_epoch_id),
+      source_subject_id BLOB NOT NULL REFERENCES source_subjects(source_subject_id),
+      stable_invoice_key TEXT NOT NULL,
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(source_connection_id, identity_epoch_id, source_subject_id, stable_invoice_key)
+    );
+    CREATE TABLE IF NOT EXISTS einvoice_invoice_revisions (
+      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+      invoice_id BLOB NOT NULL REFERENCES einvoice_invoices(invoice_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      source_revision_key TEXT NOT NULL,
+      revision_number INTEGER NOT NULL CHECK(revision_number >= 1),
+      revision_kind TEXT NOT NULL CHECK(revision_kind IN ('issued','revised','revoked')),
+      state TEXT NOT NULL CHECK(state IN ('active','revoked')),
+      invoice_number TEXT NOT NULL,
+      random_number TEXT,
+      seller_tax_id TEXT NOT NULL,
+      seller_name TEXT,
+      amount_coefficient TEXT,
+      amount_scale INTEGER CHECK(amount_scale IS NULL OR amount_scale >= 0),
+      currency TEXT,
+      currency_authority TEXT NOT NULL,
+      occurrence_value TEXT NOT NULL,
+      occurrence_precision TEXT NOT NULL CHECK(occurrence_precision IN ('date','minute','second')),
+      occurrence_time_zone TEXT NOT NULL,
+      occurrence_origin TEXT NOT NULL CHECK(occurrence_origin IN ('source-reported','provider-reported-date-fallback')),
+      authority_route TEXT NOT NULL REFERENCES source_authority_routes(authority_route),
+      contract_version TEXT NOT NULL,
+      provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('provider-record','provider-revocation','fixture')),
+      provenance_reference TEXT NOT NULL,
+      provenance_source_field TEXT,
+      revocation_reason TEXT,
+      fact_fingerprint TEXT NOT NULL,
+      UNIQUE(invoice_id, source_revision_key),
+      UNIQUE(invoice_id, revision_number),
+      CHECK((state = 'active' AND revision_kind IN ('issued','revised') AND amount_coefficient IS NOT NULL AND amount_scale IS NOT NULL AND currency = 'TWD')
+        OR (state = 'revoked' AND revision_kind = 'revoked')),
+      CHECK((revision_kind = 'revoked' AND state = 'revoked' AND revocation_reason IS NOT NULL)
+        OR (revision_kind <> 'revoked' AND state = 'active'))
+    );
+    CREATE TABLE IF NOT EXISTS einvoice_items (
+      item_id BLOB PRIMARY KEY CHECK(length(item_id) = 16),
+      revision_id BLOB NOT NULL REFERENCES einvoice_invoice_revisions(revision_id),
+      sequence INTEGER NOT NULL CHECK(sequence >= 1),
+      completeness TEXT NOT NULL CHECK(completeness IN ('complete','incomplete')),
+      name TEXT,
+      quantity_coefficient TEXT,
+      quantity_scale INTEGER CHECK(quantity_scale IS NULL OR quantity_scale >= 0),
+      unit_price_coefficient TEXT,
+      unit_price_scale INTEGER CHECK(unit_price_scale IS NULL OR unit_price_scale >= 0),
+      unit_price_currency TEXT,
+      unit_price_currency_authority TEXT,
+      amount_coefficient TEXT,
+      amount_scale INTEGER CHECK(amount_scale IS NULL OR amount_scale >= 0),
+      amount_currency TEXT,
+      amount_currency_authority TEXT,
+      source_fact_json TEXT NOT NULL CHECK(json_valid(source_fact_json)),
+      UNIQUE(revision_id, sequence),
+      CHECK((quantity_coefficient IS NULL AND quantity_scale IS NULL)
+        OR (quantity_coefficient IS NOT NULL AND quantity_scale IS NOT NULL)),
+      CHECK((unit_price_coefficient IS NULL AND unit_price_scale IS NULL
+          AND unit_price_currency IS NULL AND unit_price_currency_authority IS NULL)
+        OR (unit_price_coefficient IS NOT NULL AND unit_price_scale IS NOT NULL
+          AND unit_price_currency = 'TWD'
+          AND unit_price_currency_authority = 'taiwan/e-invoice/twd/v1')),
+      CHECK((amount_coefficient IS NULL AND amount_scale IS NULL
+          AND amount_currency IS NULL AND amount_currency_authority IS NULL)
+        OR (amount_coefficient IS NOT NULL AND amount_scale IS NOT NULL
+          AND amount_currency = 'TWD'
+          AND amount_currency_authority = 'taiwan/e-invoice/twd/v1')),
+      CHECK((completeness = 'complete'
+        AND name IS NOT NULL
+        AND quantity_coefficient IS NOT NULL AND quantity_scale IS NOT NULL
+        AND unit_price_coefficient IS NOT NULL AND unit_price_scale IS NOT NULL
+        AND unit_price_currency = 'TWD' AND unit_price_currency_authority = 'taiwan/e-invoice/twd/v1'
+        AND amount_coefficient IS NOT NULL AND amount_scale IS NOT NULL
+        AND amount_currency = 'TWD' AND amount_currency_authority = 'taiwan/e-invoice/twd/v1')
+        OR completeness = 'incomplete')
+    );
+    CREATE TABLE IF NOT EXISTS einvoice_revision_observations (
+      revision_id BLOB NOT NULL REFERENCES einvoice_invoice_revisions(revision_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      PRIMARY KEY(revision_id, source_record_id)
+    );
+    CREATE TABLE IF NOT EXISTS einvoice_revision_events (
+      event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+      invoice_id BLOB NOT NULL REFERENCES einvoice_invoices(invoice_id),
+      revision_id BLOB NOT NULL REFERENCES einvoice_invoice_revisions(revision_id),
+      source_record_id BLOB NOT NULL REFERENCES source_records(source_record_id),
+      capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      event_kind TEXT NOT NULL CHECK(event_kind IN ('issued','revised','revoked','observed','superseded')),
+      event_at TEXT NOT NULL,
+      reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_einvoice_captures_subject
+      ON einvoice_captures(source_connection_id, identity_epoch_id, source_subject_id, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_invoices_identity
+      ON einvoice_invoices(source_connection_id, identity_epoch_id, source_subject_id, stable_invoice_key);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_revisions_current
+      ON einvoice_invoice_revisions(invoice_id, revision_number DESC, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_revisions_source
+      ON einvoice_invoice_revisions(source_record_id, capture_id, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_items_revision
+      ON einvoice_items(revision_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_observations_source
+      ON einvoice_revision_observations(source_record_id, capture_id, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_einvoice_events_invoice
+      ON einvoice_revision_events(invoice_id, event_at, commit_id);
+    CREATE TRIGGER IF NOT EXISTS einvoice_captures_no_update
+      BEFORE UPDATE ON einvoice_captures
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice captures are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_captures_no_delete
+      BEFORE DELETE ON einvoice_captures
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice captures cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_invoices_no_update
+      BEFORE UPDATE ON einvoice_invoices
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice identities are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_invoices_no_delete
+      BEFORE DELETE ON einvoice_invoices
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice identities cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_invoice_revisions_no_update
+      BEFORE UPDATE ON einvoice_invoice_revisions
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice revisions are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_invoice_revisions_no_delete
+      BEFORE DELETE ON einvoice_invoice_revisions
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice revisions cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_items_no_update
+      BEFORE UPDATE ON einvoice_items
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice items are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_items_no_delete
+      BEFORE DELETE ON einvoice_items
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice items cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_revision_observations_no_update
+      BEFORE UPDATE ON einvoice_revision_observations
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice observations are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_revision_observations_no_delete
+      BEFORE DELETE ON einvoice_revision_observations
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice observations cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_revision_events_no_update
+      BEFORE UPDATE ON einvoice_revision_events
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS einvoice_revision_events_no_delete
+      BEFORE DELETE ON einvoice_revision_events
+      WHEN canonical_purge_delete_allowed() = 0
+      BEGIN SELECT RAISE(ABORT, 'E-Invoice events cannot be deleted'); END;
+  `);
+}
+
+/** Report-only reconciliation state. Source identities and their facts remain
+ * untouched; decisions are append-only and the active table is a rebuildable
+ * one-to-one projection. */
+function ensureCanonicalSpendingRecognitionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spending_match_candidates (
+      candidate_id BLOB PRIMARY KEY CHECK(length(candidate_id) = 16),
+      candidate_key TEXT NOT NULL UNIQUE,
+      invoice_id BLOB NOT NULL REFERENCES einvoice_invoices(invoice_id),
+      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      algorithm TEXT NOT NULL, algorithm_version TEXT NOT NULL,
+      similarity_evidence_json TEXT NOT NULL CHECK(json_valid(similarity_evidence_json)),
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(invoice_id, transaction_id, algorithm, algorithm_version)
+    );
+    CREATE TABLE IF NOT EXISTS spending_dedup_decision_events (
+      event_id BLOB PRIMARY KEY CHECK(length(event_id) = 16),
+      decision_key TEXT NOT NULL UNIQUE,
+      invoice_id BLOB NOT NULL REFERENCES einvoice_invoices(invoice_id),
+      transaction_id BLOB NOT NULL REFERENCES financial_transactions(transaction_id),
+      event_kind TEXT NOT NULL CHECK(event_kind IN ('confirmed','denied','revoked')),
+      decision_origin TEXT NOT NULL CHECK(decision_origin IN ('user','source')),
+      user_id TEXT,
+      authority_route TEXT,
+      stable_cross_source_reference TEXT,
+      evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+      evidence_knowledge_sequence INTEGER NOT NULL CHECK(evidence_knowledge_sequence >= 0),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      CHECK((decision_origin = 'user' AND user_id IS NOT NULL AND authority_route IS NULL AND stable_cross_source_reference IS NULL)
+         OR (decision_origin = 'source' AND user_id IS NULL AND authority_route IS NOT NULL AND stable_cross_source_reference IS NOT NULL)),
+      CHECK(event_kind <> 'denied' OR decision_origin = 'user')
+    );
+    CREATE TABLE IF NOT EXISTS current_spending_dedup_links (
+      invoice_id BLOB PRIMARY KEY REFERENCES einvoice_invoices(invoice_id),
+      transaction_id BLOB NOT NULL UNIQUE REFERENCES financial_transactions(transaction_id),
+      confirmed_event_id BLOB NOT NULL REFERENCES spending_dedup_decision_events(event_id),
+      projection_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+    );
+    CREATE TABLE IF NOT EXISTS spending_refund_identities (
+      refund_id BLOB PRIMARY KEY CHECK(length(refund_id) = 16),
+      transaction_id BLOB NOT NULL UNIQUE REFERENCES financial_transactions(transaction_id),
+      stable_refund_key TEXT NOT NULL UNIQUE,
+      created_commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id)
+    );
+    CREATE TABLE IF NOT EXISTS spending_refund_revisions (
+      revision_id BLOB PRIMARY KEY CHECK(length(revision_id) = 16),
+      refund_id BLOB NOT NULL REFERENCES spending_refund_identities(refund_id),
+      source_revision_key TEXT NOT NULL,
+      revision_number INTEGER NOT NULL CHECK(revision_number >= 1),
+      revision_kind TEXT NOT NULL CHECK(revision_kind IN ('asserted','revised','revoked')),
+      state TEXT NOT NULL CHECK(state IN ('active','revoked')),
+      amount_coefficient TEXT,
+      amount_scale INTEGER CHECK(amount_scale IS NULL OR amount_scale >= 0),
+      currency TEXT,
+      occurrence_value TEXT,
+      occurrence_precision TEXT CHECK(occurrence_precision IS NULL OR occurrence_precision IN ('date','minute','second')),
+      occurrence_time_zone TEXT,
+      date_basis TEXT CHECK(date_basis IS NULL OR date_basis IN ('source-occurrence','posting-date-fallback')),
+      authority_route TEXT NOT NULL,
+      provenance_reference TEXT NOT NULL,
+      evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+      commit_id BLOB NOT NULL REFERENCES canonical_commits(commit_id),
+      UNIQUE(refund_id, source_revision_key), UNIQUE(refund_id, revision_number),
+      CHECK((state = 'active' AND revision_kind IN ('asserted','revised') AND amount_coefficient IS NOT NULL AND amount_scale IS NOT NULL AND currency IS NOT NULL AND occurrence_value IS NOT NULL AND occurrence_precision IS NOT NULL AND occurrence_time_zone IS NOT NULL AND date_basis IS NOT NULL)
+         OR (state = 'revoked' AND revision_kind = 'revoked' AND amount_coefficient IS NULL AND amount_scale IS NULL AND currency IS NULL AND occurrence_value IS NULL AND occurrence_precision IS NULL AND occurrence_time_zone IS NULL AND date_basis IS NULL))
+    );
+    CREATE INDEX IF NOT EXISTS idx_spending_candidates_pair ON spending_match_candidates(invoice_id, transaction_id);
+    CREATE INDEX IF NOT EXISTS idx_spending_decisions_pair ON spending_dedup_decision_events(invoice_id, transaction_id, commit_id);
+    CREATE INDEX IF NOT EXISTS idx_spending_refund_revisions ON spending_refund_revisions(refund_id, revision_number, commit_id);
+    CREATE TRIGGER IF NOT EXISTS spending_candidates_no_update BEFORE UPDATE ON spending_match_candidates BEGIN SELECT RAISE(ABORT, 'Spending candidates are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_decisions_no_update BEFORE UPDATE ON spending_dedup_decision_events BEGIN SELECT RAISE(ABORT, 'Spending decisions are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_refund_identities_no_update BEFORE UPDATE ON spending_refund_identities BEGIN SELECT RAISE(ABORT, 'Spending refund identities are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_refund_revisions_no_update BEFORE UPDATE ON spending_refund_revisions BEGIN SELECT RAISE(ABORT, 'Spending refund revisions are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_candidates_no_delete BEFORE DELETE ON spending_match_candidates WHEN canonical_purge_delete_allowed() = 0 BEGIN SELECT RAISE(ABORT, 'Spending candidates cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_decisions_no_delete BEFORE DELETE ON spending_dedup_decision_events WHEN canonical_purge_delete_allowed() = 0 BEGIN SELECT RAISE(ABORT, 'Spending decisions cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_refund_identities_no_delete BEFORE DELETE ON spending_refund_identities WHEN canonical_purge_delete_allowed() = 0 BEGIN SELECT RAISE(ABORT, 'Spending refund identities cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS spending_refund_revisions_no_delete BEFORE DELETE ON spending_refund_revisions WHEN canonical_purge_delete_allowed() = 0 BEGIN SELECT RAISE(ABORT, 'Spending refund revisions cannot be deleted'); END;
+  `);
+}
+
+const CANONICAL_SPENDING_RECOGNITION_TABLES = [
+  "spending_match_candidates", "spending_dedup_decision_events",
+  "current_spending_dedup_links", "spending_refund_identities",
+  "spending_refund_revisions",
+] as const;
+
+function validateCanonicalSpendingRecognitionSchema(db: DatabaseSync): void {
+  const columns: Record<(typeof CANONICAL_SPENDING_RECOGNITION_TABLES)[number], readonly string[]> = {
+    spending_match_candidates: ["candidate_id", "candidate_key", "invoice_id", "transaction_id", "algorithm", "algorithm_version", "similarity_evidence_json", "created_commit_id"],
+    spending_dedup_decision_events: ["event_id", "decision_key", "invoice_id", "transaction_id", "event_kind", "decision_origin", "user_id", "authority_route", "stable_cross_source_reference", "evidence_json", "evidence_knowledge_sequence", "commit_id"],
+    current_spending_dedup_links: ["invoice_id", "transaction_id", "confirmed_event_id", "projection_commit_id"],
+    spending_refund_identities: ["refund_id", "transaction_id", "stable_refund_key", "created_commit_id"],
+    spending_refund_revisions: ["revision_id", "refund_id", "source_revision_key", "revision_number", "revision_kind", "state", "amount_coefficient", "amount_scale", "currency", "occurrence_value", "occurrence_precision", "occurrence_time_zone", "date_basis", "authority_route", "provenance_reference", "evidence_json", "commit_id"],
+  };
+  for (const table of CANONICAL_SPENDING_RECOGNITION_TABLES)
+    requireCanonicalTable(db, table, columns[table]);
+  if (db.prepare("PRAGMA foreign_key_check").all().length !== 0)
+    throw new Error("Canonical spending-recognition foreign-key integrity check failed.");
+}
+
+function canonicalSpendingRecognitionSchemaNeedsRepair(db: DatabaseSync): boolean {
+  return CANONICAL_SPENDING_RECOGNITION_TABLES.some((name) => relationType(db, name) !== "table");
+}
+
+const CANONICAL_EINVOICE_TABLES = [
+  "einvoice_captures",
+  "einvoice_invoices",
+  "einvoice_invoice_revisions",
+  "einvoice_items",
+  "einvoice_revision_observations",
+  "einvoice_revision_events",
+] as const;
+
+const CANONICAL_EINVOICE_INDEXES = [
+  "idx_einvoice_captures_subject",
+  "idx_einvoice_invoices_identity",
+  "idx_einvoice_revisions_current",
+  "idx_einvoice_revisions_source",
+  "idx_einvoice_items_revision",
+  "idx_einvoice_observations_source",
+  "idx_einvoice_events_invoice",
+] as const;
+
+const CANONICAL_EINVOICE_TRIGGERS = [
+  "einvoice_captures_no_update",
+  "einvoice_captures_no_delete",
+  "einvoice_invoices_no_update",
+  "einvoice_invoices_no_delete",
+  "einvoice_invoice_revisions_no_update",
+  "einvoice_invoice_revisions_no_delete",
+  "einvoice_items_no_update",
+  "einvoice_items_no_delete",
+  "einvoice_revision_observations_no_update",
+  "einvoice_revision_observations_no_delete",
+  "einvoice_revision_events_no_update",
+  "einvoice_revision_events_no_delete",
+] as const;
+
+function validateCanonicalEInvoiceSchema(db: DatabaseSync): void {
+  const expectedColumns: Readonly<Record<string, readonly string[]>> = {
+    einvoice_captures: [
+      "capture_id", "capture_key", "scope_id", "source_connection_id",
+      "identity_epoch_id", "source_subject_id", "authority_route",
+      "contract_version", "stream", "record_kind", "scope_start", "scope_end",
+      "scope_kind", "scope_completeness", "invoice_completeness",
+      "item_completeness", "page_count", "commit_id",
+    ],
+    einvoice_invoices: [
+      "invoice_id", "source_connection_id", "identity_epoch_id",
+      "source_subject_id", "stable_invoice_key", "created_commit_id",
+    ],
+    einvoice_invoice_revisions: [
+      "revision_id", "invoice_id", "source_record_id", "capture_id", "commit_id",
+      "source_revision_key", "revision_number", "revision_kind", "state",
+      "invoice_number", "random_number", "seller_tax_id", "seller_name",
+      "amount_coefficient", "amount_scale", "currency", "currency_authority",
+      "occurrence_value", "occurrence_precision", "occurrence_time_zone",
+      "occurrence_origin", "authority_route", "contract_version", "provenance_kind",
+      "provenance_reference", "provenance_source_field", "revocation_reason",
+      "fact_fingerprint",
+    ],
+    einvoice_items: [
+      "item_id", "revision_id", "sequence", "completeness", "name",
+      "quantity_coefficient", "quantity_scale", "unit_price_coefficient",
+      "unit_price_scale", "unit_price_currency", "unit_price_currency_authority",
+      "amount_coefficient", "amount_scale", "amount_currency",
+      "amount_currency_authority", "source_fact_json",
+    ],
+    einvoice_revision_observations: [
+      "revision_id", "source_record_id", "capture_id", "commit_id",
+    ],
+    einvoice_revision_events: [
+      "event_id", "invoice_id", "revision_id", "source_record_id", "capture_id",
+      "commit_id", "event_kind", "event_at", "reason",
+    ],
+  };
+  for (const table of CANONICAL_EINVOICE_TABLES) {
+    requireCanonicalTable(db, table, expectedColumns[table]!);
+    const integrityRows = db
+      .prepare(`PRAGMA integrity_check(${table})`)
+      .all() as Array<{ integrity_check?: unknown }>;
+    if (integrityRows.some((row) => String(row.integrity_check ?? "") !== "ok"))
+      throw new Error(`Canonical E-Invoice table ${table} failed integrity validation.`);
+  }
+  for (const index of CANONICAL_EINVOICE_INDEXES)
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(index))
+      throw new Error(`Canonical E-Invoice index ${index} is missing.`);
+  const triggerRows = db
+    .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'einvoice_%'")
+    .all() as Array<{ name?: unknown; sql?: unknown }>;
+  for (const trigger of CANONICAL_EINVOICE_TRIGGERS) {
+    const row = triggerRows.find((candidate) => String(candidate.name ?? "") === trigger);
+    if (!row || !/BEFORE\s+(UPDATE|DELETE)\s+ON\s+einvoice_/iu.test(String(row.sql ?? "")))
+      throw new Error(`Canonical E-Invoice immutability trigger ${trigger} is missing.`);
+    if (trigger.endsWith("_no_delete") && !/canonical_purge_delete_allowed\s*\(\s*\)/iu.test(String(row.sql ?? "")))
+      throw new Error(`Canonical E-Invoice purge guard ${trigger} is missing.`);
+  }
+  if (db.prepare("PRAGMA foreign_key_check").all().length !== 0)
+    throw new Error("Canonical E-Invoice foreign-key integrity check failed.");
+}
+
+function canonicalEInvoiceSchemaNeedsRepair(db: DatabaseSync): boolean {
+  return CANONICAL_EINVOICE_TABLES.some((name) => relationType(db, name) !== "table") ||
+    CANONICAL_EINVOICE_INDEXES.some((name) => !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name)) ||
+    CANONICAL_EINVOICE_TRIGGERS.some((name) => !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name));
+}
+
 function ensureCanonicalCaptureScopeSchema(db: DatabaseSync): void {
   const sql = String(
     (
@@ -7000,7 +7397,7 @@ function applyV8SourceEvidenceSchema(
       scope_page_id BLOB PRIMARY KEY CHECK(length(scope_page_id) = 16),
       scope_id BLOB NOT NULL REFERENCES capture_scopes_v8(scope_id),
       page_ordinal INTEGER NOT NULL CHECK(page_ordinal >= 0),
-      response_code TEXT NOT NULL DEFAULT '200' CHECK(response_code = '200'),
+      response_code TEXT NOT NULL DEFAULT '200' CHECK(response_code IN ('200','204')),
       terminal INTEGER NOT NULL CHECK(terminal IN (0,1)), row_count INTEGER NOT NULL CHECK(row_count >= 0),
       response_digest TEXT NOT NULL, proof_kind TEXT NOT NULL,
       contract_fingerprint TEXT NOT NULL, preflight_fingerprint TEXT NOT NULL,
@@ -11453,6 +11850,45 @@ export function createCanonicalSchemaLifecyclePlan(
         },
       },
       {
+        id: "canonical/einvoice-schema/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          ...CANONICAL_EINVOICE_TABLES,
+          ...CANONICAL_EINVOICE_INDEXES,
+          ...CANONICAL_EINVOICE_TRIGGERS,
+        ],
+        runOnCurrentVersion: true,
+        precondition: (db) => canonicalEInvoiceSchemaNeedsRepair(db),
+        apply(db) {
+          ensureCanonicalEInvoiceSchema(db);
+        },
+        validate(db) {
+          validateCanonicalEInvoiceSchema(db);
+        },
+      },
+      {
+        id: "canonical/spending-recognition/v1",
+        version: CANONICAL_SCHEMA_VERSION,
+        allowedSchemaObjects: [
+          ...CANONICAL_SPENDING_RECOGNITION_TABLES,
+          "idx_spending_candidates_pair",
+          "idx_spending_decisions_pair",
+          "idx_spending_refund_revisions",
+          "spending_candidates_no_update", "spending_decisions_no_update",
+          "spending_refund_identities_no_update", "spending_refund_revisions_no_update",
+          "spending_candidates_no_delete", "spending_decisions_no_delete",
+          "spending_refund_identities_no_delete", "spending_refund_revisions_no_delete",
+        ],
+        runOnCurrentVersion: true,
+        precondition: (db) => canonicalSpendingRecognitionSchemaNeedsRepair(db),
+        apply(db) {
+          ensureCanonicalSpendingRecognitionSchema(db);
+        },
+        validate(db) {
+          validateCanonicalSpendingRecognitionSchema(db);
+        },
+      },
+      {
         id: "canonical/credit-card-extension/v1",
         version: CANONICAL_SCHEMA_VERSION,
         allowedSchemaObjects: [
@@ -12261,6 +12697,9 @@ export function validateCanonicalDatabaseAfterLifecycle(
   validateCanonicalTimeObservationLifecycleSchema(db);
   validateCanonicalDepositoryBalanceSchema(db);
   validateForeignCurrencyConversionLifecycleSchema(db);
+  if (tableExists(db, "einvoice_invoices")) validateCanonicalEInvoiceSchema(db);
+  if (tableExists(db, "spending_dedup_decision_events"))
+    validateCanonicalSpendingRecognitionSchema(db);
   if (tableExists(db, "taxonomy_versions")) validateCanonicalTaxonomySchema(db);
   validateCanonicalCategorizationSchema(db);
   validateCanonicalDisplayAndTagsSchema(db);
@@ -12299,6 +12738,10 @@ export {
   validateCanonicalTimeObservationLifecycleSchema,
   validateCanonicalDepositoryBalanceSchema,
   validateForeignCurrencyConversionLifecycleSchema,
+  ensureCanonicalEInvoiceSchema,
+  validateCanonicalEInvoiceSchema,
+  ensureCanonicalSpendingRecognitionSchema,
+  validateCanonicalSpendingRecognitionSchema,
   hasCanonicalCreditCardExtension,
   hasFubonCreditCardExtension,
   canonicalCommitHasEvidence,

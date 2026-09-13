@@ -22,6 +22,9 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
@@ -1174,7 +1177,15 @@ export async function commitCanonicalSinopacDomesticDepositCapture(
     store.db,
     input.capture.observedAt,
   );
-  return commitCanonicalFinancialDepositCapture(store, admission.capture);
+  return commitCanonicalFinancialDepositCapture(
+    store,
+    admission.capture,
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
+  );
 }
 
 export async function commitCanonicalSinopacDomesticDepositCaptureBatch(
@@ -1222,6 +1233,11 @@ export async function commitCanonicalSinopacDomesticDepositCaptureBatch(
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
     admissions.map((admission) => admission.capture!),
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
   );
 }
 

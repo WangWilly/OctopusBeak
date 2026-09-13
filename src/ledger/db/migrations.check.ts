@@ -6,132 +6,7 @@ import { openLedgerDatabase, type LedgerDatabase } from "./client.ts";
 import { migrateLedgerDb } from "./migrations.ts";
 import { TYPED_STATEMENT_TABLES } from "../source-csv-parsers.ts";
 
-const invoiceKey = "AB12345678|1783065600|24536806";
-
-function resetItemsToVersion9(db: LedgerDatabase, version: 9 | 10 = 9) {
-  db.exec("DROP INDEX IF EXISTS uq_credit_card_statement_lines_semantic_key");
-  const sequenceColumnDefinition = version === 9
-    ? "TEXT"
-    : `INTEGER CHECK (
-        item_sequence_number IS NULL
-        OR (typeof(item_sequence_number) = 'integer' AND item_sequence_number >= 0)
-      )`;
-  for (const table of TYPED_STATEMENT_TABLES) {
-    if (table === "personal_invoice_items") continue;
-    db.exec(`
-      ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
-      ALTER TABLE ${table} ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'unique';
-    `);
-  }
-  db.exec(`
-    DROP TABLE personal_invoice_items;
-    DROP TABLE IF EXISTS exchange_rates;
-    DROP TABLE IF EXISTS spending_transaction_overrides;
-    CREATE TABLE personal_invoice_items (
-      statement_row_id TEXT PRIMARY KEY,
-      source_file_id TEXT NOT NULL,
-      import_run_id TEXT NOT NULL,
-      source_relative_path TEXT NOT NULL,
-      source_row_index INTEGER NOT NULL,
-      source_hash TEXT NOT NULL,
-      raw_row_hash TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      bank TEXT NOT NULL,
-      product TEXT NOT NULL,
-      dedupe_status TEXT NOT NULL,
-      raw_payload_json TEXT NOT NULL,
-      imported_at TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      item_key TEXT NOT NULL UNIQUE,
-      invoice_key TEXT NOT NULL,
-      item_sequence_number ${sequenceColumnDefinition},
-      item_quantity REAL,
-      item_unit_price REAL,
-      item_paid_amount REAL,
-      item_product_name TEXT,
-      FOREIGN KEY (invoice_key) REFERENCES personal_invoices(invoice_key)
-    );
-    CREATE INDEX idx_personal_invoice_items_invoice_key
-      ON personal_invoice_items(invoice_key);
-    CREATE INDEX idx_personal_invoice_items_product_name
-      ON personal_invoice_items(item_product_name);
-    DELETE FROM schema_migrations WHERE version >= 10;
-    INSERT OR IGNORE INTO personal_invoices (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at, invoice_key,
-      invoice_id, rebated
-    ) VALUES (
-      'invoice-row', 'invoice-source', 'invoice-run', 'legacy.csv',
-      1, 'invoice-source-hash', 'invoice-raw-hash', 'invoice-content-hash',
-      'einvoice', 'personal-invoices', 'unique', '{}',
-      '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
-      '${invoiceKey}', 'AB12345678', 0
-    );
-  `);
-  for (const table of TYPED_STATEMENT_TABLES) {
-    if (
-      table === "personal_invoices" || table === "personal_invoice_items"
-    ) continue;
-    db.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
-  }
-  if (version === 10) {
-    db.prepare(
-      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (10, ?, ?)",
-    ).run(
-      "normalized_personal_invoice_item_sequence_numbers",
-      "2026-01-01T00:00:00.000Z",
-    );
-  }
-}
-
-function insertLegacyItem(
-  db: LedgerDatabase,
-  input: {
-    id: string;
-    sourceRowIndex: number;
-    sequence: string;
-    importedAt: string;
-    productName: string;
-  },
-) {
-  db.prepare(`
-    INSERT INTO personal_invoice_items (
-      statement_row_id, source_file_id, import_run_id, source_relative_path,
-      source_row_index, source_hash, raw_row_hash, content_hash, bank, product,
-      dedupe_status, raw_payload_json, imported_at, created_at, item_key,
-      invoice_key, item_sequence_number, item_quantity, item_unit_price,
-      item_paid_amount, item_product_name
-    ) VALUES (?, ?, ?, 'legacy.csv', ?, ?, ?, ?, 'einvoice',
-      'personal-invoices', 'unique', ?, ?, ?, ?, ?, ?, 1, 10, 10, ?)
-  `).run(
-    input.id,
-    `source-${input.id}`,
-    `run-${input.id}`,
-    input.sourceRowIndex,
-    `source-hash-${input.id}`,
-    `raw-hash-${input.id}`,
-    `content-hash-${input.id}`,
-    JSON.stringify({ item_sequence_number: input.sequence }),
-    input.importedAt,
-    input.importedAt,
-    `${invoiceKey}|${input.sequence}`,
-    invoiceKey,
-    input.sequence,
-    input.productName,
-  );
-}
-
 const ledgerDir = mkdtempSync(join(tmpdir(), "ledger-db-migrations-"));
-const legacyLedgerDir = mkdtempSync(
-  join(tmpdir(), "ledger-db-sequence-migration-"),
-);
-const invalidLedgerDir = mkdtempSync(
-  join(tmpdir(), "ledger-db-invalid-sequence-"),
-);
-const categoryLedgerDir = mkdtempSync(
-  join(tmpdir(), "ledger-db-category-migration-"),
-);
 const dedupeLedgerDir = mkdtempSync(
   join(tmpdir(), "ledger-db-physical-dedupe-"),
 );
@@ -147,8 +22,8 @@ const transactionUtcLedgerDir = mkdtempSync(
 const spendingOverrideLedgerDir = mkdtempSync(
   join(tmpdir(), "spending-overrides-"),
 );
-const persistentDataIssuesLedgerDir = mkdtempSync(
-  join(tmpdir(), "persistent-data-issues-"),
+const sourceFileImportsLedgerDir = mkdtempSync(
+  join(tmpdir(), "source-file-imports-"),
 );
 const canonicalSourceVersionLedgerDir = mkdtempSync(
   join(tmpdir(), "canonical-source-version-"),
@@ -162,15 +37,11 @@ const tiedSourceVersionLedgerDir = mkdtempSync(
 const orphanSourceVersionLedgerDir = mkdtempSync(
   join(tmpdir(), "orphan-source-version-"),
 );
-const mergedExclusionLedgerDir = mkdtempSync(
-  join(tmpdir(), "merged-source-exclusion-"),
-);
 
 function resetSourceVersionsToVersion25(db: LedgerDatabase) {
   db.exec(`
     DELETE FROM schema_migrations WHERE version >= 26;
     DROP TABLE IF EXISTS source_row_lineage;
-    DROP TABLE IF EXISTS disabled_import_sources;
     DROP TABLE IF EXISTS source_file_imports;
     CREATE TABLE source_file_imports (
       source_file_id TEXT NOT NULL,
@@ -201,19 +72,6 @@ function resetSourceVersionsToVersion25(db: LedgerDatabase) {
     );
     CREATE INDEX idx_source_row_lineage_statement
       ON source_row_lineage(projection_table, statement_row_id);
-    CREATE TABLE disabled_import_sources (
-      disabled_import_source_id TEXT PRIMARY KEY,
-      data_issue_id TEXT NOT NULL,
-      source_file_id TEXT NOT NULL,
-      import_run_id TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('active','restored')),
-      disabled_at TEXT NOT NULL,
-      restored_at TEXT,
-      preview_token TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX uq_disabled_import_source_scope
-      ON disabled_import_sources(source_file_id, import_run_id);
   `);
 }
 
@@ -305,9 +163,6 @@ function tableCounts(db: LedgerDatabase) {
     "schema_migrations",
     "source_file_imports",
     "source_row_lineage",
-    "data_issues",
-    "data_issue_events",
-    "disabled_import_sources",
     ...TYPED_STATEMENT_TABLES,
   ].map((table) => [
     table,
@@ -399,28 +254,6 @@ try {
         'duplicate', '2026-01-01T00:00:00.000Z'),
       ('source-b', 'run-b', 1, 'loan_transactions', 'synthetic-row',
         'inserted', '2026-01-02T00:00:00.000Z');
-    INSERT INTO data_issues (
-      data_issue_id, account_id, account_label, account_context_json,
-      field_key, reported_value, currency, note, status, created_at, updated_at
-    ) VALUES (
-      'issue-a', 'account-a', 'Synthetic Account', '{}', 'balance', 63900,
-      'TWD', 'synthetic issue', 'investigating',
-      '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z'
-    );
-    INSERT INTO disabled_import_sources (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      reason, state, disabled_at, preview_token
-    ) VALUES (
-      'disabled-a', 'issue-a', 'source-b', 'run-b', 'synthetic exclusion',
-      'active', '2026-01-02T00:00:00.000Z', 'preview-a'
-    );
-    INSERT INTO data_issue_events (
-      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
-      details_json, created_at
-    ) VALUES (
-      'event-a', 'issue-a', 'source_disabled', 'commit', 'succeeded',
-      'synthetic event', '{}', '2026-01-02T00:00:00.000Z'
-    );
   `);
   migrateLedgerDb(canonicalDb);
   const imports = canonicalDb.prepare(`SELECT source_version_key, first_seen_at, last_seen_at,
@@ -430,24 +263,6 @@ try {
   assert.equal(imports[0]?.last_seen_at, "2026-01-02T00:00:00.000Z");
   assert.equal(imports[0]?.observation_count, 2);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_row_lineage").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issues").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
-  assert.deepEqual(canonicalDb.prepare(`
-    SELECT disabled_import_source_id, data_issue_id, source_file_id,
-      import_run_id, reason, state, disabled_at, restored_at, preview_token
-    FROM disabled_import_sources
-  `).all().map((row) => ({ ...row })), [{
-    disabled_import_source_id: "disabled-a",
-    data_issue_id: "issue-a",
-    source_file_id: "source-b",
-    import_run_id: "run-b",
-    reason: "synthetic exclusion",
-    state: "active",
-    disabled_at: "2026-01-02T00:00:00.000Z",
-    restored_at: null,
-    preview_token: "preview-a",
-  }]);
   assert.equal((canonicalDb.prepare("SELECT balance_after FROM loan_transactions WHERE statement_row_id = 'synthetic-row'").get() as { balance_after: number }).balance_after, 63_900);
   assert.deepEqual(canonicalDb.prepare(`
     SELECT source_file_id, import_run_id FROM loan_transactions
@@ -462,83 +277,12 @@ try {
   migrateLedgerDb(canonicalDb);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_file_imports").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM source_row_lineage").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issues").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM data_issue_events").get() as { count: number }).count, 1);
-  assert.equal((canonicalDb.prepare("SELECT COUNT(*) count FROM disabled_import_sources").get() as { count: number }).count, 1);
   assert.equal((canonicalDb.prepare("SELECT observation_count FROM source_file_imports").get() as { observation_count: number }).observation_count, 2);
   assert.throws(
     () => canonicalDb.exec("UPDATE source_file_imports SET observation_count = 0"),
     /CHECK constraint failed/,
   );
   canonicalDb.close();
-
-  const mergedExclusionDb = openLedgerDatabase(mergedExclusionLedgerDir);
-  resetSourceVersionsToVersion25(mergedExclusionDb);
-  for (const [source, run, importedAt] of [
-    ["merge-a", "merge-run-a", "2026-01-01T00:00:00.000Z"],
-    ["merge-b", "merge-run-b", "2026-01-02T00:00:00.000Z"],
-    ["merge-c", "merge-run-c", "2026-01-03T00:00:00.000Z"],
-    ["merge-d", "merge-run-d", "2026-01-04T00:00:00.000Z"],
-  ]) {
-    insertVersion25Source(mergedExclusionDb, source, run, importedAt);
-  }
-  mergedExclusionDb.exec(`
-    INSERT INTO data_issues (
-      data_issue_id, account_id, account_label, account_context_json,
-      field_key, reported_value, currency, note, status, created_at, updated_at
-    ) VALUES (
-      'merge-issue', 'merge-account', 'Merge Account', '{}', 'balance', 1,
-      'TWD', 'merge issue', 'investigating',
-      '2026-01-01T00:00:00.000Z', '2026-01-04T00:00:00.000Z'
-    );
-    INSERT INTO data_issue_events (
-      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
-      details_json, created_at
-    ) VALUES
-      ('merge-event-a', 'merge-issue', 'disabled', 'commit', 'succeeded',
-        'first event', '{}', '2026-01-02T00:00:00.000Z'),
-      ('merge-event-b', 'merge-issue', 'restored', 'commit', 'succeeded',
-        'second event', '{}', '2026-01-04T00:00:00.000Z');
-    INSERT INTO disabled_import_sources (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      reason, state, disabled_at, restored_at, preview_token
-    ) VALUES
-      ('merge-restored-z', 'merge-issue', 'merge-a', 'merge-run-a',
-        'later restored', 'restored', '2026-01-04T00:00:00.000Z',
-        '2026-01-05T00:00:00.000Z', 'preview-restored'),
-      ('merge-active-a', 'merge-issue', 'merge-b', 'merge-run-b',
-        'older active', 'active', '2026-01-02T00:00:00.000Z', NULL,
-        'preview-active-a'),
-      ('merge-active-b', 'merge-issue', 'merge-c', 'merge-run-c',
-        'latest active lower id', 'active', '2026-01-03T00:00:00.000Z', NULL,
-        'preview-active-b'),
-      ('merge-active-z', 'merge-issue', 'merge-d', 'merge-run-d',
-        'latest active winner', 'active', '2026-01-03T00:00:00.000Z',
-        '2026-01-06T00:00:00.000Z', 'preview-active-z');
-  `);
-  migrateLedgerDb(mergedExclusionDb);
-  assert.deepEqual(mergedExclusionDb.prepare(`
-    SELECT disabled_import_source_id, data_issue_id, source_file_id,
-      import_run_id, reason, state, disabled_at, restored_at, preview_token
-    FROM disabled_import_sources
-  `).all().map((row) => ({ ...row })), [{
-    disabled_import_source_id: "merge-active-z",
-    data_issue_id: "merge-issue",
-    source_file_id: "merge-d",
-    import_run_id: "merge-run-d",
-    reason: "latest active winner",
-    state: "active",
-    disabled_at: "2026-01-03T00:00:00.000Z",
-    restored_at: null,
-    preview_token: "preview-active-z",
-  }]);
-  assert.equal((mergedExclusionDb.prepare(
-    "SELECT COUNT(*) count FROM data_issues",
-  ).get() as { count: number }).count, 1);
-  assert.equal((mergedExclusionDb.prepare(
-    "SELECT COUNT(*) count FROM data_issue_events",
-  ).get() as { count: number }).count, 2);
-  mergedExclusionDb.close();
 
   const ambiguousDb = openLedgerDatabase(ambiguousSourceVersionLedgerDir);
   resetSourceVersionsToVersion25(ambiguousDb);
@@ -631,8 +375,6 @@ try {
 
   const seeded = openLedgerDatabase(ledgerDir);
   seeded.exec(`
-    DROP TABLE personal_invoice_items;
-    DROP TABLE personal_invoices;
     DROP TABLE IF EXISTS exchange_rates;
     DROP TABLE IF EXISTS spending_transaction_overrides;
     DELETE FROM schema_migrations WHERE version >= 4;
@@ -642,9 +384,6 @@ try {
     DROP TABLE IF EXISTS credit_card_captures;
   `);
   for (const table of TYPED_STATEMENT_TABLES) {
-    if (
-      table === "personal_invoices" || table === "personal_invoice_items"
-    ) continue;
     seeded.exec(`
       ALTER TABLE ${table} ADD COLUMN raw_row_hash TEXT NOT NULL DEFAULT '';
       ALTER TABLE ${table} ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'unique';
@@ -657,14 +396,11 @@ try {
   const versions = migrated.prepare(
     "SELECT version FROM schema_migrations ORDER BY version",
   ).all() as Array<{ version: number }>;
-  const invoiceColumns = migrated.prepare("PRAGMA table_info(personal_invoices)").all() as Array<{
-    name: string;
-  }>;
-  const itemColumns = migrated.prepare("PRAGMA table_info(personal_invoice_items)").all() as Array<{
-    name: string;
-    type: string;
-    notnull: number;
-  }>;
+  const retiredInvoiceTables = migrated.prepare(`
+    SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name IN ('personal_invoices', 'personal_invoice_items')
+  `).all();
+  assert.deepEqual(retiredInvoiceTables, []);
   const commonStatementColumns = new Map(TYPED_STATEMENT_TABLES.map((table) => [
     table,
     migrated.prepare(`PRAGMA table_info(${table})`).all() as Array<{
@@ -684,7 +420,7 @@ try {
 
   assert.deepEqual(
     versions.map((row) => row.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
+    [1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
   );
   const exchangeRateColumns = migrated.prepare(
     "PRAGMA table_info(exchange_rates)",
@@ -720,14 +456,6 @@ try {
     );
     assert.equal(instant?.notnull, 0, table);
   }
-  assert.ok(invoiceColumns.some((column) => column.name === "invoice_key"));
-  assert.ok(itemColumns.some((column) => column.name === "item_key"));
-  const sequenceColumn = itemColumns.find(
-    (column) => column.name === "item_sequence_number",
-  );
-  assert.equal(sequenceColumn?.type, "INTEGER");
-  const categoryColumn = itemColumns.find((column) => column.name === "category");
-  assert.equal(categoryColumn?.notnull, 1);
   assert.deepEqual(snapshotColumns.map((column) => column.name), [
     "snapshot_id", "source_file_id", "bank", "product", "card_key",
     "statement_type", "captured_at", "as_of_date", "currency",
@@ -778,181 +506,6 @@ try {
   `).run(), /CHECK constraint failed/);
   migrated.close();
 
-  const legacyDb = openLedgerDatabase(legacyLedgerDir);
-  resetItemsToVersion9(legacyDb);
-  insertLegacyItem(legacyDb, {
-    id: "older",
-    sourceRowIndex: 1,
-    sequence: "1",
-    importedAt: "2026-01-01T00:00:00.000Z",
-    productName: "Older item",
-  });
-  insertLegacyItem(legacyDb, {
-    id: "newer",
-    sourceRowIndex: 2,
-    sequence: "001",
-    importedAt: "2026-02-01T00:00:00.000Z",
-    productName: "Newest item",
-  });
-  seedVersion25SourcesFromTypedRows(legacyDb);
-  migrateLedgerDb(legacyDb);
-
-  const migratedItems = legacyDb.prepare(`
-    SELECT item_key, item_sequence_number,
-      typeof(item_sequence_number) AS sequence_type,
-      raw_payload_json, item_product_name
-    FROM personal_invoice_items
-  `).all().map((item) => ({ ...item })) as Array<{
-    item_key: string;
-    item_sequence_number: number;
-    sequence_type: string;
-    raw_payload_json: string;
-    item_product_name: string;
-  }>;
-  const itemIndexes = legacyDb.prepare(
-    "PRAGMA index_list(personal_invoice_items)",
-  ).all() as Array<{ name: string }>;
-  const itemForeignKeys = legacyDb.prepare(
-    "PRAGMA foreign_key_list(personal_invoice_items)",
-  ).all() as Array<{ table: string; from: string; to: string }>;
-
-  assert.deepEqual(migratedItems, [{
-    item_key: `${invoiceKey}|1`,
-    item_sequence_number: 1,
-    sequence_type: "integer",
-    raw_payload_json: JSON.stringify({ item_sequence_number: "001" }),
-    item_product_name: "Newest item",
-  }]);
-  assert.ok(itemIndexes.some(
-    (index) => index.name === "idx_personal_invoice_items_invoice_key",
-  ));
-  assert.ok(itemIndexes.some(
-    (index) => index.name === "idx_personal_invoice_items_product_name",
-  ));
-  assert.ok(itemIndexes.some(
-    (index) => index.name === "idx_personal_invoice_items_source_file_id",
-  ));
-  assert.ok(itemIndexes.some(
-    (index) => index.name === "idx_personal_invoice_items_import_run_id",
-  ));
-  assert.ok(itemIndexes.some(
-    (index) => index.name === "idx_personal_invoice_items_source",
-  ));
-  assert.ok(itemForeignKeys.some((foreignKey) => (
-    foreignKey.table === "personal_invoices"
-    && foreignKey.from === "invoice_key"
-    && foreignKey.to === "invoice_key"
-  )));
-  assert.throws(
-    () => legacyDb.prepare(`
-      UPDATE personal_invoice_items
-      SET item_sequence_number = 'A1'
-    `).run(),
-    /CHECK constraint failed/,
-  );
-  legacyDb.close();
-
-  const invalidDb = openLedgerDatabase(invalidLedgerDir);
-  resetItemsToVersion9(invalidDb);
-  insertLegacyItem(invalidDb, {
-    id: "invalid",
-    sourceRowIndex: 1,
-    sequence: "A1",
-    importedAt: "2026-01-01T00:00:00.000Z",
-    productName: "Invalid item",
-  });
-
-  assert.throws(
-    () => migrateLedgerDb(invalidDb),
-    /1 invalid value/,
-  );
-  const invalidColumn = invalidDb.prepare(
-    "PRAGMA table_info(personal_invoice_items)",
-  ).all().find((column) => (
-    (column as { name: string }).name === "item_sequence_number"
-  )) as { type: string } | undefined;
-  const invalidRow = invalidDb.prepare(`
-    SELECT item_sequence_number FROM personal_invoice_items
-  `).get() as { item_sequence_number: string };
-  const migration10 = invalidDb.prepare(`
-    SELECT version FROM schema_migrations WHERE version = 10
-  `).get();
-
-  assert.equal(invalidColumn?.type, "TEXT");
-  assert.equal(invalidRow.item_sequence_number, "A1");
-  assert.equal(migration10, undefined);
-  invalidDb.close();
-
-  const categoryDb = openLedgerDatabase(categoryLedgerDir);
-  resetItemsToVersion9(categoryDb, 10);
-  const version10Columns = categoryDb.prepare(
-    "PRAGMA table_info(personal_invoice_items)",
-  ).all() as Array<{ name: string; type: string }>;
-  assert.equal(
-    version10Columns.some((column) => column.name === "category"),
-    false,
-  );
-  assert.equal(
-    version10Columns.find((column) => column.name === "item_sequence_number")?.type,
-    "INTEGER",
-  );
-  assert.equal(
-    (categoryDb.prepare(
-      "SELECT version FROM schema_migrations WHERE version = 10",
-    ).get() as { version: number } | undefined)?.version,
-    10,
-  );
-  categoryDb.prepare(`
-    UPDATE personal_invoices
-    SET seller_name = '台灣中油股份有限公司'
-    WHERE invoice_key = ?
-  `).run(invoiceKey);
-  insertLegacyItem(categoryDb, {
-    id: "coffee",
-    sourceRowIndex: 1,
-    sequence: "1",
-    importedAt: "2026-01-01T00:00:00.000Z",
-    productName: "咖啡",
-  });
-  insertLegacyItem(categoryDb, {
-    id: "fuel",
-    sourceRowIndex: 2,
-    sequence: "2",
-    importedAt: "2026-01-01T00:00:00.000Z",
-    productName: "unmatched item",
-  });
-  seedVersion25SourcesFromTypedRows(categoryDb);
-  migrateLedgerDb(categoryDb);
-
-  const migratedCategoryColumn = categoryDb.prepare(
-    "PRAGMA table_info(personal_invoice_items)",
-  ).all().find((column) => (
-    (column as { name: string }).name === "category"
-  )) as { type: string; notnull: number; dflt_value: string } | undefined;
-  assert.equal(migratedCategoryColumn?.type, "TEXT");
-  assert.equal(migratedCategoryColumn?.notnull, 1);
-  assert.equal(migratedCategoryColumn?.dflt_value, "'other'");
-
-  const categories = categoryDb.prepare(`
-    SELECT item_product_name, category
-    FROM personal_invoice_items
-    ORDER BY item_sequence_number
-  `).all().map((item) => ({ ...item })) as Array<{
-    item_product_name: string;
-    category: string;
-  }>;
-  assert.deepEqual(categories, [
-    { item_product_name: "咖啡", category: "food" },
-    { item_product_name: "unmatched item", category: "transport" },
-  ]);
-  assert.throws(
-    () => categoryDb.prepare(`
-      UPDATE personal_invoice_items SET category = 'invalid'
-    `).run(),
-    /CHECK constraint failed/,
-  );
-  categoryDb.close();
-
   const dedupeDb = openLedgerDatabase(dedupeLedgerDir);
   dedupeDb.exec(`
     DROP TABLE IF EXISTS exchange_rates;
@@ -967,9 +520,6 @@ try {
     `);
   }
   for (const table of TYPED_STATEMENT_TABLES) {
-    if (
-      table === "personal_invoices" || table === "personal_invoice_items"
-    ) continue;
     dedupeDb.exec(`DROP INDEX IF EXISTS uq_${table}_content_hash`);
   }
   const insertAccountRow = dedupeDb.prepare(`
@@ -1013,10 +563,7 @@ try {
       name: string;
       unique: number;
     }>).find((candidate) => candidate.name === `uq_${table}_content_hash`);
-    if (
-      table === "personal_invoices" || table === "personal_invoice_items"
-      || table === "credit_card_statement_lines"
-    ) {
+    if (table === "credit_card_statement_lines") {
       assert.equal(index, undefined, table);
     } else {
       assert.equal(index?.unique, 1, table);
@@ -1464,16 +1011,13 @@ try {
   `).run(), /CHECK constraint failed/);
   spendingOverrideDb.close();
 
-  const persistentDataIssuesDb = openLedgerDatabase(persistentDataIssuesLedgerDir);
-  persistentDataIssuesDb.exec(`
+  const sourceFileImportsDb = openLedgerDatabase(sourceFileImportsLedgerDir);
+  sourceFileImportsDb.exec(`
     DELETE FROM schema_migrations WHERE version >= 24;
     DROP TABLE IF EXISTS source_row_lineage;
-    DROP TABLE IF EXISTS data_issue_events;
-    DROP TABLE IF EXISTS disabled_import_sources;
-    DROP TABLE IF EXISTS data_issues;
     DROP TABLE IF EXISTS source_file_imports;
   `);
-  persistentDataIssuesDb.prepare(`
+  sourceFileImportsDb.prepare(`
     INSERT INTO source_files (
       source_file_id, import_run_id, source_relative_path, source_file_hash,
       source_file_bytes, imported_at, bank, product, source_sheet_name,
@@ -1485,7 +1029,7 @@ try {
       '{}', '[]', '[]', '[]', '[]', 1, 'imported', '{}'
     )
   `).run();
-  persistentDataIssuesDb.prepare(`
+  sourceFileImportsDb.prepare(`
     INSERT INTO loan_transactions (
       statement_row_id, source_file_id, import_run_id, source_relative_path,
       source_row_index, source_hash, content_hash, bank, product, raw_payload_json,
@@ -1497,21 +1041,19 @@ try {
       '2026-01-18', 'Synthetic principal', 1, 63_900
     )
   `).run();
-  migrateLedgerDb(persistentDataIssuesDb);
-  const expectedPersistentDataIssueTables = new Set([
+  migrateLedgerDb(sourceFileImportsDb);
+  const expectedSourceFileImportTables = new Set([
     "source_file_imports",
-    "data_issues",
-    "disabled_import_sources",
-    "data_issue_events",
     "source_row_lineage",
+    "disabled_import_sources",
   ]);
-  const persistentDataIssueTables = persistentDataIssuesDb.prepare(
+  const sourceFileImportTables = sourceFileImportsDb.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table'",
   ).all().map((row) => String((row as { name: string }).name));
-  for (const table of expectedPersistentDataIssueTables) {
-    assert.ok(persistentDataIssueTables.includes(table), table);
+  for (const table of expectedSourceFileImportTables) {
+    assert.ok(sourceFileImportTables.includes(table), table);
   }
-  assert.deepEqual(persistentDataIssuesDb.prepare(`
+  assert.deepEqual(sourceFileImportsDb.prepare(`
     SELECT source_file_id, import_run_id, source_file_hash
     FROM source_file_imports
   `).all().map((row) => ({ ...row })), [{
@@ -1519,7 +1061,7 @@ try {
     import_run_id: "run-a",
     source_file_hash: "hash-a",
   }]);
-  assert.deepEqual(persistentDataIssuesDb.prepare(`
+  assert.deepEqual(sourceFileImportsDb.prepare(`
     SELECT source_file_id, import_run_id, source_row_index, projection_table,
       statement_row_id, outcome
     FROM source_row_lineage
@@ -1531,56 +1073,34 @@ try {
     statement_row_id: "legacy-lineage-row",
     outcome: "inserted",
   }]);
-  assert.throws(() => persistentDataIssuesDb.prepare(`
+  assert.throws(() => sourceFileImportsDb.prepare(`
     INSERT INTO source_row_lineage (
       source_file_id, import_run_id, source_version_key, source_row_index,
       projection_table, statement_row_id, outcome, created_at
     ) VALUES ('source-a', 'run-a', 'test-version', 2, 'loan_transactions', 'bad', 'unknown',
       '2026-01-18T00:00:00.000Z')
   `).run(), /CHECK constraint failed/);
-  assert.throws(() => persistentDataIssuesDb.prepare(`
-    INSERT INTO data_issues (
-      data_issue_id, account_id, account_label, account_context_json, field_key,
-      reported_value, currency, note, status, created_at, updated_at
-    ) VALUES ('issue-a', 'account-a', 'Account A', '{}', 'balance', 1, 'TWD',
-      'note', 'invalid', '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z')
-  `).run(), /CHECK constraint failed/);
-  assert.throws(() => persistentDataIssuesDb.prepare(`
-    INSERT INTO disabled_import_sources (
-      disabled_import_source_id, data_issue_id, source_file_id, import_run_id,
-      source_version_key, reason, state, disabled_at, preview_token
-    ) VALUES ('disabled-a', 'issue-a', 'source-a', 'run-a', 'test-version', 'reason', 'invalid',
-      '2026-07-20T00:00:00.000Z', 'preview-a')
-  `).run(), /CHECK constraint failed/);
-  assert.throws(() => persistentDataIssuesDb.prepare(`
-    INSERT INTO data_issue_events (
-      data_issue_event_id, data_issue_id, event_type, stage, outcome, summary,
-      details_json, created_at
-    ) VALUES ('event-a', 'issue-a', 'event', 'stage', 'invalid', 'summary', '{}',
-      '2026-07-20T00:00:00.000Z')
-  `).run(), /CHECK constraint failed/);
-  migrateLedgerDb(persistentDataIssuesDb);
-  assert.equal((persistentDataIssuesDb.prepare(
+  migrateLedgerDb(sourceFileImportsDb);
+  assert.equal((sourceFileImportsDb.prepare(
     "SELECT COUNT(*) AS count FROM source_file_imports",
   ).get() as { count: number }).count, 1);
-  persistentDataIssuesDb.close();
+  assert.equal(sourceFileImportTables.includes("data_issues"), false);
+  assert.equal(sourceFileImportTables.includes("disabled_import_sources"), true);
+  assert.equal(sourceFileImportTables.includes("data_issue_events"), false);
+  sourceFileImportsDb.close();
 } finally {
   for (const directory of [
     ledgerDir,
-    legacyLedgerDir,
-    invalidLedgerDir,
-    categoryLedgerDir,
     dedupeLedgerDir,
     cardBackfillLedgerDir,
     invalidCardBackfillLedgerDir,
     transactionUtcLedgerDir,
     spendingOverrideLedgerDir,
-    persistentDataIssuesLedgerDir,
+    sourceFileImportsLedgerDir,
     canonicalSourceVersionLedgerDir,
     ambiguousSourceVersionLedgerDir,
     tiedSourceVersionLedgerDir,
     orphanSourceVersionLedgerDir,
-    mergedExclusionLedgerDir,
   ]) {
     rmSync(directory, { recursive: true, force: true });
   }

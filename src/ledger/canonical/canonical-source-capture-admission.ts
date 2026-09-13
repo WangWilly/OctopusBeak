@@ -247,7 +247,7 @@ function validateSourceEvidence(
   evidence.pages.forEach((page, index) => {
     if (
       page.pageOrdinal !== index ||
-      page.responseCode !== "200" ||
+      (page.responseCode !== "200" && page.responseCode !== "204") ||
       page.terminal !==
         (pageTerminalPolicy === "each" || index === evidence.pages.length - 1)
     )
@@ -256,6 +256,8 @@ function validateSourceEvidence(
       );
     if (!Number.isSafeInteger(page.rowCount) || page.rowCount < 0)
       throw new Error("Source page row count is invalid.");
+    if (page.responseCode === "204" && page.rowCount !== 0)
+      throw new Error("Source page with HTTP 204 must not claim rows.");
     assertCompactSourceValue(page.metadata, `page[${index}].metadata`);
     rowCount += page.rowCount;
   });

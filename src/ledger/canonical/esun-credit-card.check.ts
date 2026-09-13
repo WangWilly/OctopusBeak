@@ -25,6 +25,7 @@ import {
   isEsunCreditCardHumanAttestedV2Active,
 } from "./esun-credit-card-human-attestation.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalSpendingQuery } from "./canonical-categorization.ts";
 import { createCanonicalSchemaLifecyclePlan } from "./canonical-schema-implementation.ts";
 import { openCanonicalSchemaLifecycle } from "./canonical-schema-lifecycle.ts";
 
@@ -319,6 +320,35 @@ test("E.SUN commit materializes the shared spine and neutral billed statement ex
       WHERE detail.billing_status = 'unbilled'
     `).get() as { billing_status?: string } | undefined;
     assert.equal(unbilledMembership, undefined);
+    const kindRows = store.db.prepare(`
+      SELECT revision.direction,
+             enrichment.taxonomy_code AS kind_code,
+             enrichment.origin,
+             enrichment.producer_id,
+             enrichment.producer_version
+        FROM financial_transactions transaction_row
+        JOIN current_transactions current_row
+          ON current_row.transaction_id = transaction_row.transaction_id
+        JOIN transaction_revisions revision
+          ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment enrichment
+          ON enrichment.transaction_id = transaction_row.transaction_id
+         AND enrichment.field_name = 'kind'
+       ORDER BY transaction_row.source_sequence
+    `).all() as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      kindRows.map((value) => [value.direction, value.kind_code]).sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      [["inflow", "refund"], ["outflow", "purchase"]],
+    );
+    assert.ok(kindRows.every((value) => value.origin === "derived"));
+    assert.ok(kindRows.every((value) => value.producer_id === "credit-card/direction-enrichment"));
+    assert.ok(kindRows.every((value) => value.producer_version === "v1"));
+    const spending = createCanonicalSpendingQuery(directory).current();
+    assert.equal(spending.reportEligibility.status, "complete");
+    assert.equal(spending.includedTransactions.length, 1);
+    assert.equal(spending.includedTransactions[0]?.kind, "purchase");
+    assert.equal(spending.transactions.find((value) => value.direction === "inflow")?.inclusion, "excluded");
   } finally {
     store.close();
   }
@@ -441,7 +471,7 @@ test("E.SUN repeated captures retain one account/instrument authority and add pr
     assert.equal(count("canonical_credit_card_instruments"), 1);
     assert.equal(count("canonical_credit_card_instrument_evidence"), 2);
     assert.equal(count("canonical_credit_card_transaction_details"), 2);
-    assert.equal(count("assertion_provenance"), 4);
+    assert.equal(count("assertion_provenance"), 8);
     assert.equal(count("canonical_credit_card_statement_summary_evidence"), 1);
   } finally {
     store.close();

@@ -28,7 +28,7 @@ export type CanonicalSourceAccountNumber = Readonly<{
 
 export type CanonicalSourcePage = {
   pageOrdinal: number;
-  responseCode: "200";
+  responseCode: "200" | "204";
   rowCount: number;
   terminal: boolean;
   metadata: Record<string, unknown>;

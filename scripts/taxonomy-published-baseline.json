@@ -1,7 +1,7 @@
 {
   "packageId": "transaction-taxonomy",
   "version": "v1",
-  "semanticHash": "sha256:reZa5PYuggNRuOqhWmBAunpn15zuo6qU63zYf1ZafVw",
+  "semanticHash": "sha256:SR18oiEJAGttLGyt6bG_MRUP0slIUtnaxdTFewLaESM",
   "kinds": [
     "purchase", "transfer", "transfer.internal", "transfer.external",
     "transfer.investment_contribution", "transfer.investment_withdrawal", "transfer.security_position",
@@ -13,7 +13,7 @@
     "fee", "fee.bank", "fee.card", "fee.loan", "fee.investment",
     "interest", "interest.earned", "interest.charged",
     "tax", "tax.payment", "tax.refund", "tax.withholding",
-    "refund", "reversal", "adjustment", "loan", "loan.disbursement",
+    "refund", "reversal", "adjustment", "receipt", "loan", "loan.disbursement",
     "investment", "investment.trade", "investment.trade.buy", "investment.trade.sell",
     "investment.trade.sell_short", "investment.trade.buy_to_cover", "investment.trade.reinvestment",
     "investment.corporate_action", "investment.corporate_action.split", "investment.corporate_action.merger",

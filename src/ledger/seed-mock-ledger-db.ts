@@ -45,14 +45,10 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
   const data = mockLedgerQueryData(referenceDate);
   const importRunId = data.importRuns[0]?.importRunId ?? "mock-run";
   const importedAt = data.importRuns[0]?.finishedAt ?? new Date().toISOString();
-  const invoiceData = personalInvoiceFixtures(importRunId, importedAt, referenceDate);
-  const sourceFiles = [
-    ...data.sourceFiles.map((row) => sourceFileRecord({
-      ...row,
-      rowCount: row.sourceFileId === "account.2026-06-27" ? 8 : row.rowCount,
-    })),
-    sourceFileRecord(invoiceData.sourceFile),
-  ];
+  const sourceFiles = data.sourceFiles.map((row) => sourceFileRecord({
+    ...row,
+    rowCount: row.sourceFileId === "account.2026-06-27" ? 8 : row.rowCount,
+  }));
 
   db.exec("BEGIN");
   try {
@@ -165,8 +161,6 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
     ]);
     insertRows(db, "maicoin_account_snapshots", data.maicoinAccountSnapshots);
     insertRows(db, "maicoin_statement_rows", data.maicoinStatementRows);
-    insertRows(db, "personal_invoices", invoiceData.invoices);
-    insertRows(db, "personal_invoice_items", invoiceData.items);
     seedSourceRowLineage(db);
     insertRows(db, "automation_task_runs", automationTaskRuns(referenceDate));
     db.exec("COMMIT");
@@ -176,137 +170,9 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
   }
 }
 
-function personalInvoiceFixtures(importRunId: string, importedAt: string, referenceDate: Date) {
-  const sourceFileId = "einvoice.personal.current";
-  const templates = [
-    {
-      month: 0, day: 10, invoiceId: "AA10000001", sellerId: "16740494", seller: "全聯福利中心新店中正店",
-      addr: "新北市新店區中正路199號", items: [
-        ["有機鮮奶", 1, 95, "food"], ["抽取式衛生紙", 1, 189, "daily"],
-      ],
-    },
-    {
-      month: 0, day: 7, invoiceId: "AA10000002", sellerId: "24536806", seller: "台灣大車隊股份有限公司",
-      addr: "台北市中山區濱江街136號", items: [["計程車車資", 1, 285, "transport"]],
-    },
-    {
-      month: 0, day: 3, invoiceId: "AA10000003", sellerId: "27952966", seller: "宜家家居股份有限公司新店分公司",
-      addr: "新北市新店區中央路159號", items: [["LED 閱讀燈", 1, 799, "home"]],
-    },
-    {
-      month: 1, day: 24, invoiceId: "BB20000001", sellerId: "23525871", seller: "台灣優衣庫有限公司",
-      addr: "台北市信義區松高路12號", items: [["亞麻襯衫", 1, 990, "shopping"]],
-    },
-    {
-      month: 1, day: 15, invoiceId: "BB20000002", sellerId: "54396490", seller: "網飛服務有限公司",
-      addr: "台北市信義區信義路五段7號", items: [["影音月費", 1, 390, "leisure"]],
-    },
-    {
-      month: 1, day: 6, invoiceId: "BB20000003", sellerId: "60616841", seller: "三民晨食有限公司",
-      addr: "新北市新店區三民路40號", items: [["里肌蛋吐司", 1, 65, "food"], ["冰豆漿", 1, 30, "food"]],
-    },
-    {
-      month: 2, day: 18, invoiceId: "CC30000001", sellerId: "03795904", seller: "台灣電力公司",
-      addr: "台北市中正區羅斯福路三段242號", items: [["住宅電費", 1, 1268, "daily"]],
-    },
-    {
-      month: 2, day: 9, invoiceId: "CC30000002", sellerId: "38443075", seller: "台灣中油新店站",
-      addr: "新北市新店區北新路一段90號", items: [["95 無鉛汽油", 22.4, 31.2, "transport"]],
-    },
-    {
-      month: 3, day: 12, invoiceId: "DD40000001", sellerId: "24789086", seller: "便利生活服務股份有限公司",
-      addr: "台北市大安區復興南路一段1號", items: [["代收服務費", 1, 15, "other"]],
-    },
-  ] as const;
-  const invoices: InputRecord[] = [];
-  const items: InputRecord[] = [];
-  let rowIndex = 1;
-
-  for (const template of templates) {
-    const invoiceKey = `${template.invoiceId}|${template.sellerId}`;
-    const issuedAt = relativeMonthUnix(referenceDate, template.month, template.day, 12);
-    const amount = template.items.reduce((sum, item) => sum + item[1] * item[2], 0);
-    invoices.push({
-      ...commonRow(importRunId, importedAt, sourceFileId, "einvoice", "personal-invoices", rowIndex),
-      invoiceKey,
-      carrierCustomizedName: "手機條碼",
-      issuedAt,
-      invoiceId: template.invoiceId,
-      amount,
-      status: "confirmed",
-      rebated: 0,
-      sellerBusinessAccountNumber: template.sellerId,
-      sellerName: template.seller,
-      sellerAddr: template.addr,
-      buyerBusinessAccountNumber: "",
-    });
-    template.items.forEach(([name, quantity, unitPrice, category], index) => {
-      items.push({
-        ...commonRow(importRunId, importedAt, sourceFileId, "einvoice", "personal-invoices", rowIndex),
-        itemKey: `${invoiceKey}|${index + 1}`,
-        invoiceKey,
-        itemSequenceNumber: index + 1,
-        itemQuantity: quantity,
-        itemUnitPrice: unitPrice,
-        itemPaidAmount: quantity * unitPrice,
-        itemProductName: name,
-        category,
-      });
-      rowIndex += 1;
-    });
-  }
-
-  const voidedKey = "ZZ90000001|70762591";
-  invoices.push({
-    ...commonRow(importRunId, importedAt, sourceFileId, "einvoice", "personal-invoices", rowIndex),
-    invoiceKey: voidedKey,
-    carrierCustomizedName: "手機條碼",
-    issuedAt: relativeMonthUnix(referenceDate, 0, 8, 18),
-    invoiceId: "ZZ90000001",
-    amount: 450,
-    status: "voided",
-    rebated: 0,
-    sellerBusinessAccountNumber: "70762591",
-    sellerName: "測試取消交易商店",
-    sellerAddr: "台北市中正區忠孝西路一段1號",
-    buyerBusinessAccountNumber: "",
-  });
-  items.push({
-    ...commonRow(importRunId, importedAt, sourceFileId, "einvoice", "personal-invoices", rowIndex),
-    itemKey: `${voidedKey}|1`,
-    invoiceKey: voidedKey,
-    itemSequenceNumber: 1,
-    itemQuantity: 1,
-    itemUnitPrice: 450,
-    itemPaidAmount: 450,
-    itemProductName: "已取消商品",
-    category: "other",
-  });
-
-  return {
-    sourceFile: {
-      sourceFileId,
-      importRunId,
-      sourceFile: "downloads/einvoice-personal-invoices/mock-current.csv",
-      sourceRelativePath: "einvoice-personal-invoices/mock-current.csv",
-      sourceFileHash: "mock-file-hash-einvoice-current",
-      sourceFileBytes: items.length * 256,
-      sourceFileModifiedAt: relativeIso(referenceDate, 0, 9, 0),
-      importedAt,
-      bank: "einvoice",
-      product: "personal-invoices",
-      rowCount: items.length,
-      status: "imported",
-    },
-    invoices,
-    items,
-  };
-}
-
 function automationTaskRuns(referenceDate: Date): InputRecord[] {
   return [
     ["fubon-all-statements", "run:fubon-all-statements", "crawler", "completed", 8, null],
-    ["einvoice-personal-invoices", "run:einvoice-personal-invoices", "crawler", "failed", 9, "CAPTCHA verification expired"],
     ["import-downloads-csv", "run:import-downloads-csv", "import", "completed", 10, null],
   ].map(([taskId, script, kind, status, hour, error]) => ({
     taskRunId: `mock-${taskId}-${status}`,

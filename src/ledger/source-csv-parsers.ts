@@ -15,8 +15,6 @@ export type TypedStatementTable =
   | "brokerage_holdings"
   | "brokerage_asset_summaries"
   | "brokerage_trade_transactions"
-  | "personal_invoices"
-  | "personal_invoice_items"
   | "unsupported_statement_rows";
 
 export const TYPED_STATEMENT_TABLES: TypedStatementTable[] = [
@@ -32,8 +30,6 @@ export const TYPED_STATEMENT_TABLES: TypedStatementTable[] = [
   "brokerage_holdings",
   "brokerage_asset_summaries",
   "brokerage_trade_transactions",
-  "personal_invoices",
-  "personal_invoice_items",
   "unsupported_statement_rows",
 ];
 
@@ -139,12 +135,6 @@ export function createSourceCsvParser(context: SourceCsvContext): SourceCsvParse
       return bind("brokerage_trade_transactions", brokerageTradeTransactionFields);
     }
   }
-  if (bankProduct === "einvoice/personal-invoices") {
-    return bind("personal_invoice_items", ({ rawPayload }) =>
-      personalInvoiceItemFields(rawPayload),
-    );
-  }
-
   return bind("unsupported_statement_rows", unsupportedStatementFields);
 }
 
@@ -156,88 +146,11 @@ function cleanTypedCell(value: unknown): string {
     .trim();
 }
 
-function personalInvoiceItemSequenceNumber(value: unknown): number {
-  const raw = cleanTypedCell(value);
-  if (!raw) {
-    throw new Error(
-      "Invalid personal invoice item_sequence_number: item_sequence_number is required",
-    );
-  }
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(
-      "Invalid personal invoice item_sequence_number: expected a non-negative decimal integer",
-    );
-  }
-  const sequenceNumber = Number(raw);
-  if (!Number.isSafeInteger(sequenceNumber)) {
-    throw new Error(
-      "Invalid personal invoice item_sequence_number: exceeds the safe integer range",
-    );
-  }
-  return sequenceNumber;
-}
-
 function sqliteInteger(value: string | number | null | undefined): number | null {
   const cleaned = cleanTypedCell(value);
   if (!cleaned) return null;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
-
-function sqliteBoolean(value: string | number | null | undefined): number {
-  return ["1", "true", "y", "yes"].includes(cleanTypedCell(value).toLowerCase())
-    ? 1
-    : 0;
-}
-
-export function personalInvoiceKey(rawPayload: Record<string, string>): string {
-  return [
-    cleanTypedCell(rawPayload.invoice_id),
-    cleanTypedCell(rawPayload.issued_at),
-    cleanTypedCell(rawPayload.seller_business_account_number),
-  ].join("|");
-}
-
-export function personalInvoiceItemKey(rawPayload: Record<string, string>): string {
-  const invoiceKey = personalInvoiceKey(rawPayload);
-  const sequenceNumber = personalInvoiceItemSequenceNumber(
-    rawPayload.item_sequence_number,
-  );
-  return `${invoiceKey}|${sequenceNumber}`;
-}
-
-export function personalInvoiceFields(rawPayload: Record<string, string>) {
-  return {
-    invoice_key: personalInvoiceKey(rawPayload),
-    carrier_customized_name: cleanTypedCell(rawPayload.carrier_customized_name),
-    issued_at: sqliteInteger(rawPayload.issued_at),
-    invoice_id: cleanTypedCell(rawPayload.invoice_id),
-    amount: sqliteAmount(rawPayload.amount),
-    status: cleanTypedCell(rawPayload.status),
-    rebated: sqliteBoolean(rawPayload.rebated),
-    seller_business_account_number: cleanTypedCell(
-      rawPayload.seller_business_account_number,
-    ),
-    seller_name: cleanTypedCell(rawPayload.seller_name),
-    seller_addr: cleanTypedCell(rawPayload.seller_addr),
-    buyer_business_account_number: cleanTypedCell(
-      rawPayload.buyer_business_account_number,
-    ),
-  };
-}
-
-export function personalInvoiceItemFields(rawPayload: Record<string, string>) {
-  return {
-    item_key: personalInvoiceItemKey(rawPayload),
-    invoice_key: personalInvoiceKey(rawPayload),
-    item_sequence_number: personalInvoiceItemSequenceNumber(
-      rawPayload.item_sequence_number,
-    ),
-    item_quantity: sqliteAmount(rawPayload.item_quantity),
-    item_unit_price: sqliteAmount(rawPayload.item_unit_price),
-    item_paid_amount: sqliteAmount(rawPayload.item_paid_amount),
-    item_product_name: cleanTypedCell(rawPayload.item_product_name),
-  };
 }
 
 function payloadCell(payload: Record<string, unknown>, key: string): string {

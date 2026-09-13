@@ -21,6 +21,9 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -870,6 +873,11 @@ export async function commitCanonicalCtbcDomesticDepositCaptureBatch(
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
     admissions.map((item) => item.capture!),
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
   );
 }
 

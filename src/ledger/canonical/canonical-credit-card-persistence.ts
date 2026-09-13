@@ -27,13 +27,18 @@ export type CanonicalCreditCardPersistenceCapture = {
     lifecycle?: string;
     evidence: { sourceRecordKey: string };
   }[];
-  transactions: readonly {
-    sourceRecordKey: string;
-    sourceKey: string;
-    instrumentKey: string;
-    billingStatus: "billed" | "unbilled";
-    statementKey?: string;
-  }[];
+    transactions: readonly {
+      sourceRecordKey: string;
+      sourceKey: string;
+      instrumentKey: string;
+      billingStatus: "billed" | "unbilled";
+      /** Provider consumption date, when the issuer supplies one. */
+      consumeDate?: string | null;
+      /** Posting date retained as secondary evidence (and fallback). */
+      postingDate?: string | null;
+      effectiveDateBasis?: "consume-date" | "posting-date-fallback";
+      statementKey?: string;
+    }[];
   statements: readonly {
     statementKey: string;
     revisionKey: string;
@@ -166,6 +171,9 @@ CREATE TABLE IF NOT EXISTS canonical_credit_card_transaction_details (
   capture_id BLOB NOT NULL REFERENCES source_captures(capture_id),
   instrument_id BLOB NOT NULL REFERENCES canonical_credit_card_instruments(instrument_id),
   billing_status TEXT NOT NULL CHECK(billing_status IN ('billed','unbilled')),
+  consume_date TEXT,
+  posting_date TEXT,
+  effective_date_basis TEXT CHECK(effective_date_basis IS NULL OR effective_date_basis IN ('consume-date','posting-date-fallback')),
   statement_key TEXT,
   PRIMARY KEY(revision_id, source_record_id)
 );
@@ -239,6 +247,21 @@ CREATE TABLE IF NOT EXISTS canonical_credit_card_relations (
          to_transaction_id, capture_id, evidence_source_record_id)
 );
   `);
+  // The extension was introduced before the typed purchase/posting dates.
+  // Keep the lifecycle repair additive so an already-open canonical handle
+  // can be upgraded without rewriting financial facts. Existing rows remain
+  // nullable and are interpreted by the projection as effective-date facts.
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(canonical_credit_card_transaction_details)").all() as Array<{ name?: string }>).map((column) => column.name),
+  );
+  for (const [column, definition] of [
+    ["consume_date", "TEXT"],
+    ["posting_date", "TEXT"],
+    ["effective_date_basis", "TEXT"],
+  ] as const) {
+    if (!columns.has(column))
+      db.exec(`ALTER TABLE canonical_credit_card_transaction_details ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 /** Structural assertion used after the lifecycle has admitted a store.
@@ -277,6 +300,9 @@ export function validateCanonicalCreditCardSchema(db: DatabaseSync): void {
       "capture_id",
       "instrument_id",
       "billing_status",
+      "consume_date",
+      "posting_date",
+      "effective_date_basis",
       "statement_key",
     ],
     canonical_credit_card_transaction_lifecycle: [
@@ -528,11 +554,14 @@ function persistCapture(
       throw new CanonicalCreditCardPersistenceError("Transaction references an unknown card instrument.");
     const existing = db.prepare(`
       SELECT integration_namespace, account_id, transaction_id, instrument_id,
-             billing_status, statement_key
+             billing_status, consume_date, posting_date, effective_date_basis,
+             statement_key
       FROM canonical_credit_card_transaction_details WHERE revision_id = ? LIMIT 1
     `).get(shared.revisionId) as
       | { integration_namespace?: string; account_id?: Uint8Array; transaction_id?: Uint8Array;
-          instrument_id?: Uint8Array; billing_status?: string; statement_key?: string | null }
+          instrument_id?: Uint8Array; billing_status?: string; consume_date?: string | null;
+          posting_date?: string | null; effective_date_basis?: string | null;
+          statement_key?: string | null }
       | undefined;
     if (existing && (existing.integration_namespace !== namespace || !existing.account_id ||
         !sameBlob(existing.account_id, scope.account_id) || !existing.transaction_id ||
@@ -541,12 +570,24 @@ function persistCapture(
       throw new CanonicalCreditCardPersistenceError(
         "Transaction revision was reused with changed credit-card authority data.",
       );
+    const consumeDate = transaction.consumeDate ?? null;
+    const postingDate = transaction.postingDate ?? null;
+    const effectiveDateBasis = transaction.effectiveDateBasis ?? null;
+    if (existing && ((existing.consume_date ?? null) !== consumeDate ||
+        (existing.posting_date ?? null) !== postingDate ||
+        (existing.effective_date_basis ?? null) !== effectiveDateBasis))
+      throw new CanonicalCreditCardPersistenceError(
+        "Transaction revision was reused with changed credit-card date evidence.",
+      );
     db.prepare(`INSERT OR IGNORE INTO canonical_credit_card_transaction_details(
       integration_namespace, account_id, transaction_id, revision_id, source_record_id,
-      capture_id, instrument_id, billing_status, statement_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      capture_id, instrument_id, billing_status, consume_date, posting_date,
+      effective_date_basis, statement_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       namespace, scope.account_id, shared.transactionId, shared.revisionId, shared.sourceRecordId,
-      scope.capture_id, instrumentId, transaction.billingStatus, transaction.statementKey ?? null,
+      scope.capture_id, instrumentId, transaction.billingStatus,
+      consumeDate, postingDate, effectiveDateBasis,
+      transaction.statementKey ?? null,
     );
     const statementKey = transaction.statementKey ?? null;
     db.prepare(`INSERT INTO canonical_credit_card_transaction_lifecycle(

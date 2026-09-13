@@ -4,7 +4,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { openLedgerDatabase } from "../../ledger/db/client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
@@ -396,26 +395,13 @@ test("Overview loader preserves exact totals and marks Current-only history unav
     store.close();
     const withoutRate = await loadOverview(directory);
     assert.equal(withoutRate.sankey, null);
-    const ledger = openLedgerDatabase(directory);
-    ledger.prepare("INSERT INTO exchange_rates (rate_date, currency, twd_per_unit, source, fetched_at) VALUES (?, ?, ?, ?, ?)").run(
-      "2026-08-31", "USD", 32, "test", "2026-08-31T12:00:00.000Z",
-    );
-    ledger.close();
     const overview = await loadOverview(directory);
     assert.equal(overview.availability, "available");
     assert.equal(overview.historyAvailability, "unavailable");
     assert.deepEqual(overview.summary[1]?.amounts[0]?.exact, { coefficient: "123456", scale: 2 });
     assert.equal(overview.summary[1]?.amounts[0]?.value, 1234.56);
-    const convertedLink = overview.sankey?.links.at(-1);
-    assert.equal(convertedLink?.value, 39505.92);
-    assert.deepEqual(convertedLink?.conversion, {
-      fromCurrency: "USD",
-      toCurrency: "TWD",
-      rateDate: "2026-08-31",
-      twdPerUnit: 32,
-      convertedExact: { coefficient: "3950592", scale: 2 },
-    });
-    assert.deepEqual(convertedLink?.exact, { coefficient: "123456", scale: 2 });
+    assert.equal(overview.sankey, null);
+    assert.deepEqual(overview.sankeyExchangeRates, []);
     assert.equal(overview.dailyHistory.length, 0);
     assert.equal(overview.accounts[0]?.amountLines[0]?.traces?.[0]?.kind, "investment-holding-observation");
   } finally {

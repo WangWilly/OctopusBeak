@@ -21,6 +21,9 @@ import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
 } from "./canonical-source-evidence.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 
 export const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 export const FOREIGN_CURRENCY_DEPOSIT_TIME_ZONE = "Asia/Taipei" as const;
@@ -733,7 +736,15 @@ export async function commitForeignCurrencyDepositCapture(
     "source" in capture
       ? admitForeignCurrencyDepositCapture(capture as ForeignCurrencyDepositCaptureInput)
       : (capture as ForeignCurrencyDepositAdmittedCapture);
-  return commitCanonicalFinancialDepositCapture(store, admitted);
+  return commitCanonicalFinancialDepositCapture(
+    store,
+    admitted,
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
+  );
 }
 
 export async function commitForeignCurrencyDepositCaptureBatch(
@@ -745,7 +756,15 @@ export async function commitForeignCurrencyDepositCaptureBatch(
       ? admitForeignCurrencyDepositCapture(capture as ForeignCurrencyDepositCaptureInput)
       : (capture as ForeignCurrencyDepositAdmittedCapture),
   );
-  return commitCanonicalFinancialDepositCaptureBatch(store, admitted);
+  return commitCanonicalFinancialDepositCaptureBatch(
+    store,
+    admitted,
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((result) => result.captureId),
+      ),
+  );
 }
 
 function hex(value: unknown): string {

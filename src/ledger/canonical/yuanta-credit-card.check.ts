@@ -15,6 +15,7 @@ import {
   type YuantaCreditCardStatementSummary,
 } from "./yuanta-credit-card.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalSpendingQuery } from "./canonical-categorization.ts";
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
@@ -767,6 +768,106 @@ test("commit writes explicit settled summaries to the shared spine and extension
   }
 });
 
+test("direction fallback enriches Yuanta outflows and inflows in the current projection", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-direction-kind-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    const billedRows = periods.map((period, index) =>
+      row(period, index === 0 ? { twdAmount: "-100.00", description: "SYNTHETIC REFUND" } : {}),
+    );
+    await commitYuantaCreditCardCapture(
+      store,
+      buildYuantaCanonicalCreditCardCapture(
+        options({
+          captureId: "capture-direction-kind",
+          billedRows,
+          statementSummaries: settledSummaries(),
+        }),
+      ),
+    );
+    const rows = store.db.prepare(`
+      SELECT revision.direction,
+             enrichment.taxonomy_code AS kind_code,
+             enrichment.origin,
+             enrichment.producer_id,
+             enrichment.producer_version
+        FROM financial_transactions transaction_row
+        JOIN current_transactions current_row
+          ON current_row.transaction_id = transaction_row.transaction_id
+        JOIN transaction_revisions revision
+          ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment enrichment
+          ON enrichment.transaction_id = transaction_row.transaction_id
+         AND enrichment.field_name = 'kind'
+       ORDER BY transaction_row.source_sequence
+    `).all() as Array<Record<string, unknown>>;
+    assert.equal(rows.length, 10);
+    assert.deepEqual(
+      rows.map((value) => [value.direction, value.kind_code]).sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      [
+        ["inflow", "refund"],
+        ...Array.from({ length: 9 }, () => ["outflow", "purchase"]),
+      ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    );
+    assert.ok(rows.every((value) => value.origin === "derived"));
+    assert.ok(rows.every((value) => value.producer_id === "credit-card/direction-enrichment"));
+    assert.ok(rows.every((value) => value.producer_version === "v1"));
+    const spending = createCanonicalSpendingQuery(directory).current();
+    assert.equal(spending.reportEligibility.status, "complete");
+    assert.equal(spending.includedTransactions.length, 9);
+    assert.ok(spending.includedTransactions.every((value) =>
+      value.direction === "outflow" && value.kind === "purchase",
+    ));
+    assert.equal(
+      spending.transactions.find((value) => value.direction === "inflow")?.inclusion,
+      "excluded",
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("direction fallback failure rolls back the source capture admission", async () => {
+  const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-direction-atomic-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const routeId = "yuanta/credit-card/direction-enrichment/v1/kind";
+  try {
+    await assert.rejects(
+      () => commitYuantaCreditCardCapture(
+        {
+          db: store.db,
+          databasePath: store.databasePath,
+          commitClock: store.commitClock,
+          beforeYuantaCreditExtensionCommit: (db) => {
+            db.prepare(
+              "UPDATE automatic_enrichment_authority_routes SET valid_to_commit_sequence = 2 WHERE route_id = ?",
+            ).run(routeId);
+          },
+        },
+        buildYuantaCanonicalCreditCardCapture(
+          options({ captureId: "capture-direction-atomic" }),
+        ),
+      ),
+      /No automatic enrichment authority route/u,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS value FROM source_captures").get() as { value?: number }).value ?? 0),
+      0,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS value FROM financial_transactions").get() as { value?: number }).value ?? 0),
+      0,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS value FROM automatic_enrichment_authority_routes WHERE route_id = ? AND valid_to_commit_sequence IS NULL").get(routeId) as { value?: number }).value ?? 0),
+      1,
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("repeated Yuanta capture dedupes transactions and adds provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-repeat-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
@@ -803,7 +904,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM assertion_provenance").get() as { n: number }).n),
-      20,
+      40,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_transaction_details").get() as { n: number }).n),
@@ -861,7 +962,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM assertion_provenance").get() as { n: number }).n),
-      30,
+      60,
     );
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM canonical_credit_card_statement_revisions WHERE balance_coefficient = '200'").get() as { n: number }).n),
