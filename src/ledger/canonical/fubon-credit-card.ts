@@ -14,6 +14,7 @@ import {
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
@@ -59,7 +60,7 @@ export type FubonCreditCardTransactionInput = {
   sourceRecordKey: string;
   occurrenceIndex: number;
   instrumentKey: string;
-  consumeDate: string;
+  consumeDate?: string | null;
   postingDate?: string | null;
   postingStatus?: "posted" | "pending";
   direction: "inflow" | "outflow";
@@ -187,12 +188,14 @@ export type FubonCreditCardCaptureInput = {
 
 export type FubonCreditCardAdmittedTransaction = Omit<
   FubonCreditCardTransactionInput,
-  "bookedAmount" | "foreignAmount" | "postingDate" | "postingStatus" | "sourceKey"
+  "bookedAmount" | "foreignAmount" | "consumeDate" | "postingDate" | "postingStatus" | "sourceKey"
 > & {
   sourceKey: `sha256:${string}`;
   bookedAmount: FubonCreditCardExactAmount;
   foreignAmount: FubonCreditCardExactAmount | null;
+  consumeDate: string | null;
   postingDate: string;
+  effectiveDateBasis: "consume-date" | "posting-date-fallback";
   postingStatus: "posted";
   normalizedDescription: string;
 };
@@ -453,7 +456,9 @@ export function buildFubonCreditCardTransactionSourceKey(
     accountKey,
     text(record.instrumentKey, "Card instrument key"),
     statementKey,
-    validDate(record.consumeDate, "Consume date"),
+    record.consumeDate == null || record.consumeDate.trim() === ""
+      ? null
+      : validDate(record.consumeDate, "Consume date"),
     record.postingDate ? validDate(record.postingDate, "Posting date") : null,
     record.direction,
     amount.coefficient,
@@ -634,8 +639,20 @@ function validateTransaction(
     fail("Transaction occurrence index must be a non-negative integer.");
   const instrumentKey = text(record.instrumentKey, "Card instrument key");
   if (!instruments.has(instrumentKey)) fail("Transaction references an unknown card instrument.");
-  const consumeDate = validDate(record.consumeDate, "Consume date");
-  const postingDate = validDate(record.postingDate, "Posting date");
+  const suppliedConsumeDate = record.consumeDate == null || record.consumeDate.trim() === ""
+    ? null
+    : validDate(record.consumeDate, "Consume date");
+  const suppliedPostingDate = record.postingDate == null || record.postingDate.trim() === ""
+    ? null
+    : validDate(record.postingDate, "Posting date");
+  if (!suppliedPostingDate) fail("Posting date is required.");
+  const consumeDate = suppliedConsumeDate ?? suppliedPostingDate;
+  const postingDate = suppliedPostingDate ?? suppliedConsumeDate;
+  if (!consumeDate || !postingDate)
+    fail("Fubon transaction requires a consume date or posting date.");
+  const effectiveDateBasis = suppliedConsumeDate
+    ? "consume-date" as const
+    : "posting-date-fallback" as const;
   if (record.postingStatus === "pending")
     fail("Fubon v2 requires posted credit-card transactions when posting date is present.");
   const bookedAmount = exactAmount(record.bookedAmount, "Booked amount");
@@ -693,6 +710,7 @@ function validateTransaction(
     instrumentKey,
     consumeDate,
     postingDate,
+    effectiveDateBasis,
     postingStatus: "posted",
     bookedAmount,
     bookedCurrency,
@@ -842,7 +860,7 @@ function validateRelation(
     case "installment_of":
       if (from.direction !== "outflow" || to.direction !== "outflow")
         fail("installment_of relations require outflow installment and original transactions.");
-      if (from.consumeDate < to.consumeDate)
+      if ((from.consumeDate ?? from.postingDate) < (to.consumeDate ?? to.postingDate))
         fail("installment_of relations require the installment date to follow the original.");
       break;
   }
@@ -1098,6 +1116,7 @@ function fubonCanonicalSpineCapture(
       throw new FubonCreditCardAdmissionError(
         "Fubon transaction instrument is missing from the validated capture.",
       );
+    const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
     const compact = JSON.stringify({
       occurrenceIndex: transaction.occurrenceIndex,
       sourceScopeKey: transaction.sourceScopeKey ?? null,
@@ -1124,15 +1143,15 @@ function fubonCanonicalSpineCapture(
       currency: transaction.bookedCurrency,
       direction: transaction.direction,
       sourceTime: {
-        localDate: transaction.postingDate,
+        localDate: effectiveDate,
         localTime: "00:00:00",
         timeZone: "Asia/Taipei",
-        epochMilliseconds: Date.parse(`${transaction.postingDate}T00:00:00+08:00`),
+        epochMilliseconds: Date.parse(`${effectiveDate}T00:00:00+08:00`),
         precision: "date" as const,
         timeOrigin: "defaulted_local_midnight" as const,
       },
-      effectiveOn: transaction.postingDate,
-      transactionDateTimeLocal: `${transaction.postingDate}T00:00:00`,
+      effectiveOn: effectiveDate,
+      transactionDateTimeLocal: `${effectiveDate}T00:00:00`,
       description: transaction.description,
       ...(transaction.foreignAmount && transaction.foreignCurrency
         ? {
@@ -1471,8 +1490,9 @@ function persistFubonCanonicalExtensions(
       db.prepare(
         `INSERT INTO fubon_credit_transaction_details(
           transaction_id, revision_id, source_record_id, capture_id,
-          instrument_id, billing_status, statement_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          instrument_id, billing_status, consume_date, posting_date,
+          effective_date_basis, statement_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         row.transactionId,
         row.revisionId,
@@ -1480,6 +1500,9 @@ function persistFubonCanonicalExtensions(
         scope.capture_id,
         instrumentId,
         transaction.billingStatus,
+        transaction.consumeDate,
+        transaction.postingDate,
+        transaction.effectiveDateBasis,
         transaction.statementKey ?? null,
       );
     }
@@ -1682,6 +1705,10 @@ export async function commitFubonCreditCardCaptureBatch(
         );
       store.beforeFubonCreditExtensionCommit?.(db);
       persistFubonCanonicalExtensions(db, captures);
+      commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction(
+        db,
+        captures.map((capture) => capture.captureId),
+      );
     },
   );
   return committed.map((result, index) => {

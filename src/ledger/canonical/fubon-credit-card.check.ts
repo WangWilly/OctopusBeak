@@ -20,6 +20,7 @@ import {
   type FubonCreditCardTransactionInput,
 } from "./fubon-credit-card.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalSpendingQuery } from "./canonical-categorization.ts";
 import { createCanonicalFinancialQuery } from "./canonical-source-store.ts";
 import {
   commitFubonCreditCardCapture,
@@ -1365,8 +1366,8 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
     assert.equal(count("source_records"), 9);
     assert.equal(count("financial_transactions"), 4);
     assert.equal(count("transaction_revisions"), 4);
-    assert.equal(count("assertions"), 4);
-    assert.equal(count("assertion_provenance"), 6);
+    assert.equal(count("assertions"), 8);
+    assert.equal(count("assertion_provenance"), 14);
     assert.equal(count("fubon_credit_instrument_details"), 2);
     assert.equal(count("fubon_credit_instrument_role_evidence"), 3);
     assert.equal(count("fubon_credit_transaction_details"), 6);
@@ -1599,6 +1600,65 @@ test("extension failure rolls back initial attestation and the shared capture at
   }
 });
 
+test("direction fallback enriches Fubon outflows and inflows in the current projection", async () => {
+  const directory = mkdtempSync(join("/tmp", "fubon-credit-card-direction-kind-"));
+  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  try {
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(
+        capture({
+          captureId: "capture-direction-kind",
+          transactions: [
+            transaction(),
+            transaction({
+              sourceRecordKey: "row-refund-a",
+              consumeDate: "2026-08-20",
+              postingDate: "2026-08-21",
+              direction: "inflow",
+              description: "SYNTHETIC REFUND",
+              bookedAmount: "20.00",
+              billingStatus: "unbilled",
+              statementKey: undefined,
+            }),
+          ],
+        }),
+      ),
+    );
+    const rows = store.db.prepare(`
+      SELECT revision.direction,
+             enrichment.taxonomy_code AS kind_code,
+             enrichment.origin,
+             enrichment.producer_id,
+             enrichment.producer_version
+        FROM financial_transactions transaction_row
+        JOIN current_transactions current_row
+          ON current_row.transaction_id = transaction_row.transaction_id
+        JOIN transaction_revisions revision
+          ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment enrichment
+          ON enrichment.transaction_id = transaction_row.transaction_id
+         AND enrichment.field_name = 'kind'
+       ORDER BY transaction_row.source_sequence
+    `).all() as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      rows.map((value) => [value.direction, value.kind_code]).sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      [["inflow", "refund"], ["outflow", "purchase"]],
+    );
+    assert.ok(rows.every((value) => value.origin === "derived"));
+    assert.ok(rows.every((value) => value.producer_id === "credit-card/direction-enrichment"));
+    assert.ok(rows.every((value) => value.producer_version === "v1"));
+    const spending = createCanonicalSpendingQuery(directory).current();
+    assert.equal(spending.reportEligibility.status, "complete");
+    assert.equal(spending.includedTransactions.length, 1);
+    assert.equal(spending.includedTransactions[0]?.kind, "purchase");
+    assert.equal(spending.transactions.find((value) => value.direction === "inflow")?.inclusion, "excluded");
+  } finally {
+    store.close();
+  }
+});
+
 test("identical occurrences remain distinct while repeated captures add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-occurrence-"));
   const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
@@ -1622,7 +1682,7 @@ test("identical occurrences remain distinct while repeated captures add provenan
     assert.equal(count("financial_transactions"), 3);
     assert.equal(count("transaction_revisions"), 3);
     assert.equal(count("source_records"), 8);
-    assert.equal(count("assertion_provenance"), 6);
+    assert.equal(count("assertion_provenance"), 12);
   } finally {
     store.close();
   }

@@ -7,6 +7,9 @@ import {
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 
 /** Resolver rules are versioned because provider note/date contracts may
@@ -1417,6 +1420,29 @@ function transactionRows(
   };
 }
 
+/**
+ * Relation resolution is also a Kind input.  Keep the refresh inside the
+ * resolver's existing transaction so a newly observed repayment cannot be
+ * visible as a Spending purchase between the relation write and its derived
+ * classification.  Re-enriching every current deposit capture in this
+ * source connection is intentional: withdrawal and supersession can affect
+ * an older capture that is not part of the replacement plan.
+ */
+function refreshResolvedLoanRepaymentKinds(
+  db: DatabaseSync,
+  rows: { deposits: readonly TransactionContext[] },
+): void {
+  const captureIds = [
+    ...new Set(rows.deposits.map((transaction) => transaction.captureKey)),
+  ];
+  if (captureIds.length === 0) return;
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+    db,
+    captureIds,
+    { relationStateAware: true },
+  );
+}
+
 function captureIsComplete(db: DatabaseSync, captureId: BlobId): boolean {
   const row = db
     .prepare(
@@ -2724,6 +2750,7 @@ function resolveOnce(
     );
     changed ||= withdrawn > 0;
   }
+  refreshResolvedLoanRepaymentKinds(store.db, rows);
   if (!changed)
     store.db.prepare("UPDATE loan_repayment_resolution_runs SET outcome = 'unchanged' WHERE resolution_id = ?").run(resolutionId);
   createCanonicalProjectionRuntime(store.db).applyCommit({

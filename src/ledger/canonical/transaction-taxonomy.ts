@@ -17,6 +17,55 @@ export const CATHAY_AUTOMATIC_ENRICHMENT_CONTRACT_VERSION =
 export const CATHAY_AUTOMATIC_ENRICHMENT_ROUTE_SCOPE =
   "cathay/domestic-deposit" as const;
 /**
+ * Credit-card sources currently expose a reliable transaction direction but
+ * do not expose a provider taxonomy Kind.  This producer records the
+ * versioned, traceable fallback used until a source-specific Kind assertion
+ * is available.  Its routes are deliberately scoped to the three supported
+ * credit-card streams instead of granting the producer global authority.
+ */
+export const CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID =
+  "credit-card/direction-enrichment" as const;
+export const CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION = "v1" as const;
+export const CREDIT_CARD_DIRECTION_ENRICHMENT_CONTRACT_VERSION =
+  "credit-card/direction/v1" as const;
+export const CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND =
+  "direction" as const;
+export const CREDIT_CARD_DIRECTION_ENRICHMENT_ROUTE_SCOPES = [
+  "yuanta/credit-card",
+  "esun/credit-card",
+  "fubon/credit-card",
+] as const;
+
+/**
+ * Bank and foreign-currency deposit rows do not carry one provider-neutral
+ * Kind field.  This producer applies the shared, versioned evidence rules
+ * after source admission while retaining the source-record lineage used by
+ * every derived assertion.
+ */
+export const BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID =
+  "bank/deposit-kind-enrichment" as const;
+export const BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION = "v4" as const;
+export const BANK_TRANSACTION_KIND_ENRICHMENT_CONTRACT_VERSION =
+  "bank/deposit-kind/v4" as const;
+export const BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS = [
+  "bank-rule",
+  "investment-relation",
+  "loan-relation",
+  "credit-card-statement-relation",
+] as const;
+export const BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES = [
+  "cathay/foreign-currency-deposit",
+  "yuanta/domestic-deposit",
+  "yuanta/foreign-currency-deposit",
+  "hncb/domestic-deposit",
+  "sinopac/domestic-deposit",
+  "sinopac/foreign-currency-deposit",
+  "linebank/domestic-deposit",
+  "fubon/domestic-deposit",
+  "post/domestic-deposit",
+  "ctbc/domestic-deposit",
+] as const;
+/**
  * Grouped counterparty output is a v23 extension contract.  It is kept
  * separate from the published Cathay v1 producer compatibility package so a
  * legacy single-role assertion keeps its original meaning.
@@ -155,6 +204,7 @@ const KIND_CODES = [
   "refund",
   "reversal",
   "adjustment",
+  "receipt",
   "loan",
   "loan.disbursement",
   "investment",
@@ -251,6 +301,7 @@ const KIND_SEMANTICS: Readonly<Record<string, string>> = {
   refund: "A refund received for an earlier purchase or payment.",
   reversal: "A movement that reverses an earlier movement.",
   adjustment: "An accounting adjustment without a more specific economic kind.",
+  receipt: "A receipt whose economic source is not yet specified as income, refund, or transfer.",
   loan: "A movement associated with lending.",
   "loan.disbursement": "Loan principal disbursed to the borrower.",
   investment: "A movement associated with an investment position.",
@@ -318,6 +369,7 @@ function zhLabel(dimension: TaxonomyDimension, code: string): string {
     refund: "退款",
     reversal: "沖銷",
     adjustment: "調整",
+    receipt: "收款",
     loan: "貸款",
     investment: "投資",
   };
@@ -410,6 +462,83 @@ const CATHAY_PRODUCER_VERSION = {
   confidenceThresholdBasisPoints: 7_500,
 } as const;
 
+const CREDIT_CARD_DIRECTION_PRODUCER_VERSION = {
+  producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
+  producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+  confidenceThresholdBasisPoints: 7_500,
+} as const;
+
+const BANK_TRANSACTION_KIND_PRODUCER_VERSION = {
+  producerId: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
+  producerVersion: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+  confidenceThresholdBasisPoints: 7_500,
+} as const;
+
+const BANK_TRANSACTION_KIND_OUTPUT_CODES = [
+  "purchase",
+  "transfer.internal",
+  "transfer.external",
+  "transfer.investment_contribution",
+  "transfer.investment_withdrawal",
+  "payment.credit_card",
+  "payment.loan",
+  "cash.deposit",
+  "cash.withdrawal",
+  "income",
+  "income.employment",
+  "income.employment.salary",
+  "income.employment.bonus",
+  "income.business",
+  "income.pension",
+  "income.government_benefit",
+  "income.rental",
+  "income.reward",
+  "income.dividend",
+  "income.investment_distribution",
+  "fee.bank",
+  "fee.card",
+  "fee.loan",
+  "fee.investment",
+  "interest.earned",
+  "interest.charged",
+  "tax.payment",
+  "tax.refund",
+  "loan.disbursement",
+  "investment.trade.buy",
+  "investment.trade.sell",
+  "refund",
+  "reversal",
+  "receipt",
+] as const;
+
+const BANK_TRANSACTION_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
+  BANK_TRANSACTION_KIND_OUTPUT_CODES.map((outputCode) => ({
+    producerId: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
+    producerVersion: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "kind" as const,
+    outputCode,
+    evidenceKinds: [...BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS],
+  }));
+
+const CATHAY_BANK_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
+  BANK_TRANSACTION_KIND_OUTPUT_CODES.filter(
+    (outputCode) =>
+      !new Set([
+        "purchase",
+        "cash.deposit",
+        "transfer.internal",
+        "payment.credit_card",
+      ]).has(outputCode),
+  ).map((outputCode) => ({
+    producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+    producerVersion: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "kind" as const,
+    outputCode,
+    evidenceKinds: [...BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS],
+  }));
+
 const CATHAY_SOURCE_COMPATIBILITY: readonly ProducerCompatibility[] = [
   ...KINDS.map((kind) => ({
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -444,7 +573,7 @@ const CATHAY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
     origin: "derived",
     field: "kind",
     outputCode: "purchase",
-    evidenceKinds: ["description", "merchant", "mcc", "combined"],
+    evidenceKinds: ["description", "merchant", "mcc", "combined", "bank-rule"],
   },
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -452,7 +581,7 @@ const CATHAY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
     origin: "derived",
     field: "kind",
     outputCode: "cash.deposit",
-    evidenceKinds: ["description", "merchant", "mcc", "combined"],
+    evidenceKinds: ["description", "merchant", "mcc", "combined", "bank-rule"],
   },
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -460,7 +589,7 @@ const CATHAY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
     origin: "derived",
     field: "kind",
     outputCode: "transfer.internal",
-    evidenceKinds: ["description", "merchant", "mcc", "combined"],
+    evidenceKinds: ["description", "merchant", "mcc", "combined", "bank-rule"],
   },
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -468,7 +597,7 @@ const CATHAY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
     origin: "derived",
     field: "kind",
     outputCode: "payment.credit_card",
-    evidenceKinds: ["description", "merchant", "mcc", "combined"],
+    evidenceKinds: ["description", "merchant", "mcc", "combined", "bank-rule"],
   },
   ...["food_and_groceries", "dining", "transportation"].map((code) => ({
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -496,6 +625,17 @@ const CATHAY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
   },
 ];
 
+const CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [
+  ...(["purchase", "refund"] as const).map((outputCode) => ({
+    producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
+    producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "kind" as const,
+    outputCode,
+    evidenceKinds: [CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND],
+  })),
+];
+
 const CATHAY_SOURCE_DISPLAY_COMPATIBILITY: readonly ProducerCompatibility[] = [
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -511,6 +651,9 @@ const PRODUCER_COMPATIBILITY = [
   ...CATHAY_SOURCE_COMPATIBILITY,
   ...CATHAY_SOURCE_DISPLAY_COMPATIBILITY,
   ...CATHAY_DERIVED_COMPATIBILITY,
+  ...CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY,
+  ...BANK_TRANSACTION_KIND_DERIVED_COMPATIBILITY,
+  ...CATHAY_BANK_KIND_DERIVED_COMPATIBILITY,
 ] as const;
 
 const AUTOMATIC_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] = (
@@ -526,6 +669,32 @@ const AUTOMATIC_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] = (
   originPolicy: "source_or_derived" as const,
   validFromCommitSequence: 1,
 }));
+
+const CREDIT_CARD_DIRECTION_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] =
+  CREDIT_CARD_DIRECTION_ENRICHMENT_ROUTE_SCOPES.map((scopeKey) => ({
+    routeId: `${scopeKey}/direction-enrichment/v1/kind`,
+    subjectKind: "transaction" as const,
+    field: "kind" as const,
+    scopeKind: "source_stream" as const,
+    scopeKey,
+    producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
+    producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+    originPolicy: "derived" as const,
+    validFromCommitSequence: 1,
+  }));
+
+const BANK_TRANSACTION_KIND_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] =
+  BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES.map((scopeKey) => ({
+    routeId: `${scopeKey}/kind-enrichment/v4/kind`,
+    subjectKind: "transaction" as const,
+    field: "kind" as const,
+    scopeKind: "source_stream" as const,
+    scopeKey,
+    producerId: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
+    producerVersion: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+    originPolicy: "derived" as const,
+    validFromCommitSequence: 1,
+  }));
 
 const LOCALIZATIONS = Object.fromEntries(
   [...KINDS, ...CATEGORIES, ...COUNTERPARTY_ROLE_DEFINITIONS].map((definition) => [
@@ -628,8 +797,16 @@ export const TRANSACTION_TAXONOMY_PACKAGE_V1: TransactionTaxonomyPackage = {
   localizations: LOCALIZATIONS,
   applicability: APPLICABILITY,
   producerCompatibility: PRODUCER_COMPATIBILITY,
-  producerVersions: [CATHAY_PRODUCER_VERSION],
-  automaticRoutes: AUTOMATIC_ROUTES,
+  producerVersions: [
+    CATHAY_PRODUCER_VERSION,
+    CREDIT_CARD_DIRECTION_PRODUCER_VERSION,
+    BANK_TRANSACTION_KIND_PRODUCER_VERSION,
+  ],
+  automaticRoutes: [
+    ...AUTOMATIC_ROUTES,
+    ...CREDIT_CARD_DIRECTION_ROUTES,
+    ...BANK_TRANSACTION_KIND_ROUTES,
+  ],
   fixtures: FIXTURES,
 };
 

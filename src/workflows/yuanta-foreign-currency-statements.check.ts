@@ -33,6 +33,9 @@ const {
   diagnoseYuantaForeignCurrencyResultMarkup,
   clickYuantaForeignCurrencyCsvDownloadControl,
   findYuantaForeignCurrencyCsvDownloadControl,
+  readYuantaForeignCurrencyResultFingerprint,
+  waitForYuantaForeignCurrencyResultTransition,
+  selectYuantaForeignCurrencyAccount,
   isYuantaForeignCurrencyCsvControl,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
@@ -177,14 +180,21 @@ const yuantaForeignResultFixtures = {
   unrelatedCsvOutsideResult:
     '<section id="resultDiv"><p>查詢結果</p></section><a href="/unrelated.csv">Download CSV file</a>',
   timestampOnlyWithExternalStatement:
-    '<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div><section id="statement-area"><table id="foreign-statement"><thead><tr><th>日期</th><th>金額</th></tr></thead><tbody><tr><td>20260903</td><td>12345</td></tr></tbody></table><a aria-label="下載 CSV 檔" href="/download">下載 CSV 檔</a></section>',
+    '<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div><section id="statement-area"><table id="foreign-statement"><thead><tr><th>日期</th><th>金額</th></tr></thead><tbody><tr><td>20260903</td><td>12345</td></tr></tbody></table><a aria-label="下載 CSV 檔" href="/download" onclick="getDownload(\'csv\')">下載 CSV 檔</a></section>',
+  providerNoDataTable:
+    '<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div><table id="tabtable"><tbody><tr><td>查無資料</td></tr></tbody></table><footer><a href="/forms.csv">Download CSV file</a></footer>',
+  staleReadyWithProviderNoDataTable: `<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div>
+    <section class="foreign-statement"><table class="normalTable"><thead><tr><th>日期</th><th>金額</th></tr></thead><tbody><tr><td>20260903</td><td>123</td></tr></tbody></table>
+      <a aria-label="下載 CSV 檔" href="/download" onclick="getDownload('csv')">下載 CSV 檔</a>
+    </section>
+    <table id="tabtable"><tbody><tr><td>查無資料</td></tr></tbody></table>`,
   liveFrameShape: `<div class="query-page">
     <div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div>
     <div class="summary-panel"><table id="summary-table"><thead><tr><th>摘要</th><th>幣別</th><th>狀態</th><th>時間</th></tr></thead><tbody></tbody></table></div>
     <div id="wide-table"><table><thead><tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>七</th><th>八</th><th>九</th><th>十</th><th>十一</th><th>十二</th></tr></thead><tbody>${Array.from({ length: 11 }, (_, index) => `<tr><td>${index}</td><td>資料</td></tr>`).join("")}</tbody></table></div>
     <div class="foreign-transaction-panel"><div class="foreign-table-wrap">
       <table class="normalTable"><thead><tr><th>日期</th><th>交易日</th><th>時間</th><th>幣別</th><th>說明</th><th>金額</th><th>餘額</th></tr></thead><tbody><tr><td>20260902</td><td>20260902</td><td>10:00</td><td>USD</td><td>買入</td><td>100</td><td>900</td></tr><tr><td>20260901</td><td>20260901</td><td>09:00</td><td>USD</td><td>賣出</td><td>50</td><td>950</td></tr></tbody></table>
-      <form action="/statement-export"></form><div class="foreign-export"><a aria-label="下載 CSV 檔" href="/download">下載 CSV 檔</a></div>
+      <form action="/statement-export"></form><div class="foreign-export"><a aria-label="下載 CSV 檔" href="/download" onclick="getDownload('csv')">下載 CSV 檔</a></div>
     </div></div>
   </div>`,
 } as const;
@@ -392,6 +402,9 @@ function fakeResultOpenings(html: string): RegExpMatchArray[] {
       /<([a-z][\w:-]*)\b[^>]*\bid\s*=\s*["']result(?:div|container|area)?["'][^>]*>/giu,
     ),
     ...html.matchAll(
+      /<([a-z][\w:-]*)\b[^>]*\bid\s*=\s*["']tabtable["'][^>]*>/giu,
+    ),
+    ...html.matchAll(
       /<([a-z][\w:-]*)\b[^>]*\bclass\s*=\s*["'][^"']*\bresult(?:div|container|area)?(?:[-\s"']|$)[^"']*["'][^>]*>/giu,
     ),
   ].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
@@ -427,12 +440,23 @@ function fakeResultMarkups(html: string): string[] {
 }
 
 type FakeElementResolver = () => FakeElement[];
+type FakeSelectOptionHandler = (value: string) => void | Promise<void>;
+type FakeInputValueHandler = () => string | Promise<string>;
 
 class FakeLocator {
   private readonly resolveElements: FakeElementResolver;
+  private readonly selectOptionHandler: FakeSelectOptionHandler | undefined;
+  private readonly inputValueHandler: FakeInputValueHandler | undefined;
 
-  constructor(elements: FakeElement[], resolveElements?: FakeElementResolver) {
+  constructor(
+    elements: FakeElement[],
+    resolveElements?: FakeElementResolver,
+    selectOptionHandler?: FakeSelectOptionHandler,
+    inputValueHandler?: FakeInputValueHandler,
+  ) {
     this.resolveElements = resolveElements ?? (() => elements);
+    this.selectOptionHandler = selectOptionHandler;
+    this.inputValueHandler = inputValueHandler;
   }
 
   private elements(): FakeElement[] {
@@ -493,6 +517,23 @@ class FakeLocator {
   async getAttribute(name: string): Promise<string | null> {
     return this.elements()[0]?.getAttribute(name) ?? null;
   }
+
+  async inputValue(): Promise<string> {
+    if (this.inputValueHandler) return await this.inputValueHandler();
+    const element = this.elements()[0];
+    if (!element) throw new Error("missing fake element");
+    return element.getAttribute("value") ?? "";
+  }
+
+  async selectOption(value: string): Promise<void> {
+    if (this.selectOptionHandler) {
+      await this.selectOptionHandler(value);
+      return;
+    }
+    const element = this.elements()[0];
+    if (!element) throw new Error("missing fake element");
+    element.attrs.value = value;
+  }
 }
 
 function unescapeFakeCssAttributeValue(value: string): string {
@@ -525,6 +566,11 @@ function fakeScopeElements(html: string, selector: string): FakeElement[] {
   }
   if (selector === "table" || selector === "a") {
     return fakeElementsByTag(html, selector);
+  }
+  if (selector === "#tabtable") {
+    return fakeElementsByTag(html, "table").filter(
+      (element) => element.getAttribute("id") === "tabtable",
+    );
   }
   if (selector.startsWith("a[")) {
     return fakeStableAnchorElements(html, selector);
@@ -615,6 +661,8 @@ class FakePage extends FakeScope {
     this.onWait?.();
   }
 
+  async waitForLoadState(): Promise<void> {}
+
   waitForEvent(
     event: "download",
     _options: { timeout: number },
@@ -627,27 +675,81 @@ class FakePage extends FakeScope {
   }
 }
 
-const timestampOnlyTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  new FakePage(yuantaForeignResultFixtures.timestampOnlyWithExternalStatement) as never,
-  500,
+class DelayedAccountSelectionPage extends FakePage {
+  selectedAccount = "account-one";
+  pendingAccount: string | null = null;
+  waitCount = 0;
+
+  constructor() {
+    super(
+      '<form><select id="acctno"><option value="account-one">第一帳戶</option><option value="account-two">第二帳戶</option></select><select name="currency"><option value="USD">美元</option></select></form>',
+    );
+    this.onWait = () => {
+      this.waitCount += 1;
+      if (this.waitCount >= 2 && this.pendingAccount) {
+        this.selectedAccount = this.pendingAccount;
+      }
+    };
+  }
+
+  override locator(selector: string): FakeLocator {
+    if (selector === "#acctno") {
+      return new FakeLocator(
+        [],
+        () => [fakeElement(`<select id="acctno" value="${this.selectedAccount}"></select>`)],
+        async (value) => {
+          this.pendingAccount = value;
+        },
+        () => this.selectedAccount,
+      );
+    }
+    if (selector === 'select[name="currency"] option') {
+      return new FakeLocator([
+        fakeElement('<option value="USD">美元</option>'),
+      ]);
+    }
+    return super.locator(selector);
+  }
+}
+
+type DownloadTarget = Awaited<
+  ReturnType<typeof findYuantaForeignCurrencyCsvDownloadControl>
+>;
+
+function requireDownloadTarget(target: DownloadTarget) {
+  if (target.kind !== "download") {
+    throw new Error(`Expected a downloadable result, received ${target.kind}.`);
+  }
+  return target;
+}
+
+const timestampOnlyTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(yuantaForeignResultFixtures.timestampOnlyWithExternalStatement) as never,
+    500,
+  ),
 );
 assert.equal(await timestampOnlyTarget.control.innerText(), "下載 CSV 檔");
 
-const liveFrameTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  new FakePage(yuantaForeignResultFixtures.liveFrameShape) as never,
-  500,
+const liveFrameTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(yuantaForeignResultFixtures.liveFrameShape) as never,
+    500,
+  ),
 );
 assert.equal(await liveFrameTarget.control.innerText(), "下載 CSV 檔");
 
 // A page re-render can insert datepicker anchors before the CSV control. A
 // global nth() locator follows the new position and would click the date, but
 // the returned identity locator must re-find only the same CSV control.
-const liveCsvAnchor = '<a aria-label="下載 CSV 檔" href="/download">下載 CSV 檔</a>';
+const liveCsvAnchor = '<a aria-label="下載 CSV 檔" href="/download" onclick="getDownload(\'csv\')">下載 CSV 檔</a>';
 const reorderedLivePage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
 const unstableGlobalAnchors = reorderedLivePage.locator("a");
-const reorderedTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  reorderedLivePage as never,
-  500,
+const reorderedTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    reorderedLivePage as never,
+    500,
+  ),
 );
 reorderedLivePage.html = yuantaForeignResultFixtures.liveFrameShape.replace(
   liveCsvAnchor,
@@ -687,9 +789,11 @@ assert.equal(await reorderedTarget.refresh(), null);
 // already-resolved control becomes detached before the action and cannot be
 // clicked, even though this is a transient provider re-render.
 const staleActionPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
-const staleActionTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  staleActionPage as never,
-  500,
+const staleActionTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    staleActionPage as never,
+    500,
+  ),
 );
 const staleActionControl = await staleActionTarget.refresh();
 assert.ok(staleActionControl);
@@ -762,9 +866,11 @@ const hiddenWideTableFrame = yuantaForeignResultFixtures.liveFrameShape.replace(
   '<div id="wide-table"><table>',
   '<div id="wide-table"><table style="display: none">',
 );
-const hiddenWideTableTarget = await findYuantaForeignCurrencyCsvDownloadControl(
-  new FakePage(hiddenWideTableFrame) as never,
-  500,
+const hiddenWideTableTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(hiddenWideTableFrame) as never,
+    500,
+  ),
 );
 assert.equal(await hiddenWideTableTarget.control.innerText(), "下載 CSV 檔");
 
@@ -794,7 +900,7 @@ await assert.rejects(
 
 const ambiguousLiveLinks = yuantaForeignResultFixtures.liveFrameShape.replace(
   "</a>",
-  '</a><a aria-label="下載 CSV 檔" href="/download-2">第二個 CSV</a>',
+  '</a><a aria-label="下載 CSV 檔" href="/download-2" onclick="getDownload(\'csv\')">第二個 CSV</a>',
 );
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
@@ -817,22 +923,133 @@ await assert.rejects(
 );
 
 const providerNoDataPage = new FakePage(yuantaForeignResultFixtures.providerNoData);
-await assert.rejects(
-  findYuantaForeignCurrencyCsvDownloadControl(providerNoDataPage as never, 500),
-  (error: unknown) => {
-    assert.ok(error instanceof StatementComponentAbsentError);
-    assert.match((error as Error).message, /no transaction data/i);
-    return true;
-  },
+const providerNoDataTarget = await findYuantaForeignCurrencyCsvDownloadControl(
+  providerNoDataPage as never,
+  500,
 );
-await assert.rejects(
-  clickYuantaForeignCurrencyCsvDownloadControl(providerNoDataPage as never, 500),
-  (error: unknown) => {
-    assert.ok(error instanceof StatementComponentAbsentError);
-    assert.match((error as Error).message, /no transaction data/i);
-    return true;
-  },
+assert.deepEqual(providerNoDataTarget, {
+  kind: "empty",
+  reason: "provider-explicit-no-data",
+});
+assert.equal(
+  await clickYuantaForeignCurrencyCsvDownloadControl(
+    providerNoDataPage as never,
+    500,
+  ),
+  null,
 );
+assert.equal(providerNoDataPage.nativeClickCount, 0);
+
+const providerNoDataTablePage = new FakePage(
+  yuantaForeignResultFixtures.providerNoDataTable,
+);
+const providerNoDataTableTarget =
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    providerNoDataTablePage as never,
+    500,
+  );
+assert.deepEqual(providerNoDataTableTarget, {
+  kind: "empty",
+  reason: "provider-explicit-no-data",
+});
+assert.equal(
+  await clickYuantaForeignCurrencyCsvDownloadControl(
+    providerNoDataTablePage as never,
+    500,
+  ),
+  null,
+);
+assert.equal(providerNoDataTablePage.nativeClickCount, 0);
+
+// A later account with no rows must complete as an empty capture even when a
+// previous account had a downloadable statement. The second query never
+// receives, clicks, or parses the first query's download.
+const firstAccountPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
+const firstAccountDownload = await clickYuantaForeignCurrencyCsvDownloadControl(
+  firstAccountPage as never,
+  500,
+);
+assert.deepEqual(firstAccountDownload, { fake: "download" });
+const secondAccountPage = new FakePage(
+  yuantaForeignResultFixtures.providerNoDataTable,
+);
+const secondAccountDownload = await clickYuantaForeignCurrencyCsvDownloadControl(
+  secondAccountPage as never,
+  500,
+);
+assert.equal(secondAccountDownload, null);
+assert.equal(secondAccountPage.nativeClickCount, 0);
+
+// The new empty table can coexist with the previous account's complete
+// result. The explicit provider no-data marker must still suppress the stale
+// CSV control before the finder returns a target.
+const staleReadyWithProviderNoDataPage = new FakePage(
+  yuantaForeignResultFixtures.staleReadyWithProviderNoDataTable,
+);
+const staleReadyWithProviderNoDataTarget =
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    staleReadyWithProviderNoDataPage as never,
+    500,
+  );
+assert.deepEqual(staleReadyWithProviderNoDataTarget, {
+  kind: "empty",
+  reason: "provider-explicit-no-data",
+});
+assert.equal(
+  await clickYuantaForeignCurrencyCsvDownloadControl(
+    staleReadyWithProviderNoDataPage as never,
+    500,
+  ),
+  null,
+);
+assert.equal(staleReadyWithProviderNoDataPage.nativeClickCount, 0);
+
+// A prior ready result may remain for one or more polling ticks after submit.
+// The new query must first cross a result fingerprint transition; otherwise
+// the old CSV is downloadable before the provider renders its no-data table.
+const temporalFencePage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
+const temporalFenceBefore = await readYuantaForeignCurrencyResultFingerprint(
+  temporalFencePage as never,
+);
+let temporalFenceWaits = 0;
+temporalFencePage.onWait = () => {
+  temporalFenceWaits += 1;
+  if (temporalFenceWaits === 1) {
+    // A provider timestamp can change before the old table is replaced. It
+    // must not release the prior account's ready result.
+    temporalFencePage.html = yuantaForeignResultFixtures.liveFrameShape.replace(
+      "2026/09/03 10:40:00",
+      "2026/09/03 10:41:00",
+    );
+  } else if (temporalFenceWaits >= 2) {
+    temporalFencePage.html = yuantaForeignResultFixtures.providerNoDataTable;
+  }
+};
+await waitForYuantaForeignCurrencyResultTransition(
+  temporalFencePage as never,
+  temporalFenceBefore,
+  500,
+);
+assert.ok(temporalFenceWaits >= 2);
+assert.deepEqual(
+  await clickYuantaForeignCurrencyCsvDownloadControl(
+    temporalFencePage as never,
+    500,
+  ),
+  null,
+);
+assert.equal(temporalFencePage.nativeClickCount, 0);
+
+// Account-driven navigation can leave the old selector and currency options
+// attached while the provider is still switching accounts. Selection must
+// wait for the requested value to be observable on the current form.
+const delayedAccountPage = new DelayedAccountSelectionPage();
+await selectYuantaForeignCurrencyAccount(delayedAccountPage as never, {
+  label: "第二帳戶",
+  value: "account-two",
+});
+assert.equal(delayedAccountPage.selectedAccount, "account-two");
+assert.ok(delayedAccountPage.waitCount >= 2);
 
 const providerErrorPage = new FakePage(yuantaForeignResultFixtures.providerError);
 await assert.rejects(
@@ -899,6 +1116,31 @@ const unrelatedCsvOutsideResultPage = new FakePage(
 await assert.rejects(
   findYuantaForeignCurrencyCsvDownloadControl(
     unrelatedCsvOutsideResultPage as never,
+    25,
+  ),
+  /Could not find YuanTa foreign-currency CSV download link in any frame\./,
+);
+
+const globalCsvOutsideTransactionTable =
+  yuantaForeignResultFixtures.liveFrameShape.replace(
+    `<div class="foreign-export">${liveCsvAnchor}</div>`,
+    "",
+  ) +
+  '<footer><a aria-label="下載 CSV 檔" href="/forms.csv" onclick="getDownload(\'csv\')">下載 CSV 檔</a></footer>';
+await assert.rejects(
+  findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(globalCsvOutsideTransactionTable) as never,
+    25,
+  ),
+  /Could not find YuanTa foreign-currency CSV download link in any frame\./,
+);
+
+const onlyTableWithGlobalCsv = `<div id="resultdiv"><h2>查詢結果：</h2><p>查詢時間：2026/09/03 10:40:00</p></div>
+  <main class="query-page"><table class="normalTable"><thead><tr><th>日期</th><th>金額</th></tr></thead><tbody><tr><td>20260903</td><td>123</td></tr></tbody></table>
+  <footer><a aria-label="下載 CSV 檔" href="/forms.csv" onclick="getDownload('csv')">下載 CSV 檔</a></footer></main>`;
+await assert.rejects(
+  findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(onlyTableWithGlobalCsv) as never,
     25,
   ),
   /Could not find YuanTa foreign-currency CSV download link in any frame\./,

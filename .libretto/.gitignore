@@ -1,3 +1,4 @@
 # Local libretto runtime state
 sessions/
 profiles/
+*

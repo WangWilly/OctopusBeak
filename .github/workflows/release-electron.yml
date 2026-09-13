@@ -124,6 +124,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check canonical readiness
+        run: npm run check:canonical-readiness
+
       - name: Check pinned GitHub Actions
         run: npm run check:actions-pinned
 

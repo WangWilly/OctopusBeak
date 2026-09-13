@@ -975,6 +975,9 @@ export type CanonicalSpendingTransaction = Readonly<{
   integrationNamespace: string;
   stream: string;
   effectiveOn: string;
+  consumeDate?: string | null;
+  postingDate?: string | null;
+  effectiveDateBasis?: "consume-date" | "posting-date-fallback" | null;
   description: string | null;
   amount: Readonly<{ coefficient: string; scale: number; currency: string }>;
   direction: string;
@@ -1128,11 +1131,8 @@ function selectedAutomaticCategory(
   kind: string | null,
   rows: readonly CanonicalProjectionTransactionEnrichment[],
 ): CanonicalSpendingCategorization {
-  const row = rows.find(
-    (candidate) =>
-      candidate.transactionId === transactionId &&
-      candidate.fieldName === "category",
-  );
+  void transactionId;
+  const row = rows.find((candidate) => candidate.fieldName === "category");
   if (
     !row ||
     row.taxonomyCode === null ||
@@ -1155,9 +1155,7 @@ function selectedUserCategorization(
   kind: string | null,
   rows: readonly CanonicalProjectionTransactionCategorization[],
 ): CanonicalSpendingCategorization | null {
-  const selected = rows.filter(
-    (row) => row.transactionId === transaction.transactionId,
-  );
+  const selected = rows;
   if (selected.length === 0 || kind === null) return null;
   const first = selected[0]!;
   if (first.mode === "single") {
@@ -1316,6 +1314,18 @@ function reportForSnapshot(
   const transactions = projection.families.transactions;
   const enrichments = projection.families["transaction-enrichment"];
   const userRows = projection.families["transaction-categorization"];
+  const enrichmentsByTransaction = new Map<string, CanonicalProjectionTransactionEnrichment[]>();
+  for (const row of enrichments) {
+    const values = enrichmentsByTransaction.get(row.transactionId) ?? [];
+    values.push(row);
+    enrichmentsByTransaction.set(row.transactionId, values);
+  }
+  const userRowsByTransaction = new Map<string, CanonicalProjectionTransactionCategorization[]>();
+  for (const row of userRows) {
+    const values = userRowsByTransaction.get(row.transactionId) ?? [];
+    values.push(row);
+    userRowsByTransaction.set(row.transactionId, values);
+  }
   const output: CanonicalSpendingTransaction[] = [];
   const included: CanonicalSpendingTransaction[] = [];
   const totalValues = new Map<string, { amount: Decimal; count: number }>();
@@ -1337,19 +1347,25 @@ function reportForSnapshot(
   for (const transaction of transactions) {
     const account = accountsById.get(transaction.accountId);
     if (!account) throw new Error("Canonical spending projection returned an unknown account.");
+    const consumeDate = transaction.consumeDate ?? null;
+    const postingDate = transaction.postingDate ??
+      (account.stream === "credit-card" ? transaction.effectiveOn : null);
+    const effectiveDateBasis = transaction.effectiveDateBasis ??
+      (account.stream === "credit-card" ? "posting-date-fallback" as const : null);
     const enrichment = projection.enrichment.get(spendingIdKey(transaction.transactionId));
     const display = spendingDisplay(enrichment?.display ?? { status: "absent" });
     const tags = spendingTags(enrichment?.tags ?? []);
     let kind: string | null = null;
-    const kindRow = enrichments.find(
-      (row) =>
-        row.transactionId === transaction.transactionId &&
-        row.fieldName === "kind",
-    );
+    const transactionEnrichments = enrichmentsByTransaction.get(transaction.transactionId) ?? [];
+    const kindRow = transactionEnrichments.find((row) => row.fieldName === "kind");
     if (kindRow?.taxonomyCode) kind = kindRow.taxonomyCode;
     const categorization =
-      selectedUserCategorization(transaction, kind, userRows) ??
-      selectedAutomaticCategory(transaction.transactionId, kind, enrichments);
+      selectedUserCategorization(
+        transaction,
+        kind,
+        userRowsByTransaction.get(transaction.transactionId) ?? [],
+      ) ??
+      selectedAutomaticCategory(transaction.transactionId, kind, transactionEnrichments);
     const amount = decimal(
       {
         coefficient: transaction.amountCoefficient,
@@ -1390,6 +1406,9 @@ function reportForSnapshot(
         integrationNamespace: account.integrationNamespace,
         stream: account.stream,
         effectiveOn: transaction.effectiveOn,
+        consumeDate,
+        postingDate,
+        effectiveDateBasis,
         description: transaction.description,
         amount: {
           coefficient: transaction.amountCoefficient,
@@ -1472,6 +1491,9 @@ function reportForSnapshot(
         integrationNamespace: account.integrationNamespace,
         stream: account.stream,
         effectiveOn: transaction.effectiveOn,
+        consumeDate,
+        postingDate,
+        effectiveDateBasis,
         description: transaction.description,
         amount: {
           coefficient: transaction.amountCoefficient,
@@ -1588,6 +1610,13 @@ function spendingSnapshot(
   )
     throw new Error("Spending date range is inverted.");
   if (kind === "current") {
+    // Typed source domains such as E-Invoice create commits without creating
+    // financial transactions or a transaction projection.
+    if (!hasCanonicalTransactionFacts(db))
+      return {
+        ...emptySpendingReport("current"),
+        knowledgePoint: latestCanonicalKnowledgePoint(db),
+      };
     const projection = createCanonicalProjectionRuntime(db).read({
       kind,
       families: [
@@ -1598,9 +1627,16 @@ function spendingSnapshot(
       ],
       scope,
     });
+    if (projection.families.transactions.length === 0) {
+      return {
+        ...emptySpendingReport("current"),
+        knowledgePoint: projection.knowledgePoint,
+        financialAt: projection.financialAt,
+      };
+    }
     const enrichment = queryCanonicalEnrichmentCurrentFromDatabase(db, {
       transactionIds: projection.families.transactions.map((transaction) => transaction.transactionId),
-    });
+    }, projection);
     return reportForSnapshot({
       ...(projection as unknown as RuntimeSpendingSnapshot),
       enrichment: new Map(enrichment.transactions.map((transaction) => [spendingIdKey(transaction.transactionId), {
@@ -1613,6 +1649,12 @@ function spendingSnapshot(
     throw new Error("Historical spending queries require financialAt.");
   if (!Number.isSafeInteger(request.knowledgeAt))
     throw new Error("Historical spending queries require knowledgeAt.");
+  if (!hasCanonicalTransactionFacts(db))
+    return {
+      ...emptySpendingReport("historical"),
+      knowledgePoint: request.knowledgeAt!,
+      financialAt: request.financialAt,
+    };
   const projection = createCanonicalProjectionRuntime(db).read({
     kind,
     families: [
@@ -1627,6 +1669,13 @@ function spendingSnapshot(
       knowledgeAt: request.knowledgeAt!,
     },
   });
+  if (projection.families.transactions.length === 0) {
+    return {
+      ...emptySpendingReport("historical"),
+      knowledgePoint: projection.knowledgePoint,
+      financialAt: projection.financialAt,
+    };
+  }
   const enrichment = queryCanonicalEnrichmentHistoricalFromDatabase(db, {
     transactionIds: projection.families.transactions.map((transaction) => transaction.transactionId),
     financialAt: request.financialAt,
@@ -1880,6 +1929,24 @@ function emptySpendingReport(kind: "current" | "historical"): CanonicalSpendingR
   };
 }
 
+function hasCanonicalTransactionFacts(db: DatabaseSync): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM financial_transactions LIMIT 1").get(),
+  );
+}
+
+function latestCanonicalKnowledgePoint(db: DatabaseSync): number {
+  return Number(
+    (
+      db
+        .prepare(
+          "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+        )
+        .get() as { value?: unknown }
+    ).value ?? 0,
+  );
+}
+
 export interface CanonicalSpendingQuery {
   current(request?: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
   historical(request: CanonicalSpendingQueryRequest): CanonicalSpendingReport;
@@ -1946,3 +2013,24 @@ export const queryCanonicalSpendingHistorical = (
   ledgerDir: string,
   request: CanonicalSpendingQueryRequest,
 ) => createCanonicalSpendingQuery(ledgerDir).historical(request);
+
+/**
+ * Read the spending projection from a caller-owned canonical database
+ * snapshot.  Purchase-basis reporting composes transactions with other
+ * canonical source domains and therefore needs to pin every input to one
+ * knowledge cutoff before opening their query facades.
+ */
+export function queryCanonicalSpendingCurrentFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalSpendingQueryRequest = {},
+): CanonicalSpendingReport {
+  return spendingSnapshot(db, request, "current");
+}
+
+/** Read a historical spending projection from a caller-owned database. */
+export function queryCanonicalSpendingHistoricalFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalSpendingQueryRequest,
+): CanonicalSpendingReport {
+  return spendingSnapshot(db, request, "historical");
+}

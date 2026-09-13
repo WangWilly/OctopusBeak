@@ -12,6 +12,9 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "./bank-transaction-kind-enrichment.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
 import {
   canonicalSourceAdmissionCommitResult,
@@ -1792,6 +1795,11 @@ export async function commitCanonicalFubonDomesticDepositCapture(
   const result = await commitCanonicalFinancialDepositCapture(
     store,
     admission.capture,
+    (db, results) =>
+      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+        db,
+        results.map((item) => item.captureId),
+      ),
   );
   recordInitialFubonHumanAttestationIfMissing(
     store.db,

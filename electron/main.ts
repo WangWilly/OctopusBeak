@@ -4,20 +4,17 @@ import { app, BrowserWindow, dialog } from "electron";
 import {
   activeAutomationTaskIds,
   prepareLibrettoRunCdpPatch,
-  recoverAbandonedAutomationSessions,
   shutdownAutomationSessions,
   startAutomationTask,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
-import { hasSuccessfulTaskRunSince } from "../src/lib/automation/server/store.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
-import { migrateLedgerBeforeWindow } from "./startup-ledger.ts";
+import { initializeCanonicalRuntimeBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
@@ -61,7 +58,9 @@ const handleBeforeQuit = createBeforeQuitHandler({
     scheduler?.stop();
     await Promise.all([
       ipcRegistration?.close(),
-      shutdownAutomationSessions(),
+      activeAutomationTaskIds().length > 0
+        ? shutdownAutomationSessions()
+        : undefined,
     ]);
   },
   quit: () => app.quit(),
@@ -176,24 +175,17 @@ async function start() {
   } catch (error) {
     console.warn("libretto-run-cdp-patch-failed", error);
   }
-  migrateLedgerBeforeWindow();
-  await recoverAbandonedAutomationSessions().catch((error) => {
-    console.warn("automation-session-startup-recovery-failed", error);
-  });
+  initializeCanonicalRuntimeBeforeWindow(userData);
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   scheduler = createExchangeRateScheduler({
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
     clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
     readSettings: () => systemSettings(readAutomationSettings()),
-    hasSuccessSince: (occurrenceUtc) => {
-      const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-      try {
-        return hasSuccessfulTaskRunSince(db, "exchange-rates", occurrenceUtc);
-      } finally {
-        db.close();
-      }
-    },
+    // Automation run history is financial legacy state. The unified sync
+    // runner owns its operational status; until it is available, a scheduled
+    // exchange-rate run is never suppressed by the retired ledger.
+    hasSuccessSince: () => false,
     isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
     startTask: (scheduledAtUtc) => {
       startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });

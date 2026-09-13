@@ -3,13 +3,20 @@ import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
-import type { SpendingPageDto } from "../src/lib/spending/model.ts";
+import type {
+  SpendingCandidateActionInput,
+  SpendingConfirmActionInput,
+  SpendingLinkActionInput,
+  SpendingPageDto,
+  SpendingPurchaseActionResult,
+} from "../src/lib/spending/model.ts";
 
 export type FinancialPageRequest =
   | { id: number; page: "overview" }
   | { id: number; page: "assets" }
   | { id: number; page: "liabilities" }
-  | { id: number; page: "spending"; input?: SpendingLoadInput };
+  | { id: number; page: "spending"; input?: SpendingLoadInput }
+  | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
 export type FinancialPageResponse =
   | { id: number; ok: true; value: unknown }
@@ -24,6 +31,9 @@ export type FinancialPageWorkerClient = {
   load(page: "assets"): Promise<AssetsPageDto>;
   load(page: "liabilities"): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
+  denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
+  revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
   close(): Promise<number>;
 };
 
@@ -59,7 +69,7 @@ export function createFinancialPageWorkerClient(
   });
 
   function load(
-    page: FinancialPageRequest["page"],
+    page: "overview" | "assets" | "liabilities" | "spending",
     input?: SpendingLoadInput,
   ): Promise<unknown> {
     if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
@@ -67,14 +77,35 @@ export function createFinancialPageWorkerClient(
     const request: FinancialPageRequest = page === "spending"
       ? { id, page, ...(input ? { input } : {}) }
       : { id, page };
-    return new Promise((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       worker.postMessage(request);
     });
   }
 
+  function action(
+    actionName: Extract<FinancialPageRequest, { page: "spending-action" }>["action"],
+    input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput,
+  ): Promise<SpendingPurchaseActionResult> {
+    if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
+    const id = nextId++;
+    const request: FinancialPageRequest = {
+      id,
+      page: "spending-action",
+      action: actionName,
+      input,
+    };
+    return new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage(request);
+    }) as Promise<SpendingPurchaseActionResult>;
+  }
+
   return {
     load: load as FinancialPageWorkerClient["load"],
+    confirmCandidate: (input) => action("confirmCandidate", input),
+    denyCandidate: (input) => action("denyCandidate", input),
+    revokeLink: (input) => action("revokeLink", input),
     close: () => {
       if (closePromise) return closePromise;
       closed = true;

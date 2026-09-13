@@ -13,6 +13,7 @@ downloads/
 data/
 .superpowers/
 .worktrees/
+.impeccable/
 
 # Libretto runtime state. Keep config/skills if setup creates them.
 .libretto/sessions/

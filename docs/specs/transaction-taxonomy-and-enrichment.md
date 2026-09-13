@@ -1,5 +1,8 @@
 # Transaction taxonomy and enrichment specification
 
+Accepted amendment: [ADR 0024](../adr/0024-purchase-basis-spending-and-report-deduplication.md) governs purchase-basis Spending and traceable one-to-one report deduplication, including explicit user confirmation. It supersedes conflicting report-level exclusions below without relaxing canonical identity, source admission, financial-fact immutability, or exact transaction-allocation requirements. [Revised ADR 0009](../adr/0009-reset-legacy-financial-data-before-canonical-collection.md) replaces quarantine and delayed cleanup with a direct canonical-only reset for a product with no existing users.
+
+
 Status: implementation-ready planning specification
 
 This specification resolves GitHub issue 125. It extends [Canonical financial storage specification](./canonical-financial-storage.md) with the first-version universal Transaction Kind, Personal Category, Counterparty, display, Tag, routing, publishing, query, and verification contracts. Plaid is a coverage comparison only; OctopusBeak does not integrate with Plaid or adopt Plaid provider identity, sign, type, or category semantics.
@@ -48,6 +51,7 @@ income
   reward
   dividend
   investment_distribution
+receipt
 fee
   bank
   card
@@ -84,6 +88,8 @@ investment
 Transaction Kind is optional enrichment unless an integration contract declares it necessary to interpret a record kind, such as an investment trade whose buy/sell semantics govern cash and quantity. Missing optional Kind is absence. Missing, unsupported, or ambiguous required Kind cancels the attempted Capture.
 
 `transfer.internal` proves only that the source identifies a movement between the person's accounts. A `transfer_counterpart` Relation additionally requires both canonical Transaction endpoints and contract-proven linkage. `refund` and `reversal` likewise do not establish `refund_of` or `reversal_of` Relations by themselves.
+
+`receipt` is a registered Transaction Kind, but it is not an income Kind. It is available only as a versioned Derived fallback for an inflow whose economic purpose cannot be proven; a later complete producer run may supersede it with `income`, `refund`, `transfer.*`, `loan.disbursement`, or another registered Kind. The fallback retains its producer and rule version and never contributes to income totals merely because the account-relative direction is `inflow`.
 
 ### 2.2 Personal Category
 
@@ -228,6 +234,16 @@ Exactly one versioned Automatic Enrichment Authority Route selects the Source or
 
 A producer may record a calibrated confidence score in lineage metadata and declare a fixture-tested threshold. One unique result above threshold creates one Derived Assertion; a low score, tie, or unsupported case creates none. Scores never create candidate rows, a low-confidence canonical state, cross-producer comparison, or runtime ranking. A successful complete-scope run may withdraw a prior result when the new producer version proves it unsupported; failure or partial output changes nothing.
 
+### 6.1 Evidence-ordered Derived Transaction Kind policy
+
+For an outflow from an asset account, the Derived producer evaluates evidence in this order:
+
+1. Explicit source evidence for a registered `transfer.*`, `payment.*`, `cash.withdrawal`, `investment.*`, or `fee.*` Kind takes precedence over any direction-only fallback. `fee.bank` therefore remains a fee and follows the current Spending policy rather than becoming a purchase.
+2. `transfer.internal` or investment funding may be derived from either an explicit source code/fixed label such as 「自轉」 or 「複委託扣／入」, or a traceable relation between known owned accounts with exact amount and currency, opposite directions, and close financial dates. The relation evidence must identify the owned endpoints; a generic label such as 「轉帳」 or 「買入」 alone is insufficient.
+3. When no more specific evidence applies, an ordinary non-investment asset-account outflow receives Derived `purchase`, making it eligible for the Spending policy subject to the report's other admission rules.
+
+Direction alone never proves self-transfer, investment funding, credit-card payment, loan payment, withdrawal, or fee. The producer emits at most one current Kind assertion for the declared subject and records the taxonomy and producer-rule versions in provenance; a later stronger or complete result supersedes the fallback within that producer lineage.
+
 All enrichment changes reuse `canonical_commits`, `assertion_lineages`, `assertions`, `assertion_transitions`, typed assertion values, and provenance from the canonical store. Do not create another enrichment event system.
 
 ## 7. Physical responsibilities
@@ -313,7 +329,7 @@ Enrichment uses knowledge time only. It inherits the Transaction's financial dat
 
 Financial report inclusion is a separate, versioned policy evaluated from admitted financial semantics before Category, display, alias, notes, or Tags. An included Transaction with absent categorization contributes its whole amount to a query-time Unclassified bucket and to classification-coverage metrics. Unclassified is not stored or selectable.
 
-The canonical spending query currently publishes policy `gross-posted-outflow` version `v1`, named **Gross posted outflow**. It includes only active, normal, posted outflows whose required inclusion semantics are present, keeps totals separate by currency, and excludes known transfer, cash, investment, credit-card-payment, and loan-payment kinds. This policy describes gross posted outflow coverage; it does not claim net-spending coverage. Category selection never changes this inclusion decision.
+The canonical spending query currently publishes policy `gross-posted-outflow` version `v1`, named **Gross posted outflow**. It includes only active, normal, posted outflows whose required inclusion semantics are present, keeps totals separate by currency, and excludes known transfer, cash, investment, credit-card-payment, and loan-payment kinds. A `purchase` fallback is therefore eligible under the same policy, while `fee.bank` remains included according to the current gross-posted-outflow policy and `receipt` is an inflow that never enters this outflow report. This policy describes gross posted outflow coverage; it does not claim net-spending coverage. Category selection never changes this inclusion decision.
 
 If an inclusion policy requires a missing optional Kind or other admitted semantic, the query returns an eligibility-coverage gap with affected count and amount and does not silently count, drop, or persist an unknown status. A supported integration that claims complete spending coverage must prove through fixtures that its declared scope has no such gap.
 
@@ -354,6 +370,9 @@ Implementation is acceptable only when automated tests prove:
 16. taxonomy CI prevents cycles, unsafe parents, definition mutation, code deletion, missing localization, incompatible applicability, and undeclared producer output;
 17. taxonomy seeding and schema upgrade commit before the writer opens, while a failed upgrade exposes neither partial registry nor projection; and
 18. no legacy categorization or enrichment data is migrated across the Canonical Reset established by ADR 0009.
+19. `receipt` is admitted only as a versioned Derived inflow fallback, is excluded from income totals, and is superseded by later precise evidence without changing the source financial fact;
+20. evidence precedence classifies explicit transfer, payment, withdrawal, investment, and fee semantics before applying the `purchase` outflow fallback, while generic 「轉帳」 and 「買入」 labels alone never establish internal transfer or investment funding; and
+21. asset-account non-investment outflows with no more specific evidence receive a versioned Derived `purchase` assertion and are covered by the gross-posted-outflow Spending policy, subject to the policy's normal status and completeness checks.
 
 ## 11. Comparison references
 

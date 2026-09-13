@@ -1917,9 +1917,17 @@ function commitOnce(
 export async function commitCanonicalFinancialDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
+  beforeCommit?: (
+    db: DatabaseSync,
+    results: readonly CanonicalFinancialDepositCommitResult[],
+  ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult> {
   requireValidatedFinancialWriterStore(store);
-  const [result] = await commitCanonicalFinancialDepositCaptureBatch(store, [capture]);
+  const [result] = await commitCanonicalFinancialDepositCaptureBatch(
+    store,
+    [capture],
+    beforeCommit,
+  );
   return result!;
 }
 

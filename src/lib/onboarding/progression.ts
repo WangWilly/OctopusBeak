@@ -9,7 +9,6 @@ export type OnboardingRoute =
   | "liabilities"
   | "spending"
   | "automation"
-  | "data-issues"
   | "settings";
 
 export type OnboardingStep =

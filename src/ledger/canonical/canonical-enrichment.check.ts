@@ -10,7 +10,10 @@ import {
 } from "./canonical-source-store.ts";
 import {
   commitCanonicalAutomaticEnrichmentRun,
+  commitCanonicalUserCounterpartyDisplay,
+  commitCanonicalUserTag,
   createCanonicalEnrichmentQuery,
+  queryCanonicalEnrichmentCurrentFromDatabase,
   type CanonicalEnrichmentFieldResult,
   type CanonicalEnrichmentOutput,
 } from "./canonical-enrichment.ts";
@@ -213,6 +216,111 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
     if (lineageTransaction.display.status !== "fallback") throw new Error("Expected lineage source-description fallback.");
     assert.equal(lineageTransaction.display.value, "Synthetic Cathay deposit description");
     assert.equal(lineageTransaction.display.provenance.sourceRecordId, state.sourceRecordId);
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("current enrichment reuses a caller-owned projection snapshot without mixing transaction fields", async () => {
+  const state = await createFixtureState();
+  try {
+    await commitCathayAutomaticEnrichmentFromDescriptions(state.directory);
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    try {
+      const projection = createCanonicalProjectionRuntime(db).read({
+        kind: "current",
+        families: ["transactions", "transaction-enrichment", "transaction-categorization"],
+        scope: { sourceConnectionKey: state.sourceConnectionKey },
+      });
+      const transactionIds = projection.families.transactions.map((row) => row.transactionId);
+      const reused = queryCanonicalEnrichmentCurrentFromDatabase(
+        db,
+        { transactionIds },
+        projection,
+      );
+      const standalone = createCanonicalEnrichmentQuery(state.directory).current({
+        sourceConnectionKey: state.sourceConnectionKey,
+      });
+      assert.deepEqual(reused, standalone);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("current enrichment batches display, participation, and tag reads for multiple transactions", async () => {
+  const state = await createFixtureState();
+  try {
+    const before = createCanonicalEnrichmentQuery(state.directory).current({
+      sourceConnectionKey: state.sourceConnectionKey,
+    });
+    const transactionIds = before.transactions.map((transaction) => transaction.transactionId);
+    assert.equal(transactionIds.length, 3);
+
+    const taggedTransactionIds = transactionIds.slice(0, 2);
+    for (const transactionId of taggedTransactionIds)
+      await commitCanonicalUserCounterpartyDisplay(state.directory, {
+        transactionId,
+        action: "override",
+        label: `User display ${transactionId.slice(0, 8)}`,
+      });
+    const tag = await commitCanonicalUserTag(state.directory, {
+      action: "create",
+      label: "Needs review",
+    });
+    for (const transactionId of taggedTransactionIds)
+      await commitCanonicalUserTag(state.directory, {
+        action: "apply",
+        tagId: tag.tagId,
+        transactionId,
+      });
+
+    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    try {
+      const projection = createCanonicalProjectionRuntime(db).read({
+        kind: "current",
+        families: ["transactions", "transaction-enrichment", "transaction-categorization"],
+        scope: { transactionIds },
+      });
+      const preparedSql: string[] = [];
+      const observedDb = Object.create(db) as typeof db;
+      Object.defineProperty(observedDb, "prepare", {
+        configurable: true,
+        value: (sql: string) => {
+          preparedSql.push(sql);
+          return db.prepare(sql);
+        },
+      });
+      const current = queryCanonicalEnrichmentCurrentFromDatabase(
+        observedDb,
+        { transactionIds },
+        projection,
+      );
+
+      const byId = new Map(current.transactions.map((transaction) => [transaction.transactionId, transaction]));
+      for (const transactionId of taggedTransactionIds) {
+        const transaction = byId.get(transactionId)!;
+        assert.equal(transaction.display.status, "supported");
+        if (transaction.display.status !== "supported") throw new Error("Expected user display override.");
+        assert.match(transaction.display.value, /^User display /u);
+        assert.deepEqual(transaction.tags.map((entry) => entry.label), ["Needs review"]);
+      }
+      assert.equal(byId.get(transactionIds[2]!)?.tags.length, 0);
+
+      const countPrepared = (needle: string): number =>
+        preparedSql.filter((sql) => sql.toLowerCase().includes(needle.toLowerCase())).length;
+      const countDisplayReads = countPrepared("counterparty_display_assertion_values");
+      assert.equal(countPrepared("FROM current_counterparty_participations"), 1);
+      assert.equal(countPrepared("FROM current_transaction_tags"), 1);
+      assert.equal(countPrepared("SELECT COALESCE(MAX(commit_sequence)"), 1);
+      // Two display sources are intentionally batched independently: user
+      // overrides/aliases and producer-routed automatic displays.
+      assert.equal(countDisplayReads, 2);
+    } finally {
+      db.close();
+    }
   } finally {
     await discard(state.directory);
   }

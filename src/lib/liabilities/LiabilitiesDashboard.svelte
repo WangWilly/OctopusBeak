@@ -1,7 +1,5 @@
 <script lang="ts">
   import { t, type Translation } from "$lib/i18n/i18n.ts";
-  import ReportDataIssueModal from "$lib/data-issues/ReportDataIssueModal.svelte";
-  import type { DataIssueCreateInput } from "$lib/data-issues/types.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
@@ -28,8 +26,6 @@
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
   let marginFilter: AccountKind | "all" = "all";
-  let reportOpen = false;
-  let reportAccount: AccountRowDto | null = null;
 
   $: liabilityAccounts = liabilities.accounts;
   $: usesEstimatedCredit = liabilityAccounts.some((account) =>
@@ -131,16 +127,6 @@
     return (event.currentTarget as HTMLSelectElement).value;
   }
 
-  function openReport(account: AccountRowDto) {
-    reportAccount = account;
-    reportOpen = true;
-  }
-
-  async function createReport(input: DataIssueCreateInput) {
-    const issue = await window.octopusBeak.dataIssues.create(input);
-    location.hash = `/data-issues/${issue.dataIssueId}`;
-    history.replaceState({ ...history.state, createdDataIssueId: issue.dataIssueId }, "");
-  }
 </script>
 
 <DashboardShell
@@ -197,7 +183,6 @@
       transactionsByAccount={liabilities.transactionsByAccount}
       dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
       focusAccountId={focusAccountId}
-      onReportDataIssue={openReport}
     />
 
     {#if liabilities.marginAccounts.length > 0}
@@ -212,11 +197,8 @@
           bind:filter={marginFilter}
           transactionsByAccount={liabilities.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
-          onReportDataIssue={openReport}
         />
       </section>
     {/if}
   </div>
 </DashboardShell>
-
-<ReportDataIssueModal bind:open={reportOpen} account={reportAccount} onSubmit={createReport} />
