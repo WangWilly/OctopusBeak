@@ -43,6 +43,8 @@ The evidence hierarchy is:
 
 The Human-attestation Contract is an Integration contract created from reviewed live behavior and sanitized fixtures. The first version has no end-user-facing relation-attestation UI and no runtime prompt that lets a user admit a financial relation.
 
+Transaction Kind and repayment relation make different claims. A provider-verified source action that explicitly denotes a loan payment, such as Taipei Fubon's deposit action 「放款繳款」, is sufficient to derive `payment.loan` for an outflow. Any following account reference, branch label, date, or amount remains opaque and cannot identify a Loan Account or relation endpoint. An exact relation or settlement group still requires the endpoint evidence above. This lets Spending exclude a source-proven loan payment without manufacturing a counterpart.
+
 Account or explicit transaction linkage takes precedence over amount equality. A source-proven relationship may be admitted when amounts differ, but the difference remains unexplained unless the source separately proves a fee, currency conversion, or allocation. Date comparison follows an Institution- and page-specific date contract; there is no universal same-day or plus-or-minus-two-day admission window.
 
 ### Mandates establish account relationships, not every payment

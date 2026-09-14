@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { slide } from "svelte/transition";
-  import { ArrowLeftRight, CircleEllipsis, CloudDownload, Import as ImportIcon, Landmark, Search, X } from "@lucide/svelte";
+  import { ArrowLeftRight, CircleEllipsis, CloudDownload, Landmark, Search, X } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type {
     CathayGmailOtpConnectionError,
@@ -52,7 +52,6 @@
   let credentialsOpen = false;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
-  let showAllCollectTasks = false;
   let expandedLogTaskId: string | null = null;
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
@@ -92,7 +91,7 @@
   let onboardingCredentialTargetKey: string | null = null;
   let selectedCredentialGroupId = "";
   let credentialSearch = "";
-  let stageOpen: Record<string, boolean> = { collect: true, import: false, sync: false };
+  let stageOpen: Record<string, boolean> = { sync: true };
   const defaultCathayGmailOtpStatus: CathayGmailOtpStatus = {
     enabled: false,
     connectedEmail: null,
@@ -102,9 +101,7 @@
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
-    : automation.importGate.locked
-      ? $t.common.importLocked
-      : $t.common.ready;
+    : $t.common.ready;
   $: sideSub = $t.common.businessDay(automation.businessDate);
   $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
   $: guideAssistViewer = shouldGuideAssistViewer(
@@ -121,19 +118,9 @@
   ).length;
   $: taskStages = [
     {
-      id: "collect",
-      title: $t.automation.collectStage,
-      tasks: automation.tasks.filter((task) => task.kind === "crawler"),
-    },
-    {
-      id: "import",
-      title: $t.automation.importStage,
-      tasks: automation.tasks.filter((task) => task.kind === "import"),
-    },
-    {
       id: "sync",
       title: $t.automation.syncStage,
-      tasks: automation.tasks.filter((task) => task.kind === "sync"),
+      tasks: automation.tasks,
     },
   ];
   $: prerequisiteNoticeGroups = [...automation.externalPrerequisiteNotices.reduce(
@@ -169,7 +156,7 @@
   );
   $: collectionGroupIds = new Set(
     automation.tasks
-      .filter((task) => task.kind === "crawler" && task.credentialGroupId)
+      .filter((task) => task.credentialGroupId)
       .map((task) => task.credentialGroupId as string),
   );
   $: onboardingDisclosure = onboardingTaskDisclosure(
@@ -217,12 +204,13 @@
     && !onboardingMissingCredentialKey
     && !onboardingNeedsStatements,
   );
-  $: visibleHistoryRows = historyRows.filter((run) => {
+  $: catalogHistoryRows = filterHistoryToCurrentTasks(historyRows, automation.tasks);
+  $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
       && (!term || `${taskIdLabel(run.taskId, $t)} ${run.script}`.toLowerCase().includes(term));
   });
-  $: historyCounts = historyRows.reduce(
+  $: historyCounts = catalogHistoryRows.reduce(
     (counts, run) => {
       counts[historyStatusGroup(run.status)] += 1;
       return counts;
@@ -275,34 +263,6 @@
     if (!stageOpen[disclosure.stageId]) {
       stageOpen = { ...stageOpen, [disclosure.stageId]: true };
     }
-    if (disclosure.showAllCollectTasks) showAllCollectTasks = true;
-  }
-
-  async function toggleCollectTasks(event: MouseEvent) {
-    const container = (event.currentTarget as HTMLElement)
-      .closest(".stage-body")
-      ?.querySelector<HTMLElement>(".table-reveal");
-    if (!container) {
-      showAllCollectTasks = !showAllCollectTasks;
-      return;
-    }
-
-    const startHeight = container.offsetHeight;
-    showAllCollectTasks = !showAllCollectTasks;
-    await tick();
-    const endHeight = container.offsetHeight;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-
-    container.style.height = `${startHeight}px`;
-    const animation = container.animate(
-      [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
-      { duration: 220, easing: "ease", fill: "both" },
-    );
-    await animation.finished;
-    container.style.height = "";
-    animation.cancel();
   }
 
   function stageRunnableTasks(tasks: AutomationTaskRow[]) {
@@ -684,9 +644,8 @@
   }
 
   async function revealTaskLog(task: AutomationTaskRow) {
-    const stageId = task.kind === "crawler" ? "collect" : task.kind;
+    const stageId = "sync";
     stageOpen = { ...stageOpen, [stageId]: true };
-    if (stageId === "collect") showAllCollectTasks = true;
     expandedLogTaskId = task.id;
     jumpHighlightTaskId = task.id;
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
@@ -733,8 +692,6 @@
   }
 
   function taskStageTitle(task: AutomationTaskRow, dictionary: Translation) {
-    if (task.kind === "crawler") return dictionary.automation.collectStage;
-    if (task.kind === "import") return dictionary.automation.importStage;
     return dictionary.automation.syncStage;
   }
 
@@ -791,6 +748,14 @@
     return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
+  function filterHistoryToCurrentTasks(
+    rows: readonly AutomationTaskHistoryRow[],
+    tasks: readonly AutomationTaskRow[],
+  ) {
+    const catalogTaskIds = new Set(tasks.map((task) => task.id));
+    return rows.filter((run) => catalogTaskIds.has(run.taskId));
+  }
+
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
     if (!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)) return;
@@ -841,7 +806,7 @@
         });
         credentialsOpen = false;
         const selectedTask = automation.tasks.find(
-          (task) => task.kind === "crawler" && task.credentialGroupId === savedGroupId,
+          (task) => task.credentialGroupId === savedGroupId,
         );
         if (selectedTask?.canRun) {
           await window.octopusBeak.automation.run(selectedTask.id);
@@ -1205,12 +1170,6 @@
     return (dictionary.automation.taskLabels as Record<string, string>)[task.id] ?? task.label;
   }
 
-  function importLockTitle(task: AutomationTaskRow, dictionary: Translation) {
-    if (task.id !== "import-downloads-csv" || task.status !== "locked") return undefined;
-    const missing = automation.importGate.missingTaskIds.map((taskId) => taskIdLabel(taskId, dictionary));
-    return missing.length > 0 ? dictionary.automation.importLockedBy(missing.join(", ")) : dictionary.automation.progressLocked;
-  }
-
   function progressLabel(task: AutomationTaskRow, dictionary: Translation) {
     if (task.progressPercent !== null) return `${task.progressPercent}%`;
     if (task.status === "running") return dictionary.automation.progressRunning(task.attempt || 1, task.maxAttempts);
@@ -1219,7 +1178,6 @@
     if (task.status === "completed") return dictionary.automation.progressCompleted;
     if (task.status === "partial") return dictionary.automation.progressPartial;
     if (task.status === "failed") return dictionary.automation.progressFailed;
-    if (task.status === "locked") return dictionary.automation.progressLocked;
     if (task.status === "needs_setup") return dictionary.automation.progressNeedsSetup;
     return dictionary.automation.progressQueued;
   }
@@ -1258,7 +1216,7 @@
         <h2>
           {automation.active
             ? $t.automation.runningTaskHeading(automation.activeTaskCount)
-            : $t.automation.startImportHeading}
+            : $t.automation.startSyncHeading}
         </h2>
         {#if iconTasks.length}
           <div class="active-task-filter">
@@ -1272,7 +1230,6 @@
                   class="active-task-jump"
                   class:waiting={task.status === "waiting_for_human"}
                   class:failed={task.status === "failed"}
-                  class:import-task={task.kind === "import"}
                   class:sync-task={task.kind === "sync"}
                   type="button"
                   aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
@@ -1291,12 +1248,8 @@
                     <CircleEllipsis size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else if task.kind === "crawler"}
                     <Landmark size={22} strokeWidth={2.2} aria-hidden="true" />
-                  {:else if task.kind === "import"}
-                    <ImportIcon size={22} strokeWidth={2.2} aria-hidden="true" />
-                  {:else if task.kind === "sync"}
-                    <ArrowLeftRight size={22} strokeWidth={2.2} aria-hidden="true" />
                   {:else}
-                    <CloudDownload size={22} strokeWidth={2.2} aria-hidden="true" />
+                    <ArrowLeftRight size={22} strokeWidth={2.2} aria-hidden="true" />
                   {/if}
                 </button>
               {/each}
@@ -1373,9 +1326,6 @@
               <span class="stage-copy">
                 <span class="stage-title-row">
                   <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
-                  {#if stage.id !== "collect" && stage.tasks.some((task) => task.status === "locked")}
-                    <span class="chip bad">{$t.common.importLocked}</span>
-                  {/if}
                 </span>
               </span>
               <div class="stage-head-actions">
@@ -1423,7 +1373,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each (stage.id === "collect" && !showAllCollectTasks ? stage.tasks.slice(0, 5) : stage.tasks) as task (task.id)}
+            {#each stage.tasks as task (task.id)}
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad" || task.status === "waiting_for_human"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
@@ -1445,31 +1395,18 @@
                     <span class="mono">{progressLabel(task, $t)}</span>
                   </div>
                   {:else}
-                  <span class={`chip ${statusClass(task.status)}`} title={importLockTitle(task, $t)}>
+                  <span class={`chip ${statusClass(task.status)}`}>
                     {$t.automation.statusLabels[task.status]}
                   </span>
                   {/if}
                 </td>
                 <td class="right">
                   <div class="task-actions">
-                    {#if task.id === "import-downloads-csv" && task.canRun && automation.importGate.warnings.length}
-                      <div class="import-warning">
-                        <span>{$t.automation.partialImportWarning}</span>
-                        {#each automation.importGate.warnings as warning}
-                          <span>
-                            {taskIdLabel(warning.taskId, $t)}{#if warning.failedTypeIds.length}:
-                              {warning.failedTypeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join(", ")}
-                            {/if}
-                          </span>
-                        {/each}
-                      </div>
-                    {/if}
                     <button
                       class={`button task-control ${task.primaryAction === "Cancel" ? "danger" : "primary"}`}
                       type="button"
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
-                      title={importLockTitle(task, $t)}
                       data-onboarding-task={task.id}
                       data-onboarding-group={task.credentialGroupId}
                       data-onboarding-action="primary"
@@ -1512,7 +1449,7 @@
                 <tr class="partial-task-detail">
                   <td colspan="5">
                     <details>
-                      <summary>{$t.automation.partialImportWarning}</summary>
+                      <summary>{$t.automation.partialSyncWarning}</summary>
                       <ul>
                         {#each task.statementFailures as failure}
                           <li>
@@ -1544,11 +1481,6 @@
               </table>
               </div>
             </div>
-            {#if stage.id === "collect" && stage.tasks.length > 5}
-              <button class="show-all-tasks" type="button" onclick={(event) => void toggleCollectTasks(event)}>
-                {showAllCollectTasks ? $t.automation.collapseTasks : $t.automation.showAllTasks(stage.tasks.length)}
-              </button>
-            {/if}
           </div>
           {/if}
         </section>
@@ -1898,7 +1830,7 @@
       <div class="modal-head">
         <div>
           <h2 id="history-title">{$t.automation.runHistory}</h2>
-          <p>{$t.automation.historyTaskCount(historyRows.length)}</p>
+          <p>{$t.automation.historyTaskCount(catalogHistoryRows.length)}</p>
         </div>
         <div class="history-head-actions">
           <label class="modal-search history-search">
@@ -1910,7 +1842,7 @@
       </div>
       <div class="modal-body history-layout">
         <aside class="history-filters">
-          <button class:selected={historyFilter === "all"} type="button" onclick={() => (historyFilter = "all")}><span>{$t.automation.historyAll}</span><strong>{historyRows.length}</strong></button>
+          <button class:selected={historyFilter === "all"} type="button" onclick={() => (historyFilter = "all")}><span>{$t.automation.historyAll}</span><strong>{catalogHistoryRows.length}</strong></button>
           <button class:selected={historyFilter === "running"} type="button" onclick={() => (historyFilter = "running")}><span>{$t.automation.historyRunning}</span><strong>{historyCounts.running}</strong></button>
           <button class:selected={historyFilter === "completed"} type="button" onclick={() => (historyFilter = "completed")}><span>{$t.automation.historyCompleted}</span><strong>{historyCounts.completed}</strong></button>
           <button class:selected={historyFilter === "failed"} type="button" onclick={() => (historyFilter = "failed")}><span>{$t.automation.historyFailed}</span><strong>{historyCounts.failed}</strong></button>
@@ -2369,12 +2301,6 @@
     color: var(--warn);
   }
 
-  .active-task-jump.import-task {
-    border-color: color-mix(in oklch, #7367c8 34%, var(--border));
-    background: color-mix(in oklch, #7367c8 8%, var(--surface));
-    color: #6559b5;
-  }
-
   .active-task-jump.sync-task {
     border-color: color-mix(in oklch, #158276 34%, var(--border));
     background: color-mix(in oklch, #158276 8%, var(--surface));
@@ -2524,20 +2450,6 @@
     overflow: clip;
   }
 
-  .show-all-tasks {
-    width: 100%;
-    min-height: 44px;
-    border: 0;
-    background: var(--surface);
-    color: var(--accent);
-    font-size: 13px;
-    font-weight: 760;
-  }
-
-  .show-all-tasks:hover {
-    background: var(--surface-soft);
-  }
-
   .modal-head p {
     margin: var(--space-1) 0 0;
     color: var(--muted);
@@ -2632,16 +2544,6 @@
     justify-content: flex-end;
     gap: 10px;
     flex-wrap: wrap;
-  }
-
-  .import-warning {
-    flex-basis: 100%;
-    display: grid;
-    gap: 2px;
-    color: var(--warn);
-    font-size: 11px;
-    line-height: 1.35;
-    text-align: right;
   }
 
   .fixed-action {

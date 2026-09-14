@@ -8,9 +8,9 @@ export function selectorForOnboardingTarget(target: OnboardingTarget | null) {
   if (target.kind === "overview-nav") return '[data-onboarding="nav-overview"]';
   if (target.kind === "complete") return '[data-onboarding="overview-summary"]';
   if (target.kind === "overview-empty") {
-    return target.route === "automation"
-      ? '[data-onboarding-task="import-downloads-csv"][data-onboarding-action="logs"]'
-      : '[data-onboarding="nav-automation"]';
+    if (target.route !== "automation" || !target.taskId) return '[data-onboarding="nav-automation"]';
+    return `[data-onboarding-group="${target.taskId}"][data-onboarding-action="logs"],`
+      + `[data-onboarding-task="${target.taskId}"][data-onboarding-action="logs"]`;
   }
   return `[data-onboarding-group="${target.taskId}"][data-onboarding-action="${target.action}"],`
     + `[data-onboarding-task="${target.taskId}"][data-onboarding-action="${target.action}"]`;

@@ -145,22 +145,21 @@ export function onboardingTaskDisclosure(
   selectedCredentialGroupId: string | null,
   tasks: readonly AutomationTaskRow[],
 ) {
-  const target = ["import", "import-failed", "overview-empty"].includes(step)
-    ? tasks.find((task) => task.id === "import-downloads-csv")
-    : ["collection", "assist", "collection-failed"].includes(step)
-      ? tasks.find((task) =>
-        task.kind === "crawler" && task.credentialGroupId === selectedCredentialGroupId
-      )
-      : null;
+  const target = ["collection", "assist", "collection-failed", "overview-empty"].includes(step)
+    ? tasks.find((task) => task.credentialGroupId === selectedCredentialGroupId)
+    : null;
   if (!target) return null;
-  const collectionTasks = tasks.filter((task) => task.kind === "crawler");
   return {
-    stageId: target.kind === "crawler" ? "collect" : target.kind,
-    showAllCollectTasks: target.kind === "crawler" && collectionTasks.indexOf(target) >= 5,
+    stageId: "sync",
+    showAllCollectTasks: false,
   };
 }
 
-export function completedImportFinishedAt(tasks: readonly AutomationTaskRow[]) {
-  const importer = tasks.find((task) => task.id === "import-downloads-csv");
-  return importer?.status === "completed" ? importer.latestFinishedAt : null;
+export function completedSourceTaskFinishedAt(
+  tasks: readonly AutomationTaskRow[],
+  selectedCredentialGroupId: string | null,
+) {
+  if (!selectedCredentialGroupId) return null;
+  const task = tasks.find((candidate) => candidate.credentialGroupId === selectedCredentialGroupId);
+  return task?.status === "completed" ? task.latestFinishedAt : null;
 }

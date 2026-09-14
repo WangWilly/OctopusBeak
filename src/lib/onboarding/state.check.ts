@@ -12,6 +12,7 @@ import * as onboardingState from "./state.ts";
 import {
   ONBOARDING_STORAGE_KEY,
   canResumeAssist,
+  completedSourceTaskFinishedAt,
   createOnboardingState,
   nextOnboardingCredentialKey,
   onboardingTaskDisclosure,
@@ -159,48 +160,29 @@ const overview = (
 
 const automation = (
   selectedTask: AutomationTaskRow,
-  importTask = task({
-    id: "import-downloads-csv",
-    kind: "import",
-    status: "locked",
-    primaryAction: "Locked",
-    canRun: false,
-  }),
 ): AutomationDesktopModel => ({
   automation: {
     businessDate: "2026-07-23",
-    active: selectedTask.isActive || importTask.isActive,
-    activeTaskCount:
-      Number(selectedTask.isActive) + Number(importTask.isActive),
+    active: selectedTask.isActive,
+    activeTaskCount: Number(selectedTask.isActive),
     parallelRunnableTaskIds: [],
     credentials: { USER: true, PASSWORD: true },
-    importGate: {
-      locked: true,
-      missingTaskIds: [selectedTask.id],
-      warnings: [],
-    },
     externalPrerequisiteNotices: [],
-    tasks: [selectedTask, importTask],
+    tasks: [selectedTask],
   },
-  credentialGroups: [fubonGroup, esunGroup],
+  credentialGroups: [fubonGroup, esunGroup, maicoinGroup],
 });
 
 const context = (
   selectedTask: AutomationTaskRow,
   options: {
     route?: OnboardingRoute;
-    importTask?: AutomationTaskRow;
     accounts?: number;
     importedAt?: string | null;
-    gateLocked?: boolean;
-    overviewLoadedForImportFinishedAt?: string | null;
+    overviewLoadedForTaskFinishedAt?: string | null;
   } = {},
 ): OnboardingFacts => {
-  const model = automation(selectedTask, options.importTask);
-  model.automation.importGate = {
-    ...model.automation.importGate,
-    locked: options.gateLocked ?? model.automation.importGate.locked,
-  };
+  const model = automation(selectedTask);
   const overviewData = overview(options.accounts, options.importedAt);
   return {
     route: options.route ?? "automation",
@@ -208,14 +190,13 @@ const context = (
       tasks: model.automation.tasks,
       credentialGroups: model.credentialGroups,
       credentials: model.automation.credentials,
-      importGateLocked: model.automation.importGate.locked,
     },
     overview: {
       accounts: overviewData.accounts,
       importedAt: overviewData.importedAt,
     },
-    overviewLoadedForImportFinishedAt:
-      options.overviewLoadedForImportFinishedAt ?? null,
+    overviewLoadedForTaskFinishedAt:
+      options.overviewLoadedForTaskFinishedAt ?? null,
   };
 };
 
@@ -233,6 +214,15 @@ const selectedCrawler = task({
   credentialKeys: ["USER", "PASSWORD"],
   latestStartedAt: "2026-07-23T08:01:00.000Z",
   latestFinishedAt: "2026-07-23T08:05:00.000Z",
+});
+const selectedSync = task({
+  id: "sync-maicoin",
+  kind: "sync",
+  credentialGroupId: "maicoin",
+  credentialKeys: ["USER", "PASSWORD"],
+  latestStartedAt: "2026-07-23T08:01:00.000Z",
+  latestFinishedAt: "2026-07-23T08:05:00.000Z",
+  status: "completed",
 });
 
 assert.equal(ONBOARDING_STORAGE_KEY, "octopusbeak-onboarding-v2");
@@ -327,7 +317,6 @@ assert.equal(onboardingCanGoBack("automation-nav"), false);
 assert.equal(onboardingCanGoBack("credentials"), true);
 assert.equal(onboardingCanGoBack("assist"), true);
 assert.equal(onboardingCanGoBack("collection"), false);
-assert.equal(onboardingCanGoBack("import"), false);
 assert.equal(
   resolveOnboardingStep(context(selectedCrawler), createOnboardingState()),
   "credentials",
@@ -359,64 +348,49 @@ assert.equal(
 );
 assert.equal(
   resolveOnboardingStep(
-    context(
-      { ...selectedCrawler, status: "partial", ranToday: true },
-      { gateLocked: true },
-    ),
+    context({ ...selectedCrawler, status: "partial", ranToday: true }),
     state,
   ),
   "collection",
 );
 assert.equal(
   resolveOnboardingStep(
-    context(
-      { ...selectedCrawler, status: "partial", ranToday: true },
-      { gateLocked: false },
-    ),
+    context({ ...selectedCrawler, status: "completed", ranToday: true }),
     state,
   ),
-  "import",
+  "overview",
 );
 assert.equal(
   resolveOnboardingStep(
-    context(
-      { ...selectedCrawler, status: "completed", ranToday: true },
-      { gateLocked: false },
-    ),
-    state,
+    context(selectedSync, {
+      accounts: 1,
+      route: "overview",
+      overviewLoadedForTaskFinishedAt: selectedSync.latestFinishedAt,
+    }),
+    { ...freshState, selectedCredentialGroupId: "maicoin" },
   ),
-  "import",
+  "complete",
 );
-
-const completedImport = task({
-  id: "import-downloads-csv",
-  kind: "import",
-  status: "completed",
-  ranToday: true,
-  latestStartedAt: "2026-07-23T08:06:00.000Z",
-  latestFinishedAt: "2026-07-23T08:07:00.000Z",
-});
 assert.equal(
   resolveOnboardingStep(
-    context(
-      {
-        ...selectedCrawler,
-        status: "completed",
-        ranToday: true,
-        latestStartedAt: "2026-07-23T07:00:00.000Z",
-        latestFinishedAt: "2026-07-23T07:30:00.000Z",
-      },
-      {
-        gateLocked: false,
-        importTask: {
-          ...completedImport,
-          latestStartedAt: "2026-07-23T07:31:00.000Z",
-        },
-      },
-    ),
+    context({ ...selectedCrawler, status: "completed", ranToday: true }, {
+      route: "overview",
+      overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
+    }),
+    state,
+  ),
+  "overview-empty",
+);
+assert.equal(
+  resolveOnboardingStep(
+    context({ ...selectedCrawler, status: "completed", ranToday: true }, {
+      route: "overview",
+      accounts: 1,
+      overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
+    }),
     freshState,
   ),
-  "collection",
+  "complete",
 );
 const freshCrawler = {
   ...selectedCrawler,
@@ -425,21 +399,14 @@ const freshCrawler = {
   latestStartedAt: "2026-07-23T08:01:00.000Z",
   latestFinishedAt: "2026-07-23T08:05:00.000Z",
 };
-const freshImporter = {
-  ...completedImport,
-  latestStartedAt: "2026-07-23T08:06:00.000Z",
-  latestFinishedAt: "2026-07-23T08:07:00.000Z",
-};
-test("stale completed import cannot suppress Automation navigation", () => {
+test("stale completed source task cannot suppress Automation navigation", () => {
   assert.equal(
     resolveOnboardingStep(
-      context(freshCrawler, {
+      context({
+        ...freshCrawler,
+        latestStartedAt: "2026-07-23T07:59:59.999Z",
+      }, {
         route: "overview",
-        gateLocked: false,
-        importTask: {
-          ...freshImporter,
-          latestStartedAt: "2026-07-23T08:04:00.000Z",
-        },
       }),
       freshState,
     ),
@@ -447,30 +414,27 @@ test("stale completed import cannot suppress Automation navigation", () => {
   );
 });
 
-test("stale failed import cannot report a fresh import failure", () => {
+test("stale failed source task cannot report a fresh source failure", () => {
   assert.equal(
     resolveOnboardingStep(
-      context(freshCrawler, {
-        gateLocked: false,
-        importTask: {
-          ...freshImporter,
-          status: "failed",
-          latestStartedAt: "2026-07-23T08:04:00.000Z",
-        },
+      context({
+        ...freshCrawler,
+        status: "failed",
+        latestStartedAt: "2026-07-23T07:59:59.999Z",
+      }, {
+        route: "overview",
       }),
       freshState,
     ),
-    "import",
+    "automation-nav",
   );
 });
 
 assert.equal(
   resolveOnboardingStep(
     context(freshCrawler, {
-      gateLocked: false,
-      importTask: freshImporter,
       accounts: 1,
-      overviewLoadedForImportFinishedAt: freshImporter.latestFinishedAt,
+      overviewLoadedForTaskFinishedAt: freshCrawler.latestFinishedAt,
     }),
     freshState,
   ),
@@ -478,16 +442,10 @@ assert.equal(
 );
 assert.equal(
   resolveOnboardingStep(
-    context(freshCrawler, {
-      gateLocked: false,
-      importTask: {
-        ...freshImporter,
-        latestStartedAt: "2026-07-23T08:04:00.000Z",
-      },
-    }),
+    context({ ...freshCrawler, latestStartedAt: "2026-07-23T07:59:59.999Z" }),
     freshState,
   ),
-  "import",
+  "collection",
 );
 assert.equal(
   resolveOnboardingStep(
@@ -497,7 +455,6 @@ assert.equal(
         status: "waiting_for_human",
         latestStartedAt: "2026-07-23T07:00:00.000Z",
       },
-      { gateLocked: false },
     ),
     freshState,
   ),
@@ -510,7 +467,6 @@ assert.equal(
         ...selectedCrawler,
         status: "waiting_for_human",
       },
-      { gateLocked: false },
     ),
     freshState,
   ),
@@ -521,7 +477,6 @@ assert.equal(
     context(
       { ...selectedCrawler, status: "completed", ranToday: true },
       {
-        importTask: completedImport,
         accounts: 0,
       },
     ),
@@ -535,9 +490,8 @@ assert.equal(
       { ...selectedCrawler, status: "completed", ranToday: true },
       {
         route: "overview",
-        importTask: completedImport,
         accounts: 0,
-        overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+        overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
       },
     ),
     state,
@@ -550,9 +504,8 @@ assert.equal(
       { ...selectedCrawler, status: "completed", ranToday: true },
       {
         route: "overview",
-        importTask: completedImport,
         accounts: 1,
-        overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+        overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
       },
     ),
     state,
@@ -585,26 +538,21 @@ assert.equal(
   true,
 );
 assert.equal(
-  hasExistingProductData(
-    context(selectedCrawler, { importTask: completedImport }),
+  completedSourceTaskFinishedAt(
+    [{ ...selectedCrawler, status: "completed" }],
+    "fubon",
   ),
-  true,
+  selectedCrawler.latestFinishedAt,
 );
-assert.equal(
-  hasExistingProductData(
-    context(selectedCrawler, {
-      importTask: { ...completedImport, status: "failed" },
-    }),
-  ),
-  false,
-);
+assert.equal(completedSourceTaskFinishedAt([selectedCrawler], "fubon"), null);
+assert.equal(completedSourceTaskFinishedAt([selectedCrawler], "missing"), null);
 assert.equal(hasExistingProductData(context(selectedCrawler)), false);
 assert.deepEqual(targetForOnboardingStep("credentials", state), {
   kind: "credentials",
 });
 assert.deepEqual(targetForOnboardingStep("assist", state), { kind: "assist" });
 assert.equal(onboardingStepNumber("assist"), 3);
-assert.equal(onboardingStepNumber("import-failed"), 4);
+assert.equal(onboardingStepNumber("overview"), 4);
 assert.equal(onboardingCopyKey("collection-failed"), "collectionFailed");
 assert.equal(onboardingCopyKey("overview-empty"), "overviewEmpty");
 assert.equal(onboardingCopyKey("hidden"), null);
@@ -850,29 +798,24 @@ storage.setItem(
 );
 assert.equal(readOnboardingState(storage), null);
 
-test("onboarding discloses hidden collection and import targets", () => {
-  const collectionTasks = Array.from({ length: 6 }, (_, index) =>
+test("onboarding discloses the selected source inside the unified sync stage", () => {
+  const tasks = Array.from({ length: 6 }, (_, index) =>
     task({
-      id: `collection-${index}`,
-      kind: "crawler",
+      id: `source-${index}`,
+      kind: index === 5 ? "sync" : "crawler",
       credentialGroupId: `group-${index}`,
     }),
   );
-  const importRow = task({ id: "import-downloads-csv", kind: "import" });
-  const tasks = [...collectionTasks, importRow];
 
   assert.deepEqual(onboardingTaskDisclosure("collection", "group-5", tasks), {
-    stageId: "collect",
-    showAllCollectTasks: true,
-  });
-  assert.deepEqual(onboardingTaskDisclosure("import", "group-5", tasks), {
-    stageId: "import",
+    stageId: "sync",
     showAllCollectTasks: false,
   });
   assert.deepEqual(
     onboardingTaskDisclosure("overview-empty", "group-5", tasks),
-    { stageId: "import", showAllCollectTasks: false },
+    { stageId: "sync", showAllCollectTasks: false },
   );
+  assert.equal(onboardingTaskDisclosure("overview", "group-5", tasks), null);
   assert.match(automationDashboard, /onboardingTaskDisclosure/);
 });
 
@@ -964,8 +907,10 @@ test("browser adapter maps semantic onboarding targets to DOM selectors", () => 
     selectorForOnboardingTarget({
       kind: "overview-empty",
       route: "automation",
+      taskId: "fubon",
     }),
-    '[data-onboarding-task="import-downloads-csv"][data-onboarding-action="logs"]',
+    '[data-onboarding-group="fubon"][data-onboarding-action="logs"],' +
+      '[data-onboarding-task="fubon"][data-onboarding-action="logs"]',
   );
 });
 
@@ -1363,7 +1308,7 @@ test("credentials Save rejects incomplete onboarding and allows ready or ordinar
   );
 });
 
-test("cross-midnight collection and import advance from fresh timestamps and terminal statuses", () => {
+test("cross-midnight source sync advances from fresh timestamps and terminal status", () => {
   const crossMidnightState = {
     ...freshState,
     sourceConfiguredAt: "2026-07-23T23:58:00.000Z",
@@ -1374,49 +1319,29 @@ test("cross-midnight collection and import advance from fresh timestamps and ter
     latestStartedAt: "2026-07-23T23:59:00.000Z",
     latestFinishedAt: "2026-07-24T00:01:00.000Z",
   };
-  const crossMidnightImporter = {
-    ...freshImporter,
-    ranToday: false,
-    latestStartedAt: "2026-07-24T00:02:00.000Z",
-    latestFinishedAt: "2026-07-24T00:03:00.000Z",
-  };
 
   assert.equal(
     resolveOnboardingStep(
-      context(crossMidnightCrawler, { gateLocked: false }),
-      crossMidnightState,
-    ),
-    "import",
-  );
-  assert.equal(
-    resolveOnboardingStep(
-      context(crossMidnightCrawler, {
-        gateLocked: false,
-        importTask: crossMidnightImporter,
-        accounts: 1,
-        overviewLoadedForImportFinishedAt:
-          crossMidnightImporter.latestFinishedAt,
-      }),
+      context(crossMidnightCrawler),
       crossMidnightState,
     ),
     "overview",
   );
+  assert.equal(
+    resolveOnboardingStep(
+      context(crossMidnightCrawler, {
+        route: "overview",
+        accounts: 1,
+        overviewLoadedForTaskFinishedAt: crossMidnightCrawler.latestFinishedAt,
+      }),
+      crossMidnightState,
+    ),
+    "complete",
+  );
 });
 
-test("route freshness marker lets cross-midnight empty Overview resolve while stale import stays blocked", () => {
-  assert.doesNotMatch(
-    page,
-    /importer\?\.status === "completed" && importer\.ranToday/,
-  );
-  const candidate = (
-    onboardingState as unknown as {
-      completedImportFinishedAt?: (
-        tasks: readonly AutomationTaskRow[],
-      ) => string | null;
-    }
-  ).completedImportFinishedAt;
-  assert.equal(typeof candidate, "function");
-  const completedImportFinishedAt = candidate!;
+test("route freshness marker lets cross-midnight empty Overview resolve while stale sync stays blocked", () => {
+  assert.doesNotMatch(page, /import-downloads-csv|completedImportFinishedAt/);
   const crossMidnightState = {
     ...freshState,
     sourceConfiguredAt: "2026-07-23T23:58:00.000Z",
@@ -1427,60 +1352,46 @@ test("route freshness marker lets cross-midnight empty Overview resolve while st
     latestStartedAt: "2026-07-23T23:59:00.000Z",
     latestFinishedAt: "2026-07-24T00:01:00.000Z",
   };
-  const crossMidnightImporter = {
-    ...freshImporter,
-    ranToday: false,
-    latestStartedAt: "2026-07-24T00:02:00.000Z",
-    latestFinishedAt: "2026-07-24T00:03:00.000Z",
-  };
-  const marker = completedImportFinishedAt([
-    crossMidnightCrawler,
-    crossMidnightImporter,
-  ]);
+  const marker = crossMidnightCrawler.latestFinishedAt;
 
-  assert.equal(marker, crossMidnightImporter.latestFinishedAt);
+  assert.equal(marker, crossMidnightCrawler.latestFinishedAt);
   assert.equal(
     resolveOnboardingStep(
       context(crossMidnightCrawler, {
         route: "overview",
-        gateLocked: false,
-        importTask: crossMidnightImporter,
         accounts: 0,
-        overviewLoadedForImportFinishedAt: marker,
+        overviewLoadedForTaskFinishedAt: marker,
       }),
       crossMidnightState,
     ),
     "overview-empty",
   );
 
-  const staleImporter = {
-    ...crossMidnightImporter,
+  const staleTask = {
+    ...crossMidnightCrawler,
     ranToday: true,
-    latestStartedAt: "2026-07-24T00:00:59.999Z",
+    latestStartedAt: "2026-07-23T23:57:59.999Z",
   };
   assert.equal(
     resolveOnboardingStep(
       context(crossMidnightCrawler, {
         route: "overview",
-        gateLocked: false,
-        importTask: staleImporter,
         accounts: 0,
-        overviewLoadedForImportFinishedAt: completedImportFinishedAt([
-          crossMidnightCrawler,
-          staleImporter,
-        ]),
       }),
+      crossMidnightState,
+    ),
+    "overview",
+  );
+  assert.equal(
+    resolveOnboardingStep(
+      context(staleTask, { route: "overview", accounts: 0 }),
       crossMidnightState,
     ),
     "automation-nav",
   );
-  assert.match(
-    page,
-    /completedImportFinishedAt\(automation\.data\.automation\.tasks\)/,
-  );
 });
 
-test("freshness timestamps still block stale collection and import history", () => {
+test("freshness timestamps still block stale source task history", () => {
   assert.deepEqual(
     {
       collection: resolveOnboardingStep(
@@ -1490,41 +1401,28 @@ test("freshness timestamps still block stale collection and import history", () 
             ranToday: true,
             latestStartedAt: "2026-07-23T07:59:59.999Z",
           },
-          { gateLocked: false },
         ),
         freshState,
       ),
-      import: resolveOnboardingStep(
-        context(freshCrawler, {
-          gateLocked: false,
-          importTask: {
-            ...freshImporter,
-            ranToday: true,
-            latestStartedAt: "2026-07-23T08:04:59.999Z",
-          },
-        }),
+      overview: resolveOnboardingStep(
+        context(
+          { ...freshCrawler, latestStartedAt: "2026-07-23T07:59:59.999Z" },
+          { route: "overview" },
+        ),
         freshState,
       ),
     },
     {
       collection: "collection",
-      import: "import",
+      overview: "automation-nav",
     },
   );
 });
 
-test("fresh milestones advance in order while stale runs stay blocked", () => {
-  const freshImportRunning = {
-    ...freshImporter,
-    status: "running" as const,
-    isActive: true,
-    ranToday: true,
-  };
+test("fresh milestones advance in order while partial commits stay incomplete", () => {
   const refreshedOverview = {
-    gateLocked: false,
-    importTask: freshImporter,
     accounts: 1,
-    overviewLoadedForImportFinishedAt: freshImporter.latestFinishedAt,
+    overviewLoadedForTaskFinishedAt: freshCrawler.latestFinishedAt,
   };
   assert.deepEqual(
     [
@@ -1545,22 +1443,11 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
         freshState,
       ),
       resolveOnboardingStep(
-        context(freshCrawler, { gateLocked: false }),
+        context(freshCrawler),
         freshState,
       ),
       resolveOnboardingStep(
-        context(freshCrawler, {
-          gateLocked: false,
-          importTask: freshImportRunning,
-        }),
-        freshState,
-      ),
-      resolveOnboardingStep(
-        context(freshCrawler, {
-          gateLocked: false,
-          importTask: freshImporter,
-          accounts: 1,
-        }),
+        context(freshCrawler, { accounts: 1 }),
         freshState,
       ),
       resolveOnboardingStep(
@@ -1579,8 +1466,7 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
       "collection",
       "collection",
       "assist",
-      "import",
-      "import",
+      "overview",
       "overview",
       "overview",
       "complete",
@@ -1595,37 +1481,26 @@ test("fresh milestones advance in order while stale runs stay blocked", () => {
             ...freshCrawler,
             latestStartedAt: "2026-07-23T07:00:00.000Z",
           },
-          { gateLocked: false },
         ),
         freshState,
       ),
-      staleImporter: resolveOnboardingStep(
-        context(freshCrawler, {
-          gateLocked: false,
-          importTask: {
-            ...freshImporter,
-            latestStartedAt: "2026-07-23T08:04:00.000Z",
-          },
-        }),
+      partialTask: resolveOnboardingStep(
+        context({ ...freshCrawler, status: "partial" }),
         freshState,
       ),
     },
     {
       staleCrawler: "collection",
-      staleImporter: "import",
+      partialTask: "collection",
     },
   );
 });
 
-test("onboarding collection advances only from task outcome, never Assist interaction", () => {
-  assert.equal(
-    onboardingTaskSucceeded({ status: "waiting_for_human" }, false),
-    false,
-  );
-  assert.equal(onboardingTaskSucceeded({ status: "failed" }, false), false);
-  assert.equal(onboardingTaskSucceeded({ status: "completed" }, true), true);
-  assert.equal(onboardingTaskSucceeded({ status: "partial" }, true), false);
-  assert.equal(onboardingTaskSucceeded({ status: "partial" }, false), true);
+test("onboarding advances only after the selected task commits completely", () => {
+  assert.equal(onboardingTaskSucceeded({ status: "waiting_for_human" }), false);
+  assert.equal(onboardingTaskSucceeded({ status: "failed" }), false);
+  assert.equal(onboardingTaskSucceeded({ status: "completed" }), true);
+  assert.equal(onboardingTaskSucceeded({ status: "partial" }), false);
 });
 
 test("restart narrows sources only on an empty installation", () => {
@@ -1656,7 +1531,7 @@ test("restart narrows sources only on an empty installation", () => {
   );
   assert.equal(
     shouldNarrowOnboardingSources(
-      context(selectedCrawler, { importTask: completedImport }),
+      context(selectedCrawler, { importedAt: "2026-07-22T06:00:00.000Z" }),
       restarted,
       "credentials",
     ),
@@ -1665,17 +1540,16 @@ test("restart narrows sources only on an empty installation", () => {
   assert.match(page, /shouldNarrowOnboardingSources/);
 });
 
-test("overview-empty recovers through Automation and Import Logs without a route loop", () => {
-  const emptyAfterImport = context(
+test("overview-empty recovers through Automation and source logs without a route loop", () => {
+  const emptyAfterSync = context(
     { ...selectedCrawler, status: "completed", ranToday: true },
     {
-      importTask: completedImport,
       accounts: 0,
-      overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+      overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
     },
   );
   assert.equal(
-    resolveOnboardingStep(emptyAfterImport, state),
+    resolveOnboardingStep(emptyAfterSync, state),
     "overview-empty",
   );
   assert.deepEqual(
@@ -1684,22 +1558,21 @@ test("overview-empty recovers through Automation and Import Logs without a route
   );
   assert.deepEqual(
     targetForOnboardingStep("overview-empty", state, "automation"),
-    { kind: "overview-empty", route: "automation" },
+    { kind: "overview-empty", route: "automation", taskId: "fubon" },
   );
 });
 
-test("completed import refreshes stale Overview before confirming empty", () => {
+test("completed source task refreshes stale Overview before confirming empty", () => {
   const staleOverview = context(
     { ...selectedCrawler, status: "completed", ranToday: true },
-    { importTask: completedImport, accounts: 0 },
+    { accounts: 0 },
   );
   const freshOverview = context(
     { ...selectedCrawler, status: "completed", ranToday: true },
     {
       route: "overview",
-      importTask: completedImport,
       accounts: 0,
-      overviewLoadedForImportFinishedAt: completedImport.latestFinishedAt,
+      overviewLoadedForTaskFinishedAt: selectedCrawler.latestFinishedAt,
     },
   );
   const confirmedEmptyBackOnAutomation = {

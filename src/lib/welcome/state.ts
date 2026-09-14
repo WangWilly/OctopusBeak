@@ -19,7 +19,7 @@ type StorageWriter = Pick<Storage, "setItem">;
 
 export type FirstRunWelcomeAutomationTask = {
   id: string;
-  kind: "crawler" | "sync" | "import";
+  kind: "crawler" | "sync";
   latestStartedAt: string | null;
   latestFinishedAt: string | null;
 };

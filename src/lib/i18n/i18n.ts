@@ -21,7 +21,6 @@ const en = {
     enabled: "Enabled",
     disabled: "Disabled",
     ready: "Ready",
-    importLocked: "Import locked",
     runningCount: (count: number) => `${count} running`,
     businessDay: (date: string) => `Business day ${date}`,
     importedAt: (value: string) => `Imported ${value}`,
@@ -425,21 +424,16 @@ const en = {
     syncInProgress: "Sync in progress",
     startSync: "Start sync",
     stopAll: "Stop all",
-    startImportHeading: "Start import",
+    startSyncHeading: "Start sync",
     runningTaskHeading: (count: number) =>
       `${count} ${count === 1 ? "task is" : "tasks are"} running`,
     syncDialogTitle: "Run tasks together",
     syncDialogDescription: (count: number) =>
-      `${count} independent ${count === 1 ? "task" : "tasks"} will start at the same time.`,
+      `${count} independent ${count === 1 ? "task" : "tasks"} will run in sequence.`,
     credentialsReady: (ready: number, total: number) =>
       `${ready} / ${total} sign-in details ready`,
     confirmStopAll: "Stop all running tasks?",
-    collectStage: "Collect statements",
-    importStage: "Import transactions",
     syncStage: "Sync data",
-    showAllTasks: (count: number) =>
-      `Show all ${count} ${count === 1 ? "task" : "tasks"}`,
-    collapseTasks: "Collapse tasks",
     expandStage: (stage: string) => `Expand ${stage}`,
     collapseStage: (stage: string) => `Collapse ${stage}`,
     inlineLogTitle: (task: string) => `${task} · Live logs`,
@@ -493,8 +487,8 @@ const en = {
     needsSetup: "Needs setup",
     selectedStatementCount: (selected: number, total: number) =>
       `${selected} of ${total} selected`,
-    partialImportWarning:
-      "Some statement types failed; available files can still be imported.",
+    partialSyncWarning:
+      "Some statement types failed; successfully collected data was written.",
     prerequisiteNoticesTitle: "Action required before running again",
     prerequisiteNoticeDescription:
       "Install the required external component, then use Run again for each affected task.",
@@ -528,7 +522,6 @@ const en = {
     noLogFile: "No log file yet.",
     noLogs: "No logs yet.",
     logsTitle: (task: string) => `${task} Logs`,
-    importLockedBy: (tasks: string) => `Blocked by: ${tasks}`,
     assistTitle: (task: string) => `${task} Assist`,
     historyStartedTime: (timezone: string) => `Started (${timezone})`,
     historyFinishedTime: (timezone: string) => `Finished (${timezone})`,
@@ -573,7 +566,6 @@ const en = {
     progressCompleted: "Completed",
     progressPartial: "Partially completed",
     progressFailed: "Failed",
-    progressLocked: "Locked",
     progressNeedsSetup: "Needs setup",
     progressQueued: "Queued",
     credentialWords: {
@@ -602,7 +594,6 @@ const en = {
       "einvoice-personal-invoices": "E-Invoice",
       "exchange-rates": "Exchange rates",
       "sync-maicoin": "MaiCoin",
-      "import-downloads-csv": "Import downloads CSV",
     },
   },
   firstRunWelcome: {
@@ -633,16 +624,16 @@ const en = {
   onboarding: {
     welcomeTitle: "Build your first local overview",
     welcomeBody:
-      "Connect one source, collect its data, import it locally, and see the result in Overview.",
+      "Connect one source, collect its data, and see the result in Overview.",
     automationTitle: "Open Automation",
     automationBody:
-      "This is where OctopusBeak collects and imports your financial data.",
+      "This is where OctopusBeak collects and syncs your financial data.",
     credentialsTitle: "Choose your first data source",
     credentialsBody:
-      "Start with one bank or service. You can add the others after your first import. Sign-in details stay on this Mac.",
+      "Start with one bank or service. You can add the others after its first sync. Sign-in details stay on this Mac.",
     chooseSourceCopy: {
       title: "Choose your first bank",
-      body: "Choose one bank for your first import. You can add other sources after it is complete.",
+      body: "Choose one bank for your first sync. You can add other sources after it is complete.",
     },
     enableSourceCopy: {
       title: "Enable this data source",
@@ -653,12 +644,12 @@ const en = {
       body: "Enter the highlighted fields. You must enter them again for this setup; saved values are not used to skip this step.",
     },
     selectStatementsCopy: {
-      title: "Confirm what to import",
+      title: "Confirm what to collect",
       body: "Choose the account data to collect this time, then continue to save.",
     },
     saveCredentialsCopy: {
-      title: "Save and start importing",
-      body: "Saving immediately starts this bank's first data collection.",
+      title: "Save and start syncing",
+      body: "Saving immediately starts this bank's first data sync.",
     },
     collectionTitle: "Collect your first statement",
     collectionBody:
@@ -689,18 +680,12 @@ const en = {
     collectionFailedTitle: "Collection needs attention",
     collectionFailedBody:
       "Open Logs to review the failure, then retry the same source.",
-    importTitle: "Import into the local ledger",
-    importBody:
-      "The source is ready. Start the existing import task to add it to your local ledger.",
-    importFailedTitle: "Import needs attention",
-    importFailedBody:
-      "Open Logs, fix the reported issue, and retry the import.",
     overviewTitle: "See your first result",
     overviewBody:
-      "Open Overview to confirm the imported account and latest import time.",
-    overviewEmptyTitle: "The import finished, but no account is visible",
+      "Open Overview to confirm the collected account and latest sync time.",
+    overviewEmptyTitle: "The sync finished, but no account is visible",
     overviewEmptyBody:
-      "Return to Automation and review the import log before completing setup.",
+      "Return to Automation and review the sync log before completing setup.",
     completeTitle: "Your first overview is ready",
     completeBody: "You can finish here or add another data source.",
     stepLabel: (current: number, total: number) =>
@@ -805,7 +790,6 @@ const zh: typeof en = {
     enabled: "已啟用",
     disabled: "未啟用",
     ready: "就緒",
-    importLocked: "匯入已鎖定",
     runningCount: (count) => `${count} 個執行中`,
     businessDay: (date) => `營業日 ${date}`,
     importedAt: (value) => `已匯入 ${value}`,
@@ -1192,17 +1176,13 @@ const zh: typeof en = {
     syncInProgress: "同步執行中",
     startSync: "開始同步",
     stopAll: "停止全部",
-    startImportHeading: "開始匯入",
+    startSyncHeading: "開始同步",
     runningTaskHeading: (count) => `${count} 個任務正在同步執行`,
     syncDialogTitle: "同步執行",
-    syncDialogDescription: (count) => `將同時啟動 ${count} 個互不依賴的任務。`,
+    syncDialogDescription: (count) => `將依序執行 ${count} 個互不依賴的任務。`,
     credentialsReady: (ready, total) => `${ready} / ${total} 登入資料已設定`,
     confirmStopAll: "要停止所有執行中的任務嗎？",
-    collectStage: "取得對帳單",
-    importStage: "匯入交易資料",
     syncStage: "同步資料",
-    showAllTasks: (count) => `顯示全部 ${count} 個任務`,
-    collapseTasks: "收合任務",
     expandStage: (stage) => `展開${stage}`,
     collapseStage: (stage) => `收合${stage}`,
     inlineLogTitle: (task) => `${task}・即時日誌`,
@@ -1251,7 +1231,7 @@ const zh: typeof en = {
     selectOneStatementType: (bank) => `請至少選擇一種 ${bank} 帳戶型態。`,
     needsSetup: "需要設定",
     selectedStatementCount: (selected, total) => `已選 ${selected}/${total}`,
-    partialImportWarning: "部分帳戶資料抓取失敗；仍可匯入已成功下載的檔案。",
+    partialSyncWarning: "部分帳戶資料抓取失敗；已成功取得的資料已寫入。",
     prerequisiteNoticesTitle: "執行前需要處理",
     prerequisiteNoticeDescription:
       "請先安裝必要的外部元件，再對每個受影響的任務按「重新執行」。",
@@ -1285,7 +1265,6 @@ const zh: typeof en = {
     noLogFile: "尚無日誌檔。",
     noLogs: "尚無日誌。",
     logsTitle: (task) => `${task} 日誌`,
-    importLockedBy: (tasks) => `阻擋任務：${tasks}`,
     assistTitle: (task) => `${task} 協助`,
     historyStartedTime: (timezone) => `開始（${timezone}）`,
     historyFinishedTime: (timezone) => `完成（${timezone}）`,
@@ -1330,7 +1309,6 @@ const zh: typeof en = {
     progressCompleted: "已完成",
     progressPartial: "部分完成",
     progressFailed: "失敗",
-    progressLocked: "已鎖定",
     progressNeedsSetup: "需要設定",
     progressQueued: "已排隊",
     credentialWords: {
@@ -1359,7 +1337,6 @@ const zh: typeof en = {
       "einvoice-personal-invoices": "電子發票（E-Invoice）",
       "exchange-rates": "匯率同步",
       "sync-maicoin": "MaiCoin",
-      "import-downloads-csv": "匯入下載 CSV",
     },
   },
   firstRunWelcome: {
@@ -1388,15 +1365,15 @@ const zh: typeof en = {
   onboarding: {
     welcomeTitle: "建立第一個本機總覽",
     welcomeBody:
-      "連結一個資料來源、完成收集並匯入本機帳本，最後在總覽看見結果。",
+      "連結一個資料來源、完成資料收集，最後在總覽看見結果。",
     automationTitle: "前往自動化",
-    automationBody: "OctopusBeak 會在這裡收集並匯入你的財務資料。",
+    automationBody: "OctopusBeak 會在這裡收集並同步你的財務資料。",
     credentialsTitle: "選擇第一個資料來源",
     credentialsBody:
-      "先設定一間銀行或服務，第一次匯入完成後再加入其他來源。登入資料只保存在這台 Mac。",
+      "先設定一間銀行或服務，第一次同步完成後再加入其他來源。登入資料只保存在這台 Mac。",
     chooseSourceCopy: {
       title: "選擇第一間銀行",
-      body: "選擇一間要完成首次匯入的銀行；完成後仍可加入其他來源。",
+      body: "選擇一間要完成首次同步的銀行；完成後仍可加入其他來源。",
     },
     enableSourceCopy: {
       title: "啟用這個資料來源",
@@ -1407,12 +1384,12 @@ const zh: typeof en = {
       body: "請在目前反白的欄位輸入資料。本次必須重新輸入，不會以已儲存的值略過。",
     },
     selectStatementsCopy: {
-      title: "確認匯入範圍",
+      title: "確認收集範圍",
       body: "選擇這次要抓取的帳戶資料，再繼續儲存。",
     },
     saveCredentialsCopy: {
-      title: "儲存並開始匯入",
-      body: "儲存後會立即執行這間銀行的首次資料收集。",
+      title: "儲存並開始同步",
+      body: "儲存後會立即執行這間銀行的首次資料同步。",
     },
     collectionTitle: "收集第一份帳務資料",
     collectionBody: "執行選定的資料來源；工作進行時，引導會留在這一步等待。",
@@ -1440,14 +1417,10 @@ const zh: typeof en = {
     clickVerificationField: "請點選銀行畫面中的驗證控制項",
     collectionFailedTitle: "收集工作需要處理",
     collectionFailedBody: "先開啟 Logs 查看失敗原因，再重試相同資料來源。",
-    importTitle: "匯入本機帳本",
-    importBody: "資料已準備完成，執行現有匯入工作即可寫入本機帳本。",
-    importFailedTitle: "匯入工作需要處理",
-    importFailedBody: "開啟 Logs、處理回報的問題，再重試匯入。",
     overviewTitle: "查看第一筆成果",
-    overviewBody: "前往總覽，確認匯入的帳戶與最新匯入時間。",
-    overviewEmptyTitle: "匯入完成，但還沒有可見帳戶",
-    overviewEmptyBody: "回到自動化查看匯入紀錄，處理完成後再結束設定。",
+    overviewBody: "前往總覽，確認收集的帳戶與最新同步時間。",
+    overviewEmptyTitle: "同步完成，但還沒有可見帳戶",
+    overviewEmptyBody: "回到自動化查看同步紀錄，處理完成後再結束設定。",
     completeTitle: "第一個總覽已完成",
     completeBody: "你可以完成引導，或繼續加入其他資料來源。",
     stepLabel: (current, total) => `步驟 ${current} / ${total}`,

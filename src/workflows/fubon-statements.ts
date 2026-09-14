@@ -252,6 +252,20 @@ export const fubonStatementsOutputSchema = z.object({
           terminal: z.boolean(),
           nextPage: z.string().nullable(),
           pageFieldName: z.string().nullable(),
+          paginationEvidence: z
+            .enum(["next-page", "terminal-no-next"])
+            .optional(),
+          paginationAmbiguous: z.boolean().optional(),
+          paginationAmbiguityReason: z
+            .enum([
+              "result-context-missing",
+              "malformed-result-action",
+              "forward-control-unrecognized",
+              "forward-target-untraversable",
+              "current-page-unresolved",
+              "terminal-proof-missing",
+            ])
+            .optional(),
           queryRange: z.object({
             startDate: z.string(),
             endDate: z.string(),
@@ -262,6 +276,7 @@ export const fubonStatementsOutputSchema = z.object({
             branchName: z.string(),
           }),
           providerPageSize: z.number().int().positive().optional(),
+          providerTotalCount: z.number().int().nonnegative().optional(),
           rows: z.array(
             z.object({
               rowOrdinal: z.number().int().nonnegative(),
@@ -527,6 +542,10 @@ export type ParsedDepositStatementPage = {
   rows: string[][];
   nextPage: string | null;
   pageFieldName: string | null;
+  paginationEvidence?: "next-page" | "terminal-no-next";
+  /** No traversable next page was parsed, but provider pagination controls were ambiguous. */
+  paginationAmbiguous?: true;
+  paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
   pageOrdinal: number;
   responseSequence: number;
   terminal: boolean;
@@ -539,6 +558,7 @@ export type ParsedDepositStatementPage = {
   bodyLength: number;
   bodySha256: `sha256:${string}`;
   providerPageSize?: number;
+  providerTotalCount?: number;
 };
 
 type FubonDepositResponseMetadata = {
@@ -686,10 +706,17 @@ export type FubonDepositStatementPageEvidence = {
   terminal: boolean;
   nextPage: string | null;
   pageFieldName: string | null;
+  /** Provider-derived pagination signal; absent means pagination is ambiguous. */
+  paginationEvidence?: "next-page" | "terminal-no-next";
+  /** No traversable next page was parsed, but provider pagination controls were ambiguous. */
+  paginationAmbiguous?: true;
+  paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
   queryRange: { startDate: string; endDate: string };
   selectedAccount: FubonDepositAccountOptionEvidence;
   /** Provider page-size evidence used to distinguish a short terminal page from a truncated full page. */
   providerPageSize?: number;
+  /** Provider result-count evidence used to prove a complete terminal page. */
+  providerTotalCount?: number;
   rows: readonly FubonDepositStatementRowEvidence[];
   zeroObservation: "empty-page" | "non-empty-page";
 };
@@ -827,6 +854,9 @@ export type FubonDepositStatementOutputEvidence = {
     terminal: boolean;
     nextPage: string | null;
     pageFieldName: string | null;
+    paginationEvidence?: "next-page" | "terminal-no-next";
+    paginationAmbiguous?: true;
+    paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
     queryRange: { startDate: string; endDate: string };
     selectedAccount: {
       valueDigest: `sha256:${string}`;
@@ -834,6 +864,7 @@ export type FubonDepositStatementOutputEvidence = {
       branchName: string;
     };
     providerPageSize?: number;
+    providerTotalCount?: number;
     rows: Array<{
       rowOrdinal: number;
       cells: string[];
@@ -880,6 +911,10 @@ function numericCounter(value: string | undefined): number | null {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 0 || number > 10_000) return null;
   return number;
+}
+
+function isFubonProviderTotalCountFieldName(name: string): boolean {
+  return /^(?:resultGrid:)?(?:totalCount|recordCount)$/iu.test(name.trim());
 }
 
 /**
@@ -956,7 +991,7 @@ export function inspectFubonDepositResponseMetadata(
     /dataGridCurrentPage\s*[=:]\s*["']?(\d+)/gi,
     /currentPage\s*[=:]\s*["']?(\d+)/gi,
     /pageSize\s*[=:]\s*["']?(\d+)/gi,
-    /(?:total|recordCount|totalCount)\s*[=:]\s*["']?(\d+)/gi,
+    /(?:resultGrid:)?(?:totalCount|recordCount)\s*[=:]\s*["']?(\d+)/gi,
   ];
   for (const pattern of paginationPatterns) {
     for (const match of html.matchAll(pattern)) {
@@ -1021,6 +1056,15 @@ export function redactFubonDepositStatementEvidence(
       terminal: page.terminal,
       nextPage: page.nextPage,
       pageFieldName: page.pageFieldName,
+      ...(page.paginationEvidence !== undefined
+        ? { paginationEvidence: page.paginationEvidence }
+        : {}),
+      ...(page.paginationAmbiguous === true
+        ? { paginationAmbiguous: true as const }
+        : {}),
+      ...(page.paginationAmbiguityReason !== undefined
+        ? { paginationAmbiguityReason: page.paginationAmbiguityReason }
+        : {}),
       queryRange: { ...page.queryRange },
       selectedAccount: redactAccount(page.selectedAccount),
       rows: page.rows.map((row) => ({
@@ -1029,6 +1073,9 @@ export function redactFubonDepositStatementEvidence(
       })),
       ...(page.providerPageSize !== undefined
         ? { providerPageSize: page.providerPageSize }
+        : {}),
+      ...(page.providerTotalCount !== undefined
+        ? { providerTotalCount: page.providerTotalCount }
         : {}),
       zeroObservation: page.zeroObservation,
     })),
@@ -1056,10 +1103,22 @@ export function buildFubonDepositStatementEvidence(
       terminal: page.terminal,
       nextPage: page.nextPage,
       pageFieldName: page.pageFieldName,
+      ...(page.paginationEvidence !== undefined
+        ? { paginationEvidence: page.paginationEvidence }
+        : {}),
+      ...(page.paginationAmbiguous === true
+        ? { paginationAmbiguous: true as const }
+        : {}),
+      ...(page.paginationAmbiguityReason !== undefined
+        ? { paginationAmbiguityReason: page.paginationAmbiguityReason }
+        : {}),
       queryRange: { ...page.queryRange },
       selectedAccount: { ...page.selectedAccount },
       ...(page.providerPageSize !== undefined
         ? { providerPageSize: page.providerPageSize }
+        : {}),
+      ...(page.providerTotalCount !== undefined
+        ? { providerTotalCount: page.providerTotalCount }
         : {}),
       rows: page.rows.map((row) => ({
         rowOrdinal: row.rowOrdinal,
@@ -1205,6 +1264,742 @@ function cleanText(value: string | null | undefined): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export type FubonDepositPaginationSignal = {
+  nextPage: string | null;
+  pageFieldName: string | null;
+  terminal: boolean;
+  evidence: "next-page" | "terminal-no-next" | null;
+  /** No traversable next page was parsed, but provider pagination was ambiguous. */
+  paginationAmbiguous?: true;
+  paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
+  providerPageSize?: number;
+};
+
+export type FubonDepositPaginationAmbiguityReason =
+  | "result-context-missing"
+  | "malformed-result-action"
+  | "forward-control-unrecognized"
+  | "forward-target-untraversable"
+  | "current-page-unresolved"
+  | "terminal-proof-missing";
+
+function fubonHtmlAttribute(openingTag: string, name: string): string {
+  const match = [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/gu,
+    ),
+  ].find((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
+}
+
+function fubonHasHtmlBooleanAttribute(openingTag: string, name: string): boolean {
+  return [
+    ...openingTag.matchAll(
+      /\s([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gu,
+    ),
+  ].some((entry) => entry[1]?.toLowerCase() === name.toLowerCase());
+}
+
+function fubonHasHtmlClassToken(openingTag: string, token: string): boolean {
+  return fubonHtmlAttribute(openingTag, "class")
+    .split(/\s+/u)
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function fubonHasHtmlClassOrIdToken(openingTag: string, token: string): boolean {
+  return [
+    fubonHtmlAttribute(openingTag, "class"),
+    fubonHtmlAttribute(openingTag, "id"),
+  ]
+    .flatMap((value) => value.split(/\s+/u))
+    .some((value) => value.toLowerCase() === token.toLowerCase());
+}
+
+function fubonStripHtml(value: string): string {
+  return cleanText(value.replace(/<[^>]*>/gu, " "));
+}
+
+function fubonExtractBalancedHtmlElement(
+  html: string,
+  openingStart: number,
+  openingTag: string,
+): string {
+  const tagName = openingTag.match(/^<([a-z][\w:-]*)\b/iu)?.[1];
+  if (!tagName || /\/>$/u.test(openingTag)) return openingTag;
+  const tokens = [
+    ...html
+      .slice(openingStart)
+      .matchAll(new RegExp(`<\\/?${tagName}\\b[^>]*>`, "giu")),
+  ];
+  let depth = 0;
+  for (const token of tokens) {
+    const value = token[0];
+    if (/^<\//u.test(value)) {
+      depth -= 1;
+      if (depth === 0) {
+        const end = (token.index ?? 0) + value.length;
+        return html.slice(openingStart, openingStart + end);
+      }
+    } else if (!/\/>$/u.test(value)) {
+      depth += 1;
+    }
+  }
+  return html.slice(openingStart);
+}
+
+function fubonHtmlAncestorOpenings(
+  markup: string,
+  offset: number,
+): string[] {
+  const voidElements = new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+  ]);
+  const stack: Array<{ tagName: string; opening: string }> = [];
+  for (const token of markup.slice(0, offset).matchAll(
+    /<\/?([a-z][\w:-]*)\b[^>]*>/giu,
+  )) {
+    const value = token[0] ?? "";
+    const tagName = token[1]?.toLowerCase();
+    if (!tagName) continue;
+    if (/^<\//u.test(value)) {
+      const index = stack.map((entry) => entry.tagName).lastIndexOf(tagName);
+      if (index >= 0) stack.splice(index, 1);
+    } else if (!voidElements.has(tagName) && !/\/\s*>$/u.test(value)) {
+      stack.push({ tagName, opening: value });
+    }
+  }
+  return stack.map((entry) => entry.opening);
+}
+
+type FubonDepositPaginationContext = {
+  markup: string;
+  providerResultTable: boolean;
+  currentPageFieldCount: number;
+  currentPage: number | null;
+  currentPageFieldNames: string[];
+  providerPageSize: number | null;
+  pageSizeControlPresent: boolean;
+  providerPager: boolean;
+  controls: Array<{
+    tagName: string;
+    opening: string;
+    text: string;
+    onclick: string;
+    ancestorOpenings: string[];
+  }>;
+};
+
+function fubonPaginationFieldNames(openingTag: string): string[] {
+  return [
+    fubonHtmlAttribute(openingTag, "id"),
+    fubonHtmlAttribute(openingTag, "name"),
+  ].filter(Boolean);
+}
+
+function isFubonDepositCurrentPageField(name: string): boolean {
+  return /(?:^|:|_)dataGridCurrentPage$/iu.test(name);
+}
+
+function isFubonDepositPageSizeField(name: string): boolean {
+  return /(?:^|:|_)(?:dataGridCurrentPageSize|currentPageSize|pageSize)$/iu.test(
+    name,
+  );
+}
+
+function fubonDepositCurrentPageFieldBelongsToResult(
+  name: string,
+  tableId: string,
+  providerResultTable: boolean,
+): boolean {
+  if (!isFubonDepositCurrentPageField(name)) return false;
+  const normalizedName = name.toLowerCase();
+  const normalizedTableId = tableId.toLowerCase();
+  const fieldPrefix = normalizedName.replace(
+    /(?:^|:|_)datagridcurrentpage$/iu,
+    "",
+  );
+  const tablePrefixes = [
+    normalizedTableId,
+    normalizedTableId.replace(/_datagrid_datagridbody$/iu, "_datagrid"),
+    normalizedTableId.replace(/_datagridbody$/iu, "_datagrid"),
+  ].filter(Boolean);
+  if (tablePrefixes.some((prefix) => fieldPrefix === prefix)) return true;
+  if (
+    providerResultTable &&
+    /(?:^|[:_-])resultgrid(?:$|[:_-])/iu.test(name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function fubonDepositPageSizeFieldBelongsToResult(
+  name: string,
+  tableId: string,
+  providerResultTable: boolean,
+): boolean {
+  if (!isFubonDepositPageSizeField(name)) return false;
+  const normalizedName = name.toLowerCase();
+  const normalizedTableId = tableId.toLowerCase();
+  const fieldPrefix = normalizedName.replace(
+    /(?:^|:|_)(?:datagridcurrentpagesize|currentpagesize|pagesize)$/iu,
+    "",
+  );
+  const tablePrefixes = [
+    normalizedTableId,
+    normalizedTableId.replace(/_datagrid_datagridbody$/iu, "_datagrid"),
+    normalizedTableId.replace(/_datagridbody$/iu, "_datagrid"),
+  ].filter(Boolean);
+  if (tablePrefixes.some((prefix) => fieldPrefix === prefix)) return true;
+  if (
+    providerResultTable &&
+    /(?:^|[:_-])resultgrid(?:$|[:_-])/iu.test(name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function fubonPaginationControls(markup: string): Array<{
+  tagName: string;
+  markup: string;
+  ancestorOpenings: string[];
+}> {
+  return [
+    ...markup.matchAll(
+      /<((?:a|button|select))\b[^>]*>[\s\S]*?<\/\1>|<(input)\b[^>]*>/giu,
+    ),
+  ].map((match) => ({
+    tagName: (match[1] ?? match[2] ?? "").toLowerCase(),
+    markup: match[0],
+    ancestorOpenings: fubonHtmlAncestorOpenings(markup, match.index ?? 0),
+  }));
+}
+
+function fubonPaginationControlOpening(markup: string): string {
+  return (
+    markup.match(/^<(?:input|select|button|a)\b[^>]*>/iu)?.[0] ?? ""
+  );
+}
+
+function fubonPaginationControlValue(
+  markup: string,
+  opening: string,
+): string {
+  const directValue = fubonHtmlAttribute(opening, "value");
+  if (directValue) return directValue;
+  const selectedOption = [
+    ...markup.matchAll(/<option\b[^>]*>/giu),
+  ].find((option) => fubonHasHtmlBooleanAttribute(option[0], "selected"));
+  return selectedOption
+    ? fubonHtmlAttribute(selectedOption[0], "value")
+    : "";
+}
+
+function fubonGridMarkerValues(opening: string): string[] {
+  return [
+    fubonHtmlAttribute(opening, "id"),
+    fubonHtmlAttribute(opening, "class"),
+  ].filter(Boolean);
+}
+
+function fubonHasResultGridNamespace(value: string): boolean {
+  return /(?:^|[^a-z0-9])resultgrid(?:[^a-z0-9]|$)/iu.test(value);
+}
+
+function fubonHasNonResultGridMarker(opening: string): boolean {
+  return fubonGridMarkerValues(opening).some(
+    (value) =>
+      /(?:grid|table|list|pager)/iu.test(value) &&
+      !fubonHasResultGridNamespace(value),
+  );
+}
+
+function fubonControlBelongsToResultGrid(
+  control: FubonDepositPaginationContext["controls"][number],
+  currentPageFieldNames: readonly string[] = [],
+): boolean {
+  const scopeOpenings = [control.opening, ...control.ancestorOpenings];
+  const scopeText = [control.onclick, ...scopeOpenings].join(" ");
+  if (fubonHasResultGridNamespace(scopeText)) return true;
+  const mentionedPaginationFields = [
+    ...fubonPaginationFieldNames(control.opening),
+    ...[...control.onclick.matchAll(/["']([^"']+)["']/gu)].map(
+      (match) => match[1] ?? "",
+    ),
+  ].filter(
+    (name) =>
+      isFubonDepositCurrentPageField(name) ||
+      isFubonDepositPageSizeField(name),
+  );
+  if (mentionedPaginationFields.length > 0)
+    return mentionedPaginationFields.some(
+      (name) =>
+        currentPageFieldNames.includes(name) ||
+        /(?:^|[:_-])resultgrid(?:$|[:_-])/iu.test(name),
+    );
+  const onclickWithoutPaginationHelper = control.onclick
+    .replace(/setDataGridCurrentPage/giu, "")
+    .replace(/dataGridCurrentPage(?:Size)?/giu, "");
+  if (
+    /\b[a-z0-9_-]*grid[a-z0-9_-]*\b/iu.test(onclickWithoutPaginationHelper)
+  )
+    return false;
+  if (scopeOpenings.some(fubonHasNonResultGridMarker)) return false;
+  return true;
+}
+
+function fubonPagerBelongsToResultGrid(
+  opening: string,
+  ancestorOpenings: string[],
+): boolean {
+  const scopeOpenings = [opening, ...ancestorOpenings];
+  if (
+    scopeOpenings.some((candidate) =>
+      fubonHasResultGridNamespace(
+        fubonGridMarkerValues(candidate).join(" "),
+      ),
+    )
+  )
+    return true;
+  if (scopeOpenings.some(fubonHasNonResultGridMarker)) return false;
+  return true;
+}
+
+function fubonPositivePageNumber(value: string): number | null {
+  if (!/^\d+$/u.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function fubonDepositPaginationContext(
+  html: string,
+): FubonDepositPaginationContext | null {
+  const expectedHeaders = depositHeaders.map((header) =>
+    header.replace(/\s+/gu, ""),
+  );
+  for (const match of html.matchAll(/<table\b[^>]*>/giu)) {
+    const opening = match[0];
+    const table = fubonExtractBalancedHtmlElement(
+      html,
+      match.index ?? 0,
+      opening,
+    );
+    const rows = [
+      ...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu),
+    ];
+    const headerRowIndex = rows.findIndex((row) => {
+      const headers = [
+        ...(row[1] ?? "").matchAll(
+          /<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/giu,
+        ),
+      ].map((cell) => fubonStripHtml(cell[1] ?? "").replace(/\s+/gu, ""));
+      return (
+        headers.length >= expectedHeaders.length &&
+        expectedHeaders.every((header, index) =>
+          (headers[index] ?? "").includes(header),
+        )
+      );
+    });
+    if (headerRowIndex < 0) continue;
+
+    const tableId = fubonHtmlAttribute(opening, "id");
+    const tableStart = match.index ?? 0;
+    const tableEnd = tableStart + table.length;
+    let formOpening: string | undefined;
+    let formMarkup: string | undefined;
+    for (const formMatch of html.matchAll(/<form\b[^>]*>/giu)) {
+      const candidateStart = formMatch.index ?? 0;
+      if (candidateStart > tableStart) break;
+      const candidateOpening = formMatch[0];
+      const candidateMarkup = fubonExtractBalancedHtmlElement(
+        html,
+        candidateStart,
+        candidateOpening,
+      );
+      const candidateEnd = candidateStart + candidateMarkup.length;
+      if (tableStart >= candidateStart && tableEnd <= candidateEnd) {
+        formOpening = candidateOpening;
+        formMarkup = candidateMarkup;
+      }
+    }
+    const markup = formMarkup ?? table;
+    const providerResultTable =
+      fubonHasHtmlClassToken(opening, "queryResult") ||
+      fubonHasHtmlClassOrIdToken(opening, "resultGrid") ||
+      /(?:^|[:_-])(?:dataGridBody|resultGrid)(?:$|[:_-])/iu.test(tableId) ||
+      fubonHtmlAttribute(formOpening ?? "", "id").toLowerCase() === "form1";
+    const controlsInMarkup = fubonPaginationControls(markup);
+    const allControls = fubonPaginationControls(html);
+    const controlNameSet = new Set(
+      controlsInMarkup.flatMap((control) => {
+        const opening = fubonPaginationControlOpening(control.markup);
+        return fubonPaginationFieldNames(opening);
+      }),
+    );
+    const currentPageFieldEntries = allControls.flatMap((control) => {
+      const opening = fubonPaginationControlOpening(control.markup);
+      return fubonPaginationFieldNames(opening)
+        .filter((name) => {
+          if (!isFubonDepositCurrentPageField(name)) return false;
+          if (controlNameSet.has(name) && !tableId) return true;
+          return fubonDepositCurrentPageFieldBelongsToResult(
+            name,
+            tableId,
+            providerResultTable,
+          );
+        })
+        .map((name) => ({
+          name,
+          value: fubonPaginationControlValue(control.markup, opening),
+        }));
+    });
+    const currentPageFieldNames = [
+      ...new Set(currentPageFieldEntries.map((entry) => entry.name)),
+    ];
+    const currentPageValues = [
+      ...new Set(
+        currentPageFieldEntries
+          .map((entry) => fubonPositivePageNumber(entry.value))
+          .filter((value): value is number => value !== null),
+      ),
+    ];
+    const currentPage = currentPageValues.length === 1
+      ? currentPageValues[0]!
+      : null;
+    const currentPageFieldCount = currentPageFieldNames.length;
+    const pageSizeFieldEntries = allControls.flatMap((control) => {
+      const controlOpening = fubonPaginationControlOpening(control.markup);
+      return fubonPaginationFieldNames(controlOpening)
+        .filter((name) =>
+          fubonDepositPageSizeFieldBelongsToResult(
+            name,
+            tableId,
+            providerResultTable,
+          ),
+        )
+        .map((name) => ({
+          name,
+          value: fubonPaginationControlValue(control.markup, controlOpening),
+        }));
+    });
+    const pageSizeValues = [
+      ...new Set(
+        pageSizeFieldEntries
+          .map((entry) => fubonPositivePageNumber(entry.value))
+          .filter((value): value is number => value !== null),
+      ),
+    ];
+    const providerPageSize = pageSizeValues.length === 1
+      ? pageSizeValues[0]!
+      : null;
+    const providerPager = [
+      ...markup.matchAll(/<([a-z][\w:-]*)\b[^>]*>/giu),
+    ].some((candidate) => {
+      const tagName = candidate[1]?.toLowerCase();
+      return (
+        tagName !== undefined &&
+        /^(?:div|span|nav|ul|ol)$/u.test(tagName) &&
+        (fubonHasHtmlClassOrIdToken(candidate[0], "pager") ||
+          fubonHasHtmlClassOrIdToken(candidate[0], "pagination")) &&
+        fubonPagerBelongsToResultGrid(
+          candidate[0],
+          fubonHtmlAncestorOpenings(markup, candidate.index ?? 0),
+        )
+      );
+    });
+    const controls = controlsInMarkup.map((control) => {
+      const markupValue = control.markup;
+      const controlOpening =
+        markupValue.match(/^<(?:input|select|button|a)\b[^>]*>/iu)?.[0] ?? "";
+      const label = [
+        fubonStripHtml(markupValue),
+        fubonHtmlAttribute(controlOpening, "value"),
+        fubonHtmlAttribute(controlOpening, "aria-label"),
+        fubonHtmlAttribute(controlOpening, "title"),
+      ]
+        .map(cleanText)
+        .find(Boolean) ?? "";
+      return {
+        tagName: control.tagName,
+        opening: controlOpening,
+        text: label,
+        onclick: fubonHtmlAttribute(controlOpening, "onclick"),
+        ancestorOpenings: control.ancestorOpenings,
+      };
+    });
+    return {
+      markup,
+      providerResultTable,
+      currentPageFieldCount,
+      currentPage,
+      currentPageFieldNames,
+      providerPageSize,
+      pageSizeControlPresent: pageSizeFieldEntries.length > 0,
+      providerPager,
+      controls,
+    };
+  }
+  return null;
+}
+
+type FubonDepositPaginationAction = {
+  targetPage: number;
+  pageFieldName: string;
+};
+
+function fubonParsePaginationAction(
+  control: FubonDepositPaginationContext["controls"][number],
+): FubonDepositPaginationAction | null {
+  if (!/setDataGridCurrentPage/iu.test(control.onclick)) return null;
+  const match = control.onclick.match(
+    /setDataGridCurrentPage\s*\(\s*[^,]+,\s*(\d+)\s*,\s*["']([^"']+)["']\s*\)/iu,
+  );
+  const targetPage = fubonPositivePageNumber(match?.[1] ?? "");
+  const pageFieldName = cleanText(match?.[2]);
+  if (
+    targetPage === null ||
+    !isFubonDepositCurrentPageField(pageFieldName)
+  )
+    return null;
+  return { targetPage, pageFieldName };
+}
+
+function fubonIsInteractivePaginationControl(
+  control: FubonDepositPaginationContext["controls"][number],
+): boolean {
+  return control.tagName === "a" || control.tagName === "button";
+}
+
+function fubonIsDisabledPaginationControl(
+  control: FubonDepositPaginationContext["controls"][number],
+): boolean {
+  return (
+    fubonHasHtmlBooleanAttribute(control.opening, "disabled") ||
+    fubonHtmlAttribute(control.opening, "aria-disabled").toLowerCase() ===
+      "true" ||
+    fubonHasHtmlClassToken(control.opening, "disabled")
+  );
+}
+
+function fubonIsPaginationLabel(text: string): boolean {
+  return (
+    /^(?:下一頁|下頁|上一頁|上頁|第一頁|最後一頁|末頁)$/u.test(text) ||
+    /^(?:第\s*)?\d+(?:\s*頁)?$/iu.test(text) ||
+    /^page\s*\d+$/iu.test(text)
+  );
+}
+
+/**
+ * Derive a provider pagination signal from the result form. A full terminal
+ * page is trusted only for the known Fubon result-table shape with either a
+ * current-page proof or an exact page-size proof and no active or ambiguous
+ * forward control. Missing controls in an unrecognized result remain
+ * ambiguous and fail closed.
+ */
+export function parseFubonDepositPaginationSignal(
+  html: string,
+  rowCount: number,
+): FubonDepositPaginationSignal {
+  const context = fubonDepositPaginationContext(html);
+  const ambiguousTerminalSignal = (
+    reason: FubonDepositPaginationAmbiguityReason,
+    providerPageSize?: number,
+  ): FubonDepositPaginationSignal => ({
+    nextPage: null,
+    pageFieldName: null,
+    // `terminal` describes the retained response sequence: no traversable
+    // next page was parsed. Provider completeness is a separate claim and is
+    // deliberately withheld when the pager is ambiguous.
+    terminal: true,
+    evidence: null,
+    paginationAmbiguous: true,
+    paginationAmbiguityReason: reason,
+    ...(providerPageSize !== undefined ? { providerPageSize } : {}),
+  });
+  if (!context) return ambiguousTerminalSignal("result-context-missing");
+  const actionBelongsToResult = (action: FubonDepositPaginationAction) =>
+    context.currentPageFieldNames.length === 0
+      ? /(?:^|[:_-])resultGrid(?:$|[:_-])/iu.test(action.pageFieldName)
+      : context.currentPageFieldNames.includes(action.pageFieldName);
+  const isResultAttributableControl = (
+    control: FubonDepositPaginationContext["controls"][number],
+  ): boolean => {
+    const action = fubonParsePaginationAction(control);
+    if (action !== null) return actionBelongsToResult(action);
+    return fubonControlBelongsToResultGrid(control);
+  };
+  const paginationControls = context.controls.filter(
+    (control) =>
+      fubonIsInteractivePaginationControl(control) &&
+      isResultAttributableControl(control),
+  );
+  const nextControls = paginationControls.filter((control) =>
+    /^(?:下一頁|下頁)$/u.test(control.text),
+  );
+  const parsedActions = context.controls
+    .filter((control) => /setDataGridCurrentPage/iu.test(control.onclick))
+    .map((control) => ({
+      control,
+      action: fubonParsePaginationAction(control),
+    }))
+    .filter(({ control, action }) =>
+      action !== null
+        ? actionBelongsToResult(action)
+        : fubonControlBelongsToResultGrid(control),
+    );
+  const malformedActions = parsedActions.some(
+    ({ action }) => action === null,
+  );
+  const recognizedActions = parsedActions.flatMap(({ control, action }) =>
+    action !== null &&
+    !fubonIsDisabledPaginationControl(control)
+      ? [{ control, action }]
+      : [],
+  );
+  const isDisabledNext = fubonIsDisabledPaginationControl;
+  const activeNextControls = nextControls.filter(
+    (control) => !isDisabledNext(control),
+  );
+  const activeNextActions = recognizedActions.filter(
+    ({ control }) =>
+      activeNextControls.includes(control) &&
+      /^(?:下一頁|下頁)$/u.test(control.text),
+  );
+  const hasAmbiguousPaginationControl = paginationControls.some((control) => {
+    if (!fubonIsPaginationLabel(control.text)) return false;
+    if (fubonIsDisabledPaginationControl(control)) return false;
+    const action = fubonParsePaginationAction(control);
+    return action === null;
+  });
+  const currentPage = context.currentPage;
+  const nextAction =
+    currentPage !== null
+      ? recognizedActions.find(
+          ({ action }) => action.targetPage === currentPage + 1,
+        )
+      : activeNextActions[0];
+  const hasUntraversableForwardTarget =
+    currentPage !== null &&
+    recognizedActions.some(({ action }) => action.targetPage > currentPage) &&
+    nextAction === undefined;
+  if (
+    malformedActions ||
+    hasAmbiguousPaginationControl ||
+    hasUntraversableForwardTarget
+  ) {
+    const reason: FubonDepositPaginationAmbiguityReason = malformedActions
+      ? "malformed-result-action"
+      : hasUntraversableForwardTarget
+        ? "forward-target-untraversable"
+        : "forward-control-unrecognized";
+    return ambiguousTerminalSignal(
+      reason,
+      context.providerPageSize ?? undefined,
+    );
+  }
+  if (nextAction) {
+    if (
+      currentPage !== null &&
+      nextAction.action.targetPage !== currentPage + 1
+    )
+      return ambiguousTerminalSignal(
+        "forward-target-untraversable",
+        context.providerPageSize ?? undefined,
+      );
+    if (
+      currentPage === null &&
+      (activeNextControls.length !== 1 || activeNextActions.length !== 1)
+    )
+      return ambiguousTerminalSignal(
+        "current-page-unresolved",
+        context.providerPageSize ?? undefined,
+      );
+    return {
+      nextPage: String(nextAction.action.targetPage),
+      pageFieldName: nextAction.action.pageFieldName,
+      terminal: false,
+      evidence: "next-page",
+      ...(context.providerPageSize !== null
+        ? { providerPageSize: context.providerPageSize }
+        : {}),
+    };
+  }
+  if (activeNextControls.length > 0) {
+    return ambiguousTerminalSignal(
+      "forward-control-unrecognized",
+      context.providerPageSize ?? undefined,
+    );
+  }
+  if (currentPage === null && recognizedActions.length > 0)
+    return ambiguousTerminalSignal(
+      "current-page-unresolved",
+      context.providerPageSize ?? undefined,
+    );
+  const hasDisabledNext =
+    nextControls.length > 0 && nextControls.every(isDisabledNext);
+  const hasOnlyCurrentOrPreviousTargets =
+    currentPage !== null &&
+    recognizedActions.length > 0 &&
+    recognizedActions.every(({ action }) => action.targetPage <= currentPage);
+  const explicitNoNext =
+    /data-(?:has-)?next(?:-page)?\s*=\s*["']?(?:false|0|none|empty)["']?/iu.test(
+      context.markup,
+    );
+  const exactFullTerminalPage =
+    context.providerResultTable &&
+    context.pageSizeControlPresent &&
+    context.providerPageSize !== null &&
+    context.providerPageSize === rowCount &&
+    context.currentPageFieldCount === 0 &&
+    nextControls.length === 0 &&
+    recognizedActions.length === 0 &&
+    !context.providerPager;
+  const terminalNoNext =
+    context.providerResultTable &&
+    context.currentPageFieldCount > 0 &&
+    currentPage !== null &&
+    rowCount > 0 &&
+    (hasDisabledNext ||
+      explicitNoNext ||
+      hasOnlyCurrentOrPreviousTargets ||
+      (nextControls.length === 0 && !context.providerPager));
+  if (
+    !exactFullTerminalPage &&
+    (!terminalNoNext ||
+      (context.providerPager &&
+        !explicitNoNext &&
+        !hasDisabledNext &&
+        !hasOnlyCurrentOrPreviousTargets))
+  )
+    return ambiguousTerminalSignal(
+      "terminal-proof-missing",
+      context.providerPageSize ?? undefined,
+    );
+  return {
+    nextPage: null,
+    pageFieldName: null,
+    terminal: true,
+    evidence: "terminal-no-next",
+    ...(context.providerPageSize !== null
+      ? { providerPageSize: context.providerPageSize }
+      : {}),
+  };
 }
 
 function nextTimestamp(): string {
@@ -1654,22 +2449,44 @@ async function parseDepositStatementHtml(
   )) as ParsedDepositStatementPage;
 
   const responseMetadata = inspectFubonDepositResponseMetadata(html);
-  const providerPageSize = responseMetadata.pagination.find((entry) =>
+  const metadataPageSize = responseMetadata.pagination.find((entry) =>
     /(?:pageSize|currentPageSize)/i.test(entry.name),
   )?.value;
+  const providerTotalCount = responseMetadata.pagination.find((entry) =>
+    isFubonProviderTotalCountFieldName(entry.name),
+  )?.value;
+  const pagination = parseFubonDepositPaginationSignal(html, parsed.rows.length);
   return {
     ...parsed,
+    nextPage: pagination.nextPage,
+    pageFieldName: pagination.pageFieldName,
+    terminal: pagination.terminal,
+    ...(pagination.evidence !== null
+      ? { paginationEvidence: pagination.evidence }
+      : {}),
+    ...(pagination.paginationAmbiguous === true
+      ? { paginationAmbiguous: true as const }
+      : {}),
+    ...(pagination.paginationAmbiguityReason !== undefined
+      ? { paginationAmbiguityReason: pagination.paginationAmbiguityReason }
+      : {}),
     responseMetadata,
     bodyLength: Buffer.byteLength(html, "utf8"),
     bodySha256: digestTelemetryValue(html),
     pageOrdinal,
     responseSequence,
-    terminal: parsed.nextPage === null,
     evidenceRows: parsed.rows.map((cells, rowOrdinal) => ({
       rowOrdinal,
       cells: [...cells] as unknown as FubonDepositStatementRowEvidence["cells"],
     })),
-    ...(providerPageSize && providerPageSize > 0 ? { providerPageSize } : {}),
+    ...(metadataPageSize && metadataPageSize > 0
+      ? { providerPageSize: metadataPageSize }
+      : pagination.providerPageSize !== undefined
+        ? { providerPageSize: pagination.providerPageSize }
+        : {}),
+    ...(providerTotalCount !== null && providerTotalCount !== undefined
+      ? { providerTotalCount }
+      : {}),
   };
 }
 
@@ -1692,6 +2509,15 @@ export async function parseFubonDepositStatementHtml(
     terminal: parsed.terminal,
     nextPage: parsed.nextPage,
     pageFieldName: parsed.pageFieldName,
+    ...(parsed.paginationEvidence !== undefined
+      ? { paginationEvidence: parsed.paginationEvidence }
+      : {}),
+    ...(parsed.paginationAmbiguous === true
+      ? { paginationAmbiguous: true as const }
+      : {}),
+    ...(parsed.paginationAmbiguityReason !== undefined
+      ? { paginationAmbiguityReason: parsed.paginationAmbiguityReason }
+      : {}),
     queryRange: { startDate: parsed.startDate, endDate: parsed.endDate },
     selectedAccount: {
       value: parsed.selectedAccountValue,
@@ -1699,6 +2525,12 @@ export async function parseFubonDepositStatementHtml(
       branchName: parsed.branchName,
     },
     rows: parsed.evidenceRows,
+    ...(parsed.providerPageSize !== undefined
+      ? { providerPageSize: parsed.providerPageSize }
+      : {}),
+    ...(parsed.providerTotalCount !== undefined
+      ? { providerTotalCount: parsed.providerTotalCount }
+      : {}),
     zeroObservation:
       parsed.evidenceRows.length === 0 ? "empty-page" : "non-empty-page",
   };
@@ -2426,7 +3258,19 @@ export async function runFubonStatements(
           );
           continue;
         }
-        const financialInput = {
+        const sourceCaptureId = `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`;
+        let sourceEvidenceCommitted = false;
+        const commitSourceEvidence = async () => {
+          if (sourceEvidenceCommitted) return;
+          await commitFubonDomesticDepositSourceEvidence(
+            sourceStore,
+            capture,
+            sourceCaptureId,
+            stableSourceIdentity,
+          );
+          sourceEvidenceCommitted = true;
+        };
+        let financialInput = {
           capture,
           captureId: `fubon-financial-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
           semantics: buildFubonHumanAttestedFinancialSemantics(
@@ -2441,19 +3285,41 @@ export async function runFubonStatements(
         // configured.  The explicit-ledger boundary changes the destination,
         // not the error taxonomy: malformed amount/time/row/balance data must
         // still fail visibly rather than being hidden as source-only.
-        const financialAdmission =
+        let financialAdmission =
           admitFubonDomesticDepositFinancialCapture(financialInput);
+        // A status marker describes one row, not the completeness of the
+        // requested range. Preserve the complete parser capture as source
+        // evidence, then admit the clean rows from the same capture so one
+        // ambiguous row cannot hide the account's range.
+        if (
+          financialAdmission.status !== "admitted" &&
+          financialAdmission.diagnostics.length > 0 &&
+          financialAdmission.diagnostics.every(
+            (diagnostic) => diagnostic === "row-status-unresolved",
+          )
+        ) {
+          const partialInput = {
+            ...financialInput,
+            allowSourceOnlyRows: true,
+          };
+          const partialAdmission =
+            admitFubonDomesticDepositFinancialCapture(partialInput);
+          if (
+            partialAdmission.status === "admitted" &&
+            partialAdmission.capture &&
+            partialAdmission.capture.records.length > 0
+          ) {
+            await commitSourceEvidence();
+            financialInput = partialInput;
+            financialAdmission = partialAdmission;
+          }
+        }
         if (financialAdmission.status !== "admitted") {
           const disallowed = financialAdmission.diagnostics.filter(
             (diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic),
           );
           if (disallowed.length > 0) {
-            await commitFubonDomesticDepositSourceEvidence(
-              sourceStore,
-              capture,
-              `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-              stableSourceIdentity,
-            );
+            await commitSourceEvidence();
             throw new Error(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
             );
@@ -2461,21 +3327,11 @@ export async function runFubonStatements(
           admissionStatus = "source-only";
           for (const diagnostic of financialAdmission.diagnostics)
             admissionReasons.add(diagnostic);
-          await commitFubonDomesticDepositSourceEvidence(
-            sourceStore,
-            capture,
-            `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-            stableSourceIdentity,
-          );
+          await commitSourceEvidence();
           continue;
         }
         if (!financialWriter || !isFubonHumanAttestedV1Active()) {
-          await commitFubonDomesticDepositSourceEvidence(
-            sourceStore,
-            capture,
-            `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-            stableSourceIdentity,
-          );
+          await commitSourceEvidence();
           continue;
         }
         try {
@@ -2492,7 +3348,10 @@ export async function runFubonStatements(
             );
           financialCaptures.push(financialCapture);
           for (const counterpartyEvidence of
-            buildFubonLoanPaymentAccountEvidence(capture, financialCapture)) {
+            buildFubonLoanPaymentAccountEvidence(
+              capture,
+              financialCapture,
+            )) {
             await persistCounterpartyAccountEvidence(
               financialStore!,
               counterpartyEvidence,
@@ -2511,22 +3370,12 @@ export async function runFubonStatements(
               failureEvent: "fubon-deposit-relation-resolution-failed",
             });
           if (!financialUsesSourceStore) {
-            await commitFubonDomesticDepositSourceEvidence(
-              sourceStore,
-              capture,
-              `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-              stableSourceIdentity,
-            );
+            await commitSourceEvidence();
           }
         } catch (error) {
           // Preserve a source-only observation when financial admission
           // fails, then propagate the fail-closed error.
-          await commitFubonDomesticDepositSourceEvidence(
-            sourceStore,
-            capture,
-            `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-            stableSourceIdentity,
-          );
+          await commitSourceEvidence();
           throw error;
         }
       }

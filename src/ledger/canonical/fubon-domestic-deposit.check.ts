@@ -966,6 +966,119 @@ assert.equal(
   false,
 );
 
+// An ambiguous final provider page is source-only, but the generic source
+// store still needs a transport-terminal marker for the last response that
+// was actually retained. The provider's ambiguity remains in page metadata
+// and must not be promoted to financial admission.
+const ambiguousTerminalCapture = captureFor(
+  "ACCOUNT-TWD-AMBIGUOUS-TERMINAL",
+  "****0012 (012)",
+  {
+    pages: [
+      {
+        ...firstCapture.pages[0]!,
+        terminal: false,
+        nextPage: null,
+        pageFieldName: null,
+        paginationEvidence: undefined,
+        paginationAmbiguous: true,
+        paginationAmbiguityReason: "terminal-proof-missing",
+      },
+    ],
+  },
+);
+const ambiguousTerminalAdmission = admitFubonDomesticDepositCaptureEvidence(
+  ambiguousTerminalCapture,
+);
+assert.equal(ambiguousTerminalAdmission.status, "rejected");
+assert.ok(
+  ambiguousTerminalAdmission.diagnostics.includes("terminal-page-missing"),
+);
+const ambiguousTerminalSourceOnly = admitFubonDomesticDepositSourceOnlyEvidence(
+  ambiguousTerminalCapture,
+);
+assert.equal(ambiguousTerminalSourceOnly.status, "source-only");
+assert.ok(ambiguousTerminalSourceOnly.capture);
+const ambiguousTerminalSourceEvidence = createFubonDomesticDepositSourceEvidence(
+  ambiguousTerminalSourceOnly.capture,
+  "fubon-source-ambiguous-terminal",
+);
+assert.equal(ambiguousTerminalSourceEvidence.pages[0]?.terminal, true);
+assert.equal(
+  ambiguousTerminalSourceEvidence.pages[0]?.metadata.providerTerminal,
+  false,
+);
+assert.equal(
+  ambiguousTerminalSourceEvidence.pages[0]?.metadata.paginationEvidence,
+  null,
+);
+assert.equal(
+  ambiguousTerminalSourceEvidence.pages[0]?.metadata.paginationAmbiguous,
+  true,
+);
+assert.equal(
+  ambiguousTerminalSourceEvidence.pages[0]?.metadata.paginationAmbiguityReason,
+  "terminal-proof-missing",
+);
+const ambiguousTerminalSourceStore = createCanonicalSourceStore(":memory:");
+try {
+  await commitFubonDomesticDepositSourceEvidence(
+    ambiguousTerminalSourceStore,
+    ambiguousTerminalSourceOnly.capture,
+    "fubon-source-ambiguous-terminal-committed",
+  );
+  assert.equal(
+    ambiguousTerminalSourceStore.db
+      .prepare(
+        `SELECT page.terminal AS transportTerminal, page.metadata_json AS metadataJson
+           FROM capture_scope_pages page
+          LIMIT 1`,
+      )
+      .get()?.transportTerminal,
+    1,
+  );
+  const metadataJson = ambiguousTerminalSourceStore.db
+    .prepare(
+      `SELECT page.metadata_json AS metadataJson
+         FROM capture_scope_pages page
+        LIMIT 1`,
+    )
+    .get()?.metadataJson as
+    | string
+    | undefined;
+  assert.ok(metadataJson);
+  assert.equal(JSON.parse(metadataJson).providerTerminal, false);
+  assert.equal(JSON.parse(metadataJson).paginationEvidence, null);
+  assert.equal(JSON.parse(metadataJson).paginationAmbiguous, true);
+  assert.equal(
+    JSON.parse(metadataJson).paginationAmbiguityReason,
+    "terminal-proof-missing",
+  );
+  const financialAdmission = admitFubonDomesticDepositFinancialCaptureCore({
+    // Deliberately bypass the compile-time brand to prove the runtime seam
+    // also refuses the raw ambiguous capture.
+    capture: ambiguousTerminalCapture as never,
+    captureId: "fubon-financial-ambiguous-terminal-must-block",
+    semantics: semanticsFor(ambiguousTerminalCapture),
+    humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+    sourceConnectionScope: stableFubonConnectionScope,
+    sourceConnectionKey: stableFubonConnectionKey,
+  });
+  assert.equal(financialAdmission.status, "blocked");
+  assert.equal(financialAdmission.capture, null);
+  assert.ok(
+    financialAdmission.diagnostics.includes("runtime-evidence-brand-missing"),
+  );
+  assert.equal(
+    ambiguousTerminalSourceStore.db
+      .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+      .get()?.count,
+    0,
+  );
+} finally {
+  ambiguousTerminalSourceStore.close();
+}
+
 for (const sourceIdentity of [
   {},
   {

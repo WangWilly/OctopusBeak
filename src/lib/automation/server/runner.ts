@@ -210,9 +210,7 @@ export async function runAutomationBatch(
   taskIds: readonly string[],
   execute: (taskId: string) => Promise<void>,
 ) {
-  const selectedTaskIds = taskIds.filter(
-    (taskId) => taskId !== "import-downloads-csv",
-  );
+  const selectedTaskIds = [...new Set(taskIds)];
   const errors: unknown[] = [];
   // Each automation workflow can open the canonical database in its own
   // Libretto process. Keep the batch on one slot so those processes never
@@ -221,14 +219,6 @@ export async function runAutomationBatch(
   await runWithConcurrency(selectedTaskIds, 1, execute).catch((error) => {
     errors.push(error);
   });
-  if (
-    taskIds.includes("import-downloads-csv") ||
-    selectedTaskIds.some((taskId) => taskById(taskId)?.kind === "crawler")
-  ) {
-    await execute("import-downloads-csv").catch((error) => {
-      errors.push(error);
-    });
-  }
   if (errors.length) throw errors[0];
 }
 
@@ -300,12 +290,7 @@ export function startAutomationTasks(
         activeTaskRunIds.set(taskId, "pending");
       }
       await runAutomationTask(taskId, ledgerDir, { claimed }).catch((error) => {
-        console.error(
-          taskId === "import-downloads-csv"
-            ? "automation-import-run-failed"
-            : "automation-task-run-failed",
-          error,
-        );
+        console.error("automation-task-run-failed", error);
       });
     }).catch((error) => {
       console.error("automation-batch-run-failed", error);

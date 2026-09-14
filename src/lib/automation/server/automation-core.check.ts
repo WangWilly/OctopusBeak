@@ -5,10 +5,8 @@ import {
   AUTOMATION_NON_SECRET_KEYS,
   AUTOMATION_SECRET_KEYS,
   AUTOMATION_TASKS,
-  CSV_IMPORT_DEPENDENCY_IDS,
   automationCredentialKeyIsSecret,
   enabledAutomationTasks,
-  enabledCsvImportDependencyIds,
   taskById,
 } from "./tasks.ts";
 import { businessDayUtcRange } from "./business-day.ts";
@@ -16,23 +14,6 @@ import { credentialStatus, updateEnvText } from "./env-file.ts";
 import { automationBusinessTimezone, automationGroupEnabledStatus } from "./settings.ts";
 
 const fubonUserKey = "LIBRETTO_CLOUD_FUBON" + "_USER_ID";
-
-assert.deepEqual(
-  CSV_IMPORT_DEPENDENCY_IDS,
-  [
-    "fubon-all-statements",
-    "esun-credit-card-statements",
-    "yuanta-all-statements",
-    "yuanta-trade-statements",
-    "cathay-all-statements",
-    "hncb-statements",
-    "ctbc-statements",
-    "post-statements",
-    "sinopac-statements",
-    "linebank-statements",
-    "einvoice-personal-invoices",
-  ],
-);
 
 assert.equal(taskById("sync-maicoin")?.kind, "sync");
 assert.equal(taskById("ctbc-statements")?.credentialGroupId, "ctbc");
@@ -64,11 +45,7 @@ assert.equal(
   AUTOMATION_SECRET_KEYS.includes("LIBRETTO_CLOUD_EINVOICE_PASSWORD"),
   true,
 );
-assert.equal(taskById("import-downloads-csv")?.kind, "import");
-assert.deepEqual(
-  taskById("import-downloads-csv")?.dependencies,
-  CSV_IMPORT_DEPENDENCY_IDS,
-);
+assert.equal(taskById("import-downloads-csv"), null);
 assert.equal(AUTOMATION_TASKS.every((task) => task.maxAttempts >= 1), true);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon")?.credentialKeys,
@@ -98,11 +75,7 @@ const enabledGroups = automationGroupEnabledStatus({
 assert.equal(enabledGroups.fubon, true);
 assert.equal(enabledGroups.esun, false);
 assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "esun-credit-card-statements"), false);
-assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "import-downloads-csv"), true);
-assert.deepEqual(
-  enabledCsvImportDependencyIds(enabledGroups),
-  ["fubon-all-statements"],
-);
+assert.equal(enabledAutomationTasks(enabledGroups).some((task) => task.id === "import-downloads-csv"), false);
 
 const taipeiRange = businessDayUtcRange(
   new Date("2026-06-30T16:30:00.000Z"),

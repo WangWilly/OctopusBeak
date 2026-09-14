@@ -71,7 +71,6 @@ test("human assistance contract persists with a task run and is exposed to Assis
       activeTaskIds: [],
       todayRunTaskIds: [],
       credentials: {},
-      importGate: { locked: false, missingTaskIds: [], warnings: [] },
       active: true,
       businessDate: "2026-08-08",
     });

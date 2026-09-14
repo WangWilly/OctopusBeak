@@ -249,6 +249,9 @@ export type FubonDomesticDepositCaptureDiagnostic =
   | "page-transition-invalid"
   | "terminal-page-incomplete"
   | "provider-page-size-invalid"
+  | "provider-total-count-invalid"
+  | "pagination-evidence-invalid"
+  | "pagination-ambiguity-reason-invalid"
   | "next-page-metadata-incomplete"
   | "query-range-drift"
   | "selected-account-drift"
@@ -559,6 +562,56 @@ export function admitFubonDomesticDepositCaptureEvidence(
         page.providerPageSize <= 0)
     )
       diagnostic(diagnostics, "provider-page-size-invalid");
+    if (
+      page.providerTotalCount !== undefined &&
+      (!Number.isSafeInteger(page.providerTotalCount) ||
+        page.providerTotalCount < 0)
+    )
+      diagnostic(diagnostics, "provider-total-count-invalid");
+    const paginationEvidence = page.paginationEvidence;
+    if (
+      paginationEvidence !== undefined &&
+      paginationEvidence !== "next-page" &&
+      paginationEvidence !== "terminal-no-next"
+    )
+      diagnostic(diagnostics, "pagination-evidence-invalid");
+    if (
+      paginationEvidence === "next-page" &&
+      (page.terminal || page.nextPage === null || page.pageFieldName === null)
+    )
+      diagnostic(diagnostics, "pagination-evidence-invalid");
+    if (
+      paginationEvidence === "terminal-no-next" &&
+      (!page.terminal || page.nextPage !== null || page.pageFieldName !== null)
+    )
+      diagnostic(diagnostics, "pagination-evidence-invalid");
+    if (
+      page.paginationAmbiguous !== undefined &&
+      page.paginationAmbiguous !== true
+    )
+      diagnostic(diagnostics, "pagination-evidence-invalid");
+    if (page.paginationAmbiguous === true && paginationEvidence !== undefined)
+      diagnostic(diagnostics, "pagination-evidence-invalid");
+    const paginationAmbiguityReason = page.paginationAmbiguityReason;
+    const validPaginationAmbiguityReasons = new Set([
+      "result-context-missing",
+      "malformed-result-action",
+      "forward-control-unrecognized",
+      "forward-target-untraversable",
+      "current-page-unresolved",
+      "terminal-proof-missing",
+    ]);
+    if (
+      paginationAmbiguityReason !== undefined &&
+      (typeof paginationAmbiguityReason !== "string" ||
+        !validPaginationAmbiguityReasons.has(paginationAmbiguityReason))
+    )
+      diagnostic(diagnostics, "pagination-ambiguity-reason-invalid");
+    if (
+      (page.paginationAmbiguous === true) !==
+        (paginationAmbiguityReason !== undefined)
+    )
+      diagnostic(diagnostics, "pagination-ambiguity-reason-invalid");
     if (!page.terminal) {
       if (page.nextPage !== String(pageIndex + 2))
         diagnostic(diagnostics, "page-transition-invalid");
@@ -569,8 +622,35 @@ export function admitFubonDomesticDepositCaptureEvidence(
             zeroResultAuthority?: string;
           }
         ).zeroResultAuthority === "provider-explicit-no-data";
+      const providerTotalCount = pages
+        .flatMap((candidate) =>
+          candidate &&
+          typeof candidate === "object" &&
+          candidate.providerTotalCount !== undefined
+            ? [candidate.providerTotalCount]
+            : [],
+        )
+        .at(0);
+      const observedRowCount = pages.reduce(
+        (count, candidate) =>
+          count +
+          (candidate &&
+          typeof candidate === "object" &&
+          Array.isArray(candidate.rows)
+            ? candidate.rows.length
+            : 0),
+        0,
+      );
+      const providerCountProvesCompleteness =
+        providerTotalCount !== undefined &&
+        Number.isSafeInteger(providerTotalCount) &&
+        providerTotalCount === observedRowCount;
+      const providerTerminalEvidence =
+        page.paginationEvidence === "terminal-no-next";
       if (
         !providerExplicitNoData &&
+        !providerCountProvesCompleteness &&
+        !providerTerminalEvidence &&
         (page.providerPageSize === undefined ||
           page.rows.length >= page.providerPageSize)
       )
@@ -633,6 +713,17 @@ export function admitFubonDomesticDepositCaptureEvidence(
     ),
   );
   if (pageSizes.size > 1) diagnostic(diagnostics, "provider-page-size-invalid");
+  const totalCounts = new Set(
+    pages.flatMap((page) =>
+      page &&
+      typeof page === "object" &&
+      page.providerTotalCount !== undefined
+        ? [page.providerTotalCount]
+        : [],
+    ),
+  );
+  if (totalCounts.size > 1)
+    diagnostic(diagnostics, "provider-total-count-invalid");
   const allPagesEmpty = pages.every(
     (page) =>
       page !== null &&
@@ -731,6 +822,7 @@ const SOURCE_ONLY_CAPTURE_DIAGNOSTICS =
     "page-transition-invalid",
     "terminal-page-incomplete",
     "provider-page-size-invalid",
+    "provider-total-count-invalid",
     "next-page-metadata-incomplete",
     "terminal-page-missing",
     "terminal-page-not-last",
@@ -802,7 +894,12 @@ function sourcePageMetadata(
   return {
     responseSequence: page.responseSequence,
     providerPageSize: page.providerPageSize ?? null,
+    providerTotalCount: page.providerTotalCount ?? null,
     pageFieldName: page.pageFieldName,
+    providerTerminal: page.paginationEvidence === "terminal-no-next",
+    paginationEvidence: page.paginationEvidence ?? null,
+    paginationAmbiguous: page.paginationAmbiguous ?? null,
+    paginationAmbiguityReason: page.paginationAmbiguityReason ?? null,
     queryStartDate: sourceDate(page.queryRange.startDate),
     queryEndDate: sourceDate(page.queryRange.endDate),
     selectedAccountDigest,
@@ -880,11 +977,17 @@ export function createFubonDomesticDepositSourceEvidence(
       completeness: sourceOnly ? "single-page" : "complete-range",
       ruleVersion: FUBON_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION,
     },
-    pages: capture.pages.map((page) => ({
+    pages: capture.pages.map((page, pageIndex) => ({
       pageOrdinal: page.pageOrdinal,
       responseCode: "200",
       rowCount: page.rows.length,
-      terminal: page.terminal,
+      // The generic source contract describes the response sequence retained
+      // by this adapter. A source-only capture may end on an ambiguous
+      // provider page, so mark only that final retained response as the
+      // transport terminal while preserving the provider marker in metadata.
+      terminal: sourceOnly
+        ? pageIndex === capture.pages.length - 1
+        : page.terminal,
       metadata: sourcePageMetadata(page),
     })),
     records: capture.pages.flatMap((page) =>
@@ -1084,6 +1187,12 @@ export type FubonDomesticDepositFinancialAdmissionInput = {
    */
   sourceConnectionScope?: string;
   sourceConnectionKey?: string;
+  /**
+   * Workflow-only admission mode: retain status-marked rows in structural
+   * source evidence, while admitting the clean rows from the same complete
+   * capture as financial records.
+   */
+  allowSourceOnlyRows?: boolean;
 };
 
 export type FubonDomesticDepositFinancialAdmissionDiagnostic =
@@ -1163,6 +1272,7 @@ export function isFubonSourceOnlyFinancialDiagnostic(
     "page-transition-invalid",
     "terminal-page-incomplete",
     "provider-page-size-invalid",
+    "provider-total-count-invalid",
     "next-page-metadata-incomplete",
     "terminal-page-missing",
     "terminal-page-not-last",
@@ -1575,10 +1685,12 @@ function normalizeFubonDomesticDepositFinancialCapture(
   const queryEnd = input.capture.queryRange.endDate.replace(/\//g, "-");
   const seenFences = new Map<string, string>();
   const records: CanonicalFinancialDepositRecord[] = [];
+  const allowSourceOnlyRows = input.allowSourceOnlyRows === true;
   for (const { page, row } of rows) {
     const cells = row.cells;
     const rowStatus = classifyFubonDomesticDepositRow(cells);
-    if (rowStatus.status !== "posted")
+    const sourceOnlyRow = rowStatus.status !== "posted";
+    if (sourceOnlyRow && !allowSourceOnlyRows)
       diagnostics.push("row-status-unresolved");
     const rowDate = clean(cells[0]).replace(/\//g, "-");
     if (!validDate(rowDate)) diagnostics.push("source-date-invalid");
@@ -1601,6 +1713,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
     if (!balanceAfter) diagnostics.push("balance-invalid");
     if (!time) diagnostics.push("source-time-invalid");
     if (!amount || !balanceAfter || !time || !direction) continue;
+    // The structural source capture remains authoritative for a row with a
+    // provider status marker. Validate its value shape above, then leave that
+    // row out of the financial record set when the workflow explicitly uses
+    // the partial admission mode.
+    if (sourceOnlyRow) continue;
     const contentHash = opaqueToken(
       "fubon-observed-composite-content-v2",
       ...normalizedOccurrenceIdentityCells(cells),
@@ -1683,6 +1800,17 @@ function normalizeFubonDomesticDepositFinancialCapture(
     input.capture.queryRange.startDate,
     input.capture.queryRange.endDate,
   );
+  const financialRowCountByPage = new Map<number, number>();
+  if (allowSourceOnlyRows) {
+    for (const page of input.capture.pages) {
+      financialRowCountByPage.set(
+        page.pageOrdinal,
+        page.rows.filter(
+          (row) => classifyFubonDomesticDepositRow(row.cells).status === "posted",
+        ).length,
+      );
+    }
+  }
   const canonicalCapture = admitCanonicalFinancialDepositCapture({
     captureId: input.captureId,
     authorityRoute: semantics.authority.route,
@@ -1737,7 +1865,9 @@ function normalizeFubonDomesticDepositFinancialCapture(
       pageOrdinal: page.pageOrdinal,
       responseCode: "200",
       terminal: page.terminal,
-      rowCount: page.rows.length,
+      rowCount: allowSourceOnlyRows
+        ? financialRowCountByPage.get(page.pageOrdinal) ?? 0
+        : page.rows.length,
       responseDigest: opaqueToken(
         "fubon-page-v3",
         String(page.pageOrdinal),
@@ -1751,7 +1881,15 @@ function normalizeFubonDomesticDepositFinancialCapture(
         pageOrdinal: page.pageOrdinal,
         responseSequence: page.responseSequence,
         terminal: page.terminal,
-        rowCount: page.rows.length,
+        rowCount: allowSourceOnlyRows
+          ? financialRowCountByPage.get(page.pageOrdinal) ?? 0
+          : page.rows.length,
+        ...(allowSourceOnlyRows ? { sourceRowCount: page.rows.length } : {}),
+        providerPageSize: page.providerPageSize ?? null,
+        providerTotalCount: page.providerTotalCount ?? null,
+        paginationEvidence: page.paginationEvidence ?? null,
+        paginationAmbiguous: page.paginationAmbiguous ?? null,
+        paginationAmbiguityReason: page.paginationAmbiguityReason ?? null,
         zeroObservation: page.zeroObservation,
         zeroResultAuthority: zeroAuthority ?? null,
         withdrawalPolicy: "never-infer",

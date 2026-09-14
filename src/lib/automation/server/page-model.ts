@@ -12,11 +12,9 @@ import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } f
 function rowStatus(
   task: AutomationTask,
   run: AutomationTaskRun | undefined,
-  gate: AutomationPageModel["importGate"],
   isActive: boolean,
   setupRequiredGroupIds: ReadonlySet<string>,
 ) {
-  if (task.kind === "import" && gate.locked) return "locked";
   if (run && resumeFailureMessage(run.logTail)) return "failed";
   if (run?.status === "waiting_for_human") return "waiting_for_human";
   if (isActive) return run?.status === "retrying" ? "retrying" : "running";
@@ -58,7 +56,6 @@ export function buildAutomationPageModel(input: {
   activeTaskIds?: readonly string[];
   todayRunTaskIds?: readonly string[];
   credentials: Record<string, boolean>;
-  importGate: AutomationPageModel["importGate"];
   setupRequiredGroupIds?: ReadonlySet<string>;
   externalPrerequisiteNotices?: readonly AutomationTaskPrerequisiteNotice[];
   active: boolean;
@@ -70,7 +67,7 @@ export function buildAutomationPageModel(input: {
   const tasks = input.tasks.map((task) => {
     const run = input.latestRuns[task.id];
     const isActive = activeTaskIds.has(task.id);
-    const status = rowStatus(task, run, input.importGate, isActive, setupRequiredGroupIds);
+    const status = rowStatus(task, run, isActive, setupRequiredGroupIds);
     const action = primaryAction(status, isActive);
     const progressPercent = parseAutomationProgress(run?.logTail ?? "");
     const attempt = run?.attempt ?? 0;
@@ -120,7 +117,6 @@ export function buildAutomationPageModel(input: {
       )
       .map((task) => task.id),
     credentials: input.credentials,
-    importGate: input.importGate,
     externalPrerequisiteNotices: [...(input.externalPrerequisiteNotices ?? [])],
     tasks,
   };

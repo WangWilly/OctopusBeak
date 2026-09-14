@@ -1,6 +1,10 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
 
-export type AutomationTaskKind = "crawler" | "sync" | "import";
+/**
+ * A task owns the complete source operation. A crawler or sync task is only
+ * successful after its workflow has collected and committed canonical data.
+ */
+export type AutomationTaskKind = "crawler" | "sync";
 
 export type AutomationLocalizedText = {
   en: string;
@@ -118,14 +122,6 @@ export type AutomationTaskHistoryRow = {
   logPath: string;
 };
 
-type ImportWarning = { taskId: string; failedTypeIds: readonly string[] };
-
-type ImportGate = {
-  locked: boolean;
-  missingTaskIds: readonly string[];
-  warnings: readonly ImportWarning[];
-};
-
 export type AutomationTaskPrerequisiteNotice = {
   noticeId: string;
   taskId: string;
@@ -165,7 +161,6 @@ export type AutomationPageModel = {
   activeTaskCount: number;
   parallelRunnableTaskIds: string[];
   credentials: Record<string, boolean>;
-  importGate: ImportGate;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
   /** Optional for compatibility with non-desktop model consumers. */
