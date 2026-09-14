@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
@@ -745,6 +747,36 @@ export async function commitYuantaDomesticDepositSourceEvidence(
     .then((admitted) =>
       canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
     );
+}
+
+export type YuantaDomesticDepositSourceEvidenceBatchInput = Readonly<{
+  capture: YuantaDomesticDepositValidatedEvidence;
+  captureId: string;
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>;
+}>;
+
+/** Commit every source capture from one Yuanta run in one source transaction. */
+export async function commitYuantaDomesticDepositSourceEvidenceBatch(
+  store: CanonicalSourceStore,
+  inputs: readonly YuantaDomesticDepositSourceEvidenceBatchInput[],
+): Promise<CanonicalSourceCommitResult[]> {
+  if (inputs.length === 0)
+    throw new Error("Yuanta source evidence batch cannot be empty.");
+  const evidence = inputs.map(({ capture, captureId, sourceIdentity }) =>
+    createYuantaDomesticDepositSourceEvidence(capture, captureId, sourceIdentity),
+  );
+  const receipts = await createCanonicalSourceCaptureAdmission(store).admitBatch(
+    evidence,
+  );
+  return receipts.map((admitted, index) =>
+    canonicalSourceAdmissionCommitResult(
+      admitted,
+      evidence[index]!.records.length,
+    ),
+  );
 }
 
 export const YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
@@ -1498,6 +1530,19 @@ export async function commitCanonicalYuantaDomesticDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   input: YuantaDomesticDepositFinancialAdmissionInput,
 ): Promise<CanonicalFinancialDepositCommitResult> {
+  const [result] = await commitCanonicalYuantaDomesticDepositCaptureBatch(
+    store,
+    [input],
+  );
+  return result!;
+}
+
+function validateYuantaFinancialAdmissionInputs(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly YuantaDomesticDepositFinancialAdmissionInput[],
+): CanonicalFinancialDepositValidatedCapture[] {
+  if (inputs.length === 0)
+    throw new Error("Yuanta domestic deposit financial batch cannot be empty.");
   ensureYuantaHumanAttestationEvents(store.db);
   const latest = latestYuantaHumanAttestationEventV2(store.db);
   if (latest?.eventKind === "revoked")
@@ -1508,25 +1553,60 @@ export async function commitCanonicalYuantaDomesticDepositCapture(
     throw new YuantaDomesticDepositFinancialAdmissionError(
       "Yuanta human attestation is revoked; future admission is blocked.",
     );
-  const admission = admitYuantaDomesticDepositFinancialCapture(input);
-  if (admission.status !== "admitted" || !admission.capture)
-    throw new YuantaDomesticDepositFinancialAdmissionError(
-      `Yuanta domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
-    );
-  // The durable attestation event is intentionally independent of the
-  // financial commit, but must exist before readiness can become live.
-  recordInitialYuantaHumanAttestationV2IfMissing(
-    store.db,
-    input.capture.observedAt,
-  );
-  return commitCanonicalFinancialDepositCapture(
+  return inputs.map((input) => {
+    const admission = admitYuantaDomesticDepositFinancialCapture(input);
+    if (admission.status !== "admitted" || !admission.capture)
+      throw new YuantaDomesticDepositFinancialAdmissionError(
+        `Yuanta domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
+      );
+    return admission.capture;
+  });
+}
+
+export function commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly YuantaDomesticDepositFinancialAdmissionInput[],
+  capability: Parameters<
+    typeof commitCanonicalFinancialDepositCaptureBatchInTransaction
+  >[2],
+): CanonicalFinancialDepositCommitResult[] {
+  const captures = validateYuantaFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
-    admission.capture,
+    captures,
+    capability,
     (db, results) =>
+      {
+        recordInitialYuantaHumanAttestationV2IfMissing(
+          db,
+          inputs[0]!.capture.observedAt,
+        );
+        commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+          db,
+          results.map((result) => result.captureId),
+        );
+      },
+  );
+}
+
+export async function commitCanonicalYuantaDomesticDepositCaptureBatch(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly YuantaDomesticDepositFinancialAdmissionInput[],
+): Promise<CanonicalFinancialDepositCommitResult[]> {
+  const captures = validateYuantaFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatch(
+    store,
+    captures,
+    (db, results) => {
+      recordInitialYuantaHumanAttestationV2IfMissing(
+        db,
+        inputs[0]!.capture.observedAt,
+      );
       commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
         db,
         results.map((result) => result.captureId),
-      ),
+      );
+    },
   );
 }
 

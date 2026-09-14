@@ -16,6 +16,8 @@ import {
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
   type CanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositRecord,
@@ -1446,6 +1448,19 @@ export async function commitCanonicalHncbDomesticDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   input: HncbDomesticDepositFinancialAdmissionInput,
 ): Promise<CanonicalFinancialDepositCommitResult> {
+  const [result] = await commitCanonicalHncbDomesticDepositCaptureBatch(
+    store,
+    [input],
+  );
+  return result!;
+}
+
+function validateHncbFinancialAdmissionInputs(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly HncbDomesticDepositFinancialAdmissionInput[],
+): CanonicalFinancialDepositValidatedCapture[] {
+  if (inputs.length === 0)
+    throw new Error("HNCB domestic deposit financial batch cannot be empty.");
   ensureHncbHumanAttestationEvents(store.db);
   let latest: ReturnType<typeof latestHncbHumanAttestationEvent>;
   try {
@@ -1459,23 +1474,60 @@ export async function commitCanonicalHncbDomesticDepositCapture(
     throw new HncbDomesticDepositFinancialAdmissionError(
       "HNCB human attestation is revoked; future admission is blocked.",
     );
-  const admission = admitHncbDomesticDepositFinancialCapture(input);
-  if (admission.status !== "admitted" || !admission.capture)
-    throw new HncbDomesticDepositFinancialAdmissionError(
-      `HNCB domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
-    );
-  recordInitialHncbHumanAttestationIfMissing(
-    store.db,
-    input.capture.observedAt,
-  );
-  return commitCanonicalFinancialDepositCapture(
+  return inputs.map((input) => {
+    const admission = admitHncbDomesticDepositFinancialCapture(input);
+    if (admission.status !== "admitted" || !admission.capture)
+      throw new HncbDomesticDepositFinancialAdmissionError(
+        `HNCB domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
+      );
+    return admission.capture;
+  });
+}
+
+export function commitCanonicalHncbDomesticDepositCaptureBatchInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly HncbDomesticDepositFinancialAdmissionInput[],
+  capability: Parameters<
+    typeof commitCanonicalFinancialDepositCaptureBatchInTransaction
+  >[2],
+): CanonicalFinancialDepositCommitResult[] {
+  const captures = validateHncbFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
-    admission.capture,
+    captures,
+    capability,
     (db, results) =>
+      {
+        recordInitialHncbHumanAttestationIfMissing(
+          db,
+          inputs[0]!.capture.observedAt,
+        );
+        commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+          db,
+          results.map((result) => result.captureId),
+        );
+      },
+  );
+}
+
+export async function commitCanonicalHncbDomesticDepositCaptureBatch(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly HncbDomesticDepositFinancialAdmissionInput[],
+): Promise<CanonicalFinancialDepositCommitResult[]> {
+  const captures = validateHncbFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatch(
+    store,
+    captures,
+    (db, results) => {
+      recordInitialHncbHumanAttestationIfMissing(
+        db,
+        inputs[0]!.capture.observedAt,
+      );
       commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
         db,
         results.map((result) => result.captureId),
-      ),
+      );
+    },
   );
 }
 

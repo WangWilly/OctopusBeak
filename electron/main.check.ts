@@ -8,6 +8,8 @@ assert.match(
   /try\s*{\s*prepareLibrettoRunCdpPatch\(\);\s*}\s*catch\s*\(error\)\s*{\s*console\.warn\("libretto-run-cdp-patch-failed", error\);\s*}/,
 );
 assert.match(source, /initializeCanonicalRuntimeBeforeWindow\(userData\)/);
+assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
+assert.match(source, /if \(!cdpFixture\)/);
 assert.doesNotMatch(
   source,
   /openLedgerDatabase|migrateLedgerBeforeWindow|recoverAbandonedAutomationSessions|hasSuccessfulTaskRunSince/,

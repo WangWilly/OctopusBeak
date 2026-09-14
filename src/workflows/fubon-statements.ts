@@ -15,8 +15,9 @@ import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
   admitFubonDomesticDepositFinancialCapture,
-  commitCanonicalFubonDomesticDepositCapture,
-  commitFubonDomesticDepositSourceEvidence,
+  commitCanonicalFubonDomesticDepositCaptureBatchInTransaction,
+  commitFubonDomesticDepositSourceEvidenceBatch,
+  createFubonDomesticDepositSourceEvidence,
   deriveFubonDomesticDepositAccountIdentity,
   FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
   FUBON_DOMESTIC_DEPOSIT_FINANCIAL_CURRENCY,
@@ -41,6 +42,8 @@ import {
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/fubon-domestic-deposit.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
+import type { CanonicalFinancialDepositValidatedCapture } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import {
   canonicalSqlitePath,
   createCanonicalSourceStore,
@@ -3167,16 +3170,16 @@ export async function runFubonStatements(
   // separate opt-in boundary: canonicalLedgerDir alone can never enable it.
   const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
   const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
-  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialDatabasePath = financialLedgerDir
     ? canonicalSqlitePath(financialLedgerDir)
     : null;
-  const financialStore = financialDatabasePath
-    ? financialDatabasePath === sourceDatabasePath
-      ? sourceStore
-      : createCanonicalSourceStore(financialDatabasePath)
-    : null;
+  if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
+    throw new Error(
+      "Fubon source and financial captures must use the same canonical SQLite database.",
+    );
+  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
+  const financialStore = financialDatabasePath ? sourceStore : null;
   const financialWriter = financialStore
     ? {
         db: financialStore.db,
@@ -3184,7 +3187,6 @@ export async function runFubonStatements(
         commitClock: () => financialStore.commitClock(),
       }
     : null;
-  const financialUsesSourceStore = financialStore === sourceStore;
   const resolveRelations =
     overrides.resolveLoanRepaymentRelations ?? resolveLoanRepaymentRelations;
   const stableSourceConnectionKey = sourceConnectionKey;
@@ -3193,6 +3195,27 @@ export async function runFubonStatements(
     sourceConnectionKey: stableSourceConnectionKey,
   } as const;
   const financialCaptures: ExistingFubonFinancialCapture[] = [];
+  const sourceEntries: Array<{
+    capture:
+      | FubonDomesticDepositValidatedEvidence
+      | FubonDomesticDepositSourceOnlyEvidence;
+    captureId: string;
+  }> = [];
+  const sourceOnlyEntries: typeof sourceEntries = [];
+  const financialInputs: Array<{
+    capture: FubonDomesticDepositValidatedEvidence;
+    captureId: string;
+    semantics: ReturnType<typeof buildFubonHumanAttestedFinancialSemantics>;
+    humanAttestation: typeof FUBON_HUMAN_ATTESTED_V1_MANIFEST;
+    sourceConnectionScope: string;
+    sourceConnectionKey: string;
+  }> = [];
+  const relationInputs: Array<{
+    capture: CanonicalFinancialDepositValidatedCapture;
+    sourceCapture: FubonDomesticDepositValidatedEvidence;
+    evidence: TransactionCounterpartyAccountEvidenceInput[];
+  }> = [];
+  let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
   try {
     await openTransactionDetail(page, 0);
@@ -3239,40 +3262,23 @@ export async function runFubonStatements(
       });
       const admissionReasons = new Set<string>();
       let admissionStatus: FubonStatementsOutput["admissions"][number]["status"] =
-        financialWriter && isFubonHumanAttestedV1Active()
-          ? "financial-admitted"
-          : "source-only";
+        "source-only";
       if (!financialWriter)
         admissionReasons.add("financial-ledger-not-configured");
       if (financialWriter && !isFubonHumanAttestedV1Active())
         admissionReasons.add("human-attestation-revoked");
       for (const [index, capture] of admittedEvidence.entries()) {
+        const accountDigest = digestEvidenceValue(account.value).slice(7, 19);
+        const sourceCaptureId = `fubon-source-${nextTimestamp()}-${accountDigest}-${index}`;
+        sourceEntries.push({ capture, captureId: sourceCaptureId });
         if (isSourceOnlyFubonDomesticDepositCaptureEvidence(capture)) {
-          admissionStatus = "source-only";
           admissionReasons.add("incomplete-scope");
-          await commitFubonDomesticDepositSourceEvidence(
-            sourceStore,
-            capture,
-            `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
-            stableSourceIdentity,
-          );
+          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
-        const sourceCaptureId = `fubon-source-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`;
-        let sourceEvidenceCommitted = false;
-        const commitSourceEvidence = async () => {
-          if (sourceEvidenceCommitted) return;
-          await commitFubonDomesticDepositSourceEvidence(
-            sourceStore,
-            capture,
-            sourceCaptureId,
-            stableSourceIdentity,
-          );
-          sourceEvidenceCommitted = true;
-        };
         let financialInput = {
           capture,
-          captureId: `fubon-financial-${nextTimestamp()}-${digestEvidenceValue(account.value).slice(7, 19)}-${index}`,
+          captureId: `fubon-financial-${nextTimestamp()}-${accountDigest}-${index}`,
           semantics: buildFubonHumanAttestedFinancialSemantics(
             capture,
             stableSourceConnectionKey,
@@ -3309,7 +3315,6 @@ export async function runFubonStatements(
             partialAdmission.capture &&
             partialAdmission.capture.records.length > 0
           ) {
-            await commitSourceEvidence();
             financialInput = partialInput;
             financialAdmission = partialAdmission;
           }
@@ -3319,7 +3324,6 @@ export async function runFubonStatements(
             (diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic),
           );
           if (disallowed.length > 0) {
-            await commitSourceEvidence();
             throw new Error(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
             );
@@ -3327,57 +3331,29 @@ export async function runFubonStatements(
           admissionStatus = "source-only";
           for (const diagnostic of financialAdmission.diagnostics)
             admissionReasons.add(diagnostic);
-          await commitSourceEvidence();
+          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
         if (!financialWriter || !isFubonHumanAttestedV1Active()) {
-          await commitSourceEvidence();
+          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
-        try {
-          // The financial writer owns the same source-evidence spine, so
-          // successful admission must not create a duplicate source row.
-          await commitCanonicalFubonDomesticDepositCapture(
-            financialWriter,
-            financialInput,
+        admissionStatus = "financial-admitted";
+        const financialCapture = financialAdmission.capture;
+        if (!financialCapture)
+          throw new Error(
+            "Fubon domestic deposit admission lost its canonical capture.",
           );
-          const financialCapture = financialAdmission.capture;
-          if (!financialCapture)
-            throw new Error(
-              "Fubon domestic deposit admission lost its canonical capture.",
-            );
-          financialCaptures.push(financialCapture);
-          for (const counterpartyEvidence of
-            buildFubonLoanPaymentAccountEvidence(
-              capture,
-              financialCapture,
-            )) {
-            await persistCounterpartyAccountEvidence(
-              financialStore!,
-              counterpartyEvidence,
-            );
-          }
-          // Relation resolution is deliberately downstream of a successful,
-          // complete financial capture. It reads retained history, so a
-          // standalone deposit run can resolve against an earlier loan run;
-          // failed or partial captures never withdraw existing support.
-          await resolveLoanRelationsAfterCapture(financialWriter, resolveRelations, {
-              sourceConnectionKey:
-                stableSourceConnectionKey ??
-                deriveFubonDepositSourceConnectionKey(capture),
-              integrationNamespace: "fubon",
-              observedAt: capture.observedAt,
-              failureEvent: "fubon-deposit-relation-resolution-failed",
-            });
-          if (!financialUsesSourceStore) {
-            await commitSourceEvidence();
-          }
-        } catch (error) {
-          // Preserve a source-only observation when financial admission
-          // fails, then propagate the fail-closed error.
-          await commitSourceEvidence();
-          throw error;
-        }
+        financialInputs.push(financialInput);
+        financialCaptures.push(financialCapture);
+        relationInputs.push({
+          capture: financialCapture,
+          sourceCapture: capture,
+          evidence: buildFubonLoanPaymentAccountEvidence(
+            capture,
+            financialCapture,
+          ),
+        });
       }
       preparedAccounts.push({
         statements: accountStatements,
@@ -3389,6 +3365,78 @@ export async function runFubonStatements(
           reason:
             admissionReasons.size > 0 ? [...admissionReasons].join(",") : null,
         },
+      });
+    }
+
+    // Read and validate the point-in-time page before opening the financial
+    // commit boundary. A failure here must not leave statement captures from
+    // this run behind.
+    if (financialWriter && financialCaptures.length > 0) {
+      const authority = financialCaptures[0]!.identity;
+      const currentRows = await readCurrent(page, {
+        observedAt: new Date().toISOString(),
+        financialAuthority: {
+          sourceConnectionKey: authority.sourceConnectionKey,
+          identityEpochKey: authority.identityEpochKey,
+          authorityClass: "existing-financial-admission",
+        },
+      });
+      const currentObservedAt = new Date().toISOString();
+      const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
+        financialCaptures,
+      );
+      currentBalanceCaptures = currentRows.map((unadjustedRow) => {
+        const row = { ...unadjustedRow, observedAt: currentObservedAt };
+        const matching = existingByAccountNumber.get(row.accountNumber);
+        if (!matching)
+          throw new Error(
+            "Fubon current deposit snapshot contains an account without existing full account-number evidence.",
+          );
+        return admitCurrentDepositBalanceCapture(
+          buildFubonCurrentDepositBalanceCapture(row, matching),
+        );
+      });
+    }
+
+    if (financialWriter && financialInputs.length > 0) {
+      await withCanonicalSourceCaptureAdmissionTransaction(
+        sourceStore,
+        (capability) => {
+          for (const entry of sourceOnlyEntries)
+            capability.admit(
+              createFubonDomesticDepositSourceEvidence(
+                entry.capture,
+                entry.captureId,
+                stableSourceIdentity,
+              ),
+            );
+          commitCanonicalFubonDomesticDepositCaptureBatchInTransaction(
+            financialWriter,
+            financialInputs,
+            capability,
+          );
+        },
+      );
+    } else if (sourceEntries.length > 0) {
+      await commitFubonDomesticDepositSourceEvidenceBatch(
+        sourceStore,
+        sourceEntries.map((entry) => ({
+          ...entry,
+          sourceIdentity: stableSourceIdentity,
+        })),
+      );
+    }
+
+    for (const { capture, sourceCapture, evidence } of relationInputs) {
+      for (const item of evidence)
+        await persistCounterpartyAccountEvidence(financialStore!, item);
+      await resolveLoanRelationsAfterCapture(financialWriter!, resolveRelations, {
+        sourceConnectionKey:
+          stableSourceConnectionKey ??
+          deriveFubonDepositSourceConnectionKey(sourceCapture),
+        integrationNamespace: "fubon",
+        observedAt: capture.observedAt,
+        failureEvent: "fubon-deposit-relation-resolution-failed",
       });
     }
 
@@ -3405,37 +3453,8 @@ export async function runFubonStatements(
       admissions.push(prepared.admission);
     }
 
-    if (
-      financialWriter &&
-      financialCaptures.length > 0
-    ) {
-      const authority = financialCaptures[0]!.identity;
-      const currentRows = await readCurrent(page, {
-        observedAt: new Date().toISOString(),
-        financialAuthority: {
-          sourceConnectionKey: authority.sourceConnectionKey,
-          identityEpochKey: authority.identityEpochKey,
-          authorityClass: "existing-financial-admission",
-        },
-      });
-      const currentObservedAt = new Date().toISOString();
-      const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
-        financialCaptures,
-      );
-      const captures = currentRows.map((unadjustedRow) => {
-        const row = { ...unadjustedRow, observedAt: currentObservedAt };
-        const matching = existingByAccountNumber.get(row.accountNumber);
-        if (!matching)
-          throw new Error(
-            "Fubon current deposit snapshot contains an account without existing full account-number evidence.",
-          );
-        return admitCurrentDepositBalanceCapture(
-          buildFubonCurrentDepositBalanceCapture(row, matching),
-        );
-      });
-      for (const capture of captures)
-        await commitCurrentDepositBalanceCapture(financialStore!, capture);
-    }
+    for (const capture of currentBalanceCaptures)
+      await commitCurrentDepositBalanceCapture(financialStore!, capture);
 
     return {
       dateRanges: input.dateRanges,

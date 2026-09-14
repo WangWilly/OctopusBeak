@@ -1949,19 +1949,47 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
     throw new Error("Financial deposit capture batch cannot be empty.");
   return withCanonicalSourceCaptureAdmissionTransaction(
     store as CanonicalSourceStore,
-    (capability) => {
-      for (const capture of captures) {
-        if (!hasValidatedBrand(capture))
-          throw new CanonicalFinancialDepositConflictError(
-            "Financial deposit batch contains a capture outside the runtime-validated seam.",
-          );
-        validateCapture(capture);
-      }
-      const results = captures.map((capture) =>
-        commitOnce(store, capture, capability),
-      );
-      beforeCommit?.(store.db, results);
-      return results;
-    },
+    (capability) =>
+      commitCanonicalFinancialDepositCaptureBatchInTransaction(
+        store,
+        captures,
+        capability,
+        beforeCommit,
+      ),
   );
+}
+
+/**
+ * Commit an already-admitted financial batch inside an existing source
+ * admission transaction.  Provider workflows use this seam when source-only
+ * captures and financial captures belong to the same source run: the caller
+ * can admit the source-only evidence with the same capability, then commit
+ * every financial capture before the single SQLite COMMIT.  The public batch
+ * function above remains the normal one-store entry point and owns its
+ * transaction when a caller does not already have one.
+ */
+export function commitCanonicalFinancialDepositCaptureBatchInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  captures: readonly CanonicalFinancialDepositValidatedCapture[],
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+  beforeCommit?: (
+    db: DatabaseSync,
+    results: readonly CanonicalFinancialDepositCommitResult[],
+  ) => void,
+): CanonicalFinancialDepositCommitResult[] {
+  requireValidatedFinancialWriterStore(store);
+  if (captures.length === 0)
+    throw new Error("Financial deposit capture batch cannot be empty.");
+  for (const capture of captures) {
+    if (!hasValidatedBrand(capture))
+      throw new CanonicalFinancialDepositConflictError(
+        "Financial deposit batch contains a capture outside the runtime-validated seam.",
+      );
+    validateCapture(capture);
+  }
+  const results = captures.map((capture) =>
+    commitOnce(store, capture, capability),
+  );
+  beforeCommit?.(store.db, results);
+  return results;
 }
