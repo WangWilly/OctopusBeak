@@ -63,8 +63,11 @@ assert.doesNotMatch(source, /shouldCheckYuantaTradeCompletion|shouldAutoResumeYu
 
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
-assert.match(mainSource, /onSystemSettingsChanged: scheduler\.reschedule/);
-assert.match(mainSource, /scheduler\.start\(\)/);
+assert.match(
+  mainSource,
+  /onSystemSettingsChanged:\s*\(\)\s*=>\s*scheduler\?\.reschedule\(\)/,
+);
+assert.match(mainSource, /scheduler\?\.start\(\)/);
 assert.match(mainSource, /scheduler\?\.stop\(\)/);
 assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc/);
 assert.match(mainSource, /ipcRegistration\?\.close\(\)/);

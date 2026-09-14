@@ -11,6 +11,7 @@ import {
   admitHncbDomesticDepositFinancialCapture,
   commitHncbDomesticDepositSourceEvidence,
   commitCanonicalHncbDomesticDepositCapture,
+  commitCanonicalHncbDomesticDepositCaptureBatch,
   createHncbDomesticDepositSourceEvidence,
   deriveHncbDomesticDepositAccountNumberEvidence,
   preflightHncbDomesticDeposit,
@@ -796,4 +797,54 @@ try {
   }
 } finally {
   await rm(financialDirectory, { recursive: true, force: true });
+}
+
+const financialBatchRollbackDirectory = await mkdtemp(
+  join(tmpdir(), "hncb-financial-batch-rollback-"),
+);
+try {
+  const store = createCanonicalSourceStore(
+    join(financialBatchRollbackDirectory, "canonical.sqlite"),
+  );
+  try {
+    const writer = {
+      db: store.db,
+      databasePath: store.databasePath,
+      commitClock: () => store.commitClock(),
+    };
+    const batchInput = {
+      capture: admitted.capture,
+      captureId: "hncb-financial-batch-capture",
+      humanAttestation: getHncbHumanAttestedV1Manifest(),
+    };
+    await assert.rejects(
+      () =>
+        commitCanonicalHncbDomesticDepositCaptureBatch(writer, [
+          batchInput,
+          batchInput,
+        ]),
+      /overwrite|capture/i,
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM source_captures")
+          .get() as { value?: number }
+      ).value,
+      0,
+      "a later HNCB capture conflict rolls back the whole financial batch",
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
+          .get() as { value?: number }
+      ).value,
+      0,
+    );
+  } finally {
+    store.close();
+  }
+} finally {
+  await rm(financialBatchRollbackDirectory, { recursive: true, force: true });
 }

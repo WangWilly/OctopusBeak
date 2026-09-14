@@ -17,6 +17,7 @@ import { YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "./yuanta-credit-card
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
 } from "./canonical-financial-deposit-writer.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
@@ -469,6 +470,49 @@ try {
   reopened.close();
 } finally {
   await rm(directory, { recursive: true, force: true });
+}
+
+// A later capture failure must roll back the earlier capture in the same
+// source run. Reusing an already-admitted capture gives the second item a
+// deterministic overwrite conflict after the first item has written rows.
+const batchRollbackDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-financial-batch-rollback-"),
+);
+try {
+  const batchStore = createCanonicalSourceStore(
+    join(batchRollbackDirectory, "canonical.sqlite"),
+  );
+  try {
+    await assert.rejects(
+      () =>
+        commitCanonicalFinancialDepositCaptureBatch(batchStore, [
+          admittedCapture,
+          admittedCapture,
+        ]),
+      /overwrite|capture/i,
+    );
+    assert.equal(
+      (
+        batchStore.db
+          .prepare("SELECT COUNT(*) AS value FROM source_captures")
+          .get() as { value?: number }
+      ).value,
+      0,
+      "a later financial capture failure rolls back the whole batch",
+    );
+    assert.equal(
+      (
+        batchStore.db
+          .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
+          .get() as { value?: number }
+      ).value,
+      0,
+    );
+  } finally {
+    batchStore.close();
+  }
+} finally {
+  await rm(batchRollbackDirectory, { recursive: true, force: true });
 }
 
 const mixedDirectory = await mkdtemp(join(tmpdir(), "yuanta-mixed-ledger-v1-"));

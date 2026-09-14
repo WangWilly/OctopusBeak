@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -1063,6 +1065,38 @@ export async function commitFubonDomesticDepositSourceEvidence(
     );
 }
 
+export type FubonDomesticDepositSourceEvidenceBatchInput = Readonly<{
+  capture:
+    | FubonDomesticDepositValidatedEvidence
+    | FubonDomesticDepositSourceOnlyEvidence;
+  captureId: string;
+  sourceIdentity: Readonly<{
+    sourceConnectionScope?: string;
+    sourceConnectionKey?: string;
+  }>;
+}>;
+
+/** Commit every source capture from one Fubon run in one source transaction. */
+export async function commitFubonDomesticDepositSourceEvidenceBatch(
+  store: CanonicalSourceStore,
+  inputs: readonly FubonDomesticDepositSourceEvidenceBatchInput[],
+): Promise<CanonicalSourceCommitResult[]> {
+  if (inputs.length === 0)
+    throw new Error("Fubon source evidence batch cannot be empty.");
+  const evidence = inputs.map(({ capture, captureId, sourceIdentity }) =>
+    createFubonDomesticDepositSourceEvidence(capture, captureId, sourceIdentity),
+  );
+  const receipts = await createCanonicalSourceCaptureAdmission(store).admitBatch(
+    evidence,
+  );
+  return receipts.map((admitted, index) =>
+    canonicalSourceAdmissionCommitResult(
+      admitted,
+      evidence[index]!.records.length,
+    ),
+  );
+}
+
 export const FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
   "human-attested-v1" as const;
 export const FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
@@ -1912,6 +1946,19 @@ export async function commitCanonicalFubonDomesticDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   input: FubonDomesticDepositFinancialAdmissionInput,
 ): Promise<CanonicalFinancialDepositCommitResult> {
+  const [result] = await commitCanonicalFubonDomesticDepositCaptureBatch(
+    store,
+    [input],
+  );
+  return result!;
+}
+
+function validateFubonFinancialAdmissionInputs(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly FubonDomesticDepositFinancialAdmissionInput[],
+): CanonicalFinancialDepositValidatedCapture[] {
+  if (inputs.length === 0)
+    throw new Error("Fubon domestic deposit financial batch cannot be empty.");
   ensureFubonHumanAttestationEvents(store.db);
   const latest = latestFubonHumanAttestationEvent(store.db);
   if (latest?.eventKind === "revoked") {
@@ -1924,24 +1971,60 @@ export async function commitCanonicalFubonDomesticDepositCapture(
       "Fubon human attestation is revoked; future admission is blocked.",
     );
   }
-  const admission = admitFubonDomesticDepositFinancialCapture(input);
-  if (admission.status !== "admitted" || !admission.capture) {
-    throw new FubonDomesticDepositFinancialAdmissionError(
-      `Fubon domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
-    );
-  }
-  const result = await commitCanonicalFinancialDepositCapture(
+  return inputs.map((input) => {
+    const admission = admitFubonDomesticDepositFinancialCapture(input);
+    if (admission.status !== "admitted" || !admission.capture) {
+      throw new FubonDomesticDepositFinancialAdmissionError(
+        `Fubon domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
+      );
+    }
+    return admission.capture;
+  });
+}
+
+export function commitCanonicalFubonDomesticDepositCaptureBatchInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly FubonDomesticDepositFinancialAdmissionInput[],
+  capability: Parameters<
+    typeof commitCanonicalFinancialDepositCaptureBatchInTransaction
+  >[2],
+): CanonicalFinancialDepositCommitResult[] {
+  const captures = validateFubonFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
-    admission.capture,
+    captures,
+    capability,
     (db, results) =>
+      {
+        recordInitialFubonHumanAttestationIfMissing(
+          db,
+          inputs[0]!.capture.observedAt,
+        );
+        commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+          db,
+          results.map((item) => item.captureId),
+        );
+      },
+  );
+}
+
+export async function commitCanonicalFubonDomesticDepositCaptureBatch(
+  store: CanonicalFinancialDepositWriterStore,
+  inputs: readonly FubonDomesticDepositFinancialAdmissionInput[],
+): Promise<CanonicalFinancialDepositCommitResult[]> {
+  const captures = validateFubonFinancialAdmissionInputs(store, inputs);
+  return commitCanonicalFinancialDepositCaptureBatch(
+    store,
+    captures,
+    (db, results) => {
+      recordInitialFubonHumanAttestationIfMissing(
+        db,
+        inputs[0]!.capture.observedAt,
+      );
       commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
         db,
         results.map((item) => item.captureId),
-      ),
+      );
+    },
   );
-  recordInitialFubonHumanAttestationIfMissing(
-    store.db,
-    input.capture.observedAt,
-  );
-  return result;
 }

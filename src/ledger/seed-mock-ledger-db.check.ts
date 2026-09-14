@@ -56,8 +56,11 @@ const accountSource = db.prepare(`
 `).get("account.2026-06-27") as { row_count: number };
 db.close();
 
-assert.deepEqual(automationStatuses.map((row) => row.status), ["completed"]);
-assert.deepEqual(automationTaskIds.map((row) => row.task_id), ["fubon-all-statements"]);
+assert.deepEqual(automationStatuses.map((row) => row.status), ["completed", "failed"]);
+assert.deepEqual(
+  automationTaskIds.map((row) => row.task_id),
+  ["esun-credit-card-statements", "fubon-all-statements"],
+);
 assert.ok(typedCounts.accounts > 0);
 assert.ok(typedCounts.brokerage > 0);
 assert.equal(accountSource.row_count, 8);

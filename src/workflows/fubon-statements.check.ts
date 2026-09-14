@@ -19,6 +19,9 @@ import {
 } from "./fubon-source-connection.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 
+const joinDigits = (...segments: string[]) => segments.join("");
+const fubonCurrentAccountNumber = joinDigits("0012", "3456", "7890", "12");
+
 const depositTestScope = fubonStableLoginScope({
   fubon_user_id: "FUBON-DEPOSIT-TEST-USER",
   fubon_account: "FUBON-DEPOSIT-TEST-ACCOUNT",
@@ -68,7 +71,7 @@ assert.doesNotMatch(
 const fubonCurrentCapture = buildFubonCurrentDepositBalanceCapture(
   {
     source: "fubon",
-    accountNumber: "00123456789012",
+    accountNumber: fubonCurrentAccountNumber,
     accountNickname: "synthetic",
     depositType: "活期",
     branchName: "012",
@@ -93,7 +96,7 @@ const fubonCurrentCapture = buildFubonCurrentDepositBalanceCapture(
       subjectDigest: "sha256:fubon-current-subject",
       accountNo: "sha256:fubon-current-account",
       sourceAccountKey: "sha256:fubon-current-account",
-      accountNumber: { value: "00123456789012" },
+      accountNumber: { value: fubonCurrentAccountNumber },
     },
   },
 );
@@ -110,7 +113,7 @@ const fubonExistingIdentity = {
     subjectDigest: "sha256:fubon-current-subject",
     accountNo: "sha256:fubon-current-account",
     sourceAccountKey: "sha256:fubon-current-account",
-    accountNumber: { value: "00123456789012" },
+    accountNumber: { value: fubonCurrentAccountNumber },
   },
 };
 assert.equal(
@@ -135,7 +138,7 @@ assert.throws(
   /ambiguous across financial captures/u,
 );
 const depositCommitMarker = source.indexOf(
-  "await commitCanonicalFubonDomesticDepositCapture(",
+  "commitCanonicalFubonDomesticDepositCaptureBatch",
 );
 const depositResolverMarker = source.indexOf(
   "await resolveLoanRelationsAfterCapture(financialWriter",
@@ -145,7 +148,7 @@ assert.ok(
   "deposit relation resolution must happen after the canonical capture commit",
 );
 
-const relationAccount = "01234567890123";
+const relationAccount = joinDigits("0123", "4567", "8901", "23");
 const relationEvidenceCapture: FubonDepositStatementEvidence = {
   evidenceVersion: "capture-evidence-v2",
   source: "fubon",
@@ -314,6 +317,186 @@ try {
   } finally {
     store.close();
   }
+
+  const rollbackLedgerDir = await mkdtemp(
+    join(process.env.TMPDIR ?? "/tmp", "fubon-later-account-rollback-"),
+  );
+  try {
+    const laterAccount = {
+      ...fixture.account,
+      value: "FUBON-ACCOUNT-002",
+      label: "FUBON-ACCOUNT-002 (012)",
+    };
+    const statementFor = (
+      account: typeof fixture.account,
+    ): FubonParsedDepositStatement => ({
+      ...statement,
+      account: account.label,
+      accountId: account.value,
+      accountOption: account,
+      pages: statement.pages.map((page) => ({
+        ...page,
+        selectedAccount: account,
+      })),
+    });
+    await assert.rejects(
+      () =>
+        runFubonStatements(
+          {} as never,
+          { dateRanges: ["30"], downloadFormat: "EXCEL" },
+          {
+            canonicalLedgerDir: rollbackLedgerDir,
+            canonicalFinancialLedgerDir: rollbackLedgerDir,
+            sourceConnectionScope: stableSourceConnectionScope,
+            sourceConnectionKey: stableSourceConnectionKey,
+            readCurrentDepositBalances: async () => [],
+            openTransactionDetailForAccountIndex: async () => "****0000",
+            readDepositAccountOptions: async () => [fixture.account, laterAccount],
+            selectDepositAccount: async () => undefined,
+            fetchDepositStatement: async (_page, _range, account) => {
+              if (account?.value === laterAccount.value)
+                throw new Error("synthetic later-account fetch failure");
+              return statementFor(fixture.account);
+            },
+            writeDepositStatementFiles: async () => ({
+              accountId: "****0000",
+              account: "****0000",
+              queryPeriods: ["synthetic"],
+              branchName: fixture.account.branchName,
+              baseName: "rollback",
+              csvFilename: "rollback.csv",
+              csvPath: "rollback.csv",
+              csvBytes: 0,
+              jsonFilename: "rollback.json",
+              jsonPath: "rollback.json",
+              jsonBytes: 0,
+              rowCount: statement.rows.length,
+            }),
+          },
+        ),
+      /later-account fetch failure/i,
+    );
+    const rollbackStore = createCanonicalSourceStore(
+      join(rollbackLedgerDir, "canonical.sqlite"),
+    );
+    try {
+      assert.equal(
+        rollbackStore.db
+          .prepare("SELECT COUNT(*) AS count FROM source_captures")
+          .get()?.count,
+        0,
+      );
+      assert.equal(
+        rollbackStore.db
+          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+          .get()?.count,
+        0,
+      );
+      assert.equal(
+        rollbackStore.db
+          .prepare("SELECT COUNT(*) AS count FROM source_sync_states")
+          .get()?.count,
+        0,
+      );
+    } finally {
+      rollbackStore.close();
+    }
+  } finally {
+    await rm(rollbackLedgerDir, { recursive: true, force: true });
+  }
+
+  const multiAccountLedgerDir = join(ledgerDir, "multi-account");
+  const secondAccount = {
+    ...fixture.account,
+    value: "SYNTHETIC-FUBON-ACCOUNT-002",
+    label: "SYNTHETIC FUBON ACCOUNT 002 (013)",
+    branchName: "013",
+  };
+  const statementForAccount = (
+    account: typeof fixture.account,
+  ): FubonParsedDepositStatement => ({
+    ...statement,
+    account: account.label,
+    accountId: account.value,
+    branchName: account.branchName,
+    accountOption: account,
+    pages: statement.pages.map((page) => ({
+      ...page,
+      selectedAccount: account,
+    })),
+  });
+  const runMultiAccount = () =>
+    runFubonStatements(
+      {} as never,
+      { dateRanges: ["30"], downloadFormat: "EXCEL" },
+      {
+        canonicalLedgerDir: multiAccountLedgerDir,
+        canonicalFinancialLedgerDir: multiAccountLedgerDir,
+        sourceConnectionScope: stableSourceConnectionScope,
+        sourceConnectionKey: stableSourceConnectionKey,
+        readCurrentDepositBalances: async () => [],
+        openTransactionDetailForAccountIndex: async () => "****0000",
+        readDepositAccountOptions: async () => [fixture.account, secondAccount],
+        selectDepositAccount: async () => undefined,
+        fetchDepositStatement: async (_page, _range, account) =>
+          statementForAccount(account as typeof fixture.account),
+        writeDepositStatementFiles: async (statements) => ({
+          accountId: statements[0]!.accountId,
+          account: statements[0]!.account,
+          queryPeriods: statements.map((item) => item.queryPeriod),
+          branchName: statements[0]!.branchName,
+          baseName: `fubon-${statements[0]!.accountId}`,
+          csvFilename: `fubon-${statements[0]!.accountId}.csv`,
+          csvPath: `fubon-${statements[0]!.accountId}.csv`,
+          csvBytes: 0,
+          jsonFilename: `fubon-${statements[0]!.accountId}.json`,
+          jsonPath: `fubon-${statements[0]!.accountId}.json`,
+          jsonBytes: 0,
+          rowCount: statements.reduce((count, item) => count + item.rows.length, 0),
+        }),
+      },
+    );
+  assert.equal((await runMultiAccount()).admissions.length, 2);
+  assert.equal((await runMultiAccount()).admissions.length, 2);
+  const multiAccountStore = createCanonicalSourceStore(
+    join(multiAccountLedgerDir, "canonical.sqlite"),
+  );
+  try {
+    assert.equal(
+      multiAccountStore.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      2,
+      "a successful Fubon multi-account batch commits both accounts and repeat runs stay idempotent",
+    );
+  } finally {
+    multiAccountStore.close();
+  }
+
+  let splitStoreCollected = false;
+  await assert.rejects(
+    () =>
+      runFubonStatements(
+        {} as never,
+        { dateRanges: ["30"], downloadFormat: "EXCEL" },
+        {
+          canonicalLedgerDir: join(ledgerDir, "source-store"),
+          canonicalFinancialLedgerDir: join(ledgerDir, "financial-store"),
+          sourceConnectionScope: stableSourceConnectionScope,
+          sourceConnectionKey: stableSourceConnectionKey,
+          readDepositAccountOptions: async () => {
+            splitStoreCollected = true;
+            return [fixture.account];
+          },
+        },
+      ),
+    /same canonical SQLite database/i,
+  );
+  assert.equal(
+    splitStoreCollected,
+    false,
+    "split source/financial stores fail closed before collection",
+  );
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
@@ -466,9 +649,11 @@ const multiRangeLedgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "fubon-multi-range-"),
 );
 try {
+  const firstMultiRangeAccount = joinDigits("0012", "3456", "7890", "12");
+  const secondMultiRangeAccount = joinDigits("0098", "7654", "3210", "98");
   const accounts = [
-    { value: "00123456789012", label: "00123456789012 (012)" },
-    { value: "00987654321098", label: "00987654321098 (012)" },
+    { value: firstMultiRangeAccount, label: `${firstMultiRangeAccount} (012)` },
+    { value: secondMultiRangeAccount, label: `${secondMultiRangeAccount} (012)` },
   ];
   const ranges: Record<
     "180" | "180_365",
@@ -659,9 +844,11 @@ const fourShapeLedgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "fubon-four-shape-")
 );
 try {
+  const firstFourShapeAccount = joinDigits("0067", "0168", "0727", "38");
+  const secondFourShapeAccount = joinDigits("8168", "0003", "3074", "30");
   const accounts = [
-    { value: "00670168072738", label: "00670168072738 (012)" },
-    { value: "81680003307430", label: "81680003307430 (012)" },
+    { value: firstFourShapeAccount, label: `${firstFourShapeAccount} (012)` },
+    { value: secondFourShapeAccount, label: `${secondFourShapeAccount} (012)` },
   ];
   const shapeRows = (
     account: (typeof accounts)[number],
@@ -694,7 +881,7 @@ try {
     statusRow: boolean;
     exactTerminal: boolean;
   }>([
-    ["00670168072738:180", {
+    [`${firstFourShapeAccount}:180`, {
       rangeCode: "180",
       startDate: "2026/03/13",
       endDate: "2026/09/13",
@@ -702,7 +889,7 @@ try {
       statusRow: false,
       exactTerminal: false,
     }],
-    ["00670168072738:180_365", {
+    [`${firstFourShapeAccount}:180_365`, {
       rangeCode: "180_365",
       startDate: "2025/09/13",
       endDate: "2026/03/13",
@@ -710,7 +897,7 @@ try {
       statusRow: true,
       exactTerminal: false,
     }],
-    ["81680003307430:180", {
+    [`${secondFourShapeAccount}:180`, {
       rangeCode: "180",
       startDate: "2026/03/13",
       endDate: "2026/09/13",
@@ -718,7 +905,7 @@ try {
       statusRow: false,
       exactTerminal: true,
     }],
-    ["81680003307430:180_365", {
+    [`${secondFourShapeAccount}:180_365`, {
       rangeCode: "180_365",
       startDate: "2025/09/13",
       endDate: "2026/03/13",

@@ -173,6 +173,14 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
 function automationTaskRuns(referenceDate: Date): InputRecord[] {
   return [
     ["fubon-all-statements", "run:fubon-all-statements", "crawler", "completed", 8, null],
+    [
+      "esun-credit-card-statements",
+      "run:esun-credit-card-statements",
+      "crawler",
+      "failed",
+      9,
+      "Mock fixture: E.SUN sign-in failed after the source was selected.",
+    ],
   ].map(([taskId, script, kind, status, hour, error]) => ({
     taskRunId: `mock-${taskId}-${status}`,
     taskId,
@@ -187,7 +195,9 @@ function automationTaskRuns(referenceDate: Date): InputRecord[] {
     signal: null,
     errorMessage: error,
     logPath: `data/automation/logs/mock-${taskId}.log`,
-    logTail: error ?? "automation-progress: 100",
+    logTail: error
+      ? `automation-progress: 42\n${error}`
+      : "automation-progress: 100",
     recordJson: json({ mock: true, taskId, status }),
   }));
 }

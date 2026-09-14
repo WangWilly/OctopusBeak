@@ -161,6 +161,7 @@ function showStartupError(error: unknown) {
 async function start() {
   const userData = app.getPath("userData");
   const appRoot = projectRoot();
+  const cdpFixture = process.env.OCTOPUSBEAK_CDP_FIXTURE === "171";
   ensureDataRoot(userData);
   Object.assign(process.env, buildDesktopEnv({
     userData,
@@ -177,25 +178,27 @@ async function start() {
   }
   initializeCanonicalRuntimeBeforeWindow(userData);
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
-  scheduler = createExchangeRateScheduler({
-    now: () => new Date(),
-    setTimer: (callback, ms) => setTimeout(callback, ms),
-    clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
-    readSettings: () => systemSettings(readAutomationSettings()),
-    // Automation run history is financial legacy state. The unified sync
-    // runner owns its operational status; until it is available, a scheduled
-    // exchange-rate run is never suppressed by the retired ledger.
-    hasSuccessSince: () => false,
-    isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
-    startTask: (scheduledAtUtc) => {
-      startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });
-    },
-    reportError: (error) => console.error("exchange-rate-scheduler-error", error),
-  });
+  if (!cdpFixture) {
+    scheduler = createExchangeRateScheduler({
+      now: () => new Date(),
+      setTimer: (callback, ms) => setTimeout(callback, ms),
+      clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
+      readSettings: () => systemSettings(readAutomationSettings()),
+      // Automation run history is financial legacy state. The unified sync
+      // runner owns its operational status; until it is available, a scheduled
+      // exchange-rate run is never suppressed by the retired ledger.
+      hasSuccessSince: () => false,
+      isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
+      startTask: (scheduledAtUtc) => {
+        startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });
+      },
+      reportError: (error) => console.error("exchange-rate-scheduler-error", error),
+    });
+  }
   ipcRegistration = registerOctopusBeakIpc({
-    onSystemSettingsChanged: scheduler.reschedule,
+    onSystemSettingsChanged: () => scheduler?.reschedule(),
   });
-  scheduler.start();
+  scheduler?.start();
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
   await createWindow(currentRendererUrl, currentPreloadPath);

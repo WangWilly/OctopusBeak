@@ -684,9 +684,7 @@ try {
 const financialSourceDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-source-workflow-"),
 );
-const financialLedgerDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-ledger-workflow-"),
-);
+const financialLedgerDir = financialSourceDir;
 const relationRequests: LoanRepaymentRelationResolutionRequest[] = [];
 const relationEvidenceCounts: number[] = [];
 const resolveYuantaRelations = async (
@@ -825,15 +823,48 @@ try {
   }
 } finally {
   await rm(financialSourceDir, { recursive: true, force: true });
-  await rm(financialLedgerDir, { recursive: true, force: true });
+}
+
+const splitStoreRoot = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-split-store-rejection-"),
+);
+try {
+  let splitStoreCollected = false;
+  await assert.rejects(
+    () =>
+      runYuantaStatements(
+        {} as never,
+        {
+          dateRange: "one_month",
+          accountFilters: [],
+          replaceActiveSession: true,
+          telemetry: false,
+        },
+        {
+          ...stableConnectionIdentity,
+          canonicalLedgerDir: join(splitStoreRoot, "source"),
+          canonicalFinancialLedgerDir: join(splitStoreRoot, "financial"),
+          readDepositAccountOptions: async () => {
+            splitStoreCollected = true;
+            return [workflowAccount];
+          },
+        },
+      ),
+    /same canonical SQLite database/i,
+  );
+  assert.equal(
+    splitStoreCollected,
+    false,
+    "split source/financial stores fail closed before collection",
+  );
+} finally {
+  await rm(splitStoreRoot, { recursive: true, force: true });
 }
 
 const maskedSourceDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-source-workflow-"),
 );
-const maskedLedgerDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-ledger-workflow-"),
-);
+const maskedLedgerDir = maskedSourceDir;
 try {
   await assert.rejects(
     () =>
@@ -861,13 +892,13 @@ try {
     join(maskedLedgerDir, "canonical.sqlite"),
   );
   try {
-    // Financial capture admission is append-only; rejecting masked evidence
-    // must not silently admit an exact account or erase the capture.
+    // Counterparty evidence is validated before the run transaction opens;
+    // rejecting a masked account must leave the whole run unapplied.
     assert.equal(
       maskedStore.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
         .get()?.count,
-      1,
+      0,
     );
     assert.equal(queryCounterpartyAccountEvidence(maskedStore).length, 0);
   } finally {
@@ -875,7 +906,6 @@ try {
   }
 } finally {
   await rm(maskedSourceDir, { recursive: true, force: true });
-  await rm(maskedLedgerDir, { recursive: true, force: true });
 }
 
 const multiAccountDir = await mkdtemp(
@@ -926,6 +956,144 @@ try {
   }
 } finally {
   await rm(multiAccountDir, { recursive: true, force: true });
+}
+
+const financialMultiAccountDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-multi-account-workflow-"),
+);
+try {
+  const financialRun = async () =>
+    runYuantaStatements(
+      {} as never,
+      {
+        dateRange: "one_month",
+        accountFilters: [],
+        replaceActiveSession: true,
+        telemetry: false,
+      },
+      {
+        ...stableConnectionIdentity,
+        canonicalLedgerDir: financialMultiAccountDir,
+        canonicalFinancialLedgerDir: financialMultiAccountDir,
+        readDepositAccountOptions: async () => [
+          workflowAccount,
+          secondWorkflowAccount,
+        ],
+        queryAccount: async () => undefined,
+        downloadStatementRows: async (_page, account) =>
+          account.value === secondWorkflowAccount.value
+            ? secondWorkflowDownload
+            : workflowDownload,
+        writeBankTransactionsFile: writeWorkflowFile as never,
+        readCurrentDepositBalances: async () => [],
+        resolveRelations: async () => ({
+          status: "canonical-live" as const,
+          outcome: "no-admission" as const,
+          resolutionId: null,
+          exactRelationIds: [],
+          settlementGroupIds: [],
+          reason: "test" as const,
+        }),
+      },
+    );
+
+  const firstFinancialRun = await financialRun();
+  assert.deepEqual(
+    firstFinancialRun.admissions.map((admission) => admission.status),
+    ["financial-admitted", "financial-admitted"],
+    "a successful multi-account run commits every account together",
+  );
+  const secondFinancialRun = await financialRun();
+  assert.deepEqual(
+    secondFinancialRun.admissions.map((admission) => admission.status),
+    ["financial-admitted", "financial-admitted"],
+  );
+  const financialMultiStore = createCanonicalSourceStore(
+    join(financialMultiAccountDir, "canonical.sqlite"),
+  );
+  try {
+    assert.equal(
+      financialMultiStore.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      2,
+      "repeated synchronization keeps one transaction per source occurrence",
+    );
+    assert.equal(
+      queryCanonicalSourceCurrent(financialMultiStore).records.length,
+      2,
+    );
+  } finally {
+    financialMultiStore.close();
+  }
+} finally {
+  await rm(financialMultiAccountDir, { recursive: true, force: true });
+}
+
+const financialRollbackDir = await mkdtemp(
+  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-rollback-workflow-"),
+);
+try {
+  await assert.rejects(
+    () =>
+      runYuantaStatements(
+        {} as never,
+        {
+          dateRange: "one_month",
+          accountFilters: [],
+          replaceActiveSession: true,
+          telemetry: false,
+        },
+        {
+          ...stableConnectionIdentity,
+          canonicalLedgerDir: financialRollbackDir,
+          canonicalFinancialLedgerDir: financialRollbackDir,
+          readDepositAccountOptions: async () => [
+            workflowAccount,
+            secondWorkflowAccount,
+          ],
+          queryAccount: async () => undefined,
+          downloadStatementRows: async (_page, account) => {
+            if (account.value === secondWorkflowAccount.value)
+              throw new Error("synthetic later-account download failure");
+            return workflowDownload;
+          },
+          writeBankTransactionsFile: writeWorkflowFile as never,
+          readCurrentDepositBalances: async () => [],
+        },
+      ),
+    /later-account download failure/i,
+  );
+  const rollbackStore = createCanonicalSourceStore(
+    join(financialRollbackDir, "canonical.sqlite"),
+  );
+  try {
+    assert.equal(
+      rollbackStore.db
+        .prepare("SELECT COUNT(*) AS count FROM source_captures")
+        .get()?.count,
+      0,
+      "a later account failure leaves no source capture from the run",
+    );
+    assert.equal(
+      rollbackStore.db
+        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
+        .get()?.count,
+      0,
+      "a later account failure leaves no financial transaction from the run",
+    );
+    assert.equal(
+      rollbackStore.db
+        .prepare("SELECT COUNT(*) AS count FROM source_sync_states")
+        .get()?.count,
+      0,
+      "a failed run does not advance committed sync state",
+    );
+  } finally {
+    rollbackStore.close();
+  }
+} finally {
+  await rm(financialRollbackDir, { recursive: true, force: true });
 }
 
 const cancellationDir = await mkdtemp(
@@ -999,7 +1167,7 @@ try {
     );
     assert.equal(
       queryCanonicalSourceCurrent(cancellationStore).records.length,
-      1,
+      0,
     );
   } finally {
     cancellationStore.close();
