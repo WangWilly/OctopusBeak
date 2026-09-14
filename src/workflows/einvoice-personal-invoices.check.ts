@@ -458,6 +458,28 @@ try {
   assert.equal(committed.invoiceCount, 1);
   assert.equal(committed.itemCount, 1);
 
+  const renewedRowTokenCapture = captureInput(
+    [{
+      ...completeRecord,
+      entry: {
+        ...completeRecord.entry,
+        token: "opaque-provider-row-a-renewed",
+      },
+    }],
+    "einvoice-workflow-renewed-row-token",
+    "2026-09-10T05:00:15Z",
+  );
+  const renewedRowTokenCommit = await commitCanonicalCapture(
+    renewedRowTokenCapture,
+    workflowLedgerDir,
+  );
+  assert.equal(
+    renewedRowTokenCommit.insertedRevisionCount,
+    0,
+    "a refreshed list-row token must not create or overwrite an invoice revision",
+  );
+  assert.equal(renewedRowTokenCommit.observedDuplicateCount, 1);
+
   const fractionalStringRecord = {
     ...completeRecord,
     entry: {
