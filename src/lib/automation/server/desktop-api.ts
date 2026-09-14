@@ -3,7 +3,6 @@ import {
   AUTOMATION_CREDENTIAL_KEYS,
   AUTOMATION_TASKS,
   enabledAutomationTasks,
-  enabledCsvImportDependencyIds,
   taskById,
 } from "./tasks.ts";
 import {
@@ -34,7 +33,6 @@ import {
   startAutomationTasks,
 } from "./runner.ts";
 import {
-  importGateStatus,
   activeTaskPrerequisiteNotices,
   latestTaskRuns,
   recentTaskRuns,
@@ -181,11 +179,6 @@ export function loadAutomationDesktopModel(
       undefined,
       automationBusinessTimezone(settings),
     );
-    const importGate = importGateStatus(db, {
-      dependencyIds: enabledCsvImportDependencyIds(enabledGroups),
-      startUtc: range.startUtc,
-      endUtc: range.endUtc,
-    });
     const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
       const enabled = enabledGroups[group.id] !== false;
       const selectionSettings = { ...settings, [group.enabledKey]: enabled };
@@ -220,7 +213,6 @@ export function loadAutomationDesktopModel(
           }),
           activeTaskIds,
           credentials: credentialState.status,
-          importGate,
           setupRequiredGroupIds: new Set(
             credentialGroups
               .filter((group) => group.statementSetupRequired)
@@ -301,11 +293,6 @@ function assertAutomationTaskCanStartInModel(
   if (row.status === "waiting_for_human") {
     throw new Error(
       "Task is waiting for human input. Resume or force quit it first.",
-    );
-  }
-  if (row.status === "locked") {
-    throw new Error(
-      "Import is locked until all crawler dependencies complete for the business day.",
     );
   }
   const group = task.credentialGroupId

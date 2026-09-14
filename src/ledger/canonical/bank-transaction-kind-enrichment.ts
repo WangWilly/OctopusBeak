@@ -545,6 +545,37 @@ function isYuantaScheduledFundSubscription(
   );
 }
 
+function isFubonStructuredCreditCardPayment(
+  transaction: CurrentTransaction,
+): boolean {
+  if (
+    transaction.integrationNamespace !== "fubon" ||
+    transaction.stream !== "domestic-deposit" ||
+    transaction.direction !== "outflow" ||
+    typeof transaction.description !== "string"
+  )
+    return false;
+  const compactDescription = transaction.description.replace(/\s+/gu, "");
+  return /^(?:行動|網路)?繳費·(?:繳)?[^·]+信用卡(?:款|費)[^·]*$/u.test(
+    compactDescription,
+  );
+}
+
+function isFubonStructuredLoanPayment(
+  transaction: CurrentTransaction,
+): boolean {
+  if (
+    transaction.integrationNamespace !== "fubon" ||
+    transaction.stream !== "domestic-deposit" ||
+    transaction.direction !== "outflow" ||
+    typeof transaction.description !== "string"
+  )
+    return false;
+  const sourceAction = transaction.description.split("·", 1)[0]
+    ?.replace(/\s+/gu, "") ?? "";
+  return sourceAction === "放款繳款";
+}
+
 function classify(
   transaction: CurrentTransaction,
   fundingDirection: "inflow" | "outflow" | undefined,
@@ -585,6 +616,22 @@ function classify(
   if (isYuantaScheduledFundSubscription(transaction))
     return {
       value: "investment.trade.buy",
+      evidenceKind: "bank-rule",
+      sourceField: "source_description",
+      sourceValue,
+    };
+
+  if (isFubonStructuredCreditCardPayment(transaction))
+    return {
+      value: "payment.credit_card",
+      evidenceKind: "bank-rule",
+      sourceField: "source_description",
+      sourceValue,
+    };
+
+  if (isFubonStructuredLoanPayment(transaction))
+    return {
+      value: "payment.loan",
       evidenceKind: "bank-rule",
       sourceField: "source_description",
       sourceValue,
@@ -932,6 +979,8 @@ export function refreshCanonicalBankTransactionKindsAfterCreditCardCapture(
       JOIN source_captures capture
         ON capture.capture_id = revision.capture_id
      WHERE account.stream IN ('domestic-deposit', 'foreign-currency-deposit')
+       AND capture.capture_key IS NOT NULL
+       AND TRIM(capture.capture_key) <> ''
   `).all() as Array<Record<string, unknown>>;
   return commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
     db,

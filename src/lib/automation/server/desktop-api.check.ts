@@ -398,7 +398,7 @@ try {
 
   assert.throws(
     () => api.assertAutomationTaskCanStart("import-downloads-csv", dir),
-    /Import is locked/,
+    /Unknown automation task/,
   );
 
   const waitingDb = openLedgerDatabase(dir);

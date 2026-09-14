@@ -17,6 +17,9 @@ const db = openLedgerDatabase(ledgerDir, { readOnly: true });
 const automationStatuses = db.prepare(`
   SELECT DISTINCT status FROM automation_task_runs ORDER BY status
 `).all() as Array<{ status: string }>;
+const automationTaskIds = db.prepare(`
+  SELECT DISTINCT task_id FROM automation_task_runs ORDER BY task_id
+`).all() as Array<{ task_id: string }>;
 const typedCounts = db.prepare(`
   SELECT
     (SELECT COUNT(*) FROM account_transactions) AS accounts,
@@ -54,6 +57,7 @@ const accountSource = db.prepare(`
 db.close();
 
 assert.deepEqual(automationStatuses.map((row) => row.status), ["completed"]);
+assert.deepEqual(automationTaskIds.map((row) => row.task_id), ["fubon-all-statements"]);
 assert.ok(typedCounts.accounts > 0);
 assert.ok(typedCounts.brokerage > 0);
 assert.equal(accountSource.row_count, 8);

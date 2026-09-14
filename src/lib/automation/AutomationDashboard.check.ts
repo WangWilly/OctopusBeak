@@ -29,9 +29,8 @@ assert.match(
 );
 assert.match(source, /class="stage-body"[^>]*transition:disclosureSlide/);
 assert.match(source, /class="inline-log-panel"[^>]*transition:disclosureSlide/);
-assert.match(source, /async function toggleCollectTasks\(event: MouseEvent\)/);
 assert.match(source, /class="table-reveal"/);
-assert.match(source, /container\.animate\(/);
+assert.doesNotMatch(source, /container\.animate\(/);
 assert.doesNotMatch(source, /class="task-row"[^>]*transition:disclosureSlide/);
 assert.match(source, /transition: transform 180ms ease/);
 assert.match(
@@ -62,7 +61,6 @@ assert.match(source, /from "@lucide\/svelte"/);
 assert.match(source, /ArrowLeftRight/);
 assert.match(source, /CircleEllipsis/);
 assert.match(source, /CloudDownload/);
-assert.match(source, /Import as ImportIcon/);
 assert.match(source, /Landmark/);
 assert.match(source, /class="active-task-jump-list"/);
 assert.match(source, /class="active-task-filter"/);
@@ -91,7 +89,6 @@ assert.match(
 assert.match(source, /openHumanViewer\(task\)/);
 assert.match(source, /async function revealTaskLog\(task: AutomationTaskRow\)/);
 assert.match(source, /expandedLogTaskId = task\.id/);
-assert.match(source, /showAllCollectTasks = true/);
 assert.match(
   source,
   /<tr class="task-row"[^>]*id=\{`\$\{task\.id\}-task-row`\}/,
@@ -148,7 +145,7 @@ assert.match(
   source,
   /task\.status === "waiting_for_human"[\s\S]*?automation\.forceQuit\(task\.id\)/,
 );
-assert.match(source, /historyTaskCount\(historyRows\.length\)/);
+assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
 assert.match(source, /class="stage-toggle-action"/);
 assert.match(source, /aria-expanded=\{stageOpen\[stage\.id\]\}/);
 assert.doesNotMatch(source, /<details class="stage-section"/);
@@ -158,10 +155,15 @@ assert.match(source, /class="button primary stage-sync-action"/);
 assert.match(source, /onclick=\{\(\) => openSyncSheet\(stage\.tasks\)\}/);
 assert.match(
   source,
+  /\$: taskStages = \[\s*\{\s*id: "sync",\s*title: \$t\.automation\.syncStage,\s*tasks: automation\.tasks,\s*\},\s*\];/,
+);
+assert.match(source, /\{#each stage\.tasks as task \(task\.id\)\}/);
+assert.match(
+  source,
   /class:muted=\{!stageRunnableTasks\(stage\.tasks\)\.length\}/,
 );
 assert.doesNotMatch(source, /stage\.description/);
-assert.match(source, /\$t\.automation\.startImportHeading/);
+assert.match(source, /\$t\.automation\.startSyncHeading/);
 assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);
@@ -214,6 +216,17 @@ assert.match(
   /\? remembered && collectionGroupIds\.has\(remembered\) \? remembered : ""/,
 );
 assert.doesNotMatch(openCredentialsSource, /selectedCredentialGroupId\s*=/);
+const sourceGroupIdsSource = source.slice(
+  source.indexOf("$: collectionGroupIds"),
+  source.indexOf("$: onboardingDisclosure"),
+);
+assert.match(sourceGroupIdsSource, /\.filter\(\(task\) => task\.credentialGroupId\)/);
+const saveSourceTaskSource = source.slice(
+  source.indexOf("const selectedTask = automation.tasks.find"),
+  source.indexOf("if (selectedTask?.canRun)"),
+);
+assert.match(saveSourceTaskSource, /task\.credentialGroupId === savedGroupId/);
+assert.doesNotMatch(saveSourceTaskSource, /task\.kind === "crawler"/);
 assert.match(
   source,
   /value=\{credentialSearch\} oninput=\{updateCredentialSearch\}/,
@@ -231,10 +244,23 @@ assert.match(
 );
 assert.match(source, /historySearch/);
 assert.match(source, /historyFilter/);
-assert.match(source, /\$: historyCounts = historyRows\.reduce/);
+assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, automation\.tasks\)/);
+assert.match(source, /const catalogTaskIds = new Set\(tasks\.map\(\(task\) => task\.id\)\)/);
+assert.match(source, /return rows\.filter\(\(run\) => catalogTaskIds\.has\(run\.taskId\)\)/);
+assert.match(source, /\$: historyCounts = catalogHistoryRows\.reduce/);
 assert.match(source, /historyCounts\.completed/);
 assert.doesNotMatch(source, /historyFinishedTime/);
 assert.doesNotMatch(source, /class="modal-footer"/);
+
+const currentTaskIds = new Set(["source-task"]);
+const historyRowsForCheck = [
+  { taskId: "source-task", script: "run:source-task" },
+  { taskId: "retired-source", script: "run:retired-source" },
+];
+assert.deepEqual(
+  historyRowsForCheck.filter((run) => currentTaskIds.has(run.taskId)),
+  [{ taskId: "source-task", script: "run:source-task" }],
+);
 
 assert.match(source, /statementSelectionDrafts/);
 assert.match(source, /<fieldset[^>]*class="statement-selection"/);
@@ -246,7 +272,6 @@ assert.match(source, /type="checkbox"/);
 assert.match(source, /selectedStatementTypeIds/);
 assert.match(source, /task\.primaryAction === "Configure"/);
 assert.match(source, /task\.status === "partial"/);
-assert.match(source, /automation\.importGate\.warnings/);
 assert.match(
   source,
   /import type \{ CertificateFileValidationReason, CredentialGroupDto \} from "\$lib\/desktop\/api\.ts"/,
@@ -330,29 +355,6 @@ assert.match(source, /<span>\{credentialGroupStatuses\[group\.id\]\}<\/span>/);
 assert.doesNotMatch(
   source,
   /<span>\{credentialGroupStatus\(group, \$t\)\}<\/span>/,
-);
-
-const importWarningSource = source.slice(
-  source.indexOf(
-    '{#if task.id === "import-downloads-csv" && task.canRun && automation.importGate.warnings.length}',
-  ),
-  source.indexOf(
-    "<button\n                      class={`button task-control",
-    source.indexOf('{#if task.id === "import-downloads-csv"'),
-  ),
-);
-assert.match(
-  importWarningSource,
-  /\{#each automation\.importGate\.warnings as warning\}/,
-);
-assert.match(importWarningSource, /taskIdLabel\(warning\.taskId, \$t\)/);
-assert.match(
-  importWarningSource,
-  /\{#if warning\.failedTypeIds\.length\}:[\s\S]*?\{\/if\}/,
-);
-assert.match(
-  importWarningSource,
-  /warning\.failedTypeIds\.map\(\(typeId\) => \$t\.automation\.statementTypeLabels\[typeId\] \?\? typeId\)\.join\(", "\)/,
 );
 
 const statementFieldsetSource = source.slice(

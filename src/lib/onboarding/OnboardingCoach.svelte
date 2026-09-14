@@ -89,8 +89,6 @@
       collection: { title: dictionary.onboarding.collectionTitle, body: dictionary.onboarding.collectionBody },
       assist: { title: dictionary.onboarding.assistTitle, body: dictionary.onboarding.assistBody },
       collectionFailed: { title: dictionary.onboarding.collectionFailedTitle, body: dictionary.onboarding.collectionFailedBody },
-      import: { title: dictionary.onboarding.importTitle, body: dictionary.onboarding.importBody },
-      importFailed: { title: dictionary.onboarding.importFailedTitle, body: dictionary.onboarding.importFailedBody },
       overview: { title: dictionary.onboarding.overviewTitle, body: dictionary.onboarding.overviewBody },
       overviewEmpty: { title: dictionary.onboarding.overviewEmptyTitle, body: dictionary.onboarding.overviewEmptyBody },
       complete: { title: dictionary.onboarding.completeTitle, body: dictionary.onboarding.completeBody },
@@ -284,11 +282,11 @@
       : undefined}
   >
     <div class="coach-meta">
-      <span>{$t.onboarding.stepLabel(current, 5)}</span>
+      <span>{$t.onboarding.stepLabel(current, 4)}</span>
       <span class="guide" aria-hidden="true"></span>
     </div>
     <div class="milestones" aria-hidden="true">
-      {#each [1, 2, 3, 4, 5] as item}<span class:active={item === current}></span>{/each}
+      {#each [1, 2, 3, 4] as item}<span class:active={item === current}></span>{/each}
     </div>
     <h2 id="onboarding-title">{title}</h2>
     <p>{body}</p>

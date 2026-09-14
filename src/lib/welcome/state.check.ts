@@ -92,7 +92,7 @@ test("shows Welcome only for a genuinely empty installation", () => {
 
   for (const history of [
     { id: "fubon-all-statements", kind: "crawler" as const, latestStartedAt: "2026-08-07T00:00:00.000Z", latestFinishedAt: null },
-    { id: "import-downloads-csv", kind: "import" as const, latestStartedAt: null, latestFinishedAt: "2026-08-07T00:01:00.000Z" },
+    { id: "sync-maicoin", kind: "sync" as const, latestStartedAt: null, latestFinishedAt: "2026-08-07T00:01:00.000Z" },
   ]) {
     const existingAutomation = emptyEligibilityFacts();
     existingAutomation.automation = { tasks: [history] };

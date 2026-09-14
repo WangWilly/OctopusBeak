@@ -33,20 +33,6 @@ export type AutomationTask = AutomationTaskSummary & {
   maxAttempts: number;
 };
 
-export const CSV_IMPORT_DEPENDENCY_IDS = [
-  "fubon-all-statements",
-  "esun-credit-card-statements",
-  "yuanta-all-statements",
-  "yuanta-trade-statements",
-  "cathay-all-statements",
-  "hncb-statements",
-  "ctbc-statements",
-  "post-statements",
-  "sinopac-statements",
-  "linebank-statements",
-  "einvoice-personal-invoices",
-] as const;
-
 const localized = (en: string, zh: string) => ({ en, "zh-TW": zh });
 
 const field = (
@@ -1174,21 +1160,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     dependencies: [],
     maxAttempts: 1,
   },
-  {
-    id: "import-downloads-csv",
-    label: "Import downloads CSV",
-    script: "run:import-downloads-csv",
-    command: [
-      "node",
-      "--no-warnings",
-      "--experimental-strip-types",
-      "src/ledger/import-downloads-csv.ts",
-    ],
-    kind: "import",
-    credentialKeys: [],
-    dependencies: CSV_IMPORT_DEPENDENCY_IDS,
-    maxAttempts: 1,
-  },
 ];
 
 export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
@@ -1257,16 +1228,5 @@ function taskIsEnabled(
 }
 
 export function enabledAutomationTasks(enabledGroups: Record<string, boolean>) {
-  return AUTOMATION_TASKS.filter(
-    (task) => task.kind === "import" || taskIsEnabled(task, enabledGroups),
-  );
-}
-
-export function enabledCsvImportDependencyIds(
-  enabledGroups: Record<string, boolean>,
-) {
-  return CSV_IMPORT_DEPENDENCY_IDS.filter((taskId) => {
-    const task = taskById(taskId);
-    return task ? taskIsEnabled(task, enabledGroups) : false;
-  });
+  return AUTOMATION_TASKS.filter((task) => taskIsEnabled(task, enabledGroups));
 }
