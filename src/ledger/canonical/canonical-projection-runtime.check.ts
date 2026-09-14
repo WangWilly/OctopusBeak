@@ -107,9 +107,18 @@ test("applyCommit joins the caller transaction and is idempotent", async () => {
       const transactionRuntime = createCanonicalProjectionRuntime(db);
       const latest = db
         .prepare(
-          "SELECT commit_id, commit_sequence FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1",
+          "SELECT commit_id, commit_sequence FROM canonical_commits WHERE commit_kind = 'source_capture' ORDER BY commit_sequence DESC LIMIT 1",
         )
         .get() as { commit_id: Uint8Array; commit_sequence: number };
+      const nextCommitSequence = Number(
+        (
+          db
+            .prepare(
+              "SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits",
+            )
+            .get() as { value?: unknown }
+        ).value,
+      );
       db.exec("BEGIN IMMEDIATE");
       transactionRuntime.applyCommit({
         commitId: latest.commit_id,
@@ -143,7 +152,7 @@ test("applyCommit joins the caller transaction and is idempotent", async () => {
          ) VALUES (?, ?, ?, ?, 'source_capture')`,
       ).run(
         nextCommit,
-        latest.commit_sequence + 1,
+        nextCommitSequence,
         1_800_000_000_000_000,
         CATHAY_DOMESTIC_DEPOSIT_FIXTURE.authorityRoute,
       );
@@ -157,7 +166,7 @@ test("applyCommit joins the caller transaction and is idempotent", async () => {
           families: ["transactions"],
           scope,
         }).knowledgePoint,
-        latest.commit_sequence + 1,
+        nextCommitSequence,
       );
       db.exec("ROLLBACK");
       assert.equal(
@@ -300,6 +309,7 @@ test("rebuild validates a shadow generation before exactly one switch", async ()
 test("an explicit older rebuild reports one generation Knowledge Point", async () => {
   const { directory, runtime, scope } = await fixture();
   let laterCommitId: Buffer | null = null;
+  let laterCommitSequence: number | null = null;
   try {
     const db = openCanonicalDatabase(directory);
     try {
@@ -314,7 +324,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
       db.prepare(
         `INSERT INTO canonical_commits(
            commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-         ) VALUES (?, 2, 2000000, 'synthetic/later-relation', 'relation_resolution')`,
+         ) VALUES (?, 3, 3000000, 'synthetic/later-relation', 'relation_resolution')`,
       ).run(relationCommitId);
       db.prepare(
         `INSERT INTO loan_repayment_resolution_runs(
@@ -342,10 +352,20 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
       1,
       "a later retained relation commit cannot widen an older active generation",
     );
+    await runtime.rebuild();
 
     const writer = openCanonicalDatabase(directory);
     try {
       laterCommitId = randomBytes(16);
+      laterCommitSequence = Number(
+        (
+          writer
+            .prepare(
+              "SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits",
+            )
+            .get() as { value?: unknown }
+        ).value,
+      );
       const sourceConnectionId = (
         writer
           .prepare(
@@ -354,11 +374,12 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
           .get(scope.sourceConnectionKey) as { source_connection_id: Uint8Array }
       ).source_connection_id;
       writer.exec("BEGIN IMMEDIATE");
+      const transactionRuntime = createCanonicalProjectionRuntime(writer);
       writer.prepare(
         `INSERT INTO canonical_commits(
            commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-         ) VALUES (?, 4, 4000000, 'synthetic/applied-relation', 'relation_resolution')`,
-      ).run(laterCommitId);
+         ) VALUES (?, ?, 4000000, 'synthetic/applied-relation', 'relation_resolution')`,
+      ).run(laterCommitId, laterCommitSequence);
       writer.prepare(
         `INSERT INTO loan_repayment_resolution_runs(
            resolution_id, resolution_key, source_connection_id, resolver_version,
@@ -367,7 +388,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
                    'complete', 'no-admission', 'synthetic',
                    '2026-08-31T00:00:01.000Z', ?)`,
       ).run(randomBytes(16), sourceConnectionId, laterCommitId);
-      createCanonicalProjectionRuntime(writer).applyCommit({
+      transactionRuntime.applyCommit({
         commitId: laterCommitId,
         kind: "relation_resolution",
       });
@@ -378,7 +399,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
     assert.equal(
       runtime.read({ kind: "current", families: ["transactions"], scope })
         .knowledgePoint,
-      4,
+      laterCommitSequence,
       "applying a later commit advances the whole active generation together",
     );
     const transactionId = runtime.read({
@@ -541,7 +562,7 @@ test("transaction enrichment is a Runtime family at current and historical cutof
     const db = openCanonicalDatabase(directory, { readOnly: true });
     let captureSequence: number;
     try {
-      captureSequence = Number((db.prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits").get() as { value?: unknown }).value);
+      captureSequence = Number((db.prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits WHERE commit_kind = 'source_capture'").get() as { value?: unknown }).value);
     } finally {
       db.close();
     }
@@ -605,7 +626,7 @@ test("historical selection ignores revisions that become effective after the fin
     db.prepare(
       `INSERT INTO canonical_commits(
          commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
-       ) VALUES (?, 2, 2000000, 'synthetic/runtime-cutoff-test', 'source_capture')`,
+       ) VALUES (?, 3, 3000000, 'synthetic/runtime-cutoff-test', 'source_capture')`,
     ).run(laterCommitId);
     db.prepare(
       `INSERT INTO transaction_revisions(
@@ -632,7 +653,7 @@ test("historical selection ignores revisions that become effective after the fin
       kind: "historical",
       families: ["transactions"],
       scope,
-      cutoff: { financialAt: "2026-08-17", knowledgeAt: 2 },
+      cutoff: { financialAt: "2026-08-17", knowledgeAt: 3 },
     });
     assert.equal(snapshot.families.transactions.length, 3);
     assert.equal(

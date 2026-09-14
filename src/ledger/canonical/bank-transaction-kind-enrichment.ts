@@ -967,24 +967,58 @@ export function commitCanonicalBankTransactionKindEnrichmentForCapturesInTransac
 export function refreshCanonicalBankTransactionKindsAfterCreditCardCapture(
   db: DatabaseSync,
 ): readonly CanonicalEnrichmentCommitResult[] {
-  const rows = db.prepare(`
-    SELECT DISTINCT capture.capture_key
-      FROM current_transactions current_row
-      JOIN transaction_revisions revision
-        ON revision.revision_id = current_row.revision_id
-      JOIN financial_transactions transaction_row
-        ON transaction_row.transaction_id = current_row.transaction_id
-      JOIN financial_accounts account
-        ON account.account_id = transaction_row.account_id
-      JOIN source_captures capture
-        ON capture.capture_id = revision.capture_id
+  const projectionRuntime = createCanonicalProjectionRuntime(db);
+  const sourceConnections = db.prepare(`
+    SELECT DISTINCT connection.source_connection_key
+      FROM financial_accounts account
+      JOIN source_connections connection
+        ON connection.source_connection_id = account.source_connection_id
      WHERE account.stream IN ('domestic-deposit', 'foreign-currency-deposit')
-       AND capture.capture_key IS NOT NULL
-       AND TRIM(capture.capture_key) <> ''
+     ORDER BY connection.source_connection_key
   `).all() as Array<Record<string, unknown>>;
+  const captureKeys = new Set<string>();
+
+  for (const sourceConnection of sourceConnections) {
+    const sourceConnectionKey = requiredText(
+      sourceConnection.source_connection_key,
+      "Bank source connection key",
+    );
+    const projection = projectionRuntime.read({
+      kind: "current",
+      families: ["financial-accounts", "transactions"],
+      scope: { sourceConnectionKey },
+    });
+    const accountIds = new Set(
+      projection.families["financial-accounts"]
+        .filter((account) =>
+          account.stream === "domestic-deposit" ||
+          account.stream === "foreign-currency-deposit",
+        )
+        .map((account) => account.accountId),
+    );
+    const revisionIds = projection.families.transactions
+      .filter((transaction) => accountIds.has(transaction.accountId))
+      .map((transaction) =>
+        Buffer.from(transaction.revisionId.replaceAll("-", ""), "hex"),
+      );
+    if (revisionIds.length === 0) continue;
+    const placeholders = revisionIds.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT DISTINCT capture.capture_key
+        FROM transaction_revisions revision
+        JOIN source_captures capture
+          ON capture.capture_id = revision.capture_id
+       WHERE revision.revision_id IN (${placeholders})
+         AND capture.capture_key IS NOT NULL
+         AND TRIM(capture.capture_key) <> ''
+    `).all(...revisionIds) as Array<Record<string, unknown>>;
+    for (const row of rows)
+      captureKeys.add(requiredText(row.capture_key, "Bank capture key"));
+  }
+
   return commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
     db,
-    rows.map((row) => requiredText(row.capture_key, "Bank capture key")),
+    [...captureKeys].sort(),
     { relationStateAware: true },
   );
 }

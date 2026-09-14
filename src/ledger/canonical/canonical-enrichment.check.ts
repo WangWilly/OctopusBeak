@@ -28,6 +28,7 @@ type FixtureState = Readonly<{
   transactionId: string;
   sourceRecordId: string;
   captureCommitSequence: number;
+  automaticEnrichmentCommitSequence: number;
 }>;
 
 type SupportedFieldResult = Extract<CanonicalEnrichmentFieldResult, { status: "supported" }>;
@@ -50,7 +51,10 @@ async function createFixtureState(): Promise<FixtureState> {
     const row = db.prepare(`
       SELECT transaction_row.transaction_id, revision.source_record_id,
              connection.source_connection_key,
-             (SELECT MAX(commit_sequence) FROM canonical_commits) AS capture_commit_sequence
+             (SELECT MAX(commit_sequence) FROM canonical_commits
+               WHERE commit_kind = 'source_capture') AS capture_commit_sequence,
+             (SELECT MAX(commit_sequence) FROM canonical_commits
+               WHERE commit_kind = 'derived_import') AS automatic_enrichment_commit_sequence
         FROM financial_transactions transaction_row
         JOIN current_transactions current_row
           ON current_row.transaction_id = transaction_row.transaction_id
@@ -69,6 +73,9 @@ async function createFixtureState(): Promise<FixtureState> {
       transactionId: idToString(blob(row.transaction_id)),
       sourceRecordId: idToString(blob(row.source_record_id)),
       captureCommitSequence: Number(row.capture_commit_sequence),
+      automaticEnrichmentCommitSequence: Number(
+        row.automatic_enrichment_commit_sequence,
+      ),
     };
   } finally {
     db.close();
@@ -132,7 +139,15 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
   const state = await createFixtureState();
   try {
     const result = await commitCathayAutomaticEnrichmentFromDescriptions(state.directory);
-    assert.equal(result.commitSequence, state.captureCommitSequence + 1);
+    assert.equal(
+      state.automaticEnrichmentCommitSequence,
+      state.captureCommitSequence + 1,
+      "source admission appends its automatic enrichment in the same transaction",
+    );
+    assert.equal(
+      result.commitSequence,
+      state.automaticEnrichmentCommitSequence + 1,
+    );
     assert.equal(result.assertionIds.length, 3);
     assert.equal(result.absent.length, 9);
 
@@ -203,7 +218,13 @@ test("Cathay description producer reaches Current, Historical, and Lineage", asy
       financialAt: "2026-12-31",
       knowledgeAt: result.commitSequence,
     });
-    const kindLineage = lineage.lineage?.find((entry) => entry.field === "kind" && entry.transactionId === state.transactionId);
+    const kindLineage = lineage.lineage?.find(
+      (entry) =>
+        entry.field === "kind" &&
+        entry.transactionId === state.transactionId &&
+        (entry.provenance as Record<string, unknown>).ruleLineage ===
+          "cathay/domestic-deposit/v1/description-taxonomy",
+    );
     assert.equal(kindLineage?.taxonomyId, "transaction-taxonomy");
     assert.equal(kindLineage?.taxonomyVersion, "v1");
     assert.equal(kindLineage?.taxonomyCode, "cash.deposit");
@@ -364,7 +385,15 @@ test("admission stores the unique candidate winner and treats ties or threshold 
     });
     assert.deepEqual(result.assertionIds, []);
     assert.deepEqual(result.absent, [{ transactionId: tieState.transactionId, field: "kind" }]);
-    assert.equal(createCanonicalEnrichmentQuery(tieState.directory).current({ sourceConnectionKey: tieState.sourceConnectionKey }).transactions[0]!.kind.status, "absent");
+    assert.equal(
+      requireSupported(
+        createCanonicalEnrichmentQuery(tieState.directory).current({
+          sourceConnectionKey: tieState.sourceConnectionKey,
+        }).transactions[0]!.kind,
+      ).code,
+      "receipt",
+      "withdrawing the test producer leaves source-admission enrichment intact",
+    );
   } finally {
     await discard(tieState.directory);
   }
@@ -383,7 +412,14 @@ test("admission stores the unique candidate winner and treats ties or threshold 
     });
     assert.deepEqual(result.assertionIds, []);
     assert.equal(result.absent[0]?.field, "kind");
-    assert.equal(createCanonicalEnrichmentQuery(boundaryState.directory).current({ sourceConnectionKey: boundaryState.sourceConnectionKey }).transactions[0]!.kind.status, "absent");
+    assert.equal(
+      requireSupported(
+        createCanonicalEnrichmentQuery(boundaryState.directory).current({
+          sourceConnectionKey: boundaryState.sourceConnectionKey,
+        }).transactions[0]!.kind,
+      ).code,
+      "receipt",
+    );
   } finally {
     await discard(boundaryState.directory);
   }
@@ -404,9 +440,9 @@ test("complete runs require one explicit result for every declared subject field
     );
     const db = openCanonicalDatabase(state.directory, { readOnly: true });
     try {
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 1);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM current_transaction_enrichment"), 0);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM current_transaction_enrichment"), 3);
     } finally {
       db.close();
     }
@@ -440,7 +476,7 @@ test("effective Kind and Category admission is atomic, including winner and unsu
     );
     const db = openCanonicalDatabase(winnerState.directory, { readOnly: true });
     try {
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
     } finally {
       db.close();
     }
@@ -469,7 +505,7 @@ test("effective Kind and Category admission is atomic, including winner and unsu
     );
     const db = openCanonicalDatabase(unsupportedState.directory, { readOnly: true });
     try {
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
     } finally {
       db.close();
     }
@@ -505,9 +541,9 @@ test("Source admission rejects forged or non-retained Cathay taxonomy fields and
     );
     const db = openCanonicalDatabase(state.directory, { readOnly: true });
     try {
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 1);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM current_transaction_enrichment"), 0);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM current_transaction_enrichment"), 3);
     } finally {
       db.close();
     }
@@ -736,11 +772,17 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
     );
     const db = openCanonicalDatabase(incompatible.directory, { readOnly: true });
     try {
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 1);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 0);
-      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM assertions WHERE field_name IN ('kind', 'category')"), 0);
-      assert.equal(createCanonicalEnrichmentQuery(incompatible.directory)
-        .current({ sourceConnectionKey: incompatible.sourceConnectionKey }).transactions[0]!.kind.status, "absent");
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
+      assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM assertions WHERE field_name IN ('kind', 'category')"), 3);
+      assert.equal(
+        requireSupported(
+          createCanonicalEnrichmentQuery(incompatible.directory)
+            .current({ sourceConnectionKey: incompatible.sourceConnectionKey })
+            .transactions[0]!.kind,
+        ).code,
+        "receipt",
+      );
     } finally {
       db.close();
     }
@@ -891,6 +933,10 @@ test("complete unsupported output withdraws one producer lineage, while failed o
     assert.equal(requireSupported(before.kind).code, "cash.deposit");
     const beforeDb = openCanonicalDatabase(state.directory, { readOnly: true });
     const beforeProvenance = countRows(beforeDb, "SELECT COUNT(*) AS value FROM assertion_provenance WHERE enrichment_run_id IS NOT NULL");
+    const beforeTransitions = countRows(
+      beforeDb,
+      "SELECT COUNT(*) AS value FROM assertion_transitions WHERE enrichment_run_id IS NOT NULL",
+    );
     beforeDb.close();
 
     const withdrawn = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
@@ -906,17 +952,29 @@ test("complete unsupported output withdraws one producer lineage, while failed o
     });
     assert.deepEqual(withdrawn.assertionIds, []);
     assert.deepEqual(withdrawn.absent, [{ transactionId: state.transactionId, field: "kind" }]);
-    assert.equal(createCanonicalEnrichmentQuery(state.directory).current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!.kind.status, "absent");
+    assert.equal(
+      requireSupported(
+        createCanonicalEnrichmentQuery(state.directory).current({
+          sourceConnectionKey: state.sourceConnectionKey,
+        }).transactions[0]!.kind,
+      ).code,
+      "receipt",
+    );
     assert.equal(requireSupported(createCanonicalEnrichmentQuery(state.directory).historical({
       sourceConnectionKey: state.sourceConnectionKey,
       financialAt: "2026-12-31",
       knowledgeAt: supported.commitSequence,
     }).transactions[0]!.kind).code, "cash.deposit");
-    assert.equal(createCanonicalEnrichmentQuery(state.directory).historical({
-      sourceConnectionKey: state.sourceConnectionKey,
-      financialAt: "2026-12-31",
-      knowledgeAt: withdrawn.commitSequence,
-    }).transactions[0]!.kind.status, "absent");
+    assert.equal(
+      requireSupported(
+        createCanonicalEnrichmentQuery(state.directory).historical({
+          sourceConnectionKey: state.sourceConnectionKey,
+          financialAt: "2026-12-31",
+          knowledgeAt: withdrawn.commitSequence,
+        }).transactions[0]!.kind,
+      ).code,
+        "receipt",
+    );
 
     const afterWithdrawalDb = openCanonicalDatabase(state.directory, { readOnly: true });
     const afterWithdrawal = {
@@ -925,7 +983,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
     };
     afterWithdrawalDb.close();
     assert.equal(afterWithdrawal.provenance, beforeProvenance + 1);
-    assert.equal(afterWithdrawal.transitions, 2);
+    assert.equal(afterWithdrawal.transitions, beforeTransitions + 1);
 
     for (const status of ["failed", "partial"] as const) {
       await assert.rejects(
@@ -941,7 +999,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
         /complete successful enrichment run/u,
       );
       const preserved = createCanonicalEnrichmentQuery(state.directory).current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
-      assert.equal(preserved.kind.status, "absent");
+      assert.equal(requireSupported(preserved.kind).code, "receipt");
     }
   } finally {
     await discard(state.directory);
@@ -1115,7 +1173,7 @@ test("a route revision selects the new assertion while historical knowledge poin
     assert.equal(requireSupported(afterRouteChange.kind).route.id, newRouteId);
     const dbAfter = openCanonicalDatabase(state.directory, { readOnly: true });
     try {
-      assert.equal(countRows(dbAfter, "SELECT COUNT(*) AS value FROM assertions WHERE field_name = 'kind'"), 2);
+      assert.equal(countRows(dbAfter, "SELECT COUNT(*) AS value FROM assertions WHERE field_name = 'kind'"), 5);
       assert.equal(countRows(dbAfter, "SELECT COUNT(*) AS value FROM assertion_transitions WHERE field_name = 'kind' AND event_kind = 'superseded'"), 0);
     } finally {
       dbAfter.close();

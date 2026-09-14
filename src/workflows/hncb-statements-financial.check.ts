@@ -522,8 +522,8 @@ try {
           .prepare("SELECT COUNT(*) AS value FROM canonical_commits")
           .get() as { value?: number }
       ).value,
-      2,
-      "same-database financial/source flow crosses separate statement and balance commit boundaries",
+      3,
+      "the statement source capture, its automatic Kind enrichment, and the balance capture keep separate commit facts",
     );
     validateCanonicalSourceStore(sameDatabaseStore);
   } finally {
