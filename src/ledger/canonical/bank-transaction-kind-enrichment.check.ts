@@ -64,6 +64,102 @@ test("opaque numeric bank notes do not prove a credit-card payment", () => {
   );
 });
 
+test("Fubon payment-channel grammar identifies issuer-labelled credit-card payments", () => {
+  const classify = (
+    description: string,
+    overrides: Partial<{
+      direction: "inflow" | "outflow";
+      integrationNamespace: string;
+      stream: string;
+    }> = {},
+  ) =>
+    classifyBankTransactionKind({
+      direction: overrides.direction ?? "outflow",
+      description,
+      integrationNamespace: overrides.integrationNamespace ?? "fubon",
+      stream: overrides.stream ?? "domestic-deposit",
+    }).value;
+
+  for (const description of [
+    "行動繳費 · 繳富邦信用卡款012769",
+    "行動繳費 · 繳富邦信用卡款",
+    "網路繳費 · 繳富邦信用卡款",
+    "繳費 · 玉山信用卡款808000",
+    "繳費 · 星展信用卡費星展銀行",
+    "繳費 · 未來發卡行信用卡款REF123",
+  ])
+    assert.equal(classify(description), "payment.credit_card", description);
+
+  assert.equal(classify("行動繳費 · 台灣電力電費"), "purchase");
+  assert.equal(classify("行動轉出 · 繳富邦信用卡款012769"), "purchase");
+  assert.equal(classify("行動繳費 · 信用卡優惠"), "purchase");
+  assert.equal(
+    classify("行動繳費 · 繳富邦信用卡款012769", {
+      direction: "inflow",
+    }),
+    "receipt",
+  );
+  assert.equal(
+    classify("行動繳費 · 繳富邦信用卡款012769", {
+      integrationNamespace: "another-bank",
+    }),
+    "purchase",
+  );
+  assert.equal(
+    classify("行動繳費 · 繳富邦信用卡款012769", {
+      stream: "foreign-currency-deposit",
+    }),
+    "purchase",
+  );
+});
+
+test("Fubon loan-payment action identifies loan payments without interpreting its reference", () => {
+  const classify = (
+    description: string,
+    overrides: Partial<{
+      direction: "inflow" | "outflow";
+      integrationNamespace: string;
+      stream: string;
+    }> = {},
+  ) =>
+    classifyBankTransactionKind({
+      direction: overrides.direction ?? "outflow",
+      description,
+      integrationNamespace: overrides.integrationNamespace ?? "fubon",
+      stream: overrides.stream ?? "domestic-deposit",
+    }).value;
+
+  for (const description of [
+    "放款繳款 · 85040000049498012870",
+    "放款繳款 · 85040000049498桂林分行",
+    "放款繳款 · VARIABLE-OPAQUE-REFERENCE",
+    "放款繳款",
+  ])
+    assert.equal(classify(description), "payment.loan", description);
+
+  assert.equal(classify("放款 · VARIABLE-OPAQUE-REFERENCE"), "purchase");
+  assert.equal(classify("放款繳費 · VARIABLE-OPAQUE-REFERENCE"), "purchase");
+  assert.equal(classify("轉帳 · 放款繳款"), "purchase");
+  assert.equal(
+    classify("放款繳款 · VARIABLE-OPAQUE-REFERENCE", {
+      direction: "inflow",
+    }),
+    "receipt",
+  );
+  assert.equal(
+    classify("放款繳款 · VARIABLE-OPAQUE-REFERENCE", {
+      integrationNamespace: "another-bank",
+    }),
+    "purchase",
+  );
+  assert.equal(
+    classify("放款繳款 · VARIABLE-OPAQUE-REFERENCE", {
+      stream: "foreign-currency-deposit",
+    }),
+    "purchase",
+  );
+});
+
 test("Yuanta scheduled fund subscriptions require the complete source pattern", () => {
   const classify = (description: string, integrationNamespace = "yuanta") =>
     classifyBankTransactionKind({

@@ -173,7 +173,6 @@ function seed(db: LedgerDatabase, referenceDate: Date) {
 function automationTaskRuns(referenceDate: Date): InputRecord[] {
   return [
     ["fubon-all-statements", "run:fubon-all-statements", "crawler", "completed", 8, null],
-    ["import-downloads-csv", "run:import-downloads-csv", "import", "completed", 10, null],
   ].map(([taskId, script, kind, status, hour, error]) => ({
     taskRunId: `mock-${taskId}-${status}`,
     taskId,

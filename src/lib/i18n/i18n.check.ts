@@ -74,10 +74,10 @@ assert.equal(translations["zh-TW"].automation.historyStartedTime("Asia/Taipei"),
 assert.equal(translations["zh-TW"].automation.historyFinishedTime("Asia/Taipei"), "完成（Asia/Taipei）");
 assert.equal(translations.en.automation.runningTaskHeading(1), "1 task is running");
 assert.equal(translations.en.automation.runningTaskHeading(2), "2 tasks are running");
-assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent task will start at the same time.");
-assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will start at the same time.");
-assert.equal(translations.en.automation.showAllTasks(1), "Show all 1 task");
-assert.equal(translations.en.automation.showAllTasks(2), "Show all 2 tasks");
+assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent task will run in sequence.");
+assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will run in sequence.");
+assert.equal(translations.en.automation.startSyncHeading, "Start sync");
+assert.equal(translations["zh-TW"].automation.startSyncHeading, "開始同步");
 assert.deepEqual(translations.en.automation.taskLabels, {
   "fubon-all-statements": "Taipei Fubon Bank",
   "esun-credit-card-statements": "E.SUN Bank",
@@ -92,7 +92,6 @@ assert.deepEqual(translations.en.automation.taskLabels, {
   "einvoice-personal-invoices": "E-Invoice",
   "exchange-rates": "Exchange rates",
   "sync-maicoin": "MaiCoin",
-  "import-downloads-csv": "Import downloads CSV",
 });
 assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
   "fubon-all-statements": "台北富邦銀行（Taipei Fubon Bank）",
@@ -108,7 +107,6 @@ assert.deepEqual(translations["zh-TW"].automation.taskLabels, {
   "einvoice-personal-invoices": "電子發票（E-Invoice）",
   "exchange-rates": "匯率同步",
   "sync-maicoin": "MaiCoin",
-  "import-downloads-csv": "匯入下載 CSV",
 });
 assert.equal(translations.en.historyTable.rateDates(["2026-07-11"]), "Rate date: 2026-07-11");
 assert.equal(

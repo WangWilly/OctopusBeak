@@ -9,7 +9,7 @@
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
-    completedImportFinishedAt,
+    completedSourceTaskFinishedAt,
     createOnboardingState,
     readOnboardingState,
     writeOnboardingState,
@@ -62,7 +62,7 @@
   let onboardingState: OnboardingState | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
-  let overviewLoadedForImportFinishedAt: string | null = null;
+  let overviewLoadedForTaskFinishedAt: string | null = null;
   let overviewReloading = false;
   const routeDataCache = createRouteLoadCache<RouteData>();
 
@@ -79,13 +79,12 @@
           tasks: automationData.automation.tasks,
           credentialGroups: automationData.credentialGroups,
           credentials: automationData.automation.credentials,
-          importGateLocked: automationData.automation.importGate.locked,
         }
         : null,
       overview: overviewData
         ? { accounts: overviewData.accounts, importedAt: overviewData.importedAt }
         : null,
-      overviewLoadedForImportFinishedAt: overviewLoadedAt,
+      overviewLoadedForTaskFinishedAt: overviewLoadedAt,
     };
   }
 
@@ -93,24 +92,24 @@
     route,
     automation.status === "ready" ? automation.data : null,
     overview.status === "ready" ? overview.data : null,
-    overviewLoadedForImportFinishedAt,
+    overviewLoadedForTaskFinishedAt,
   );
   $: onboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
   $: onboardingCompact = automation.status === "ready"
-    && (onboardingStep === "collection" || onboardingStep === "import")
+    && onboardingStep === "collection"
     && automation.data.automation.tasks.some((task) =>
       task.isActive
-      && (onboardingStep === "import"
-        ? task.id === "import-downloads-csv"
-        : task.credentialGroupId === onboardingState?.selectedCredentialGroupId),
+      && task.credentialGroupId === onboardingState?.selectedCredentialGroupId,
     );
   $: if (
     route === "overview"
     && onboardingStep === "overview"
     && !overviewReloading
     && automation.status === "ready"
-    && completedImportFinishedAt(automation.data.automation.tasks)
-      !== overviewLoadedForImportFinishedAt
+    && completedSourceTaskFinishedAt(
+      automation.data.automation.tasks,
+      onboardingState?.selectedCredentialGroupId ?? null,
+    ) !== overviewLoadedForTaskFinishedAt
   ) {
     routeDataCache.clearAll();
     void loadRoute("overview", { force: true });
@@ -224,7 +223,7 @@
       ]);
       automation = { status: "ready", data: automationData };
       overview = { status: "ready", data: overviewData };
-      overviewLoadedForImportFinishedAt = completedImportFinishedAt(automationData.automation.tasks);
+      overviewLoadedForTaskFinishedAt = null;
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
         welcomeState: null,
         onboardingState: null,
@@ -238,8 +237,11 @@
   }
 
   async function loadRoute(next: RouteId, options: { force?: boolean } = {}) {
-    const importFinishedAt = next === "overview" && automation.status === "ready"
-      ? completedImportFinishedAt(automation.data.automation.tasks)
+    const taskFinishedAt = next === "overview" && automation.status === "ready"
+      ? completedSourceTaskFinishedAt(
+        automation.data.automation.tasks,
+        onboardingState?.selectedCredentialGroupId ?? null,
+      )
       : null;
     if (next === "overview") overviewReloading = true;
     try {
@@ -252,7 +254,7 @@
             options,
           ),
         };
-        overviewLoadedForImportFinishedAt = importFinishedAt;
+        overviewLoadedForTaskFinishedAt = taskFinishedAt;
       }
       if (next === "assets") {
         assets = {

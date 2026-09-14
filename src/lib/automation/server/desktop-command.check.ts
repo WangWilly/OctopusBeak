@@ -104,16 +104,7 @@ assert.deepEqual(
   ["resume", "--session", "ses-octopus-123"],
 );
 
-const importTask = taskById("import-downloads-csv");
-assert.ok(importTask);
-assert.deepEqual(
-  resolveTaskCommand(importTask, {}, env).args,
-  [
-    "--no-warnings",
-    "--experimental-strip-types",
-    join("/AppRoot", "src", "ledger", "import-downloads-csv.ts"),
-  ],
-);
+assert.equal(taskById("import-downloads-csv"), null);
 
 assert.deepEqual(
   resolveTaskCommand(fubon, {}, { PATH: "/usr/bin" }),

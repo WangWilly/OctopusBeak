@@ -17,8 +17,6 @@ export type OnboardingStep =
   | "collection"
   | "assist"
   | "collection-failed"
-  | "import"
-  | "import-failed"
   | "overview"
   | "overview-empty"
   | "complete"
@@ -30,8 +28,6 @@ export type OnboardingCopyKey =
   | "collection"
   | "assist"
   | "collectionFailed"
-  | "import"
-  | "importFailed"
   | "overview"
   | "overviewEmpty"
   | "complete";
@@ -41,7 +37,7 @@ export type OnboardingTarget =
   | { kind: "credentials" }
   | { kind: "assist" }
   | { kind: "overview-nav" }
-  | { kind: "overview-empty"; route: OnboardingRoute }
+  | { kind: "overview-empty"; route: OnboardingRoute; taskId?: string }
   | { kind: "complete" }
   | { kind: "task"; taskId: string; action: "primary" | "logs" };
 
@@ -66,22 +62,15 @@ export type OnboardingFacts = {
     tasks: readonly OnboardingTask[];
     credentialGroups: readonly OnboardingCredentialGroup[];
     credentials: Readonly<Record<string, boolean>>;
-    importGateLocked: boolean;
   } | null;
   overview: Pick<OverviewPageDto, "accounts" | "importedAt"> | null;
-  overviewLoadedForImportFinishedAt: string | null;
+  overviewLoadedForTaskFinishedAt: string | null;
 };
 
-function importTask(facts: OnboardingFacts) {
-  return facts.automation?.tasks.find((item) => item.id === "import-downloads-csv") ?? null;
-}
-
 export function hasExistingProductData(facts: OnboardingFacts) {
-  const importer = importTask(facts);
   return Boolean(
     facts.overview?.accounts.length
     || facts.overview?.importedAt
-    || (importer?.status === "completed" && importer.latestFinishedAt),
   );
 }
 
@@ -103,7 +92,7 @@ function selectedGroup(facts: OnboardingFacts, state: OnboardingState) {
 
 function selectedTask(facts: OnboardingFacts, state: OnboardingState) {
   return facts.automation?.tasks.find(
-    (item) => item.kind === "crawler" && item.credentialGroupId === state.selectedCredentialGroupId,
+    (item) => item.credentialGroupId === state.selectedCredentialGroupId,
   ) ?? null;
 }
 
@@ -126,25 +115,21 @@ function groupReady(
   return group.credentialKeys.every((key) => facts.automation!.credentials[key]);
 }
 
-function overviewIsFreshForImport(
+function overviewIsFreshForTask(
   facts: OnboardingFacts,
-  importer: OnboardingTask,
+  task: OnboardingTask,
 ) {
-  if (!importer.latestFinishedAt) return false;
-  if (facts.overviewLoadedForImportFinishedAt === importer.latestFinishedAt) return true;
+  if (!task.latestFinishedAt) return false;
+  if (facts.overviewLoadedForTaskFinishedAt === task.latestFinishedAt) return true;
   const overviewImportedAt = Date.parse(facts.overview?.importedAt ?? "");
-  const importFinishedAt = Date.parse(importer.latestFinishedAt);
+  const taskFinishedAt = Date.parse(task.latestFinishedAt);
   return Number.isFinite(overviewImportedAt)
-    && Number.isFinite(importFinishedAt)
-    && overviewImportedAt >= importFinishedAt;
+    && Number.isFinite(taskFinishedAt)
+    && overviewImportedAt >= taskFinishedAt;
 }
 
-export function onboardingTaskSucceeded(
-  task: Pick<OnboardingTask, "status"> | null,
-  importGateLocked: boolean,
-) {
-  return task?.status === "completed"
-    || (task?.status === "partial" && !importGateLocked);
+export function onboardingTaskSucceeded(task: Pick<OnboardingTask, "status"> | null) {
+  return task?.status === "completed";
 }
 
 export function resolveOnboardingStep(
@@ -152,27 +137,26 @@ export function resolveOnboardingStep(
   state: OnboardingState | null,
 ): OnboardingStep {
   if (!state || state.status !== "active" || !facts.automation || !facts.overview) return "hidden";
-  const importer = importTask(facts);
-  const crawler = selectedTask(facts, state);
-  const freshCollection = taskStartedAtOrAfter(crawler, state.sourceConfiguredAt);
-  const freshImport = freshCollection && taskStartedAtOrAfter(importer, crawler?.latestFinishedAt ?? null);
-  const importComplete = freshImport && importer?.status === "completed";
-  if (!importComplete && facts.route !== "automation") return "automation-nav";
   const group = selectedGroup(facts, state);
+  const task = selectedTask(facts, state);
+  const freshTask = taskStartedAtOrAfter(task, state.sourceConfiguredAt);
+  const taskComplete = freshTask && onboardingTaskSucceeded(task);
+  if (
+    facts.route !== "automation"
+    && (!groupReady(facts, group) || !taskComplete)
+  ) return "automation-nav";
   if (
     !state.selectedCredentialGroupId
     || !state.sourceConfiguredAt
     || !groupReady(facts, group)
   ) return "credentials";
-  if (!crawler || !freshCollection) return "collection";
-  if (crawler.status === "waiting_for_human") return "assist";
-  if (crawler.status === "failed") return "collection-failed";
-  const collectionComplete = onboardingTaskSucceeded(crawler, facts.automation.importGateLocked);
-  if (!collectionComplete) return "collection";
-  if (!freshImport) return "import";
-  if (importer?.status === "failed") return "import-failed";
-  if (!importer || !importComplete) return "import";
-  if (!overviewIsFreshForImport(facts, importer)) return "overview";
+  if (!task || !freshTask) {
+    return "collection";
+  }
+  if (task.status === "waiting_for_human") return "assist";
+  if (task.status === "failed") return "collection-failed";
+  if (!taskComplete) return "collection";
+  if (!overviewIsFreshForTask(facts, task)) return "overview";
   if (!facts.overview.accounts.length) return "overview-empty";
   if (facts.route !== "overview") return "overview";
   return "complete";
@@ -187,11 +171,17 @@ export function targetForOnboardingStep(
   if (step === "credentials") return { kind: "credentials" };
   if (step === "assist") return { kind: "assist" };
   if (step === "overview") return { kind: "overview-nav" };
-  if (step === "overview-empty") return { kind: "overview-empty", route };
+  if (step === "overview-empty") {
+    return {
+      kind: "overview-empty",
+      route,
+      ...(route === "automation" && state.selectedCredentialGroupId
+        ? { taskId: state.selectedCredentialGroupId }
+        : {}),
+    };
+  }
   if (step === "complete") return { kind: "complete" };
-  const taskId = step === "import" || step === "import-failed"
-    ? "import-downloads-csv"
-    : state.selectedCredentialGroupId;
+  const taskId = state.selectedCredentialGroupId;
   const action = step.endsWith("failed") ? "logs" : "primary";
   return taskId ? { kind: "task", taskId, action } : null;
 }
@@ -200,8 +190,7 @@ export function onboardingStepNumber(step: OnboardingStep) {
   if (step === "automation-nav") return 1;
   if (step === "credentials") return 2;
   if (["collection", "assist", "collection-failed"].includes(step)) return 3;
-  if (["import", "import-failed"].includes(step)) return 4;
-  return 5;
+  return 4;
 }
 
 export function onboardingCanGoBack(step: OnboardingStep) {
@@ -212,7 +201,6 @@ export function onboardingCopyKey(step: OnboardingStep): OnboardingCopyKey | nul
   if (step === "hidden") return null;
   if (step === "automation-nav") return "automation";
   if (step === "collection-failed") return "collectionFailed";
-  if (step === "import-failed") return "importFailed";
   if (step === "overview-empty") return "overviewEmpty";
   if (step === "complete") return "complete";
   return step;

@@ -117,19 +117,6 @@ async function settleStartedTask(taskId: string) {
 
 async function settleStartedBatchTasks(taskIds: readonly string[]) {
   await settleStartedTasks(taskIds);
-  // A crawler batch schedules its final import after the selected tasks
-  // settle. Let that callback and its promise continuations claim the
-  // dynamically-created import task before declaring the batch idle.
-  let idleTurns = 0;
-  while (idleTurns < 4) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (activeAutomationTaskIds().includes("import-downloads-csv")) {
-      idleTurns = 0;
-      await settleStartedTask("import-downloads-csv");
-    } else {
-      idleTurns += 1;
-    }
-  }
 }
 
 afterEach(async () => {
@@ -870,24 +857,25 @@ test("sync-all canonical writer tasks never overlap", async () => {
   assert.equal(peak, 1);
 });
 
-test("each sync-all batch attempts one import after its tasks settle", async () => {
+test("each sync-all batch runs every selected source once", async () => {
   const executed: string[] = [];
   const execute = async (taskId: string) => {
     executed.push(taskId);
   };
 
   await runAutomationBatch(["fubon-all-statements", "exchange-rates"], execute);
-  assert.equal(executed.at(-1), "import-downloads-csv");
+  assert.deepEqual(executed, ["fubon-all-statements", "exchange-rates"]);
   await runAutomationBatch(["fubon-all-statements", "exchange-rates"], execute);
 
-  assert.equal(
-    executed.filter((taskId) => taskId === "import-downloads-csv").length,
-    2,
-  );
-  assert.equal(executed.at(-1), "import-downloads-csv");
+  assert.deepEqual(executed, [
+    "fubon-all-statements",
+    "exchange-rates",
+    "fubon-all-statements",
+    "exchange-rates",
+  ]);
 });
 
-test("a selected task failure still permits one final import attempt", async () => {
+test("a selected task failure still permits independent sources", async () => {
   const executed: string[] = [];
   const failure = new Error("crawler failed");
 
@@ -902,14 +890,10 @@ test("a selected task failure still permits one final import attempt", async () 
     (error) => error === failure,
   );
 
-  assert.equal(
-    executed.filter((taskId) => taskId === "import-downloads-csv").length,
-    1,
-  );
-  assert.equal(executed.at(-1), "import-downloads-csv");
+  assert.deepEqual(executed, ["fubon-all-statements", "exchange-rates"]);
 });
 
-test("a batch without crawlers does not auto-import", async () => {
+test("a batch without crawlers still runs every selected source", async () => {
   const executed: string[] = [];
   await runAutomationBatch(
     ["exchange-rates", "sync-maicoin"],
@@ -917,7 +901,18 @@ test("a batch without crawlers does not auto-import", async () => {
       executed.push(taskId);
     },
   );
-  assert.equal(executed.includes("import-downloads-csv"), false);
+  assert.deepEqual(executed, ["exchange-rates", "sync-maicoin"]);
+});
+
+test("a batch de-duplicates a source selected more than once", async () => {
+  const executed: string[] = [];
+  await runAutomationBatch(
+    ["exchange-rates", "exchange-rates", "sync-maicoin"],
+    async (taskId) => {
+      executed.push(taskId);
+    },
+  );
+  assert.deepEqual(executed, ["exchange-rates", "sync-maicoin"]);
 });
 
 test("batch execution limits concurrency and starts the next task after a slot opens", async () => {
@@ -983,57 +978,6 @@ test("a queued batch task can be cancelled before its process starts", async () 
   });
   await waitForTaskToSettle("exchange-rates");
   assert.deepEqual(activeAutomationTaskIds(), []);
-});
-
-test("an import-only batch runs once and releases its claim", async () => {
-  const root = mkdtempSync(join(tmpdir(), "automation-import-only-"));
-  const ledgerDir = join(root, "ledger");
-  const capturePath = join(root, "capture.txt");
-  const oldEnv = {
-    OCTOPUSBEAK_DESKTOP: process.env.OCTOPUSBEAK_DESKTOP,
-    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
-    OCTOPUSBEAK_NODE_PATH: process.env.OCTOPUSBEAK_NODE_PATH,
-    CAPTURE_PATH: process.env.CAPTURE_PATH,
-  };
-  mkdirSync(join(root, "src", "ledger"), { recursive: true });
-  writeFileSync(
-    join(root, "src", "ledger", "import-downloads-csv.ts"),
-    'import { appendFileSync } from "node:fs";\nappendFileSync(process.env.CAPTURE_PATH, "import\\n");\n',
-  );
-  process.env.OCTOPUSBEAK_DESKTOP = "1";
-  process.env.OCTOPUSBEAK_APP_ROOT = root;
-  process.env.OCTOPUSBEAK_NODE_PATH = process.execPath;
-  process.env.CAPTURE_PATH = capturePath;
-
-  try {
-    startAutomationTasks(["import-downloads-csv"], ledgerDir);
-    assert.deepEqual(activeAutomationTaskIds(), ["import-downloads-csv"]);
-    await waitForTaskToSettle("import-downloads-csv");
-
-    assert.deepEqual(activeAutomationTaskIds(), []);
-    assert.equal(readFileSync(capturePath, "utf8"), "import\n");
-    const db = openLedgerDatabase(ledgerDir);
-    const count = db
-      .prepare(
-        `
-      SELECT count(*) AS count
-      FROM automation_task_runs
-      WHERE task_id = 'import-downloads-csv'
-    `,
-      )
-      .get() as { count: number };
-    assert.equal(count.count, 1);
-    db.close();
-  } finally {
-    if (activeAutomationTaskIds().includes("import-downloads-csv")) {
-      await cancelAutomationTask("import-downloads-csv");
-    }
-    for (const [key, value] of Object.entries(oldEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 assert.equal(
@@ -2249,7 +2193,6 @@ test("scheduled exchange-rate starts append schedule context only to that task",
   mkdirSync(join(root, "src", "ledger"), { recursive: true });
   mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(join(root, "src", "ledger", "sync-exchange-rates.ts"), script);
-  writeFileSync(join(root, "src", "ledger", "import-downloads-csv.ts"), script);
   writeFileSync(join(root, "scripts", "patch-libretto-run-cdp.mjs"), "");
   const fakeNpm = join(root, "bin", "npm");
   writeFileSync(fakeNpm, `#!/usr/bin/env node\n${script}`);
@@ -2310,12 +2253,6 @@ test("scheduled exchange-rate starts append schedule context only to that task",
     assert.deepEqual(await waitForCapture(), []);
     await waitForIdle("exchange-rates");
 
-    rmSync(capturePath);
-    startAutomationTask("import-downloads-csv", ledgerDir, {
-      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
-    });
-    assert.deepEqual(await waitForCapture(), []);
-    await waitForIdle("import-downloads-csv");
     assert.throws(
       () =>
         startAutomationTask("exchange-rates", ledgerDir, {

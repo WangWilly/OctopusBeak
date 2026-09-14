@@ -125,7 +125,8 @@ const parserPage = {
 const parserHtml = `
   <input id="form1:startDate" value="2026/01/01">
   <input id="form1:endDate" value="2026/01/31">
-  <table><tr>
+  <input name="resultGrid:totalCount" value="1">
+  <form id="form1"><table id="resultGrid" class="tb1 queryResult"><tr>
     <th>帳務日期</th><th>交易時間</th><th>摘要</th><th>支出金額</th>
     <th>存入金額</th><th>即時餘額</th><th>附註</th>
   </tr><tr>
@@ -133,6 +134,7 @@ const parserHtml = `
     <td>100</td><td>100</td><td>NOTE</td>
   </tr></table>
   <a onclick="setDataGridCurrentPage('x', 2, 'resultGrid:dataGridCurrentPage')">下一頁</a>
+  </form>
   <script>
     setupComboBox("form1:comboAccount", "", "123456");
     comboAccountItems[0] = new Array("123456 (012)", "123456");
@@ -176,6 +178,348 @@ assert.deepEqual(parsedPage.rows[0]?.cells, [
   "NOTE",
 ]);
 assert.equal(parsedPage.zeroObservation, "non-empty-page");
+assert.equal(parsedPage.providerTotalCount, 1);
+
+globalObject.DOMParser = syntheticParser;
+let amountOnlyParsedPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  amountOnlyParsedPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    parserHtml.replace("resultGrid:totalCount", "resultGrid:totalAmount"),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(
+  amountOnlyParsedPage.providerTotalCount,
+  undefined,
+  "a totalAmount field must not be treated as provider row-count evidence",
+);
+
+const staticTerminalRows = Array.from(
+  { length: 48 },
+  (_, index) => `
+    <tr><td>2026/03/19</td><td>09:${String(index).padStart(2, "0")}:00</td>
+      <td>STATIC-${index}</td><td>1</td><td></td><td>${100 - index}</td><td></td></tr>`,
+).join("");
+const staticTerminalHtml = `
+  <input id="form1:startDate" value="2026/03/13">
+  <input id="form1:endDate" value="2026/09/13">
+  <input name="resultGrid:dataGridCurrentPage" value="1">
+  <input name="resultGrid:dataGridCurrentPageSize" value="48">
+  <form id="form1"><table id="resultGrid" class="tb1 queryResult"><tr>
+    <th>帳務日期</th><th>交易時間</th><th>摘要</th><th>支出金額</th>
+    <th>存入金額</th><th>即時餘額</th><th>附註</th>
+  </tr>${staticTerminalRows}</table></form>
+  <script>
+    setupComboBox("form1:comboAccount", "", "123456");
+    comboAccountItems[0] = new Array("123456 (012)", "123456");
+  </script>
+`;
+const staticTerminalWithoutCurrentPageHtml = staticTerminalHtml.replace(
+  '  <input name="resultGrid:dataGridCurrentPage" value="1">\n',
+  "",
+);
+globalObject.DOMParser = syntheticParser;
+let staticTerminalPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  staticTerminalPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    staticTerminalHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(staticTerminalPage.providerPageSize, 48);
+assert.equal(staticTerminalPage.providerTotalCount, undefined);
+assert.equal(staticTerminalPage.paginationEvidence, "terminal-no-next");
+assert.equal(staticTerminalPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let staticTerminalWithoutCurrentPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  staticTerminalWithoutCurrentPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    staticTerminalWithoutCurrentPageHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(staticTerminalWithoutCurrentPage.providerPageSize, 48);
+assert.equal(staticTerminalWithoutCurrentPage.paginationEvidence, "terminal-no-next");
+assert.equal(staticTerminalWithoutCurrentPage.paginationAmbiguous, undefined);
+assert.equal(staticTerminalWithoutCurrentPage.terminal, true);
+
+const decoratedResultHeaderHtml = staticTerminalWithoutCurrentPageHtml.replace(
+  "<th>帳務日期</th>",
+  "<th>帳務日期<span>排序</span></th>",
+);
+globalObject.DOMParser = syntheticParser;
+let decoratedResultHeaderPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  decoratedResultHeaderPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    decoratedResultHeaderHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(decoratedResultHeaderPage.providerPageSize, 48);
+assert.equal(decoratedResultHeaderPage.paginationEvidence, "terminal-no-next");
+assert.equal(decoratedResultHeaderPage.paginationAmbiguous, undefined);
+assert.equal(decoratedResultHeaderPage.terminal, true);
+
+const unrelatedGridTerminalHtml = staticTerminalWithoutCurrentPageHtml.replace(
+  "</form>",
+  '<div id="otherGrid" class="pagination"><a onclick="setDataGridCurrentPage(\'x\', 2, \'otherGrid:dataGridCurrentPage\')">下一頁</a></div></form>',
+);
+globalObject.DOMParser = syntheticParser;
+let unrelatedGridTerminalPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  unrelatedGridTerminalPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    unrelatedGridTerminalHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(unrelatedGridTerminalPage.paginationEvidence, "terminal-no-next");
+assert.equal(unrelatedGridTerminalPage.paginationAmbiguous, undefined);
+assert.equal(unrelatedGridTerminalPage.terminal, true);
+
+const unrelatedGridMalformedHtml = staticTerminalWithoutCurrentPageHtml.replace(
+  "</form>",
+  '<div id="otherGrid" class="pagination"><a onclick="setDataGridCurrentPage(\'x\', malformed, \'otherGrid:dataGridCurrentPage\')">下一頁</a></div></form>',
+);
+globalObject.DOMParser = syntheticParser;
+let unrelatedGridMalformedPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  unrelatedGridMalformedPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    unrelatedGridMalformedHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(unrelatedGridMalformedPage.paginationEvidence, "terminal-no-next");
+assert.equal(unrelatedGridMalformedPage.paginationAmbiguous, undefined);
+assert.equal(unrelatedGridMalformedPage.paginationAmbiguityReason, undefined);
+assert.equal(unrelatedGridMalformedPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let ambiguousPagerPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  ambiguousPagerPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    staticTerminalHtml.replace(
+      "</table></form>",
+      "<a>下一頁</a></table></form>",
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(ambiguousPagerPage.paginationEvidence, undefined);
+assert.equal(ambiguousPagerPage.paginationAmbiguous, true);
+assert.equal(
+  ambiguousPagerPage.paginationAmbiguityReason,
+  "forward-control-unrecognized",
+);
+assert.equal(ambiguousPagerPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let ambiguousButtonPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  ambiguousButtonPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    staticTerminalHtml.replace(
+      "</table></form>",
+      '<button aria-label="下一頁"></button></table></form>',
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(ambiguousButtonPage.paginationEvidence, undefined);
+assert.equal(ambiguousButtonPage.paginationAmbiguous, true);
+assert.equal(
+  ambiguousButtonPage.paginationAmbiguityReason,
+  "forward-control-unrecognized",
+);
+assert.equal(ambiguousButtonPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let unrelatedCurrentPageField: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  unrelatedCurrentPageField = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    staticTerminalHtml.replace(
+      'name="resultGrid:dataGridCurrentPage"',
+      'name="otherGrid:dataGridCurrentPage"',
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(unrelatedCurrentPageField.paginationEvidence, "terminal-no-next");
+assert.equal(unrelatedCurrentPageField.paginationAmbiguous, undefined);
+assert.equal(unrelatedCurrentPageField.paginationAmbiguityReason, undefined);
+assert.equal(unrelatedCurrentPageField.terminal, true);
+
+const numberedTerminalHtml = `
+  <input name="resultGrid:dataGridCurrentPage" value="3">
+  <form id="form1"><table id="resultGrid" class="tb1 queryResult"><tr>
+    <th>帳務日期</th><th>交易時間</th><th>摘要</th><th>支出金額</th>
+    <th>存入金額</th><th>即時餘額</th><th>附註</th>
+  </tr>${staticTerminalRows}
+  </table><div class="pagination">
+    <a onclick="setDataGridCurrentPage('x', 1, 'resultGrid:dataGridCurrentPage')">第一頁</a>
+    <a onclick="setDataGridCurrentPage('x', 2, 'resultGrid:dataGridCurrentPage')">上一頁</a>
+    <a onclick="setDataGridCurrentPage('x', 3, 'resultGrid:dataGridCurrentPage')">3</a>
+  </div></form>
+  <script>
+    setupComboBox("form1:comboAccount", "", "123456");
+    comboAccountItems[0] = new Array("123456 (012)", "123456");
+  </script>
+`;
+globalObject.DOMParser = syntheticParser;
+let numberedTerminalPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  numberedTerminalPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    numberedTerminalHtml,
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(numberedTerminalPage.paginationEvidence, "terminal-no-next");
+assert.equal(numberedTerminalPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let numberedForwardPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  numberedForwardPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    numberedTerminalHtml.replace(
+      '</div></form>',
+      '<a onclick="setDataGridCurrentPage(\'x\', 4, \'resultGrid:dataGridCurrentPage\')">下一頁</a></div></form>',
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(numberedForwardPage.paginationEvidence, "next-page");
+assert.equal(numberedForwardPage.nextPage, "4");
+assert.equal(numberedForwardPage.pageFieldName, "resultGrid:dataGridCurrentPage");
+assert.equal(numberedForwardPage.terminal, false);
+
+globalObject.DOMParser = syntheticParser;
+let skippedForwardPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  skippedForwardPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    numberedTerminalHtml.replace(
+      "'x', 3, 'resultGrid:dataGridCurrentPage'",
+      "'x', 5, 'resultGrid:dataGridCurrentPage'",
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(skippedForwardPage.paginationEvidence, undefined);
+assert.equal(skippedForwardPage.paginationAmbiguous, true);
+assert.equal(
+  skippedForwardPage.paginationAmbiguityReason,
+  "forward-target-untraversable",
+);
+assert.equal(skippedForwardPage.terminal, true);
+
+globalObject.DOMParser = syntheticParser;
+let malformedPagerPage: Awaited<
+  ReturnType<typeof module.parseFubonDepositStatementHtml>
+>;
+try {
+  malformedPagerPage = await module.parseFubonDepositStatementHtml(
+    parserPage,
+    numberedTerminalHtml.replace(
+      "'x', 2, 'resultGrid:dataGridCurrentPage'",
+      "'x', malformed, 'resultGrid:dataGridCurrentPage'",
+    ),
+    0,
+    1,
+  );
+} finally {
+  if (previousDomParser === undefined) delete globalObject.DOMParser;
+  else globalObject.DOMParser = previousDomParser;
+}
+assert.equal(malformedPagerPage.paginationEvidence, undefined);
+assert.equal(malformedPagerPage.paginationAmbiguous, true);
+assert.equal(
+  malformedPagerPage.paginationAmbiguityReason,
+  "malformed-result-action",
+);
+assert.equal(malformedPagerPage.terminal, true);
+
 globalObject.DOMParser = syntheticParser;
 let emptyParsedPage: Awaited<
   ReturnType<typeof module.parseFubonDepositStatementHtml>
