@@ -442,7 +442,14 @@ export function mapCanonicalEInvoiceRecord(
   if (record.itemCompleteness === "incomplete" && itemCompleteness === "complete") {
     throw new Error(`E-Invoice ${invoiceNumber} item completeness was overstated.`);
   }
-  const reference = `provider-record:${opaqueDigest("einvoice-provider-record", providerRowKey)}`;
+  // The portal refreshes the list-row token between collections. Its presence
+  // establishes that the provider returned a row, but its value cannot
+  // identify immutable canonical occurrence or revision provenance.
+  const reference = `provider-record:${opaqueDigest(
+    "einvoice-provider-record",
+    stableInvoiceKey,
+    sourceRevisionKey,
+  )}`;
   return {
     stableInvoiceKey,
     sourceRevisionKey,
