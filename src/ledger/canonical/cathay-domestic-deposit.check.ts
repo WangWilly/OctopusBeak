@@ -790,7 +790,8 @@ try {
       repeatDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      12,
+      9,
+      "recapture adds source provenance while the unchanged derived Kind run stays idempotent",
     );
   } finally {
     repeatDb.close();
@@ -895,7 +896,8 @@ try {
   const boundaryQuery = createBoundaryCanonicalQuery(ledgerDir);
   assert.equal(
     (await boundaryQuery.current({ kind: "current" })).commitSequence,
-    repeated.commitSequence + 1,
+    repeated.commitSequence,
+    "an unchanged recapture does not append another derived enrichment commit",
   );
 
   assert.equal(
@@ -1068,7 +1070,8 @@ try {
       repeatedDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      24,
+      18,
+      "the unchanged recapture appends source provenance without duplicating derived enrichment",
     );
   } finally {
     repeatedDb.close();
@@ -1189,7 +1192,7 @@ try {
       provenanceOnlyV4Migrated
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      12,
+      9,
     );
     assert.equal(
       provenanceOnlyV4Migrated
@@ -1516,7 +1519,8 @@ try {
   );
   assert.equal(
     (await withdrawnQuery.current({ kind: "current" })).commitSequence,
-    restored.commitSequence + 1,
+    restored.commitSequence,
+    "restoring unchanged transaction revisions does not duplicate their derived Kind commit",
   );
   const restoredProjectionDb = openCanonicalDatabase(lifecycleDir, {
     readOnly: true,
@@ -3121,7 +3125,8 @@ try {
       contendedDb
         .prepare("SELECT COUNT(*) AS count FROM assertion_provenance")
         .get()?.count,
-      12,
+      9,
+      "contended equivalent captures append source provenance once while derived enrichment stays idempotent",
     );
   } finally {
     contendedDb.close();

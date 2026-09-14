@@ -65,8 +65,8 @@
   $: visibleCategoryTotals = activeCategory
     ? categoryTotals.filter((row) => row.code === activeCategory)
     : categoryTotals;
-  $: visibleInvoices = invoices.filter((invoice) =>
-    activeMonth === null || invoiceMonths[invoices.indexOf(invoice)] === activeMonth,
+  $: visibleInvoices = invoices.filter((invoice, index) =>
+    activeMonth === null || invoiceMonths[index] === activeMonth,
   );
 
   function amountText(amount: CanonicalSpendingAmountDto) {

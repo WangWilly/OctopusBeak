@@ -20,4 +20,4 @@ A link follows the identities of the paired records rather than freezing their c
 
 This continuity does not authorize carrying a link to a replacement identity or an unsupported, withdrawn source record. Revoking the link removes its deduplication effect; each surviving record is then evaluated independently under the recognition policy, without erasing the historical confirmation.
 
-One-to-many and many-to-one matching are outside the first version. This decision does not require retaining the Data Issues page, which is scheduled for removal,.
+One-to-many and many-to-one matching are outside the first version. This decision does not require retaining the Data Issues page, which is scheduled for removal.

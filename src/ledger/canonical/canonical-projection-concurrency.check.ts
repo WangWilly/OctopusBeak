@@ -104,11 +104,7 @@ test("concurrent canonical writers keep retained lifecycle validation on one sna
           `SELECT generation.build_cutoff_commit_sequence AS cutoff,
                   (SELECT MAX(commit_sequence) FROM canonical_commits) AS latest,
                   (SELECT MAX(commit_sequence) FROM canonical_commits commit_row
-                     WHERE commit_row.commit_kind <> 'projection_rebuild'
-                       AND EXISTS (
-                         SELECT 1 FROM source_captures capture
-                          WHERE capture.commit_id = commit_row.commit_id
-                       )) AS latest_evidence
+                     WHERE commit_row.commit_kind <> 'projection_rebuild') AS latest_evidence
              FROM projection_generations generation
             WHERE generation.status = 'active'`,
         )

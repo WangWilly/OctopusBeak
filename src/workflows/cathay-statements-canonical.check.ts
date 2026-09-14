@@ -341,7 +341,8 @@ try {
       assert.equal(
         multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
           ?.count,
-        1,
+        2,
+        "the source capture and automatic Kind enrichment commit atomically",
       );
       assert.equal(
         multiDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
