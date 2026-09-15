@@ -252,7 +252,7 @@ assert.deepEqual(injected.diagnostics, []);
 // durable readiness, and the resulting blocker identifies ledger evidence.
 const ledgerDirectory = await mkdtemp(join(tmpdir(), "canonical-readiness-"));
 try {
-  const store = createDomesticDepositStore(join(ledgerDirectory, "canonical.sqlite"));
+  const store = createDomesticDepositStore(ledgerDirectory);
   try {
     const lineBankInventory = [
       {

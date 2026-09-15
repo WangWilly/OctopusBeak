@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   queryCanonicalSpendingCurrentFromDatabase,
   queryCanonicalSpendingHistoricalFromDatabase,

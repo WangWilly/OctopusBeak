@@ -23,9 +23,9 @@ import {
 import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import { getPostHumanAttestedV1Manifest } from "../ledger/canonical/post-human-attestation.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
@@ -868,23 +868,21 @@ export async function runPostStatements(
     process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const store = createCanonicalSourceStore(
-    canonicalSqlitePath(sourceLedgerDir),
-  );
+  const store = createCanonicalSourceStore(sourceLedgerDir);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
+    ? canonicalDatabaseWriterKey(financialLedgerDir)
     : null;
   const financialStore = financialDatabasePath
-    ? financialDatabasePath === canonicalSqlitePath(sourceLedgerDir)
+    ? financialDatabasePath === canonicalDatabaseWriterKey(sourceLedgerDir)
       ? store
-      : createCanonicalSourceStore(financialDatabasePath)
+      : createCanonicalSourceStore(financialLedgerDir!)
     : null;
   const financialWriter: CanonicalFinancialDepositWriterStore | null =
     financialStore
       ? {
           db: financialStore.db,
-          databasePath: financialStore.databasePath,
+          withWriter: financialStore.withWriter,
           commitClock: () => financialStore.commitClock(),
         }
       : null;

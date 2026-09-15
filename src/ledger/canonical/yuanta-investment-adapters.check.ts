@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   admitCanonicalInvestmentCapture,
@@ -11,7 +11,7 @@ import {
   queryCanonicalInvestmentCurrent,
   queryCanonicalInvestmentHistorical,
 } from "./investment-financial.ts";
-import { CANONICAL_SOURCE_SCHEMA_VERSION } from "./canonical-source-store.ts";
+import { CANONICAL_SCHEMA_VERSION } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   buildYuantaInvestmentCapture,
@@ -165,7 +165,7 @@ test("admits both affected 984C brokerage accounts with dated trade evidence", (
 test("Yuanta repeated holdings accept a source display-name change without changing Security identity", async () => {
   const directory = mkdtempSync(join(tmpdir(), "yuanta-security-name-"));
   const path = join(directory, "canonical.sqlite");
-  let store = createCanonicalInvestmentStore(path);
+  let store = createCanonicalInvestmentStore(dirname(path));
   const capture = (captureId: string, name: string | undefined) =>
     buildYuantaInvestmentCapture({
       sourceId: "yuanta-trade",
@@ -201,14 +201,14 @@ test("Yuanta repeated holdings accept a source display-name change without chang
     const legacy = new DatabaseSync(path);
     rewindInvestmentDatabaseToV24PhysicalSchema(legacy);
     legacy.close();
-    store = createCanonicalInvestmentStore(path);
+    store = createCanonicalInvestmentStore(dirname(path));
     assert.equal(
       (
         store.db.prepare("PRAGMA user_version").get() as {
           user_version: number;
         }
       ).user_version,
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+      CANONICAL_SCHEMA_VERSION,
     );
     const knowledgeBefore = Number(
       (

@@ -1676,7 +1676,7 @@ const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
 );
 const yuantaEmptyDirectory = await mkdtemp(join(tmpdir(), "yuanta-foreign-empty-133-"));
 try {
-  const store = createCanonicalSourceStore(join(yuantaEmptyDirectory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(yuantaEmptyDirectory);
   const result = await commitForeignCurrencyDepositCapture(
     store,
     admitForeignCurrencyDepositCapture(emptyYuantaCapture),

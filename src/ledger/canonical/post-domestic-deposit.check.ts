@@ -126,7 +126,7 @@ for (const privateToken of [
 const sourceDir = await mkdtemp(join(tmpdir(), "post-source-check-"));
 try {
   const databasePath = join(sourceDir, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(sourceDir);
   await commitPostDomesticDepositSourceEvidence(
     store,
     admitted.capture,
@@ -162,7 +162,7 @@ try {
   );
   store.close();
 
-  const reopened = createCanonicalSourceStore(databasePath);
+  const reopened = createCanonicalSourceStore(sourceDir);
   assert.equal(
     Number(
       (
@@ -290,10 +290,10 @@ assert.deepEqual(
 const financialDir = await mkdtemp(join(tmpdir(), "post-financial-check-"));
 try {
   const financialPath = join(financialDir, "canonical.sqlite");
-  const financialStore = createCanonicalSourceStore(financialPath);
+  const financialStore = createCanonicalSourceStore(financialDir);
   const writer = {
     db: financialStore.db,
-    databasePath: financialStore.databasePath,
+    withWriter: financialStore.withWriter,
     commitClock: () => financialStore.commitClock(),
   };
   const committed = await commitCanonicalPostDomesticDepositCaptureBatch(
@@ -350,9 +350,7 @@ try {
 
 const atomicDir = await mkdtemp(join(tmpdir(), "post-source-atomic-check-"));
 try {
-  const atomicStore = createCanonicalSourceStore(
-    join(atomicDir, "canonical.sqlite"),
-  );
+  const atomicStore = createCanonicalSourceStore(atomicDir);
   await assert.rejects(
     commitPostDomesticDepositSourceEvidenceBatch(atomicStore, [
       { capture: admitted.capture, captureId: "post-batch-duplicate" },

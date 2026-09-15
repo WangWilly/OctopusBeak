@@ -301,7 +301,7 @@ try {
   const sourceStorePath = join(ledgerDir, "canonical.sqlite");
   const { createCanonicalSourceStore } =
     await import("../ledger/canonical/canonical-source-store.ts");
-  const store = createCanonicalSourceStore(sourceStorePath);
+  const store = createCanonicalSourceStore(ledgerDir);
   try {
     const current = queryCanonicalSourceCurrent(store);
     assert.equal(current.status, "durable-source-evidence");
@@ -376,9 +376,7 @@ try {
         ),
       /later-account fetch failure/i,
     );
-    const rollbackStore = createCanonicalSourceStore(
-      join(rollbackLedgerDir, "canonical.sqlite"),
-    );
+    const rollbackStore = createCanonicalSourceStore(rollbackLedgerDir);
     try {
       assert.equal(
         rollbackStore.db
@@ -458,9 +456,7 @@ try {
     );
   assert.equal((await runMultiAccount()).admissions.length, 2);
   assert.equal((await runMultiAccount()).admissions.length, 2);
-  const multiAccountStore = createCanonicalSourceStore(
-    join(multiAccountLedgerDir, "canonical.sqlite"),
-  );
+  const multiAccountStore = createCanonicalSourceStore(multiAccountLedgerDir);
   try {
     assert.equal(
       multiAccountStore.db
@@ -555,7 +551,7 @@ try {
   assert.equal(output.admissions[0]?.reason, "financial-ledger-not-configured");
   const sourceOnlyStore = (
     await import("../ledger/canonical/canonical-source-store.ts")
-  ).createCanonicalSourceStore(join(sourceOnlyLedgerDir, "canonical.sqlite"));
+  ).createCanonicalSourceStore(sourceOnlyLedgerDir);
   try {
     assert.equal(
       sourceOnlyStore.db
@@ -786,9 +782,7 @@ try {
   );
   const { createCanonicalSourceStore } =
     await import("../ledger/canonical/canonical-source-store.ts");
-  const multiRangeStore = createCanonicalSourceStore(
-    join(multiRangeLedgerDir, "canonical.sqlite"),
-  );
+  const multiRangeStore = createCanonicalSourceStore(multiRangeLedgerDir);
   try {
     const currentRows = multiRangeStore.db
       .prepare(
@@ -1017,7 +1011,7 @@ try {
   );
   const fourShapeStore = (
     await import("../ledger/canonical/canonical-source-store.ts")
-  ).createCanonicalSourceStore(join(fourShapeLedgerDir, "canonical.sqlite"));
+  ).createCanonicalSourceStore(fourShapeLedgerDir);
   try {
     const rowsByAccount = fourShapeStore.db
       .prepare(

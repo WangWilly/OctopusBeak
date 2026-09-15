@@ -1,5 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
@@ -14,17 +14,17 @@ import {
   taxonomyDimensionForField,
 } from "./transaction-taxonomy.ts";
 import {
-  openCanonicalDatabase,
+  canonicalDatabaseWriterKey,
+  currentUtcMicros,
+  openCanonicalDatabaseHandle,
 } from "./canonical-database.ts";
 import {
-  canonicalSqlitePath,
-  currentUtcMicros,
   idFromString,
   idToString,
   uuidV7,
   blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
@@ -1380,11 +1380,11 @@ function commitAutomaticEnrichmentRunOnce(
   rawInput: CanonicalEnrichmentRunInput,
   clock: () => string,
 ): CanonicalEnrichmentCommitResult {
-  const db = openCanonicalDatabase(ledgerDir);
+  const handle = openCanonicalDatabaseHandle(ledgerDir);
   try {
-    return commitAutomaticEnrichmentRunInDatabase(db, rawInput, clock, true);
+    return commitAutomaticEnrichmentRunInDatabase(handle.db, rawInput, clock, true);
   } finally {
-    db.close();
+    handle.close();
   }
 }
 
@@ -1395,7 +1395,7 @@ export function commitCanonicalAutomaticEnrichmentRun(
 ): Promise<CanonicalEnrichmentCommitResult> {
   const clock = options.clock ?? (() => new Date().toISOString());
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => commitAutomaticEnrichmentRunOnce(ledgerDir, input, clock),
     options.runtime,
   );
@@ -3202,8 +3202,8 @@ function queryHistorical(db: DatabaseSync, request: CanonicalEnrichmentQueryRequ
 
 export function createCanonicalEnrichmentQuery(ledgerDir: string) {
   const run = <T>(operation: (db: DatabaseSync) => T): T => {
-    const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
-    try { return withCanonicalSnapshot(db, () => operation(db)); } finally { db.close(); }
+    const handle = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
+    try { return withCanonicalSnapshot(handle, () => operation(handle.db)); } finally { handle.close(); }
   };
   return Object.freeze({
     current(request: CanonicalEnrichmentQueryRequest = {}): CanonicalEnrichmentQueryResult { return run((db) => queryCurrent(db, request)); },

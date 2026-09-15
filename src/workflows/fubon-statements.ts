@@ -45,9 +45,9 @@ import {
 import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
 import type { CanonicalFinancialDepositValidatedCapture } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   persistCounterpartyAccountEvidence,
   resolveLoanRepaymentRelations,
@@ -3169,21 +3169,21 @@ export async function runFubonStatements(
   // Source evidence always has a durable default. Financial projection is a
   // separate opt-in boundary: canonicalLedgerDir alone can never enable it.
   const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
+  const sourceDatabasePath = canonicalDatabaseWriterKey(sourceLedgerDir);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
+    ? canonicalDatabaseWriterKey(financialLedgerDir)
     : null;
   if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
     throw new Error(
       "Fubon source and financial captures must use the same canonical SQLite database.",
     );
-  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
+  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
   const financialStore = financialDatabasePath ? sourceStore : null;
   const financialWriter = financialStore
     ? {
         db: financialStore.db,
-        databasePath: financialStore.databasePath,
+        withWriter: financialStore.withWriter,
         commitClock: () => financialStore.commitClock(),
       }
     : null;

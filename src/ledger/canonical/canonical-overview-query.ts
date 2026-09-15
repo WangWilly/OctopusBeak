@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { canonicalSqlitePath, openCanonicalDatabase } from "./canonical-database.ts";
+import { canonicalDatabaseWriterKey, openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
   type CanonicalProjectionCreditCardBalance,
@@ -266,13 +266,13 @@ export function createCanonicalOverviewQuery(
   const expectedSources = input.expectedSources ?? [];
   return Object.freeze({
     async current(): Promise<CanonicalOverviewCurrentQueryResult> {
-      const databasePath = canonicalSqlitePath(ledgerDir);
+      const databasePath = canonicalDatabaseWriterKey(ledgerDir);
       if (!existsSync(databasePath))
         return result(withExpectedSourceGaps(EMPTY_PROJECTION, expectedSources));
 
-      let db: ReturnType<typeof openCanonicalDatabase> | undefined;
+      let db: ReturnType<typeof openCanonicalDatabaseHandle> | undefined;
       try {
-        const opened = openCanonicalDatabase(ledgerDir, { readOnly: true });
+        const opened = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
         db = opened;
         const projection = withCanonicalSnapshot(opened, () => {
           const runtime = createCanonicalProjectionRuntime(opened);

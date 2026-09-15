@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type { Frame, Page } from "playwright";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES } from "../ledger/canonical/hncb-domestic-deposit.ts";
 import {
   ensureHncbLoginEntry,
@@ -143,7 +143,7 @@ try {
   assert.equal(output.count, 1);
   assert.equal(output.downloads.length, 1);
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     const current = queryCanonicalSourceCurrent(store);
     assert.equal(current.records.length, 1);
@@ -216,9 +216,7 @@ try {
       ),
     /synthetic query failure/,
   );
-  const store = createCanonicalSourceStore(
-    canonicalSqlitePath(failedDirectory),
-  );
+  const store = createCanonicalSourceStore(failedDirectory);
   try {
     assert.equal(
       (

@@ -290,7 +290,7 @@ test("five settled summaries may omit only the oldest billed period", async () =
   );
 
   const oldestDirectory = mkdtempSync(join("/tmp", "yuanta-credit-card-oldest-edge-"));
-  const oldestStore = createCanonicalSourceStore(join(oldestDirectory, "canonical.sqlite"));
+  const oldestStore = createCanonicalSourceStore(oldestDirectory);
   try {
     const committed = await commitYuantaCreditCardCapture(oldestStore, oldestOmitted);
     assert.equal(committed.statementCount, 5);
@@ -324,7 +324,7 @@ test("five settled summaries may omit only the oldest billed period", async () =
     (_statement, index) => index !== 2,
   );
   const middleDirectory = mkdtempSync(join("/tmp", "yuanta-credit-card-middle-edge-"));
-  const middleStore = createCanonicalSourceStore(join(middleDirectory, "canonical.sqlite"));
+  const middleStore = createCanonicalSourceStore(middleDirectory);
   try {
     assert.throws(
       () => admitYuantaCreditCardCapture(middleOmitted),
@@ -435,7 +435,7 @@ test("source keys are stable across captures and exact duplicate ordinals are di
 
 test("repeated credit rows ignore provider description formatting in content identity", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-description-format-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const baseline = buildYuantaCanonicalCreditCardCapture(
       options({ captureId: "description-format-a" }),
@@ -475,7 +475,7 @@ test("repeated credit rows ignore provider description formatting in content ide
 
 test("credit amount identity ignores provider zero padding", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-amount-format-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const baseline = buildYuantaCanonicalCreditCardCapture(
       options({
@@ -694,7 +694,7 @@ test("a complete capture without summaries cannot be built for canonical commit"
 
 test("commit writes explicit settled summaries to the shared spine and extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-canonical-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const committed = await commitYuantaCreditCardCapture(
       store,
@@ -770,7 +770,7 @@ test("commit writes explicit settled summaries to the shared spine and extension
 
 test("direction fallback enriches Yuanta outflows and inflows in the current projection", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-direction-kind-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const billedRows = periods.map((period, index) =>
       row(period, index === 0 ? { twdAmount: "-100.00", description: "SYNTHETIC REFUND" } : {}),
@@ -830,14 +830,14 @@ test("direction fallback enriches Yuanta outflows and inflows in the current pro
 
 test("direction fallback failure rolls back the source capture admission", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-direction-atomic-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const routeId = "yuanta/credit-card/direction-enrichment/v1/kind";
   try {
     await assert.rejects(
       () => commitYuantaCreditCardCapture(
         {
           db: store.db,
-          databasePath: store.databasePath,
+          withWriter: store.withWriter,
           commitClock: store.commitClock,
           beforeYuantaCreditExtensionCommit: (db) => {
             db.prepare(
@@ -870,7 +870,7 @@ test("direction fallback failure rolls back the source capture admission", async
 
 test("repeated Yuanta capture dedupes transactions and adds provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-repeat-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const first = await commitYuantaCreditCardCapture(
       store,
@@ -975,7 +975,7 @@ test("repeated Yuanta capture dedupes transactions and adds provenance", async (
 
 test("Yuanta billing lifecycle reuses one transaction while retaining status history", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-billing-lifecycle-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const unbilledLifecycleRow = row(null, {
       consumeDate: "2026-06-10",
@@ -1053,7 +1053,7 @@ test("Yuanta billing lifecycle reuses one transaction while retaining status his
 
 test("settled summary corrections create complete revisions without duplicating statements", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-summary-revisions-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const baselineCapture = buildYuantaCanonicalCreditCardCapture(
       options({ captureId: "summary-capture-a", statementSummaries: settledSummaries() }),

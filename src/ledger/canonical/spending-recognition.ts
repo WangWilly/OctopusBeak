@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {

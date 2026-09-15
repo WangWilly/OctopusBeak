@@ -258,9 +258,7 @@ try {
     createDomesticDepositStore,
     queryCurrent,
   } = await import("../ledger/canonical/domestic-deposit-store.ts");
-  const store = createDomesticDepositStore(
-    join(canonicalDirectory, "canonical.sqlite"),
-  );
+  const store = createDomesticDepositStore(canonicalDirectory);
   try {
     const committed = await commitCanonicalLineBankFinancialCaptureBatch(
       store,

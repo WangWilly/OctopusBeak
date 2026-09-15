@@ -478,7 +478,7 @@ test("financial-account card masks honor the projection knowledge cutoff", async
 test("instrument mask column is added idempotently to a legacy extension table", () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-instrument-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const initial = createCanonicalSourceStore(databasePath);
+  const initial = createCanonicalSourceStore(directory);
   initial.close();
   const legacy = new DatabaseSync(databasePath);
   try {
@@ -496,7 +496,7 @@ test("instrument mask column is added idempotently to a legacy extension table",
   } finally {
     legacy.close();
   }
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
@@ -516,7 +516,7 @@ test("instrument role evidence rejects source payload mask drift", async () => {
       commitFubonCreditCardCapture(
         {
           db: store.db,
-          databasePath: store.databasePath,
+          withWriter: store.withWriter,
           commitClock: store.commitClock,
           beforeFubonCreditExtensionCommit: (db) => {
             const row = db.prepare(
@@ -1265,7 +1265,7 @@ test("restores the attestation state after the focused event check", () => {
 test("persistence uses the shared canonical spine and typed credit extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-canonical-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     const first = await commitFubonCreditCardCapture(
@@ -1485,7 +1485,7 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
 test("idempotently migrates legacy statement evidence lineage without losing rows", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-summary-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const initial = createCanonicalSourceStore(databasePath);
+  const initial = createCanonicalSourceStore(directory);
   initial.close();
   const legacy = new DatabaseSync(databasePath);
   try {
@@ -1512,7 +1512,7 @@ END;
     legacy.close();
   }
 
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
@@ -1562,13 +1562,13 @@ END;
 
 test("extension failure rolls back initial attestation and the shared capture atomically", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-atomic-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitFubonCreditCardCapture(
         {
           db: base.db,
-          databasePath: base.databasePath,
+          withWriter: base.withWriter,
           commitClock: base.commitClock,
           beforeFubonCreditExtensionCommit: () => {
             throw new Error("injected extension failure");
@@ -1602,7 +1602,7 @@ test("extension failure rolls back initial attestation and the shared capture at
 
 test("direction fallback enriches Fubon outflows and inflows in the current projection", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-direction-kind-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1661,7 +1661,7 @@ test("direction fallback enriches Fubon outflows and inflows in the current proj
 
 test("identical occurrences remain distinct while repeated captures add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-occurrence-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1690,7 +1690,7 @@ test("identical occurrences remain distinct while repeated captures add provenan
 
 test("Statement revisions pin billed membership and revision keys cannot be reused", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-statement-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1737,7 +1737,7 @@ test("Statement revisions pin billed membership and revision keys cannot be reus
 test("durable revocation survives reopen until a durable restore event", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-revocation-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const first = createCanonicalSourceStore(databasePath);
+  const first = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       first,
@@ -1755,7 +1755,7 @@ test("durable revocation survives reopen until a durable restore event", async (
     "2026-08-25T04:01:00.000Z",
     "simulate active code manifest after restart",
   );
-  const reopened = createCanonicalSourceStore(databasePath);
+  const reopened = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitFubonCreditCardCapture(
@@ -1786,7 +1786,7 @@ test("durable revocation survives reopen until a durable restore event", async (
 test("generic current, historical, and lineage queries see Fubon after reopen", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-query-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   let firstCommitSequence = 0;
   try {
     ensureFubonCreditCardSchema(store.db);

@@ -39,9 +39,9 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
@@ -3014,9 +3014,7 @@ export default workflow("yuantaForeignCurrencyStatements", {
       process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
     if (financialLedgerDir) {
       const captureOccurrenceId = randomUUID();
-      const financialStore = createCanonicalSourceStore(
-        canonicalSqlitePath(financialLedgerDir),
-      );
+      const financialStore = createCanonicalSourceStore(financialLedgerDir);
       try {
         const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
         for (const row of rows) {

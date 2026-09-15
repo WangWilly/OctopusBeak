@@ -283,7 +283,7 @@ assert.throws(
 
 const directory = await mkdtemp(join(tmpdir(), "foreign-currency-deposit-133-"));
 try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const firstCommit = await commitForeignCurrencyDepositCapture(store, admittedUsd);
   await commitForeignCurrencyDepositCapture(store, admittedJpy);
   const accountRows = store.db
@@ -386,9 +386,7 @@ try {
 
 const revisionDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-revision-133-"));
 try {
-  const revisionStore = createCanonicalSourceStore(
-    join(revisionDirectory, "canonical.sqlite"),
-  );
+  const revisionStore = createCanonicalSourceStore(revisionDirectory);
   await commitForeignCurrencyDepositCapture(revisionStore, admittedUsd);
   await assert.rejects(
     () =>
@@ -416,9 +414,7 @@ try {
 
 const linkageDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-linkage-133-"));
 try {
-  const linkageStore = createCanonicalSourceStore(
-    join(linkageDirectory, "canonical.sqlite"),
-  );
+  const linkageStore = createCanonicalSourceStore(linkageDirectory);
   try {
     await commitForeignCurrencyDepositCapture(
       linkageStore,
@@ -466,9 +462,7 @@ try {
 
 const atomicDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-atomic-133-"));
 try {
-  const atomicStore = createCanonicalSourceStore(
-    join(atomicDirectory, "canonical.sqlite"),
-  );
+  const atomicStore = createCanonicalSourceStore(atomicDirectory);
   await assert.rejects(
     () =>
       commitForeignCurrencyDepositCaptureBatch(atomicStore, [
@@ -591,9 +585,7 @@ for (const mutatePages of [
 
 const defensiveDirectory = await mkdtemp(join(tmpdir(), "foreign-currency-defensive-133-"));
 try {
-  const defensiveStore = createCanonicalSourceStore(
-    join(defensiveDirectory, "canonical.sqlite"),
-  );
+  const defensiveStore = createCanonicalSourceStore(defensiveDirectory);
   const admittedThenCorrupted = admitForeignCurrencyDepositCapture(
     structuredClone(correctedDirection),
   );

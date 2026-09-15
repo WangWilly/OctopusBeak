@@ -4,8 +4,8 @@ import { join } from "node:path";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   createCathayCanonicalFinancialQuery,
-  openCanonicalDatabase,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
 import {
   downloadCathayStatements,
   deriveCathayDomesticDepositAccountNumberEvidence,
@@ -239,7 +239,7 @@ try {
       },
       numericClient,
     );
-    const numericDb = openCanonicalDatabase(numericAccountDir, { readOnly: true });
+    const numericDb = openCanonicalDatabaseHandle(numericAccountDir, { readOnly: true });
     try {
       assert.equal(
         (numericDb
@@ -257,7 +257,7 @@ try {
   const query = createCathayCanonicalFinancialQuery(ledgerDir);
   const current = await query.current({ kind: "current" });
   assert.equal(current.transactions.length, 3);
-  const attestedDb = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const attestedDb = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     assert.equal(
       attestedDb
@@ -336,7 +336,7 @@ try {
       multiClient,
     );
     assert.equal(multiOutput.length, 2);
-    const multiDb = openCanonicalDatabase(multiDir, { readOnly: true });
+    const multiDb = openCanonicalDatabaseHandle(multiDir, { readOnly: true });
     try {
       assert.equal(
         multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
@@ -400,7 +400,7 @@ try {
       /returnCode was not 0000/,
     );
     assert.equal(legacyWriterCalls, 0);
-    const db = openCanonicalDatabase(failingDir);
+    const db = openCanonicalDatabaseHandle(failingDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -482,7 +482,7 @@ try {
       JSON.stringify(scopeTelemetry),
       /2025-08-17|2026-08-16|2026-08-17|SYNTHETIC|description/,
     );
-    const db = openCanonicalDatabase(scopeMismatchDir);
+    const db = openCanonicalDatabaseHandle(scopeMismatchDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -570,7 +570,7 @@ try {
         JSON.stringify(malformedTelemetry),
         /2025-08-17|2026-08-17|SYNTHETIC|description/,
       );
-      const db = openCanonicalDatabase(malformedDateDir);
+      const db = openCanonicalDatabaseHandle(malformedDateDir);
       try {
         assert.equal(
           db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -695,7 +695,7 @@ try {
       JSON.stringify(rowDateShapeTelemetry),
       /2026-07-01|20260701|SYNTHETIC|description|incomeAmt/,
     );
-    const db = openCanonicalDatabase(invalidRowDateDir);
+    const db = openCanonicalDatabaseHandle(invalidRowDateDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -750,7 +750,7 @@ try {
       /account scope does not match the response/,
     );
     assert.equal(accountMismatchWriterCalls, 0);
-    const db = openCanonicalDatabase(accountMismatchDir);
+    const db = openCanonicalDatabaseHandle(accountMismatchDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
@@ -816,7 +816,7 @@ try {
       /returnCode was not 0000/,
     );
     assert.equal(multiWriterCalls, 0);
-    const db = openCanonicalDatabase(failingMultiDir);
+    const db = openCanonicalDatabaseHandle(failingMultiDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()

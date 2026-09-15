@@ -2,9 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { withCanonicalWriterQueue } from "./canonical-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import {
-  canonicalSqlitePath,
-  uuidV7,
-  blob,
+  canonicalDatabaseWriterKey,
   recordProjectionGenerationEvent,
   rejectStrayProjectionGenerations,
   validateGenerationTransactionIntegrity,
@@ -17,9 +15,16 @@ import {
   validateUserAssertionProvenanceAuthority,
   validateProjectionGenerationProvenance,
   selectAssertionAsOf,
+  currentUtcMicros,
+  quotedSqlIdentifier,
+  projectionRelevantCommitCount,
+} from "./canonical-database.ts";
+import {
+  uuidV7,
+  blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-local-identifier.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import type {
   CanonicalProjectionRebuildFailureInjection,
   CanonicalProjectionRebuildOptions,
@@ -632,7 +637,7 @@ function rebuildCathayCanonicalProjectionOnce(
   ledgerDir: string,
   options: CanonicalProjectionRebuildOptions,
 ): CanonicalProjectionRebuildResult {
-  const db = openCanonicalDatabase(ledgerDir, { runtime: options });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { runtime: options });
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -663,7 +668,7 @@ export function canonicalProjectionRuntimeRebuildInternal(
   options: CanonicalProjectionRebuildOptions = {},
 ): Promise<CanonicalProjectionRebuildResult> {
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => rebuildCathayCanonicalProjectionOnce(ledgerDir, options),
     options,
   );

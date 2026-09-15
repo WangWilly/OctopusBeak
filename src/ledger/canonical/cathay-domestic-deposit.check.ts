@@ -4,7 +4,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import {
-  CANONICAL_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   CATHAY_POSTING_MAPPING,
@@ -16,18 +15,18 @@ import {
   commitCathayDerivedImportRun,
   runCathayDerivedImportRun,
   commitCathayUserAssertion,
-  canonicalSqlitePath,
   createCathayCanonicalFinancialQuery,
-  openCanonicalDatabase,
   parseExactDecimalLexeme,
   type CathayStagedCapturePage,
 } from "./cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
+import { CANONICAL_SCHEMA_VERSION, canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const rebuildCathayCanonicalProjection = (
   ledgerDir: string,
   options = {},
-) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
+) => createCanonicalProjectionRuntime(ledgerDir).rebuild(options);
 import { createCathayCanonicalFinancialQuery as createBoundaryCanonicalQuery } from "../../lib/shared-ledger/server/financial-query.ts";
 
 const syncPage = (
@@ -168,7 +167,7 @@ CREATE TABLE current_transactions (
 const legacyId = (value: number): Buffer => Buffer.alloc(16, value);
 
 function seedLegacyDatabase(directory: string, version: 1 | 2): void {
-  const db = new DatabaseSync(canonicalSqlitePath(directory));
+  const db = new DatabaseSync(canonicalDatabaseWriterKey(directory));
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   db.exec(LEGACY_V1_SCHEMA);
   const commitId = legacyId(1);
@@ -367,7 +366,7 @@ function restoreLegacySyncState(db: DatabaseSync): void {
 
 function seedLegacyV5Database(directory: string): void {
   seedLegacyDatabase(directory, 2);
-  const db = new DatabaseSync(canonicalSqlitePath(directory));
+  const db = new DatabaseSync(canonicalDatabaseWriterKey(directory));
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(
     "ALTER TABLE source_captures ADD COLUMN completeness_basis TEXT NOT NULL DEFAULT 'success-status-scope-count-details' CHECK(completeness_basis = 'success-status-scope-count-details')",
@@ -536,7 +535,7 @@ try {
     scale: 0,
   });
 
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     for (const [table, expected] of [
       ["canonical_commits", 2],
@@ -757,7 +756,7 @@ try {
       .length,
     0,
   );
-  const repeatDb = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const repeatDb = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     assert.equal(
       repeatDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -799,7 +798,7 @@ try {
   // Force the repeated observation's source-record id to sort before the
   // immutable revision source-record id. The compatibility view must expose
   // revision origin, not MIN(provenance.source_record_id).
-  const sourceIdentityRepair = new DatabaseSync(canonicalSqlitePath(ledgerDir));
+  const sourceIdentityRepair = new DatabaseSync(canonicalDatabaseWriterKey(ledgerDir));
   sourceIdentityRepair.exec("PRAGMA foreign_keys = OFF");
   const identityRows = sourceIdentityRepair
     .prepare(
@@ -850,7 +849,7 @@ try {
       .run(lowOccurrence, repeatedObservedRecord);
   }
   sourceIdentityRepair.close();
-  const sourceIdentityAfter = openCanonicalDatabase(ledgerDir, {
+  const sourceIdentityAfter = openCanonicalDatabaseHandle(ledgerDir, {
     readOnly: true,
   });
   try {
@@ -949,7 +948,7 @@ try {
   assert.equal(firstCommit.scopes.length, 2);
   assert.equal(firstCommit.accountIds.length, 2);
   assert.equal(firstCommit.commitSequence, 1);
-  const multiDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
+  const multiDb = openCanonicalDatabaseHandle(multiScopeDir, { readOnly: true });
   try {
     assert.equal(
       multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
@@ -1042,7 +1041,7 @@ try {
     observedAt: "2026-08-18T00:00:00+08:00",
   });
   assert.equal(repeated.commitSequence, 3);
-  const repeatedDb = openCanonicalDatabase(multiScopeDir, { readOnly: true });
+  const repeatedDb = openCanonicalDatabaseHandle(multiScopeDir, { readOnly: true });
   try {
     assert.equal(
       repeatedDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -1093,17 +1092,17 @@ try {
     populatedV4ScopeMigrationDir,
     syncInput([syncPage(), syncPage(secondAccount, secondRaw)]),
   );
-  const v4Seed = openCanonicalDatabase(populatedV4ScopeMigrationDir);
+  const v4Seed = openCanonicalDatabaseHandle(populatedV4ScopeMigrationDir);
   v4Seed.close();
-  const v4SeedRaw = new DatabaseSync(canonicalSqlitePath(populatedV4ScopeMigrationDir));
+  const v4SeedRaw = new DatabaseSync(canonicalDatabaseWriterKey(populatedV4ScopeMigrationDir));
   rewindCurrentDatabaseToV23PhysicalSchema(v4SeedRaw);
   v4SeedRaw.exec(
     "PRAGMA foreign_keys = OFF; UPDATE source_records SET sequence_lexeme = (SELECT scope.account_no || ':' || source_records.sequence_lexeme FROM source_record_scopes record_scope JOIN capture_scopes scope ON scope.scope_id = record_scope.scope_id WHERE record_scope.source_record_id = source_records.source_record_id); DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
   v4SeedRaw.close();
-  const migratedV4Writer = openCanonicalDatabase(populatedV4ScopeMigrationDir);
+  const migratedV4Writer = openCanonicalDatabaseHandle(populatedV4ScopeMigrationDir);
   migratedV4Writer.close();
-  const migratedV4 = openCanonicalDatabase(populatedV4ScopeMigrationDir, {
+  const migratedV4 = openCanonicalDatabaseHandle(populatedV4ScopeMigrationDir, {
     readOnly: true,
   });
   try {
@@ -1155,23 +1154,23 @@ try {
     ...syncInput(),
     observedAt: "2026-08-18T00:00:00+08:00",
   });
-  const provenanceOnlyV4Seed = openCanonicalDatabase(
+  const provenanceOnlyV4Seed = openCanonicalDatabaseHandle(
     provenanceOnlyV4MigrationDir,
   );
   provenanceOnlyV4Seed.close();
   const provenanceOnlyV4SeedRaw = new DatabaseSync(
-    canonicalSqlitePath(provenanceOnlyV4MigrationDir),
+    canonicalDatabaseWriterKey(provenanceOnlyV4MigrationDir),
   );
   rewindCurrentDatabaseToV23PhysicalSchema(provenanceOnlyV4SeedRaw);
   provenanceOnlyV4SeedRaw.exec(
     "PRAGMA foreign_keys = OFF; DROP TABLE source_record_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 4; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0), (4, 0); PRAGMA user_version = 4; PRAGMA foreign_keys = ON;",
   );
   provenanceOnlyV4SeedRaw.close();
-  const provenanceOnlyV4Writer = openCanonicalDatabase(
+  const provenanceOnlyV4Writer = openCanonicalDatabaseHandle(
     provenanceOnlyV4MigrationDir,
   );
   provenanceOnlyV4Writer.close();
-  const provenanceOnlyV4Migrated = openCanonicalDatabase(
+  const provenanceOnlyV4Migrated = openCanonicalDatabaseHandle(
     provenanceOnlyV4MigrationDir,
     { readOnly: true },
   );
@@ -1229,10 +1228,10 @@ try {
     restorationV4MigrationDir,
     { ...syncInput(), observedAt: "2026-08-19T00:00:00+08:00" },
   );
-  const restorationV4Seed = openCanonicalDatabase(restorationV4MigrationDir);
+  const restorationV4Seed = openCanonicalDatabaseHandle(restorationV4MigrationDir);
   restorationV4Seed.close();
   const restorationV4SeedRaw = new DatabaseSync(
-    canonicalSqlitePath(restorationV4MigrationDir),
+    canonicalDatabaseWriterKey(restorationV4MigrationDir),
   );
   rewindCurrentDatabaseToV23PhysicalSchema(restorationV4SeedRaw);
   restorationV4SeedRaw.exec(
@@ -1241,13 +1240,13 @@ try {
   restorationV4SeedRaw.close();
   assert.throws(
     () =>
-      openCanonicalDatabase(restorationV4MigrationDir, {
+      openCanonicalDatabaseHandle(restorationV4MigrationDir, {
         injectMigrationFailure: "v4-v5-after-record-copy",
       }),
     /Injected v4-v5 migration failure/,
   );
   const failedV4 = new DatabaseSync(
-    canonicalSqlitePath(restorationV4MigrationDir),
+    canonicalDatabaseWriterKey(restorationV4MigrationDir),
   );
   try {
     assert.equal(
@@ -1270,11 +1269,11 @@ try {
   } finally {
     failedV4.close();
   }
-  const restoredMigrationWriter = openCanonicalDatabase(
+  const restoredMigrationWriter = openCanonicalDatabaseHandle(
     restorationV4MigrationDir,
   );
   restoredMigrationWriter.close();
-  const restoredMigrationDb = openCanonicalDatabase(restorationV4MigrationDir, {
+  const restoredMigrationDb = openCanonicalDatabaseHandle(restorationV4MigrationDir, {
     readOnly: true,
   });
   try {
@@ -1334,7 +1333,7 @@ try {
       ),
     /tombstone.*unsupported|tombstone.*validated/i,
   );
-  const tombstoneDb = openCanonicalDatabase(tombstoneDir);
+  const tombstoneDb = openCanonicalDatabaseHandle(tombstoneDir);
   try {
     assert.equal(
       tombstoneDb
@@ -1419,7 +1418,7 @@ for (const [label, pages, expected] of [
       expected,
       label,
     );
-    const rejectedSyncDb = openCanonicalDatabase(rejectedSyncDir);
+    const rejectedSyncDb = openCanonicalDatabaseHandle(rejectedSyncDir);
     try {
       assert.equal(
         rejectedSyncDb
@@ -1478,9 +1477,7 @@ try {
     historicalWithdrawn.transactions[0]?.assertionSupportState,
     "withdrawn",
   );
-  const projectionRuntime = createCanonicalProjectionRuntime(
-    canonicalSqlitePath(lifecycleDir),
-  );
+  const projectionRuntime = createCanonicalProjectionRuntime(lifecycleDir);
   const projectionScope = {
     sourceConnectionKey: "synthetic-sync-connection",
   } as const;
@@ -1522,7 +1519,7 @@ try {
     restored.commitSequence,
     "restoring unchanged transaction revisions does not duplicate their derived Kind commit",
   );
-  const restoredProjectionDb = openCanonicalDatabase(lifecycleDir, {
+  const restoredProjectionDb = openCanonicalDatabaseHandle(lifecycleDir, {
     readOnly: true,
   });
   try {
@@ -1640,7 +1637,7 @@ try {
     changed.transactions.some((transaction) => transaction.revisionCreated),
     true,
   );
-  const changedDb = openCanonicalDatabase(lifecycleDir, { readOnly: true });
+  const changedDb = openCanonicalDatabaseHandle(lifecycleDir, { readOnly: true });
   try {
     assert.equal(
       changedDb
@@ -1684,7 +1681,7 @@ try {
     semanticDir,
     syncInput(),
   );
-  const semanticDb = openCanonicalDatabase(semanticDir);
+  const semanticDb = openCanonicalDatabaseHandle(semanticDir);
   semanticDb
     .prepare(
       "UPDATE transaction_revisions SET economic_status = 'refund', administrative_state = 'deleted', semantic_rule_version = ? WHERE revision_number = 1",
@@ -1791,7 +1788,7 @@ try {
     currentDerived.displayLabelCommitSequence,
     firstDerived.commitSequence,
   );
-  const sharedSpineAfterFirst = openCanonicalDatabase(derivedDir, {
+  const sharedSpineAfterFirst = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   try {
@@ -1831,7 +1828,7 @@ try {
     sharedSpineAfterFirst.close();
   }
 
-  const sharedSpineBeforeUnchanged = openCanonicalDatabase(derivedDir, {
+  const sharedSpineBeforeUnchanged = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const sharedSpineBeforeUnchangedCounts = {
@@ -1847,7 +1844,7 @@ try {
     derivedDir,
     derivedInput,
   );
-  const sharedSpineAfterUnchanged = openCanonicalDatabase(derivedDir, {
+  const sharedSpineAfterUnchanged = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   try {
@@ -1883,7 +1880,7 @@ try {
       },
     ],
   });
-  const beforeRuleLineage = openCanonicalDatabase(derivedDir, {
+  const beforeRuleLineage = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const beforeRuleLineageCounts = {
@@ -1920,7 +1917,7 @@ try {
     ],
   });
   assert.equal(ruleLineageDiagnostic.status, "diagnostic");
-  const afterRuleLineage = openCanonicalDatabase(derivedDir, {
+  const afterRuleLineage = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   try {
@@ -1984,7 +1981,7 @@ try {
       { transactionId, field: "note" as const, state: "unsupported" as const },
     ],
   });
-  const unsupportedRetryBefore = openCanonicalDatabase(derivedDir, {
+  const unsupportedRetryBefore = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const unsupportedRetryTransitions = unsupportedRetryBefore
@@ -2011,7 +2008,7 @@ try {
     unsupportedRetry.commitSequence > withdrawn.commitSequence,
     true,
   );
-  const unsupportedRetryAfter = openCanonicalDatabase(derivedDir, {
+  const unsupportedRetryAfter = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   try {
@@ -2032,7 +2029,7 @@ try {
   } finally {
     unsupportedRetryAfter.close();
   }
-  const historicalLineageBefore = openCanonicalDatabase(derivedDir, {
+  const historicalLineageBefore = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const historicalLineageSnapshot = {
@@ -2085,7 +2082,7 @@ try {
       } as never,
     );
     assert.equal(historicalLineageDiagnostic.status, "diagnostic");
-    const historicalLineageAfter = openCanonicalDatabase(derivedDir, {
+    const historicalLineageAfter = openCanonicalDatabaseHandle(derivedDir, {
       readOnly: true,
     });
     try {
@@ -2168,7 +2165,7 @@ try {
     )?.provenance.length,
     3,
   );
-  const db = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(derivedDir, { readOnly: true });
   try {
     assert.equal(
       db.prepare("SELECT COUNT(*) AS count FROM derived_import_runs").get()
@@ -2222,7 +2219,7 @@ try {
   });
   assert.equal(historicalUser.transactions[0]?.displayLabel, "User label");
   assert.equal(historicalUser.transactions[0]?.displayLabelOrigin, "user");
-  const repeatedDisplayBefore = openCanonicalDatabase(derivedDir, {
+  const repeatedDisplayBefore = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const repeatedDisplayCounts = {
@@ -2254,7 +2251,7 @@ try {
     repeatedNote.commitSequence > repeatedNoteFirst.commitSequence,
     true,
   );
-  const repeatedUserDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const repeatedUserDb = openCanonicalDatabaseHandle(derivedDir, { readOnly: true });
   try {
     assert.equal(
       repeatedUserDb
@@ -2321,7 +2318,7 @@ try {
     (await rebuildCathayCanonicalProjection(derivedDir)).status,
     "switched",
   );
-  const tamperDb = new DatabaseSync(canonicalSqlitePath(derivedDir));
+  const tamperDb = new DatabaseSync(canonicalDatabaseWriterKey(derivedDir));
   const reobservation = tamperDb
     .prepare(
       `SELECT provenance.assertion_id, provenance.commit_id
@@ -2360,7 +2357,7 @@ try {
     mutate();
     try {
       assert.throws(
-        () => openCanonicalDatabase(derivedDir, { readOnly: true }),
+        () => openCanonicalDatabaseHandle(derivedDir, { readOnly: true }),
         /provenance|authority|evidence|route|coordinate/i,
         label,
       );
@@ -2410,7 +2407,7 @@ try {
           "UPDATE assertion_provenance SET assertion_id = ? WHERE assertion_id = ? AND commit_id = ?",
         )
         .run(originalAssertion, sourceAssertionId, reobservationCommitId);
-      const repaired = openCanonicalDatabase(derivedDir);
+      const repaired = openCanonicalDatabaseHandle(derivedDir);
       repaired.close();
     },
   );
@@ -2452,7 +2449,7 @@ try {
       ? "Synthetic Cathay deposit description"
       : null,
   );
-  const authorityDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const authorityDb = openCanonicalDatabaseHandle(derivedDir, { readOnly: true });
   try {
     for (const compatibility of [
       "source_assertions",
@@ -2548,7 +2545,7 @@ try {
     ),
     true,
   );
-  const sharedMetadataEdit = new DatabaseSync(canonicalSqlitePath(derivedDir));
+  const sharedMetadataEdit = new DatabaseSync(canonicalDatabaseWriterKey(derivedDir));
   sharedMetadataEdit
     .prepare(
       "UPDATE assertions SET value_text = ? WHERE origin = 'derived' AND field_name = 'display_name'",
@@ -2572,7 +2569,7 @@ try {
     value: "Origin trigger user",
     userId: "origin-trigger-user",
   });
-  const originTriggerDb = new DatabaseSync(canonicalSqlitePath(derivedDir));
+  const originTriggerDb = new DatabaseSync(canonicalDatabaseWriterKey(derivedDir));
   try {
     const sourceAssertionId = originTriggerDb
       .prepare(
@@ -2601,7 +2598,7 @@ try {
     userId: "origin-trigger-user",
   });
 
-  const malformedTargetBefore = openCanonicalDatabase(derivedDir, {
+  const malformedTargetBefore = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const malformedTargetSnapshot = {
@@ -2655,7 +2652,7 @@ try {
       /target|transaction|subject|conflict/i,
       label,
     );
-    const malformedTargetAfter = openCanonicalDatabase(derivedDir, {
+    const malformedTargetAfter = openCanonicalDatabaseHandle(derivedDir, {
       readOnly: true,
     });
     try {
@@ -2694,7 +2691,7 @@ try {
     }
   }
 
-  const emptyScopeBefore = openCanonicalDatabase(derivedDir, {
+  const emptyScopeBefore = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const emptyScopeSnapshot = {
@@ -2723,7 +2720,7 @@ try {
     scope: [],
   });
   assert.equal(diagnostic.status, "diagnostic");
-  const diagnosticDb = openCanonicalDatabase(derivedDir, { readOnly: true });
+  const diagnosticDb = openCanonicalDatabaseHandle(derivedDir, { readOnly: true });
   try {
     assert.deepEqual(
       {
@@ -2752,7 +2749,7 @@ try {
     diagnosticDb.close();
   }
   const validMatrix = derivedInput.scope;
-  const invalidMatrixSnapshotDb = openCanonicalDatabase(derivedDir, {
+  const invalidMatrixSnapshotDb = openCanonicalDatabaseHandle(derivedDir, {
     readOnly: true,
   });
   const invalidMatrixSnapshot = {
@@ -2849,7 +2846,7 @@ try {
       invalidInput as never,
     );
     assert.equal(invalidResult.status, "diagnostic", label);
-    const invalidAfter = openCanonicalDatabase(derivedDir, { readOnly: true });
+    const invalidAfter = openCanonicalDatabaseHandle(derivedDir, { readOnly: true });
     try {
       assert.deepEqual(
         {
@@ -2940,7 +2937,7 @@ for (const [label, rawResponse] of [
       /exactly one transfer result/,
       label,
     );
-    const rejectedDb = openCanonicalDatabase(rejectedDir);
+    const rejectedDb = openCanonicalDatabaseHandle(rejectedDir);
     try {
       assert.equal(
         rejectedDb
@@ -2977,7 +2974,7 @@ try {
     rawResponse: emptyRaw,
   });
   assert.equal(empty.transactions.length, 0);
-  const emptyDb = openCanonicalDatabase(emptyDir, { readOnly: true });
+  const emptyDb = openCanonicalDatabaseHandle(emptyDir, { readOnly: true });
   try {
     assert.equal(
       emptyDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -3024,7 +3021,7 @@ try {
     scope: { ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope, complete: false },
   });
   assert.equal(result.transactions.length, 3);
-  const completenessDb = openCanonicalDatabase(completenessDir, {
+  const completenessDb = openCanonicalDatabaseHandle(completenessDir, {
     readOnly: true,
   });
   try {
@@ -3052,7 +3049,7 @@ try {
     },
     { clock: () => "2026-08-20T12:00:00.123456Z" },
   );
-  const backfillDb = openCanonicalDatabase(backfillDir, { readOnly: true });
+  const backfillDb = openCanonicalDatabaseHandle(backfillDir, { readOnly: true });
   try {
     const knowledge = backfillDb
       .prepare("SELECT recorded_at_utc_us FROM canonical_commits")
@@ -3108,7 +3105,7 @@ try {
       observedAt: "2026-08-18T00:00:00+08:00",
     }),
   ]);
-  const contendedDb = openCanonicalDatabase(contendedDir, { readOnly: true });
+  const contendedDb = openCanonicalDatabaseHandle(contendedDir, { readOnly: true });
   try {
     assert.equal(
       contendedDb.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -3139,13 +3136,13 @@ const newerSchemaDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "cathay-canonical-schema-"),
 );
 try {
-  const schemaDb = openCanonicalDatabase(newerSchemaDir);
+  const schemaDb = openCanonicalDatabaseHandle(newerSchemaDir);
   schemaDb.close();
-  const schemaDbRaw = new DatabaseSync(canonicalSqlitePath(newerSchemaDir));
+  const schemaDbRaw = new DatabaseSync(canonicalDatabaseWriterKey(newerSchemaDir));
   schemaDbRaw.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION + 1}`);
   schemaDbRaw.close();
   assert.throws(
-    () => openCanonicalDatabase(newerSchemaDir),
+    () => openCanonicalDatabaseHandle(newerSchemaDir),
     /newer than supported/,
   );
 } finally {
@@ -3161,7 +3158,7 @@ for (const version of [1, 2] as const) {
   );
   try {
     seedLegacyDatabase(migrationDir, version);
-    const migrated = openCanonicalDatabase(migrationDir);
+    const migrated = openCanonicalDatabaseHandle(migrationDir);
     try {
       assert.equal(
         Number(migrated.prepare("PRAGMA user_version").get()?.user_version),
@@ -3230,7 +3227,7 @@ for (const version of [1, 2] as const) {
       migrated.close();
     }
 
-    const reopened = openCanonicalDatabase(migrationDir);
+    const reopened = openCanonicalDatabaseHandle(migrationDir);
     try {
       assert.equal(
         reopened.prepare("SELECT COUNT(*) AS count FROM source_records").get()
@@ -3282,15 +3279,15 @@ const v1RollbackDir = await mkdtemp(
 );
 try {
   seedLegacyDatabase(v1RollbackDir, 1);
-  const brokenV1 = new DatabaseSync(canonicalSqlitePath(v1RollbackDir));
+  const brokenV1 = new DatabaseSync(canonicalDatabaseWriterKey(v1RollbackDir));
   brokenV1.exec("DROP TABLE source_sync_states");
   brokenV1.exec("CREATE VIEW source_sync_states AS SELECT 1 AS unusable");
   brokenV1.close();
   assert.throws(
-    () => openCanonicalDatabase(v1RollbackDir),
+    () => openCanonicalDatabaseHandle(v1RollbackDir),
     /source_sync_states/,
   );
-  const afterV1Failure = new DatabaseSync(canonicalSqlitePath(v1RollbackDir));
+  const afterV1Failure = new DatabaseSync(canonicalDatabaseWriterKey(v1RollbackDir));
   try {
     assert.equal(
       Number(afterV1Failure.prepare("PRAGMA user_version").get()?.user_version),
@@ -3322,7 +3319,7 @@ try {
   } finally {
     afterV1Failure.close();
   }
-  const retriedV1 = openCanonicalDatabase(v1RollbackDir);
+  const retriedV1 = openCanonicalDatabaseHandle(v1RollbackDir);
   try {
     assert.equal(
       Number(retriedV1.prepare("PRAGMA user_version").get()?.user_version),
@@ -3348,14 +3345,14 @@ const v2RollbackDir = await mkdtemp(
 );
 try {
   seedLegacyDatabase(v2RollbackDir, 2);
-  const brokenV2 = new DatabaseSync(canonicalSqlitePath(v2RollbackDir));
+  const brokenV2 = new DatabaseSync(canonicalDatabaseWriterKey(v2RollbackDir));
   brokenV2.exec("DROP TABLE source_sync_states");
   brokenV2.close();
   assert.throws(
-    () => openCanonicalDatabase(v2RollbackDir),
+    () => openCanonicalDatabaseHandle(v2RollbackDir),
     /source_sync_states/,
   );
-  const afterV2Failure = new DatabaseSync(canonicalSqlitePath(v2RollbackDir));
+  const afterV2Failure = new DatabaseSync(canonicalDatabaseWriterKey(v2RollbackDir));
   try {
     assert.equal(
       Number(afterV2Failure.prepare("PRAGMA user_version").get()?.user_version),
@@ -3378,7 +3375,7 @@ try {
   } finally {
     afterV2Failure.close();
   }
-  const retriedV2 = openCanonicalDatabase(v2RollbackDir);
+  const retriedV2 = openCanonicalDatabaseHandle(v2RollbackDir);
   try {
     assert.equal(
       Number(retriedV2.prepare("PRAGMA user_version").get()?.user_version),
@@ -3404,7 +3401,7 @@ try {
     v3MigrationDir,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const v3Seed = new DatabaseSync(canonicalSqlitePath(v3MigrationDir));
+  const v3Seed = new DatabaseSync(canonicalDatabaseWriterKey(v3MigrationDir));
   rewindCurrentDatabaseToV23PhysicalSchema(v3Seed);
   v3Seed.exec(
     "DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes;",
@@ -3413,7 +3410,7 @@ try {
     "PRAGMA foreign_keys = OFF; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0); PRAGMA user_version = 3; PRAGMA foreign_keys = ON;",
   );
   v3Seed.close();
-  const migratedV3 = openCanonicalDatabase(v3MigrationDir);
+  const migratedV3 = openCanonicalDatabaseHandle(v3MigrationDir);
   try {
     assert.equal(
       Number(migratedV3.prepare("PRAGMA user_version").get()?.user_version),
@@ -3450,17 +3447,17 @@ try {
       v3RollbackDir,
       CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
     );
-    const downgrade = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
+    const downgrade = new DatabaseSync(canonicalDatabaseWriterKey(v3RollbackDir));
     rewindCurrentDatabaseToV23PhysicalSchema(downgrade);
     downgrade.exec(
       "PRAGMA foreign_keys = OFF; DROP VIEW assertion_lifecycle_events; DROP TABLE source_record_scopes; DROP TABLE capture_scope_pages; DROP TABLE capture_scopes; DELETE FROM canonical_contract_purge_commits; DELETE FROM canonical_contract_purges; DELETE FROM schema_migrations WHERE version > 3; INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc_us) VALUES (1, 0), (2, 0), (3, 0); PRAGMA user_version = 3; CREATE VIEW capture_scopes AS SELECT 1 AS unusable; PRAGMA foreign_keys = ON;",
     );
     downgrade.close();
     assert.throws(
-      () => openCanonicalDatabase(v3RollbackDir),
+      () => openCanonicalDatabaseHandle(v3RollbackDir),
       /capture_scopes|views may not be indexed/,
     );
-    const afterFailure = new DatabaseSync(canonicalSqlitePath(v3RollbackDir));
+    const afterFailure = new DatabaseSync(canonicalDatabaseWriterKey(v3RollbackDir));
     try {
       assert.equal(
         Number(afterFailure.prepare("PRAGMA user_version").get()?.user_version),
@@ -3476,7 +3473,7 @@ try {
     } finally {
       afterFailure.close();
     }
-    const retried = openCanonicalDatabase(v3RollbackDir);
+    const retried = openCanonicalDatabaseHandle(v3RollbackDir);
     try {
       assert.equal(
         Number(retried.prepare("PRAGMA user_version").get()?.user_version),
@@ -3501,7 +3498,7 @@ const populatedV5MigrationDir = await mkdtemp(
 try {
   seedLegacyV5Database(populatedV5MigrationDir);
   const genuineV5 = new DatabaseSync(
-    canonicalSqlitePath(populatedV5MigrationDir),
+    canonicalDatabaseWriterKey(populatedV5MigrationDir),
   );
   try {
     assert.equal(
@@ -3537,13 +3534,13 @@ try {
   }
   assert.throws(
     () =>
-      openCanonicalDatabase(populatedV5MigrationDir, {
+      openCanonicalDatabaseHandle(populatedV5MigrationDir, {
         injectMigrationFailure: "v5-v6-after-derived-schema",
       }),
     /Injected v5-v6 migration failure/,
   );
   const failedPopulatedV5 = new DatabaseSync(
-    canonicalSqlitePath(populatedV5MigrationDir),
+    canonicalDatabaseWriterKey(populatedV5MigrationDir),
   );
   try {
     assert.equal(
@@ -3601,7 +3598,7 @@ try {
   } finally {
     failedPopulatedV5.close();
   }
-  const retriedPopulatedV5 = openCanonicalDatabase(populatedV5MigrationDir);
+  const retriedPopulatedV5 = openCanonicalDatabaseHandle(populatedV5MigrationDir);
   try {
     assert.equal(
       Number(
@@ -3680,7 +3677,7 @@ try {
     ).entries.length,
     1,
   );
-  const migratedV5ReadOnly = openCanonicalDatabase(populatedV5MigrationDir, {
+  const migratedV5ReadOnly = openCanonicalDatabaseHandle(populatedV5MigrationDir, {
     readOnly: true,
   });
   migratedV5ReadOnly.close();
@@ -3696,14 +3693,14 @@ try {
     corruptDir,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const corruptDb = new DatabaseSync(canonicalSqlitePath(corruptDir));
+  const corruptDb = new DatabaseSync(canonicalDatabaseWriterKey(corruptDir));
   corruptDb.exec("PRAGMA foreign_keys = OFF");
   corruptDb
     .prepare("UPDATE current_transactions SET commit_id = ?")
     .run(Buffer.alloc(16, 7));
   corruptDb.close();
   assert.throws(
-    () => openCanonicalDatabase(corruptDir, { readOnly: true }),
+    () => openCanonicalDatabaseHandle(corruptDir, { readOnly: true }),
     /foreign-key integrity/,
   );
 } finally {
@@ -3718,11 +3715,11 @@ try {
     malformedV5Dir,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const malformedV5 = new DatabaseSync(canonicalSqlitePath(malformedV5Dir));
+  const malformedV5 = new DatabaseSync(canonicalDatabaseWriterKey(malformedV5Dir));
   malformedV5.exec("DROP INDEX idx_source_record_scopes_scope_sequence");
   malformedV5.close();
   assert.throws(
-    () => openCanonicalDatabase(malformedV5Dir, { readOnly: true }),
+    () => openCanonicalDatabaseHandle(malformedV5Dir, { readOnly: true }),
     /schema v6 index idx_source_record_scopes_scope_sequence is missing/,
   );
 } finally {
@@ -3738,12 +3735,12 @@ try {
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
   const malformedV6Spine = new DatabaseSync(
-    canonicalSqlitePath(malformedV6SpineDir),
+    canonicalDatabaseWriterKey(malformedV6SpineDir),
   );
   malformedV6Spine.exec("DROP INDEX idx_assertions_lineage");
   malformedV6Spine.close();
   assert.throws(
-    () => openCanonicalDatabase(malformedV6SpineDir, { readOnly: true }),
+    () => openCanonicalDatabaseHandle(malformedV6SpineDir, { readOnly: true }),
     /schema v6 index idx_assertions_lineage is missing/,
   );
 } finally {
@@ -3907,7 +3904,7 @@ for (const [label, capture] of [
       /./,
       label,
     );
-    const rejectedDb = openCanonicalDatabase(rejectedDir);
+    const rejectedDb = openCanonicalDatabaseHandle(rejectedDir);
     try {
       assert.equal(
         rejectedDb

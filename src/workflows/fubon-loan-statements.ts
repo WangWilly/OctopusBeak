@@ -9,7 +9,7 @@ import {
   type LoanCapturePage,
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
-import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import {
   FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -1592,7 +1592,7 @@ export async function runFubonLoanStatements(
     overrides.canonicalLedgerDir ??
     DEFAULT_LEDGER_DIR;
   const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
   );
   const persist = overrides.persistLoanCapture ?? persistFubonLoanCapture;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());

@@ -469,7 +469,7 @@ try {
   await commitCanonicalYuantaDomesticDepositCapture(
     {
       db: yuantaSourceThenFinancialStore.db,
-      databasePath: yuantaSourceThenFinancialStore.databasePath,
+      withWriter: yuantaSourceThenFinancialStore.withWriter,
       commitClock: () => yuantaSourceThenFinancialStore.commitClock(),
     },
     {

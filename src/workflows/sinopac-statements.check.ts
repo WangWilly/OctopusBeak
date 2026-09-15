@@ -468,9 +468,7 @@ try {
       },
     );
     assert.equal(financialResult.status, "financial-admitted");
-    const financialStore = createCanonicalSourceStore(
-      join(financialDir, "canonical.sqlite"),
-    );
+    const financialStore = createCanonicalSourceStore(financialDir);
     try {
       assert.equal(
         Number(
@@ -585,9 +583,7 @@ try {
       },
     );
     assert.equal(foreignOnlyResult.status, "financial-admitted");
-    let foreignOnlyStore = createCanonicalSourceStore(
-      join(foreignOnlyFinancialDir, "canonical.sqlite"),
-    );
+    let foreignOnlyStore = createCanonicalSourceStore(foreignOnlyFinancialDir);
     try {
       assert.equal(
         Number(
@@ -671,9 +667,7 @@ try {
         },
       );
       assert.equal(repeatedForeignResult.status, "financial-admitted");
-      foreignOnlyStore = createCanonicalSourceStore(
-        join(foreignOnlyFinancialDir, "canonical.sqlite"),
-      );
+      foreignOnlyStore = createCanonicalSourceStore(foreignOnlyFinancialDir);
       assert.equal(
         Number(
           (
@@ -763,9 +757,7 @@ try {
         ),
       /human-attested source identity collision/i,
     );
-    const collisionStore = createCanonicalSourceStore(
-      join(foreignCollisionDir, "canonical.sqlite"),
-    );
+    const collisionStore = createCanonicalSourceStore(foreignCollisionDir);
     try {
       assert.equal(
         Number(
@@ -879,9 +871,7 @@ try {
   assert.deepEqual(foreignAbsentResult.skippedAccounts, [
     { accountId: "002", currency: "USD", reason: "provider-explicit-no-data" },
   ]);
-  const noDataStore = createCanonicalSourceStore(
-    join(sourceDir, "canonical.sqlite"),
-  );
+  const noDataStore = createCanonicalSourceStore(sourceDir);
   try {
     assert.equal(
       Number(
@@ -943,9 +933,7 @@ try {
   );
   assert.equal(mixedResult.rowCount, 1);
   assert.deepEqual(mixedResult.skippedAccounts, []);
-  const mixedStore = createCanonicalSourceStore(
-    join(sourceDir, "canonical.sqlite"),
-  );
+  const mixedStore = createCanonicalSourceStore(sourceDir);
   try {
     assert.equal(
       Number(

@@ -3,9 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   buildCtbcCurrentDepositBalanceCapture,
@@ -151,7 +151,7 @@ try {
   );
   assert.equal(sourceOnly.status, "source-only");
   assert.equal(sourceOnly.sourceCaptureCount, 1);
-  const verify = createCanonicalSourceStore(canonicalSqlitePath(sourceOnlyDir));
+  const verify = createCanonicalSourceStore(sourceOnlyDir);
   const sourceCount = verify.db
     .prepare("SELECT COUNT(*) AS count FROM source_records")
     .get() as { count: number };

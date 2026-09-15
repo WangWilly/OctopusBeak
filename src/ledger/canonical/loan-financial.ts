@@ -9,13 +9,16 @@ import {
 import { commitCanonicalFinancialAdmission } from "./canonical-financial-admission.ts";
 import {
   createCanonicalSourceStore,
-  validateCanonicalLoanExtensionSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { validateCanonicalLoanExtensionSchema } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
-import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import {
+  assertValidatedCanonicalDatabase,
+  type ValidatedCanonicalDatabase,
+} from "./canonical-schema-lifecycle.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import {
@@ -416,10 +419,10 @@ export type LoanValidatedCapture = LoanCaptureInput & {
 };
 
 export type LoanFinancialStore = {
-  readonly db: DatabaseSync;
-  readonly databasePath: string;
+  readonly db: ValidatedCanonicalDatabase;
   readonly sourceStore: CanonicalSourceStore;
   readonly commitClock: () => number;
+  readonly withWriter: CanonicalSourceStore["withWriter"];
   close(): void;
 };
 
@@ -1905,17 +1908,17 @@ function hasLoanExtensionSchema(db: DatabaseSync): boolean {
 }
 
 export function createCanonicalLoanStore(
-  databasePath: string,
+  ledgerDir: string,
   options: { commitClock?: () => number } = {},
 ): LoanFinancialStore {
-  const sourceStore = createCanonicalSourceStore(databasePath, options);
+  const sourceStore = createCanonicalSourceStore(ledgerDir, options);
   validateCanonicalLoanExtensionSchema(sourceStore.db);
   let closed = false;
   return {
     db: sourceStore.db,
-    databasePath: sourceStore.databasePath,
     sourceStore,
     commitClock: sourceStore.commitClock,
+    withWriter: sourceStore.withWriter,
     close() {
       if (!closed) {
         sourceStore.close();

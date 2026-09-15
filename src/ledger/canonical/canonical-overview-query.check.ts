@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "./canonical-source-store.ts";
 import {
@@ -110,7 +109,7 @@ test("Current Overview keeps canonical account identity and never infers deposit
 
 test("Current Overview classifies a committed multi-currency account as foreign when account currency is null", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-foreign-account-"));
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     const fixture = YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1;
     await commitForeignCurrencyDepositCapture(store, {
@@ -183,7 +182,7 @@ test("enabled expected sources remain visible before their first canonical captu
 
 test("Current liabilities preserve loan directions and source effective dates", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-loan-"));
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitCanonicalLoanCapture(
       store,
@@ -231,7 +230,7 @@ test("Current liabilities preserve loan directions and source effective dates", 
 
 test("Current Overview uses exact current holding valuation and exposes its trace", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-investment-"));
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  const store = createCanonicalInvestmentStore(directory);
   try {
     const capture = admitCanonicalInvestmentCapture(investmentFixture());
     await commitCanonicalInvestmentCapture(store, capture);
@@ -269,7 +268,7 @@ test("Current Overview uses exact current holding valuation and exposes its trac
 
 test("Current Overview exposes investment transactions once with source descriptions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-investment-transactions-"));
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  const store = createCanonicalInvestmentStore(directory);
   try {
     const capture = investmentFixture();
     capture.transactions.push(
@@ -344,7 +343,7 @@ test("Current Overview exposes investment transactions once with source descript
 
 test("Current liabilities keep margin-only exposure visible without inventing a loan", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-margin-only-"));
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  const store = createCanonicalInvestmentStore(directory);
   try {
     const capture = investmentFixture();
     capture.holdings = [];
@@ -389,7 +388,7 @@ test("Product projection states ignore unrelated accounts and source gaps", asyn
 
 test("Overview loader preserves exact totals and marks Current-only history unavailable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-loader-"));
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  const store = createCanonicalInvestmentStore(directory);
   try {
     await commitCanonicalInvestmentCapture(store, admitCanonicalInvestmentCapture(investmentFixture()));
     store.close();
@@ -413,7 +412,7 @@ test("mixed typed and awaiting accounts mark Overview totals partial", async () 
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-partial-coverage-"));
   try {
     await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-    const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+    const store = createCanonicalInvestmentStore(directory);
     await commitCanonicalInvestmentCapture(store, admitCanonicalInvestmentCapture(investmentFixture()));
     store.close();
     const overview = await loadOverview(directory);
@@ -429,7 +428,7 @@ test("mixed typed and awaiting accounts mark Overview totals partial", async () 
 
 test("Current Overview with an unvalued current holding does not present a partial total", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-overview-partial-"));
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(directory));
+  const store = createCanonicalInvestmentStore(directory);
   try {
     const capture = investmentFixture();
     capture.securities.push({

@@ -18,6 +18,7 @@ import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
+  type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
@@ -126,7 +127,7 @@ try {
           db: rawWriterDb,
           databasePath: ":memory:",
           commitClock: () => Date.now() * 1_000,
-        },
+        } as unknown as CanonicalFinancialDepositWriterStore,
         admittedCapture,
       ),
     /canonical database capability|lifecycle/i,
@@ -381,7 +382,7 @@ assert.throws(
 
 const directory = await mkdtemp(join(tmpdir(), "yuanta-financial-writer-v1-"));
 try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const committed = await commitCanonicalFinancialDepositCapture(
     store,
     admittedCapture,
@@ -410,9 +411,7 @@ try {
   );
   store.close();
 
-  const reopened = createCanonicalSourceStore(
-    join(directory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(directory);
   assert.equal(
     (
       reopened.db
@@ -479,9 +478,7 @@ const batchRollbackDirectory = await mkdtemp(
   join(tmpdir(), "canonical-financial-batch-rollback-"),
 );
 try {
-  const batchStore = createCanonicalSourceStore(
-    join(batchRollbackDirectory, "canonical.sqlite"),
-  );
+  const batchStore = createCanonicalSourceStore(batchRollbackDirectory);
   try {
     await assert.rejects(
       () =>
@@ -521,9 +518,7 @@ try {
     mixedDirectory,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const mixedStore = createCanonicalSourceStore(
-    join(mixedDirectory, "canonical.sqlite"),
-  );
+  const mixedStore = createCanonicalSourceStore(mixedDirectory);
   await commitCanonicalFinancialDepositCapture(mixedStore, admittedCapture);
   assert.equal(
     (
@@ -552,9 +547,7 @@ const creditCardVersionDirectory = await mkdtemp(
   join(tmpdir(), "yuanta-credit-card-v1-v2-coexistence-"),
 );
 try {
-  const versionedStore = createCanonicalSourceStore(
-    join(creditCardVersionDirectory, "canonical.sqlite"),
-  );
+  const versionedStore = createCanonicalSourceStore(creditCardVersionDirectory);
   await commitCanonicalFinancialDepositCapture(
     versionedStore,
     yuantaCreditCardRouteAdmission,

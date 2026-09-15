@@ -1,10 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
-import {
-  withCanonicalSnapshot,
-  withCanonicalWriterQueue,
-} from "./canonical-runtime.ts";
+import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
 import type {
@@ -20,8 +17,8 @@ type LinkedFundingEvidence = Extract<
  * capability; a raw DatabaseSync is never accepted. */
 type RelationResolutionStore = Readonly<{
   readonly db: DatabaseSync;
-  readonly databasePath: string;
   readonly commitClock: () => number;
+  readonly withWriter: <T>(operation: () => T) => Promise<T>;
 }>;
 
 type InvestmentRow = {
@@ -619,12 +616,6 @@ function withdrawCurrentRelations(
 /** Amount is only a discriminator after the provider-specific settlement
  * contract supplies the grouping model; the bank capture supplies the actual
  * account, booking date, and fixed Institution-generated note. */
-function relationStorePath(store: RelationResolutionStore): string {
-  const databasePath = store.databasePath;
-  if (!databasePath)
-    throw new Error("Canonical investment relation resolver requires a database path.");
-  return databasePath;
-}
 
 function resolveCanonicalInvestmentFundingRelationsInQueue(
   store: RelationResolutionStore,
@@ -1220,7 +1211,7 @@ export async function resolveCanonicalInvestmentFundingRelations(
   store: RelationResolutionStore,
 ): Promise<{ resolved: number; noAdmission: number; reasons: string[] }> {
   assertValidatedCanonicalDatabase(store.db);
-  return withCanonicalWriterQueue(relationStorePath(store), () =>
+  return store.withWriter(() =>
     resolveCanonicalInvestmentFundingRelationsInQueue(store),
   );
 }

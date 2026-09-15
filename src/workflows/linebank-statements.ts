@@ -14,9 +14,9 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   buildLinebankCurrentDepositBalanceCaptures,
 } from "./linebank-current-deposit-canonical.ts";
@@ -1386,9 +1386,7 @@ async function downloadLineBankStatements(
       commitCanonicalLineBankFinancialCaptureBatch,
       createDomesticDepositStore,
     } = await import("../ledger/canonical/domestic-deposit-store.ts");
-    const store = createDomesticDepositStore(
-      join(financialLedgerDir, "canonical.sqlite"),
-    );
+    const store = createDomesticDepositStore(financialLedgerDir);
     try {
       await commitCanonicalLineBankFinancialCaptureBatch(
         store,
@@ -1399,9 +1397,7 @@ async function downloadLineBankStatements(
     }
   }
   if (financialLedgerDir && foreignCanonicalCaptures.length > 0) {
-    const store = createCanonicalSourceStore(
-      canonicalSqlitePath(financialLedgerDir),
-    );
+    const store = createCanonicalSourceStore(financialLedgerDir);
     try {
       await commitForeignCurrencyDepositCaptureBatch(
         store,
@@ -1425,9 +1421,7 @@ async function downloadLineBankStatements(
       admitCurrentDepositBalanceCapture,
       commitCurrentDepositBalanceCapture,
     } = await import("../ledger/canonical/current-deposit-balance-writer.ts");
-    const store = createCanonicalSourceStore(
-      canonicalSqlitePath(financialLedgerDir),
-    );
+    const store = createCanonicalSourceStore(financialLedgerDir);
     try {
       for (const capture of currentBalanceCaptures) {
         const admitted = admitCurrentDepositBalanceCapture(capture);

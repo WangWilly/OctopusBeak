@@ -24,17 +24,16 @@ import {
   type CanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
 import {
-  CANONICAL_SQLITE_FILE,
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { CANONICAL_SQLITE_FILE, canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const rebuildCanonicalProjection = (
   ledgerDir: string,
   options = {},
-) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
+) => createCanonicalProjectionRuntime(ledgerDir).rebuild(options);
 
 /** Rewind a freshly bootstrapped database to the physical v23 source shape.
  * Lowering user_version alone leaves the v26 split identifier columns in
@@ -1394,18 +1393,18 @@ test("current loan balance selection is deterministic across input order and reb
   const firstDir = await mkdtemp(join(tmpdir(), "loan-balance-order-first-"));
   const secondDir = await mkdtemp(join(tmpdir(), "loan-balance-order-second-"));
   try {
-    const first = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    const first = createCanonicalLoanStore(firstDir);
     await persistFubonLoanCapture(first, makeInput([older, newer]));
     const firstCurrent = queryFubonLoanCurrent(first).balanceObservations;
     assert.deepEqual(firstCurrent.map((balance) => balance.effectiveAt), ["2026-02-28"]);
     first.close();
     await rebuildCanonicalProjection(firstDir);
-    const firstReopened = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    const firstReopened = createCanonicalLoanStore(firstDir);
     const firstAfterRebuild = queryFubonLoanCurrent(firstReopened).balanceObservations;
     assert.deepEqual(firstAfterRebuild.map((balance) => balance.effectiveAt), ["2026-02-28"]);
     firstReopened.close();
 
-    const second = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
+    const second = createCanonicalLoanStore(secondDir);
     await persistFubonLoanCapture(second, makeInput([newer, older]));
     assert.deepEqual(
       queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
@@ -1413,7 +1412,7 @@ test("current loan balance selection is deterministic across input order and reb
     );
     second.close();
     await rebuildCanonicalProjection(secondDir);
-    const secondReopened = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
+    const secondReopened = createCanonicalLoanStore(secondDir);
     assert.deepEqual(
       queryFubonLoanCurrent(secondReopened).balanceObservations.map((balance) => balance.effectiveAt),
       ["2026-02-28"],
@@ -1469,7 +1468,7 @@ test("Runtime preserves per-kind loan balances while Overview selects one latest
     },
   ];
   try {
-    const store = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    const store = createCanonicalLoanStore(directory);
     await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(capture));
     const scope = { sourceConnectionKey: capture.identity.sourceConnectionKey } as const;
     const before = createCanonicalProjectionRuntime(store.db).read({
@@ -1486,7 +1485,7 @@ test("Runtime preserves per-kind loan balances while Overview selects one latest
     store.close();
 
     await rebuildCanonicalProjection(directory);
-    const reopened = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    const reopened = createCanonicalLoanStore(directory);
     const after = createCanonicalProjectionRuntime(reopened.db).read({
       kind: "current",
       families: ["loan-balances", "overview-loan-balances"],
@@ -2104,7 +2103,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
   const directory = await mkdtemp(join(tmpdir(), "canonical-loan-v9-"));
   const databasePath = join(directory, CANONICAL_SQLITE_FILE);
   try {
-    const v9Seed = createCanonicalSourceStore(databasePath);
+    const v9Seed = createCanonicalSourceStore(directory);
     v9Seed.close();
     const v8 = new DatabaseSync(databasePath);
     v8.exec(`PRAGMA foreign_keys = OFF;
@@ -2129,7 +2128,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     `);
     v8.close();
 
-    const initial = createCanonicalLoanStore(databasePath);
+    const initial = createCanonicalLoanStore(directory);
     await commitCanonicalLoanCapture(
       initial,
       admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
@@ -2142,7 +2141,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     initial.close();
 
     await rebuildCanonicalProjection(directory);
-    const reopened = createCanonicalLoanStore(databasePath);
+    const reopened = createCanonicalLoanStore(directory);
     validateCanonicalSourceStore(reopened.sourceStore);
     const after = queryCanonicalLoanCurrent(reopened, { sourceId: "fubon" });
     assert.deepEqual(
@@ -2161,7 +2160,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     );
     reopened.close();
 
-    const reopenedAgain = createCanonicalLoanStore(databasePath);
+    const reopenedAgain = createCanonicalLoanStore(directory);
     validateCanonicalSourceStore(reopenedAgain.sourceStore);
     assert.equal(
       Number(

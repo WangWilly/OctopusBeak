@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
@@ -14,7 +14,7 @@ const textId = (value: unknown) => { const h = Buffer.from(value as Uint8Array).
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "spending-recognition-"));
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path, { commitClock: () => 1_800_000_000_000_000 });
+  const store = createCanonicalSourceStore(dirname(path), { commitClock: () => 1_800_000_000_000_000 });
   await commitCanonicalEInvoiceCapture(store, {
     captureId: "spending-recognition-invoice",
     sourceConnectionKey: "sha256:spending-recognition-connection",

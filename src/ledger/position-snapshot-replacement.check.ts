@@ -12,7 +12,6 @@ import {
   type InvestmentCaptureInput,
   type InvestmentSourceId,
 } from "./canonical/investment-financial.ts";
-import { canonicalSqlitePath } from "./canonical/canonical-database.ts";
 
 const token = (label: string) =>
   `sha256:${createHash("sha256").update(label).digest("base64url")}`;
@@ -26,7 +25,7 @@ async function symbolsAfterSnapshots(options: {
   // an omitted Security is therefore never an inferred withdrawal.
   const rootDir = await mkdtemp(join(tmpdir(), `${options.fixtureName}-`));
   const outputDir = join(rootDir, "ledger");
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(outputDir));
+  const store = createCanonicalInvestmentStore(outputDir);
   try {
     for (const [index, symbols] of options.snapshots.entries()) {
       await commitCanonicalInvestmentCapture(
@@ -75,7 +74,7 @@ test("a newer fund capture retains a fund omitted under never-infer", async () =
 test("an explicit zero holding remains the latest observed position", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "investment-zero-holding-"));
   const outputDir = join(rootDir, "ledger");
-  const store = createCanonicalInvestmentStore(canonicalSqlitePath(outputDir));
+  const store = createCanonicalInvestmentStore(outputDir);
   try {
     await commitCanonicalInvestmentCapture(
       store,

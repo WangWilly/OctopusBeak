@@ -1377,7 +1377,7 @@ function persistStandalone(
   evidence: RuntimeValidatedSourceEvidence,
 ): Promise<CanonicalSourceCaptureAdmissionTransactionResult> {
   validateCanonicalSourceStore(store);
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const result = persistWithinTransaction(store, evidence);
@@ -1404,7 +1404,7 @@ function persistBatchStandalone(
       "empty-batch",
       "Canonical source capture admission batch cannot be empty.",
     );
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const results = evidences.map((evidence) =>
@@ -1430,7 +1430,7 @@ export async function withCanonicalSourceCaptureAdmissionTransaction<T>(
   ) => T | Promise<T>,
 ): Promise<T> {
   assertValidatedCanonicalDatabase(store.db);
-  return withCanonicalWriterQueue(store.databasePath, async () => {
+  return store.withWriter(async () => {
     store.db.exec("BEGIN IMMEDIATE");
     const capability = mintTransactionCapability(store);
     try {

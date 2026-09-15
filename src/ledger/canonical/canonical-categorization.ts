@@ -1,14 +1,16 @@
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
-  canonicalSqlitePath,
+  canonicalDatabaseWriterKey,
   currentUtcMicros,
+  openCanonicalDatabaseHandle,
+} from "./canonical-database.ts";
+import {
   idToString,
   uuidV7,
   blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
@@ -799,7 +801,8 @@ function commitCanonicalUserCategorizationOnce(
   validateObservedAt(input.observedAt);
   const userId = input.userId?.trim() || "local-user";
   if (!userId) throw new Error("Categorization user identity is required.");
-  const db = openCanonicalDatabase(ledgerDir);
+  const handle = openCanonicalDatabaseHandle(ledgerDir);
+  const db = handle.db;
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -865,7 +868,7 @@ function commitCanonicalUserCategorizationOnce(
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
   } finally {
-    db.close();
+    handle.close();
   }
 }
 
@@ -876,7 +879,7 @@ export function commitCanonicalUserCategorization(
 ): Promise<CanonicalUserCategorizationResult> {
   const clock = options.clock ?? (() => new Date().toISOString());
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => commitCanonicalUserCategorizationOnce(ledgerDir, input, clock),
     options.runtime,
   );
@@ -1957,16 +1960,16 @@ export function createCanonicalSpendingQuery(
   ledgerDir: string,
 ): CanonicalSpendingQuery {
   const run = <T>(operation: (db: DatabaseSync) => T): T => {
-    const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+    const handle = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
     try {
-      return withCanonicalSnapshot(db, () => operation(db));
+      return withCanonicalSnapshot(handle, () => operation(handle.db));
     } finally {
-      db.close();
+      handle.close();
     }
   };
   return Object.freeze({
     current(request: CanonicalSpendingQueryRequest = {}) {
-      if (!existsSync(canonicalSqlitePath(ledgerDir))) {
+      if (!existsSync(canonicalDatabaseWriterKey(ledgerDir))) {
         return emptySpendingReport("current");
       }
       return run((db) => spendingSnapshot(db, request, "current"));

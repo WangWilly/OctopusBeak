@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   CREDIT_CARD_DIRECTION_ENRICHMENT_CONTRACT_VERSION,
   CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND,
@@ -9,8 +9,8 @@ import {
 import {
   blob,
   idToString,
-} from "./canonical-schema-implementation.ts";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-local-identifier.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   commitCanonicalAutomaticEnrichmentRun,
@@ -288,10 +288,10 @@ export async function commitCanonicalCreditCardDirectionEnrichment(
   scope: CreditCardDirectionEnrichmentScope,
   options: CreditCardDirectionEnrichmentOptions = {},
 ): Promise<CanonicalEnrichmentCommitResult | null> {
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   let input: CanonicalEnrichmentRunInput | null;
   try {
-    input = buildEnrichmentInput(db, scope, options);
+    input = buildEnrichmentInput(db.db, scope, options);
   } finally {
     db.close();
   }
@@ -332,10 +332,10 @@ export async function commitCanonicalCreditCardDirectionEnrichmentForCaptures(
   options: CreditCardDirectionEnrichmentOptions = {},
 ): Promise<readonly CanonicalEnrichmentCommitResult[]> {
   if (captureIds.length === 0) return [];
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   let scopes: CreditCardDirectionEnrichmentScope[];
   try {
-    scopes = readCaptureScopes(db, captureIds);
+    scopes = readCaptureScopes(db.db, captureIds);
   } finally {
     db.close();
   }

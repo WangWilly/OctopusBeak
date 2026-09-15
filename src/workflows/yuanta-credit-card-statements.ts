@@ -23,9 +23,9 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
@@ -5617,9 +5617,7 @@ export default workflow("yuantaCreditCardStatements", {
         statementSummaries,
       });
       if (canonicalCaptures.length > 0) {
-        const store = createCanonicalSourceStore(
-          canonicalSqlitePath(DEFAULT_LEDGER_DIR),
-        );
+        const store = createCanonicalSourceStore(DEFAULT_LEDGER_DIR);
         try {
           await commitYuantaCreditCardCaptureBatch(store, canonicalCaptures);
           refreshCanonicalBankTransactionKindsAfterCreditCardCapture(store.db);

@@ -131,7 +131,7 @@ const sourceCapture = {
 
 test("HNCB recapture preserves occurrences when a changed query moves rows", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hncb-recapture-position-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const originalRow = sourceCapture.downloads[0]!.rows[0]!;
     const insertedRow = {
@@ -443,9 +443,7 @@ assert.equal(
 
 const sourceDirectory = await mkdtemp(join(tmpdir(), "hncb-source-v1-"));
 try {
-  const store = createCanonicalSourceStore(
-    join(sourceDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(sourceDirectory);
   validateCanonicalSourceStore(store);
   const first = await commitHncbDomesticDepositSourceEvidence(
     store,
@@ -520,9 +518,7 @@ try {
   );
   assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
   store.close();
-  const reopened = createCanonicalSourceStore(
-    join(sourceDirectory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(sourceDirectory);
   assert.equal(queryCanonicalSourceCurrent(reopened).observations.length, 2);
   reopened.close();
 } finally {
@@ -535,9 +531,7 @@ try {
     mixedDirectory,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const mixed = createCanonicalSourceStore(
-    join(mixedDirectory, "canonical.sqlite"),
-  );
+  const mixed = createCanonicalSourceStore(mixedDirectory);
   try {
     const cathayFinancialCount = Number(
       (
@@ -576,9 +570,7 @@ try {
   } finally {
     mixed.close();
   }
-  const reopenedMixed = createCanonicalSourceStore(
-    join(mixedDirectory, "canonical.sqlite"),
-  );
+  const reopenedMixed = createCanonicalSourceStore(mixedDirectory);
   try {
     validateCanonicalSourceStore(reopenedMixed);
     assert.equal(
@@ -602,9 +594,7 @@ try {
 
 const financialDirectory = await mkdtemp(join(tmpdir(), "hncb-financial-v1-"));
 try {
-  const store = createCanonicalSourceStore(
-    join(financialDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(financialDirectory);
   try {
     assert.equal(
       buildHncbDomesticDepositReadinessFromLedger(store.db).capability,
@@ -705,7 +695,7 @@ try {
     await commitCanonicalHncbDomesticDepositCapture(
       {
         db: store.db,
-        databasePath: store.databasePath,
+        withWriter: store.withWriter,
         commitClock: () => store.commitClock(),
       },
       financialInput,
@@ -725,7 +715,7 @@ try {
     await commitCanonicalHncbDomesticDepositCapture(
       {
         db: store.db,
-        databasePath: store.databasePath,
+        withWriter: store.withWriter,
         commitClock: () => store.commitClock(),
       },
       { ...financialInput, captureId: "hncb-financial-capture-2" },
@@ -773,7 +763,7 @@ try {
         commitCanonicalHncbDomesticDepositCapture(
           {
             db: store.db,
-            databasePath: store.databasePath,
+            withWriter: store.withWriter,
             commitClock: () => store.commitClock(),
           },
           {
@@ -803,13 +793,11 @@ const financialBatchRollbackDirectory = await mkdtemp(
   join(tmpdir(), "hncb-financial-batch-rollback-"),
 );
 try {
-  const store = createCanonicalSourceStore(
-    join(financialBatchRollbackDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(financialBatchRollbackDirectory);
   try {
     const writer = {
       db: store.db,
-      databasePath: store.databasePath,
+      withWriter: store.withWriter,
       commitClock: () => store.commitClock(),
     };
     const batchInput = {

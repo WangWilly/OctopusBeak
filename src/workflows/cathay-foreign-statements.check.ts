@@ -352,7 +352,7 @@ try {
     [emptyCathayCapture],
   );
   assert.equal(result?.transactionCount, 0);
-  const store = createCanonicalSourceStore(join(cathayEmptyDirectory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(cathayEmptyDirectory);
   assert.equal(
     Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
     1,

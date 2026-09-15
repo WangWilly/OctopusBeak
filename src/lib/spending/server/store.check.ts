@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  canonicalSqlitePath,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCanonicalSourceStore,
 } from "../../../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
   commitCanonicalEInvoiceCapture,
   E_INVOICE_CONTRACT_VERSION,
@@ -24,8 +24,8 @@ import {
   createCanonicalTransactionTag,
 } from "../../../ledger/canonical/canonical-enrichment.ts";
 import { createCanonicalProjectionRuntime } from "../../../ledger/canonical/canonical-projection-runtime.ts";
-import { openCanonicalDatabase } from "../../../ledger/canonical/canonical-database.ts";
-import { blob, idToString } from "../../../ledger/canonical/canonical-schema-implementation.ts";
+import { openCanonicalDatabaseHandle } from "../../../ledger/canonical/canonical-database.ts";
+import { blob, idToString } from "../../../ledger/canonical/canonical-local-identifier.ts";
 import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
 import {
   confirmSpendingCandidate,
@@ -79,7 +79,7 @@ test("Spending loader uses the canonical report and exposes eligibility gaps", a
       [{ coefficient: "300", scale: 0 }],
     );
 
-    const db = openCanonicalDatabase(directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
     const transactions = createCanonicalProjectionRuntime(db).read({
       kind: "current",
       families: ["transactions"],
@@ -191,7 +191,7 @@ test("Spending does not fall back to legacy rows when canonical data is absent",
 test("Spending loader returns an empty view for an initialized empty canonical database", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spending-canonical-initialized-empty-"));
   try {
-    const db = openCanonicalDatabase(directory);
+    const db = openCanonicalDatabaseHandle(directory);
     db.close();
     const loaded = loadSpending(directory);
     assert.ok(loaded.canonical);
@@ -206,8 +206,8 @@ test("Spending loader returns an empty view for an initialized empty canonical d
 
 test("a canonical E-Invoice admission is visible in Spending without legacy replay", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spending-canonical-einvoice-"));
-  openCanonicalDatabase(directory).close();
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  openCanonicalDatabaseHandle(directory).close();
+  const store = createCanonicalSourceStore(directory);
   const digest = (suffix: string) => `sha256:${Buffer.from(suffix).toString("base64url")}`;
   const invoice = (
     stableInvoiceKey: string,
@@ -331,7 +331,7 @@ test("a canonical E-Invoice admission is visible in Spending without legacy repl
 
 async function seedPurchaseCandidate(directory: string, directOnly = false) {
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const db = openCanonicalDatabase(directory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   const transactions = createCanonicalProjectionRuntime(db).read({
     kind: "current",
     families: ["transactions"],
@@ -383,7 +383,7 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     // This store-level test needs a currency mismatch without coupling the
     // product command to a second provider fixture. Preserve and restore the
     // immutable guards around the one synthetic revision mutation.
-    const fixtureDb = openCanonicalDatabase(directory);
+    const fixtureDb = openCanonicalDatabaseHandle(directory);
     const triggers = fixtureDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'transaction_revisions'").all() as Array<{ name: string; sql: string }>;
     for (const trigger of triggers) fixtureDb.exec(`DROP TRIGGER "${trigger.name}"`);
     fixtureDb.prepare("UPDATE transaction_revisions SET currency = 'USD' WHERE direction = 'outflow' AND amount_coefficient = '300'").run();
@@ -391,7 +391,7 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     fixtureDb.close();
   }
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitCanonicalEInvoiceCapture(store, {
       captureId: "spending-purchase-action-invoice",
@@ -513,7 +513,7 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       "bank-transaction",
       "invoice",
     ]);
-    const confirmStore = createCanonicalSourceStore(canonicalSqlitePath(confirmDirectory));
+    const confirmStore = createCanonicalSourceStore(confirmDirectory);
     try {
       assert.deepEqual(
         querySpendingRecognition(confirmStore).candidates.map((row) => row.status),
@@ -533,7 +533,7 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       "denial patch reproduces the committed report");
     assert.equal(denied.candidates.some((row) => row.status === "candidate"), false);
     assert.equal(denied.records.some((row) => row.possibleDuplicate), false);
-    const denyStore = createCanonicalSourceStore(canonicalSqlitePath(denyDirectory));
+    const denyStore = createCanonicalSourceStore(denyDirectory);
     try {
       const recognition = querySpendingRecognition(denyStore);
       assert.deepEqual(recognition.candidates.map((row) => row.status), ["denied"]);

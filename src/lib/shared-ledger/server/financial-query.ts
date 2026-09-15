@@ -1,11 +1,11 @@
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import { channel } from "node:diagnostics_channel";
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "../../../ledger/canonical/canonical-database.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../../../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
   createCathayCanonicalFinancialQuery as createCathayCanonicalQuery,
   type CathayCanonicalFinancialQuery,
@@ -300,7 +300,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
       }).current();
     }
     if (request.product === "spending") {
-      const databasePath = canonicalSqlitePath(this.ledgerDir);
+      const databasePath = canonicalDatabaseWriterKey(this.ledgerDir);
       if (!existsSync(databasePath)) {
         return {
           status: "ok",
@@ -312,7 +312,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
         };
       }
       channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
-      const store = createCanonicalSourceStore(databasePath);
+      const store = createCanonicalSourceStore(this.ledgerDir);
       try {
         return queryCurrentSpendingFromDatabase(store.db);
       } finally {
@@ -372,9 +372,9 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
 }
 
 function currentCanonicalEInvoices(ledgerDir: string): readonly CanonicalEInvoiceView[] {
-  const databasePath = canonicalSqlitePath(ledgerDir);
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return [];
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(ledgerDir);
   try { return queryCanonicalEInvoiceCurrent(store).invoices; }
   finally { store.close(); }
 }
@@ -383,9 +383,9 @@ function purchaseReport(
   ledgerDir: string,
   request: Parameters<typeof queryPurchaseReport>[1],
 ): PurchaseReport {
-  const databasePath = canonicalSqlitePath(ledgerDir);
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return emptyPurchaseReport(request.kind, request.knowledgeAt ?? 0, request.financialAt ?? null);
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(ledgerDir);
   try {
     return queryPurchaseReport(store, request);
   } finally {
@@ -402,9 +402,9 @@ function spendingLineageSubject(subject: LineageSubject): SpendingPair | Readonl
 }
 
 function purchaseLineage(ledgerDir: string, subject: ReturnType<typeof spendingLineageSubject>): PurchaseLineage {
-  const databasePath = canonicalSqlitePath(ledgerDir);
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return { kind: "lineage", subject, invoice: null, recognition: [], refunds: [] };
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(ledgerDir);
   try { return queryPurchaseLineage(store, subject); }
   finally { store.close(); }
 }

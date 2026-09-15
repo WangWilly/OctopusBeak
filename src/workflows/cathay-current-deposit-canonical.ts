@@ -19,7 +19,6 @@ import {
   type CurrentDepositTimeEvidence,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 
@@ -252,15 +251,15 @@ export async function commitCathayCurrentDepositBalanceCaptures(
   ledgerDir: string,
   captures: readonly CurrentDepositBalanceCaptureInput[],
   storeFactory: (
-    path: string,
-  ) => CurrentDepositBalanceWriterStore = (path) =>
-    createCanonicalSourceStore(path),
+    ledgerDirectory: string,
+  ) => CurrentDepositBalanceWriterStore = (ledgerDirectory) =>
+    createCanonicalSourceStore(ledgerDirectory),
 ): Promise<readonly CurrentDepositBalanceCommitResult[]> {
   if (captures.length === 0) return [];
   if (!ledgerDir.trim()) {
     throw new Error("Cathay current deposit canonical ledger directory is required.");
   }
-  const store = storeFactory(canonicalSqlitePath(ledgerDir));
+  const store = storeFactory(ledgerDir);
   try {
     const results: CurrentDepositBalanceCommitResult[] = [];
     for (const capture of captures) {

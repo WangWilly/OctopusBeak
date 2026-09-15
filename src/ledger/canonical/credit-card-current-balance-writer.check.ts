@@ -9,7 +9,8 @@ import {
   commitFubonCreditCardCapture,
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
 } from "./fubon-credit-card.ts";
-import { canonicalSqlitePath, createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { createCanonicalSourceStore } from "./canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
@@ -422,7 +423,7 @@ test("credit-card estimates attach to one issuer account, retain formula evidenc
 
 test("overview liability totals include the estimate with explicit lineage", async () => {
   const directory = await mkdtemp(join(tmpdir(), "credit-card-overview-estimate-"));
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     const statementCapture = fubonCapture();
     await commitFubonCreditCardCapture(store, statementCapture);
