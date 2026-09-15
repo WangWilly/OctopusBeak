@@ -562,9 +562,7 @@ try {
     "financial-ledger-not-configured",
   );
   assert.equal(sourceOnlyOutput.telemetry?.length, 1);
-  const sourceOnlyStore = createCanonicalSourceStore(
-    join(sourceOnlyDir, "canonical.sqlite"),
-  );
+  const sourceOnlyStore = createCanonicalSourceStore(sourceOnlyDir);
   try {
     assert.equal(
       sourceOnlyStore.db
@@ -624,9 +622,7 @@ try {
     },
   );
   assert.equal(boundaryOutput.admissions[0]?.status, "financial-admitted");
-  const boundaryStore = createCanonicalSourceStore(
-    join(boundaryDir, "canonical.sqlite"),
-  );
+  const boundaryStore = createCanonicalSourceStore(boundaryDir);
   try {
     const boundaryCurrent = queryCanonicalSourceCurrent(boundaryStore);
     assert.equal(boundaryCurrent.records.length, 1);
@@ -747,9 +743,7 @@ try {
     financialOutput.relationResolution?.reason,
     "no-evidence-backed-admission",
   );
-  const financialStore = createCanonicalSourceStore(
-    join(financialLedgerDir, "canonical.sqlite"),
-  );
+  const financialStore = createCanonicalSourceStore(financialLedgerDir);
   try {
     assert.equal(
       financialStore.db
@@ -888,9 +882,7 @@ try {
       ),
     /masked counterparty account/i,
   );
-  const maskedStore = createCanonicalSourceStore(
-    join(maskedLedgerDir, "canonical.sqlite"),
-  );
+  const maskedStore = createCanonicalSourceStore(maskedLedgerDir);
   try {
     // Counterparty evidence is validated before the run transaction opens;
     // rejecting a masked account must leave the whole run unapplied.
@@ -937,9 +929,7 @@ try {
     },
   );
   assert.equal(multiAccountOutput.admissions.length, 2);
-  const multiAccountStore = createCanonicalSourceStore(
-    join(multiAccountDir, "canonical.sqlite"),
-  );
+  const multiAccountStore = createCanonicalSourceStore(multiAccountDir);
   try {
     assert.equal(
       queryCanonicalSourceCurrent(multiAccountStore).records.length,
@@ -1008,9 +998,7 @@ try {
     secondFinancialRun.admissions.map((admission) => admission.status),
     ["financial-admitted", "financial-admitted"],
   );
-  const financialMultiStore = createCanonicalSourceStore(
-    join(financialMultiAccountDir, "canonical.sqlite"),
-  );
+  const financialMultiStore = createCanonicalSourceStore(financialMultiAccountDir);
   try {
     assert.equal(
       financialMultiStore.db
@@ -1064,9 +1052,7 @@ try {
       ),
     /later-account download failure/i,
   );
-  const rollbackStore = createCanonicalSourceStore(
-    join(financialRollbackDir, "canonical.sqlite"),
-  );
+  const rollbackStore = createCanonicalSourceStore(financialRollbackDir);
   try {
     assert.equal(
       rollbackStore.db
@@ -1155,9 +1141,7 @@ try {
     JSON.stringify(amountTelemetry),
     /YUANTA|CLEAN|取消|沖正/,
   );
-  const cancellationStore = createCanonicalSourceStore(
-    join(cancellationDir, "canonical.sqlite"),
-  );
+  const cancellationStore = createCanonicalSourceStore(cancellationDir);
   try {
     assert.equal(
       cancellationStore.db
@@ -1212,9 +1196,7 @@ try {
     emptyOutput.admissions[0]?.reason ?? "",
     /zero-result-authority-unproven/,
   );
-  const emptyStore = createCanonicalSourceStore(
-    join(emptyDir, "canonical.sqlite"),
-  );
+  const emptyStore = createCanonicalSourceStore(emptyDir);
   try {
     assert.equal(
       emptyStore.db

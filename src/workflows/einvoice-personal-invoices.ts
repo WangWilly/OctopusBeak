@@ -13,10 +13,10 @@ import {
 } from "./human-assistance.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
-import { openCanonicalDatabase } from "../ledger/canonical/canonical-database.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
 import {
   commitCanonicalEInvoiceCapture,
   E_INVOICE_CONTRACT_VERSION,
@@ -925,8 +925,8 @@ export async function commitCanonicalCapture(
 ) {
   // The source store validates the schema, while product reads also require an
   // active canonical projection generation. Initialize both on a fresh ledger.
-  openCanonicalDatabase(ledgerDir).close();
-  const store = createCanonicalSourceStore(canonicalSqlitePath(ledgerDir));
+  openCanonicalDatabaseHandle(ledgerDir).close();
+  const store = createCanonicalSourceStore(ledgerDir);
   try {
     return await commitCanonicalEInvoiceCapture(store, capture);
   } finally {

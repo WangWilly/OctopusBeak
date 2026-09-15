@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -9,6 +8,7 @@ import {
 } from "./canonical-runtime.ts";
 import {
   isValidatedCanonicalDatabase,
+  type ValidatedCanonicalDatabase,
 } from "./canonical-schema-lifecycle.ts";
 import {
   CANONICAL_SOURCE_ADMISSION,
@@ -35,6 +35,7 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
   CATHAY_DERIVED_ORIGIN,
+  canonicalDatabaseWriterKey,
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
@@ -42,11 +43,6 @@ import {
   ESUN_CREDIT_CARD_QUERY_ROUTES,
   YUANTA_CREDIT_CARD_QUERY_ROUTES,
   CANONICAL_SCHEMA_VERSION,
-  canonicalSqlitePath,
-  uuidV7,
-  idToString,
-  idFromString,
-  blob,
   validateV8SourceEvidenceSchema,
   validateCanonicalCompatibilityViews,
   projectionRelevantCommitCount,
@@ -54,8 +50,14 @@ import {
   validateCanonicalInvestmentExtensionSchema,
   validateCanonicalLoanRepaymentRelationSchema,
   validateCanonicalRelationResolutionCommitSchema,
+} from "./canonical-database.ts";
+import {
+  uuidV7,
+  idToString,
+  idFromString,
+  blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import type {
   CanonicalProjectionKnowledgePoint,
   CanonicalProjectionRebuildFailureInjection,
@@ -66,8 +68,7 @@ import {
   validateRequiredCanonicalContractPurges,
 } from "./canonical-contract-purge.ts";
 import {
-  openCanonicalDatabase,
-  openCanonicalDatabasePath,
+  openCanonicalDatabaseHandle,
 } from "./canonical-database.ts";
 import {
   addSelectedFields,
@@ -86,7 +87,7 @@ async function withCanonicalWriter<T>(
   runtime?: CanonicalRuntimeOptions,
 ): Promise<T> {
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     operation,
     runtime,
   );
@@ -99,19 +100,7 @@ export {
   CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
   CATHAY_DERIVED_ORIGIN,
-  CANONICAL_SQLITE_FILE,
-  CANONICAL_SCHEMA_VERSION,
-  SCHEMA_V15_INVESTMENTS,
-  SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS,
-  canonicalSqlitePath,
-  createCanonicalSchemaLifecyclePlan,
-  isKnownRetiredFubonV18Fingerprint,
-  isRetiredFubonV18RecoveryEligible,
-  validateCanonicalInvestmentExtensionSchema,
-  validateCanonicalInvestmentFundingRelationSchema,
-  validateCanonicalLoanExtensionSchema,
-  validateCanonicalLoanRepaymentRelationSchema,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-database.ts";
 export {
   resumeCanonicalDeletionScrub,
 } from "./canonical-contract-purge-runtime.ts";
@@ -124,9 +113,7 @@ export type {
 } from "./canonical-contract-purge-runtime.ts";
 export type {
   CanonicalDatabaseOptions,
-  CanonicalMigrationFailureInjection,
-} from "./canonical-schema-implementation.ts";
-export { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-database.ts";
 export {
   canonicalProjectionRuntimeRebuildInternal,
   canonicalProjectionRuntimeSyncInternal,
@@ -1285,7 +1272,7 @@ function commitCathayDomesticDepositSyncOnce(
   admissionClock: CanonicalAdmissionClock,
   runtime?: CanonicalRuntimeOptions,
 ): CathayCanonicalCommitResult {
-  const db = openCanonicalDatabase(ledgerDir, { runtime });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { runtime });
   let inTransaction = false;
   try {
     const priorCurrentTransactions = new Set(
@@ -1303,10 +1290,10 @@ function commitCathayDomesticDepositSyncOnce(
     inTransaction = true;
     return withCanonicalSourceCaptureAdmissionExistingTransaction(
       {
-        db,
-        databasePath: canonicalSqlitePath(ledgerDir),
+        db: db.db,
         commitClock: () => recordedAtUtcUs(admissionClock()),
-      } as CanonicalSourceStore,
+        withWriter: async <T>(operation: () => T) => await operation(),
+      } as unknown as CanonicalSourceStore,
       (sourceAdmissionCapability) => {
     const commitId = uuidV7();
     const maxSequence = Number(
@@ -1759,7 +1746,7 @@ function commitCathayDomesticDepositSyncOnce(
       kind: "source_capture",
     });
     commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
-      db,
+      db.db,
       [idToString(captureId)],
     );
     db.exec("COMMIT");
@@ -1992,7 +1979,7 @@ function validateDerivedImportSubjects(
   input: CathayDerivedImportRunInput,
   coordinates: CathayDerivedImportCoordinate[],
 ): void {
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     const connection = db
       .prepare(
@@ -2109,7 +2096,7 @@ function commitCathayDerivedImportRunOnce(
   clock: CanonicalAdmissionClock,
   runtime?: CanonicalRuntimeOptions,
 ): { runId: string; commitSequence: number; assertionIds: string[] } {
-  const db = openCanonicalDatabase(ledgerDir, { runtime });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { runtime });
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -2477,7 +2464,7 @@ export async function commitCathayUserAssertion(
   return withCanonicalWriter(
     ledgerDir,
     () => {
-      const db = openCanonicalDatabase(ledgerDir, { runtime: options.runtime });
+      const db = openCanonicalDatabaseHandle(ledgerDir, { runtime: options.runtime });
       let inTransaction = false;
       try {
         db.exec("BEGIN IMMEDIATE");
@@ -2836,7 +2823,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const yuantaV2CurrentRead =
       this.profile.integrationNamespace === "yuanta" &&
       this.profile.postingRuleVersion === YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2;
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const accountEligibility = yuantaV1CurrentSupersession
@@ -2965,7 +2952,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       throw new Error(
         "Canonical historical knowledgeAt is outside the supported sequence range.",
       );
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const rows = db
@@ -3015,7 +3002,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     if (request.subject.kind !== "transaction" || !request.subject.id)
       throw new Error("Cathay lineage queries require a transaction subject.");
     const transactionId = idFromString(request.subject.id);
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const revisionRows = db
@@ -3210,18 +3197,28 @@ export function createCanonicalFinancialQuery(
   return new CathayCanonicalFinancialQueryAdapter(ledgerDir, profile);
 }
 
-export const CANONICAL_SOURCE_SCHEMA_VERSION = CANONICAL_SCHEMA_VERSION;
 const CANONICAL_SOURCE_STORE_BRAND = Symbol(
   "canonical-source-store-lifecycle-validated-v1",
 );
 const CANONICAL_SOURCE_STORE_OBJECTS = new WeakSet<object>();
 export type CanonicalSourceStore = {
   readonly [CANONICAL_SOURCE_STORE_BRAND]: true;
-  readonly db: DatabaseSync;
-  readonly databasePath: string;
+  readonly db: ValidatedCanonicalDatabase;
   readonly commitClock: () => number;
+  withWriter<T>(
+    operation: () => T,
+    runtime?: CanonicalRuntimeOptions,
+  ): Promise<T>;
   close(): void;
 };
+const CANONICAL_SOURCE_STORE_HANDLES = new WeakMap<
+  object,
+  Readonly<{
+    handle: ReturnType<typeof openCanonicalDatabaseHandle>;
+    writerKey: ReturnType<typeof canonicalDatabaseWriterKey>;
+    databasePath: string;
+  }>
+>();
 
 function requireValidatedCanonicalSourceStore(
   value: unknown,
@@ -3309,29 +3306,40 @@ export type CanonicalSourceCommitResult = {
   provenanceCount: number;
 };
 export type CanonicalSourceStoreOptions = { commitClock?: () => number };
+
+function normalizeCanonicalLedgerDirectory(ledgerDir: string): string {
+  return ledgerDir;
+}
+
 export function createCanonicalSourceStore(
-  databasePath: string,
+  ledgerDir: string,
   options: CanonicalSourceStoreOptions = {},
 ): CanonicalSourceStore {
-  const path = requireCanonicalSourceText(
-    databasePath,
-    "Canonical SQLite path",
+  const directory = normalizeCanonicalLedgerDirectory(
+    requireCanonicalSourceText(ledgerDir, "Canonical ledger directory"),
   );
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const db = openCanonicalDatabasePath(path);
+  const handle = openCanonicalDatabaseHandle(directory);
+  const db = handle.db;
   const commitClock = options.commitClock ?? currentUtcMicros;
   let closed = false;
   const store: CanonicalSourceStore = {
     [CANONICAL_SOURCE_STORE_BRAND]: true,
     db,
-    databasePath: path,
     commitClock,
+    withWriter(operation, runtime) {
+      return withCanonicalWriterQueue(
+        canonicalDatabaseWriterKey(directory),
+        operation,
+        runtime,
+      );
+    },
     close() {
       if (!closed) {
         try {
-          db.close();
+          handle.close();
         } finally {
           closed = true;
+          CANONICAL_SOURCE_STORE_HANDLES.delete(store);
           CANONICAL_SOURCE_STORE_OBJECTS.delete(store);
         }
       }
@@ -3339,6 +3347,12 @@ export function createCanonicalSourceStore(
   };
   Object.freeze(store);
   CANONICAL_SOURCE_STORE_OBJECTS.add(store);
+  const writerKey = canonicalDatabaseWriterKey(directory);
+  CANONICAL_SOURCE_STORE_HANDLES.set(store, {
+    handle,
+    writerKey,
+    databasePath: writerKey,
+  });
   return store;
 }
 
@@ -3352,9 +3366,14 @@ export function submitCanonicalContractPurge(
   request: CanonicalContractPurgeRequest,
 ): Promise<CanonicalContractPurgeResult> {
   requireValidatedCanonicalSourceStore(store);
-  return withCanonicalWriterQueue(
-    store.databasePath,
-    () => submitCanonicalContractPurgeInValidatedStore(store.db, store.databasePath, request),
+  const state = CANONICAL_SOURCE_STORE_HANDLES.get(store)!;
+  return store.withWriter(
+    () =>
+      submitCanonicalContractPurgeInValidatedStore(
+        store.db,
+        state.databasePath,
+        request,
+      ),
     request.runtime,
   );
 }

@@ -29,9 +29,7 @@ import {
 // by a readiness flag.
 const emptyDirectory = await mkdtemp(join(tmpdir(), "canonical-readiness-empty-"));
 try {
-  const emptyStore = createCanonicalSourceStore(
-    join(emptyDirectory, "canonical.sqlite"),
-  );
+  const emptyStore = createCanonicalSourceStore(emptyDirectory);
   try {
     const emptyGate = evaluateCanonicalReadiness({
       mode: "ledger",

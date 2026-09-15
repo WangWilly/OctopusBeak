@@ -14,8 +14,8 @@ import {
 } from "./hncb-human-attestation.ts";
 import {
   createCanonicalSourceStore,
-  canonicalSqlitePath,
 } from "./canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 
 assert.equal(HNCB_HUMAN_ATTESTED_V1_MANIFEST.providerGuaranteed, false);
 assert.match(
@@ -29,7 +29,7 @@ assert.equal(
 
 const directory = await mkdtemp(join(tmpdir(), "hncb-attestation-v1-"));
 try {
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureHncbHumanAttestationEvents(store.db);
     assert.equal(isHncbHumanAttestationDurablyActive(store.db), false);
@@ -38,9 +38,7 @@ try {
       "2026-08-23T01:00:00.000+08:00",
     );
     store.close();
-    const reopenedAfterAttestation = createCanonicalSourceStore(
-      canonicalSqlitePath(directory),
-    );
+    const reopenedAfterAttestation = createCanonicalSourceStore(directory);
     assert.equal(
       isHncbHumanAttestationDurablyActive(reopenedAfterAttestation.db),
       true,
@@ -55,9 +53,7 @@ try {
       reopenedAfterAttestation.db,
     );
     reopenedAfterAttestation.close();
-    const reopenedAfterRevocation = createCanonicalSourceStore(
-      canonicalSqlitePath(directory),
-    );
+    const reopenedAfterRevocation = createCanonicalSourceStore(directory);
     assert.equal(
       isHncbHumanAttestationDurablyActive(reopenedAfterRevocation.db),
       false,
@@ -68,9 +64,7 @@ try {
       reopenedAfterRevocation.db,
     );
     reopenedAfterRevocation.close();
-    const reopenedAfterRestore = createCanonicalSourceStore(
-      canonicalSqlitePath(directory),
-    );
+    const reopenedAfterRestore = createCanonicalSourceStore(directory);
     assert.equal(
       isHncbHumanAttestationDurablyActive(reopenedAfterRestore.db),
       true,

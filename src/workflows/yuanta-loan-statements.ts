@@ -8,7 +8,6 @@ import {
   hasAttachedLocator,
 } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
   createCanonicalLoanStore,
   type LoanCapturePage,
@@ -1282,7 +1281,7 @@ export async function runYuantaLoanStatements(
     overrides.canonicalLedgerDir ??
     DEFAULT_LEDGER_DIR;
   const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
-    canonicalSqlitePath(ledgerDir),
+    ledgerDir,
   );
   const persist = overrides.persistLoanCapture ?? persistYuantaLoanCapture;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());

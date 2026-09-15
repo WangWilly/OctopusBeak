@@ -19,9 +19,9 @@ import {
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { queryCanonicalEInvoiceCurrent } from "../ledger/canonical/einvoice.ts";
 
 const workflowSource = readFileSync(
@@ -599,7 +599,7 @@ try {
   assert.equal(revokedCapture.invoices[0]?.total, null);
   await commitCanonicalCapture(revokedCapture, workflowLedgerDir);
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(workflowLedgerDir));
+  const store = createCanonicalSourceStore(workflowLedgerDir);
   try {
     const current = queryCanonicalEInvoiceCurrent(store);
     const revoked = current.invoices.find((invoice) => invoice.stableInvoiceKey === mapped.stableInvoiceKey);
@@ -652,7 +652,7 @@ try {
       /requires a total/,
       "workflow success must not be reported when canonical admission fails",
     );
-    const failedStore = createCanonicalSourceStore(canonicalSqlitePath(failingDir));
+    const failedStore = createCanonicalSourceStore(failingDir);
     try {
       assert.equal(queryCanonicalEInvoiceCurrent(failedStore).invoices.length, 0);
     } finally {

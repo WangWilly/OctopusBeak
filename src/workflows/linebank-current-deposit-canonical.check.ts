@@ -142,7 +142,7 @@ test("fresh canonical store registers and commits the LINE current balance after
   });
   assert.ok(financialCapture, "the fixture must admit a personal-main financial identity");
 
-  const store = createDomesticDepositStore(join(directory, "canonical.sqlite"));
+  const store = createDomesticDepositStore(directory);
   try {
     await commitCanonicalLineBankFinancialCaptureBatch(store, [financialCapture]);
     const currentRows = parseLinebankCurrentDepositBalanceSnapshot({

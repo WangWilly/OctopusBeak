@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
   admitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCaptureBatch,
@@ -2144,9 +2143,7 @@ async function commitYuantaFundCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
-  const store = createCanonicalInvestmentStore(
-    canonicalSqlitePath(input.canonicalLedgerDir),
-  );
+  const store = createCanonicalInvestmentStore(input.canonicalLedgerDir);
   try {
     await commitCanonicalInvestmentCaptureBatch(store, captures);
   } finally {

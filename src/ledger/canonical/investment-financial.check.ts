@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -31,12 +31,14 @@ import {
 } from "./investment-financial.ts";
 import { queryCanonicalLoanCurrent } from "./loan-financial.ts";
 import {
-  CANONICAL_SOURCE_SCHEMA_VERSION,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
+} from "./canonical-source-store.ts";
+import {
+  CANONICAL_SCHEMA_VERSION,
   validateCanonicalInvestmentExtensionSchema,
   validateCanonicalInvestmentFundingRelationSchema,
-} from "./canonical-source-store.ts";
+} from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const token = (label: string) =>
@@ -395,7 +397,7 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
   const dir = await mkdtemp(join(tmpdir(), "canonical-investment-"));
   const path = join(dir, "canonical.sqlite");
   try {
-    let store = createCanonicalInvestmentStore(path);
+    let store = createCanonicalInvestmentStore(dirname(path));
     await commitCanonicalInvestmentCapture(
       store,
       admitCanonicalInvestmentCapture(fixture()),
@@ -436,7 +438,7 @@ test("investment capture is atomic, restart-safe, and preserves independent meas
       [{ timeOrigin: "defaulted_local_midnight" }],
     );
     store.close();
-    store = createCanonicalInvestmentStore(path);
+    store = createCanonicalInvestmentStore(dirname(path));
     current = queryCanonicalInvestmentCurrent(store, token("a"));
     assert.equal(current.holdings.length, 1);
     store.close();
@@ -2342,13 +2344,13 @@ test("a v15 database migrates and reopens with investment funding relations", as
   const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v16-"));
   const path = join(dir, "canonical.sqlite");
   try {
-    const initial = createCanonicalInvestmentStore(path);
+    const initial = createCanonicalInvestmentStore(dirname(path));
     initial.close();
     const legacy = new DatabaseSync(path);
     rewindInvestmentDatabaseToV15PhysicalSchema(legacy);
     legacy.close();
 
-    const migrated = createCanonicalInvestmentStore(path);
+    const migrated = createCanonicalInvestmentStore(dirname(path));
     assert.equal(
       Number(
         (
@@ -2357,7 +2359,7 @@ test("a v15 database migrates and reopens with investment funding relations", as
           }
         ).user_version,
       ),
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+      CANONICAL_SCHEMA_VERSION,
     );
     assert.deepEqual(
       migrated.db
@@ -2384,16 +2386,16 @@ test("investment funding relation production entries reject a raw DatabaseSync a
   const raw = new DatabaseSync(":memory:");
   const forged = {
     db: raw,
-    databasePath: ":memory:",
     commitClock: () => Date.now() * 1_000,
+    withWriter: async <T>(operation: () => T) => await operation(),
   };
   try {
     await assert.rejects(
-      () => resolveCanonicalInvestmentFundingRelations(forged),
+      () => resolveCanonicalInvestmentFundingRelations(forged as never),
       /canonical database capability|lifecycle/i,
     );
     assert.throws(
-      () => queryCanonicalInvestmentFundingRelations(forged, token("raw-investment-connection")),
+      () => queryCanonicalInvestmentFundingRelations(forged as never, token("raw-investment-connection")),
       /canonical database capability|lifecycle/i,
     );
   } finally {

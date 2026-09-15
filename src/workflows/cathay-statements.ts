@@ -22,10 +22,10 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   commitCathayDomesticDepositSync,
-  openCanonicalDatabase,
   recordInitialCathayHumanAttestationIfMissing,
   type CathayStagedCapturePage,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
   readCathayCurrentDepositBalances,
@@ -2057,9 +2057,9 @@ export async function downloadCathayStatements(
   // The existing Cathay canonical writer commits the provider response first.
   // Only after that durable financial capture succeeds do we append the
   // observed-human attestation event used by the readiness gate.
-  const canonicalDb = openCanonicalDatabase(canonicalLedgerDir);
+  const canonicalDb = openCanonicalDatabaseHandle(canonicalLedgerDir);
   try {
-    recordInitialCathayHumanAttestationIfMissing(canonicalDb, observedAt);
+    recordInitialCathayHumanAttestationIfMissing(canonicalDb.db, observedAt);
   } finally {
     canonicalDb.close();
   }

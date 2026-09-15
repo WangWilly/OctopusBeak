@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
   ensureFubonCreditCardSchema,
@@ -1029,7 +1029,7 @@ export const isValidatedFubonCreditCardCapture = isAdmittedFubonCreditCardCaptur
 
 export type FubonCreditCardWriterStore = Pick<
   CanonicalSourceStore,
-  "db" | "databasePath" | "commitClock"
+  "db" | "commitClock" | "withWriter"
 > & {
   readonly beforeFubonCreditExtensionCommit?: (db: DatabaseSync) => void;
 };

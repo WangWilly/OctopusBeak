@@ -1130,7 +1130,7 @@ try {
   await commitCanonicalFubonDomesticDepositCapture(
     {
       db: fubonSourceThenFinancialStore.db,
-      databasePath: fubonSourceThenFinancialStore.databasePath,
+      withWriter: fubonSourceThenFinancialStore.withWriter,
       commitClock: () => fubonSourceThenFinancialStore.commitClock(),
     },
     {
@@ -1175,11 +1175,11 @@ const ledgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "fubon-human-attested-v1-"),
 );
 try {
-  const store = createCanonicalSourceStore(join(ledgerDir, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(ledgerDir);
   try {
     const writer = {
       db: store.db,
-      databasePath: store.databasePath,
+      withWriter: store.withWriter,
       commitClock: () => store.commitClock(),
     };
     assert.throws(

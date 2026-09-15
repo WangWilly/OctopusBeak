@@ -331,9 +331,7 @@ try {
         currentForeignBalanceCaptures += 1;
         assert.equal(captures.length, 1);
         assert.ok(ledgerDir);
-        const committedStore = createCanonicalSourceStore(
-          join(ledgerDir, "canonical.sqlite"),
-        );
+        const committedStore = createCanonicalSourceStore(ledgerDir);
         try {
           assert.equal(
             Number(
@@ -364,9 +362,7 @@ assert.equal(foreignCanonicalAttempts, 2);
 assert.equal(currentForeignBalanceCaptures, 1);
 assert.deepEqual(foreignCanonicalLifecycle, ["foreign-account-commit-complete"]);
 assert.equal(foreignCanonicalOutput.count, 1);
-const canonicalStore = createCanonicalSourceStore(
-  join(canonicalLedgerDirectory, "canonical.sqlite"),
-);
+const canonicalStore = createCanonicalSourceStore(canonicalLedgerDirectory);
 try {
   assert.equal(
     Number(

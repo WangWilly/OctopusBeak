@@ -26,7 +26,7 @@ import {
 } from "./esun-credit-card-human-attestation.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 import { createCanonicalSpendingQuery } from "./canonical-categorization.ts";
-import { createCanonicalSchemaLifecyclePlan } from "./canonical-schema-implementation.ts";
+import { createCanonicalSchemaLifecyclePlan } from "./canonical-database.ts";
 import { openCanonicalSchemaLifecycle } from "./canonical-schema-lifecycle.ts";
 
 const identity = {
@@ -271,7 +271,7 @@ test("E.SUN neutral projection preserves opaque identities and billed-only membe
 
 test("E.SUN commit materializes the shared spine and neutral billed statement extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-canonical-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admitted = buildEsunCanonicalCreditCardCapture(
       options({
@@ -356,13 +356,13 @@ test("E.SUN commit materializes the shared spine and neutral billed statement ex
 
 test("E.SUN initial attestation repair reuses the writer transaction snapshot", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repair-snapshot-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   let attestationVisibleBeforeExtensionCommit = false;
   try {
     const committed = await commitEsunCreditCardCapture(
       {
         db: base.db,
-        databasePath: base.databasePath,
+        withWriter: base.withWriter,
         commitClock: base.commitClock,
         beforeEsunCreditExtensionCommit: (db) => {
           attestationVisibleBeforeExtensionCommit =
@@ -400,7 +400,7 @@ for (const existingDatabase of [false, true]) {
       });
       previous.close();
     }
-    const store = createCanonicalSourceStore(databasePath);
+    const store = createCanonicalSourceStore(directory);
     const reader = spawn(process.execPath, [
       "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e",
       `import { createCanonicalSourceStore } from ${JSON.stringify(new URL("./canonical-source-store.ts", import.meta.url).href)};
@@ -408,7 +408,7 @@ for (const existingDatabase of [false, true]) {
        console.log("ready");
        process.stdin.resume();
        process.stdin.on("end", () => { store.close(); });`,
-      databasePath,
+      directory,
     ], { stdio: ["pipe", "pipe", "pipe"] });
     const exited = once(reader, "exit");
     let diagnostics = "";
@@ -439,7 +439,7 @@ for (const existingDatabase of [false, true]) {
 
 test("E.SUN repeated captures retain one account/instrument authority and add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repeat-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const settledPeriods = [{
       period: "2026-07",
@@ -480,7 +480,7 @@ test("E.SUN repeated captures retain one account/instrument authority and add pr
 
 test("E.SUN rolling query dates do not change canonical occurrence content", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-rolling-query-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const rowsWithoutQueryPeriod = {
       statementRows: [{ ...billedRow, issuerStatementPeriod: undefined }],
@@ -562,13 +562,13 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
 
 test("E.SUN extension failure rolls back the shared capture and initial attestation", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-atomic-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitEsunCreditCardCapture(
         {
           db: base.db,
-          databasePath: base.databasePath,
+          withWriter: base.withWriter,
           commitClock: base.commitClock,
           beforeEsunCreditExtensionCommit: () => {
             throw new Error("injected E.SUN extension failure");

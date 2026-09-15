@@ -1053,7 +1053,7 @@ export function yuantaNeutralCreditCardCapture(
 
 export type YuantaCreditCardWriterStore = Pick<
   CanonicalSourceStore,
-  "db" | "databasePath" | "commitClock"
+  "db" | "commitClock" | "withWriter"
 > & {
   readonly beforeYuantaCreditExtensionCommit?: (db: DatabaseSync) => void;
 };

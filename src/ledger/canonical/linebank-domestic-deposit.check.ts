@@ -2277,7 +2277,7 @@ assert.equal(zeroV13.status, "admissible");
 assert.equal(zeroV13.capture?.records.length, 0);
 
 const v13Directory = await mkdtemp(join(tmpdir(), "linebank-v13-main-"));
-const v13Store = createDomesticDepositStore(join(v13Directory, "canonical.sqlite"));
+const v13Store = createDomesticDepositStore(v13Directory);
 await assert.rejects(
   () =>
     commitCanonicalLineBankFinancialCapture(v13Store, {
@@ -2682,7 +2682,7 @@ assert.equal(lateFailure.status, "admissible");
 const commitsBeforeLateFailure = v13Store.db
   .prepare("SELECT COUNT(*) AS count FROM canonical_commits")
   .get()?.count;
-const lateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+const lateFailureSchemaDb = new DatabaseSync(join(v13Directory, "canonical.sqlite"));
 lateFailureSchemaDb.exec(`CREATE TRIGGER inject_v13_late_failure
   BEFORE UPDATE ON source_sync_states
   BEGIN SELECT RAISE(ABORT, 'injected late v13 failure'); END`);
@@ -2691,7 +2691,7 @@ await assert.rejects(
   () => commitCanonicalLineBankFinancialCapture(v13Store, lateFailure.capture!),
   /injected late v13 failure/i,
 );
-const cleanupLateFailureSchemaDb = new DatabaseSync(v13Store.databasePath);
+const cleanupLateFailureSchemaDb = new DatabaseSync(join(v13Directory, "canonical.sqlite"));
 cleanupLateFailureSchemaDb.exec("DROP TRIGGER inject_v13_late_failure");
 cleanupLateFailureSchemaDb.close();
 assert.equal(
@@ -2852,7 +2852,7 @@ const persistentV13Directory = await mkdtemp(
 );
 try {
   const path = join(persistentV13Directory, "canonical.sqlite");
-  const persistent = createDomesticDepositStore(path);
+  const persistent = createDomesticDepositStore(persistentV13Directory);
   await commitCanonicalLineBankFinancialCapture(
     persistent,
     admittedV13.capture!,
@@ -2866,7 +2866,7 @@ try {
     restoredV13.capture!,
   );
   persistent.close();
-  const reopened = createDomesticDepositStore(path);
+  const reopened = createDomesticDepositStore(persistentV13Directory);
   assert.equal(queryCurrent(reopened).transactions.length, 2);
   assert.equal(queryCurrent(reopened).status, "canonical-live");
   assert.deepEqual(queryCurrent(reopened).financialAdmissionBlockers, []);
@@ -2884,9 +2884,7 @@ try {
   const cathayBefore = await createCathayCanonicalFinancialQuery(
     mixedV13Directory,
   ).current({ kind: "current" });
-  const mixed = createDomesticDepositStore(
-    join(mixedV13Directory, "canonical.sqlite"),
-  );
+  const mixed = createDomesticDepositStore(mixedV13Directory);
   await commitCanonicalLineBankFinancialCapture(mixed, admittedV13.capture!);
   assert.equal(queryCurrent(mixed).transactions.length, 2);
   mixed.close();

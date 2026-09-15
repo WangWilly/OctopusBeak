@@ -8,10 +8,10 @@ import test from "node:test";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { queryCanonicalSpendingCurrentFromDatabase } from "./canonical-categorization.ts";
 import {
-  CANONICAL_SOURCE_SCHEMA_VERSION,
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { CANONICAL_SCHEMA_VERSION } from "./canonical-database.ts";
 import {
   LOAN_CONTRACT_FIXTURES,
   admitCanonicalLoanCapture,
@@ -305,12 +305,13 @@ async function commitPair(
     depositCurrency?: string;
   } = {},
 ): Promise<{
+  directory: string;
   store: ReturnType<typeof createCanonicalSourceStore>;
   loan: ReturnType<typeof loanCapture>;
   deposit: ReturnType<typeof depositCapture>;
 }> {
   const directory = await mkdtemp(join(tmpdir(), `loan-relation-${label}-`));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const loan = loanCapture(
     sourceConnectionKey,
     token(`${label}:loan-epoch`),
@@ -338,7 +339,7 @@ async function commitPair(
   );
   await commitCanonicalLoanCapture(store, loan);
   await commitCanonicalFinancialDepositCapture(store, deposit);
-  return { store, loan, deposit };
+  return { directory, store, loan, deposit };
 }
 
 function currentKindForDescription(
@@ -470,7 +471,7 @@ test("v9 loan relation schema migrates transactionally and survives reopen", asy
   const directory = await mkdtemp(join(tmpdir(), "loan-relation-migration-"));
   const path = join(directory, "canonical.sqlite");
   try {
-    const initial = createCanonicalSourceStore(path);
+    const initial = createCanonicalSourceStore(directory);
     initial.close();
     const downgraded = new DatabaseSync(path);
     downgraded.exec("PRAGMA foreign_keys = OFF");
@@ -497,11 +498,11 @@ test("v9 loan relation schema migrates transactionally and survives reopen", asy
     `);
     downgraded.close();
 
-    const reopened = createCanonicalSourceStore(path);
+    const reopened = createCanonicalSourceStore(directory);
     assert.equal(
       (reopened.db.prepare("PRAGMA user_version").get() as { user_version?: number })
         .user_version,
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+      CANONICAL_SCHEMA_VERSION,
     );
     validateCanonicalSourceStore(reopened);
     assert.equal(
@@ -578,7 +579,7 @@ test("counterparty account evidence stores exact source, normalized value, diges
       /masked/i,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -613,10 +614,7 @@ test("replayed source observations retain transaction-scoped account evidence", 
     assert.equal(persisted.accountId, null);
     assert.equal(persisted.captureId, replay.captureId);
   } finally {
-    const directory = pair.store.databasePath.slice(
-      0,
-      pair.store.databasePath.lastIndexOf("/"),
-    );
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -809,7 +807,7 @@ test("resolver admits direct exact transfer counterpart across independent captu
     pair.store.db.exec("COMMIT");
     assert.equal(queryCurrentLoanRepaymentRelations(pair.store).length, 0);
 
-    const databasePath = pair.store.databasePath;
+    const databasePath = pair.directory;
     pair.store.close();
     storeClosed = true;
     const runtime = createCanonicalProjectionRuntime(databasePath);
@@ -824,7 +822,7 @@ test("resolver admits direct exact transfer counterpart across independent captu
       "a shadow rebuild must not reactivate a withdrawn relation",
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     if (!storeClosed) pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1065,7 +1063,7 @@ test("resolver-driven group withdrawal refreshes loan kind and Spending without 
       "the replacement active repayment remains excluded from Spending",
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1100,7 +1098,7 @@ test("independent exact relations sharing one endpoint remain current", async ()
       0,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1166,7 +1164,7 @@ test("a collective group remains current alongside an exact relation sharing an 
       0,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1290,7 +1288,7 @@ test("resolver audits no-admission, is idempotent, and fails closed on incomplet
     assert.equal(queryCurrentLoanRepaymentRelations(pair.store).length, 0);
     assert.equal(queryCurrentLoanRepaymentSettlementGroups(pair.store).length, 0);
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1342,7 +1340,7 @@ test("resolver retains an ambiguous settlement group and never uses amount compo
       (pair.store.db.prepare("SELECT COUNT(*) AS count FROM loan_transaction_facts").get() as { count?: number }).count,
       2,
     );
-    const databasePath = pair.store.databasePath;
+    const databasePath = pair.directory;
     pair.store.close();
     storeClosed = true;
     const runtime = createCanonicalProjectionRuntime(databasePath);
@@ -1357,7 +1355,7 @@ test("resolver retains an ambiguous settlement group and never uses amount compo
       "a shadow rebuild preserves current settlement groups across the switch",
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     if (!storeClosed) pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1420,7 +1418,7 @@ test("verified repayment destination groups collective membership despite unequa
       0,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1429,7 +1427,7 @@ test("verified repayment destination groups collective membership despite unequa
 test("verified Fubon account evidence partitions principal and interest by complete same-day total", async () => {
   const sourceConnectionKey = token("fubon-date-total-connection");
   const directory = await mkdtemp(join(tmpdir(), "loan-relation-fubon-date-total-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const loan = loanCapture(
     sourceConnectionKey,
     token("fubon-date-total-loan-epoch"),
@@ -1518,7 +1516,7 @@ test("verified Fubon account evidence partitions principal and interest by compl
 
 test("verified account reconciliation never withdraws another Source Connection group", async () => {
   const directory = await mkdtemp(join(tmpdir(), "loan-relation-connection-isolation-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const accountValue = "01234567890123";
   const connections = [
     {
@@ -1665,7 +1663,7 @@ test("a stronger exact resolution does not withdraw an unrelated larger group", 
       historicalGroupId,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1894,7 +1892,7 @@ test("an exact assertion replaces a current two-member group when it is the same
       .get() as { supersedes_relation_id?: Uint8Array } | undefined;
     assert.ok(superseded?.supersedes_relation_id);
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1950,7 +1948,7 @@ test("repayment mandates honor effective intervals and are not retroactive when 
       if (expectedExactRelations === 0)
         assert.equal(result.outcome, "no-admission");
     } finally {
-      const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+      const directory = pair.directory;
       pair.store.close();
       await rm(directory, { recursive: true, force: true });
     }
@@ -2015,7 +2013,7 @@ test("fixed Institution note fallback persists provenance and admits only exact 
       "fixed-institution-note",
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2049,7 +2047,7 @@ test("repayment amount keys normalize equivalent decimal scales consistently", a
     });
     assert.equal(result.exactRelationIds.length, 1);
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2119,7 +2117,7 @@ test("loan queries expose the actual explicit, account, and fixed-note support",
       "counterparty-account/v1",
     );
   } finally {
-    const directory = accountPair.store.databasePath.slice(0, accountPair.store.databasePath.lastIndexOf("/"));
+    const directory = accountPair.directory;
     accountPair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2151,7 +2149,7 @@ test("loan queries expose the actual explicit, account, and fixed-note support",
       INSTITUTION_REPAYMENT_NOTE_EVIDENCE_VERSION,
     );
   } finally {
-    const directory = notePair.store.databasePath.slice(0, notePair.store.databasePath.lastIndexOf("/"));
+    const directory = notePair.directory;
     notePair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2193,7 +2191,7 @@ test("fixed-note date matching requires an explicit provider offset contract", a
       if (expectedRelations === 0)
         assert.equal(result.outcome, "no-admission");
     } finally {
-      const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+      const directory = pair.directory;
       pair.store.close();
       await rm(directory, { recursive: true, force: true });
     }
@@ -2225,7 +2223,7 @@ test("fixed-note date matching requires an explicit provider offset contract", a
       /date contract/i,
     );
   } finally {
-    const directory = missingContractPair.store.databasePath.slice(0, missingContractPair.store.databasePath.lastIndexOf("/"));
+    const directory = missingContractPair.directory;
     missingContractPair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2276,7 +2274,7 @@ test("expired or current-only mandate evidence cannot downgrade to fixed-note fa
       1,
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2316,7 +2314,7 @@ test("expired or current-only mandate evidence cannot downgrade to fixed-note fa
     assert.equal(currentOnly.outcome, "no-admission");
     assert.equal(queryCurrentLoanRepaymentRelations(currentOnlyPair.store).length, 0);
   } finally {
-    const directory = currentOnlyPair.store.databasePath.slice(0, currentOnlyPair.store.databasePath.lastIndexOf("/"));
+    const directory = currentOnlyPair.directory;
     currentOnlyPair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2365,7 +2363,7 @@ test("account evidence has priority over fixed-note fallback", async () => {
       "verified-repayment-destination",
     );
   } finally {
-    const directory = pair.store.databasePath.slice(0, pair.store.databasePath.lastIndexOf("/"));
+    const directory = pair.directory;
     pair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2420,7 +2418,7 @@ test("fixed-note fallback refuses wrong currency, invalid authoring, incomplete 
     });
     assert.equal(incomplete.outcome, "no-admission");
   } finally {
-    const directory = invalidPair.store.databasePath.slice(0, invalidPair.store.databasePath.lastIndexOf("/"));
+    const directory = invalidPair.directory;
     invalidPair.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2460,7 +2458,7 @@ test("fixed-note fallback refuses wrong currency, invalid authoring, incomplete 
     assert.equal(collective.settlementGroupIds.length, 1);
     assert.equal(collective.exactRelationIds.length, 0);
   } finally {
-    const directory = ambiguous.store.databasePath.slice(0, ambiguous.store.databasePath.lastIndexOf("/"));
+    const directory = ambiguous.directory;
     ambiguous.store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -2470,19 +2468,19 @@ test("loan relation production entries reject a raw DatabaseSync adapter", async
   const raw = new DatabaseSync(":memory:");
   const forged = {
     db: raw,
-    databasePath: ":memory:",
     commitClock: () => Date.now() * 1_000,
+    withWriter: async <T>(operation: () => T) => await operation(),
   };
   try {
     await assert.rejects(
       () =>
-        resolveLoanRepaymentRelations(forged, {
+        resolveLoanRepaymentRelations(forged as never, {
           sourceConnectionKey: token("raw-relation-connection"),
         }),
       /canonical database capability|lifecycle/i,
     );
     assert.throws(
-      () => queryCurrentLoanRepaymentRelations(forged),
+      () => queryCurrentLoanRepaymentRelations(forged as never),
       /canonical database capability|lifecycle/i,
     );
   } finally {

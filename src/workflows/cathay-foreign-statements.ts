@@ -16,9 +16,9 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
@@ -570,9 +570,7 @@ export async function commitCathayForeignCanonicalCaptures(
   captures: readonly ForeignCurrencyDepositCaptureInput[],
 ) {
   if (!financialLedgerDir || captures.length === 0) return [];
-  const financialStore = createCanonicalSourceStore(
-    canonicalSqlitePath(financialLedgerDir),
-  );
+  const financialStore = createCanonicalSourceStore(financialLedgerDir);
   try {
     return await commitForeignCurrencyDepositCaptureBatch(
       financialStore,

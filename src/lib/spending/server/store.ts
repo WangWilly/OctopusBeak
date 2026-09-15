@@ -2,10 +2,10 @@ import { existsSync } from "node:fs";
 import { channel } from "node:diagnostics_channel";
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   type CanonicalSourceStore,
 } from "../../../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
   confirmSpendingDedupLink,
   denySpendingDedupCandidate,
@@ -364,10 +364,10 @@ function currentSpendingQueryFromStore(
 }
 
 function recordStore(ledgerDir: string) {
-  const databasePath = canonicalSqlitePath(ledgerDir);
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
   storeOpenDiagnostics.publish({ ledgerDir });
-  return createCanonicalSourceStore(databasePath);
+  return createCanonicalSourceStore(ledgerDir);
 }
 
 function pageFromQuery(

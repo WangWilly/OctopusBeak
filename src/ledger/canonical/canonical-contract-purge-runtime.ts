@@ -17,13 +17,13 @@ import {
   idFromString,
   idToString,
   uuidV7,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import {
   assertValidatedCanonicalDatabase,
   runCanonicalContractPurgeDataTransition,
   runCanonicalLocalScrub,
 } from "./canonical-schema-lifecycle.ts";
-import { openCanonicalDatabasePath } from "./canonical-database.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   rebuildCanonicalProjectionInTransaction,
 } from "./canonical-projection-runtime.ts";
@@ -1705,11 +1705,15 @@ export function resumeCanonicalDeletionScrub(
   if (typeof databasePath !== "string" || databasePath.trim() === "")
     throw new Error("Canonical database path is required for scrub recovery.");
   return withCanonicalWriterQueue(databasePath, () => {
-    const db = openCanonicalDatabasePath(databasePath, { runtime });
+    const handle = openCanonicalDatabaseHandle(dirname(databasePath), { runtime });
     try {
-      return runPendingScrub(databasePath, db, scrubStatus(databasePath, db));
+      return runPendingScrub(
+        databasePath,
+        handle.db,
+        scrubStatus(databasePath, handle.db),
+      );
     } finally {
-      db.close();
+      handle.close();
     }
   }, runtime);
 }

@@ -7,21 +7,20 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
-  CANONICAL_SCHEMA_VERSION,
-  canonicalSqlitePath,
   commitCathayDomesticDeposit,
   commitCathayDerivedImportRun,
   commitCathayUserAssertion,
   createCathayCanonicalFinancialQuery,
-  openCanonicalDatabase,
 } from "./cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
+import { CANONICAL_SCHEMA_VERSION, canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { CanonicalBusyRetryExhaustedError } from "./canonical-runtime.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const rebuildCathayCanonicalProjection = (
   ledgerDir: string,
   options = {},
-) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
+) => createCanonicalProjectionRuntime(ledgerDir).rebuild(options);
 
 // Keep the legacy v7 migration fixtures physically coherent. Downgrading only
 // PRAGMA user_version would leave the v26 source-key/account-number split in
@@ -47,7 +46,7 @@ try {
     ledgerDir,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     assert.equal(
       Number(db.prepare("PRAGMA user_version").get()?.user_version),
@@ -96,7 +95,7 @@ try {
     before.transactions.length,
   );
 
-  const switched = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const switched = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   let activeGeneration = 0;
   try {
     activeGeneration = Number(
@@ -134,7 +133,7 @@ try {
       }),
     /Injected projection rebuild failure/,
   );
-  const afterFailure = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const afterFailure = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     assert.equal(
       Number(
@@ -158,7 +157,7 @@ try {
     afterFailure.close();
   }
 
-  const lock = new DatabaseSync(canonicalSqlitePath(ledgerDir));
+  const lock = new DatabaseSync(canonicalDatabaseWriterKey(ledgerDir));
   lock.exec("PRAGMA busy_timeout = 1; BEGIN IMMEDIATE");
   const retried = commitCathayDomesticDeposit(
     ledgerDir,
@@ -178,7 +177,7 @@ try {
   setTimeout(() => lock.exec("COMMIT"), 10);
   await retried;
   lock.close();
-  const exhausted = new DatabaseSync(canonicalSqlitePath(ledgerDir));
+  const exhausted = new DatabaseSync(canonicalDatabaseWriterKey(ledgerDir));
   exhausted.exec("PRAGMA busy_timeout = 1; BEGIN IMMEDIATE");
   await assert.rejects(
     () =>
@@ -202,13 +201,13 @@ try {
   exhausted.exec("ROLLBACK");
   exhausted.close();
 
-  const newer = new DatabaseSync(canonicalSqlitePath(ledgerDir));
+  const newer = new DatabaseSync(canonicalDatabaseWriterKey(ledgerDir));
   try {
     newer.exec(`PRAGMA user_version = ${CANONICAL_SCHEMA_VERSION + 1}`);
   } finally {
     newer.close();
   }
-  assert.throws(() => openCanonicalDatabase(ledgerDir), /newer than supported/);
+  assert.throws(() => openCanonicalDatabaseHandle(ledgerDir), /newer than supported/);
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
@@ -218,7 +217,7 @@ async function makePopulatedLedger(
 ): Promise<{ dir: string; commitId: Buffer }> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   await commitCathayDomesticDeposit(dir, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const db = new DatabaseSync(canonicalSqlitePath(dir), { readOnly: true });
+  const db = new DatabaseSync(canonicalDatabaseWriterKey(dir), { readOnly: true });
   try {
     return {
       dir,
@@ -282,9 +281,9 @@ async function makeFieldLedger(
 {
   const dir = await mkdtemp(join(tmpdir(), "cathay-canonical-v7-empty-"));
   try {
-    const writer = openCanonicalDatabase(dir);
+    const writer = openCanonicalDatabaseHandle(dir);
     writer.close();
-    const readable = openCanonicalDatabase(dir, { readOnly: true });
+    const readable = openCanonicalDatabaseHandle(dir, { readOnly: true });
     readable.close();
     const query = createCathayCanonicalFinancialQuery(dir);
     assert.deepEqual(await query.current({ kind: "current" }), {
@@ -316,7 +315,7 @@ async function makeFieldLedger(
       [],
     );
 
-    const partial = new DatabaseSync(canonicalSqlitePath(dir));
+    const partial = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const commitId = Buffer.alloc(16, 0x2a);
     partial
       .prepare(
@@ -325,7 +324,7 @@ async function makeFieldLedger(
       .run(commitId);
     partial.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /empty|projection|generation|pointer|provenance/i,
     );
   } finally {
@@ -340,13 +339,13 @@ async function makeFieldLedger(
     "cathay-canonical-v7-red-arithmetic-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "UPDATE transaction_revisions SET amount_coefficient = '12abc'",
     );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /exact arithmetic|decimal/i,
     );
   } finally {
@@ -359,7 +358,7 @@ async function makeFieldLedger(
     "cathay-canonical-v7-red-route-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt
       .prepare(
         "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?)",
@@ -370,7 +369,7 @@ async function makeFieldLedger(
       .run();
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /authority|route/i,
     );
     assert.rejects(
@@ -387,7 +386,7 @@ async function makeFieldLedger(
     "cathay-canonical-v7-red-active-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt
       .prepare(
         `INSERT INTO projection_generations(generation_id, status, build_cutoff_commit_sequence, rule_version, created_commit_id, validated_commit_id, switched_commit_id)
@@ -396,7 +395,7 @@ async function makeFieldLedger(
       .run(commitId, commitId, commitId);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /active projection/i,
     );
   } finally {
@@ -409,7 +408,7 @@ async function makeFieldLedger(
     "cathay-canonical-v7-red-pointer-null-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "DROP TRIGGER trg_active_projection_generation_switch_update; DROP TRIGGER trg_active_projection_generation_commit_update",
     );
@@ -418,7 +417,7 @@ async function makeFieldLedger(
     );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /pointer|switch|projection state/i,
     );
   } finally {
@@ -439,7 +438,7 @@ async function makeFieldLedger(
       ...CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
       observedAt: "2026-08-18T00:00:00+08:00",
     });
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const ids = corrupt
       .prepare(
         "SELECT commit_id FROM canonical_commits ORDER BY commit_sequence",
@@ -452,7 +451,7 @@ async function makeFieldLedger(
       .run(Buffer.from(ids[1]!.commit_id));
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /pointer|switch|projection state/i,
     );
     assert.equal(first.commitSequence, 1);
@@ -465,14 +464,14 @@ async function makeFieldLedger(
   const { dir } = await makePopulatedLedger("cathay-canonical-v7-exact-valid-");
   try {
     const largeSigned = "-123456789012345678901234567890123456789";
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt
       .prepare(
         "UPDATE transaction_revisions SET amount_coefficient = ?, amount_scale = 2",
       )
       .run(largeSigned);
     corrupt.close();
-    const readable = openCanonicalDatabase(dir, { readOnly: true });
+    const readable = openCanonicalDatabaseHandle(dir, { readOnly: true });
     readable.close();
     const rebuilt = await rebuildCathayCanonicalProjection(dir);
     assert.equal(rebuilt.status, "switched");
@@ -495,7 +494,7 @@ async function makeFieldLedger(
     "cathay-canonical-v7-red-completeness-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const sourceRevision = corrupt
       .prepare(
         "SELECT revision_id FROM transaction_revisions ORDER BY revision_number, revision_id LIMIT 1",
@@ -536,13 +535,13 @@ async function makeFieldLedger(
       )
       .run(commitId, Buffer.from(sourceRevision.revision_id));
     corrupt.close();
-    const valid = openCanonicalDatabase(dir, { readOnly: true });
+    const valid = openCanonicalDatabaseHandle(dir, { readOnly: true });
     valid.close();
     await assert.rejects(
       () => rebuildCathayCanonicalProjection(dir),
       /complete|missing|identity|projection/i,
     );
-    const after = new DatabaseSync(canonicalSqlitePath(dir), {
+    const after = new DatabaseSync(canonicalDatabaseWriterKey(dir), {
       readOnly: true,
     });
     try {
@@ -619,14 +618,14 @@ for (const [label, corruptField] of [
     `cathay-canonical-v7-red-field-${label.replaceAll(" ", "-")}-`,
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_insert; DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_update",
     );
     corruptField(corrupt, otherTransactionId);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /field|assertion|projection|origin|generation/i,
       label,
     );
@@ -648,7 +647,7 @@ for (const [label, corruptField] of [
     "cathay-canonical-v7-red-user-provenance-route-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const sourceCommit = (
       corrupt
         .prepare(
@@ -665,7 +664,7 @@ for (const [label, corruptField] of [
       .run(Buffer.from(sourceCommit));
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /user|provenance|authority|route|commit/i,
     );
     await assert.rejects(
@@ -707,7 +706,7 @@ for (const origin of ["source", "derived", "user"] as const) {
         ],
       });
     }
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const assertion =
       origin === "source"
         ? corrupt
@@ -730,7 +729,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /provenance|lineage|source|assertion|selected/i,
       origin,
     );
@@ -749,7 +748,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     "cathay-canonical-v7-red-lifecycle-coordinate-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_insert; DROP TRIGGER IF EXISTS trg_assertion_transitions_integrity_update",
     );
@@ -762,7 +761,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       .run(Buffer.from(otherTransactionId.replaceAll("-", ""), "hex"));
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /lifecycle|coordinate|assertion|transaction/i,
     );
     await assert.rejects(
@@ -777,7 +776,7 @@ for (const origin of ["source", "derived", "user"] as const) {
 {
   const { dir } = await makeFieldLedger("cathay-canonical-v7-red-field-moved-");
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_insert; DROP TRIGGER IF EXISTS trg_projection_generation_fields_integrity_update",
     );
@@ -799,7 +798,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /field|complete|projection/i,
     );
     await assert.rejects(
@@ -828,7 +827,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       ).replace('"balance":12500', '"balance":13000'),
       observedAt: "2026-08-18T00:00:00+08:00",
     });
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const target = corrupt
       .prepare(
         `SELECT transaction_id, revision_id FROM current_transactions
@@ -856,7 +855,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     corrupt.close();
     assert.equal(first.transactions.length, 3);
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /revision|projection|identity|complete/i,
     );
     await assert.rejects(
@@ -873,7 +872,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     "cathay-canonical-v7-red-too-new-commit-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const maxSequence = Number(
       (
         corrupt
@@ -896,7 +895,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       .run(tooNew);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /commit|projection|cutoff/i,
     );
     await assert.rejects(
@@ -951,7 +950,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     assert.equal(current.note, "Stable note");
     assert.equal(current.displayLabelCommitSequence, user.commitSequence);
     assert.equal(current.noteCommitSequence, derived.commitSequence);
-    const readable = openCanonicalDatabase(dir, { readOnly: true });
+    const readable = openCanonicalDatabaseHandle(dir, { readOnly: true });
     try {
       assert.equal(
         readable
@@ -977,7 +976,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     "cathay-canonical-v7-red-transaction-selection-commit-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const unrelated = (
       corrupt
         .prepare(
@@ -995,7 +994,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /selection|projection|commit|provenance/i,
     );
     await assert.rejects(
@@ -1014,7 +1013,7 @@ for (const origin of ["source", "derived", "user"] as const) {
     "cathay-canonical-v7-red-orphan-knowledge-commit-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const maxSequence = Number(
       (
         corrupt
@@ -1050,7 +1049,7 @@ for (const origin of ["source", "derived", "user"] as const) {
       .run(orphan);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /switch|knowledge|provenance|projection/i,
     );
     await assert.rejects(
@@ -1122,11 +1121,11 @@ for (const [label, corrupt] of [
     `cathay-canonical-v7-red-chain-${label.replaceAll(" ", "-")}-`,
   );
   try {
-    const corruptDb = new DatabaseSync(canonicalSqlitePath(dir));
+    const corruptDb = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt(corruptDb);
     corruptDb.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /chain|provenance|knowledge|digest|commit|source/i,
       label,
     );
@@ -1148,7 +1147,7 @@ for (const [label, corrupt] of [
     "cathay-canonical-v7-red-chain-semantic-duplicate-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const last = corrupt
       .prepare(
         `SELECT event_id, commit_id, ordinal FROM projection_generation_provenance
@@ -1177,7 +1176,7 @@ for (const [label, corrupt] of [
       .run(duplicateId, ordinal, previous, commitId, digest);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /chain|provenance|knowledge|source/i,
     );
     await assert.rejects(
@@ -1197,7 +1196,7 @@ for (const [label, corrupt] of [
   );
   try {
     await rebuildCathayCanonicalProjection(dir);
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(
       "DROP TRIGGER IF EXISTS projection_generation_events_no_update",
     );
@@ -1206,7 +1205,7 @@ for (const [label, corrupt] of [
     );
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /chain|provenance|knowledge|generation/i,
     );
     await assert.rejects(
@@ -1223,7 +1222,7 @@ for (const [label, corrupt] of [
 {
   const { dir } = await makeFieldLedger("cathay-canonical-v7-chain-migration-");
   try {
-    const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    const legacy = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`PRAGMA foreign_keys = OFF;
       DROP TRIGGER IF EXISTS projection_generation_events_no_update;
@@ -1241,9 +1240,9 @@ for (const [label, corrupt] of [
       DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
-    const writer = openCanonicalDatabase(dir);
+    const writer = openCanonicalDatabaseHandle(dir);
     writer.close();
-    const migrated = openCanonicalDatabase(dir, { readOnly: true });
+    const migrated = openCanonicalDatabaseHandle(dir, { readOnly: true });
     try {
       assert.equal(
         migrated
@@ -1264,7 +1263,7 @@ for (const [label, corrupt] of [
     } finally {
       migrated.close();
     }
-    const immutable = new DatabaseSync(canonicalSqlitePath(dir));
+    const immutable = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     assert.throws(
       () =>
         immutable.exec(
@@ -1293,7 +1292,7 @@ for (const [label, corrupt] of [
     "cathay-canonical-v7-chain-migration-missing-phase-",
   );
   try {
-    const legacy = new DatabaseSync(canonicalSqlitePath(dir));
+    const legacy = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     rewindCurrentDatabaseToV23PhysicalSchema(legacy);
     legacy.exec(`PRAGMA foreign_keys = OFF;
       DROP TRIGGER IF EXISTS projection_generation_events_no_update;
@@ -1312,9 +1311,9 @@ for (const [label, corrupt] of [
       DELETE FROM schema_migrations WHERE version > 7;
       PRAGMA user_version = 7;`);
     legacy.close();
-    const writer = openCanonicalDatabase(dir);
+    const writer = openCanonicalDatabaseHandle(dir);
     writer.close();
-    const migrated = openCanonicalDatabase(dir, { readOnly: true });
+    const migrated = openCanonicalDatabaseHandle(dir, { readOnly: true });
     try {
       assert.deepEqual(
         (
@@ -1343,7 +1342,7 @@ for (const [label, corrupt] of [
     "cathay-canonical-v7-red-trigger-definition-",
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     corrupt.exec(`DROP TRIGGER projection_generation_events_no_update;
       DROP TRIGGER projection_generation_events_no_delete;
       CREATE TRIGGER projection_generation_events_no_update
@@ -1354,7 +1353,7 @@ for (const [label, corrupt] of [
       BEGIN SELECT RAISE(ABORT, 'projection generation provenance is append-only'); END;`);
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /trigger|append-only|provenance/i,
     );
   } finally {
@@ -1373,7 +1372,7 @@ for (const [status, phaseCount] of [
     `cathay-canonical-v7-red-stray-${status}-`,
   );
   try {
-    const corrupt = new DatabaseSync(canonicalSqlitePath(dir));
+    const corrupt = new DatabaseSync(canonicalDatabaseWriterKey(dir));
     const maxSequence = Number(
       (
         corrupt
@@ -1425,7 +1424,7 @@ for (const [status, phaseCount] of [
     }
     corrupt.close();
     assert.throws(
-      () => openCanonicalDatabase(dir, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(dir, { readOnly: true }),
       /building|validated|recovery|generation/i,
       status,
     );
@@ -1434,7 +1433,7 @@ for (const [status, phaseCount] of [
       /building|validated|recovery|generation/i,
       status,
     );
-    const unchanged = new DatabaseSync(canonicalSqlitePath(dir), {
+    const unchanged = new DatabaseSync(canonicalDatabaseWriterKey(dir), {
       readOnly: true,
     });
     try {

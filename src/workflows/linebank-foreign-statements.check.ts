@@ -145,7 +145,7 @@ function inputPagesWithoutEpoch() {
 
 const directory = await mkdtemp(join(tmpdir(), "linebank-foreign-133-"));
 try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   await commitForeignCurrencyDepositCapture(store, input);
   assert.equal(queryForeignCurrencyDepositCurrent(store).transactions.length, 1);
   store.close();
@@ -182,7 +182,7 @@ assert.throws(
 );
 const emptyLinebankDirectory = await mkdtemp(join(tmpdir(), "linebank-foreign-empty-133-"));
 try {
-  const store = createCanonicalSourceStore(join(emptyLinebankDirectory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(emptyLinebankDirectory);
   const result = await commitForeignCurrencyDepositCapture(
     store,
     admitForeignCurrencyDepositCapture(emptyLinebankInput),

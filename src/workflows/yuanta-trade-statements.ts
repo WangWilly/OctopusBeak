@@ -9,7 +9,6 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
-import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
 import {
   admitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCaptureBatch,
@@ -1576,9 +1575,7 @@ async function commitYuantaTradeCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
-  const store = createCanonicalInvestmentStore(
-    canonicalSqlitePath(input.canonicalLedgerDir),
-  );
+  const store = createCanonicalInvestmentStore(input.canonicalLedgerDir);
   try {
     await commitCanonicalInvestmentCaptureBatch(store, captures);
   } finally {

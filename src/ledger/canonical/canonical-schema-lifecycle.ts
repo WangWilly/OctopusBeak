@@ -127,6 +127,20 @@ export type CanonicalSchemaLifecycleOptions = CanonicalRuntimeOptions & {
   readonly readOnly?: boolean;
 };
 
+/**
+ * The only database value that may cross the canonical production seam. The
+ * compile-time brand complements the runtime WeakSet below; callers cannot
+ * manufacture a capability by wrapping an arbitrary `DatabaseSync`.
+ */
+declare const VALIDATED_CANONICAL_DATABASE_BRAND: unique symbol;
+type CanonicalDataOperation = "exec" | "prepare";
+export type ValidatedCanonicalDatabase = {
+  readonly [Operation in keyof DatabaseSync]:
+    Operation extends CanonicalDataOperation ? DatabaseSync[Operation] : never;
+} & {
+  readonly [VALIDATED_CANONICAL_DATABASE_BRAND]: true;
+};
+
 const VALIDATED_DATABASES = new WeakSet<object>();
 const VALIDATED_REPAIRERS = new WeakMap<object, (id: string) => void>();
 const VALIDATED_DATA_TRANSITIONERS = new WeakMap<
@@ -2718,7 +2732,7 @@ function validatedDatabaseCapability(
   db: DatabaseSync,
   close: () => void,
   repair: (id: string) => void,
-): DatabaseSync {
+): ValidatedCanonicalDatabase {
   installValidatedDatabaseAuthorizer(db);
   // Keep the native connection private.  A Proxy over DatabaseSync still
   // exposes its prototype, so a caller could invoke a native method with the
@@ -2730,10 +2744,10 @@ function validatedDatabaseCapability(
       db.exec(sql);
     },
     prepare(sql: string, ...options: unknown[]) {
-      return (db.prepare as (...args: unknown[]) => unknown)(sql, ...options);
+      return Reflect.apply(db.prepare, db, [sql, ...options]);
     },
     close,
-  }) as unknown as DatabaseSync;
+  }) as unknown as ValidatedCanonicalDatabase;
   VALIDATED_DATABASES.add(capability);
   VALIDATED_REPAIRERS.set(capability, repair);
   return capability;
@@ -2742,7 +2756,7 @@ function validatedDatabaseCapability(
 function scopedValidatedDatabaseCapability(
   db: DatabaseSync,
   isActive: () => boolean,
-): DatabaseSync {
+): ValidatedCanonicalDatabase {
   const assertActive = (): void => {
     if (!isActive())
       throw new Error("Canonical data-transition capability is revoked.");
@@ -2754,10 +2768,10 @@ function scopedValidatedDatabaseCapability(
     },
     prepare(sql: string, ...options: unknown[]) {
       assertActive();
-      const statement = (db.prepare as (...args: unknown[]) => object)(
+      const statement = Reflect.apply(db.prepare, db, [
         sql,
         ...options,
-      );
+      ]) as object;
       return new Proxy(statement, {
         get(target, property) {
           assertActive();
@@ -2774,13 +2788,15 @@ function scopedValidatedDatabaseCapability(
       assertActive();
       throw new Error("Canonical data-transition capability is lifecycle-owned.");
     },
-  }) as unknown as DatabaseSync;
+  }) as unknown as ValidatedCanonicalDatabase;
   VALIDATED_DATABASES.add(capability);
   return capability;
 }
 
 /** True only for a database returned by a successful lifecycle open. */
-export function isValidatedCanonicalDatabase(value: unknown): boolean {
+export function isValidatedCanonicalDatabase(
+  value: unknown,
+): value is ValidatedCanonicalDatabase {
   return (
     (typeof value === "object" && value !== null) || typeof value === "function"
   )
@@ -2792,7 +2808,7 @@ export function isValidatedCanonicalDatabase(value: unknown): boolean {
  * capability without exposing the full CanonicalSourceStore facade. */
 export function assertValidatedCanonicalDatabase(
   value: unknown,
-): asserts value is DatabaseSync {
+): asserts value is ValidatedCanonicalDatabase {
   if (!isValidatedCanonicalDatabase(value))
     throw new Error(
       "Canonical database capability must be created by the schema lifecycle.",
@@ -2800,7 +2816,7 @@ export function assertValidatedCanonicalDatabase(
 }
 
 export class ValidatedCanonicalStore {
-  readonly db: DatabaseSync;
+  readonly db: ValidatedCanonicalDatabase;
   readonly databasePath: string;
   /** Schema version observed before this lifecycle open began. */
   readonly openedFromVersion: number;

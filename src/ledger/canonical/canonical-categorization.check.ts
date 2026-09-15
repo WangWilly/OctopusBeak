@@ -8,8 +8,8 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCanonicalSourceStore,
-  openCanonicalDatabase,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   applyCanonicalTransactionTag,
   commitCanonicalCounterpartyDisplay,
@@ -23,10 +23,10 @@ import {
 } from "./canonical-categorization.ts";
 import {
   blob,
-  canonicalSqlitePath,
   idToString,
   uuidV7,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
@@ -53,7 +53,7 @@ async function fixtureWithInput(
 ): Promise<FixtureState> {
   const directory = await mkdtemp(join(tmpdir(), "canonical-categorization-"));
   await commitCathayDomesticDeposit(directory, input);
-  const db = openCanonicalDatabase(directory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   try {
     const row = db
       .prepare(
@@ -103,7 +103,7 @@ function admitTypedConversionEvidence(
   state: FixtureState,
   evidenceSourceRecordId = state.sourceRecordId,
 ): void {
-  const store = createCanonicalSourceStore(join(state.directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(state.directory);
   try {
     const row = store.db
       .prepare(
@@ -235,7 +235,7 @@ function matchesTransaction(transactionId: string, expectedId: string): boolean 
 
 test("E-Invoice-only canonical data leaves transaction Spending empty", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-spending-einvoice-only-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const input: CanonicalEInvoiceCaptureInput = {
     captureId: "spending-einvoice-only",
     sourceConnectionKey: "sha256:spending-einvoice-connection",
@@ -566,7 +566,7 @@ test("a later source revision makes the old allocation stale for Current while p
     );
     assert.equal(automatic.commitSequence, user.commitSequence - 1);
 
-    const currentDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const currentDb = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const currentRevision = currentDb
       .prepare(
         `SELECT revision.source_record_id
@@ -636,7 +636,7 @@ test("allocation rejects partial or duplicate targets without a commit and prese
   const state = await fixture();
   try {
     await publishPurchaseKind(state);
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const beforeCommits = Number(
       (
         db.prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits").get() as {
@@ -671,7 +671,7 @@ test("allocation rejects partial or duplicate targets without a commit and prese
       /duplicate target/u,
     );
 
-    const untouched = openCanonicalDatabase(state.directory, { readOnly: true });
+    const untouched = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     assert.equal(
       Number(
         (
@@ -740,7 +740,7 @@ test("conflicting categorization aliases fail before any assertion mutation", as
   try {
     await publishPurchaseKind(state);
     const before = spending(state);
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const countsBefore = db
       .prepare(
         `SELECT (SELECT MAX(commit_sequence) FROM canonical_commits) AS commits,
@@ -777,7 +777,7 @@ test("conflicting categorization aliases fail before any assertion mutation", as
       );
     }
     assert.deepEqual(spending(state), before);
-    const afterDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const afterDb = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const countsAfter = afterDb
       .prepare(
         `SELECT (SELECT MAX(commit_sequence) FROM canonical_commits) AS commits,
@@ -841,7 +841,7 @@ test("typed conversion evidence supports an exact split and rejects guessed or s
         ["transportation", "189", "TWD", state.sourceRecordId],
       ],
     );
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const before = db
       .prepare(
         `SELECT (SELECT MAX(commit_sequence) FROM canonical_commits) AS commits,
@@ -902,7 +902,7 @@ test("typed conversion evidence supports an exact split and rejects guessed or s
         }),
       /typed fact/u,
     );
-    const afterDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const afterDb = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const after = afterDb
       .prepare(
         `SELECT (SELECT MAX(commit_sequence) FROM canonical_commits) AS commits,
@@ -920,7 +920,7 @@ test("typed conversion evidence supports an exact split and rejects guessed or s
 test("typed conversion evidence rejects a different source record from the same capture", async () => {
   const state = await foreignConversionFixture();
   try {
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const current = db
       .prepare(
         `SELECT revision.capture_id, revision.source_record_id
@@ -979,7 +979,7 @@ test("typed conversion evidence rejects a different source record from the same 
         }),
       /typed fact/u,
     );
-    const after = openCanonicalDatabase(state.directory, { readOnly: true });
+    const after = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     assert.equal(
       Number(
         (after.prepare("SELECT COUNT(*) AS count FROM transaction_categorization_values").get() as {
@@ -1070,7 +1070,7 @@ test("allocation ownership rejects equal-amount cross-links and preserves the ac
     rawResponse: JSON.stringify(raw),
   });
   try {
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const rows = db
       .prepare(
         `SELECT current_row.transaction_id, revision.source_record_id,
@@ -1146,7 +1146,7 @@ test("allocation ownership rejects equal-amount cross-links and preserves the ac
       ],
     });
     const runtimeModule = await import("./canonical-projection-runtime.ts");
-    const writable = new DatabaseSync(canonicalSqlitePath(state.directory));
+    const writable = new DatabaseSync(canonicalDatabaseWriterKey(state.directory));
     try {
       writable.exec("PRAGMA foreign_keys = ON");
       const ownerSet = writable
@@ -1180,7 +1180,7 @@ test("allocation ownership rejects equal-amount cross-links and preserves the ac
       ["food_and_groceries", "travel"],
     );
 
-    const malformed = new DatabaseSync(canonicalSqlitePath(state.directory));
+    const malformed = new DatabaseSync(canonicalDatabaseWriterKey(state.directory));
     try {
       malformed.exec("PRAGMA foreign_keys = ON");
       const victimSet = malformed

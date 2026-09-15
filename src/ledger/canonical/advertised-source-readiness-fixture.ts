@@ -350,7 +350,7 @@ const SINOPAC_CAPTURE = {
 function writer(store: CanonicalSourceStore) {
   return {
     db: store.db,
-    databasePath: store.databasePath,
+    withWriter: store.withWriter,
     commitClock: store.commitClock,
   };
 }
@@ -540,7 +540,6 @@ export async function populateCanonicalReadinessLedger(
 
 export type CanonicalReadinessLedgerFixture = {
   directory: string;
-  databasePath: string;
   store: CanonicalSourceStore;
   close(): Promise<void>;
 };
@@ -553,14 +552,13 @@ export type CanonicalReadinessLedgerFixture = {
  */
 export async function createCanonicalReadinessLedgerFixture(): Promise<CanonicalReadinessLedgerFixture> {
   const directory = await mkdtemp(join(tmpdir(), "octopusbeak-readiness-"));
-  const databasePath = join(directory, "canonical.sqlite");
   let store: CanonicalSourceStore | undefined;
   try {
     // Cathay's writer owns its database handle, so let it create the first
     // schema generation before opening the shared source store for the other
     // source-specific financial writers.
     await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-    const lineBankStore = createDomesticDepositStore(databasePath);
+    const lineBankStore = createDomesticDepositStore(directory);
     try {
       const lineBank = validateLineBankHumanAttestedV13Fixture();
       if (lineBank.status !== "admissible" || !lineBank.capture) {
@@ -575,7 +573,7 @@ export async function createCanonicalReadinessLedgerFixture(): Promise<Canonical
     } finally {
       lineBankStore.close();
     }
-    store = createCanonicalSourceStore(databasePath);
+    store = createCanonicalSourceStore(directory);
     recordInitialCathayHumanAttestationIfMissing(
       store.db,
       CATHAY_DOMESTIC_DEPOSIT_FIXTURE.observedAt,
@@ -583,7 +581,6 @@ export async function createCanonicalReadinessLedgerFixture(): Promise<Canonical
     await populateCanonicalReadinessLedger(store, "initial");
     const fixture: CanonicalReadinessLedgerFixture = {
       directory,
-      databasePath,
       store,
       async close() {
         store?.close();

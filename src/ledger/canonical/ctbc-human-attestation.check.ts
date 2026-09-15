@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
@@ -35,7 +35,7 @@ assert.match(
 const directory = await mkdtemp(join(tmpdir(), "ctbc-attestation-check-"));
 try {
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(dirname(path));
   assert.equal(isCtbcHumanAttestationDurablyActive(store.db), false);
   recordInitialCtbcHumanAttestationIfMissing(
     store.db,
@@ -46,7 +46,7 @@ try {
     "attested",
   );
   store.close();
-  const reopened = createCanonicalSourceStore(path);
+  const reopened = createCanonicalSourceStore(dirname(path));
   assert.equal(isCtbcHumanAttestationDurablyActive(reopened.db), true);
   revokeCtbcHumanAttestedV1(
     "2026-08-24T11:00:00+08:00",

@@ -16,12 +16,12 @@ import {
   assertValidatedCanonicalSourceStore,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { validateCanonicalEInvoiceSchema } from "./canonical-database.ts";
 import {
   blob,
   idToString,
   uuidV7,
-  validateCanonicalEInvoiceSchema,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 
 export const E_INVOICE_INTEGRATION_NAMESPACE = "einvoice" as const;
 export const E_INVOICE_STREAM = "personal-invoices" as const;

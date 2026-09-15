@@ -9,7 +9,6 @@ import {
   openLedgerDatabase,
   type LedgerDatabase,
 } from "./db/client.ts";
-import { canonicalSqlitePath } from "./canonical/canonical-source-store.ts";
 import {
   admitCanonicalInvestmentCapture,
   commitCanonicalInvestmentCaptureBatch,
@@ -953,13 +952,13 @@ async function writeStatementJson(filePath: string, statement: StatementBatch[])
  * in one wallet also rolls back the complete batch.
  */
 export async function commitMaicoinCanonicalInvestmentCaptures(
-  databasePath: string,
+  ledgerDir: string,
   input: MaicoinInvestmentCaptureBuildInput,
 ) {
   const captures = buildMaicoinInvestmentCaptures(input).map(
     (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
   );
-  const store = createCanonicalInvestmentStore(databasePath);
+  const store = createCanonicalInvestmentStore(ledgerDir);
   try {
     return await commitCanonicalInvestmentCaptureBatch(store, captures);
   } finally {
@@ -1008,7 +1007,7 @@ export async function syncMaicoin(params: CliParams) {
     console.log("automation-progress: 80");
 
     const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
-      canonicalSqlitePath(params.ledgerDir),
+      params.ledgerDir,
       {
         captureId: syncRunId,
         providerEmail: walletSelection.providerEmail,

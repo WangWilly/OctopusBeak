@@ -28,9 +28,9 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
@@ -1341,9 +1341,7 @@ export default workflow("esunCreditCardStatements", {
       "not-configured";
     let canonicalCaptureCount = 0;
     if (canonicalCapture) {
-      const store = createCanonicalSourceStore(
-        canonicalSqlitePath(DEFAULT_LEDGER_DIR),
-      );
+      const store = createCanonicalSourceStore(DEFAULT_LEDGER_DIR);
       try {
         await commitEsunCreditCardCapture(store, canonicalCapture);
         if (currentUsedCredit) {

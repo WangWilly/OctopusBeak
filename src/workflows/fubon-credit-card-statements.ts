@@ -30,9 +30,9 @@ import {
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -2700,7 +2700,7 @@ export async function runFubonCreditCardStatements(
   let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
   if (overrides.canonicalFinancialLedgerDir && canonicalCaptures.length > 0) {
     const store = createCanonicalSourceStore(
-      canonicalSqlitePath(overrides.canonicalFinancialLedgerDir),
+      overrides.canonicalFinancialLedgerDir,
     );
     try {
       await commitFubonCreditCardCaptureBatch(store, canonicalCaptures);

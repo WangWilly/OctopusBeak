@@ -1253,7 +1253,7 @@ export function esunNeutralCreditCardCapture(
 
 export type EsunCreditCardWriterStore = Pick<
   CanonicalSourceStore,
-  "db" | "databasePath" | "commitClock"
+  "db" | "commitClock" | "withWriter"
 > & {
   readonly beforeEsunCreditExtensionCommit?: (db: DatabaseSync) => void;
 };

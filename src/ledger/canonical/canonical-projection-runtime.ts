@@ -1,8 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
-import { basename, dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { CANONICAL_SQLITE_FILE, blob } from "./canonical-schema-implementation.ts";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+import { blob } from "./canonical-local-identifier.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
+import type {
+  CanonicalDatabaseHandle,
+  ValidatedCanonicalDatabase,
+} from "./canonical-database.ts";
 import {
   canonicalProjectionRuntimeRebuildInternal,
   canonicalProjectionRuntimeRebuildInTransaction,
@@ -3285,28 +3288,28 @@ function readSnapshotInTransaction(
   });
 }
 
-function createRuntime(target: string | DatabaseSync): CanonicalProjectionRuntime {
-  const databasePath = typeof target === "string" ? target : null;
-  const ledgerDirectory =
-    databasePath !== null && basename(databasePath) === CANONICAL_SQLITE_FILE
-      ? dirname(databasePath)
-      : databasePath;
+function createRuntime(
+  target: string | ValidatedCanonicalDatabase | CanonicalDatabaseHandle,
+): CanonicalProjectionRuntime {
+  const ledgerDirectory = typeof target === "string" ? target : null;
+  const capability =
+    typeof target === "string" ? null : "db" in target ? target.db : target;
   return Object.freeze({
     applyCommit(commit: CanonicalProjectionCommitToken): void {
       if (typeof target === "string")
         throw new Error(
           "Canonical projection apply requires a Runtime bound to the caller-owned transaction.",
         );
-      applyCanonicalProjectionCommit(target, commit);
+      applyCanonicalProjectionCommit(capability!, commit);
     },
     read(request: CanonicalProjectionReadRequest): CanonicalProjectionSnapshot {
-      if (typeof target !== "string")
-        return withProjectionReadSnapshot(target, () =>
-          readSnapshotInTransaction(target, request),
+      if (capability !== null)
+        return withProjectionReadSnapshot(capability, () =>
+          readSnapshotInTransaction(capability, request),
         );
       if (ledgerDirectory === null)
         throw new Error("Canonical projection runtime database path is required.");
-      const db = openCanonicalDatabase(ledgerDirectory, { readOnly: true });
+      const db = openCanonicalDatabaseHandle(ledgerDirectory, { readOnly: true });
       try {
         return withProjectionReadSnapshot(db, () =>
           readSnapshotInTransaction(db, request),
@@ -3354,11 +3357,12 @@ function withProjectionReadSnapshot<T>(db: DatabaseSync, operation: () => T): T 
 }
 
 export function createCanonicalProjectionRuntime(
-  target: string | DatabaseSync,
+  target: string | ValidatedCanonicalDatabase | CanonicalDatabaseHandle,
 ): CanonicalProjectionRuntime {
   if (typeof target === "string" && !target.trim())
-    throw new Error("Canonical projection runtime database path is required.");
-  if (typeof target !== "string") assertValidatedCanonicalDatabase(target);
+    throw new Error("Canonical projection runtime ledger directory is required.");
+  if (typeof target !== "string")
+    assertValidatedCanonicalDatabase("db" in target ? target.db : target);
   return createRuntime(target);
 }
 

@@ -370,7 +370,7 @@ test("Yuanta resolves only after a complete committed capture and preserves it w
     assert.deepEqual(relationRequests[0]?.requiredCoverage, { complete: true });
     assert.equal("explicitLinks" in relationRequests[0]!, false);
 
-    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const store = createCanonicalSourceStore(directory);
     try {
       assert.equal(
         (

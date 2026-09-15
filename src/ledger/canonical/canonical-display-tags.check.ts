@@ -6,8 +6,8 @@ import test from "node:test";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  openCanonicalDatabase,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   applyCanonicalTransactionTag,
@@ -20,7 +20,7 @@ import {
   type CanonicalEnrichmentOutput,
 } from "./canonical-enrichment.ts";
 import { commitCanonicalAutomaticEnrichmentRun } from "./canonical-enrichment.ts";
-import { blob, idToString, uuidV7 } from "./canonical-schema-implementation.ts";
+import { blob, idToString, uuidV7 } from "./canonical-local-identifier.ts";
 import { CATHAY_GROUPED_COUNTERPARTY_CONTRACT_VERSION } from "./transaction-taxonomy.ts";
 
 type Fixture = Readonly<{
@@ -33,7 +33,7 @@ type Fixture = Readonly<{
 async function fixture(): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "canonical-display-tags-"));
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const db = openCanonicalDatabase(directory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   try {
     const row = db.prepare(`
       SELECT transaction_row.transaction_id, revision.source_record_id,
@@ -270,7 +270,7 @@ test("grouped roles keep member taxonomy and bind automatic displays to the sele
         },
       ],
     });
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       const members = db.prepare(`
         SELECT participation.role_code, typed.taxonomy_code
@@ -378,7 +378,7 @@ test("versioned grouped contracts preserve source and derived role permutations"
     // The source-store fixture has a deliberately small retained payload. Add
     // the explicit source role field in this isolated fixture to exercise the
     // source grouped contract without changing the published source parser.
-    const sourceDb = openCanonicalDatabase(state.directory);
+    const sourceDb = openCanonicalDatabaseHandle(state.directory);
     try {
       const row = sourceDb.prepare(
         "SELECT payload_json FROM source_records WHERE source_record_id = ?",
@@ -437,7 +437,7 @@ test("versioned grouped contracts preserve source and derived role permutations"
     const sourceCurrent = createCanonicalEnrichmentQuery(state.directory).current({ transactionIds: [state.transactionId] }).transactions[0]!;
     assert.deepEqual(sourceCurrent.counterparties.map((row) => row.taxonomyCode), ["merchant", "marketplace"]);
     assert.equal(sourceCurrent.counterparties.every((row) => row.origin === "source"), true);
-    const reopenedAfterSource = openCanonicalDatabase(state.directory, { readOnly: true });
+    const reopenedAfterSource = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     reopenedAfterSource.close();
 
     const derived = await commitCanonicalAutomaticEnrichmentRun(state.directory, {
@@ -711,7 +711,7 @@ test("tag values require a User Assertion and survive an atomic projection rebui
     assert.equal(before.display.status, "supported");
     if (before.display.status !== "supported") throw new Error("Expected display before rebuild.");
 
-    const db = openCanonicalDatabase(state.directory);
+    const db = openCanonicalDatabaseHandle(state.directory);
     try {
       const latestCommit = db.prepare(
         "SELECT commit_id FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1",

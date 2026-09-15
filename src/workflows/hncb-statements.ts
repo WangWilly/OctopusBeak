@@ -12,9 +12,9 @@ import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
 import {
   deriveHncbDomesticDepositAccountNumberEvidence,
@@ -1225,22 +1225,22 @@ export async function runHncbStatements(
     process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
+  const sourceDatabasePath = canonicalDatabaseWriterKey(sourceLedgerDir);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
+    ? canonicalDatabaseWriterKey(financialLedgerDir)
     : null;
   if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
     throw new Error(
       "HNCB source and financial captures must use the same canonical SQLite database.",
     );
-  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
+  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
   const financialStore = financialDatabasePath ? sourceStore : null;
   const financialWriter: CanonicalFinancialDepositWriterStore | null =
     financialStore
       ? {
           db: financialStore.db,
-          databasePath: financialStore.databasePath,
+          withWriter: financialStore.withWriter,
           commitClock: () => financialStore.commitClock(),
         }
       : null;

@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase } from "./canonical-database.ts";
 import { createHash } from "node:crypto";
 import {
   createCanonicalSourceCaptureAdmission,
@@ -201,8 +202,7 @@ export type DomesticDepositValidatedCapture = DomesticDepositCapture & {
 };
 
 export type DomesticDepositStore = {
-  readonly db: DatabaseSync;
-  readonly databasePath: string;
+  readonly db: ValidatedCanonicalDatabase;
   readonly sourceStore: ReturnType<typeof createCanonicalSourceStore>;
   close(): void;
 };
@@ -355,17 +355,16 @@ function ensureOpen(store: DomesticDepositStore): void {
 }
 
 export function createDomesticDepositStore(
-  databasePath: string,
+  ledgerDir: string,
 ): DomesticDepositStore {
-  if (typeof databasePath !== "string" || databasePath.trim() === "") {
-    throw new Error("A durable domestic-deposit SQLite path is required.");
+  if (typeof ledgerDir !== "string" || ledgerDir.trim() === "") {
+    throw new Error("A durable domestic-deposit ledger directory is required.");
   }
-  const path = databasePath.trim();
-  const sourceStore = createCanonicalSourceStore(path);
+  const directory = ledgerDir.trim();
+  const sourceStore = createCanonicalSourceStore(directory);
   let closed = false;
   return {
     db: sourceStore.db,
-    databasePath: path,
     sourceStore,
     close() {
       if (!closed) {

@@ -48,9 +48,9 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
@@ -1499,21 +1499,19 @@ export async function runSinopacStatements(
     process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const sourceStore = createCanonicalSourceStore(
-    canonicalSqlitePath(sourceLedgerDir),
-  );
+  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialStore = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir) ===
-      canonicalSqlitePath(sourceLedgerDir)
+    ? canonicalDatabaseWriterKey(financialLedgerDir) ===
+      canonicalDatabaseWriterKey(sourceLedgerDir)
       ? sourceStore
-      : createCanonicalSourceStore(canonicalSqlitePath(financialLedgerDir))
+      : createCanonicalSourceStore(financialLedgerDir)
     : null;
   const financialWriter: CanonicalFinancialDepositWriterStore | null =
     financialStore
       ? {
           db: financialStore.db,
-          databasePath: financialStore.databasePath,
+          withWriter: financialStore.withWriter,
           commitClock: () => financialStore.commitClock(),
         }
       : null;

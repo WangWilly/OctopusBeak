@@ -6,8 +6,8 @@ import test from "node:test";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  openCanonicalDatabase,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   commitCanonicalAutomaticEnrichmentRun,
   commitCanonicalUserCounterpartyDisplay,
@@ -19,7 +19,8 @@ import {
 } from "./canonical-enrichment.ts";
 import { commitCanonicalUserCategorization } from "./canonical-categorization.ts";
 import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
-import { blob, canonicalSqlitePath, idToString } from "./canonical-schema-implementation.ts";
+import { blob, idToString } from "./canonical-local-identifier.ts";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 type FixtureState = Readonly<{
@@ -38,7 +39,7 @@ function requireSupported(field: CanonicalEnrichmentFieldResult): SupportedField
   return field;
 }
 
-function countRows(db: ReturnType<typeof openCanonicalDatabase>, sql: string): number {
+function countRows(db: ReturnType<typeof openCanonicalDatabaseHandle>, sql: string): number {
   const row = db.prepare(sql).get() as { value?: unknown } | undefined;
   return Number(row?.value ?? 0);
 }
@@ -46,7 +47,7 @@ function countRows(db: ReturnType<typeof openCanonicalDatabase>, sql: string): n
 async function createFixtureState(): Promise<FixtureState> {
   const directory = await mkdtemp(join(tmpdir(), "canonical-enrichment-"));
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const db = openCanonicalDatabase(directory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   try {
     const row = db.prepare(`
       SELECT transaction_row.transaction_id, revision.source_record_id,
@@ -246,7 +247,7 @@ test("current enrichment reuses a caller-owned projection snapshot without mixin
   const state = await createFixtureState();
   try {
     await commitCathayAutomaticEnrichmentFromDescriptions(state.directory);
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       const projection = createCanonicalProjectionRuntime(db).read({
         kind: "current",
@@ -255,7 +256,7 @@ test("current enrichment reuses a caller-owned projection snapshot without mixin
       });
       const transactionIds = projection.families.transactions.map((row) => row.transactionId);
       const reused = queryCanonicalEnrichmentCurrentFromDatabase(
-        db,
+        db.db,
         { transactionIds },
         projection,
       );
@@ -298,7 +299,7 @@ test("current enrichment batches display, participation, and tag reads for multi
         transactionId,
       });
 
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       const projection = createCanonicalProjectionRuntime(db).read({
         kind: "current",
@@ -306,12 +307,12 @@ test("current enrichment batches display, participation, and tag reads for multi
         scope: { transactionIds },
       });
       const preparedSql: string[] = [];
-      const observedDb = Object.create(db) as typeof db;
+      const observedDb = Object.create(db.db) as typeof db.db;
       Object.defineProperty(observedDb, "prepare", {
         configurable: true,
         value: (sql: string) => {
           preparedSql.push(sql);
-          return db.prepare(sql);
+          return db.db.prepare(sql);
         },
       });
       const current = queryCanonicalEnrichmentCurrentFromDatabase(
@@ -438,7 +439,7 @@ test("complete runs require one explicit result for every declared subject field
       }),
       /missing a declared subject\/field/u,
     );
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
@@ -474,7 +475,7 @@ test("effective Kind and Category admission is atomic, including winner and unsu
       }),
       /incompatible with Kind transfer\.internal/u,
     );
-    const db = openCanonicalDatabase(winnerState.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(winnerState.directory, { readOnly: true });
     try {
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
     } finally {
@@ -503,7 +504,7 @@ test("effective Kind and Category admission is atomic, including winner and unsu
       }),
       /category cannot be captured without a transaction Kind/u,
     );
-    const db = openCanonicalDatabase(unsupportedState.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(unsupportedState.directory, { readOnly: true });
     try {
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
     } finally {
@@ -539,7 +540,7 @@ test("Source admission rejects forged or non-retained Cathay taxonomy fields and
       }),
       /not retained by the source contract/u,
     );
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
@@ -555,7 +556,7 @@ test("Source admission rejects forged or non-retained Cathay taxonomy fields and
 test("Derived description evidence must retain the same transaction's source record", async () => {
   const state = await createFixtureState();
   try {
-    const db = openCanonicalDatabase(state.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     let otherSourceRecordId: string;
     try {
       const row = db.prepare(`
@@ -602,7 +603,7 @@ test("Derived description evidence must retain the same transaction's source rec
 test("published producer metadata cannot be mutated and is checked on reopen", async () => {
   const state = await createFixtureState();
   try {
-    const db = openCanonicalDatabase(state.directory);
+    const db = openCanonicalDatabaseHandle(state.directory);
     try {
       assert.throws(
         () => db.prepare(`
@@ -614,7 +615,7 @@ test("published producer metadata cannot be mutated and is checked on reopen", a
     } finally {
       db.close();
     }
-    const reopened = openCanonicalDatabase(state.directory, { readOnly: true });
+    const reopened = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     reopened.close();
   } finally {
     await discard(state.directory);
@@ -653,7 +654,7 @@ test("a supported role creates a lifecycle-visible participation without a refer
 test("missing and overlapping authority routes fail admission before a commit", async () => {
   const missing = await createFixtureState();
   try {
-    const db = openCanonicalDatabase(missing.directory);
+    const db = openCanonicalDatabaseHandle(missing.directory);
     // Close the published route immediately before the attempted run. Route
     // rows are immutable records; interval closure is the supported way to
     // represent a gap in a later knowledge point.
@@ -675,7 +676,7 @@ test("missing and overlapping authority routes fail admission before a commit", 
 
   const overlap = await createFixtureState();
   try {
-    const db = openCanonicalDatabase(overlap.directory);
+    const db = openCanonicalDatabaseHandle(overlap.directory);
     db.prepare(`
       INSERT INTO automatic_enrichment_authority_routes(
         route_id, subject_kind, field_name, scope_kind, scope_key,
@@ -770,7 +771,7 @@ test("compatible Category and Counterparty Role values are typed and incompatibl
       }),
       /incompatible with Kind/u,
     );
-    const db = openCanonicalDatabase(incompatible.directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(incompatible.directory, { readOnly: true });
     try {
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM canonical_commits"), 2);
       assert.equal(countRows(db, "SELECT COUNT(*) AS value FROM enrichment_runs"), 1);
@@ -931,7 +932,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
     });
     const before = createCanonicalEnrichmentQuery(state.directory).current({ sourceConnectionKey: state.sourceConnectionKey }).transactions[0]!;
     assert.equal(requireSupported(before.kind).code, "cash.deposit");
-    const beforeDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const beforeDb = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const beforeProvenance = countRows(beforeDb, "SELECT COUNT(*) AS value FROM assertion_provenance WHERE enrichment_run_id IS NOT NULL");
     const beforeTransitions = countRows(
       beforeDb,
@@ -976,7 +977,7 @@ test("complete unsupported output withdraws one producer lineage, while failed o
         "receipt",
     );
 
-    const afterWithdrawalDb = openCanonicalDatabase(state.directory, { readOnly: true });
+    const afterWithdrawalDb = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     const afterWithdrawal = {
       provenance: countRows(afterWithdrawalDb, "SELECT COUNT(*) AS value FROM assertion_provenance WHERE enrichment_run_id IS NOT NULL"),
       transitions: countRows(afterWithdrawalDb, "SELECT COUNT(*) AS value FROM assertion_transitions WHERE enrichment_run_id IS NOT NULL"),
@@ -1110,7 +1111,7 @@ test("projection rebuild failure preserves the current typed enrichment projecti
     await commitCathayAutomaticEnrichmentFromDescriptions(state.directory);
     const query = createCanonicalEnrichmentQuery(state.directory);
     const before = query.current({ sourceConnectionKey: state.sourceConnectionKey });
-    const runtime = createCanonicalProjectionRuntime(canonicalSqlitePath(state.directory));
+    const runtime = createCanonicalProjectionRuntime(state.directory);
     await assert.rejects(runtime.rebuild({ injectFailure: "population" }), /Injected projection rebuild failure/u);
     const after = query.current({ sourceConnectionKey: state.sourceConnectionKey });
     assert.deepEqual(after.transactions, before.transactions);
@@ -1133,7 +1134,7 @@ test("a route revision selects the new assertion while historical knowledge poin
     });
     const oldRouteId = "cathay/domestic-deposit/automatic-enrichment/v1/kind";
     const newRouteId = "cathay/domestic-deposit/automatic-enrichment/v1/kind-route-revision";
-    const db = openCanonicalDatabase(state.directory);
+    const db = openCanonicalDatabaseHandle(state.directory);
     db.prepare("UPDATE automatic_enrichment_authority_routes SET valid_to_commit_sequence = ? WHERE route_id = ?").run(first.commitSequence + 1, oldRouteId);
     db.prepare(`
       INSERT INTO automatic_enrichment_authority_routes(
@@ -1171,7 +1172,7 @@ test("a route revision selects the new assertion while historical knowledge poin
     }).transactions[0]!;
     assert.equal(requireSupported(afterRouteChange.kind).code, "transfer.internal");
     assert.equal(requireSupported(afterRouteChange.kind).route.id, newRouteId);
-    const dbAfter = openCanonicalDatabase(state.directory, { readOnly: true });
+    const dbAfter = openCanonicalDatabaseHandle(state.directory, { readOnly: true });
     try {
       assert.equal(countRows(dbAfter, "SELECT COUNT(*) AS value FROM assertions WHERE field_name = 'kind'"), 5);
       assert.equal(countRows(dbAfter, "SELECT COUNT(*) AS value FROM assertion_transitions WHERE field_name = 'kind' AND event_kind = 'superseded'"), 0);

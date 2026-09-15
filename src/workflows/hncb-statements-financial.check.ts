@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Frame, Page } from "playwright";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   createDomesticDepositStore,
   queryCurrent,
@@ -132,9 +132,7 @@ try {
     },
   );
   assert.equal(output.status, "financial-admitted");
-  const financial = createCanonicalSourceStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const financial = createCanonicalSourceStore(join(root, "financial"));
   try {
     validateCanonicalSourceStore(financial);
     assert.equal(
@@ -189,9 +187,7 @@ try {
       ).value,
     );
     financial.close();
-    const financialQuery = createDomesticDepositStore(
-      canonicalSqlitePath(join(root, "financial")),
-    );
+    const financialQuery = createDomesticDepositStore(join(root, "financial"));
     try {
       const current = queryCurrent(financialQuery, {
         integrationNamespace: "hncb",
@@ -265,9 +261,7 @@ try {
     },
   );
   assert.equal(overviewReplay.status, "financial-admitted");
-  const overviewStore = createCanonicalSourceStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const overviewStore = createCanonicalSourceStore(join(root, "financial"));
   try {
     assert.equal(
       (
@@ -335,9 +329,7 @@ try {
       "source-only",
       "a no-transaction account still admits its current overview capture",
     );
-    const noDataStore = createCanonicalSourceStore(
-      canonicalSqlitePath(join(noDataRoot, "financial")),
-    );
+    const noDataStore = createCanonicalSourceStore(join(noDataRoot, "financial"));
     try {
       assert.equal(
         (
@@ -396,9 +388,7 @@ try {
     await rm(noDataRoot, { recursive: true, force: true });
   }
 
-  const reopenedFinancialQuery = createDomesticDepositStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const reopenedFinancialQuery = createDomesticDepositStore(join(root, "financial"));
   try {
     const reopenedCommitSequence = Number(
       (
@@ -525,9 +515,7 @@ try {
     );
   assert.equal((await runMultiAccount()).status, "financial-admitted");
   assert.equal((await runMultiAccount()).status, "financial-admitted");
-  const multiAccountStore = createCanonicalSourceStore(
-    canonicalSqlitePath(multiAccountDirectory),
-  );
+  const multiAccountStore = createCanonicalSourceStore(multiAccountDirectory);
   try {
     assert.equal(
       (
@@ -584,9 +572,7 @@ try {
       ),
     /HNCB later-account failure/i,
   );
-  const laterFailureStore = createCanonicalSourceStore(
-    canonicalSqlitePath(laterAccountFailureDirectory),
-  );
+  const laterFailureStore = createCanonicalSourceStore(laterAccountFailureDirectory);
   try {
     assert.equal(
       (
@@ -643,9 +629,7 @@ try {
     },
   );
   assert.equal(sameDatabaseOutput.status, "financial-admitted");
-  const sameDatabaseStore = createCanonicalSourceStore(
-    canonicalSqlitePath(sameDatabaseDirectory),
-  );
+  const sameDatabaseStore = createCanonicalSourceStore(sameDatabaseDirectory);
   try {
     assert.equal(
       (

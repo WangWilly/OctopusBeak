@@ -297,10 +297,10 @@ await assert.rejects(
 const persistentDir = await mkdtemp(join(tmpdir(), "linebank-domestic-store-"));
 try {
   const persistentPath = join(persistentDir, "canonical.sqlite");
-  const durable = createDomesticDepositStore(persistentPath);
+  const durable = createDomesticDepositStore(persistentDir);
   await commitCanonicalDomesticDeposit(durable, capture);
   durable.close();
-  const reopened = createDomesticDepositStore(persistentPath);
+  const reopened = createDomesticDepositStore(persistentDir);
   assert.equal(queryCurrent(reopened).records.length, 1);
   assert.equal(queryCurrent(reopened).provenanceCount, 1);
   reopened.close();

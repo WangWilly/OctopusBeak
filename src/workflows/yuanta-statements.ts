@@ -33,10 +33,10 @@ import {
 } from "../ledger/canonical/yuanta-domestic-deposit.ts";
 import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   type CanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import type { CanonicalFinancialDepositValidatedCapture } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
 import {
   deriveSourceConnectionIdentityKey,
@@ -1170,21 +1170,21 @@ export async function runYuantaStatements(
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
   const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
+  const sourceDatabasePath = canonicalDatabaseWriterKey(sourceLedgerDir);
   const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
   const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
+    ? canonicalDatabaseWriterKey(financialLedgerDir)
     : null;
   if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
     throw new Error(
       "Yuanta source and financial captures must use the same canonical SQLite database.",
     );
-  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
+  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
   const financialStore = financialDatabasePath ? sourceStore : null;
   const financialWriter = financialStore
     ? {
         db: financialStore.db,
-        databasePath: financialStore.databasePath,
+        withWriter: financialStore.withWriter,
         commitClock: () => financialStore.commitClock(),
       }
     : null;
