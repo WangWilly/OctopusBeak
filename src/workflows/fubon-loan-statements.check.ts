@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer } from "vite";
 import {
   FUBON_LOAN_PAGINATION_FIXTURES_V1,
@@ -11,8 +13,10 @@ import {
 const { persistFubonLoanCapture } =
   await import("../ledger/canonical/fubon-loan.ts");
 const { runFubonLoanStatements } = await import("./fubon-loan-statements.ts");
-const { FUBON_LOAN_CONTRACT_VERSION } =
+const { createCanonicalLoanStore, FUBON_LOAN_CONTRACT_VERSION } =
   await import("../ledger/canonical/loan-financial.ts");
+const { deriveFubonSourceConnectionKey, fubonStableLoginScope } =
+  await import("./fubon-source-connection.ts");
 
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
@@ -77,8 +81,47 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
   );
 });
 
+test("opens an existing canonical database through the default loan-store path", async () => {
+  const ledgerDir = await mkdtemp(join(tmpdir(), "fubon-loan-existing-ledger-"));
+  const sourceConnectionScope = fubonStableLoginScope({
+    fubon_user_id: "fubon-loan-regression-user",
+    fubon_account: "fubon-loan-regression-account",
+  })!;
+  const sourceConnectionKey = deriveFubonSourceConnectionKey({
+    fubon_user_id: "fubon-loan-regression-user",
+    fubon_account: "fubon-loan-regression-account",
+  })!;
+
+  try {
+    const seededStore = createCanonicalLoanStore(ledgerDir);
+    seededStore.close();
+
+    await assert.rejects(
+      () =>
+        runFubonLoanStatements(
+          fakePage([Object.assign(fakeScope("txnFrame"), { ready: true })]),
+          {
+            downloadFormat: "EXCEL",
+            loanAccountLabels: [],
+            quickMonths: "6",
+          },
+          {
+            canonicalFinancialLedgerDir: ledgerDir,
+            canonicalLedgerDir: ledgerDir,
+            sourceConnectionScope,
+            sourceConnectionKey,
+          },
+        ),
+      /No Fubon loan account is available/u,
+    );
+  } finally {
+    await rm(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 type FakeLocator = Locator & {
   selector: string;
+  locator(selector: string): FakeLocator;
 };
 
 type FakeScope = {
@@ -117,6 +160,9 @@ class TestHTMLElement {
 function fakeLocator(scope: FakeScope, selector: string): FakeLocator {
   const locator = {
     selector,
+    locator(childSelector: string) {
+      return fakeLocator(scope, `${selector} ${childSelector}`);
+    },
     first() {
       return this;
     },
@@ -164,7 +210,8 @@ function fakeLocator(scope: FakeScope, selector: string): FakeLocator {
 
       const present =
         (selector === "#form1\\:loanAccountCombo" ||
-          selector === "form#form1") &&
+          selector === "form#form1" ||
+          selector === "#form1\\:loanAccountCombo option") &&
         scope.ready;
       const linkPresent =
         selector === "a.task_CLNQU001.menu_CLN02" &&
