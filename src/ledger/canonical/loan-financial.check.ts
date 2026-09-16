@@ -23,6 +23,8 @@ import {
   commitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical-financial-admission.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "./canonical-source-capture-admission.ts";
 import {
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
@@ -1256,6 +1258,63 @@ test("loan canonical writer preserves source-scoped accounts and exact facts", a
     assert.equal(lineage.transactions.length, 1);
     assert.equal(lineage.lineage.length, 1);
     assert.equal(lineage.lineage[0]?.payload.eventKind, "disbursement");
+  } finally {
+    store.close();
+  }
+});
+
+test("loan in-transaction admission rolls back every prepared spine before extension failure", async () => {
+  const input = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  const observation = input.balanceObservations[0]!;
+  const sourceRecord = input.records.find(
+    (record) => record.sourceRecordKey === observation.sourceRecordKey,
+  )!;
+  sourceRecord.balanceSourceEvidence = sourceRecord.balanceSourceEvidence!.map(
+    (evidence) => ({
+      ...evidence,
+      correctionOfObservationKey: observation.observationKey,
+    }),
+  );
+  observation.correctionEvidence = {
+    kind: "source-correction",
+    sourceRecordKey: observation.sourceRecordKey,
+    observationKey: observation.observationKey,
+    contractVersion: input.contractVersion,
+  };
+  const capture = admitCanonicalLoanCapture(input);
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await assert.rejects(
+      () =>
+        withCanonicalSourceCaptureAdmissionTransaction(
+          store.sourceStore,
+          (capability) =>
+            commitCanonicalFinancialAdmissionInTransaction(
+              store,
+              { kind: "loan", capture },
+              capability,
+            ),
+        ),
+      /correction evidence must target an existing observation/i,
+    );
+    for (const table of [
+      "canonical_commits",
+      "source_captures",
+      "financial_transactions",
+      "loan_account_identities",
+      "balance_observations",
+    ])
+      assert.equal(
+        Number(
+          (
+            store.db
+              .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+        `${table} must roll back with the failed loan extension`,
+      );
   } finally {
     store.close();
   }

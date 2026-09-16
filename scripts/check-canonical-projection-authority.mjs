@@ -164,7 +164,9 @@ function sourceStoreLifecycleLines(source) {
     const index = lines.findIndex((line) => line.includes(marker));
     return index < 0 ? null : index + 1;
   };
-  const firstProductWriter = lineOf("function commitCathayDomesticDepositSyncOnce(");
+  const firstProductWriter = lineOf(
+    "function commitCathayDomesticDepositSyncInStore(",
+  );
   const rebuildStart = lineOf("function rebuildCathayCanonicalProjectionOnce(");
   const rebuildEnd = lineOf("export function commitCathayDomesticDeposit(");
   const compatibilityStart = lineOf("function syncActiveProjectionFromCompatibility(");

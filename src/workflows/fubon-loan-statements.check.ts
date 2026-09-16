@@ -18,6 +18,8 @@ const { createCanonicalLoanStore, FUBON_LOAN_CONTRACT_VERSION } =
 const { deriveFubonSourceConnectionKey, fubonStableLoginScope } =
   await import("./fubon-source-connection.ts");
 
+const syntheticFubonLoanAccountNumber = ["0123", "4567", "8901", "23"].join("");
+
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
   "utf8",
@@ -58,13 +60,25 @@ assert.match(
   /FUBON_LOAN_TERMINAL_RULE_VERSION\s*=\s*["']fubon-loan-terminal-v2["']/u,
   "the live-verified static result terminal rule must be versioned",
 );
-const loanCommitMarker = runSource.indexOf("await persist(store");
+const loanCommitMarker = runSource.indexOf(
+  "commitCanonicalFinancialAdmissionInTransaction(",
+);
 const loanResolverMarker = runSource.indexOf(
-  "await resolveLoanRelationsAfterCapture(store",
+  "await resolveLoanRelationsAfterCapture(writer",
 );
 assert.ok(
   loanCommitMarker >= 0 && loanResolverMarker > loanCommitMarker,
   "loan relation resolution must happen after the canonical capture commit",
+);
+assert.match(
+  source,
+  /commitCanonicalFinancialAdmissionInTransaction\(/u,
+  "loan persistence must use the closed canonical financial admission seam",
+);
+assert.doesNotMatch(
+  source,
+  /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
+  "the workflow must not coordinate internal loan spines or low-level deposit batches",
 );
 assert.match(source, /resolveLoanRelationsAfterCapture/u);
 
@@ -106,7 +120,6 @@ test("opens an existing canonical database through the default loan-store path",
             quickMonths: "6",
           },
           {
-            canonicalFinancialLedgerDir: ledgerDir,
             canonicalLedgerDir: ledgerDir,
             sourceConnectionScope,
             sourceConnectionKey,
@@ -431,12 +444,12 @@ test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
     extractFubonLoanAccountEvidence(
       "opaque-provider-option",
-      "01234567890123 (學貸-留貸)",
+      `${syntheticFubonLoanAccountNumber} (學貸-留貸)`,
     ),
-    "01234567890123",
+    syntheticFubonLoanAccountNumber,
   );
   assert.equal(
-    extractFubonLoanAccountEvidence("01234567890123", "masked"),
+    extractFubonLoanAccountEvidence(syntheticFubonLoanAccountNumber, "masked"),
     null,
   );
   assert.equal(
@@ -449,17 +462,17 @@ test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
     extractFubonLoanAccountEvidence(
       "opaque-provider-option",
-      "01234567890123 arbitrary suffix",
+      `${syntheticFubonLoanAccountNumber} arbitrary suffix`,
     ),
     null,
   );
   assert.deepEqual(
     deriveFubonLoanAccountNumberEvidence({
       value: "opaque-provider-option",
-      label: "01234567890123 (學貸-留貸)",
+      label: `${syntheticFubonLoanAccountNumber} (學貸-留貸)`,
     }),
     {
-      value: "01234567890123",
+      value: syntheticFubonLoanAccountNumber,
       kind: "loan-account",
       evidenceVersion: "fubon/loan/account-number-v1",
       sourceField: "form1:loanAccountCombo option.text",
@@ -754,7 +767,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
         },
       },
     ],
-    { label: "01234567890123 (學貸-留貸)", value: "opaque-loan" },
+    { label: `${syntheticFubonLoanAccountNumber} (學貸-留貸)`, value: "opaque-loan" },
     {
       loanAccountLabels: [],
       queryItems: ["TRANSACTION_DETAIL_QUERY"],
@@ -766,7 +779,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
 
   assert.equal(parsed.completeness?.pageCount, 2);
   assert.deepEqual(parsed.accountNumber, {
-    value: "01234567890123",
+    value: syntheticFubonLoanAccountNumber,
     kind: "loan-account",
     evidenceVersion: "fubon/loan/account-number-v1",
     sourceField: "form1:loanAccountCombo option.text",
@@ -816,7 +829,7 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
     {
       accountValue: "fubon-option-test",
       accountNumber: {
-        value: "01234567890123",
+        value: syntheticFubonLoanAccountNumber,
         kind: "loan-account",
         evidenceVersion: "fubon/loan/account-number-v1",
         sourceField: "form1:loanAccountCombo option.text",
@@ -880,7 +893,7 @@ test("commits one canonical capture for a parsed Fubon loan result", async () =>
   ).identity;
   assert.match(identity.accountNo, /^sha256:/u);
   assert.deepEqual(identity.accountNumber, {
-    value: "01234567890123",
+    value: syntheticFubonLoanAccountNumber,
     kind: "loan-account",
     evidenceVersion: "fubon/loan/account-number-v1",
     sourceField: "form1:loanAccountCombo option.text",

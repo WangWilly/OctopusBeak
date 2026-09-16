@@ -20,6 +20,8 @@ import {
   commitCanonicalFinancialDepositCaptureBatch,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical-financial-admission.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "./canonical-source-capture-admission.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
@@ -510,6 +512,54 @@ try {
   }
 } finally {
   await rm(batchRollbackDirectory, { recursive: true, force: true });
+}
+
+// The closed admission adapter must preserve the generic writer's all-or-
+// nothing behavior while using a caller-owned transaction capability.
+const closedAdmissionBatchRollbackDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-financial-admission-batch-rollback-"),
+);
+try {
+  const store = createCanonicalSourceStore(closedAdmissionBatchRollbackDirectory);
+  try {
+    await assert.rejects(
+      () =>
+        withCanonicalSourceCaptureAdmissionTransaction(
+          store,
+          (capability) =>
+            commitCanonicalFinancialAdmissionInTransaction(
+              store,
+              { kind: "generic", captures: [admittedCapture, admittedCapture] },
+              capability,
+            ),
+        ),
+      /overwrite|capture/i,
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM source_captures")
+          .get() as { value?: number }
+      ).value,
+      0,
+      "a failed generic admission group rolls back every source spine",
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
+          .get() as { value?: number }
+      ).value,
+      0,
+    );
+  } finally {
+    store.close();
+  }
+} finally {
+  await rm(closedAdmissionBatchRollbackDirectory, {
+    recursive: true,
+    force: true,
+  });
 }
 
 const mixedDirectory = await mkdtemp(join(tmpdir(), "yuanta-mixed-ledger-v1-"));

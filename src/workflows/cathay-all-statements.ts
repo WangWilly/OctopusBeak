@@ -18,6 +18,7 @@ import {
 } from "./cathay-foreign-statements.js";
 import { retryableStage } from "./retryable-stage.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 
 const statementTypeSchema = z
   .enum(["domestic", "foreign_currency", "foreign"])
@@ -89,6 +90,15 @@ const outputSchema = z.object({
 });
 
 const inputSchema = createInputSchema();
+
+function resolveCathayCanonicalLedgerDir(): string {
+  const configured =
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+    process.env.LEDGER_DIR?.trim();
+  if (configured && /[\u0000-\u001f\u007f]/u.test(configured))
+    throw new Error("Invalid Cathay canonical ledger directory.");
+  return configured || DEFAULT_LEDGER_DIR;
+}
 const cathayAllStatementsDependencies = {
   signInCathay,
   createCathaySession,
@@ -130,6 +140,7 @@ export async function runCathayAllStatements(
     .filter((typeId) => requestedIds.has(typeId));
   if (!selectedIds.length)
     throw new Error("Select at least one Cathay statement type.");
+  const canonicalLedgerDir = resolveCathayCanonicalLedgerDir();
   console.log("automation-progress: 0");
 
   page.on("dialog", async (dialog) => {
@@ -164,7 +175,11 @@ export async function runCathayAllStatements(
               input.dateRange,
               input.domesticAccountFilters ?? input.accountFilters,
               cathaySession,
-              { telemetry: input.telemetry, captureCurrentBalances: true },
+              {
+                telemetry: input.telemetry,
+                captureCurrentBalances: true,
+                canonicalLedgerDir,
+              },
             ),
         });
         return downloads.map((download) => ({
@@ -200,14 +215,21 @@ export async function runCathayAllStatements(
             );
           },
         });
-        await commitCathayForeignCanonicalCaptures(
-          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
-          canonicalCollector.captures,
-        );
+        const committedForeignCaptures =
+          await commitCathayForeignCanonicalCaptures(
+            canonicalLedgerDir,
+            canonicalCollector.captures,
+          );
+        if (
+          committedForeignCaptures.length !== canonicalCollector.captures.length
+        )
+          throw new Error(
+            "Cathay foreign canonical persistence partially completed.",
+          );
         await captureCathayCurrentForeignDepositBalances(
           page,
           canonicalCollector.captures,
-          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+          canonicalLedgerDir,
         );
         return downloads.map((download) => ({
           type: "foreign" as const,

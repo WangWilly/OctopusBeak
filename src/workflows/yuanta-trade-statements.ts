@@ -11,13 +11,17 @@ import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
 import {
   admitCanonicalInvestmentCapture,
-  commitCanonicalInvestmentCaptureBatch,
-  createCanonicalInvestmentStore,
   YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   type InvestmentFundingEvidence,
   type InvestmentTransactionAction,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
+import {
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
 import {
   buildYuantaInvestmentCapture,
   YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -1575,12 +1579,38 @@ async function commitYuantaTradeCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
-  const store = createCanonicalInvestmentStore(input.canonicalLedgerDir);
-  try {
-    await commitCanonicalInvestmentCaptureBatch(store, captures);
-  } finally {
-    store.close();
-  }
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
+    (capture) => ({
+      provider: "yuanta-trade",
+      product: "investment",
+      itemKey: capture.captureId,
+      commit: ({ writer, admission }) =>
+        commitCanonicalFinancialAdmissionInTransaction(
+          writer,
+          { kind: "investment", captures: [capture] },
+          admission,
+        ),
+      resolveRelations: async ({ writer }) => {
+        await runCanonicalInvestmentRelationFollowThrough(
+          writer,
+          undefined,
+          "yuanta-trade-investment-relation-resolution-failed",
+        );
+      },
+    }),
+  );
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: input.canonicalLedgerDir,
+    items: executionItems,
+    provider: "yuanta-trade",
+    product: "investment",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Yuanta trade canonical persistence ${executionResult.status}: ${executionResult.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
 }
 
 export default workflow("yuantaTradeStatements", {

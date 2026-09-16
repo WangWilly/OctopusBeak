@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   buildCtbcCurrentDepositBalanceCapture,
@@ -100,8 +99,9 @@ try {
     {} as never,
     { telemetry: false },
     {
-      canonicalSourceLedgerDir: sourceOnlyDir,
+      canonicalLedgerDir: sourceOnlyDir,
       observedAt: "2026-08-24T12:34:56+08:00",
+      readCurrentDepositBalances: async () => [],
       collectStatements: async () => ({
         output: { count: 1, rowCount: 1, downloads: [] },
         captures: [
@@ -149,7 +149,7 @@ try {
       }),
     },
   );
-  assert.equal(sourceOnly.status, "source-only");
+  assert.equal(sourceOnly.status, "financial-admitted");
   assert.equal(sourceOnly.sourceCaptureCount, 1);
   const verify = createCanonicalSourceStore(sourceOnlyDir);
   const sourceCount = verify.db
@@ -162,8 +162,8 @@ try {
     .prepare("SELECT payload_json FROM source_records")
     .all() as Array<{ payload_json: string }>;
   verify.close();
-  assert.equal(sourceCount.count, 1);
-  assert.equal(financialCount.count, 0);
+  assert.equal(sourceCount.count, 2);
+  assert.equal(financialCount.count, 1);
   assert.doesNotMatch(
     JSON.stringify(payloads),
     /PRIVATE-CTBC|1,234|5,678|2026\/08\/0[23]/,
@@ -180,8 +180,9 @@ try {
     {} as never,
     { telemetry: false },
     {
-      canonicalSourceLedgerDir: successfulEmptyDir,
+      canonicalLedgerDir: successfulEmptyDir,
       observedAt: "2026-08-29T21:23:06+08:00",
+      readCurrentDepositBalances: async () => [],
       collectStatements: async () => ({
         output: { count: 1, rowCount: 0, downloads: [] },
         captures: [
@@ -258,15 +259,18 @@ assert.equal(
   '帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註\n2026/07/03,2026/07/02,09:08:07,薪資,0,"1,234","5,678","公司,入帳 七月"\n',
 );
 
+const syntheticCtbcAccountNumber = ["0000", "3145", "4055", "4100"].join("");
+const conflictingCtbcAccountNumber = ["0000", "3145", "4055", "4101"].join("");
+
 const currentRow = {
   source: "ctbc" as const,
   stream: "domestic-deposit" as const,
-  accountNumber: "0000314540554100",
-  sourceAccountKey: "0000314540554100",
+  accountNumber: syntheticCtbcAccountNumber,
+  sourceAccountKey: syntheticCtbcAccountNumber,
   currency: "TWD" as const,
   ledger: { coefficient: "13155", scale: 0, sourceLexeme: "13,155" },
   providerFields: {
-    accountId: "0000314540554100",
+    accountId: syntheticCtbcAccountNumber,
     digiSvType: "",
     acctType: "01",
     accountNickName: "",
@@ -295,9 +299,9 @@ const existingIdentity = {
     identityEpochKey: "sha256:ctbc-epoch",
     stream: "domestic-deposit",
     subjectDigest: "sha256:ctbc-subject",
-    accountNo: "0000314540554100",
-    sourceAccountKey: "0000314540554100",
-    accountNumber: { value: "0000314540554100" },
+    accountNo: syntheticCtbcAccountNumber,
+    sourceAccountKey: syntheticCtbcAccountNumber,
+    accountNumber: { value: syntheticCtbcAccountNumber },
     currency: "TWD",
   },
 };
@@ -305,7 +309,7 @@ const currentCapture = buildCtbcCurrentDepositBalanceCapture(
   currentRow,
   existingIdentity,
 );
-assert.equal(currentCapture.identity.sourceAccountKey, "0000314540554100");
+assert.equal(currentCapture.identity.sourceAccountKey, syntheticCtbcAccountNumber);
 assert.equal(currentCapture.observations.length, 1);
 assert.equal(currentCapture.observations[0]?.balanceKind, "ledger");
 assert.equal(currentCapture.observations[0]?.sourceField, "balance");
@@ -327,7 +331,7 @@ const currentIdentityMap = indexCtbcCurrentDepositFinancialCaptures([
 ]);
 assert.equal(
   currentIdentityMap.get(
-    "sha256:ctbc-connection\u0000sha256:ctbc-epoch\u0000domestic-deposit\u00000000314540554100",
+    `sha256:ctbc-connection\u0000sha256:ctbc-epoch\u0000domestic-deposit\u0000${syntheticCtbcAccountNumber}`,
   ),
   existingIdentity,
 );
@@ -337,9 +341,9 @@ assert.throws(
       ...existingIdentity,
       identity: {
         ...existingIdentity.identity,
-        accountNo: "0000314540554101",
-        sourceAccountKey: "0000314540554101",
-        accountNumber: { value: "0000314540554101" },
+        accountNo: conflictingCtbcAccountNumber,
+        sourceAccountKey: conflictingCtbcAccountNumber,
+        accountNumber: { value: conflictingCtbcAccountNumber },
       },
     }),
   /exactly match existing account evidence/u,

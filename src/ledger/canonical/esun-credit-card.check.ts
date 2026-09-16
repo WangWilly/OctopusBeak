@@ -486,7 +486,7 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
       statementRows: [{ ...billedRow, issuerStatementPeriod: undefined }],
       unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
     };
-    const first = buildEsunCanonicalCreditCardCapture(
+    const firstCapture = buildEsunCanonicalCreditCardCapture(
       options({
         ...rowsWithoutQueryPeriod,
         captureId: "capture-esun-query-day-one",
@@ -495,36 +495,86 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
         endDate: "2026-08-26",
       }),
     );
-    const second = buildEsunCanonicalCreditCardCapture(
+    const periodAppearsCapture = buildEsunCanonicalCreditCardCapture(
       options({
-        ...rowsWithoutQueryPeriod,
-        captureId: "capture-esun-query-day-two",
+        statementRows: [{ ...billedRow, issuerStatementPeriod: "2026-07" }],
+        unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
+        captureId: "capture-esun-query-period-appears",
         observedAt: "2026-08-27T00:00:00.000Z",
         startDate: "2025-08-27",
         endDate: "2026-08-27",
       }),
     );
-    await commitEsunCreditCardCapture(store, first);
-    await commitEsunCreditCardCapture(store, second);
-
-    const records = store.db.prepare(`
-      SELECT occurrence_key, content_hash, payload_json
-      FROM source_records
-      WHERE record_kind = 'esun-credit-card-transaction'
-      ORDER BY occurrence_key, rowid
-    `).all() as Array<{
+    const periodDisappearsCapture = buildEsunCanonicalCreditCardCapture(
+      options({
+        ...rowsWithoutQueryPeriod,
+        captureId: "capture-esun-query-period-disappears",
+        observedAt: "2026-08-28T00:00:00.000Z",
+        startDate: "2025-08-28",
+        endDate: "2026-08-28",
+      }),
+    );
+    const first = await commitEsunCreditCardCapture(store, firstCapture);
+    const originalRecords = store.db.prepare(`
+      SELECT record.occurrence_key, record.content_hash, record.payload_json
+      FROM source_records AS record
+      JOIN source_record_provenance AS provenance
+        ON provenance.source_record_id = record.source_record_id
+      JOIN source_captures AS capture
+        ON capture.capture_id = provenance.capture_id
+      WHERE capture.capture_key = ?
+        AND record.record_kind = 'esun-credit-card-transaction'
+      ORDER BY record.rowid
+    `).all("capture-esun-query-day-one") as Array<{
       occurrence_key?: string;
       content_hash?: string;
       payload_json?: string;
     }>;
-    assert.equal(records.length, 4);
-    for (let index = 0; index < records.length; index += 2) {
-      const firstRecord = records[index]!;
-      const repeatedRecord = records[index + 1]!;
-      assert.equal(firstRecord.occurrence_key, repeatedRecord.occurrence_key);
-      assert.equal(firstRecord.content_hash, repeatedRecord.content_hash);
-      assert.equal(firstRecord.payload_json, repeatedRecord.payload_json);
+    assert.equal(originalRecords.length, 2);
+    const appeared = await commitEsunCreditCardCapture(store, periodAppearsCapture);
+    const disappeared = await commitEsunCreditCardCapture(store, periodDisappearsCapture);
+    assert.equal(appeared.accountId, first.accountId);
+    assert.equal(disappeared.accountId, first.accountId);
+
+    const records = store.db.prepare(`
+      SELECT capture.capture_key, record.occurrence_key, record.content_hash, record.payload_json
+      FROM source_records AS record
+      JOIN source_record_provenance AS provenance
+        ON provenance.source_record_id = record.source_record_id
+      JOIN source_captures AS capture
+        ON capture.capture_id = provenance.capture_id
+      WHERE record.record_kind = 'esun-credit-card-transaction'
+      ORDER BY capture.capture_key, record.rowid
+    `).all() as Array<{
+      capture_key?: string;
+      occurrence_key?: string;
+      content_hash?: string;
+      payload_json?: string;
+    }>;
+    assert.equal(records.length, 6);
+    assert.equal(new Set(records.map((record) => record.occurrence_key)).size, 2);
+    for (const original of originalRecords) {
+      const persisted = records.find(
+        (record) =>
+          record.capture_key === "capture-esun-query-day-one" &&
+          record.occurrence_key === original.occurrence_key,
+      );
+      assert.equal(persisted?.content_hash, original.content_hash);
+      assert.equal(persisted?.payload_json, original.payload_json);
     }
+    const captureOccurrenceKeys = records.map(
+      (record) => `${record.capture_key}\u0000${record.occurrence_key}`,
+    );
+    assert.equal(new Set(captureOccurrenceKeys).size, 6);
+    const capturesByOccurrence = new Map<string, Set<string>>();
+    for (const record of records) {
+      const occurrenceKey = String(record.occurrence_key);
+      const captures = capturesByOccurrence.get(occurrenceKey) ?? new Set<string>();
+      captures.add(String(record.capture_key));
+      capturesByOccurrence.set(occurrenceKey, captures);
+    }
+    assert.equal(capturesByOccurrence.size, 2);
+    assert.ok([...capturesByOccurrence.values()].every((captures) => captures.size === 3));
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get() as {
         count?: number;
@@ -542,6 +592,7 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
     assert.deepEqual(scopes, [
       { scope_start: "2025-08-26", scope_end: "2026-08-26" },
       { scope_start: "2025-08-27", scope_end: "2026-08-27" },
+      { scope_start: "2025-08-28", scope_end: "2026-08-28" },
     ]);
 
     const changedIssuerPeriod = buildEsunCanonicalCreditCardCapture(
@@ -553,6 +604,17 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
     );
     await assert.rejects(
       commitEsunCreditCardCapture(store, changedIssuerPeriod),
+      /Source occurrence content overwrite is forbidden/i,
+    );
+    const changedCardMask = buildEsunCanonicalCreditCardCapture(
+      options({
+        captureId: "capture-esun-card-mask-change",
+        statementRows: [{ ...billedRow, issuerStatementPeriod: undefined, cardNumber: "****5678" }],
+        unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined, cardNumber: "****5678" }],
+      }),
+    );
+    await assert.rejects(
+      commitEsunCreditCardCapture(store, changedCardMask),
       /Source occurrence content overwrite is forbidden/i,
     );
   } finally {

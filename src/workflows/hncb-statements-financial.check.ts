@@ -7,7 +7,6 @@ import {
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import {
   createDomesticDepositStore,
   queryCurrent,
@@ -107,8 +106,7 @@ try {
       outputDir: join(root, "downloads"),
     },
     {
-      canonicalSourceLedgerDir: join(root, "financial"),
-      canonicalFinancialLedgerDir: join(root, "financial"),
+      canonicalLedgerDir: join(root, "financial"),
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],
@@ -236,8 +234,7 @@ try {
       outputDir: join(root, "overview-replay-downloads"),
     },
     {
-      canonicalSourceLedgerDir: join(root, "financial"),
-      canonicalFinancialLedgerDir: join(root, "financial"),
+      canonicalLedgerDir: join(root, "financial"),
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],
@@ -315,8 +312,7 @@ try {
         outputDir: join(noDataRoot, "downloads"),
       },
       {
-        canonicalSourceLedgerDir: join(noDataRoot, "financial"),
-        canonicalFinancialLedgerDir: join(noDataRoot, "financial"),
+        canonicalLedgerDir: join(noDataRoot, "financial"),
         readAccountOptions: async () => [
           { label: noDataAccountNumber, value: noDataAccountNumber },
         ],
@@ -435,36 +431,6 @@ try {
     reopenedFinancialQuery.close();
   }
 
-  const sameDatabaseDirectory = join(root, "same-database");
-
-  let splitStoreCollected = false;
-  await assert.rejects(
-    () =>
-      runHncbStatements(
-        page,
-        {
-          startDate: "2026/08/01",
-          endDate: "2026/08/20",
-          accountFilters: [],
-          outputDir: join(root, "split-store-downloads"),
-        },
-        {
-          canonicalSourceLedgerDir: join(root, "split-source"),
-          canonicalFinancialLedgerDir: join(root, "split-financial"),
-          readAccountOptions: async () => {
-            splitStoreCollected = true;
-            return [];
-          },
-        },
-      ),
-    /same canonical SQLite database/i,
-  );
-  assert.equal(
-    splitStoreCollected,
-    false,
-    "split source/financial stores fail closed before collection",
-  );
-
   const multiAccountDirectory = join(root, "multi-account");
   const secondAccount = {
     label: "HNCB SECOND ACCOUNT",
@@ -487,8 +453,7 @@ try {
         outputDir: join(root, "multi-account-downloads"),
       },
       {
-        canonicalSourceLedgerDir: multiAccountDirectory,
-        canonicalFinancialLedgerDir: multiAccountDirectory,
+        canonicalLedgerDir: multiAccountDirectory,
         readAccountOptions: async () => [
           { label: "HNCB ACCOUNT", value: primaryAccountNumber },
           secondAccount,
@@ -542,8 +507,7 @@ try {
           outputDir: join(root, "later-account-failure-downloads"),
         },
         {
-          canonicalSourceLedgerDir: laterAccountFailureDirectory,
-          canonicalFinancialLedgerDir: laterAccountFailureDirectory,
+          canonicalLedgerDir: laterAccountFailureDirectory,
           readAccountOptions: async () => [
             { label: "HNCB ACCOUNT", value: primaryAccountNumber },
             secondAccount,
@@ -595,6 +559,7 @@ try {
     laterFailureStore.close();
   }
 
+  const sameDatabaseDirectory = join(root, "same-database");
   const sameDatabaseOutput = await runHncbStatements(
     page,
     {
@@ -604,8 +569,7 @@ try {
       outputDir: join(root, "same-database-downloads"),
     },
     {
-      canonicalSourceLedgerDir: sameDatabaseDirectory,
-      canonicalFinancialLedgerDir: sameDatabaseDirectory,
+      canonicalLedgerDir: sameDatabaseDirectory,
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],

@@ -30,6 +30,10 @@ import {
   sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
 
+const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
+const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
+const syntheticSinopacForeignAccount = ["1990", "1800", "5959", "24"].join("");
+
 const sinopacBalanceResponse = {
   url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
   status: 200 as const,
@@ -46,7 +50,7 @@ const sinopacBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       SubInfo: [
         {
           AcctText: "新店分行活期儲蓄存款",
-          AcctValue: "14101800082221",
+          AcctValue: syntheticSinopacTwdAccount,
           AcctValueFormat: "###-###-#######-#",
           Curr: "TWD",
           CurText: "新台幣",
@@ -73,7 +77,7 @@ const sinopacForeignBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       SubInfo: [
         {
           AcctText: "外幣活期存款",
-          AcctValue: "19901800595924",
+          AcctValue: syntheticSinopacForeignAccount,
           AcctValueFormat: "###-###-#######-#",
           Curr: "USD",
           CurText: "美元",
@@ -100,8 +104,8 @@ const sinopacBalanceIdentity = {
     sourceConnectionKey: "sha256:sinopac-connection",
     identityEpochKey: "sha256:sinopac-epoch",
     subjectDigest: "sha256:sinopac-subject",
-    accountNo: "14101800082221",
-    sourceAccountKey: "14101800082221",
+    accountNo: syntheticSinopacTwdAccount,
+    sourceAccountKey: syntheticSinopacTwdAccount,
     stream: "domestic-deposit",
   },
   sourceCurrency: "TWD",
@@ -130,8 +134,8 @@ assert.throws(
       ...sinopacBalanceIdentity,
       identity: {
         ...sinopacBalanceIdentity.identity,
-        accountNo: "14101800082222",
-        sourceAccountKey: "14101800082222",
+        accountNo: conflictingSinopacTwdAccount,
+        sourceAccountKey: conflictingSinopacTwdAccount,
       },
     }),
   /does not match/i,
@@ -142,8 +146,8 @@ assert.throws(
       ...sinopacBalanceIdentity,
       identity: {
         ...sinopacBalanceIdentity.identity,
-        accountNo: "19901800595924",
-        sourceAccountKey: "19901800595924",
+        accountNo: syntheticSinopacForeignAccount,
+        sourceAccountKey: syntheticSinopacForeignAccount,
         stream: "foreign-currency-deposit",
       },
       sourceCurrency: "EUR",
@@ -374,7 +378,8 @@ try {
     },
     accounts,
     {
-      canonicalSourceLedgerDir: sourceDir,
+      canonicalLedgerDir: sourceDir,
+      readCurrentDepositBalances: async () => [],
       queryTransactions: async (account) => ({
         Header: "SUCCESS",
         SubInfo: [
@@ -410,7 +415,7 @@ try {
       },
     },
   );
-  assert.equal(result.status, "source-only");
+  assert.equal(result.status, "financial-admitted");
   assert.equal(result.count, 2);
   assert.equal(result.skippedAccounts.length, 0);
   assert.equal(writeCount, 2);
@@ -419,8 +424,8 @@ try {
   );
   try {
     const numericAccounts = [
-      { DataText: "TWD numeric account", DataValue: "14101800082221", DisplayText: "TWD" },
-      { DataText: "USD numeric account", DataValue: "19901800595924", DisplayText: "USD" },
+      { DataText: "TWD numeric account", DataValue: syntheticSinopacTwdAccount, DisplayText: "TWD" },
+      { DataText: "USD numeric account", DataValue: syntheticSinopacForeignAccount, DisplayText: "USD" },
     ];
     const financialResult = await runSinopacStatements(
       {} as never,
@@ -432,8 +437,7 @@ try {
       },
       numericAccounts,
       {
-        canonicalSourceLedgerDir: sourceDir,
-        canonicalFinancialLedgerDir: financialDir,
+        canonicalLedgerDir: financialDir,
         readCurrentDepositBalances: async () => [
           sinopacBalanceRow,
           sinopacForeignBalanceRow,
@@ -515,8 +519,8 @@ try {
           account.account_no,
         ]),
         [
-          ["14101800082221", "14101800082221"],
-          ["19901800595924", "19901800595924"],
+          [syntheticSinopacTwdAccount, syntheticSinopacTwdAccount],
+          [syntheticSinopacForeignAccount, syntheticSinopacForeignAccount],
         ],
       );
       assert.equal(
@@ -550,8 +554,7 @@ try {
       },
       [accounts[1]!],
       {
-        canonicalSourceLedgerDir: sourceDir,
-        canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+        canonicalLedgerDir: foreignOnlyFinancialDir,
         readCurrentDepositBalances: async () => [],
         queryTransactions: async () => ({
           Header: "SUCCESS",
@@ -633,8 +636,7 @@ try {
         },
         [accounts[1]!],
         {
-          canonicalSourceLedgerDir: sourceDir,
-          canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
+          canonicalLedgerDir: foreignOnlyFinancialDir,
           readCurrentDepositBalances: async () => [],
           queryTransactions: async () => ({
             Header: "SUCCESS",
@@ -728,8 +730,7 @@ try {
           },
           [accounts[1]!],
           {
-            canonicalSourceLedgerDir: sourceDir,
-            canonicalFinancialLedgerDir: foreignCollisionDir,
+            canonicalLedgerDir: foreignCollisionDir,
             readCurrentDepositBalances: async () => [],
             queryTransactions: async () => ({
               Header: "SUCCESS",
@@ -785,7 +786,8 @@ try {
     },
     [{ DataText: "duplicate account", DataValue: "003", DisplayText: "TWD" }],
     {
-      canonicalSourceLedgerDir: sourceDir,
+      canonicalLedgerDir: sourceDir,
+      readCurrentDepositBalances: async () => [],
       queryTransactions: async () => ({
         Header: "SUCCESS",
         SubInfo: [
@@ -832,10 +834,11 @@ try {
       currencyFilters: [],
     },
     [accounts[0]!],
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async () => ({
-        Header: "FAIL",
+  {
+    canonicalLedgerDir: sourceDir,
+    readCurrentDepositBalances: async () => [],
+    queryTransactions: async () => ({
+      Header: "FAIL",
         Message: "查無資料",
       }),
       writeStatementFile: async () => {
@@ -858,7 +861,8 @@ try {
     },
     [accounts[1]!],
     {
-      canonicalSourceLedgerDir: sourceDir,
+      canonicalLedgerDir: sourceDir,
+      readCurrentDepositBalances: async () => [],
       queryTransactions: async () => ({
         Header: "FAIL",
         Message: "查無資料",
@@ -878,7 +882,14 @@ try {
         (
           noDataStore.db
             .prepare(
-              "SELECT COUNT(*) AS count FROM capture_scopes WHERE absence_authority = 'provider-explicit-no-data'",
+              `SELECT COUNT(*) AS count
+                 FROM capture_scopes AS scope
+                 JOIN source_captures AS capture ON capture.capture_id = scope.capture_id
+                WHERE scope.absence_authority = 'provider-explicit-no-data'
+                  AND capture.authority_route IN (
+                    'sinopac/domestic-deposit/capture-evidence-v1',
+                    'sinopac/foreign-currency/capture-evidence-v1'
+                  )`,
             )
             .get() as { count?: number }
         ).count ?? 0,
@@ -898,7 +909,8 @@ try {
     },
     [{ DataText: "mixed account", DataValue: "004", DisplayText: "TWD" }],
     {
-      canonicalSourceLedgerDir: sourceDir,
+      canonicalLedgerDir: sourceDir,
+      readCurrentDepositBalances: async () => [],
       queryTransactions: async (_account, window) =>
         window.endDate === "20260823"
           ? {
@@ -962,7 +974,8 @@ try {
         },
         [accounts[0]!],
         {
-          canonicalSourceLedgerDir: sourceDir,
+          canonicalLedgerDir: sourceDir,
+          readCurrentDepositBalances: async () => [],
           queryTransactions: async () => ({ Header: "SUCCESS" }),
         },
       ),

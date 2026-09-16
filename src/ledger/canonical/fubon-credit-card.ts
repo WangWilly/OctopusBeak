@@ -11,9 +11,14 @@ export {
 } from "./fubon-credit-card-schema.ts";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
+  type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+} from "./canonical-source-capture-admission.ts";
 import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
@@ -1682,10 +1687,37 @@ function persistFubonCanonicalExtensions(
   }
 }
 
-export async function commitFubonCreditCardCaptureBatch(
+function toFubonCreditCardCommitResult(
+  store: FubonCreditCardWriterStore,
+  capture: FubonCreditCardValidatedCapture,
+  result: CanonicalFinancialDepositCommitResult,
+): FubonCreditCardCommitResult {
+  const row = store.db.prepare(
+    `SELECT hex(scope.account_id) AS account_id
+     FROM source_captures capture
+     JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+     WHERE capture.capture_key = ?`,
+  ).get(capture.captureId) as { account_id?: string } | undefined;
+  if (!row?.account_id)
+    throw new Error("Fubon shared canonical account is missing after commit.");
+  return {
+    status: "canonical-live",
+    canonicalAdmission: "admitted",
+    captureId: capture.captureId,
+    accountId: row.account_id.toLowerCase(),
+    commitSequence: result.commitSequence,
+    transactionCount: result.transactionCount,
+    statementCount: capture.statements.length,
+    relationCount: capture.relations.length,
+    provenanceCount: result.provenanceCount,
+  };
+}
+
+export function commitFubonCreditCardCaptureBatchInTransaction(
   store: FubonCreditCardWriterStore,
   captures: readonly FubonCreditCardValidatedCapture[],
-): Promise<FubonCreditCardCommitResult[]> {
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): FubonCreditCardCommitResult[] {
   if (captures.length === 0) throw new FubonCreditCardAdmissionError("Fubon credit-card capture batch cannot be empty.");
   for (const capture of captures) {
     if (!hasValidatedCapture(capture))
@@ -1693,9 +1725,10 @@ export async function commitFubonCreditCardCaptureBatch(
   }
   if (peekFubonCreditCardHumanAttestationStatus(store.db) === "revoked")
     throw new FubonCreditCardAdmissionError("Fubon credit-card durable human attestation is revoked.");
-  const committed = await commitCanonicalFinancialDepositCaptureBatch(
-      store,
-      captures.map(fubonCanonicalSpineCapture),
+  const committed = commitCanonicalFinancialDepositCaptureBatchInTransaction(
+    store,
+    captures.map(fubonCanonicalSpineCapture),
+    capability,
     (db) => {
       ensureFubonCreditCardSchema(db);
       recordInitialFubonCreditCardHumanAttestationV2IfMissing(db);
@@ -1711,26 +1744,27 @@ export async function commitFubonCreditCardCaptureBatch(
       );
     },
   );
-  return committed.map((result, index) => {
-    const capture = captures[index]!;
-    const row = store.db.prepare(
-      `SELECT hex(scope.account_id) AS account_id
-       FROM source_captures capture
-       JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
-       WHERE capture.capture_key = ?`,
-    ).get(capture.captureId) as { account_id?: string } | undefined;
-    if (!row?.account_id)
-      throw new Error("Fubon shared canonical account is missing after commit.");
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      captureId: capture.captureId,
-      accountId: row.account_id.toLowerCase(),
-      commitSequence: result.commitSequence,
-      transactionCount: result.transactionCount,
-      statementCount: capture.statements.length,
-      relationCount: capture.relations.length,
-      provenanceCount: result.provenanceCount,
-    };
-  });
+  return committed.map((result, index) =>
+    toFubonCreditCardCommitResult(store, captures[index]!, result),
+  );
+}
+
+/** Commit one Fubon capture inside an execution-owned transaction. */
+export function commitFubonCreditCardCaptureInTransaction(
+  store: FubonCreditCardWriterStore,
+  capture: FubonCreditCardValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): FubonCreditCardCommitResult {
+  return commitFubonCreditCardCaptureBatchInTransaction(store, [capture], capability)[0]!;
+}
+
+export async function commitFubonCreditCardCaptureBatch(
+  store: FubonCreditCardWriterStore,
+  captures: readonly FubonCreditCardValidatedCapture[],
+): Promise<FubonCreditCardCommitResult[]> {
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as unknown as CanonicalSourceStore,
+    (capability) =>
+      commitFubonCreditCardCaptureBatchInTransaction(store, captures, capability),
+  );
 }

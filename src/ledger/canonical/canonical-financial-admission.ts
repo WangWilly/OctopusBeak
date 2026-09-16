@@ -1,9 +1,11 @@
 import {
   commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import type { CanonicalSourceCaptureAdmissionTransactionCapability } from "./canonical-source-capture-admission.ts";
 import {
   canonicalLoanCaptureSpines,
   persistCanonicalLoanCaptureExtensions,
@@ -88,6 +90,32 @@ export async function commitCanonicalFinancialAdmission(
   return commitCanonicalFinancialDepositCaptureBatch(
     store,
     prepared.captures,
+    prepared.applyExtensions,
+  );
+}
+
+/**
+ * Commit a closed financial admission inside an execution-owned transaction.
+ *
+ * Preparation remains shared with the standalone entry point, so loan and
+ * investment spine ordering cannot diverge between the two paths.  The
+ * low-level writer performs each source admission through the supplied
+ * capability and keeps the prepared spines plus their domain extensions in
+ * the caller's transaction; this function never begins, queues, commits, or
+ * closes a transaction of its own.
+ */
+export function commitCanonicalFinancialAdmissionInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  request: CanonicalFinancialAdmissionRequest,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CanonicalFinancialDepositCommitResult[] {
+  const prepared = prepareAdmission(request);
+  if (prepared.captures.length === 0)
+    throw new Error("Financial admission request cannot be empty.");
+  return commitCanonicalFinancialDepositCaptureBatchInTransaction(
+    store,
+    prepared.captures,
+    capability,
     prepared.applyExtensions,
   );
 }

@@ -11,10 +11,15 @@ import {
 } from "./db/client.ts";
 import {
   admitCanonicalInvestmentCapture,
-  commitCanonicalInvestmentCaptureBatch,
-  createCanonicalInvestmentStore,
   type InvestmentValidatedCapture,
 } from "./canonical/investment-financial.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical/canonical-financial-admission.ts";
+import {
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "./canonical/canonical-financial-commit-execution.ts";
+import { runCanonicalInvestmentRelationFollowThrough } from "./canonical/canonical-relation-followthrough.ts";
+import type { CanonicalFinancialDepositCommitResult } from "./canonical/canonical-financial-deposit-writer.ts";
 import {
   buildMaicoinInvestmentCaptures,
   parseMaicoinTickerQuote,
@@ -946,10 +951,11 @@ async function writeStatementJson(filePath: string, statement: StatementBatch[])
 }
 
 /**
- * Admit every wallet scope before opening the canonical store, then commit
- * them through the batch seam.  This keeps missing provider evidence and
- * malformed rows from leaving a partial canonical capture behind; a conflict
- * in one wallet also rolls back the complete batch.
+ * Admit each wallet scope through the shared execution seam.  A wallet is a
+ * complete provider-domain investment capture, so its margin/loan spines stay
+ * in one transaction while independent wallets retain separate item results.
+ * The operational database remains owned by syncMaicoin; only the canonical
+ * store lifecycle moves behind execution.
  */
 export async function commitMaicoinCanonicalInvestmentCaptures(
   ledgerDir: string,
@@ -958,12 +964,40 @@ export async function commitMaicoinCanonicalInvestmentCaptures(
   const captures = buildMaicoinInvestmentCaptures(input).map(
     (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
   );
-  const store = createCanonicalInvestmentStore(ledgerDir);
-  try {
-    return await commitCanonicalInvestmentCaptureBatch(store, captures);
-  } finally {
-    store.close();
-  }
+  const items: CanonicalFinancialCommitItem<CanonicalFinancialDepositCommitResult[]>[] =
+    captures.map((capture) => ({
+      provider: "maicoin",
+      product: "investment",
+      itemKey: capture.captureId,
+      commit: ({ writer, admission }) =>
+        commitCanonicalFinancialAdmissionInTransaction(
+          writer,
+          { kind: "investment", captures: [capture] },
+          admission,
+        ),
+      resolveRelations: async ({ writer }) => {
+        await runCanonicalInvestmentRelationFollowThrough(
+          writer,
+          undefined,
+          "maicoin-investment-relation-resolution-failed",
+        );
+      },
+    }));
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: ledgerDir,
+    items,
+    provider: "maicoin",
+    product: "investment",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Maicoin canonical persistence ${executionResult.status}: ${executionResult.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
+  return executionResult.items.flatMap((item) =>
+    item.status === "committed" ? item.value : [],
+  );
 }
 
 export async function syncMaicoin(params: CliParams) {

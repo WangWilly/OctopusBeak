@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,16 @@ import {
   createCanonicalInvestmentStore,
   queryCanonicalInvestmentCurrent,
 } from "./canonical/investment-financial.ts";
+
+const syncSource = await readFile(
+  new URL("./sync-maicoin.ts", import.meta.url),
+  "utf8",
+);
+assert.match(syncSource, /executeCanonicalFinancialCommitRun/);
+assert.match(syncSource, /commitCanonicalFinancialAdmissionInTransaction/);
+assert.match(syncSource, /runCanonicalInvestmentRelationFollowThrough/);
+assert.doesNotMatch(syncSource, /createCanonicalInvestmentStore/);
+assert.doesNotMatch(syncSource, /commitCanonicalInvestmentCaptureBatch/);
 
 const credentials: MaxCredentials = {
   accessKey: "access-key",

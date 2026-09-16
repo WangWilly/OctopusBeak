@@ -138,14 +138,14 @@ assert.throws(
   /ambiguous across financial captures/u,
 );
 const depositCommitMarker = source.indexOf(
-  "commitCanonicalFubonDomesticDepositCaptureBatch",
+  "executeCanonicalFinancialCommitRun({",
 );
 const depositResolverMarker = source.indexOf(
-  "await resolveLoanRelationsAfterCapture(financialWriter",
+  "resolveRelations: async ({ writer })",
 );
 assert.ok(
-  depositCommitMarker >= 0 && depositResolverMarker > depositCommitMarker,
-  "deposit relation resolution must happen after the canonical capture commit",
+  depositCommitMarker >= 0 && depositResolverMarker >= 0,
+  "deposit relation resolution must be owned by the execution item",
 );
 
 const relationAccount = joinDigits("0123", "4567", "8901", "23");
@@ -251,7 +251,6 @@ try {
     },
     {
       canonicalLedgerDir: ledgerDir,
-      canonicalFinancialLedgerDir: ledgerDir,
       sourceConnectionScope: stableSourceConnectionScope,
       sourceConnectionKey: stableSourceConnectionKey,
       readCurrentDepositBalances: async () => [],
@@ -346,7 +345,6 @@ try {
           { dateRanges: ["30"], downloadFormat: "EXCEL" },
           {
             canonicalLedgerDir: rollbackLedgerDir,
-            canonicalFinancialLedgerDir: rollbackLedgerDir,
             sourceConnectionScope: stableSourceConnectionScope,
             sourceConnectionKey: stableSourceConnectionKey,
             readCurrentDepositBalances: async () => [],
@@ -429,7 +427,6 @@ try {
       { dateRanges: ["30"], downloadFormat: "EXCEL" },
       {
         canonicalLedgerDir: multiAccountLedgerDir,
-        canonicalFinancialLedgerDir: multiAccountLedgerDir,
         sourceConnectionScope: stableSourceConnectionScope,
         sourceConnectionKey: stableSourceConnectionKey,
         readCurrentDepositBalances: async () => [],
@@ -469,36 +466,11 @@ try {
     multiAccountStore.close();
   }
 
-  let splitStoreCollected = false;
-  await assert.rejects(
-    () =>
-      runFubonStatements(
-        {} as never,
-        { dateRanges: ["30"], downloadFormat: "EXCEL" },
-        {
-          canonicalLedgerDir: join(ledgerDir, "source-store"),
-          canonicalFinancialLedgerDir: join(ledgerDir, "financial-store"),
-          sourceConnectionScope: stableSourceConnectionScope,
-          sourceConnectionKey: stableSourceConnectionKey,
-          readDepositAccountOptions: async () => {
-            splitStoreCollected = true;
-            return [fixture.account];
-          },
-        },
-      ),
-    /same canonical SQLite database/i,
-  );
-  assert.equal(
-    splitStoreCollected,
-    false,
-    "split source/financial stores fail closed before collection",
-  );
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }
 
-// A source ledger override is not a financial opt-in. Evidence remains
-// durable, while the financial transaction table stays empty.
+// A single canonical ledger owns both source evidence and financial facts.
 const sourceOnlyLedgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "fubon-source-only-boundary-"),
 );
@@ -527,6 +499,7 @@ try {
     {
       ...depositTestIdentity,
       canonicalLedgerDir: sourceOnlyLedgerDir,
+      readCurrentDepositBalances: async () => [],
       openTransactionDetailForAccountIndex: async () => "****0000",
       readDepositAccountOptions: async () => [fixture.account],
       selectDepositAccount: async () => undefined,
@@ -547,8 +520,8 @@ try {
       }),
     },
   );
-  assert.equal(output.admissions[0]?.status, "source-only");
-  assert.equal(output.admissions[0]?.reason, "financial-ledger-not-configured");
+  assert.equal(output.admissions[0]?.status, "financial-admitted");
+  assert.equal(output.admissions[0]?.reason, null);
   const sourceOnlyStore = (
     await import("../ledger/canonical/canonical-source-store.ts")
   ).createCanonicalSourceStore(sourceOnlyLedgerDir);
@@ -557,7 +530,7 @@ try {
       sourceOnlyStore.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
         .get()?.count,
-      0,
+      1,
     );
     assert.equal(
       queryCanonicalSourceCurrent(sourceOnlyStore).records.length,
@@ -610,7 +583,6 @@ try {
         {
           ...depositTestIdentity,
           canonicalLedgerDir: malformedLedgerDir,
-          canonicalFinancialLedgerDir: malformedLedgerDir,
           openTransactionDetailForAccountIndex: async () => "****0000",
           readDepositAccountOptions: async () => [fixture.account],
           selectDepositAccount: async () => undefined,
@@ -740,7 +712,6 @@ try {
     {
       ...depositTestIdentity,
       canonicalLedgerDir: multiRangeLedgerDir,
-      canonicalFinancialLedgerDir: multiRangeLedgerDir,
       openTransactionDetailForAccountIndex: async () => "****1098",
       readDepositAccountOptions: async () => accounts,
       selectDepositAccount: async () => undefined,
@@ -969,7 +940,6 @@ try {
     {
       ...depositTestIdentity,
       canonicalLedgerDir: fourShapeLedgerDir,
-      canonicalFinancialLedgerDir: fourShapeLedgerDir,
       openTransactionDetailForAccountIndex: async () => "****2738",
       readDepositAccountOptions: async () => accounts,
       selectDepositAccount: async () => undefined,

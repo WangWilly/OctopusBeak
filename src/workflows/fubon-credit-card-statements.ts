@@ -8,7 +8,7 @@ import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   admitFubonCreditCardCapture,
   buildFubonCreditCardStatementEvidenceKey,
-  commitFubonCreditCardCaptureBatch,
+  commitFubonCreditCardCaptureInTransaction,
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
   resolveFubonCreditCardIdentity,
   type FubonCreditCardCaptureInput,
@@ -23,16 +23,17 @@ import {
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCapture,
+  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   creditCardCurrentUsedAmountFromLimitAndAvailable,
   type CreditCardCurrentBalanceObservationInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -2574,7 +2575,7 @@ export async function runFubonCreditCardStatements(
   page: Page,
   input: FubonCreditCardStatementsInput,
   overrides: {
-    canonicalFinancialLedgerDir?: string;
+    canonicalLedgerDir?: string;
     panFingerprintKey?: FubonCreditCardPanFingerprintKey;
   } = {},
 ): Promise<FubonCreditCardStatementsOutput> {
@@ -2697,24 +2698,55 @@ export async function runFubonCreditCardStatements(
             : {}),
         })
       : [];
+  const canonicalLedgerDir =
+    overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
   let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
-  if (overrides.canonicalFinancialLedgerDir && canonicalCaptures.length > 0) {
-    const store = createCanonicalSourceStore(
-      overrides.canonicalFinancialLedgerDir,
-    );
-    try {
-      await commitFubonCreditCardCaptureBatch(store, canonicalCaptures);
-      if (currentUsedCredit) {
-        const balanceCapture = fubonCreditCurrentSnapshotCapture(
-          canonicalCaptures[0]!,
-          currentUsedCredit,
-        );
-        await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
-      }
-      canonicalAdmission = "admitted";
-    } finally {
-      store.close();
+  if (canonicalCaptures.length > 0) {
+    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+    for (const canonicalCapture of canonicalCaptures) {
+      executionItems.push({
+        provider: "fubon",
+        product: "credit-card",
+        itemKey: canonicalCapture.captureId,
+        commit: ({ writer, admission }) =>
+          commitFubonCreditCardCaptureInTransaction(
+            writer,
+            canonicalCapture,
+            admission,
+          ),
+      });
     }
+    if (currentUsedCredit) {
+      const balanceCapture = fubonCreditCurrentSnapshotCapture(
+        canonicalCaptures[0]!,
+        currentUsedCredit,
+      );
+      executionItems.push({
+        provider: "fubon",
+        product: "current-balance",
+        itemKey: balanceCapture.captureId,
+        commit: ({ writer, admission }) =>
+          commitCreditCardCurrentBalanceCaptureInTransaction(
+            writer,
+            balanceCapture,
+            admission,
+          ),
+      });
+    }
+    const executionResult = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir,
+      items: executionItems,
+      provider: "fubon",
+      product: "credit-card",
+    });
+    if (executionResult.status !== "completed")
+      throw new Error(
+        `Fubon credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+      );
+    canonicalAdmission = "admitted";
   }
 
   const billedStatements = await writeCsvWithMetadata(
@@ -2778,10 +2810,12 @@ export default workflow("fubonCreditCardStatements", {
     };
     await openCreditCardLoginForm(page);
     await completeFubonHumanLogin(page, session, values);
-    const financialLedgerDir = process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR?.trim() ||
-      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim();
+    const canonicalLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+      process.env.LEDGER_DIR?.trim() ||
+      DEFAULT_LEDGER_DIR;
     return await runFubonCreditCardStatements(page, input, {
-      ...(financialLedgerDir ? { canonicalFinancialLedgerDir: financialLedgerDir } : {}),
+      canonicalLedgerDir,
     });
   },
 });

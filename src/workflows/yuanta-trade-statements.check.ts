@@ -37,7 +37,11 @@ const workflowSource = await readFile(
 );
 assert.match(workflowSource, /commitYuantaTradeCanonicalIfComplete/);
 assert.match(workflowSource, /buildYuantaInvestmentCapture/);
-assert.match(workflowSource, /commitCanonicalInvestmentCapture/);
+assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
+assert.match(workflowSource, /commitCanonicalFinancialAdmissionInTransaction/);
+assert.match(workflowSource, /runCanonicalInvestmentRelationFollowThrough/);
+assert.doesNotMatch(workflowSource, /createCanonicalInvestmentStore/);
+assert.doesNotMatch(workflowSource, /commitCanonicalInvestmentCaptureBatch/);
 assert.match(workflowSource, /startUrl: YUANTA_TRADE_LOGIN_URL/);
 assert.doesNotMatch(workflowSource, /resolveCanonicalInvestmentFundingRelations/);
 assert.match(workflowSource, /holding-capture-incomplete/);

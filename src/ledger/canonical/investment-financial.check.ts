@@ -10,7 +10,11 @@ import {
   commitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
 } from "./canonical-financial-deposit-writer.ts";
-import { commitCanonicalFinancialAdmission } from "./canonical-financial-admission.ts";
+import {
+  commitCanonicalFinancialAdmission,
+  commitCanonicalFinancialAdmissionInTransaction,
+} from "./canonical-financial-admission.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "./canonical-source-capture-admission.ts";
 import { admitForeignCurrencyDepositCapture } from "./foreign-currency-deposit.ts";
 import {
   admitCanonicalInvestmentCapture,
@@ -546,10 +550,19 @@ test("closed investment admission rolls back source and extensions together", as
       name: "CHANGED LABEL",
     };
     await assert.rejects(
-      commitCanonicalFinancialAdmission(store, {
-        kind: "investment",
-        captures: [admitCanonicalInvestmentCapture(drift)],
-      }),
+      () =>
+        withCanonicalSourceCaptureAdmissionTransaction(
+          store,
+          (capability) =>
+            commitCanonicalFinancialAdmissionInTransaction(
+              store,
+              {
+                kind: "investment",
+                captures: [admitCanonicalInvestmentCapture(drift)],
+              },
+              capability,
+            ),
+        ),
       /Immutable Security/,
     );
     for (const table of [

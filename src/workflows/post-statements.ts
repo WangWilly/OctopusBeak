@@ -12,20 +12,27 @@ import { z } from "zod";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
-  commitCanonicalPostDomesticDepositCaptureBatch,
-  commitPostDomesticDepositSourceEvidenceBatch,
+  createPostDomesticDepositSourceEvidence,
   isPostSourceOnlyFinancialDiagnostic,
   POST_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   derivePostDomesticDepositAccountNumberEvidence,
   type PostDomesticDepositCaptureEvidence,
   type PostDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/post-domestic-deposit.ts";
-import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import { getPostHumanAttestedV1Manifest } from "../ledger/canonical/post-human-attestation.ts";
+import { commitCanonicalFinancialDepositCaptureInTransaction } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction } from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+  ensurePostHumanAttestationEvents,
+  getPostHumanAttestedV1Manifest,
+  isPostHumanAttestedV1Active,
+  latestPostHumanAttestationEvent,
+  recordInitialPostHumanAttestationIfMissing,
+} from "../ledger/canonical/post-human-attestation.ts";
+import {
+  CanonicalFinancialCommitItemError,
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
@@ -35,7 +42,7 @@ import {
 } from "./post-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   emitHumanAssistanceStage,
@@ -150,8 +157,7 @@ export type PostStatementsRunDependencies = {
     telemetry: boolean,
   ) => Promise<PostCollectedStatement[]>;
   readCurrentDepositBalances?: typeof readPostCurrentDepositBalances;
-  canonicalSourceLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
+  canonicalLedgerDir?: string;
   observedAt?: string;
 };
 
@@ -863,109 +869,150 @@ export async function runPostStatements(
       );
     captures.push(admission.capture);
   }
-  const sourceLedgerDir =
-    overrides.canonicalSourceLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+  const canonicalLedgerDir =
+    overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const store = createCanonicalSourceStore(sourceLedgerDir);
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalDatabaseWriterKey(financialLedgerDir)
-    : null;
-  const financialStore = financialDatabasePath
-    ? financialDatabasePath === canonicalDatabaseWriterKey(sourceLedgerDir)
-      ? store
-      : createCanonicalSourceStore(financialLedgerDir!)
-    : null;
-  const financialWriter: CanonicalFinancialDepositWriterStore | null =
-    financialStore
-      ? {
-          db: financialStore.db,
-          withWriter: financialStore.withWriter,
-          commitClock: () => financialStore.commitClock(),
-        }
-      : null;
-  const financialUsesSourceStore = financialStore === store;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readPostCurrentDepositBalances;
   const captureEntries = captures.map((capture, index) => ({
     capture,
     captureId: postCaptureId(observedAt, index),
   }));
-  let status: PostStatementOutput["status"] = "source-only";
-  try {
-    if (!financialWriter || !financialUsesSourceStore)
-      await commitPostDomesticDepositSourceEvidenceBatch(store, captureEntries);
-    if (financialWriter) {
-      const manifest = getPostHumanAttestedV1Manifest();
-      const financialInputs = captureEntries.map(({ capture, captureId }) => ({
-        capture,
-        captureId: `post-financial-${captureId}`,
-        humanAttestation: manifest,
-      }));
-      const admissions = financialInputs.map(
-        admitPostDomesticDepositFinancialCapture,
-      );
-      const blocked = admissions.flatMap((admission) => admission.diagnostics);
-      if (blocked.length > 0) {
-        if (financialUsesSourceStore)
-          await commitPostDomesticDepositSourceEvidenceBatch(
-            store,
-            captureEntries,
-          );
-        if (!blocked.every(isPostSourceOnlyFinancialDiagnostic))
-          throw new Error(
-            `Post domestic deposit financial admission failed: ${[
-              ...new Set(blocked),
-            ].join(", ")}`,
-          );
-      } else {
-        await commitCanonicalPostDomesticDepositCaptureBatch(
-          financialWriter,
-          financialInputs,
+  const sourceOnlyEntries: typeof captureEntries = [];
+  const financialInputs: Array<{
+    capture: PostDomesticDepositValidatedEvidence;
+    captureId: string;
+    humanAttestation: ReturnType<typeof getPostHumanAttestedV1Manifest>;
+    financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
+  }> = [];
+  const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] = [];
+  const manifest = getPostHumanAttestedV1Manifest();
+  for (const { capture, captureId } of captureEntries) {
+    const input = {
+      capture,
+      captureId: `post-financial-${captureId}`,
+      humanAttestation: manifest,
+    };
+    const admission = admitPostDomesticDepositFinancialCapture(input);
+    if (admission.status !== "admitted" || !admission.capture) {
+      const blocked = admission.diagnostics;
+      if (!blocked.every(isPostSourceOnlyFinancialDiagnostic))
+        throw new Error(
+          `Post domestic deposit financial admission failed: ${[
+            ...new Set(blocked),
+          ].join(", ")}`,
         );
-        status = "financial-admitted";
+      sourceOnlyEntries.push({ capture, captureId });
+      continue;
+    }
+    financialInputs.push({
+      capture,
+      captureId: input.captureId,
+      humanAttestation: manifest,
+      financialCapture: admission.capture,
+    });
+    financialCaptures.push({ identity: admission.capture.identity });
+  }
+  let status: PostStatementOutput["status"] = "source-only";
+  if (financialInputs.length > 0) status = "financial-admitted";
 
-        // The overview response is staged only after every ordinary Post
-        // statement capture has crossed financial admission.  Each PS row
-        // must join an existing financial identity by its exact ACT_NO; the
-        // current overview can never create a new account.
-        const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] =
-          admissions.map((admission) => {
-            if (!admission.capture)
-              throw new Error("Post financial admission lost its canonical identity.");
-            return {
-              identity: admission.capture.identity,
-            };
-          });
-        const currentRows = await readCurrent(page, {});
-        indexPostCurrentDepositFinancialCaptures(financialCaptures);
-        for (const row of currentRows) {
-          const matching = financialCaptures.find((candidate) => {
-            const identity = candidate.identity;
-            return (
-              identity.stream === row.stream &&
-              (identity.sourceAccountKey ?? identity.accountNo) === row.sourceAccountKey
-            );
-          });
-          if (!matching)
-            throw new Error(
-              "Post current deposit snapshot contains an account without an existing admitted identity.",
-            );
-          await commitCurrentDepositBalanceCapture(
-            financialStore!,
-            admitCurrentDepositBalanceCapture(
-              buildPostCurrentDepositBalanceCapture(row, matching),
-            ),
+  // The overview response is staged before opening the execution run. Each
+  // row still commits only after its statement identity item has committed.
+  const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
+  if (financialCaptures.length > 0) {
+    const currentRows = await readCurrent(page, {});
+    indexPostCurrentDepositFinancialCaptures(financialCaptures);
+    for (const row of currentRows) {
+      const matching = financialCaptures.find((candidate) => {
+        const identity = candidate.identity;
+        return (
+          identity.stream === row.stream &&
+          (identity.sourceAccountKey ?? identity.accountNo) === row.sourceAccountKey
+        );
+      });
+      if (!matching)
+        throw new Error(
+          "Post current deposit snapshot contains an account without an existing admitted identity.",
+        );
+      currentBalanceCaptures.push(
+        admitCurrentDepositBalanceCapture(
+          buildPostCurrentDepositBalanceCapture(row, matching),
+        ),
+      );
+    }
+  }
+
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+  for (const entry of sourceOnlyEntries) {
+    executionItems.push({
+      provider: "post",
+      product: "domestic-deposit",
+      itemKey: entry.captureId,
+      commit: ({ admission }) => {
+        admission.admit(
+          createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
+        );
+        return entry.captureId;
+      },
+    });
+  }
+  for (const financialInput of financialInputs) {
+    executionItems.push({
+      provider: "post",
+      product: "domestic-deposit",
+      itemKey: financialInput.captureId,
+      commit: ({ writer, admission, database }) => {
+        ensurePostHumanAttestationEvents(database);
+        let latest: ReturnType<typeof latestPostHumanAttestationEvent>;
+        try {
+          latest = latestPostHumanAttestationEvent(database);
+        } catch {
+          throw new CanonicalFinancialCommitItemError(
+            "Post human attestation chain is invalid.",
           );
         }
-      }
-    }
-  } finally {
-    if (financialStore && !financialUsesSourceStore) financialStore.close();
-    store.close();
+        if (latest?.eventKind === "revoked" || !isPostHumanAttestedV1Active())
+          throw new CanonicalFinancialCommitItemError(
+            "Post human attestation is revoked; future admission is blocked.",
+          );
+        recordInitialPostHumanAttestationIfMissing(
+          database,
+          financialInput.capture.observedAt,
+        );
+        return commitCanonicalFinancialDepositCaptureInTransaction(
+          writer,
+          financialInput.financialCapture,
+          admission,
+          (db, results) =>
+            commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+              db,
+              results.map((result) => result.captureId),
+            ),
+        );
+      },
+    });
   }
+  for (const capture of currentBalanceCaptures) {
+    executionItems.push({
+      provider: "post",
+      product: "current-balance",
+      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+      commit: ({ writer, admission }) =>
+        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
+    });
+  }
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: executionItems,
+    provider: "post",
+    product: "financial",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Post canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+    );
   const downloads = statements.map((statement) => statement.download);
   return {
     count: downloads.length,
@@ -995,8 +1042,10 @@ export default workflow("postStatements", {
 
     console.log("automation-progress: 25");
     const result = await runPostStatements(page, input.telemetry, {
-      canonicalFinancialLedgerDir:
-        process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+      canonicalLedgerDir:
+        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+        process.env.LEDGER_DIR ??
+        DEFAULT_LEDGER_DIR,
     });
     console.log("automation-progress: 100");
     return result;

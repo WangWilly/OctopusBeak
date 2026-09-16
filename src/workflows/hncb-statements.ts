@@ -12,16 +12,10 @@ import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
-import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
-import {
   deriveHncbDomesticDepositAccountNumberEvidence,
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
-  commitHncbDomesticDepositSourceEvidenceBatch,
-  createHncbDomesticDepositBatchSourceEvidence,
+  createHncbDomesticDepositSourceEvidence,
   commitCanonicalHncbDomesticDepositCaptureBatchInTransaction,
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
@@ -29,7 +23,10 @@ import {
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/hncb-domestic-deposit.ts";
-import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   emitHumanAssistanceStage,
@@ -46,7 +43,7 @@ import {
 } from "./hncb-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -352,8 +349,7 @@ export type HncbStatementsRunDependencies = {
     resultFrame: Frame,
   ) => Promise<HncbStatementDownload>;
   writeStatementFile?: typeof writeStatementFile;
-  canonicalSourceLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
+  canonicalLedgerDir?: string;
   /** Injected in checks; production reads the authenticated current-balance page. */
   readCurrentDepositBalances?: typeof readHncbCurrentDepositBalances;
   /** Production reads the authenticated account-overview page first. */
@@ -1220,35 +1216,19 @@ export async function runHncbStatements(
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readHncbCurrentDepositBalances;
   const readCurrentOverview = overrides.readCurrentDepositOverviewBalances;
-  const sourceLedgerDir =
-    overrides.canonicalSourceLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+  const canonicalLedgerDir =
+    overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalDatabaseWriterKey(sourceLedgerDir);
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalDatabaseWriterKey(financialLedgerDir)
-    : null;
-  if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
-    throw new Error(
-      "HNCB source and financial captures must use the same canonical SQLite database.",
-    );
-  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
-  const financialStore = financialDatabasePath ? sourceStore : null;
-  const financialWriter: CanonicalFinancialDepositWriterStore | null =
-    financialStore
-      ? {
-          db: financialStore.db,
-          withWriter: financialStore.withWriter,
-          commitClock: () => financialStore.commitClock(),
-        }
-      : null;
   const dateRange = resolveDateRange(input);
   const observedAt = hncbObservedAt();
   const captures: HncbDomesticDepositValidatedEvidence[] = [];
   const financialCaptures: ExistingHncbFinancialCapture[] = [];
-  const sourceOnlyCaptures: HncbDomesticDepositValidatedEvidence[] = [];
+  const sourceOnlyEntries: Array<{
+    capture: HncbDomesticDepositValidatedEvidence;
+    captureId: string;
+  }> = [];
   const financialInputs: Array<{
     capture: HncbDomesticDepositValidatedEvidence;
     captureId: string;
@@ -1257,7 +1237,7 @@ export async function runHncbStatements(
   const downloads: StatementDownload[] = [];
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
-  try {
+  {
     const accounts = await readAccounts(page, input.accountFilters);
     for (const account of accounts) {
       const resultFrame = await query(page, account, dateRange);
@@ -1290,62 +1270,54 @@ export async function runHncbStatements(
       throw new Error("No HNCB accounts reached a terminal source result.");
     const captureId = hncbCaptureId(observedAt);
     let status: WorkflowOutput["status"] = "source-only";
-    if (financialWriter) {
-      const manifest = getHncbHumanAttestedV1Manifest();
-      const candidateInputs = captures.map((capture, index) => ({
+    const manifest = getHncbHumanAttestedV1Manifest();
+    for (const [index, capture] of captures.entries()) {
+      const input = {
         capture,
-        input: {
-          capture,
-          captureId: `hncb-financial-${captureId}-${index}`,
-          humanAttestation: manifest,
-        },
-      }));
-      const admissions = candidateInputs.map(({ input }) => ({
-        input,
-        admission: admitHncbDomesticDepositFinancialCapture(input),
-      }));
-      for (const { capture, input, admission } of admissions.map((entry, index) => ({
-        ...entry,
-        capture: captures[index]!,
-      }))) {
-        if (admission.status !== "admitted") {
-          const allowedSourceOnly = admission.diagnostics.every((diagnostic) =>
-            [
-              "human-attestation-missing",
-              "human-attestation-mismatch",
-              "human-attestation-revoked",
-              "unsupported-currency",
-              "authority-shared-account",
-              "authority-semantics-unproven",
-              "completeness-semantics-unproven",
-              "zero-result-authority-unproven",
-              "terminal-evidence-missing",
-            ].includes(diagnostic),
+        captureId: `hncb-financial-${captureId}-${index}`,
+        humanAttestation: manifest,
+      };
+      const admission = admitHncbDomesticDepositFinancialCapture(input);
+      const sourceCaptureId = `hncb-source-${captureId}-${index}`;
+      if (admission.status !== "admitted") {
+        const allowedSourceOnly = admission.diagnostics.every((diagnostic) =>
+          [
+            "human-attestation-missing",
+            "human-attestation-mismatch",
+            "human-attestation-revoked",
+            "unsupported-currency",
+            "authority-shared-account",
+            "authority-semantics-unproven",
+            "completeness-semantics-unproven",
+            "zero-result-authority-unproven",
+            "terminal-evidence-missing",
+          ].includes(diagnostic),
+        );
+        if (!allowedSourceOnly)
+          throw new Error(
+            `HNCB domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
           );
-          if (!allowedSourceOnly)
-            throw new Error(
-              `HNCB domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-            );
-          sourceOnlyCaptures.push(capture);
-          continue;
-        }
-        if (admission.capture) {
-          financialInputs.push({
-            capture,
-            captureId: input.captureId,
-            humanAttestation: manifest,
-          });
-          financialCaptures.push(admission.capture);
-          if (admission.capture.records.length > 0)
-            status = "financial-admitted";
-        }
+        sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+        continue;
       }
+      if (!admission.capture)
+        throw new Error(
+          "HNCB domestic deposit admission lost its canonical capture.",
+        );
+      financialInputs.push({
+        capture,
+        captureId: input.captureId,
+        humanAttestation: manifest,
+      });
+      financialCaptures.push(admission.capture);
+      if (admission.capture.records.length > 0)
+        status = "financial-admitted";
     }
 
     // Read and validate the point-in-time page before opening the financial
     // commit boundary. A failure here must not leave statement captures from
     // this run behind.
-    if (financialWriter && financialCaptures.length > 0) {
+    if (financialCaptures.length > 0) {
       const authority = financialCaptures[0]!.identity;
       const currentInput = {
         observedAt: hncbObservedAt(),
@@ -1382,33 +1354,56 @@ export async function runHncbStatements(
       });
     }
 
-    if (financialWriter && financialInputs.length > 0) {
-      await withCanonicalSourceCaptureAdmissionTransaction(
-        sourceStore,
-        (capability) => {
-          if (sourceOnlyCaptures.length > 0)
-            capability.admit(
-              createHncbDomesticDepositBatchSourceEvidence(
-                sourceOnlyCaptures,
-                `${captureId}-source-only`,
-              ),
-            );
-          commitCanonicalHncbDomesticDepositCaptureBatchInTransaction(
-            financialWriter,
-            financialInputs,
-            capability,
+    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+    for (const entry of sourceOnlyEntries) {
+      executionItems.push({
+        provider: "hncb",
+        product: "domestic-deposit",
+        itemKey: entry.captureId,
+        commit: ({ admission }) => {
+          admission.admit(
+            createHncbDomesticDepositSourceEvidence(
+              entry.capture,
+              entry.captureId,
+            ),
           );
+          return entry.captureId;
         },
-      );
-    } else {
-      await commitHncbDomesticDepositSourceEvidenceBatch(
-        sourceStore,
-        captures,
-        captureId,
-      );
+      });
     }
-    for (const capture of currentBalanceCaptures)
-      await commitCurrentDepositBalanceCapture(financialStore!, capture);
+    for (const financialInput of financialInputs) {
+      executionItems.push({
+        provider: "hncb",
+        product: "domestic-deposit",
+        itemKey: financialInput.captureId,
+        commit: ({ writer, admission }) =>
+          commitCanonicalHncbDomesticDepositCaptureBatchInTransaction(
+            writer,
+            [financialInput],
+            admission,
+          )[0]!,
+      });
+    }
+    const currentBalanceItems: CanonicalFinancialCommitItem<unknown>[] = currentBalanceCaptures.map((capture) => ({
+      provider: "hncb",
+      product: "current-balance",
+      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+      commit: ({ writer, admission }) =>
+        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
+    }));
+    const executionResult = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir,
+      items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+        yield* executionItems;
+        yield* currentBalanceItems;
+      })(),
+      provider: "hncb",
+      product: "financial",
+    });
+    if (executionResult.status !== "completed")
+      throw new Error(
+        `HNCB canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+      );
     return {
       dateRange,
       usedExistingSession: overrides.usedExistingSession ?? false,
@@ -1416,8 +1411,6 @@ export async function runHncbStatements(
       downloads,
       status,
     };
-  } finally {
-    sourceStore.close();
   }
 }
 
@@ -1451,8 +1444,10 @@ export default workflow("hncbStatements", {
       const firstResultFrame = await openFirstStatementDetail(page);
       const output = await runHncbStatements(page, input, {
         usedExistingSession: authResult.usedProfile,
-        canonicalFinancialLedgerDir:
-          process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+        canonicalLedgerDir:
+          process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+          process.env.LEDGER_DIR ??
+          DEFAULT_LEDGER_DIR,
         readAccountOptions: async () =>
           readAccountOptions(firstResultFrame, input.accountFilters),
         readCurrentDepositOverviewBalances: readHncbCurrentDepositOverviewBalances,

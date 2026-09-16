@@ -3,9 +3,14 @@ import type { DatabaseSync } from "node:sqlite";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
+  type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+} from "./canonical-source-capture-admission.ts";
 import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import {
   ensureCanonicalCreditCardSchema,
@@ -1270,10 +1275,37 @@ export async function commitYuantaCreditCardCapture(
   return (await commitYuantaCreditCardCaptureBatch(store, [capture]))[0]!;
 }
 
-export async function commitYuantaCreditCardCaptureBatch(
+function toYuantaCreditCardCommitResult(
+  store: YuantaCreditCardWriterStore,
+  capture: YuantaCreditCardValidatedCapture,
+  result: CanonicalFinancialDepositCommitResult,
+): YuantaCreditCardCommitResult {
+  const row = store.db.prepare(
+    `SELECT hex(scope.account_id) AS account_id
+     FROM source_captures capture
+     JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+     WHERE capture.capture_key = ?`,
+  ).get(capture.captureId) as { account_id?: string } | undefined;
+  if (!row?.account_id)
+    throw new Error("Yuanta shared canonical account is missing after commit.");
+  return {
+    status: "canonical-live",
+    canonicalAdmission: "admitted",
+    captureId: capture.captureId,
+    accountId: row.account_id.toLowerCase(),
+    commitSequence: result.commitSequence,
+    transactionCount: result.transactionCount,
+    statementCount: capture.statements.length,
+    relationCount: capture.relations.length,
+    provenanceCount: result.provenanceCount,
+  };
+}
+
+export function commitYuantaCreditCardCaptureBatchInTransaction(
   store: YuantaCreditCardWriterStore,
   captures: readonly YuantaCreditCardValidatedCapture[],
-): Promise<YuantaCreditCardCommitResult[]> {
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): YuantaCreditCardCommitResult[] {
   if (captures.length === 0)
     throw new YuantaCreditCardAdmissionError(
       "Yuanta credit-card capture batch cannot be empty.",
@@ -1291,9 +1323,10 @@ export async function commitYuantaCreditCardCaptureBatch(
     throw new YuantaCreditCardAdmissionError(
       "Yuanta credit-card durable human attestation is revoked.",
     );
-  const committed = await commitCanonicalFinancialDepositCaptureBatch(
+  const committed = commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
     captures.map(yuantaCanonicalSpineCapture),
+    capability,
     (db) => {
       ensureCanonicalCreditCardSchema(db);
       if (!isYuantaCreditCardHumanAttestedV2Active())
@@ -1316,28 +1349,29 @@ export async function commitYuantaCreditCardCaptureBatch(
       );
     },
   );
-  return committed.map((result, index) => {
-    const capture = captures[index]!;
-    const row = store.db.prepare(
-      `SELECT hex(scope.account_id) AS account_id
-       FROM source_captures capture
-       JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
-       WHERE capture.capture_key = ?`,
-    ).get(capture.captureId) as { account_id?: string } | undefined;
-    if (!row?.account_id)
-      throw new Error("Yuanta shared canonical account is missing after commit.");
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      captureId: capture.captureId,
-      accountId: row.account_id.toLowerCase(),
-      commitSequence: result.commitSequence,
-      transactionCount: result.transactionCount,
-      statementCount: capture.statements.length,
-      relationCount: capture.relations.length,
-      provenanceCount: result.provenanceCount,
-    };
-  });
+  return committed.map((result, index) =>
+    toYuantaCreditCardCommitResult(store, captures[index]!, result),
+  );
+}
+
+/** Commit one Yuanta capture inside an execution-owned transaction. */
+export function commitYuantaCreditCardCaptureInTransaction(
+  store: YuantaCreditCardWriterStore,
+  capture: YuantaCreditCardValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): YuantaCreditCardCommitResult {
+  return commitYuantaCreditCardCaptureBatchInTransaction(store, [capture], capability)[0]!;
+}
+
+export async function commitYuantaCreditCardCaptureBatch(
+  store: YuantaCreditCardWriterStore,
+  captures: readonly YuantaCreditCardValidatedCapture[],
+): Promise<YuantaCreditCardCommitResult[]> {
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as unknown as CanonicalSourceStore,
+    (capability) =>
+      commitYuantaCreditCardCaptureBatchInTransaction(store, captures, capability),
+  );
 }
 
 export type YuantaCreditCardSourceRow = {

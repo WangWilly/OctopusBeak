@@ -5,11 +5,15 @@ import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   admitCanonicalInvestmentCapture,
-  commitCanonicalInvestmentCaptureBatch,
-  createCanonicalInvestmentStore,
   CanonicalInvestmentAdmissionError,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
+import {
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
 import {
   buildYuantaInvestmentCapture,
   type YuantaCanonicalInvestmentRow,
@@ -2143,12 +2147,38 @@ async function commitYuantaFundCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
-  const store = createCanonicalInvestmentStore(input.canonicalLedgerDir);
-  try {
-    await commitCanonicalInvestmentCaptureBatch(store, captures);
-  } finally {
-    store.close();
-  }
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
+    (capture) => ({
+      provider: "yuanta-fund",
+      product: "investment",
+      itemKey: capture.captureId,
+      commit: ({ writer, admission }) =>
+        commitCanonicalFinancialAdmissionInTransaction(
+          writer,
+          { kind: "investment", captures: [capture] },
+          admission,
+        ),
+      resolveRelations: async ({ writer }) => {
+        await runCanonicalInvestmentRelationFollowThrough(
+          writer,
+          undefined,
+          "yuanta-fund-investment-relation-resolution-failed",
+        );
+      },
+    }),
+  );
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: input.canonicalLedgerDir,
+    items: executionItems,
+    provider: "yuanta-fund",
+    product: "investment",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Yuanta fund canonical persistence ${executionResult.status}: ${executionResult.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
 }
 
 export default workflow("yuantaFundStatements", {

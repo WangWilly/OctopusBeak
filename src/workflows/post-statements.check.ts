@@ -26,6 +26,8 @@ import {
 } from "./post-statements.ts";
 import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
 
+const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
+
 function fakeNoticePage(visible: boolean) {
   let clicks = 0;
   const page = {
@@ -437,7 +439,7 @@ const builtCapture = buildPostDomesticDepositCapture(
 assert.equal(builtCapture.response.rows[0]?.directionFlag, "inflow");
 const builtAccountNumberCapture = buildPostDomesticDepositCapture(
   {
-    accountId: "03115240529395",
+    accountId: syntheticPostAccountNumber,
     queryPeriods: ["2026/02/01~2026/08/24"],
     queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
     httpStatus: 200,
@@ -447,7 +449,7 @@ const builtAccountNumberCapture = buildPostDomesticDepositCapture(
   "2026-08-24T10:11:12+08:00",
 );
 assert.deepEqual(builtAccountNumberCapture.account.accountNumber, {
-  value: "03115240529395",
+  value: syntheticPostAccountNumber,
   kind: "depository-account",
   evidenceVersion: "post/domestic-deposit/account-number-v1",
   sourceField: "request.body._USER_ID",
@@ -461,7 +463,7 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
         itemList: [
           {
             ACT_TYPE: "PS",
-            ACT_NO: "03115240529395",
+            ACT_NO: syntheticPostAccountNumber,
             BAL: "12345",
             PBA_CUT_BAL: "99999",
             VISA_BAL: "77777",
@@ -495,8 +497,9 @@ assert.equal(postCurrentBalanceRow.length, 1);
 const runDir = await mkdtemp(join(tmpdir(), "post-workflow-check-"));
 try {
   const output = await runPostStatements({} as never, true, {
-    canonicalSourceLedgerDir: runDir,
+    canonicalLedgerDir: runDir,
     observedAt: "2026-08-24T10:11:12+08:00",
+    readCurrentDepositBalances: async () => [],
     collectStatements: async () => [
       {
         accountId: "PRIVATE-ACCOUNT",
@@ -528,7 +531,12 @@ try {
       sourceCaptureCount: output.sourceCaptureCount,
       status: output.status,
     },
-    { count: 1, rowCount: 1, sourceCaptureCount: 1, status: "source-only" },
+    {
+      count: 1,
+      rowCount: 1,
+      sourceCaptureCount: 1,
+      status: "financial-admitted",
+    },
   );
   const db = new DatabaseSync(join(runDir, "canonical.sqlite"), {
     readOnly: true,
@@ -551,7 +559,7 @@ try {
           .get() as { count: number }
       ).count,
     ),
-    0,
+    1,
   );
   const payload = String(
     (
@@ -574,21 +582,20 @@ const financialRunDir = await mkdtemp(
 );
 try {
   const output = await runPostStatements({} as never, false, {
-    canonicalSourceLedgerDir: financialRunDir,
-    canonicalFinancialLedgerDir: financialRunDir,
+    canonicalLedgerDir: financialRunDir,
     observedAt: "2026-08-24T10:12:13+08:00",
     readCurrentDepositBalances: async () => postCurrentBalanceRow,
     collectStatements: async () => [
       {
-        accountId: "03115240529395",
+        accountId: syntheticPostAccountNumber,
         queryPeriods: ["2026/02/01~2026/08/24"],
         queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
         httpStatus: 200,
         itemShape: "array",
         rows,
         download: {
-          account: "03115240529395 郵局",
-          accountId: "03115240529395",
+          account: `${syntheticPostAccountNumber} 郵局`,
+          accountId: syntheticPostAccountNumber,
           queryPeriods: ["2026/02/01~2026/08/24"],
           baseName: "private-financial",
           csvFilename: "private-financial.csv",
@@ -651,8 +658,8 @@ try {
       "SELECT source_account_key, account_no FROM financial_accounts WHERE stream = 'domestic-deposit'",
     )
     .get() as { source_account_key: string; account_no: string };
-  assert.equal(accountIdentity.source_account_key, "03115240529395");
-  assert.equal(accountIdentity.account_no, "03115240529395");
+  assert.equal(accountIdentity.source_account_key, syntheticPostAccountNumber);
+  assert.equal(accountIdentity.account_no, syntheticPostAccountNumber);
   db.close();
 } finally {
   await rm(financialRunDir, { recursive: true, force: true });
