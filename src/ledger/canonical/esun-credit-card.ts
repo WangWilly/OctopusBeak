@@ -433,6 +433,63 @@ export function buildEsunCreditCardTransactionSourceKey(
     | "foreignCurrency"
     | "foreignAmount"
     | "description"
+    | "statementKey"
+  > & { occurrenceIndex: number; statementKey?: string | null },
+): `sha256:${string}` {
+  const accountKey = buildEsunCreditCardAccountIdentityKey(identity);
+  const amount = record.signedAmount
+    ? signedAmount(record.signedAmount, "Signed amount").amount
+    : exactAmount(record.bookedAmount, "Booked amount");
+  const foreignCurrency = record.foreignCurrency
+    ? currency(record.foreignCurrency, "Foreign currency")
+    : null;
+  const foreignAmount = record.foreignAmount == null
+    ? null
+    : exactAmount(record.foreignAmount, "Foreign amount");
+  if ((foreignCurrency === null) !== (foreignAmount === null))
+    fail("Foreign currency and foreign amount must be provided together.");
+  validateDirection(record.direction);
+  if (!Number.isSafeInteger(record.occurrenceIndex) || record.occurrenceIndex < 0)
+    fail("Transaction occurrence index must be a non-negative integer.");
+  const tuple = stableTuple([
+    "esun-credit-card-transaction-v2",
+    accountKey,
+    text(record.instrumentKey, "Card instrument key"),
+    record.consumeDate ? sourceDate(record.consumeDate, "Consume date") : null,
+    record.postingDate ? sourceDate(record.postingDate, "Posting date") : null,
+    record.direction,
+    amount.coefficient,
+    amount.scale,
+    currency(record.bookedCurrency, "Booked currency"),
+    foreignCurrency,
+    foreignAmount?.coefficient ?? null,
+    foreignAmount?.scale ?? null,
+    normalizedDescription(text(record.description, "Transaction description")),
+    normalizeSourceScope(record.statementKey),
+    record.occurrenceIndex,
+  ]);
+  return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
+}
+
+/**
+ * The v1 transaction tuple included billing status. Keep this private legacy
+ * codec only for the bounded reconciliation performed while opening an E.SUN
+ * writer; new captures always use the v2 tuple above.
+ */
+function buildEsunCreditCardTransactionSourceKeyV1(
+  identity: EsunCreditCardIdentityInput,
+  record: Pick<
+    EsunCreditCardTransactionInput,
+    | "instrumentKey"
+    | "consumeDate"
+    | "postingDate"
+    | "direction"
+    | "bookedAmount"
+    | "bookedCurrency"
+    | "signedAmount"
+    | "foreignCurrency"
+    | "foreignAmount"
+    | "description"
     | "billingStatus"
     | "statementKey"
   > & { occurrenceIndex: number; statementKey?: string | null },
@@ -780,12 +837,26 @@ export function admitEsunCreditCardCapture(
   const sourceKeys = new Set<string>();
   const sourceRecordKeys = new Set<string>();
   const occurrenceOrdinals = new Map<string, number>();
+  const billingStatusByEconomicIdentity = new Map<string, "billed" | "unbilled">();
   const transactionsBySourceRecord = new Map<string, EsunCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
     const contentIdentity = buildEsunCreditCardTransactionSourceKey(
       capture.identity,
       { ...record, occurrenceIndex: 0 },
     );
+    const economicIdentity = buildEsunCreditCardTransactionSourceKey(
+      capture.identity,
+      { ...record, statementKey: undefined, occurrenceIndex: 0 },
+    );
+    const previousBillingStatus = billingStatusByEconomicIdentity.get(economicIdentity);
+    if (
+      previousBillingStatus !== undefined &&
+      previousBillingStatus !== record.billingStatus
+    )
+      fail(
+        "E.SUN capture cannot contain the same economic transaction in billed and unbilled grids.",
+      );
+    billingStatusByEconomicIdentity.set(economicIdentity, record.billingStatus);
     const expected = occurrenceOrdinals.get(contentIdentity) ?? 0;
     if (record.occurrenceIndex !== expected)
       fail("Transaction occurrence indexes must be contiguous in complete observed source order.");
@@ -928,7 +999,6 @@ function sourceRowBaseIdentity(
     foreign.currency,
     foreign.amount,
     normalizedDescription(text(row.description, "Transaction description")),
-    sourceRowBillingStatus(row),
     buildEsunCreditCardAccountIdentityKey(accountIdentity),
   ]);
 }
@@ -955,7 +1025,6 @@ function createSourceRowTransaction(
     foreignCurrency: foreign.currency,
     foreignAmount: foreign.amount,
     description: row.description,
-    billingStatus,
     statementKey: undefined,
     occurrenceIndex,
   });
@@ -1278,6 +1347,115 @@ function opaqueEsunSpineToken(label: string, value: unknown): `sha256:${string}`
   return digest(label, value);
 }
 
+function esunFinancialAccountId(
+  db: DatabaseSync,
+  capture: EsunCreditCardValidatedCapture,
+): Uint8Array | undefined {
+  const row = db.prepare(`
+    SELECT account.account_id
+    FROM financial_accounts account
+    JOIN source_connections connection_row
+      ON connection_row.source_connection_id = account.source_connection_id
+    JOIN identity_epochs epoch
+      ON epoch.identity_epoch_id = account.identity_epoch_id
+    WHERE connection_row.integration_namespace = 'esun'
+      AND connection_row.source_connection_key = ?
+      AND epoch.epoch_key = ?
+      AND account.stream = 'credit-card'
+      AND account.source_account_key = ?
+    LIMIT 1
+  `).get(
+    opaqueEsunSpineToken(
+      "esun-credit-connection-v1",
+      capture.identity.sourceConnectionKey,
+    ),
+    opaqueEsunSpineToken(
+      "esun-credit-epoch-v1",
+      capture.identity.identityEpochKey,
+    ),
+    capture.identity.accountNaturalKey,
+  ) as { account_id?: unknown } | undefined;
+  return row?.account_id instanceof Uint8Array
+    ? row.account_id
+    : undefined;
+}
+
+function esunLegacySourceKeyCandidates(
+  capture: EsunCreditCardValidatedCapture,
+  transaction: EsunCreditCardTransactionInput,
+): readonly string[] {
+  const statementKeys = [transaction.statementKey, undefined];
+  const statuses = ["billed", "unbilled"] as const;
+  return [...new Set(
+    statuses.flatMap((billingStatus) =>
+      statementKeys.map((statementKey) =>
+        buildEsunCreditCardTransactionSourceKeyV1(capture.identity, {
+          ...transaction,
+          billingStatus,
+          statementKey,
+        }),
+      ),
+    ),
+  )];
+}
+
+/**
+ * Reconcile the one legacy identity shape that this provider emitted before
+ * billing status left the economic tuple.  The financial authority key is
+ * upgraded in-place only after an exact account-scoped v1 match; source rows
+ * and their immutable payloads are never rewritten.
+ */
+function reconcileEsunLegacySourceSequences(
+  db: DatabaseSync,
+  captures: readonly EsunCreditCardValidatedCapture[],
+): void {
+  for (const capture of captures) {
+    const accountId = esunFinancialAccountId(db, capture);
+    if (!accountId) continue;
+    for (const transaction of capture.transactions) {
+      const currentSourceKey = transaction.sourceKey;
+      if (
+        db.prepare(
+          "SELECT 1 FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
+        ).get(accountId, currentSourceKey)
+      )
+        continue;
+      const legacyMatches = esunLegacySourceKeyCandidates(capture, transaction)
+        .flatMap((legacySourceKey) => {
+          const row = db.prepare(
+            "SELECT source_sequence FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
+          ).get(accountId, legacySourceKey) as {
+            source_sequence?: unknown;
+          } | undefined;
+          return row?.source_sequence === undefined
+            ? []
+            : [String(row.source_sequence)];
+        });
+      const distinctLegacyMatches = [...new Set(legacyMatches)];
+      if (distinctLegacyMatches.length === 0) continue;
+      if (distinctLegacyMatches.length > 1)
+        throw new EsunCreditCardAdmissionError(
+          "E.SUN legacy v1 source identities are ambiguous for one economic transaction.",
+        );
+      const [legacySourceKey] = distinctLegacyMatches;
+      const conflictingCurrent = db.prepare(
+        "SELECT 1 FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
+      ).get(accountId, currentSourceKey);
+      if (conflictingCurrent)
+        throw new EsunCreditCardAdmissionError(
+          "E.SUN v1 source identity reconciliation would collide with a v2 transaction.",
+        );
+      const result = db.prepare(
+        "UPDATE financial_transactions SET source_sequence = ? WHERE account_id = ? AND source_sequence = ?",
+      ).run(currentSourceKey, accountId, legacySourceKey);
+      if (Number(result.changes ?? 0) !== 1)
+        throw new EsunCreditCardAdmissionError(
+          "E.SUN v1 source identity reconciliation did not update exactly one transaction.",
+        );
+    }
+  }
+}
+
 function esunCanonicalSpineCapture(
   capture: EsunCreditCardValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
@@ -1546,6 +1724,7 @@ export function commitEsunCreditCardCaptureBatchInTransaction(
     throw new EsunCreditCardAdmissionError(
       "E.SUN credit-card human-attested v1 contract is revoked.",
     );
+  reconcileEsunLegacySourceSequences(store.db, captures);
   const committed = commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
     captures.map(esunCanonicalSpineCapture),
