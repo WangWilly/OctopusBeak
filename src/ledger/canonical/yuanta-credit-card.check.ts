@@ -433,6 +433,30 @@ test("source keys are stable across captures and exact duplicate ordinals are di
   );
 });
 
+test("Yuanta rejects a same-capture billed and unbilled overlap", () => {
+  const overlapDescription = "SYNTHETIC BILLING OVERLAP";
+  const billedOverlap = row("115/06", {
+    consumeDate: "2026-06-10",
+    postedDate: "2026-06-10",
+    description: overlapDescription,
+  });
+  const unbilledOverlap = row(null, {
+    consumeDate: "2026-06-10",
+    postedDate: "2026-06-10",
+    description: overlapDescription,
+  });
+  assert.throws(
+    () =>
+      buildYuantaCanonicalCreditCardCapture(
+        options({
+          billedRows: [...options().billedRows, billedOverlap],
+          unbilledRows: [...options().unbilledRows, unbilledOverlap],
+        }),
+      ),
+    /same economic transaction.*billed.*unbilled|billed.*unbilled.*same economic transaction/i,
+  );
+});
+
 test("repeated credit rows ignore provider description formatting in content identity", async () => {
   const directory = mkdtempSync(join("/tmp", "yuanta-credit-card-description-format-"));
   const store = createCanonicalSourceStore(directory);
@@ -1014,9 +1038,33 @@ test("Yuanta billing lifecycle reuses one transaction while retaining status his
     await commitYuantaCreditCardCapture(store, first);
     await commitYuantaCreditCardCapture(store, second);
 
+    const transitionTransaction = store.db.prepare(`
+      SELECT transaction_id
+      FROM financial_transactions
+      WHERE source_sequence = ?
+    `).get(secondLifecycle.sourceKey) as {
+      transaction_id?: Uint8Array;
+    } | undefined;
+    assert.ok(transitionTransaction?.transaction_id);
+    const transitionRevision = store.db.prepare(`
+      SELECT revision_id
+      FROM current_transactions
+      WHERE transaction_id = ?
+    `).get(transitionTransaction!.transaction_id) as {
+      revision_id?: Uint8Array;
+    } | undefined;
+    assert.ok(transitionRevision?.revision_id);
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
       11,
+    );
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(DISTINCT transaction_id) AS n
+        FROM canonical_credit_card_transaction_lifecycle
+        WHERE transaction_id = ?
+      `).get(transitionTransaction!.transaction_id) as { n: number }).n),
+      1,
     );
     assert.equal(
       Number((store.db.prepare(`
@@ -1046,6 +1094,110 @@ test("Yuanta billing lifecycle reuses one transaction while retaining status his
       { billing_status: "unbilled", statement_key: null },
       { billing_status: "billed", statement_key: secondLifecycle.statementKey },
     ]);
+    const currentLifecycle = store.db.prepare(`
+      SELECT billing_status, statement_key
+      FROM canonical_credit_card_transaction_lifecycle
+      WHERE transaction_id = ?
+      ORDER BY rowid DESC
+      LIMIT 1
+    `).get(transitionTransaction!.transaction_id) as {
+      billing_status?: string;
+      statement_key?: string | null;
+    } | undefined;
+    assert.deepEqual(currentLifecycle && {
+      billing_status: currentLifecycle.billing_status,
+      statement_key: currentLifecycle.statement_key,
+    }, {
+      billing_status: "billed",
+      statement_key: secondLifecycle.statementKey,
+    });
+    const immutableDetail = store.db.prepare(`
+      SELECT billing_status, statement_key
+      FROM canonical_credit_card_transaction_details
+      WHERE transaction_id = ? AND revision_id = ?
+    `).get(
+      transitionTransaction!.transaction_id,
+      transitionRevision!.revision_id,
+    ) as {
+      billing_status?: string;
+      statement_key?: string | null;
+    } | undefined;
+    assert.deepEqual(
+      immutableDetail && {
+        billing_status: immutableDetail.billing_status,
+        statement_key: immutableDetail.statement_key,
+      },
+      { billing_status: "unbilled", statement_key: null },
+      "the original revision detail stays immutable; the latest billing state lives in lifecycle evidence",
+    );
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM source_record_provenance provenance
+        WHERE provenance.source_record_id IN (
+          SELECT source_record_id
+          FROM canonical_credit_card_transaction_lifecycle
+          WHERE transaction_id = ?
+        )
+      `).get(transitionTransaction!.transaction_id) as { n: number }).n),
+      2,
+    );
+
+    const reverse = buildYuantaCanonicalCreditCardCapture(
+      options({
+        captureId: "billing-lifecycle-reverse",
+        observedAt: "2026-09-03T12:00:00+08:00",
+        unbilledRows: [unbilledLifecycleRow, ...options().unbilledRows],
+      }),
+    );
+    const reverseLifecycle = reverse.transactions.find(
+      (transaction) => transaction.description === unbilledLifecycleRow.description,
+    );
+    assert.ok(reverseLifecycle);
+    assert.equal(reverseLifecycle.sourceKey, secondLifecycle.sourceKey);
+    await commitYuantaCreditCardCapture(store, reverse);
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
+      11,
+      "a Yuanta billing reversal is lifecycle evidence, not a new financial transaction",
+    );
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM transaction_revisions
+        WHERE transaction_id = ?
+      `).get(transitionTransaction!.transaction_id) as { n: number }).n),
+      1,
+    );
+    const lifecycleAfterReverse = store.db.prepare(`
+      SELECT billing_status, statement_key
+      FROM canonical_credit_card_transaction_lifecycle
+      WHERE transaction_id = ?
+      ORDER BY rowid
+    `).all(transitionTransaction!.transaction_id) as Array<{
+      billing_status?: string;
+      statement_key?: string | null;
+    }>;
+    assert.deepEqual(lifecycleAfterReverse.map(({ billing_status, statement_key }) => ({
+      billing_status,
+      statement_key,
+    })), [
+      { billing_status: "unbilled", statement_key: null },
+      { billing_status: "billed", statement_key: secondLifecycle.statementKey },
+      { billing_status: "unbilled", statement_key: null },
+    ]);
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM source_record_provenance provenance
+        WHERE provenance.source_record_id IN (
+          SELECT source_record_id
+          FROM canonical_credit_card_transaction_lifecycle
+          WHERE transaction_id = ?
+        )
+      `).get(transitionTransaction!.transaction_id) as { n: number }).n),
+      3,
+    );
   } finally {
     store.close();
   }

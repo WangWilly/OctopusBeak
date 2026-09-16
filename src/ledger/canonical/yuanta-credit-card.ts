@@ -848,12 +848,22 @@ export function admitYuantaCreditCardCapture(
   const sourceKeys = new Set<string>();
   const sourceRecords = new Set<string>();
   const occurrenceOrdinals = new Map<string, number>();
+  const billingStatusByContentIdentity = new Map<string, "billed" | "unbilled">();
   const bySourceRecord = new Map<string, YuantaCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
     const base = buildYuantaCreditCardTransactionSourceKey(identity, {
       ...record,
       occurrenceIndex: 0,
     });
+    const previousBillingStatus = billingStatusByContentIdentity.get(base);
+    if (
+      previousBillingStatus !== undefined &&
+      previousBillingStatus !== record.billingStatus
+    )
+      fail(
+        "Yuanta capture cannot contain the same economic transaction in billed and unbilled grids.",
+      );
+    billingStatusByContentIdentity.set(base, record.billingStatus);
     const expected = occurrenceOrdinals.get(base) ?? 0;
     if (record.occurrenceIndex !== expected)
       fail("Yuanta duplicate occurrence indexes must be contiguous in source order.");

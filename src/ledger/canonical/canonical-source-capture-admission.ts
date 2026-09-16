@@ -872,17 +872,26 @@ function sourceRecordComparisonPayload(
   return payload;
 }
 
-function esunOptionalStatementPeriodOnlyDifference(
+function esunAllowedTransactionEvolution(
   prior: Record<string, unknown>,
   next: Record<string, unknown>,
 ): boolean {
   const priorPresent = prior.statementPeriod !== undefined && prior.statementPeriod !== null;
   const nextPresent = next.statementPeriod !== undefined && next.statementPeriod !== null;
-  if (priorPresent === nextPresent) return false;
+  const optionalPeriodChanged = priorPresent !== nextPresent;
+  const billingStatusAdvanced =
+    prior.billingStatus === "unbilled" && next.billingStatus === "billed";
+  if (!optionalPeriodChanged && !billingStatusAdvanced) return false;
   const normalizedPrior = { ...prior };
   const normalizedNext = { ...next };
-  delete normalizedPrior.statementPeriod;
-  delete normalizedNext.statementPeriod;
+  if (optionalPeriodChanged) {
+    delete normalizedPrior.statementPeriod;
+    delete normalizedNext.statementPeriod;
+  }
+  if (billingStatusAdvanced) {
+    delete normalizedPrior.billingStatus;
+    delete normalizedNext.billingStatus;
+  }
   return stableCanonicalSourceJson(normalizedPrior) ===
     stableCanonicalSourceJson(normalizedNext);
 }
@@ -914,21 +923,22 @@ function sourceRecordContentMatches(
     return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
   }
 
-  const esunOptionalPeriodCompatibility =
+  const esunTransactionEvolution =
     recordKind === "esun-credit-card-transaction" &&
-    esunOptionalStatementPeriodOnlyDifference(prior, next);
+    esunAllowedTransactionEvolution(prior, next);
 
   // Financial content hashes are part of the immutable source contract. Only
   // Yuanta's explicitly derived settlement-linkage enrichment may change the
   // hash while preserving the normalized source transaction content, plus
-  // E.SUN's optional issuer statement-period appearance/disappearance.
+  // E.SUN's optional issuer statement-period appearance/disappearance or its
+  // one-way unbilled-to-billed lifecycle advance.
   if (
     String(row.content_hash) !== record.contentHash &&
     recordKind !== "yuanta-foreign-currency-deposit" &&
-    !esunOptionalPeriodCompatibility
+    !esunTransactionEvolution
   )
     return false;
-  if (esunOptionalPeriodCompatibility) return true;
+  if (esunTransactionEvolution) return true;
   return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
 }
 
