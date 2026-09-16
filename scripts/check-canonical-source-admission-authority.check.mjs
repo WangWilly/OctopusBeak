@@ -41,6 +41,46 @@ test("source admission authority rejects legacy and unauthorized internal caller
           "withCanonicalSourceCaptureAdmissionTransaction(store, operation);",
         ].join("\n"),
       },
+      {
+        path: "src/ledger/canonical/canonical-financial-admission.ts",
+        source: "CanonicalSourceCaptureAdmissionTransactionCapability;",
+      },
+      {
+        path: "src/ledger/canonical/canonical-financial-commit-execution.ts",
+        source: [
+          "CanonicalSourceCaptureAdmissionTransactionCapability;",
+          "CanonicalSourceCaptureAdmissionTransactionResult;",
+          "withCanonicalSourceCaptureAdmissionTransaction(store, operation);",
+        ].join("\n"),
+      },
+      ...[
+        "esun-credit-card",
+        "foreign-currency-deposit",
+        "fubon-credit-card",
+        "yuanta-credit-card",
+      ].map((name) => ({
+        path: `src/ledger/canonical/${name}.ts`,
+        source: [
+          "CanonicalSourceCaptureAdmissionTransactionCapability;",
+          "withCanonicalSourceCaptureAdmissionTransaction(store, operation);",
+        ].join("\n"),
+      })),
+      {
+        path: "src/ledger/canonical/canonical-source-store.ts",
+        source: [
+          "function commitCathayDomesticDepositSyncInStore() {",
+          "  db.prepare('UPDATE source_connections SET source_connection_key = ?');",
+          "}",
+        ].join("\n"),
+      },
+      {
+        path: "src/ledger/canonical/canonical-source-store.ts",
+        source: [
+          "function productWriter() {",
+          "  db.prepare('UPDATE source_connections SET source_connection_key = ?');",
+          "}",
+        ].join("\n"),
+      },
     ]),
     [
       {
@@ -72,6 +112,11 @@ test("source admission authority rejects legacy and unauthorized internal caller
         path: "src/ledger/canonical/canonical-schema-implementation.ts",
         line: 4,
         identifier: "source_records-write",
+      },
+      {
+        path: "src/ledger/canonical/canonical-source-store.ts",
+        line: 2,
+        identifier: "source_connections-write",
       },
     ],
   );

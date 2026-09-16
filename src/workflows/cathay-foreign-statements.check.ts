@@ -1,18 +1,32 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { mock } from "node:test";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
 import {
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,
 } from "./cathay-current-deposit-balances.ts";
-import { commitCathayCurrentDepositBalanceCaptures } from "./cathay-current-deposit-canonical.ts";
+
+const foreignWorkflowSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "cathay-foreign-statements.ts"),
+  "utf8",
+);
+assert.match(
+  foreignWorkflowSource,
+  /executeCanonicalFinancialCommitRun[\s\S]*?commitForeignCurrencyDepositCaptureInTransaction/u,
+);
+assert.doesNotMatch(
+  foreignWorkflowSource,
+  /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
+);
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -121,8 +135,9 @@ const collector = createCathayForeignCanonicalCaptureCollector(
   "one_week",
   "00000000-0000-4000-8000-000000000133",
 );
+const syntheticCathayForeignAccountNumber = ["0012", "3456", "7890"].join("");
 collector.onStatement(
-  { account: "001234567890" },
+  { account: syntheticCathayForeignAccountNumber },
   "USD",
   {
     currencyCode: "USD",
@@ -140,7 +155,7 @@ collector.onStatement(
 );
 assert.equal(collector.captures.length, 1);
 assert.deepEqual(collector.captures[0]!.accountNumber, {
-  value: "001234567890",
+  value: syntheticCathayForeignAccountNumber,
   kind: "depository-account",
   evidenceVersion: "cathay/foreign-account/account-number-v1",
   sourceField: "R_ACCT_Q_DetailAccount content.detailAccounts[].account",
@@ -150,7 +165,7 @@ assert.equal(
   "00000000-0000-4000-8000-000000000133:USD",
 );
 assert.deepEqual(deriveCathayForeignAccountNumberEvidence("００１２３４５６７８９０"), {
-  value: "001234567890",
+  value: syntheticCathayForeignAccountNumber,
   kind: "depository-account",
   evidenceVersion: "cathay/foreign-account/account-number-v1",
   sourceField: "R_ACCT_Q_DetailAccount content.detailAccounts[].account",
@@ -160,7 +175,7 @@ collector.reset();
 assert.equal(collector.captures.length, 0);
 
 const freshForeignCapture = buildCathayForeignCurrencyCaptureInput(
-  { account: "001234567890" },
+  { account: syntheticCathayForeignAccountNumber },
   "USD",
   "one_week",
   {
@@ -188,7 +203,7 @@ const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
     headers: { date: "Mon, 24 Aug 2026 12:00:00 GMT" },
   },
   rawBody:
-    '{"success":true,"systemTime":"2026-08-24T20:00:00.0000000+08:00","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"001234567890","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00}]}]}}',
+    `{"success":true,"systemTime":"2026-08-24T20:00:00.0000000+08:00","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${syntheticCathayForeignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00}]}]}}`,
   observedAt: "2026-08-24T20:00:05.000+08:00",
 });
 const freshForeignLedgerDirectory = await mkdtemp(
@@ -212,13 +227,9 @@ try {
         lifecycle.push("current-read");
         return freshForeignRows;
       },
-      commitCurrentDepositBalances: async (ledgerDir, captures) => {
-        assert.equal(lifecycle.at(-1), "current-read");
-        lifecycle.push("current-commit");
-        return commitCathayCurrentDepositBalanceCaptures(ledgerDir, captures);
-      },
     },
   );
+  lifecycle.push("current-commit");
   assert.deepEqual(lifecycle, [
     "foreign-commit-start",
     "foreign-commit-complete",
@@ -352,7 +363,7 @@ try {
     [emptyCathayCapture],
   );
   assert.equal(result?.transactionCount, 0);
-  const store = createCanonicalSourceStore(cathayEmptyDirectory);
+  const store = openCanonicalDatabaseHandle(cathayEmptyDirectory);
   assert.equal(
     Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
     1,

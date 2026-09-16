@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 
 registerHooks({
@@ -12,6 +13,17 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
+
+const workflowSource = await readFile(
+  new URL("./yuanta-credit-card-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(workflowSource, /commitYuantaCreditCardCaptureInTransaction/);
+assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
+assert.doesNotMatch(
+  workflowSource,
+  /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,
+);
 
 const {
   buildYuantaCanonicalCreditCardCaptures,

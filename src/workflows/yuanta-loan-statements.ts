@@ -9,18 +9,23 @@ import {
 } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
-  createCanonicalLoanStore,
   type LoanCapturePage,
   type LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import {
   YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
+  admitYuantaLoanCapture,
   buildYuantaLoanCapture,
-  persistYuantaLoanCapture,
   type YuantaLoanAccountNumberEvidence,
   type YuantaLoanCaptureBuildInput,
   type YuantaLoanStatementRow,
 } from "../ledger/canonical/yuanta-loan.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
+import {
+  CanonicalFinancialCommitItemError,
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
@@ -139,11 +144,9 @@ type YuantaLoanStatementsOutput = z.infer<typeof outputSchema>;
 
 export type YuantaLoanStatementsRunDependencies = Partial<{
   canonicalLedgerDir: string;
-  canonicalFinancialLedgerDir: string;
   sourceConnectionScope: string;
   sourceConnectionKey: string;
   observedAt: () => string;
-  createLoanStore: typeof createCanonicalLoanStore;
   /** Test/live-adapter seams; production uses the provider page functions. */
   openLoanStatementPage: (page: Page) => Promise<unknown>;
   readLoanAccountOptions: typeof readYuantaLoanAccountOptions;
@@ -173,10 +176,6 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
   /** Optional provider-explicit transaction links supplied by a live adapter. */
   explicitRelationLinks: Parameters<typeof resolveLoanRepaymentRelations>[1]["explicitLinks"];
   resolveRelations: typeof resolveLoanRepaymentRelations;
-  persistLoanCapture: (
-    store: ReturnType<typeof createCanonicalLoanStore>,
-    input: YuantaLoanCaptureBuildInput,
-  ) => ReturnType<typeof persistYuantaLoanCapture>;
 }>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
@@ -1276,31 +1275,32 @@ export async function runYuantaLoanStatements(
   const write = overrides.writeLoanStatementsFile ?? writeLoanStatementsFile;
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta loan", overrides);
-  const ledgerDir =
-    overrides.canonicalFinancialLedgerDir ??
+  const canonicalLedgerDir =
     overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const store = (overrides.createLoanStore ?? createCanonicalLoanStore)(
-    ledgerDir,
-  );
-  const persist = overrides.persistLoanCapture ?? persistYuantaLoanCapture;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
   const resolveRelations =
     overrides.resolveRelations ?? resolveLoanRepaymentRelations;
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
 
-  try {
-    await openStatementPage(page);
-    const accounts = await readAccounts(
-      page,
-      input.loanAccountFilters,
-    );
-    const rows: StatementRow[] = [];
-    const sourceTables: SourceTable[] = [];
-    const nextTimestamp = createTimestampGenerator();
-    const dateRange = describeDateRange(input);
-    const canonicalRange = canonicalLoanDateRange(input);
+  await openStatementPage(page);
+  const accounts = await readAccounts(
+    page,
+    input.loanAccountFilters,
+  );
+  const rows: StatementRow[] = [];
+  const sourceTables: SourceTable[] = [];
+  const nextTimestamp = createTimestampGenerator();
+  const dateRange = describeDateRange(input);
+  const canonicalRange = canonicalLoanDateRange(input);
 
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    provider: "yuanta",
+    product: "loan",
+    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
       await queryAccount(page, input, account);
@@ -1353,60 +1353,90 @@ export async function runYuantaLoanStatements(
       };
       // Build once before commit so optional source evidence can refer to the
       // exact immutable source-record keys that the Yuanta adapter will
-      // persist.  The core writer still owns admission and commit.
+      // persist.
       const capture = buildYuantaLoanCapture(captureInput);
-      await persist(store, captureInput);
-
-      const sourceEvidence = overrides.readCounterpartyAccountEvidence
-        ? await overrides.readCounterpartyAccountEvidence(
-            page,
-            account,
-            accountRows,
-          )
-        : [yuantaLoanSelectorAccountEvidence(account)];
-      for (const evidence of sourceEvidence) {
-        await persistCounterpartyAccountEvidence(
-          store,
-          materializeYuantaLoanCounterpartyEvidence(capture, evidence),
-        );
-      }
-      relationResolution = await resolveLoanRelationsAfterCapture(
-        store,
-        resolveRelations,
-        {
-          sourceConnectionKey,
-          integrationNamespace: "yuanta",
-          observedAt: capture.observedAt,
-          failureEvent: "yuanta-loan-relation-resolution-failed",
-          explicitLinks: overrides.explicitRelationLinks,
+      yield {
+        provider: "yuanta",
+        product: "loan",
+        itemKey: capture.captureId,
+        commit: (transaction) => {
+          transaction.throwIfCancelled();
+          const admitted = admitYuantaLoanCapture(capture);
+          const [result] = commitCanonicalFinancialAdmissionInTransaction(
+            transaction.writer,
+            { kind: "loan", capture: admitted },
+            transaction.admission,
+          );
+          if (!result)
+            throw new CanonicalFinancialCommitItemError(
+              "Yuanta loan financial commit returned no result.",
+            );
+          return {
+            ...result,
+            balanceObservationCount: admitted.balanceObservations.length,
+            relationCount: admitted.relations.length,
+          };
         },
-      );
+        resolveRelations: async ({ writer }) => {
+          const sourceEvidence = overrides.readCounterpartyAccountEvidence
+            ? await overrides.readCounterpartyAccountEvidence(
+                page,
+                account,
+                accountRows,
+              )
+            : [yuantaLoanSelectorAccountEvidence(account)];
+          for (const evidence of sourceEvidence) {
+            await persistCounterpartyAccountEvidence(
+              writer,
+              materializeYuantaLoanCounterpartyEvidence(capture, evidence),
+            );
+          }
+          relationResolution = await resolveLoanRelationsAfterCapture(
+            writer,
+            resolveRelations,
+            {
+              sourceConnectionKey,
+              integrationNamespace: "yuanta",
+              observedAt: capture.observedAt,
+              failureEvent: "yuanta-loan-relation-resolution-failed",
+              explicitLinks: overrides.explicitRelationLinks,
+            },
+          );
+        },
+      };
     }
+  })(),
+  });
 
-    const file = await write(
-      nextTimestamp,
-      dateRange,
-      rows,
-      sourceTables,
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Yuanta canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
     );
 
-    return {
-      dateRange,
-      count: 1,
-      files: [file],
-      ...(relationResolution
-        ? {
-            relationResolution: {
-              ...relationResolution,
-              exactRelationIds: [...relationResolution.exactRelationIds],
-              settlementGroupIds: [...relationResolution.settlementGroupIds],
-            },
-          }
-        : {}),
-    };
-  } finally {
-    store.close();
-  }
+  const file = await write(
+    nextTimestamp,
+    dateRange,
+    rows,
+    sourceTables,
+  );
+  const resolvedRelation = relationResolution as
+    | LoanRepaymentRelationResolutionResult
+    | null;
+
+  return {
+    dateRange,
+    count: 1,
+    files: [file],
+    ...(resolvedRelation
+      ? {
+          relationResolution: {
+            ...resolvedRelation,
+            exactRelationIds: [...resolvedRelation.exactRelationIds],
+            settlementGroupIds: [...resolvedRelation.settlementGroupIds],
+          },
+        }
+      : {}),
+  };
 }
 
 export default workflow("yuantaLoanStatements", {
@@ -1426,13 +1456,7 @@ export default workflow("yuantaLoanStatements", {
     );
     const output = await runYuantaLoanStatements(page, input, {
       canonicalLedgerDir:
-        process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-        process.env.LEDGER_DIR ??
-        DEFAULT_LEDGER_DIR,
-      canonicalFinancialLedgerDir:
-        process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR ??
         process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-        process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
         process.env.LEDGER_DIR ??
         DEFAULT_LEDGER_DIR,
       sourceConnectionScope,

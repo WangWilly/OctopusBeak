@@ -13,12 +13,7 @@ import {
 } from "./human-assistance.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
-import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
-import {
-  commitCanonicalEInvoiceCapture,
+  commitCanonicalEInvoiceCaptureInTransaction,
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
   E_INVOICE_ROUTE,
@@ -28,6 +23,7 @@ import {
   type CanonicalEInvoiceOccurrence,
 } from "../ledger/canonical/einvoice.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { executeCanonicalFinancialCommitRun } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
 const SEARCH_URL =
@@ -912,8 +908,6 @@ export function buildCanonicalEInvoiceCapture(
 
 function configuredCanonicalLedgerDir(explicit: string | undefined): string {
   return explicit?.trim() ||
-    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR?.trim() ||
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR?.trim() ||
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
     process.env.LEDGER_DIR?.trim() ||
     DEFAULT_LEDGER_DIR;
@@ -923,15 +917,32 @@ export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
   ledgerDir: string,
 ) {
-  // The source store validates the schema, while product reads also require an
-  // active canonical projection generation. Initialize both on a fresh ledger.
-  openCanonicalDatabaseHandle(ledgerDir).close();
-  const store = createCanonicalSourceStore(ledgerDir);
-  try {
-    return await commitCanonicalEInvoiceCapture(store, capture);
-  } finally {
-    store.close();
-  }
+  const result = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: ledgerDir,
+    items: [
+      {
+        provider: "einvoice",
+        product: "personal-invoice",
+        itemKey: capture.captureId,
+        commit: ({ writer, admission }) =>
+          commitCanonicalEInvoiceCaptureInTransaction(
+            writer,
+            capture,
+            admission,
+          ),
+      },
+    ],
+    provider: "einvoice",
+    product: "personal-invoice",
+  });
+  const item = result.items[0];
+  if (item?.status !== "committed")
+    throw new Error(
+      `E-Invoice canonical persistence ${result.status}: ${result.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
+  return item.value;
 }
 
 export default workflow("einvoicePersonalInvoices", {

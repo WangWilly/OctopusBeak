@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildEsunCanonicalCreditCardCapture,
@@ -16,6 +17,17 @@ import {
 } from "./esun-credit-card-statements.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+
+const workflowSource = await readFile(
+  new URL("./esun-credit-card-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.match(workflowSource, /commitEsunCreditCardCaptureInTransaction/);
+assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
+assert.doesNotMatch(
+  workflowSource,
+  /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,
+);
 
 assert.equal(
   isEsunCompleteGrid({

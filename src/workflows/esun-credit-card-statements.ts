@@ -10,7 +10,7 @@ import type { Frame, Page } from "playwright";
 import { z } from "zod";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
-  commitEsunCreditCardCapture,
+  commitEsunCreditCardCaptureInTransaction,
   ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
   type EsunCreditCardCanonicalCaptureOptions,
   type EsunCreditCardIdentityInput,
@@ -21,16 +21,16 @@ import {
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCapture,
+  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
@@ -1341,21 +1341,52 @@ export default workflow("esunCreditCardStatements", {
       "not-configured";
     let canonicalCaptureCount = 0;
     if (canonicalCapture) {
-      const store = createCanonicalSourceStore(DEFAULT_LEDGER_DIR);
-      try {
-        await commitEsunCreditCardCapture(store, canonicalCapture);
-        if (currentUsedCredit) {
-          const balanceCapture = esunCreditCurrentSnapshotCapture(
-            canonicalCapture,
-            currentUsedCredit,
-          );
-          await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
-        }
-        canonicalAdmission = "admitted";
-        canonicalCaptureCount = 1;
-      } finally {
-        store.close();
+      const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
+        {
+          provider: "esun",
+          product: "credit-card",
+          itemKey: canonicalCapture.captureId,
+          commit: ({ writer, admission }) =>
+            commitEsunCreditCardCaptureInTransaction(
+              writer,
+              canonicalCapture,
+              admission,
+            ),
+        },
+      ];
+      if (currentUsedCredit) {
+        const balanceCapture = esunCreditCurrentSnapshotCapture(
+          canonicalCapture,
+          currentUsedCredit,
+        );
+        executionItems.push({
+          provider: "esun",
+          product: "current-balance",
+          itemKey: balanceCapture.captureId,
+          commit: ({ writer, admission }) =>
+            commitCreditCardCurrentBalanceCaptureInTransaction(
+              writer,
+              balanceCapture,
+              admission,
+            ),
+        });
       }
+      const canonicalLedgerDir =
+        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+        process.env.LEDGER_DIR?.trim() ||
+        DEFAULT_LEDGER_DIR;
+      const executionResult = await executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir,
+        items: executionItems,
+        provider: "esun",
+        product: "credit-card",
+      });
+      if (executionResult.status !== "completed")
+        throw new Error(
+          `E.SUN credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+        );
+      canonicalAdmission = "admitted";
+      canonicalCaptureCount = 1;
     }
     console.log("automation-progress: 100");
 

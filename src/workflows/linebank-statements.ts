@@ -1,5 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   librettoAuthenticate,
@@ -8,15 +8,28 @@ import {
 } from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
-import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/domestic-deposit-store.ts";
+import type {
+  DomesticDepositSourceTime,
+  LineBankHumanAttestedV13ValidatedCapture,
+} from "../ledger/canonical/domestic-deposit-store.ts";
 import {
-  commitForeignCurrencyDepositCaptureBatch,
+  admitCanonicalFinancialDepositCapture,
+  commitCanonicalFinancialDepositCaptureInTransaction,
+  type CanonicalFinancialDepositValidatedCapture,
+} from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
+import {
+  commitForeignCurrencyDepositCaptureInTransaction,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+  type CanonicalFinancialCommitTransaction,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   buildLinebankCurrentDepositBalanceCaptures,
 } from "./linebank-current-deposit-canonical.ts";
@@ -26,12 +39,173 @@ import {
   type LineBankCurrentDepositBalanceRow,
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
 const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
+
+const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
+const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
+
+function linebankCanonicalToken(...parts: string[]): string {
+  return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;
+}
+
+function linebankCanonicalDate(value: string): string {
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+}
+
+function linebankCanonicalDateTime(value: DomesticDepositSourceTime): string {
+  return `${linebankCanonicalDate(value.localDate)}T${value.localTime.slice(0, 2)}:${value.localTime.slice(2, 4)}:${value.localTime.slice(4, 6)}`;
+}
+
+function linebankCompactFinancialRecord(
+  capture: LineBankHumanAttestedV13ValidatedCapture,
+  record: LineBankHumanAttestedV13ValidatedCapture["records"][number],
+): string {
+  return JSON.stringify({
+    sourceOccurrenceKey: record.sourceOccurrenceKey,
+    baseOccurrenceKey: record.baseOccurrenceKey,
+    sourceChangeFingerprint: record.sourceChangeFingerprint,
+    accountKey: capture.accountKey,
+    sourceConnection: capture.sourceConnection,
+    stream: capture.stream,
+    contractVersion: capture.contractVersion,
+    identityEpoch: capture.identityEpoch,
+    sourceSequence: record.sourceSequence,
+    occurrenceCounter: record.occurrenceCounter,
+    sourceSequenceKey: record.sourceOccurrenceKey,
+    sourceTime: record.sourceTime,
+    direction: record.direction,
+    sourceDirectionCode: record.sourceDirectionCode,
+    amount: record.amount,
+    balanceAfter: record.balanceAfter,
+    currency: record.currency,
+    description: record.description ?? null,
+    cancellation: "N",
+    cancellationFlags: record.cancellationFlags,
+    provenance: { matchingRuleVersion: "occurrence-v1" },
+  });
+}
+
+/** Keep LINE Bank's provider vocabulary in the adapter before execution. */
+function normalizeLineBankFinancialCapture(
+  capture: LineBankHumanAttestedV13ValidatedCapture,
+): CanonicalFinancialDepositValidatedCapture {
+  const contractFingerprint = linebankCanonicalToken(
+    "linebank-v13-contract",
+    capture.contractVersion,
+    capture.humanAttestation.evidenceVersion,
+  );
+  const preflightFingerprint = linebankCanonicalToken(
+    "linebank-v13-scope",
+    capture.sourceScopeEvidence.evidenceVersion,
+    capture.authority.kind,
+    capture.authority.membershipEffectiveDate ?? "personal-main",
+  );
+  return admitCanonicalFinancialDepositCapture({
+    captureId: capture.captureId,
+    authorityRoute: LINEBANK_V13_AUTHORITY,
+    contractVersion: "human-attested-v13",
+    identity: {
+      integrationNamespace: "linebank",
+      sourceConnectionKey: linebankCanonicalToken(
+        "linebank-connection",
+        capture.sourceConnection,
+      ),
+      identityEpochKey: linebankCanonicalToken(
+        "linebank-epoch",
+        capture.sourceConnection,
+        String(capture.identityEpoch),
+      ),
+      stream: capture.stream,
+      recordKind: LINEBANK_V13_RECORD_KIND,
+      subjectDigest: capture.accountKey,
+      accountNo: capture.accountKey,
+      sourceAccountKey: capture.accountKey,
+      accountNumber: capture.accountNumber ?? null,
+      accountType: "depository",
+      currency: "TWD",
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: linebankCanonicalDate(capture.scope.startDate),
+      endDate: linebankCanonicalDate(capture.scope.endDate),
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis:
+        "human-attested-requested-scope-all-pages-stable-totals",
+      completenessRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      absenceAuthority: "comparable-complete-range",
+      contractFingerprint,
+      preflightFingerprint,
+      pageCount: capture.pageCount,
+    },
+    semantics: {
+      postingStatus: capture.postingStatus,
+      postingOrigin: "human_attested_history",
+      postingBasis: "human-attested-formally-posted",
+      postingRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      effectiveTimeBasis: capture.effectiveTimeBasis,
+      effectiveTimeRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      timeZone: capture.timeZone,
+      timePrecision: "second",
+      timeOrigin: "source_reported",
+      requireBalance: true,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageNbr - 1,
+      responseCode: "200",
+      terminal: page.pageNbr === capture.pageCount,
+      rowCount: page.txCnt,
+      responseDigest: linebankCanonicalToken(
+        "linebank-v13-page",
+        capture.captureId,
+        String(page.pageNbr),
+        String(page.txCnt),
+      ),
+      proofKind: "human-attested-requested-scope-all-pages-stable-totals",
+      contractFingerprint,
+      preflightFingerprint,
+      metadataJson: JSON.stringify({
+        pageNbr: page.pageNbr,
+        pageCapacity: page.pageCnt,
+        totalCount: page.totTxCnt,
+        rowCount: page.txCnt,
+      }),
+    })),
+    records: capture.records.map((record) => ({
+      occurrenceKey: record.sourceOccurrenceKey,
+      collisionKey: record.baseOccurrenceKey,
+      providerKey: record.sourceOccurrenceKey,
+      contentHash: record.sourceChangeFingerprint,
+      sequenceLexeme: record.sourceOccurrenceKey,
+      compactJson: linebankCompactFinancialRecord(capture, record),
+      amount: record.amount,
+      balanceAfter: record.balanceAfter,
+      currency: record.currency,
+      description: record.description ?? null,
+      direction: record.direction,
+      sourceTime: {
+        localDate: record.sourceTime.localDate,
+        localTime: record.sourceTime.localTime,
+        timeZone: record.sourceTime.timeZone,
+        epochMilliseconds: record.sourceTime.epochMilliseconds,
+      },
+      effectiveOn: linebankCanonicalDate(record.sourceTime.localDate),
+      transactionDateTimeLocal: linebankCanonicalDateTime(record.sourceTime),
+    })),
+  });
+}
 
 const statementHeaders = [
   "帳務日期",
@@ -1341,7 +1515,6 @@ async function downloadLineBankStatements(
   const downloads: LineBankDownload[] = [];
   const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
   const foreignCanonicalCaptures: ForeignCurrencyDepositCaptureInput[] = [];
-  let currentBalanceCaptureCount = 0;
   const captureOccurrenceId = randomUUID();
   for (const account of accounts) {
     const rows: LineBankStatementRow[] = [];
@@ -1379,68 +1552,96 @@ async function downloadLineBankStatements(
     );
   }
 
-  const financialLedgerDir =
-    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-  if (financialLedgerDir && canonicalCaptures.length > 0) {
-    const {
-      commitCanonicalLineBankFinancialCaptureBatch,
-      createDomesticDepositStore,
-    } = await import("../ledger/canonical/domestic-deposit-store.ts");
-    const store = createDomesticDepositStore(financialLedgerDir);
-    try {
-      await commitCanonicalLineBankFinancialCaptureBatch(
-        store,
-        canonicalCaptures,
-      );
-    } finally {
-      store.close();
-    }
-  }
-  if (financialLedgerDir && foreignCanonicalCaptures.length > 0) {
-    const store = createCanonicalSourceStore(financialLedgerDir);
-    try {
-      await commitForeignCurrencyDepositCaptureBatch(
-        store,
-        foreignCanonicalCaptures,
-      );
-    } finally {
-      store.close();
-    }
-  }
-  if (financialLedgerDir && currentBalanceRows.length > 0 && canonicalCaptures.length > 0) {
+  const canonicalLedgerDir =
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
+  const committedDomesticCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
+  const committedDomesticCaptureInputs: LineBankHumanAttestedV13ValidatedCapture[] = [];
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
+    ...canonicalCaptures.map((capture) => ({
+      provider: "linebank",
+      product: "domestic-deposit",
+      itemKey: capture.captureId,
+      commit: (transaction: CanonicalFinancialCommitTransaction) => {
+        const normalized = normalizeLineBankFinancialCapture(capture);
+        const result = commitCanonicalFinancialDepositCaptureInTransaction(
+          transaction.writer,
+          normalized,
+          transaction.admission,
+          (db, results) =>
+            commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+              db,
+              results.map((entry) => entry.captureId),
+            ),
+        );
+        committedDomesticCaptures.push(normalized);
+        committedDomesticCaptureInputs.push(capture);
+        return result;
+      },
+    })),
+    ...foreignCanonicalCaptures.map((capture, index) => ({
+      provider: "linebank",
+      product: "foreign-currency",
+      itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
+      commit: (transaction: CanonicalFinancialCommitTransaction) =>
+        commitForeignCurrencyDepositCaptureInTransaction(
+          transaction.writer,
+          capture,
+          transaction.admission,
+        ),
+    })),
+  ];
+  const currentBalanceItems = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+    if (currentBalanceRows.length === 0 || committedDomesticCaptures.length === 0)
+      return;
     const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
       currentBalanceRows,
-      canonicalCaptures.map((capture) => ({
+      committedDomesticCaptureInputs.map((capture) => ({
         accountKey: capture.accountKey,
         sourceConnection: capture.sourceConnection,
         identityEpoch: capture.identityEpoch,
         observedAt: capture.observedAt,
       })),
     );
-    const {
-      admitCurrentDepositBalanceCapture,
-      commitCurrentDepositBalanceCapture,
-    } = await import("../ledger/canonical/current-deposit-balance-writer.ts");
-    const store = createCanonicalSourceStore(financialLedgerDir);
-    try {
-      for (const capture of currentBalanceCaptures) {
-        const admitted = admitCurrentDepositBalanceCapture(capture);
-        await commitCurrentDepositBalanceCapture(store, admitted);
-      }
-      currentBalanceCaptureCount = currentBalanceCaptures.length;
-    } finally {
-      store.close();
+    for (const [index, capture] of currentBalanceCaptures.entries()) {
+      yield {
+        provider: "linebank",
+        product: "current-balance",
+        itemKey: `current-balance:${index}`,
+        commit: (transaction) =>
+          commitCurrentDepositBalanceCaptureInTransaction(
+            transaction.writer,
+            admitCurrentDepositBalanceCapture(capture),
+            transaction.admission,
+          ),
+      };
     }
-  }
+  };
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+      yield* executionItems;
+      yield* currentBalanceItems();
+    })(),
+    provider: "linebank",
+    product: "financial",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `LINE Bank canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
+    );
+  const canonicalCaptureCount = executionResult.items.reduce(
+    (count, item) =>
+      count + (item.status === "committed" ? item.admissionSummaries.length : 0),
+    0,
+  );
 
   return {
     dateRange,
     count: downloads.length,
     rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-    canonicalCaptureCount:
-      financialLedgerDir === undefined
-        ? 0
-        : canonicalCaptures.length + foreignCanonicalCaptures.length + currentBalanceCaptureCount,
+    canonicalCaptureCount,
     downloads,
   };
 }

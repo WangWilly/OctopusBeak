@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import {
   withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
   type CanonicalSourceCaptureAdmissionTransactionResult,
 } from "./canonical-source-capture-admission.ts";
 import {
@@ -22,6 +23,7 @@ import {
   idToString,
   uuidV7,
 } from "./canonical-local-identifier.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 
 export const E_INVOICE_INTEGRATION_NAMESPACE = "einvoice" as const;
 export const E_INVOICE_STREAM = "personal-invoices" as const;
@@ -135,6 +137,11 @@ export type CanonicalEInvoiceCaptureInput = Readonly<{
   pages: readonly CanonicalEInvoiceCapturePage[];
   invoices: readonly CanonicalEInvoiceInput[];
 }>;
+
+export type CanonicalEInvoiceWriterStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock" | "withWriter"
+>;
 
 export type CanonicalEInvoiceCommitResult = Readonly<{
   status: "committed";
@@ -884,40 +891,51 @@ function insertOrObserveInvoice(
 }
 
 /** Atomically admit an E-Invoice capture, its source envelope, and typed facts. */
-export async function commitCanonicalEInvoiceCapture(
-  store: CanonicalSourceStore,
+export function commitCanonicalEInvoiceCaptureInTransaction(
+  store: CanonicalEInvoiceWriterStore,
   input: CanonicalEInvoiceCaptureInput,
-): Promise<CanonicalEInvoiceCommitResult> {
-  assertValidatedCanonicalSourceStore(store);
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CanonicalEInvoiceCommitResult {
+  assertValidatedCanonicalDatabase(store.db);
   const [, invoices] = normalizeCapture(input);
   const evidence = buildCanonicalEInvoiceSourceEvidence(input);
-  return withCanonicalSourceCaptureAdmissionTransaction(store, (capability) => {
-    const admitted = capability.admit(evidence);
-    insertEInvoiceCapture(store.db, input, admitted);
-    let insertedInvoiceCount = 0;
-    let insertedRevisionCount = 0;
-    let observedDuplicateCount = 0;
-    let itemCount = 0;
-    for (const [index, invoice] of invoices.entries()) {
-      const sourceRecordId = blob(admitted.sourceRecordIds[index]);
-      const result = insertOrObserveInvoice(store.db, input, invoice, admitted, sourceRecordId);
-      if (result.insertedInvoice) insertedInvoiceCount += 1;
-      if (result.insertedRevision) insertedRevisionCount += 1;
-      if (result.duplicate) observedDuplicateCount += 1;
-      itemCount += result.itemCount;
-    }
-    return Object.freeze({
-      status: "committed" as const,
-      captureId: input.captureId,
-      knowledgeAt: admitted.receipt.knowledgePoint,
-      sourceRecordIds: Object.freeze(admitted.sourceRecordIds.map(idToString)),
-      invoiceCount: invoices.length,
-      insertedInvoiceCount,
-      insertedRevisionCount,
-      observedDuplicateCount,
-      itemCount,
-    });
+  const admitted = capability.admit(evidence);
+  insertEInvoiceCapture(store.db, input, admitted);
+  let insertedInvoiceCount = 0;
+  let insertedRevisionCount = 0;
+  let observedDuplicateCount = 0;
+  let itemCount = 0;
+  for (const [index, invoice] of invoices.entries()) {
+    const sourceRecordId = blob(admitted.sourceRecordIds[index]);
+    const result = insertOrObserveInvoice(store.db, input, invoice, admitted, sourceRecordId);
+    if (result.insertedInvoice) insertedInvoiceCount += 1;
+    if (result.insertedRevision) insertedRevisionCount += 1;
+    if (result.duplicate) observedDuplicateCount += 1;
+    itemCount += result.itemCount;
+  }
+  return Object.freeze({
+    status: "committed" as const,
+    captureId: input.captureId,
+    knowledgeAt: admitted.receipt.knowledgePoint,
+    sourceRecordIds: Object.freeze(admitted.sourceRecordIds.map(idToString)),
+    invoiceCount: invoices.length,
+    insertedInvoiceCount,
+    insertedRevisionCount,
+    observedDuplicateCount,
+    itemCount,
   });
+}
+
+export async function commitCanonicalEInvoiceCapture(
+  store: CanonicalEInvoiceWriterStore,
+  input: CanonicalEInvoiceCaptureInput,
+): Promise<CanonicalEInvoiceCommitResult> {
+  assertValidatedCanonicalSourceStore(store as unknown as CanonicalSourceStore);
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as unknown as CanonicalSourceStore,
+    (capability) =>
+      commitCanonicalEInvoiceCaptureInTransaction(store, input, capability),
+  );
 }
 
 export type CanonicalEInvoiceMoneyView = Readonly<{

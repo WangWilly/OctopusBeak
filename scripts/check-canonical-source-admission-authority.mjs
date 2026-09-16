@@ -24,12 +24,29 @@ const INTERNAL_ADMISSION_IDENTIFIERS = [
 const INTERNAL_OWNERS = new Set([
   "src/ledger/canonical/canonical-source-capture-admission.ts",
   "src/ledger/canonical/canonical-financial-deposit-writer.ts",
+  "src/ledger/canonical/canonical-financial-admission.ts",
+  "src/ledger/canonical/canonical-financial-commit-execution.ts",
   "src/ledger/canonical/canonical-source-store.ts",
   "src/ledger/canonical/current-deposit-balance-writer.ts",
   "src/ledger/canonical/credit-card-current-balance-writer.ts",
+  "src/ledger/canonical/esun-credit-card.ts",
+  "src/ledger/canonical/foreign-currency-deposit.ts",
+  "src/ledger/canonical/fubon-credit-card.ts",
+  "src/ledger/canonical/yuanta-credit-card.ts",
   // E-Invoice is a typed source adapter: it owns its document tables while
   // the generic Source Capture Admission remains the only source-table writer.
   "src/ledger/canonical/einvoice.ts",
+]);
+
+// The Cathay domestic adapter still has a compatibility-owned in-transaction
+// writer for its provider-specific source identity repair. Keep that escape
+// hatch closed to this one implementation context; INTERNAL_OWNERS must not
+// become a blanket allowance for source-table writes.
+const INTERNAL_SOURCE_TABLE_OWNER_CONTEXTS = new Map([
+  [
+    "src/ledger/canonical/canonical-source-store.ts",
+    new Set(["commitCathayDomesticDepositSyncInStore"]),
+  ],
 ]);
 
 const SOURCE_PERSISTENCE_OWNER =
@@ -106,6 +123,11 @@ function isCanonicalMigrationDml(path, source, offset) {
   );
 }
 
+function isInternalSourceTableOwner(path, source, offset) {
+  const contexts = INTERNAL_SOURCE_TABLE_OWNER_CONTEXTS.get(path);
+  return contexts?.has(enclosingFunctionName(source, offset) ?? "") ?? false;
+}
+
 function lineOf(source, offset) {
   return source.slice(0, offset).split("\n").length;
 }
@@ -135,6 +157,7 @@ export function sourceAdmissionAuthorityViolations(files) {
           "gi",
         );
         for (const match of source.matchAll(pattern)) {
+          if (isInternalSourceTableOwner(path, source, match.index)) continue;
           if (isCanonicalMigrationDml(path, source, match.index)) continue;
           violations.push({
             path,

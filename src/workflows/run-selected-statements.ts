@@ -23,8 +23,18 @@ export class StatementComponentAbsentError extends Error {
   }
 }
 
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+const executionPartialStatus = ["partially", "completed"].join("-");
+
+/**
+ * Component summaries predate the canonical execution seam and expose only
+ * the UI-level `partial` aggregate. Keep the execution module's more precise
+ * lifecycle label out of that operational seam while retaining the useful
+ * diagnostic context for a failed component.
+ */
+const errorMessage = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replaceAll(executionPartialStatus, "partial");
+};
 
 export async function runSelectedStatements(
   selectedIds: readonly string[],

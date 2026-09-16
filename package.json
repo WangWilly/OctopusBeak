@@ -33,6 +33,7 @@
     "desktop:strip-types-probe": "ELECTRON_RUN_AS_NODE=1 electron --experimental-strip-types electron/strip-types-probe.ts",
     "patch:libretto": "node scripts/patch-libretto-run-cdp.mjs",
     "check:actions-pinned": "node scripts/check-actions-pinned.mjs",
+    "check:canonical-financial-commit-seam": "node scripts/check-canonical-financial-commit-seam.mjs",
     "check:canonical-readiness": "node --no-warnings --experimental-strip-types scripts/check-canonical-readiness.mjs",
     "check:canonical-schema-seam": "node scripts/check-canonical-schema-seam.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",

@@ -6,7 +6,7 @@ import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
-  commitYuantaCreditCardCaptureBatch,
+  commitYuantaCreditCardCaptureInTransaction,
   type YuantaCreditCardCaptureBuilderOptions,
   type YuantaCreditCardIdentityInput,
   type YuantaCreditCardSourceRow,
@@ -17,15 +17,15 @@ import { refreshCanonicalBankTransactionKindsAfterCreditCardCapture } from "../l
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCapture,
+  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-writer.ts";
 import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
@@ -5617,22 +5617,58 @@ export default workflow("yuantaCreditCardStatements", {
         statementSummaries,
       });
       if (canonicalCaptures.length > 0) {
-        const store = createCanonicalSourceStore(DEFAULT_LEDGER_DIR);
-        try {
-          await commitYuantaCreditCardCaptureBatch(store, canonicalCaptures);
-          refreshCanonicalBankTransactionKindsAfterCreditCardCapture(store.db);
-          if (currentUsedCredit) {
-            const balanceCapture = yuantaCreditCurrentSnapshotCapture(
-              canonicalCaptures[0]!,
-              currentUsedCredit,
-            );
-            await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
-          }
-          canonicalAdmission = "admitted";
-          canonicalCaptureCount = canonicalCaptures.length;
-        } finally {
-          store.close();
+        const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+        for (const canonicalCapture of canonicalCaptures) {
+          executionItems.push({
+            provider: "yuanta",
+            product: "credit-card",
+            itemKey: canonicalCapture.captureId,
+            commit: ({ writer, admission }) => {
+              const result = commitYuantaCreditCardCaptureInTransaction(
+                writer,
+                canonicalCapture,
+                admission,
+              );
+              refreshCanonicalBankTransactionKindsAfterCreditCardCapture(
+                writer.db,
+              );
+              return result;
+            },
+          });
         }
+        if (currentUsedCredit) {
+          const balanceCapture = yuantaCreditCurrentSnapshotCapture(
+            canonicalCaptures[0]!,
+            currentUsedCredit,
+          );
+          executionItems.push({
+            provider: "yuanta",
+            product: "current-balance",
+            itemKey: balanceCapture.captureId,
+            commit: ({ writer, admission }) =>
+              commitCreditCardCurrentBalanceCaptureInTransaction(
+                writer,
+                balanceCapture,
+                admission,
+              ),
+          });
+        }
+        const canonicalLedgerDir =
+          process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+          process.env.LEDGER_DIR?.trim() ||
+          DEFAULT_LEDGER_DIR;
+        const executionResult = await executeCanonicalFinancialCommitRun({
+          canonicalLedgerDir,
+          items: executionItems,
+          provider: "yuanta",
+          product: "credit-card",
+        });
+        if (executionResult.status !== "completed")
+          throw new Error(
+            `Yuanta credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+          );
+        canonicalAdmission = "admitted";
+        canonicalCaptureCount = canonicalCaptures.length;
       }
     }
 

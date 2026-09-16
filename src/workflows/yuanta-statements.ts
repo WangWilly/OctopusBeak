@@ -12,14 +12,11 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
   commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction,
-  commitYuantaDomesticDepositSourceEvidenceBatch,
   createYuantaDomesticDepositSourceEvidence,
   createYuantaDomesticDepositTelemetryManifest,
   getYuantaHumanAttestedV2Manifest,
-  isYuantaHumanAttestationV2DurablyActive,
   isYuantaHumanAttestedV2Active,
   isYuantaSourceOnlyFinancialDiagnostic,
-  latestYuantaHumanAttestationEventV2,
   YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -31,13 +28,10 @@ import {
   type YuantaDomesticDepositTelemetryManifest,
   type YuantaDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/yuanta-domestic-deposit.ts";
-import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
 import {
-  createCanonicalSourceStore,
-  type CanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
-import type { CanonicalFinancialDepositValidatedCapture } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   deriveSourceConnectionIdentityKey,
   requireSourceConnectionIdentity,
@@ -69,7 +63,7 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -250,7 +244,6 @@ export type YuantaStatementsRunDependencies = {
   ) => Promise<YuantaStatementDownload>;
   writeBankTransactionsFile?: typeof writeBankTransactionsFile;
   canonicalLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
   /** Explicit opt-in directory for raw, local-only occurrence diagnostics. */
   occurrenceDiagnosticDirectory?: string | null;
   /** Stable provider-login scope; never contains a password or session. */
@@ -1169,25 +1162,7 @@ export async function runYuantaStatements(
     overrides.writeBankTransactionsFile ?? writeBankTransactionsFile;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
-  const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalDatabaseWriterKey(sourceLedgerDir);
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalDatabaseWriterKey(financialLedgerDir)
-    : null;
-  if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
-    throw new Error(
-      "Yuanta source and financial captures must use the same canonical SQLite database.",
-    );
-  const sourceStore = createCanonicalSourceStore(sourceLedgerDir);
-  const financialStore = financialDatabasePath ? sourceStore : null;
-  const financialWriter = financialStore
-    ? {
-        db: financialStore.db,
-        withWriter: financialStore.withWriter,
-        commitClock: () => financialStore.commitClock(),
-      }
-    : null;
+  const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
   const resolveRelations =
     overrides.resolveRelations ?? resolveLoanRepaymentRelations;
   const occurrenceDiagnosticDirectory =
@@ -1211,20 +1186,18 @@ export async function runYuantaStatements(
   }> = [];
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
   const financialCaptures: ExistingYuantaFinancialCapture[] = [];
-  const sourceEntries: Array<{
+  const sourceOnlyEntries: Array<{
     capture: YuantaDomesticDepositValidatedEvidence;
     captureId: string;
   }> = [];
-  const sourceOnlyEntries: typeof sourceEntries = [];
   const financialInputs: YuantaDomesticDepositFinancialAdmissionInput[] = [];
   const relationInputs: Array<{
-    capture: CanonicalFinancialDepositValidatedCapture;
+    captureId: string;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
   }> = [];
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
-  try {
-    // The canonical domestic scope is all visible TWD selectors. Input
+  // The canonical domestic scope is all visible TWD selectors. Input
     // accountFilters remains accepted for compatibility but never narrows
     // the financial/source capture set.
     const accounts = await readAccounts(page);
@@ -1294,25 +1267,10 @@ export async function runYuantaStatements(
           path: diagnosticPath,
         });
       const reasons = new Set<string>();
-      let attestationStateInvalid = false;
       let status: "financial-admitted" | "source-only" = "source-only";
       const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
 
-      sourceEntries.push({ capture, captureId: sourceCaptureId });
-      if (!financialWriter) {
-        reasons.add("financial-ledger-not-configured");
-        sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-      } else {
-        let durablyActive = false;
-        if (isYuantaHumanAttestedV2Active()) {
-          try {
-            const latest = latestYuantaHumanAttestationEventV2(financialWriter.db);
-            durablyActive = latest === null || latest.eventKind === "attested";
-          } catch {
-            attestationStateInvalid = true;
-          }
-        }
-        if (financialAdmission.status !== "admitted") {
+      if (financialAdmission.status !== "admitted") {
           const disallowed = financialAdmission.diagnostics.filter(
             (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
           );
@@ -1324,35 +1282,30 @@ export async function runYuantaStatements(
             reasons.add(diagnostic),
           );
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-        } else if (!durablyActive) {
-          reasons.add(
-            attestationStateInvalid
-              ? "human-attestation-mismatch"
-              : "human-attestation-revoked",
+      } else if (!isYuantaHumanAttestedV2Active()) {
+        reasons.add("human-attestation-revoked");
+        sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+      } else {
+        status = "financial-admitted";
+        if (!financialAdmission.capture)
+          throw new Error(
+            "Yuanta domestic deposit admission lost its canonical capture.",
           );
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-        } else {
-          status = "financial-admitted";
-          if (!financialAdmission.capture)
-            throw new Error(
-              "Yuanta domestic deposit admission lost its canonical capture.",
-            );
-          financialInputs.push(financialInput);
-          financialCaptures.push(financialAdmission.capture);
-          relationInputs.push({
-            capture: financialAdmission.capture,
-            evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
-              (evidence) => {
-                const materialized = materializeYuantaCounterpartyEvidence(
-                  financialAdmission.capture!,
-                  evidence,
-                );
-                admitCounterpartyAccountEvidence(materialized, "yuanta");
-                return materialized;
-              },
-            ),
-          });
-        }
+        financialInputs.push(financialInput);
+        financialCaptures.push(financialAdmission.capture);
+        relationInputs.push({
+          captureId: financialInput.captureId,
+          evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
+            (evidence) => {
+              const materialized = materializeYuantaCounterpartyEvidence(
+                financialAdmission.capture!,
+                evidence,
+              );
+              admitCounterpartyAccountEvidence(materialized, "yuanta");
+              return materialized;
+            },
+          ),
+        });
       }
 
       admissions.push({
@@ -1366,7 +1319,7 @@ export async function runYuantaStatements(
     // Read and validate the point-in-time page before opening the financial
     // commit boundary. A failure here must not leave statement captures from
     // this run behind.
-    if (financialWriter && financialCaptures.length > 0) {
+    if (financialCaptures.length > 0) {
       const authority = financialCaptures[0]!.identity;
       const currentRows = await readCurrent(page, "domestic", {
         observedAt: yuantaObservedAt(),
@@ -1393,52 +1346,78 @@ export async function runYuantaStatements(
       });
     }
 
-    if (financialWriter && financialInputs.length > 0) {
-      await withCanonicalSourceCaptureAdmissionTransaction(
-        sourceStore,
-        (capability) => {
-          for (const entry of sourceOnlyEntries)
-            capability.admit(
-              createYuantaDomesticDepositSourceEvidence(
-                entry.capture,
-                entry.captureId,
-                stableSourceIdentity,
-              ),
-            );
-          commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
-            financialWriter,
-            financialInputs,
-            capability,
+    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+    for (const entry of sourceOnlyEntries) {
+      executionItems.push({
+        provider: "yuanta",
+        product: "domestic-deposit",
+        itemKey: entry.captureId,
+        commit: ({ admission }) => {
+          admission.admit(
+            createYuantaDomesticDepositSourceEvidence(
+              entry.capture,
+              entry.captureId,
+              stableSourceIdentity,
+            ),
           );
+          return entry.captureId;
         },
-      );
-    } else if (sourceEntries.length > 0) {
-      await commitYuantaDomesticDepositSourceEvidenceBatch(
-        sourceStore,
-        sourceEntries.map((entry) => ({
-          ...entry,
-          sourceIdentity: stableSourceIdentity,
-        })),
-      );
+      });
     }
-
-    for (const { capture, evidence } of relationInputs) {
-      for (const item of evidence)
-        await persistCounterpartyAccountEvidence(financialStore!, item);
-      relationResolution = await resolveLoanRelationsAfterCapture(
-        financialStore!,
-        resolveRelations,
-        {
-          sourceConnectionKey,
-          integrationNamespace: "yuanta",
-          observedAt: capture.observedAt,
-          failureEvent: "yuanta-loan-relation-resolution-failed",
-        },
+    for (const financialInput of financialInputs) {
+      const relation = relationInputs.find(
+        (candidate) => candidate.captureId === financialInput.captureId,
       );
+      executionItems.push({
+        provider: "yuanta",
+        product: "domestic-deposit",
+        itemKey: financialInput.captureId,
+        commit: ({ writer, admission }) =>
+          commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
+            writer,
+            [financialInput],
+            admission,
+          )[0]!,
+        ...(relation
+          ? {
+              resolveRelations: async ({ writer }) => {
+                for (const item of relation.evidence)
+                  await persistCounterpartyAccountEvidence(writer, item);
+                relationResolution = await resolveLoanRelationsAfterCapture(
+                  writer,
+                  resolveRelations,
+                  {
+                    sourceConnectionKey,
+                    integrationNamespace: "yuanta",
+                    observedAt: financialInput.capture.observedAt,
+                    failureEvent: "yuanta-loan-relation-resolution-failed",
+                  },
+                );
+              },
+            }
+          : {}),
+      });
     }
-
-    for (const capture of currentBalanceCaptures)
-      await commitCurrentDepositBalanceCapture(financialStore!, capture);
+    const currentBalanceItems: CanonicalFinancialCommitItem<unknown>[] = currentBalanceCaptures.map((capture) => ({
+      provider: "yuanta",
+      product: "current-balance",
+      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+      commit: ({ writer, admission }) =>
+        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
+    }));
+    const executionResult = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir,
+      items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+        yield* executionItems;
+        yield* currentBalanceItems;
+      })(),
+      provider: "yuanta",
+      product: "financial",
+    });
+    if (executionResult.status !== "completed")
+      throw new Error(
+        `Yuanta canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+      );
 
     const file = await write(
       nextTimestamp,
@@ -1446,28 +1425,24 @@ export async function runYuantaStatements(
       rows,
       sourceDownloads,
     );
-    return {
+  const resolvedRelation = relationResolution as LoanRepaymentRelationResolutionResult | null;
+  return {
       dateRange: input.dateRange,
       replacedActiveSession: input.replaceActiveSession,
       count: 1,
       admissions,
       files: [file],
-      ...(relationResolution
+      ...(resolvedRelation
         ? {
             relationResolution: {
-              ...relationResolution,
-              exactRelationIds: [...relationResolution.exactRelationIds],
-              settlementGroupIds: [...relationResolution.settlementGroupIds],
+              ...resolvedRelation,
+              exactRelationIds: [...resolvedRelation.exactRelationIds],
+              settlementGroupIds: [...resolvedRelation.settlementGroupIds],
             },
           }
         : {}),
       ...(telemetry.length > 0 ? { telemetry } : {}),
-    };
-  } finally {
-    sourceStore.close();
-    if (financialStore && financialStore !== sourceStore)
-      financialStore.close();
-  }
+  };
 }
 
 export default workflow("yuantaStatements", {
@@ -1487,23 +1462,18 @@ export default workflow("yuantaStatements", {
 
     await openTransactionDetailsPage(page);
     await chooseDateRange(page, input.dateRange);
-    const configuredSourceLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+    const configuredCanonicalLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
       process.env.LEDGER_DIR ??
       DEFAULT_LEDGER_DIR;
-    const explicitFinancialLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
     const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
     const output = await runYuantaStatements(page, input, {
-      canonicalLedgerDir: configuredSourceLedgerDir,
+      canonicalLedgerDir: configuredCanonicalLedgerDir,
       sourceConnectionScope,
       sourceConnectionKey: deriveSourceConnectionIdentityKey(
         "yuanta",
         sourceConnectionScope,
       ),
-      ...(explicitFinancialLedgerDir
-        ? { canonicalFinancialLedgerDir: explicitFinancialLedgerDir }
-        : {}),
     });
     return { ...output, replacedActiveSession };
   },

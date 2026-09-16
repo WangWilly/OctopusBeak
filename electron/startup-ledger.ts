@@ -26,8 +26,7 @@ export function initializeCanonicalRuntimeBeforeWindow(
   return initializeCanonicalRuntime({
     userData,
     canonicalLedgerDir:
-      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ?? process.env.LEDGER_DIR,
     seams,
   });
 }

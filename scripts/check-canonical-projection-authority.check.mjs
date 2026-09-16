@@ -33,7 +33,9 @@ test("projection authority check rejects a new caller but permits checks and cat
         path: "src/ledger/canonical/canonical-source-store.ts",
         source: [
           "CREATE TABLE projection_generations (...) ",
-          "function commitCathayDomesticDepositSyncOnce() {}",
+          "export { canonicalProjectionRuntimeRebuildInternal } from './canonical-projection-implementation.ts';",
+          "export { canonicalProjectionRuntimeSyncInternal } from './canonical-projection-implementation.ts';",
+          "function commitCathayDomesticDepositSyncInStore() {}",
           "function rebuildCathayCanonicalProjectionOnce() {}",
           "export function commitCathayDomesticDeposit() {}",
           "function syncActiveProjectionFromCompatibility() {}",

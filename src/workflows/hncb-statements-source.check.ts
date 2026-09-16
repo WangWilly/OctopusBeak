@@ -8,7 +8,6 @@ import {
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
 } from "../ledger/canonical/canonical-source-store.ts";
-import { canonicalDatabaseWriterKey } from "../ledger/canonical/canonical-database.ts";
 import { HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES } from "../ledger/canonical/hncb-domestic-deposit.ts";
 import {
   ensureHncbLoginEntry,
@@ -111,7 +110,7 @@ try {
     },
     {
       usedExistingSession: true,
-      canonicalSourceLedgerDir: directory,
+      canonicalLedgerDir: directory,
       readAccountOptions: async (_page, filters) => {
         seenFilters.push(filters);
         return [
@@ -136,6 +135,7 @@ try {
         jsonBytes: 10,
         rowCount: 1,
       }),
+      readCurrentDepositBalances: async () => [],
     },
   );
   assert.deepEqual(seenFilters, [[]]);
@@ -154,7 +154,7 @@ try {
           .prepare("SELECT COUNT(*) AS value FROM source_captures")
           .get() as { value?: number }
       ).value,
-      1,
+      2,
     );
     assert.equal(
       (
@@ -171,7 +171,7 @@ try {
           .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
           .get() as { value?: number }
       ).value,
-      0,
+      1,
     );
     const payload = String(
       (
@@ -184,7 +184,7 @@ try {
       payload,
       /PRIVATE DESCRIPTION|PRIVATE DEPOSITOR|PRIVATE NOTE|PRIVATE NUMBER|account-with-data/,
     );
-    assert.match(payload, /observed-structural-only/);
+    assert.match(payload, /"evidenceVersion":"human-attested-v1"/);
   } finally {
     store.close();
   }
@@ -205,7 +205,7 @@ try {
           outputDir: join(failedDirectory, "downloads"),
         },
         {
-          canonicalSourceLedgerDir: failedDirectory,
+          canonicalLedgerDir: failedDirectory,
           readAccountOptions: async () => [
             { label: "HNCB account", value: "account" },
           ],

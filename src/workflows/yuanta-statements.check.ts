@@ -554,13 +554,11 @@ try {
       queryAccount: async () => undefined,
       downloadStatementRows: async () => workflowDownload,
       writeBankTransactionsFile: writeWorkflowFile as never,
+      readCurrentDepositBalances: async () => [],
     },
   );
-  assert.equal(sourceOnlyOutput.admissions[0]?.status, "source-only");
-  assert.equal(
-    sourceOnlyOutput.admissions[0]?.reason,
-    "financial-ledger-not-configured",
-  );
+  assert.equal(sourceOnlyOutput.admissions[0]?.status, "financial-admitted");
+  assert.equal(sourceOnlyOutput.admissions[0]?.reason, null);
   assert.equal(sourceOnlyOutput.telemetry?.length, 1);
   const sourceOnlyStore = createCanonicalSourceStore(sourceOnlyDir);
   try {
@@ -568,15 +566,15 @@ try {
       sourceOnlyStore.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
         .get()?.count,
-      0,
+      1,
     );
     const current = queryCanonicalSourceCurrent(sourceOnlyStore);
     assert.equal(current.records.length, 1);
     const sourceOnlyReadiness = buildYuantaDomesticDepositReadinessFromLedger(
       sourceOnlyStore.db,
     );
-    assert.equal(sourceOnlyReadiness.capability, "preflight-only");
-    assert.deepEqual(sourceOnlyReadiness.blockers.length > 0, true);
+    assert.equal(sourceOnlyReadiness.capability, "canonical-human-attested");
+    assert.deepEqual(sourceOnlyReadiness.blockers, []);
     assert.doesNotMatch(
       JSON.stringify(
         current.records.map(({ compact }) => ({
@@ -613,7 +611,6 @@ try {
       ...stableConnectionIdentity,
       observedAt: () => "2026-09-06T23:40:39+08:00",
       canonicalLedgerDir: boundaryDir,
-      canonicalFinancialLedgerDir: boundaryDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
       downloadStatementRows: async () => nextDayAccountingWorkflowDownload,
@@ -664,7 +661,6 @@ try {
           ...stableConnectionIdentity,
           observedAt: () => "2026-09-06T23:40:39+08:00",
           canonicalLedgerDir: outOfRangeDir,
-          canonicalFinancialLedgerDir: outOfRangeDir,
           readDepositAccountOptions: async () => [workflowAccount],
           queryAccount: async () => undefined,
           downloadStatementRows: async () => transactionOutsideWorkflowDownload,
@@ -720,7 +716,6 @@ try {
     {
       observedAt: stableConnectionIdentity.observedAt,
       canonicalLedgerDir: financialSourceDir,
-      canonicalFinancialLedgerDir: financialLedgerDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
       downloadStatementRows: async () => workflowDownload,
@@ -819,42 +814,6 @@ try {
   await rm(financialSourceDir, { recursive: true, force: true });
 }
 
-const splitStoreRoot = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-split-store-rejection-"),
-);
-try {
-  let splitStoreCollected = false;
-  await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "one_month",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: false,
-        },
-        {
-          ...stableConnectionIdentity,
-          canonicalLedgerDir: join(splitStoreRoot, "source"),
-          canonicalFinancialLedgerDir: join(splitStoreRoot, "financial"),
-          readDepositAccountOptions: async () => {
-            splitStoreCollected = true;
-            return [workflowAccount];
-          },
-        },
-      ),
-    /same canonical SQLite database/i,
-  );
-  assert.equal(
-    splitStoreCollected,
-    false,
-    "split source/financial stores fail closed before collection",
-  );
-} finally {
-  await rm(splitStoreRoot, { recursive: true, force: true });
-}
-
 const maskedSourceDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-source-workflow-"),
 );
@@ -873,7 +832,6 @@ try {
         {
           ...stableConnectionIdentity,
           canonicalLedgerDir: maskedSourceDir,
-          canonicalFinancialLedgerDir: maskedLedgerDir,
           readDepositAccountOptions: async () => [workflowAccount],
           queryAccount: async () => undefined,
           downloadStatementRows: async () => maskedWorkflowDownload,
@@ -939,7 +897,7 @@ try {
       multiAccountStore.db
         .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
         .get()?.count,
-      0,
+      2,
     );
   } finally {
     multiAccountStore.close();
@@ -964,7 +922,6 @@ try {
       {
         ...stableConnectionIdentity,
         canonicalLedgerDir: financialMultiAccountDir,
-        canonicalFinancialLedgerDir: financialMultiAccountDir,
         readDepositAccountOptions: async () => [
           workflowAccount,
           secondWorkflowAccount,
@@ -1035,7 +992,6 @@ try {
         {
           ...stableConnectionIdentity,
           canonicalLedgerDir: financialRollbackDir,
-          canonicalFinancialLedgerDir: financialRollbackDir,
           readDepositAccountOptions: async () => [
             workflowAccount,
             secondWorkflowAccount,
@@ -1124,7 +1080,6 @@ try {
         {
           ...stableConnectionIdentity,
           canonicalLedgerDir: cancellationDir,
-          canonicalFinancialLedgerDir: cancellationDir,
           readDepositAccountOptions: async () => [workflowAccount],
           queryAccount: async () => undefined,
           downloadStatementRows: async () => cancellationDownload,
@@ -1184,7 +1139,6 @@ try {
     {
       ...stableConnectionIdentity,
       canonicalLedgerDir: emptyDir,
-      canonicalFinancialLedgerDir: emptyDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
       downloadStatementRows: async () => emptyDownload,

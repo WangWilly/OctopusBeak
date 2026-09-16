@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
   withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
 } from "./canonical-source-capture-admission.ts";
 import {
   stableCanonicalSourceJson,
@@ -29,6 +30,11 @@ export type CreditCardCurrentBalanceIdentity = Readonly<{
   /** Existing issuer-aggregate account key. Never a PAN or card mask. */
   sourceAccountKey: string;
 }>;
+
+export type CreditCardCurrentBalanceWriterStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock" | "withWriter"
+>;
 
 export type CreditCardCurrentBalanceTimeEvidence = Readonly<{
   effectiveAt: string;
@@ -701,31 +707,42 @@ function idText(value: Uint8Array): string {
   return Buffer.from(value).toString("hex");
 }
 
-export async function commitCreditCardCurrentBalanceCapture(
-  store: CanonicalSourceStore,
+export function commitCreditCardCurrentBalanceCaptureInTransaction(
+  store: CreditCardCurrentBalanceWriterStore,
   capture: CreditCardCurrentBalanceValidatedCapture,
-): Promise<CreditCardCurrentBalanceCommitResult> {
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CreditCardCurrentBalanceCommitResult {
   assertValidatedCanonicalDatabase(store.db);
   if (!VALIDATED_CAPTURES.has(capture)) fail("Credit-card capture did not cross the validated seam.");
   validateCapture(capture);
-  return withCanonicalSourceCaptureAdmissionTransaction(store, async (capability) => {
-    const account = findExistingAccount(store.db, capture.identity);
-    if (account.currency !== null && capture.observations.some((observation) => observation.currency.toUpperCase() !== account.currency?.toUpperCase()))
-      fail("Credit-card balance currency does not match the existing account.");
-    const sourceContext = capability.admit(sourceEvidenceFromCapture(capture));
-    capability.linkFinancialAccount({ accountId: account.accountId, scopeId: sourceContext.scopeId, sourceRecordIds: sourceContext.sourceRecordIds });
-    const revisions = persistObservations(store.db, capture, account.accountId, sourceContext.captureId, sourceContext.commitId, sourceContext.sourceRecordIds);
-    createCanonicalProjectionRuntime(store.db).applyCommit({ commitId: sourceContext.commitId, kind: "source_capture" });
-    return {
-      status: "canonical-live",
-      captureId: capture.captureId,
-      accountId: idText(account.accountId),
-      commitSequence: sourceContext.receipt.knowledgePoint,
-      observationCount: capture.observations.length,
-      revisionCount: revisions.revisionCount,
-      deduplicatedRevisionCount: revisions.deduplicatedRevisionCount,
-    };
-  });
+  const account = findExistingAccount(store.db, capture.identity);
+  if (account.currency !== null && capture.observations.some((observation) => observation.currency.toUpperCase() !== account.currency?.toUpperCase()))
+    fail("Credit-card balance currency does not match the existing account.");
+  const sourceContext = capability.admit(sourceEvidenceFromCapture(capture));
+  capability.linkFinancialAccount({ accountId: account.accountId, scopeId: sourceContext.scopeId, sourceRecordIds: sourceContext.sourceRecordIds });
+  const revisions = persistObservations(store.db, capture, account.accountId, sourceContext.captureId, sourceContext.commitId, sourceContext.sourceRecordIds);
+  createCanonicalProjectionRuntime(store.db).applyCommit({ commitId: sourceContext.commitId, kind: "source_capture" });
+  return {
+    status: "canonical-live",
+    captureId: capture.captureId,
+    accountId: idText(account.accountId),
+    commitSequence: sourceContext.receipt.knowledgePoint,
+    observationCount: capture.observations.length,
+    revisionCount: revisions.revisionCount,
+    deduplicatedRevisionCount: revisions.deduplicatedRevisionCount,
+  };
+}
+
+export async function commitCreditCardCurrentBalanceCapture(
+  store: CreditCardCurrentBalanceWriterStore,
+  capture: CreditCardCurrentBalanceValidatedCapture,
+): Promise<CreditCardCurrentBalanceCommitResult> {
+  assertValidatedCanonicalDatabase(store.db);
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as unknown as CanonicalSourceStore,
+    (capability) =>
+    commitCreditCardCurrentBalanceCaptureInTransaction(store, capture, capability),
+  );
 }
 
 export function creditCardCurrentBalanceSourceRecord(input: Readonly<{

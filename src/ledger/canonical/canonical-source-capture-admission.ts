@@ -872,6 +872,21 @@ function sourceRecordComparisonPayload(
   return payload;
 }
 
+function esunOptionalStatementPeriodOnlyDifference(
+  prior: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const priorPresent = prior.statementPeriod !== undefined && prior.statementPeriod !== null;
+  const nextPresent = next.statementPeriod !== undefined && next.statementPeriod !== null;
+  if (priorPresent === nextPresent) return false;
+  const normalizedPrior = { ...prior };
+  const normalizedNext = { ...next };
+  delete normalizedPrior.statementPeriod;
+  delete normalizedNext.statementPeriod;
+  return stableCanonicalSourceJson(normalizedPrior) ===
+    stableCanonicalSourceJson(normalizedNext);
+}
+
 function sourceRecordContentMatches(
   recordKind: string,
   row: Record<string, unknown>,
@@ -899,14 +914,21 @@ function sourceRecordContentMatches(
     return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
   }
 
+  const esunOptionalPeriodCompatibility =
+    recordKind === "esun-credit-card-transaction" &&
+    esunOptionalStatementPeriodOnlyDifference(prior, next);
+
   // Financial content hashes are part of the immutable source contract. Only
   // Yuanta's explicitly derived settlement-linkage enrichment may change the
-  // hash while preserving the normalized source transaction content.
+  // hash while preserving the normalized source transaction content, plus
+  // E.SUN's optional issuer statement-period appearance/disappearance.
   if (
     String(row.content_hash) !== record.contentHash &&
-    recordKind !== "yuanta-foreign-currency-deposit"
+    recordKind !== "yuanta-foreign-currency-deposit" &&
+    !esunOptionalPeriodCompatibility
   )
     return false;
+  if (esunOptionalPeriodCompatibility) return true;
   return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
 }
 

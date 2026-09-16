@@ -1995,3 +1995,28 @@ export function commitCanonicalFinancialDepositCaptureBatchInTransaction(
   beforeCommit?.(store.db, results);
   return results;
 }
+
+/**
+ * Commit one validated financial Capture in an execution-owned transaction.
+ * The supplied capability is the only admission authority, so this adapter
+ * performs exactly one source admission and never opens, queues, or closes a
+ * store.  Batch callers retain the batch adapter above for their existing
+ * all-or-nothing semantics.
+ */
+export function commitCanonicalFinancialDepositCaptureInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  capture: CanonicalFinancialDepositValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+  beforeCommit?: (
+    db: ValidatedCanonicalDatabase,
+    results: readonly CanonicalFinancialDepositCommitResult[],
+  ) => void,
+): CanonicalFinancialDepositCommitResult {
+  const [result] = commitCanonicalFinancialDepositCaptureBatchInTransaction(
+    store,
+    [capture],
+    capability,
+    beforeCommit,
+  );
+  return result!;
+}

@@ -101,6 +101,10 @@ export type CurrentDepositBalanceValidatedCapture =
   };
 
 export type CurrentDepositBalanceWriterStore = CanonicalSourceStore;
+export type CurrentDepositBalanceTransactionStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock" | "withWriter"
+>;
 
 export type CurrentDepositBalanceCommitResult = Readonly<{
   status: "canonical-live";
@@ -982,70 +986,79 @@ function idText(value: Uint8Array): string {
   return Buffer.from(value).toString("hex");
 }
 
+export function commitCurrentDepositBalanceCaptureInTransaction(
+  store: CurrentDepositBalanceTransactionStore,
+  capture: CurrentDepositBalanceValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CurrentDepositBalanceCommitResult {
+  assertValidatedCanonicalDatabase(store.db);
+  requireValidatedCapture(capture);
+  validateCapture(capture, { allowExistingIdentityKeys: true });
+  const account = findExistingAccount(store.db, capture.identity);
+  const overviewUsesCanonicalCurrency =
+    capture.authorityRoute === HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE &&
+    capture.records.some(
+      (record) => record.compact.currencyResolution === "canonical-account",
+    );
+  if (
+    overviewUsesCanonicalCurrency &&
+    (account.currency === null ||
+      account.currency.trim() === "" ||
+      capture.observations.some(
+        (observation) =>
+          observation.currency.toUpperCase() !== account.currency!.toUpperCase(),
+      ))
+  )
+    fail(
+      "HNCB current deposit overview canonical currency requires an exact existing account currency.",
+    );
+  if (
+    account.currency !== null &&
+    capture.identity.stream === "domestic-deposit" &&
+    capture.observations.some((observation) => observation.currency !== account.currency)
+  )
+    fail("Current deposit currency does not match the existing account.");
+  const sourceContext = capability.admit(
+    sourceEvidenceFromCapture(capture),
+    [],
+    { allowExistingIdentityKeys: true },
+  );
+  capability.linkFinancialAccount({
+    accountId: account.accountId,
+    scopeId: sourceContext.scopeId,
+    sourceRecordIds: sourceContext.sourceRecordIds,
+  });
+  const revisions = persistObservations(
+    store.db,
+    capture,
+    account.accountId,
+    sourceContext.captureId,
+    sourceContext.commitId,
+    sourceContext.sourceRecordIds,
+  );
+  createCanonicalProjectionRuntime(store.db).applyCommit({
+    commitId: sourceContext.commitId,
+    kind: "source_capture",
+  });
+  return {
+    status: "canonical-live",
+    captureId: capture.captureId,
+    accountId: idText(account.accountId),
+    commitSequence: sourceContext.receipt.knowledgePoint,
+    observationCount: capture.observations.length,
+    revisionCount: revisions.revisionCount,
+    deduplicatedRevisionCount: revisions.deduplicatedRevisionCount,
+  };
+}
+
 export async function commitCurrentDepositBalanceCapture(
   store: CurrentDepositBalanceWriterStore,
   capture: CurrentDepositBalanceValidatedCapture,
 ): Promise<CurrentDepositBalanceCommitResult> {
   assertValidatedCanonicalDatabase(store.db);
-  requireValidatedCapture(capture);
-  const contract = validateCapture(capture, { allowExistingIdentityKeys: true });
-  return withCanonicalSourceCaptureAdmissionTransaction(store, async (capability) => {
-    const account = findExistingAccount(store.db, capture.identity);
-    const overviewUsesCanonicalCurrency =
-      capture.authorityRoute === HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE &&
-      capture.records.some(
-        (record) => record.compact.currencyResolution === "canonical-account",
-      );
-    if (
-      overviewUsesCanonicalCurrency &&
-      (account.currency === null ||
-        account.currency.trim() === "" ||
-        capture.observations.some(
-          (observation) =>
-            observation.currency.toUpperCase() !== account.currency!.toUpperCase(),
-        ))
-    )
-      fail(
-        "HNCB current deposit overview canonical currency requires an exact existing account currency.",
-      );
-    if (
-      account.currency !== null &&
-      capture.identity.stream === "domestic-deposit" &&
-      capture.observations.some((observation) => observation.currency !== account.currency)
-    )
-      fail("Current deposit currency does not match the existing account.");
-    const sourceContext = capability.admit(
-      sourceEvidenceFromCapture(capture),
-      [],
-      { allowExistingIdentityKeys: true },
-    );
-    capability.linkFinancialAccount({
-      accountId: account.accountId,
-      scopeId: sourceContext.scopeId,
-      sourceRecordIds: sourceContext.sourceRecordIds,
-    });
-    const revisions = persistObservations(
-      store.db,
-      capture,
-      account.accountId,
-      sourceContext.captureId,
-      sourceContext.commitId,
-      sourceContext.sourceRecordIds,
-    );
-    createCanonicalProjectionRuntime(store.db).applyCommit({
-      commitId: sourceContext.commitId,
-      kind: "source_capture",
-    });
-    return {
-      status: "canonical-live",
-      captureId: capture.captureId,
-      accountId: idText(account.accountId),
-      commitSequence: sourceContext.receipt.knowledgePoint,
-      observationCount: capture.observations.length,
-      revisionCount: revisions.revisionCount,
-      deduplicatedRevisionCount: revisions.deduplicatedRevisionCount,
-    };
-  });
+  return withCanonicalSourceCaptureAdmissionTransaction(store, (capability) =>
+    commitCurrentDepositBalanceCaptureInTransaction(store, capture, capability),
+  );
 }
 
 export function currentDepositSourceRecord(

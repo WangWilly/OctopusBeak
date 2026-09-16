@@ -3,9 +3,14 @@ import type { DatabaseSync } from "node:sqlite";
 import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
+  type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+} from "./canonical-source-capture-admission.ts";
 import { commitCanonicalCreditCardDirectionEnrichmentForCapturesInTransaction } from "./credit-card-direction-enrichment.ts";
 import {
   ensureCanonicalCreditCardSchema,
@@ -1497,10 +1502,36 @@ export async function commitEsunCreditCardCapture(
   return (await commitEsunCreditCardCaptureBatch(store, [capture]))[0]!;
 }
 
-export async function commitEsunCreditCardCaptureBatch(
+function toEsunCreditCardCommitResult(
+  store: EsunCreditCardWriterStore,
+  capture: EsunCreditCardValidatedCapture,
+  result: CanonicalFinancialDepositCommitResult,
+): EsunCreditCardCommitResult {
+  const row = store.db.prepare(
+    `SELECT hex(scope.account_id) AS account_id
+     FROM source_captures capture
+     JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
+     WHERE capture.capture_key = ?`,
+  ).get(capture.captureId) as { account_id?: string } | undefined;
+  if (!row?.account_id)
+    throw new Error("E.SUN shared canonical account is missing after commit.");
+  return {
+    status: "canonical-live",
+    canonicalAdmission: "admitted",
+    captureId: capture.captureId,
+    accountId: row.account_id.toLowerCase(),
+    commitSequence: result.commitSequence,
+    transactionCount: result.transactionCount,
+    statementCount: capture.statements.length,
+    provenanceCount: result.provenanceCount,
+  };
+}
+
+export function commitEsunCreditCardCaptureBatchInTransaction(
   store: EsunCreditCardWriterStore,
   captures: readonly EsunCreditCardValidatedCapture[],
-): Promise<EsunCreditCardCommitResult[]> {
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): EsunCreditCardCommitResult[] {
   if (captures.length === 0)
     throw new EsunCreditCardAdmissionError(
       "E.SUN credit-card capture batch cannot be empty.",
@@ -1515,9 +1546,10 @@ export async function commitEsunCreditCardCaptureBatch(
     throw new EsunCreditCardAdmissionError(
       "E.SUN credit-card human-attested v1 contract is revoked.",
     );
-  const committed = await commitCanonicalFinancialDepositCaptureBatch(
+  const committed = commitCanonicalFinancialDepositCaptureBatchInTransaction(
     store,
     captures.map(esunCanonicalSpineCapture),
+    capability,
     (db) => {
       ensureCanonicalCreditCardSchema(db);
       recordInitialEsunCreditCardHumanAttestationIfMissing(db);
@@ -1536,25 +1568,27 @@ export async function commitEsunCreditCardCaptureBatch(
       );
     },
   );
-  return committed.map((result, index) => {
-    const capture = captures[index]!;
-    const row = store.db.prepare(
-      `SELECT hex(scope.account_id) AS account_id
-       FROM source_captures capture
-       JOIN capture_scopes scope ON scope.capture_id = capture.capture_id
-       WHERE capture.capture_key = ?`,
-    ).get(capture.captureId) as { account_id?: string } | undefined;
-    if (!row?.account_id)
-      throw new Error("E.SUN shared canonical account is missing after commit.");
-    return {
-      status: "canonical-live",
-      canonicalAdmission: "admitted",
-      captureId: capture.captureId,
-      accountId: row.account_id.toLowerCase(),
-      commitSequence: result.commitSequence,
-      transactionCount: result.transactionCount,
-      statementCount: capture.statements.length,
-      provenanceCount: result.provenanceCount,
-    };
-  });
+  return committed.map((result, index) =>
+    toEsunCreditCardCommitResult(store, captures[index]!, result),
+  );
+}
+
+/** Commit one E.SUN capture inside an execution-owned transaction. */
+export function commitEsunCreditCardCaptureInTransaction(
+  store: EsunCreditCardWriterStore,
+  capture: EsunCreditCardValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): EsunCreditCardCommitResult {
+  return commitEsunCreditCardCaptureBatchInTransaction(store, [capture], capability)[0]!;
+}
+
+export async function commitEsunCreditCardCaptureBatch(
+  store: EsunCreditCardWriterStore,
+  captures: readonly EsunCreditCardValidatedCapture[],
+): Promise<EsunCreditCardCommitResult[]> {
+  return withCanonicalSourceCaptureAdmissionTransaction(
+    store as unknown as CanonicalSourceStore,
+    (capability) =>
+      commitEsunCreditCardCaptureBatchInTransaction(store, captures, capability),
+  );
 }
