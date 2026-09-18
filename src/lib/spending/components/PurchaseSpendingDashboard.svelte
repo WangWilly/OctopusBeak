@@ -33,6 +33,7 @@
   let selectedMonth: string | null = null;
   let busyAction: string | null = null;
   let actionError = "";
+  let actionNotice = "";
   let actionReconciliationPending = false;
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
@@ -397,13 +398,21 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  async function reconcileSpendingAction(command?: SpendingPendingCommand): Promise<boolean> {
+  async function reconcileSpendingAction(
+    command?: SpendingPendingCommand,
+    options: { dataChanged?: boolean } = {},
+  ): Promise<boolean> {
     actionReconciliationPending = true;
     actionError = "";
     try {
       if (!onActionReconciliation) throw new Error("spending-action-reconciliation-unavailable");
       await onActionReconciliation();
       if (command) completeSpendingPendingCommand(command);
+      if (options.dataChanged) {
+        actionNotice = $locale === "zh-TW"
+          ? "資料已更新，已重新載入最新配對狀態。"
+          : "The data changed; the latest pairing state has been loaded.";
+      }
       return true;
     } catch (error) {
       actionError = $locale === "zh-TW"
@@ -427,11 +436,15 @@
         knowledgePointDistance: 0,
       }).finish();
       selectedMonth = activeMonth;
+      actionNotice = "";
       if (command) completeSpendingPendingCommand(command);
       return true;
     } catch (error) {
       telemetry?.startSpan("patch-applied").finish("error", { error });
-      await reconcileSpendingAction(command);
+      await reconcileSpendingAction(command, {
+        dataChanged: spendingActionErrorCode(error) === "spending-pair-stale" ||
+          (error instanceof Error && error.message === "spending-action-stale"),
+      });
       return false;
     }
   }
@@ -463,7 +476,7 @@
         if (command) completeSpendingPendingCommand(command);
         actionError = actionErrorText(error);
       } else if (code === "spending-pair-stale" || isSpendingActionUncertain(error)) {
-        await reconcileSpendingAction(command);
+        await reconcileSpendingAction(command, { dataChanged: code === "spending-pair-stale" });
       } else {
         actionError = actionErrorText(error);
       }
@@ -512,6 +525,13 @@
 
     {#if actionReconciliationPending}
       <section class="card purchase-action-pending" role="status" aria-live="polite">{$locale === "zh-TW" ? "讀取中…" : "Checking the latest pairing result…"}</section>
+    {/if}
+
+    {#if actionNotice}
+      <section class="card purchase-action-status" data-action-notice role="status" aria-live="polite">
+        <span>{actionNotice}</span>
+        <button type="button" class="button secondary" onclick={() => actionNotice = ""}>{$locale === "zh-TW" ? "知道了" : "Dismiss"}</button>
+      </section>
     {/if}
 
     {#if actionError}

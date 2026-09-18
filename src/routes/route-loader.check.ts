@@ -95,6 +95,34 @@ test("financial route invalidation coalesces bursts and refreshes only the visib
   assert.equal(coordinator.isStale("spending"), true, "hidden routes remain stale");
 });
 
+test("a newer knowledge point aborts an active generation before it can publish", async () => {
+  const loads: Array<{ knowledgePoint: number; signal: AbortSignal }> = [];
+  const coordinator = createFinancialRouteGenerationCoordinator({
+    routes: ["spending"] as const,
+    subscribe: () => () => {},
+    latestKnowledgePoint: async () => 0,
+    load: async ({ cutoff, signal }) => {
+      loads.push({ knowledgePoint: cutoff.knowledgePoint, signal });
+      if (cutoff.knowledgePoint === 1) {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+    },
+  });
+
+  coordinator.setVisibleRoute("spending");
+  coordinator.observeKnowledgePoint(1);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(loads.map(({ knowledgePoint }) => knowledgePoint), [1]);
+
+  coordinator.observeKnowledgePoint(2);
+  assert.equal(loads[0]?.signal.aborted, true, "a superseded read is cancelled immediately");
+  await coordinator.waitForIdle();
+
+  assert.deepEqual(loads.map(({ knowledgePoint }) => knowledgePoint), [1, 2]);
+  assert.equal(coordinator.getState("spending").knowledgePoint, 2);
+  assert.equal(coordinator.getState("spending").stale, false);
+});
+
 test("late route results are discarded after navigation and do not refresh a hidden route", async () => {
   const loads: string[] = [];
   const results: string[] = [];

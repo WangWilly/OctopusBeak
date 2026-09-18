@@ -296,6 +296,17 @@ export function createFinancialRouteGenerationCoordinator<Route extends string>(
         options.onRouteStale?.(route, knowledgePoint);
       }
     }
+
+    // A newer commit supersedes the active read immediately. Keeping the old
+    // generation active until its promise settles lets route loaders publish
+    // stale primary/secondary sections before the next refresh can start.
+    // Abort is part of the load contract; the generation bump also protects
+    // non-abort-aware loaders from publishing through a late callback.
+    if (active && knowledgePoint > active.knowledgePoint) {
+      active.controller.abort();
+      active = undefined;
+      generation += 1;
+    }
     scheduleRefresh();
   };
 

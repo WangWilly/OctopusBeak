@@ -20,6 +20,8 @@ test("the renderer exposes the progressive generation invariants", () => {
   assert.match(source, /if \(secondaryResult\) applySecondary\(secondaryResult\)/);
   assert.match(source, /!options\.force\s*&&\s*!options\.background/);
   assert.match(source, /secondaryError = error;\s*applySecondaryError\(error\)/);
+  assert.match(source, /if \(!primarySettled && background\) return/);
+  assert.match(source, /data-secondary-ready/);
   assert.match(source, /route === next && !signal\?\.aborted/);
   assert.match(source, /Primary.*generation|new primary generation invalidates the old secondary/u);
 });

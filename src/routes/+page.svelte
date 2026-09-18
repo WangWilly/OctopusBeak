@@ -541,7 +541,11 @@
         return;
       }
       secondaryResult = result;
-      if (!primarySettled) return;
+      // An initial primary failure must not hide a secondary section that
+      // already completed. During a background refresh, however, the new
+      // secondary cannot replace the old generation until its primary has
+      // also completed.
+      if (!primarySettled && background) return;
       updateRouteState(next, (state) => ({
         ...state,
         secondary: {
@@ -553,7 +557,7 @@
     };
 
     const applySecondaryError = (error: unknown) => {
-      if (!isCurrent() || !primarySettled) return;
+      if (!isCurrent() || (background && !primarySettled)) return;
       updateRouteState(next, (state) => ({
         ...state,
         secondary: {
@@ -782,6 +786,12 @@
     </DashboardShell>
   {/if}
   {#if refreshStatus(overview)}<p class="route-freshness" role="status">{refreshStatus(overview)}</p>{/if}
+  {#if overview.primary.status !== "ready" && overview.secondary.status === "ready"}
+    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={overview.secondary.knowledgePoint}>
+      <h2>次要資料</h2>
+      <p>次要資料已載入；核心資料目前無法顯示。</p>
+    </section>
+  {/if}
   {#if overview.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if overview.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "assets"}
@@ -793,6 +803,12 @@
     </DashboardShell>
   {/if}
   {#if refreshStatus(assets)}<p class="route-freshness" role="status">{refreshStatus(assets)}</p>{/if}
+  {#if assets.primary.status !== "ready" && assets.secondary.status === "ready"}
+    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={assets.secondary.knowledgePoint}>
+      <h2>次要資料</h2>
+      <p>次要資料已載入；核心資料目前無法顯示。</p>
+    </section>
+  {/if}
   {#if assets.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if assets.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "liabilities"}
@@ -804,6 +820,12 @@
     </DashboardShell>
   {/if}
   {#if refreshStatus(liabilities)}<p class="route-freshness" role="status">{refreshStatus(liabilities)}</p>{/if}
+  {#if liabilities.primary.status !== "ready" && liabilities.secondary.status === "ready"}
+    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={liabilities.secondary.knowledgePoint}>
+      <h2>次要資料</h2>
+      <p>次要資料已載入；核心資料目前無法顯示。</p>
+    </section>
+  {/if}
   {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if liabilities.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "spending"}
@@ -815,6 +837,12 @@
     </DashboardShell>
   {/if}
   {#if refreshStatus(spending)}<p class="route-freshness" role="status">{refreshStatus(spending)}</p>{/if}
+  {#if spending.primary.status !== "ready" && spending.secondary.status === "ready"}
+    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={spending.secondary.knowledgePoint}>
+      <h2>次要資料</h2>
+      <p>次要資料已載入；核心資料目前無法顯示。</p>
+    </section>
+  {/if}
   {#if spending.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if spending.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "automation"}
