@@ -214,6 +214,10 @@ _Avoid_: Partial Capture commit, eventually consistent projection, cross-store f
 The single recorded knowledge position shared by every fact, Assertion transition, provenance link, and projection change in one Canonical Financial Commit. Knowledge points have a strict local order independent of wall-clock ties or reversal; backfilled financial facts retain the later knowledge point at which they were admitted rather than being backdated to their effective time.
 _Avoid_: Per-row import time, financial effective time, wall-clock-only ordering, backdated knowledge
 
+**Product view generation**:
+A page-scoped presentation of one or more Current Financial Projection queries fixed to one Canonical Knowledge Point. Its independently available sections may appear progressively, while values from different generations never combine and a prior generation remains visible only when explicitly marked stale during refresh.
+_Avoid_: Mixed-knowledge page, full-page loading barrier, unmarked stale view
+
 **Current financial projection**:
 The deterministic, disposable selection of the presently authoritative canonical revisions, Observations, Statements, and user-governed fields under declared Assertion precedence and Source Authority Routing. It becomes visible in the same Canonical Financial Commit as the facts that change it, contains no independent financial authority, and can be rebuilt completely from the immutable write model. A projection-rule change builds and validates one complete replacement while the prior projection remains readable, then switches atomically so consumers never observe a mixed generation.
 _Avoid_: Mutable source of truth, runtime consumer interpretation, eventually consistent read model
