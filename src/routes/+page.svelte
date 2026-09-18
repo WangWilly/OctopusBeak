@@ -115,6 +115,7 @@
   let freshnessReconcileTimer: ReturnType<typeof setTimeout> | undefined;
   let financialLoadGeneration = 0;
   let activeFinancialReadRequestToken: string | null = null;
+  let retryingFinancialRoute: FinancialRoute | null = null;
   let routeNavigationEpoch = 0;
   let suppressNormalizedHashChange = false;
 
@@ -289,6 +290,7 @@
   $: assetsData = assetsPage(assets);
   $: liabilitiesData = liabilitiesPage(liabilities);
   $: spendingData = spendingPage(spending);
+  $: spendingSecondaryReady = matchingSecondary(spending) !== null;
 
   $: onboardingFacts = factsForOnboarding(
     route,
@@ -365,6 +367,27 @@
 
   function sectionError(state: SectionState<unknown>): string {
     return state.status === "error" ? state.message : "資料載入失敗";
+  }
+
+  async function retryFinancialRoute(next: FinancialRoute) {
+    // A retry is explicitly user initiated. The lock prevents double clicks
+    // from starting overlapping generations or turning a persistent failure
+    // into a tight retry loop.
+    if (route !== next || retryingFinancialRoute !== null) return;
+    const state = routeState(next);
+    if (state.primary.status === "loading" || state.secondary.status === "loading") return;
+    retryingFinancialRoute = next;
+    try {
+      // loadRoute obtains one latest cutoff for both sections, preserving the
+      // same generation/knowledge-point boundary as normal route entry. A
+      // secondary-only retry keeps the already usable primary view visible.
+      await loadRoute(next, {
+        force: true,
+        background: state.primary.status === "ready",
+      });
+    } finally {
+      if (retryingFinancialRoute === next) retryingFinancialRoute = null;
+    }
   }
 
   function saveOnboarding(next: OnboardingState) {
@@ -862,7 +885,20 @@
     <DashboardShell active="overview" eyebrow={$t.overview.eyebrow} title={$t.overview.title} sideLabel={$t.overview.sideLabel}>
       {#if overview.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
-      {:else}<p class="status" role="alert">{sectionError(overview.primary)}</p>{/if}
+      {:else}
+        <div class="financial-section-error">
+          <p class="status" role="alert">{sectionError(overview.primary)}</p>
+          <button
+            class="button secondary financial-retry"
+            type="button"
+            data-financial-retry-primary="overview"
+            disabled={retryingFinancialRoute === "overview"}
+            onclick={() => void retryFinancialRoute("overview")}
+          >
+            {retryingFinancialRoute === "overview" ? $t.common.loading : $t.common.retry}
+          </button>
+        </div>
+      {/if}
     </DashboardShell>
   {/if}
   {#if refreshStatus(overview)}<p class="route-freshness" role="status">{refreshStatus(overview)}</p>{/if}
@@ -870,13 +906,39 @@
     <FinancialSecondaryFallback kind="overview" data={overview.secondary.data} />
   {/if}
   {#if overview.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
-  {#if overview.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
+  {#if overview.secondary.status === "error"}
+    <div class="financial-section-error" data-financial-secondary-error="overview">
+      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
+      <button
+        class="button secondary financial-retry"
+        type="button"
+        data-financial-retry-secondary="overview"
+        disabled={retryingFinancialRoute === "overview"}
+        onclick={() => void retryFinancialRoute("overview")}
+      >
+        {retryingFinancialRoute === "overview" ? $t.common.loading : $t.common.retry}
+      </button>
+    </div>
+  {/if}
 {:else if route === "assets"}
   {#if assetsData}<AssetsDashboard assets={assetsData} {focusAccountId} />{:else}
     <DashboardShell active="assets" eyebrow={$t.assets.eyebrow} title={$t.assets.title} sideLabel={$t.assets.sideLabel} searchPlaceholder={$t.assets.searchPlaceholder}>
       {#if assets.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
-      {:else}<p class="status" role="alert">{sectionError(assets.primary)}</p>{/if}
+      {:else}
+        <div class="financial-section-error">
+          <p class="status" role="alert">{sectionError(assets.primary)}</p>
+          <button
+            class="button secondary financial-retry"
+            type="button"
+            data-financial-retry-primary="assets"
+            disabled={retryingFinancialRoute === "assets"}
+            onclick={() => void retryFinancialRoute("assets")}
+          >
+            {retryingFinancialRoute === "assets" ? $t.common.loading : $t.common.retry}
+          </button>
+        </div>
+      {/if}
     </DashboardShell>
   {/if}
   {#if refreshStatus(assets)}<p class="route-freshness" role="status">{refreshStatus(assets)}</p>{/if}
@@ -884,13 +946,39 @@
     <FinancialSecondaryFallback kind="assets" data={assets.secondary.data} />
   {/if}
   {#if assets.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
-  {#if assets.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
+  {#if assets.secondary.status === "error"}
+    <div class="financial-section-error" data-financial-secondary-error="assets">
+      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
+      <button
+        class="button secondary financial-retry"
+        type="button"
+        data-financial-retry-secondary="assets"
+        disabled={retryingFinancialRoute === "assets"}
+        onclick={() => void retryFinancialRoute("assets")}
+      >
+        {retryingFinancialRoute === "assets" ? $t.common.loading : $t.common.retry}
+      </button>
+    </div>
+  {/if}
 {:else if route === "liabilities"}
   {#if liabilitiesData}<LiabilitiesDashboard liabilities={liabilitiesData} {focusAccountId} />{:else}
     <DashboardShell active="liabilities" eyebrow={$t.liabilities.eyebrow} title={$t.liabilities.title} sideLabel={$t.liabilities.sideLabel} searchPlaceholder={$t.liabilities.searchPlaceholder}>
       {#if liabilities.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
-      {:else}<p class="status" role="alert">{sectionError(liabilities.primary)}</p>{/if}
+      {:else}
+        <div class="financial-section-error">
+          <p class="status" role="alert">{sectionError(liabilities.primary)}</p>
+          <button
+            class="button secondary financial-retry"
+            type="button"
+            data-financial-retry-primary="liabilities"
+            disabled={retryingFinancialRoute === "liabilities"}
+            onclick={() => void retryFinancialRoute("liabilities")}
+          >
+            {retryingFinancialRoute === "liabilities" ? $t.common.loading : $t.common.retry}
+          </button>
+        </div>
+      {/if}
     </DashboardShell>
   {/if}
   {#if refreshStatus(liabilities)}<p class="route-freshness" role="status">{refreshStatus(liabilities)}</p>{/if}
@@ -898,27 +986,91 @@
     <FinancialSecondaryFallback kind="liabilities" data={liabilities.secondary.data} />
   {/if}
   {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
-  {#if liabilities.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
+  {#if liabilities.secondary.status === "error"}
+    <div class="financial-section-error" data-financial-secondary-error="liabilities">
+      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
+      <button
+        class="button secondary financial-retry"
+        type="button"
+        data-financial-retry-secondary="liabilities"
+        disabled={retryingFinancialRoute === "liabilities"}
+        onclick={() => void retryFinancialRoute("liabilities")}
+      >
+        {retryingFinancialRoute === "liabilities" ? $t.common.loading : $t.common.retry}
+      </button>
+    </div>
+  {/if}
 {:else if route === "spending"}
-  {#if spendingData}<SpendingDashboard spending={spendingData} onActionReconciliation={reconcileSpendingAction} />{:else}
+  {#if spendingData}
+    <SpendingDashboard
+      spending={spendingData}
+      purchaseReportReady={spendingSecondaryReady}
+      onActionReconciliation={reconcileSpendingAction}
+    />
+  {:else}
     <DashboardShell active="spending" eyebrow={$t.spending.eyebrow} title={$t.spending.title} sideLabel={$t.spending.sideLabel}>
       {#if spending.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
-      {:else}<p class="status" role="alert">{sectionError(spending.primary)}</p>{/if}
+      {:else}
+        <div class="financial-section-error">
+          <p class="status" role="alert">{sectionError(spending.primary)}</p>
+          <button
+            class="button secondary financial-retry"
+            type="button"
+            data-financial-retry-primary="spending"
+            disabled={retryingFinancialRoute === "spending"}
+            onclick={() => void retryFinancialRoute("spending")}
+          >
+            {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
+          </button>
+        </div>
+      {/if}
     </DashboardShell>
+  {/if}
+  {#if spendingData && !spendingSecondaryReady && spending.secondary.status === "loading"}
+    <p class="route-freshness" data-spending-secondary-state="loading" role="status">購買與配對資料載入中…</p>
   {/if}
   {#if refreshStatus(spending)}<p class="route-freshness" role="status">{refreshStatus(spending)}</p>{/if}
   {#if spending.primary.status !== "ready" && spending.secondary.status === "ready"}
     <FinancialSecondaryFallback kind="spending" data={spending.secondary.data} />
   {/if}
-  {#if spending.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
-  {#if spending.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
+  {#if spending.secondary.status === "loading" && !spendingData}
+    <p class="route-freshness" role="status">{$t.common.loading}</p>
+  {/if}
+  {#if spendingData && !spendingSecondaryReady && spending.secondary.status === "error"}
+    <div class="financial-section-error" data-spending-secondary-state="error">
+      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
+      <button
+        class="button secondary financial-retry"
+        type="button"
+        data-financial-retry-secondary="spending"
+        disabled={retryingFinancialRoute === "spending"}
+        onclick={() => void retryFinancialRoute("spending")}
+      >
+        {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
+      </button>
+    </div>
+  {:else if spending.secondary.status === "error"}
+    <div class="financial-section-error" data-financial-secondary-error="spending">
+      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
+      <button
+        class="button secondary financial-retry"
+        type="button"
+        data-financial-retry-secondary="spending"
+        disabled={retryingFinancialRoute === "spending"}
+        onclick={() => void retryFinancialRoute("spending")}
+      >
+        {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
+      </button>
+    </div>
+  {/if}
 {:else if route === "automation"}
   {#if automation.status === "ready"}
     <AutomationDashboard
       automation={automation.data.automation}
       credentialGroups={automation.data.credentialGroups}
       reload={() => loadRoute("automation", { force: true })}
+      onAutomationRunSettled={scheduleFreshnessReconciliation}
       onboardingSourceSelection={onboardingStep === "credentials"}
       onboardingSingleSource={shouldNarrowOnboardingSources(
         onboardingFacts,
@@ -958,6 +1110,16 @@
   .status {
     margin: 32px;
     color: var(--muted);
+  }
+
+  .financial-section-error {
+    display: grid;
+    justify-items: start;
+    gap: var(--space-3);
+  }
+
+  .financial-retry {
+    margin: 0 var(--space-4) var(--space-4);
   }
 
   .route-freshness {

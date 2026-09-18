@@ -8,6 +8,9 @@ const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.ur
 
 assert.match(entry, /spending\.purchaseReport/);
 assert.match(entry, /<PurchaseSpendingDashboard/);
+assert.match(entry, /export let purchaseReportReady = true/);
+assert.match(entry, /purchaseReportReady && spending\.purchaseReport/);
+assert.match(entry, /purchaseReportReady \? spending\.invoices : \[\]/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
 
 for (const marker of [

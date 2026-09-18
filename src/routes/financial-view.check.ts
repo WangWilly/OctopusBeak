@@ -32,6 +32,15 @@ test("the renderer exposes the progressive generation invariants", () => {
   assert.doesNotMatch(source, /return error instanceof Error \? error\.message/);
 });
 
+test("automation terminal reconciliation stays on the page coordinator seam", () => {
+  assert.match(source, /function scheduleFreshnessReconciliation\(\)/);
+  assert.match(
+    source,
+    /<AutomationDashboard[\s\S]*?onAutomationRunSettled=\{scheduleFreshnessReconciliation\}/,
+  );
+  assert.doesNotMatch(source, /onAutomationRunSettled=\{[^}]*loadRoute/);
+});
+
 test("old secondary data is not composed across a primary knowledge point", () => {
   assert.match(
     source,
@@ -61,4 +70,25 @@ test("a primary failure renders section-specific secondary data without enabling
   assert.doesNotMatch(source, /refreshError: error/);
   assert.doesNotMatch(source, /primary: \{ status: "error", message: message\(error\)/);
   assert.doesNotMatch(source, /console\.warn\([^\n]*,\s*error\)/);
+});
+
+test("initial financial section failures expose a bounded, explicit retry action", () => {
+  assert.match(source, /let retryingFinancialRoute: FinancialRoute \| null = null/);
+  assert.match(source, /async function retryFinancialRoute\(next: FinancialRoute\)/);
+  assert.match(source, /retryingFinancialRoute !== null\) return/);
+  assert.match(source, /loadRoute\(next, \{[\s\S]*force: true,[\s\S]*background: state\.primary\.status === "ready"[\s\S]*\}\)/);
+  assert.match(source, /retryingFinancialRoute = next/);
+  assert.match(source, /retryingFinancialRoute === next/);
+  for (const route of ["overview", "assets", "liabilities", "spending"]) {
+    assert.match(source, new RegExp(`data-financial-retry-primary="${route}"`));
+    assert.match(source, new RegExp(`data-financial-retry-secondary="${route}"`));
+  }
+});
+
+test("Spending keeps the canonical primary view visible while purchase data waits for a matching secondary", () => {
+  assert.match(source, /matchingSecondary\(spending\) !== null/);
+  assert.match(source, /purchaseReportReady=\{spendingSecondaryReady\}/);
+  assert.match(source, /data-spending-secondary-state="loading"/);
+  assert.match(source, /data-spending-secondary-state="error"/);
+  assert.match(source, /data-spending-secondary-state="error"[\s\S]*data-financial-retry-secondary="spending"/);
 });
