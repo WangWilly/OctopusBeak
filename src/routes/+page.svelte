@@ -99,6 +99,7 @@
   let completingFirstRunWelcome = false;
   let overviewLoadedForTaskFinishedAt: string | null = null;
   let overviewReloading = false;
+  let settingsReady = false;
   const routeDataCache = createRouteLoadCache<RouteData>();
   const financialRoutes: readonly FinancialRoute[] = [
     "overview",
@@ -108,6 +109,8 @@
   ];
   let freshnessReconcileTimer: ReturnType<typeof setTimeout> | undefined;
   let financialLoadGeneration = 0;
+  let routeNavigationEpoch = 0;
+  let suppressNormalizedHashChange = false;
 
   function createFinancialRouteState<Primary, Secondary>(): FinancialRouteState<Primary, Secondary> {
     return {
@@ -318,8 +321,12 @@
     }
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
-    if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
+    if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) {
+      suppressNormalizedHashChange = true;
+      location.hash = canonicalHash;
+    }
     generationCoordinator.setVisibleRoute(isFinancialRoute(route) ? route : null);
+    if (!settingsReady) return;
     const load = loadRoute(route);
     if (isFinancialRoute(route)) {
       void load.then(() => generationCoordinator.reconcile()).catch((error) => {
@@ -410,7 +417,8 @@
     location.hash = route === "automation" ? "/overview" : "/automation";
   }
 
-  async function resolveFirstRunWelcome() {
+  async function resolveFirstRunWelcome(startedAtNavigationEpoch: number) {
+    if (startedAtNavigationEpoch !== routeNavigationEpoch) return;
     const storedWelcome = readFirstRunWelcomeState(localStorage);
     if (storedWelcome || onboardingState) {
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
@@ -428,17 +436,10 @@
         routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
         window.octopusBeak.overview.loadSection("primary"),
       ]);
-      automation = { status: "ready", data: automationData };
-      const knowledgePoint = overviewSection.knowledgePoint;
-      overview = {
-        primary: { status: "ready", data: overviewSection.value, knowledgePoint },
-        secondary: { status: "loading", knowledgePoint },
-        knowledgePoint,
-        stale: false,
-        updating: false,
-      };
-      generationCoordinator.markRouteLoaded("overview", knowledgePoint);
-      overviewLoadedForTaskFinishedAt = null;
+      // Eligibility is a background read, not a route load. A user may have
+      // navigated while it was in flight; in that case keep the chosen route
+      // and let its own generation query own the visible state.
+      if (startedAtNavigationEpoch !== routeNavigationEpoch) return;
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
         welcomeState: null,
         onboardingState: null,
@@ -707,7 +708,7 @@
     if (freshnessReconcileTimer) clearTimeout(freshnessReconcileTimer);
     freshnessReconcileTimer = setTimeout(() => {
       freshnessReconcileTimer = undefined;
-      if (!isFinancialRoute(route)) return;
+      if (!settingsReady || !isFinancialRoute(route)) return;
       void generationCoordinator.reconcile().catch((error) => {
         console.warn("financial-freshness-reconcile-failed", error);
       });
@@ -715,30 +716,43 @@
   }
 
   onMount(() => {
-    generationCoordinator.start();
     const onWindowFocus = () => scheduleFreshnessReconciliation();
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") scheduleFreshnessReconciliation();
     };
     const onPageShow = () => scheduleFreshnessReconciliation();
+    const onHashChange = () => {
+      if (suppressNormalizedHashChange) {
+        suppressNormalizedHashChange = false;
+        normalizeRoute();
+        return;
+      }
+      routeNavigationEpoch += 1;
+      normalizeRoute();
+    };
     addEventListener("focus", onWindowFocus);
     addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    addEventListener("hashchange", onHashChange);
     scheduleFreshnessReconciliation();
+    onboardingState = readOnboardingState(localStorage);
+    // Parse the route before any asynchronous bootstrap. This mounts the
+    // shell and its navigation controls without waiting for settings,
+    // Automation, or financial queries.
+    normalizeRoute();
+    initialized = true;
+    const welcomeStartedAtNavigationEpoch = routeNavigationEpoch;
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error))
-      .then(async () => {
-        onboardingState = readOnboardingState(localStorage);
-        // Mount the shell before product reads complete. Financial sections
-        // can then reveal their primary and secondary states independently.
-        initialized = true;
-        await resolveFirstRunWelcome();
+      .then(() => {
+        settingsReady = true;
+        generationCoordinator.start();
         normalizeRoute();
+        void resolveFirstRunWelcome(welcomeStartedAtNavigationEpoch);
     });
-    addEventListener("hashchange", normalizeRoute);
     return () => {
-      removeEventListener("hashchange", normalizeRoute);
+      removeEventListener("hashchange", onHashChange);
       removeEventListener("focus", onWindowFocus);
       removeEventListener("pageshow", onPageShow);
       document.removeEventListener("visibilitychange", onVisibilityChange);
