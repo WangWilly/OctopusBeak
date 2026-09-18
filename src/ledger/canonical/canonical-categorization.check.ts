@@ -20,6 +20,7 @@ import {
   commitCanonicalUserCategorization,
   createCanonicalSpendingQuery,
   CANONICAL_SPENDING_INCLUSION_POLICY,
+  queryCanonicalSpendingCurrentFromDatabase,
 } from "./canonical-categorization.ts";
 import {
   blob,
@@ -1034,6 +1035,52 @@ test("spending report publishes gross posted outflow scope and reports semantic 
     );
     assert.equal(beforePurchase.includedTransactions[0]?.kind, "purchase");
     assert.equal(beforePurchase.reportEligibility.gapCount, 0);
+  } finally {
+    await discard(state.directory);
+  }
+});
+
+test("spending projection applies the canonical transaction-kind inclusion boundary", async () => {
+  const state = await fixture();
+  try {
+    await publishPurchaseKind(state);
+    const store = createCanonicalSourceStore(state.directory);
+    try {
+      const transactionId = Buffer.from(state.transactionId.replaceAll("-", ""), "hex");
+      const setKind = (kind: string) => store.db.prepare(`
+        UPDATE current_transaction_enrichment
+           SET taxonomy_code = ?, value_text = ?
+         WHERE transaction_id = ? AND field_name = 'kind'
+      `).run(kind, kind, transactionId);
+
+      for (const kind of [
+        "transfer",
+        "transfer.internal",
+        "cash",
+        "cash.withdrawal",
+        "investment",
+        "investment.purchase",
+        "payment.credit_card",
+        "payment.credit_card.autopay",
+        "payment.loan",
+        "payment.loan.principal",
+      ]) {
+        setKind(kind);
+        assert.equal(
+          queryCanonicalSpendingCurrentFromDatabase(store.db).includedTransactions.length,
+          0,
+          kind,
+        );
+      }
+
+      setKind("purchase");
+      assert.equal(
+        queryCanonicalSpendingCurrentFromDatabase(store.db).includedTransactions.length,
+        1,
+      );
+    } finally {
+      store.close();
+    }
   } finally {
     await discard(state.directory);
   }

@@ -10,6 +10,7 @@ import {
   financialPerformanceTelemetry,
   type FinancialPerformanceOperation,
 } from "../../lib/performance/financial-performance-telemetry.ts";
+import { isCanonicalSpendingTransactionKindIncluded } from "./spending-inclusion-policy.ts";
 
 export type ExactMoney = Readonly<{ coefficient: string; scale: number; currency: string }>;
 export type SpendingPair = Readonly<{ invoiceId: string; transactionId: string }>;
@@ -228,14 +229,6 @@ function requireActivePair(db: DatabaseSync, pair: SpendingPair): void {
     throw new Error("Direct Spending confirmation transaction identity is stale, replaced, or inactive.");
 }
 
-const SPENDING_LINK_EXCLUDED_KIND_PREFIXES = [
-  "transfer",
-  "cash",
-  "investment",
-  "payment.credit_card",
-  "payment.loan",
-] as const;
-
 /**
  * Apply the current Spending inclusion predicate to one command pair without
  * rebuilding the full Spending report.  This mirrors the bounded
@@ -253,9 +246,6 @@ function requireCurrentSpendingEligibility(db: DatabaseSync, pair: SpendingPair)
   const kind = projection.families["transaction-enrichment"].find(
     (row) => row.fieldName === "kind",
   )?.taxonomyCode ?? null;
-  const excludedKind = kind !== null && SPENDING_LINK_EXCLUDED_KIND_PREFIXES.some(
-    (prefix) => kind === prefix || kind.startsWith(`${prefix}.`),
-  );
   if (
     !transaction ||
     transaction.administrativeState !== "active" ||
@@ -263,7 +253,7 @@ function requireCurrentSpendingEligibility(db: DatabaseSync, pair: SpendingPair)
     transaction.economicStatus !== "normal" ||
     transaction.direction !== "outflow" ||
     kind === null ||
-    excludedKind
+    !isCanonicalSpendingTransactionKindIncluded(kind)
   ) throw new Error("Direct Spending confirmation pair is not currently eligible.");
 }
 function write<T>(

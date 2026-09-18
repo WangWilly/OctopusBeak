@@ -30,6 +30,7 @@ import {
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_VERSION,
 } from "./transaction-taxonomy.ts";
+import { isCanonicalSpendingTransactionKindIncluded } from "./spending-inclusion-policy.ts";
 import {
   queryCanonicalEnrichmentCurrentFromDatabase,
   queryCanonicalEnrichmentHistoricalFromDatabase,
@@ -1089,13 +1090,6 @@ export type CanonicalSpendingLineageResult = Readonly<
   }
 >;
 
-const EXCLUDED_KIND_PREFIXES = [
-  "transfer",
-  "cash",
-  "investment",
-  "payment.credit_card",
-  "payment.loan",
-];
 const KNOWN_DIRECTIONS = new Set(["inflow", "outflow"]);
 const KNOWN_POSTING = new Set(["pending", "posted"]);
 const KNOWN_ECONOMIC = new Set(["normal", "canceled", "refund", "reversal"]);
@@ -1254,12 +1248,6 @@ function selectedUserCategorization(
   };
 }
 
-function isExcludedKind(kind: string): boolean {
-  return EXCLUDED_KIND_PREFIXES.some(
-    (prefix) => kind === prefix || kind.startsWith(prefix + "."),
-  );
-}
-
 type RuntimeSpendingSnapshot = Readonly<{
   kind: "current" | "historical";
   knowledgePoint: number;
@@ -1400,7 +1388,7 @@ function reportForSnapshot(
       transaction.economicStatus !== "normal" ||
       transaction.postingStatus !== "posted" ||
       transaction.direction !== "outflow" ||
-      isExcludedKind(kind!)
+      !isCanonicalSpendingTransactionKindIncluded(kind!)
     ) {
       inclusion = "excluded";
     } else {
@@ -1790,7 +1778,7 @@ export function queryCanonicalSpendingMatchingFromDatabase(
       transaction.economicStatus !== "normal" ||
       transaction.postingStatus !== "posted" ||
       transaction.direction !== "outflow" ||
-      isExcludedKind(kindCode)
+      !isCanonicalSpendingTransactionKindIncluded(kindCode)
     )
       continue;
     const consumeDate = transaction.consumeDate ?? null;

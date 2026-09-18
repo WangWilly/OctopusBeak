@@ -358,12 +358,25 @@ test("canonical spending establish command rejects pairs outside the current Spe
     `).run(transaction);
     assertRejectedWithoutWrites("forged-missing-kind");
 
-    fixture.store.db.prepare(`
-      UPDATE current_transaction_enrichment
-         SET taxonomy_code = 'payment.loan', value_text = 'payment.loan'
-       WHERE transaction_id = ? AND field_name = 'kind'
-    `).run(transaction);
-    assertRejectedWithoutWrites("forged-excluded-kind");
+    for (const kind of [
+      "transfer",
+      "transfer.internal",
+      "cash",
+      "cash.withdrawal",
+      "investment",
+      "investment.purchase",
+      "payment.credit_card",
+      "payment.credit_card.autopay",
+      "payment.loan",
+      "payment.loan.principal",
+    ]) {
+      fixture.store.db.prepare(`
+        UPDATE current_transaction_enrichment
+           SET taxonomy_code = ?, value_text = ?
+         WHERE transaction_id = ? AND field_name = 'kind'
+      `).run(kind, kind, transaction);
+      assertRejectedWithoutWrites(`forged-excluded-kind-${kind}`);
+    }
 
     fixture.store.db.prepare(`
       UPDATE current_transaction_enrichment
