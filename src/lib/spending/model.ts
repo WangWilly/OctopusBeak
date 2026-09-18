@@ -4,7 +4,11 @@ import {
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
 import type { FinancialSectionResult } from "$lib/shared-ledger/financial-section.ts";
-export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
+export type {
+  SpendingPurchaseActionPatch,
+  SpendingPurchaseActionResult,
+  SpendingRecognitionReportPatch,
+} from "./purchase-report-patch.ts";
 
 /**
  * The purchase-basis report is the active Spending contract.  It stays as a
@@ -15,18 +19,28 @@ export type SpendingPurchaseReportDto = PurchaseReport;
 
 export type SpendingCandidateActionInput = Readonly<{
   kind: "candidate";
-  candidateId: string;
+  /**
+   * Candidate ids remain available for denial and legacy callers.  Link
+   * confirmation should send the two canonical identities instead so the
+   * command path does not have to rebuild candidate analysis.
+   */
+  candidateId?: string;
+  invoiceIdentityId?: string;
+  transactionIdentityId?: string;
+  idempotencyKey?: string;
 }>;
 
 export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly<{
   kind: "direct";
   invoiceIdentityId: string;
   transactionIdentityId: string;
+  idempotencyKey?: string;
 }>;
 
 export type SpendingLinkActionInput = Readonly<{
   invoiceId: string;
   transactionId: string;
+  idempotencyKey?: string;
 }>;
 
 export type SpendingItemDto = {

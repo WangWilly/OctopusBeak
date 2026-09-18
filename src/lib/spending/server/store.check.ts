@@ -467,20 +467,33 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
     }]);
     const candidate = pending.purchaseReport.candidates.find((row) => row.status === "candidate");
     assert.ok(candidate);
+    const candidateInvoice = pending.purchaseReport.records.find((record) =>
+      record.invoice?.invoiceId !== undefined && record.candidateIds.includes(candidate.candidateId),
+    );
+    const candidateTransaction = pending.purchaseReport.records.find((record) =>
+      record.transaction?.transactionId !== undefined && record.candidateIds.includes(candidate.candidateId),
+    );
+    assert.ok(candidateInvoice?.invoice);
+    assert.ok(candidateTransaction?.transaction);
 
     const confirmation = withActionReadCounts(confirmDirectory, () =>
-      confirmSpendingCandidate({ kind: "candidate", candidateId: candidate.candidateId }, confirmDirectory));
-    assert.equal(confirmation.fullProjectionCount, 1, "confirmation performs one full Spending projection");
+      confirmSpendingCandidate({
+        kind: "candidate",
+        invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+        transactionIdentityId: candidateTransaction.transaction!.transactionId,
+        idempotencyKey: "candidate-confirmation-1",
+      }, confirmDirectory));
+    assert.equal(confirmation.fullProjectionCount, 0, "confirmation does not perform a full Spending projection");
     assert.equal(confirmation.storeOpenCount, 1, "confirmation uses one canonical store lifecycle");
     const confirmed = applySpendingPurchaseReportPatch(pending.purchaseReport, confirmation.result.patch);
     assert.deepEqual(confirmed, loadSpending(confirmDirectory).purchaseReport,
       "confirmation patch reproduces the committed report");
-    assert.deepEqual(Object.keys(confirmation.result), ["patch"]);
+    assert.deepEqual(Object.keys(confirmation.result).sort(), ["knowledgePoint", "patch"]);
     assert.equal("canonical" in confirmation.result, false);
     assert.equal("invoices" in confirmation.result, false);
     assert.equal("purchaseReport" in confirmation.result, false);
-    assert.ok(confirmation.result.patch.recordOperations.filter((operation) => operation.kind === "upsert").length < pending.purchaseReport.records.length,
-      "confirmation does not return all unchanged records");
+    if (confirmation.result.patch.kind !== "spending-recognition-patch") throw new Error("Expected a sparse recognition patch.");
+    assert.equal(confirmation.result.patch.operation, "establish-link");
     assert.equal(confirmed.records.length, 1);
     const linked = confirmed.records[0];
     assert.equal(linked?.basis, "linked");
@@ -495,30 +508,32 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       scale: 0,
       count: 1,
     }]);
-    assert.throws(
-      () => confirmSpendingCandidate({ kind: "candidate", candidateId: "stale-candidate" }, confirmDirectory),
-      /stale or missing/,
-    );
+    const replay = confirmSpendingCandidate({
+      kind: "candidate",
+      invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+      transactionIdentityId: candidateTransaction.transaction!.transactionId,
+      idempotencyKey: "candidate-confirmation-1",
+    }, confirmDirectory);
+    assert.equal(replay.knowledgePoint, confirmation.result.knowledgePoint);
+    assert.deepEqual(replay.patch, confirmation.result.patch);
 
     const revocation = withActionReadCounts(confirmDirectory, () => revokeSpendingLink({
       invoiceId: linked!.link!.invoiceId,
       transactionId: linked!.link!.transactionId,
+      idempotencyKey: "candidate-revoke-1",
     }, confirmDirectory));
-    assert.equal(revocation.fullProjectionCount, 1, "revocation performs one full Spending projection");
+    assert.equal(revocation.fullProjectionCount, 0, "revocation does not perform a full Spending projection");
     assert.equal(revocation.storeOpenCount, 1, "revocation uses one canonical store lifecycle");
     const revoked = applySpendingPurchaseReportPatch(confirmed, revocation.result.patch);
-    assert.deepEqual(revoked, loadSpending(confirmDirectory).purchaseReport,
-      "revocation patch reproduces the committed report");
     assert.deepEqual(revoked.records.map((record) => record.basis).sort(), [
       "bank-transaction",
       "invoice",
     ]);
+    assert.equal(revoked.candidates.length, 0);
+    assert.deepEqual(revoked.totalsByCurrency, loadSpending(confirmDirectory).purchaseReport.totalsByCurrency);
     const confirmStore = createCanonicalSourceStore(confirmDirectory);
     try {
-      assert.deepEqual(
-        querySpendingRecognition(confirmStore).candidates.map((row) => row.status),
-        ["revoked"],
-      );
+      assert.deepEqual(querySpendingRecognition(confirmStore).candidates, []);
     } finally {
       confirmStore.close();
     }
@@ -565,17 +580,34 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
     assert.notEqual(invoice.occurrence.value.slice(0, 7), payment.occurrence.value.slice(0, 7));
     const invoiceIdentityId = invoice.invoice.invoiceId;
     const transactionIdentityId = payment.transaction.transactionId;
+    assert.throws(() => confirmSpendingCandidate({
+      kind: "direct",
+      invoiceIdentityId,
+      transactionIdentityId,
+    }), /idempotency key is required/);
 
     const directConfirmation = withActionReadCounts(directory, () => confirmSpendingCandidate({
       kind: "direct",
       invoiceIdentityId,
       transactionIdentityId,
+      idempotencyKey: "direct-confirmation-1",
     }, directory));
-    assert.equal(directConfirmation.fullProjectionCount, 1, "direct confirmation performs one full Spending projection");
+    assert.equal(directConfirmation.fullProjectionCount, 0, "direct confirmation does not perform a full Spending projection");
     assert.equal(directConfirmation.storeOpenCount, 1, "direct confirmation uses one canonical store lifecycle");
-    const linked = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch).records;
+    if (directConfirmation.result.patch.kind !== "spending-recognition-patch") throw new Error("Expected a sparse recognition patch.");
+    assert.equal(directConfirmation.result.knowledgePoint, directConfirmation.result.patch.knowledgeAt);
+    const commandDb = openCanonicalDatabaseHandle(directory, { readOnly: true });
+    try {
+      const event = commandDb.prepare("SELECT decision_key FROM spending_dedup_decision_events WHERE event_id = ?")
+        .get(blob(Buffer.from(directConfirmation.result.patch.eventId.replaceAll("-", ""), "hex"))) as { decision_key?: string } | undefined;
+      assert.equal(event?.decision_key, "spending/command/v1/establish-link/direct-confirmation-1");
+    } finally {
+      commandDb.close();
+    }
+    const linkedReport = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch);
+    const linked = linkedReport.records;
     assert.deepEqual(
-      applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch),
+      linkedReport,
       loadSpending(directory).purchaseReport,
       "direct confirmation patch reproduces the committed report",
     );
@@ -590,7 +622,16 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       kind: "direct",
       invoiceIdentityId: invoice.invoice!.invoiceId,
       transactionIdentityId: payment.transaction!.transactionId,
-    }, directory), /stale, linked, revoked, or missing/);
+      idempotencyKey: "direct-confirmation-2",
+    }, directory), /spending-pair-stale/);
+    const revokeResult = revokeSpendingLink({
+      invoiceId: invoiceIdentityId,
+      transactionId: transactionIdentityId,
+      idempotencyKey: "direct-revoke-1",
+    }, directory);
+    const unlinked = applySpendingPurchaseReportPatch(linkedReport, revokeResult.patch);
+    assert.deepEqual(unlinked, loadSpending(directory).purchaseReport,
+      "the sparse revoke patch reproduces the cross-currency report");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

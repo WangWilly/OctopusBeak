@@ -22,8 +22,27 @@ export type SpendingPurchaseReportPatch = Readonly<{
   candidateOperations: readonly SpendingSequencePatchOperation<SpendingPurchaseCandidateView>[];
 }>;
 
+/**
+ * The write-side Spending command intentionally returns only the recognition
+ * change.  The renderer already owns the current purchase report and can
+ * materialize the affected invoice/payment records from that generation.  A
+ * full report is therefore never required on the confirmation critical path.
+ */
+export type SpendingRecognitionReportPatch = Readonly<{
+  kind: "spending-recognition-patch";
+  baseKnowledgeAt: number;
+  knowledgeAt: number;
+  operation: "establish-link" | "remove-link";
+  invoiceId: string;
+  transactionId: string;
+  eventId: string;
+}>;
+
+export type SpendingPurchaseActionPatch = SpendingPurchaseReportPatch | SpendingRecognitionReportPatch;
+
 export type SpendingPurchaseActionResult = Readonly<{
-  patch: SpendingPurchaseReportPatch;
+  knowledgePoint: number;
+  patch: SpendingPurchaseActionPatch;
 }>;
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -121,8 +140,10 @@ export function createSpendingPurchaseReportPatch(
 
 export function applySpendingPurchaseReportPatch(
   current: SpendingPurchaseReportView,
-  patch: SpendingPurchaseReportPatch,
+  patch: SpendingPurchaseActionPatch,
 ): SpendingPurchaseReportView {
+  if (patch.kind === "spending-recognition-patch")
+    return applySpendingRecognitionReportPatch(current, patch);
   if (patch.kind !== "spending-purchase-report-patch") throw new Error("Spending report patch kind is invalid.");
   if (current.knowledgeAt !== patch.baseKnowledgeAt)
     throw new Error("Spending report patch does not match the currently displayed report.");
@@ -135,5 +156,197 @@ export function applySpendingPurchaseReportPatch(
     totalsByCurrency: patch.totalsByCurrency,
     totalStatus: patch.totalStatus,
     candidates: applySequencePatch(current.candidates, patch.candidateOperations, (candidate) => candidate.candidateId),
+  });
+}
+
+function exactMoneyAdd(
+  left: SpendingPurchaseReportView["totalsByCurrency"][number],
+  right: SpendingPurchaseReportView["totalsByCurrency"][number],
+): SpendingPurchaseReportView["totalsByCurrency"][number] {
+  if (left.currency !== right.currency) throw new Error("Spending report patch money currencies do not match.");
+  const scale = Math.max(left.scale, right.scale);
+  return {
+    currency: left.currency,
+    coefficient: (
+      BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale) +
+      BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
+    ).toString(),
+    scale,
+    count: left.count + right.count,
+  };
+}
+
+function recordMoney(record: SpendingPurchaseRecordView): SpendingPurchaseReportView["totalsByCurrency"][number] | null {
+  if (!record.amount) return null;
+  return { ...record.amount, count: 1 };
+}
+
+function totalsForRecords(
+  records: readonly SpendingPurchaseRecordView[],
+): SpendingPurchaseReportView["totalsByCurrency"] {
+  const totals = new Map<string, SpendingPurchaseReportView["totalsByCurrency"][number]>();
+  for (const record of records) {
+    const amount = recordMoney(record);
+    if (!amount) continue;
+    const previous = totals.get(amount.currency);
+    totals.set(amount.currency, previous ? exactMoneyAdd(previous, amount) : amount);
+  }
+  return Object.freeze([...totals.values()].sort((left, right) => left.currency.localeCompare(right.currency)));
+}
+
+function transactionOccurrence(
+  transaction: NonNullable<SpendingPurchaseRecordView["transaction"]>,
+): SpendingPurchaseRecordView["occurrence"] {
+  const value = transaction.consumeDate ?? transaction.postingDate ?? transaction.effectiveOn;
+  return {
+    value,
+    precision: "date",
+    timeZone: "unknown",
+    basis: transaction.consumeDate ? "purchase-date" : "posting-date-fallback",
+  };
+}
+
+function linkedRecord(
+  invoice: SpendingPurchaseRecordView,
+  transaction: SpendingPurchaseRecordView,
+  patch: SpendingRecognitionReportPatch,
+): SpendingPurchaseRecordView {
+  if (!invoice.invoice || !transaction.transaction)
+    throw new Error("Spending recognition patch is missing the invoice or transaction record.");
+  const invoiceAmount = invoice.amount;
+  const bankAmount = transaction.transaction.amount;
+  return {
+    purchaseId: `link:${patch.eventId}`,
+    basis: "linked",
+    amount: bankAmount,
+    occurrence: invoice.occurrence,
+    description: invoice.invoice.revision.seller.name ?? transaction.transaction.description,
+    invoice: invoice.invoice,
+    transaction: transaction.transaction,
+    items: invoice.items,
+    possibleDuplicate: false,
+    candidateIds: [],
+    link: {
+      invoiceId: patch.invoiceId,
+      transactionId: patch.transactionId,
+      eventId: patch.eventId,
+      origin: "user",
+      evidenceKnowledgeSequence: patch.knowledgeAt,
+      evidence: { command: `spending/command/v1/${patch.operation}` },
+      // These fields are part of the canonical server view.  The browser
+      // contract intentionally exposes only the subset needed for rendering,
+      // but retaining them here lets a sparse patch reproduce a compatibility
+      // report exactly when it is used by a non-product caller.
+      userId: "local-user",
+      authorityRoute: null,
+      stableCrossSourceReference: null,
+      decisionCommitSequence: patch.knowledgeAt,
+    } as SpendingPurchaseRecordView["link"],
+    difference: {
+      invoiceAmount,
+      bankAmount,
+      sameCurrency: invoiceAmount?.currency === bankAmount.currency,
+      exactAmountEqual: invoiceAmount
+        ? invoiceAmount.currency === bankAmount.currency &&
+          BigInt(invoiceAmount.coefficient) * 10n ** BigInt(Math.max(invoiceAmount.scale, bankAmount.scale) - invoiceAmount.scale) ===
+          BigInt(bankAmount.coefficient) * 10n ** BigInt(Math.max(invoiceAmount.scale, bankAmount.scale) - bankAmount.scale)
+        : false,
+    },
+    refund: null,
+  };
+}
+
+function standaloneInvoice(record: SpendingPurchaseRecordView): SpendingPurchaseRecordView {
+  if (!record.invoice) throw new Error("Spending recognition patch invoice record is missing invoice facts.");
+  const amount = record.invoice.revision.total
+    ? {
+        currency: record.invoice.revision.total.currency,
+        coefficient: record.invoice.revision.total.coefficient,
+        scale: record.invoice.revision.total.scale,
+      }
+    : null;
+  return {
+    purchaseId: `invoice:${record.invoice.invoiceId}`,
+    basis: "invoice",
+    amount,
+    occurrence: record.occurrence,
+    description: record.invoice.revision.seller.name,
+    invoice: record.invoice,
+    transaction: null,
+    items: record.items,
+    possibleDuplicate: false,
+    candidateIds: [],
+    link: null,
+    difference: null,
+    refund: null,
+  };
+}
+
+function standaloneTransaction(record: SpendingPurchaseRecordView): SpendingPurchaseRecordView {
+  if (!record.transaction) throw new Error("Spending recognition patch transaction record is missing transaction facts.");
+  return {
+    purchaseId: `transaction:${record.transaction.transactionId}`,
+    basis: "bank-transaction",
+    amount: record.transaction.amount,
+    occurrence: transactionOccurrence(record.transaction),
+    description: record.transaction.description,
+    invoice: null,
+    transaction: record.transaction,
+    items: [],
+    possibleDuplicate: false,
+    candidateIds: [],
+    link: null,
+    difference: null,
+    refund: null,
+  };
+}
+
+function sortRecords(records: readonly SpendingPurchaseRecordView[]): readonly SpendingPurchaseRecordView[] {
+  return Object.freeze([...records].sort((left, right) =>
+    left.occurrence.value.localeCompare(right.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
+}
+
+function applySpendingRecognitionReportPatch(
+  current: SpendingPurchaseReportView,
+  patch: SpendingRecognitionReportPatch,
+): SpendingPurchaseReportView {
+  if (current.knowledgeAt !== patch.baseKnowledgeAt)
+    throw new Error("Spending recognition patch does not match the currently displayed report.");
+  const invoice = current.records.find((record) =>
+    record.invoice?.invoiceId === patch.invoiceId && record.basis !== "linked",
+  );
+  const transaction = current.records.find((record) =>
+    record.transaction?.transactionId === patch.transactionId && record.basis !== "linked",
+  );
+  const linked = current.records.find((record) =>
+    record.basis === "linked" && record.link?.invoiceId === patch.invoiceId && record.link?.transactionId === patch.transactionId,
+  );
+  let records: SpendingPurchaseRecordView[];
+  let candidates = [...current.candidates];
+  if (patch.operation === "establish-link") {
+    if (!invoice || !transaction) throw new Error("Spending recognition patch cannot find its current pair.");
+    const candidateIds = new Set([...invoice.candidateIds, ...transaction.candidateIds]);
+    records = current.records
+      .filter((record) => record !== invoice && record !== transaction)
+      .map((record) => candidateIds.size === 0
+        ? record
+        : { ...record, candidateIds: record.candidateIds.filter((id) => !candidateIds.has(id)), possibleDuplicate: record.candidateIds.some((id) => !candidateIds.has(id)) })
+      .concat(linkedRecord(invoice, transaction, patch));
+    candidates = candidates.filter((candidate) => !candidateIds.has(candidate.candidateId));
+  } else {
+    if (!linked?.invoice || !linked.transaction) throw new Error("Spending recognition patch cannot find its active link.");
+    records = current.records.filter((record) => record !== linked)
+      .concat(standaloneInvoice(linked), standaloneTransaction(linked));
+  }
+  const sorted = sortRecords(records);
+  return Object.freeze({
+    ...current,
+    knowledgeAt: patch.knowledgeAt,
+    records: sorted,
+    totalsByCurrency: totalsForRecords(sorted),
+    totalStatus: sorted.some((record) => record.possibleDuplicate)
+      ? "includes-pending-confirmation"
+      : "complete",
+    candidates: Object.freeze(candidates),
   });
 }

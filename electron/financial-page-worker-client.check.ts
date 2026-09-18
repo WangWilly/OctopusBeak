@@ -159,3 +159,44 @@ test("Spending decisions use the worker boundary without blocking the caller", a
     await client.close();
   }
 });
+
+test("Spending command identity and idempotency inputs cross the worker unchanged", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, input }) => {
+      parentPort.postMessage({
+        id,
+        ok: true,
+        value: {
+          knowledgePoint: 12,
+          patch: {
+            kind: "spending-recognition-patch",
+            baseKnowledgeAt: 11,
+            knowledgeAt: 12,
+            operation: "establish-link",
+            invoiceId: input.invoiceIdentityId,
+            transactionId: input.transactionIdentityId,
+            eventId: "event",
+            idempotencyKey: input.idempotencyKey,
+          },
+        },
+      });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const result = await client.confirmCandidate({
+      kind: "candidate",
+      invoiceIdentityId: "invoice",
+      transactionIdentityId: "transaction",
+      idempotencyKey: "renderer-key-unchanged",
+    });
+    assert.equal((result as unknown as { knowledgePoint: number }).knowledgePoint, 12);
+    assert.equal(
+      (result.patch as unknown as { idempotencyKey: string }).idempotencyKey,
+      "renderer-key-unchanged",
+    );
+  } finally {
+    await client.close();
+  }
+});

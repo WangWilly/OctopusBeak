@@ -9,6 +9,7 @@ import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-
 import {
   confirmSpendingDedupLink,
   denySpendingDedupCandidate,
+  executeSpendingRecognitionCommand,
   querySpendingRecognition,
   recordSpendingMatchCandidate,
   revokeSpendingDedupLink,
@@ -32,7 +33,10 @@ import type {
   CanonicalSpendingRecordDto,
   CanonicalSpendingView,
 } from "../model.ts";
-import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+import {
+  createSpendingPurchaseReportPatch,
+  type SpendingRecognitionReportPatch,
+} from "../purchase-report-patch.ts";
 import {
   createFinancialQuery,
   queryCurrentSpendingFromDatabase,
@@ -85,6 +89,14 @@ const sectionDiagnostics = channel("octopus-beak.financial.section-query");
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
+
+function commandIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "")
+    throw new TypeError("Spending command idempotency key is required.");
+  if (value.length > 256)
+    throw new TypeError("Spending command idempotency key is too long.");
+  return value;
+}
 
 function taxonomyLabels(
   code: string | null | undefined,
@@ -432,7 +444,23 @@ function actionResultAfterRecognitionMutation(
     recognition,
   });
   const after = purchaseReportWithEphemeralCandidates(query, purchaseReport);
-  return { patch: createSpendingPurchaseReportPatch(before, after) };
+  const patch = createSpendingPurchaseReportPatch(before, after);
+  return { knowledgePoint: patch.knowledgeAt, patch };
+}
+
+function recognitionActionResult(
+  result: ReturnType<typeof executeSpendingRecognitionCommand>,
+): SpendingPurchaseActionResult {
+  const patch: SpendingRecognitionReportPatch = Object.freeze({
+    kind: "spending-recognition-patch",
+    baseKnowledgeAt: result.knowledgePoint - 1,
+    knowledgeAt: result.knowledgePoint,
+    operation: result.kind,
+    invoiceId: result.invoiceId,
+    transactionId: result.transactionId,
+    eventId: result.eventId,
+  });
+  return Object.freeze({ knowledgePoint: result.knowledgePoint, patch });
 }
 
 function requiredActionText(value: unknown, label: string): string {
@@ -445,7 +473,24 @@ function candidateActionValue(input: unknown): SpendingCandidateDecisionInput {
     throw new TypeError("Spending candidate action must be an object.");
   const value = input as Record<string, unknown>;
   if (value.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
-  return { kind: "candidate", candidateId: requiredActionText(value.candidateId, "Candidate id") };
+  const candidateId = value.candidateId === undefined
+    ? undefined
+    : requiredActionText(value.candidateId, "Candidate id");
+  const invoiceIdentityId = value.invoiceIdentityId === undefined
+    ? undefined
+    : requiredActionText(value.invoiceIdentityId, "Invoice identity id");
+  const transactionIdentityId = value.transactionIdentityId === undefined
+    ? undefined
+    : requiredActionText(value.transactionIdentityId, "Transaction identity id");
+  if (!candidateId && (!invoiceIdentityId || !transactionIdentityId))
+    throw new TypeError("Spending candidate action requires a candidate id or both canonical identities.");
+  return {
+    kind: "candidate",
+    ...(candidateId === undefined ? {} : { candidateId }),
+    ...(invoiceIdentityId === undefined ? {} : { invoiceIdentityId }),
+    ...(transactionIdentityId === undefined ? {} : { transactionIdentityId }),
+    ...(value.idempotencyKey === undefined ? {} : { idempotencyKey: commandIdempotencyKey(value.idempotencyKey) }),
+  };
 }
 
 function confirmActionValue(input: unknown): SpendingConfirmActionInput {
@@ -458,6 +503,7 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
     kind: "direct",
     invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
     transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+    idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
   };
 }
 
@@ -468,6 +514,7 @@ function linkActionValue(input: unknown): SpendingLinkRevokeInput {
   return {
     invoiceId: requiredActionText(value.invoiceId, "Invoice id"),
     transactionId: requiredActionText(value.transactionId, "Transaction id"),
+    idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
   };
 }
 
@@ -509,6 +556,7 @@ function decideCandidate(
   kind: "confirmed" | "denied",
 ): SpendingPurchaseActionResult {
   const action = candidateActionValue(input);
+  if (!action.candidateId) throw new TypeError("Candidate id is required for candidate denial.");
   const store = recordStore(ledgerDir);
   try {
     const query = currentSpendingQueryFromStore(store, ledgerDir);
@@ -531,51 +579,50 @@ function decideCandidate(
   }
 }
 
+function confirmCandidateByIdentity(
+  action: SpendingCandidateDecisionInput,
+  ledgerDir: string,
+): SpendingPurchaseActionResult {
+  const invoiceId = action.invoiceIdentityId;
+  const transactionId = action.transactionIdentityId;
+  if (!invoiceId || !transactionId)
+    throw new TypeError("Candidate confirmation requires canonical invoice and transaction identities.");
+  const store = recordStore(ledgerDir);
+  try {
+    const result = executeSpendingRecognitionCommand(store, {
+      kind: "establish-link",
+      invoiceId: invoiceId.toLowerCase(),
+      transactionId: transactionId.toLowerCase(),
+      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+    });
+    return recognitionActionResult(result);
+  } finally {
+    store.close();
+  }
+}
+
 export function confirmSpendingCandidate(
   input: SpendingConfirmActionInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
   const action = confirmActionValue(input);
-  if (action.kind === "candidate") return decideCandidate(action, ledgerDir, "confirmed");
+  if (action.kind === "candidate") {
+    // The identity-bearing form is the product command seam.  The old
+    // candidate-id-only form remains as a compatibility adapter for callers
+    // that have not yet moved candidate analysis out of the command path.
+    if (action.invoiceIdentityId && action.transactionIdentityId)
+      return confirmCandidateByIdentity(action, ledgerDir);
+    return decideCandidate(action, ledgerDir, "confirmed");
+  }
   const store = recordStore(ledgerDir);
   try {
-    const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const invoice = query.purchaseReport.records.find((record) =>
-      record.basis === "invoice" && record.invoice?.invoiceId === action.invoiceIdentityId,
-    );
-    const payment = query.purchaseReport.records.find((record) =>
-      record.basis === "bank-transaction" && record.transaction?.transactionId === action.transactionIdentityId,
-    );
-    if (!invoice?.invoice) throw new Error("Spending invoice selection is stale, linked, revoked, or missing.");
-    if (!payment?.transaction) throw new Error("Spending payment selection is stale, linked, or ineligible.");
-    confirmSpendingDedupLink(store, {
-      invoiceIdentityId: action.invoiceIdentityId,
-      transactionIdentityId: action.transactionIdentityId,
-      decisionKey: `spending/user/direct/${action.invoiceIdentityId}/${action.transactionIdentityId}/${query.purchaseReport.knowledgeAt}`,
-      userId: LOCAL_SPENDING_USER_ID,
-      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
-      evidence: {
-        decisionOrigin: "explicit-user-selection",
-        invoice: {
-          identityId: action.invoiceIdentityId,
-          sourceRecordId: invoice.invoice.revision.sourceRecordId,
-          date: invoice.occurrence.value,
-          amount: invoice.amount,
-          label: invoice.description,
-        },
-        payment: {
-          identityId: action.transactionIdentityId,
-          sourceConnectionKey: payment.transaction.sourceConnectionKey,
-          date: payment.transaction.effectiveOn,
-          consumeDate: payment.transaction.consumeDate ?? null,
-          postingDate: payment.transaction.postingDate ?? null,
-          dateBasis: payment.transaction.effectiveDateBasis ?? "effective-date",
-          amount: payment.amount,
-          label: payment.description,
-        },
-      },
+    const result = executeSpendingRecognitionCommand(store, {
+      kind: "establish-link",
+      invoiceId: action.invoiceIdentityId.toLowerCase(),
+      transactionId: action.transactionIdentityId.toLowerCase(),
+      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
     });
-    return actionResultAfterRecognitionMutation(query, store);
+    return recognitionActionResult(result);
   } finally {
     store.close();
   }
@@ -595,25 +642,13 @@ export function revokeSpendingLink(
   const action = linkActionValue(input);
   const store = recordStore(ledgerDir);
   try {
-    const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const linked = query.purchaseReport.records.find((record) =>
-      record.basis === "linked" &&
-      record.link?.invoiceId === action.invoiceId &&
-      record.link?.transactionId === action.transactionId,
-    );
-    if (!linked?.link) throw new Error("Spending link is stale, missing, or inactive.");
-    revokeSpendingDedupLink(store, {
-      decisionKey: `spending/user/revoke/${action.invoiceId}/${action.transactionId}/${query.purchaseReport.knowledgeAt}`,
-      invoiceId: action.invoiceId,
-      transactionId: action.transactionId,
-      origin: { kind: "user", userId: LOCAL_SPENDING_USER_ID },
-      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
-      evidence: {
-        reason: "user-revoked-link",
-        priorEventId: linked.link.eventId,
-      },
+    const result = executeSpendingRecognitionCommand(store, {
+      kind: "remove-link",
+      invoiceId: action.invoiceId.toLowerCase(),
+      transactionId: action.transactionId.toLowerCase(),
+      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
     });
-    return actionResultAfterRecognitionMutation(query, store);
+    return recognitionActionResult(result);
   } finally {
     store.close();
   }

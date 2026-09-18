@@ -52,6 +52,11 @@ import {
   type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
+import type {
+  SpendingCandidateActionInput,
+  SpendingConfirmActionInput,
+  SpendingLinkActionInput,
+} from "../src/lib/spending/model.ts";
 import type { FinancialPageLoadInput } from "../src/lib/desktop/api.ts";
 import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
@@ -140,6 +145,67 @@ function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
   } as SpendingLoadInput;
 }
 
+function requiredSpendingActionText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${label} is required.`);
+  }
+  return value;
+}
+
+function spendingIdempotencyKeyFrom(value: unknown): string {
+  const key = requiredSpendingActionText(value, "Spending command idempotency key");
+  if (key.length > 256) throw new TypeError("Spending command idempotency key is too long.");
+  return key;
+}
+
+function spendingConfirmActionFrom(value: unknown): SpendingConfirmActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending confirmation must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "direct") {
+    return {
+      kind: "direct",
+      invoiceIdentityId: requiredSpendingActionText(record.invoiceIdentityId, "Invoice identity id"),
+      transactionIdentityId: requiredSpendingActionText(record.transactionIdentityId, "Transaction identity id"),
+      idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+    };
+  }
+  if (record.kind !== "candidate") throw new TypeError("Spending confirmation kind is invalid.");
+  return {
+    kind: "candidate",
+    invoiceIdentityId: requiredSpendingActionText(record.invoiceIdentityId, "Invoice identity id"),
+    transactionIdentityId: requiredSpendingActionText(record.transactionIdentityId, "Transaction identity id"),
+    idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+    ...(record.candidateId === undefined ? {} : { candidateId: requiredSpendingActionText(record.candidateId, "Candidate id") }),
+  };
+}
+
+function spendingCandidateActionFrom(value: unknown): SpendingCandidateActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending candidate action must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
+  return {
+    kind: "candidate",
+    candidateId: requiredSpendingActionText(record.candidateId, "Candidate id"),
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey) }),
+  };
+}
+
+function spendingLinkActionFrom(value: unknown): SpendingLinkActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending link action must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    invoiceId: requiredSpendingActionText(record.invoiceId, "Invoice id"),
+    transactionId: requiredSpendingActionText(record.transactionId, "Transaction id"),
+    idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+  };
+}
+
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
 }: {
@@ -206,13 +272,13 @@ export function registerOctopusBeakIpc({
       financialPages.loadSection("spending", financialSectionFrom(section), spendingLoadInputFrom(input)),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
-    financialPages.confirmCandidate(input),
+    financialPages.confirmCandidate(spendingConfirmActionFrom(input)),
   );
   ipcMain.handle("spending:denyCandidate", (_event, input) =>
-    financialPages.denyCandidate(input),
+    financialPages.denyCandidate(spendingCandidateActionFrom(input)),
   );
   ipcMain.handle("spending:revokeLink", (_event, input) =>
-    financialPages.revokeLink(input),
+    financialPages.revokeLink(spendingLinkActionFrom(input)),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
