@@ -19,7 +19,8 @@ npm run bench:spending-latency:ci
 The CI report is written to
 `reports/spending-financial-latency-ci.json`. The command exits non-zero when
 an iteration minimum or the normal/contention p99/max regression budget is
-exceeded.
+exceeded. The normal and contention p99 budgets are 200 ms and 500 ms;
+maximum latency is a separate regression guard and never substitutes for p99.
 
 Formal acceptance runs the complete 1x/2x × warm/cold × normal/contention
 matrix, with direct pair, candidate confirmation, and unlink operations. It
@@ -60,9 +61,43 @@ unexpected checkpoint data fails closed. The final formal report is accepted
 only when all 24 expected scenario keys are present. A partial checkpoint is
 progress evidence, never a formal success report.
 
-The machine-readable report schema is
-`spending-financial-latency-report-v1`. It reports p50/p95/p99/max, bounded
-stage spans, warm/cold and contention labels, dataset cardinality buckets,
-build/hardware profiles, and stable status. The affected-section visibility
-boundary is approximated at the public command result → minimal patch seam;
-renderer paint is measured separately by Electron acceptance.
+The worker-side machine-readable report schema is
+`spending-financial-latency-worker-report-v1`. It reports p50/p95/p99/max,
+bounded stage spans, warm/cold and contention labels, dataset cardinality
+buckets, build/hardware profiles, and stable status. Its boundary explicitly
+sets `uiVisibleProjectionMeasured: false` and `syntheticPatchMeasured: false`.
+The benchmark contains no synthetic patch-as-paint claim.
+
+Electron/CDP acceptance measures the missing boundary:
+
+```bash
+node --no-warnings --experimental-strip-types \
+  scripts/spending-financial-latency-electron.mjs \
+  --mode formal --cdp-endpoint http://127.0.0.1:9222 \
+  --route 'file:///path/to/app/#/spending' \
+  --hardware medium \
+  --output reports/spending-financial-latency-electron-formal.json \
+  --checkpoint reports/spending-financial-latency-electron-formal.checkpoint.json
+```
+
+The CDP runner measures from confirmation click through two renderer animation
+frames after the affected section visibly changes. Its boundary is
+`renderer-confirmation-to-visible-current-projection`, with
+`domPaintMeasured: true` and `syntheticPatchMeasured: false`. It covers direct
+pair, candidate confirmation, and unlink operations. Formal mode requires at
+least 1,000 operations for every scenario and supports the same atomic,
+privacy-bounded checkpoint/resume flow. Use a disposable fixture or resettable
+acceptance page so each operation has a valid action; the runner never fakes a
+paint or puts financial identifiers in the report.
+
+The formal acceptance aggregator requires both reports:
+
+```bash
+npm run bench:spending-latency:acceptance
+```
+
+Missing Electron-visible evidence is incomplete, not a pass. The aggregator
+checks the complete 24-scenario matrix and applies the 200 ms normal / 500 ms
+contention p99 budget independently to the worker and renderer-visible
+measurements. The worker report diagnoses command latency, but only the
+Electron-visible report proves the affected projection reached the screen.

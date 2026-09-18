@@ -11,6 +11,7 @@ import {
   parseLatencyReport,
   percentile,
   summarizeSamples,
+  WORKER_REQUIRED_SPANS,
 } from "./spending-financial-latency-benchmark.mjs";
 
 function scenario(overrides = {}) {
@@ -27,19 +28,21 @@ function scenario(overrides = {}) {
     buildProfile: "test",
     hardwareProfile: "unknown",
     overall: stats,
-    spans: [
-      { name: "canonical-command", stats },
-      { name: "patch-applied", stats },
-    ],
+    spans: WORKER_REQUIRED_SPANS.map((name) => ({ name, stats })),
     ...overrides,
   };
 }
 
 function report(scenarios = [scenario()]) {
   return {
-    schema: "spending-financial-latency-report-v1",
+    schema: "spending-financial-latency-worker-report-v1",
     mode: "ci",
     seed: profile.seed,
+    boundary: {
+      kind: "renderer-to-worker-durable-response",
+      uiVisibleProjectionMeasured: false,
+      syntheticPatchMeasured: false,
+    },
     profile: {
       profileVersion: profile.profileVersion,
       source: profile.source,
@@ -92,6 +95,18 @@ test("report contract carries warm/cold and normal/contention labels", () => {
     ["candidate-confirmation", false, false],
     ["unlink", true, true],
   ]);
+});
+
+test("worker evidence rejects UI-paint or synthetic-patch claims", () => {
+  const invalidUi = report();
+  invalidUi.boundary.uiVisibleProjectionMeasured = true;
+  assert.throws(() => parseLatencyReport(invalidUi), /must not claim UI-visible projection/u);
+  const invalidPatch = report();
+  invalidPatch.boundary.syntheticPatchMeasured = true;
+  assert.throws(() => parseLatencyReport(invalidPatch), /must not claim synthetic patch/u);
+  const missingSpan = report();
+  missingSpan.scenarios[0].spans = missingSpan.scenarios[0].spans.filter((span) => span.name !== "worker-response");
+  assert.throws(() => parseLatencyReport(missingSpan), /missing required spans: worker-response/u);
 });
 
 test("formal report rejects fewer than the required timed operations", () => {
@@ -191,10 +206,7 @@ test("formal reports reject a partial scenario matrix even when iteration minimu
   const partial = report([scenario({
     iterations: FORMAL_MIN_ITERATIONS,
     overall: completeIterationStats,
-    spans: [
-      { name: "canonical-command", stats: completeIterationStats },
-      { name: "patch-applied", stats: completeIterationStats },
-    ],
+    spans: WORKER_REQUIRED_SPANS.map((name) => ({ name, stats: completeIterationStats })),
   })]);
   partial.mode = "formal";
   assert.throws(() => parseLatencyReport(partial), /complete expected scenario set/u);

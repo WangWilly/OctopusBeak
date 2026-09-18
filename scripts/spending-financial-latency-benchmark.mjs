@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { Worker } from "node:worker_threads";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,7 +11,19 @@ import { CATHAY_DOMESTIC_DEPOSIT_FIXTURE, commitCathayDomesticDeposit, createCan
 import { executeSpendingRecognitionCommand } from "../src/ledger/canonical/spending-recognition.ts";
 import { FINANCIAL_INTERACTION_SLO_MS } from "../src/lib/performance/financial-performance-telemetry.ts";
 
-export const REPORT_SCHEMA = "spending-financial-latency-report-v1";
+/**
+ * This report deliberately stops at the real worker response.  It is not a
+ * UI-paint report; Electron/CDP acceptance owns that boundary.
+ */
+export const REPORT_SCHEMA = "spending-financial-latency-worker-report-v1";
+export const WORKER_EVIDENCE_BOUNDARY = "renderer-to-worker-durable-response";
+export const WORKER_REQUIRED_SPANS = Object.freeze([
+  "renderer-to-worker",
+  "worker-response",
+  "narrow-validation",
+  "canonical-transaction",
+  "canonical-commit",
+]);
 export const CHECKPOINT_SCHEMA = "spending-financial-latency-checkpoint-v1";
 export const PROFILE_SCHEMA = "spending-financial-latency-profile-v1";
 export const FORMAL_MIN_ITERATIONS = 1_000;
@@ -147,11 +160,20 @@ function validateScenario(value, index) {
 /** Validate and return a privacy-bounded, machine-readable report. */
 export function parseLatencyReport(value) {
   if (!isPlainObject(value)) throw new Error("Latency report must be an object.");
-  const allowedRoot = new Set(["schema", "mode", "seed", "profile", "datasets", "scenarios"]);
+  const allowedRoot = new Set(["schema", "mode", "seed", "profile", "boundary", "datasets", "scenarios"]);
   for (const key of Object.keys(value)) if (!allowedRoot.has(key)) throw new Error(`Latency report field is not allowed: ${key}`);
   if (value.schema !== REPORT_SCHEMA) throw new Error("Latency report schema is invalid.");
   requireEnum(value.mode, new Set(["smoke", "ci", "formal"]), "report.mode");
   requireString(value.seed, "report.seed");
+  if (!isPlainObject(value.boundary)) throw new Error("report.boundary must be an object.");
+  assertAllowedKeys(value.boundary, new Set(["kind", "uiVisibleProjectionMeasured", "syntheticPatchMeasured"]), "report.boundary");
+  if (value.boundary.kind !== WORKER_EVIDENCE_BOUNDARY) throw new Error("report.boundary.kind is invalid.");
+  if (value.boundary.uiVisibleProjectionMeasured !== false) {
+    throw new Error("Worker report must not claim UI-visible projection evidence.");
+  }
+  if (value.boundary.syntheticPatchMeasured !== false) {
+    throw new Error("Worker report must not claim synthetic patch evidence.");
+  }
   if (!isPlainObject(value.profile)) throw new Error("report.profile must be an object.");
   assertAllowedKeys(value.profile, new Set(["profileVersion", "source", "baseCardinalities", "stressMultiplier"]), "report.profile");
   if (value.profile.profileVersion !== PROFILE_SCHEMA) throw new Error("report.profile.profileVersion is invalid.");
@@ -174,6 +196,11 @@ export function parseLatencyReport(value) {
     throw new Error(`Formal report requires at least ${FORMAL_MIN_ITERATIONS} iterations per scenario.`);
   }
   if (value.mode === "formal") assertScenarioSet(value.scenarios, expectedFormalScenarioKeys(), "Formal report");
+  for (const scenario of value.scenarios) {
+    const spanNames = new Set(scenario.spans.map((span) => span.name));
+    const missing = WORKER_REQUIRED_SPANS.filter((name) => !spanNames.has(name));
+    if (missing.length > 0) throw new Error(`Worker report scenario is missing required spans: ${missing.join(", ")}`);
+  }
   return value;
 }
 
@@ -369,30 +396,57 @@ async function createSyntheticLedger(plan) {
   };
 }
 
-function createPatch(result) {
-  return Object.freeze({
-    kind: result.kind,
-    outcome: result.outcome,
-    eventId: result.eventId,
-    knowledgePoint: result.knowledgePoint,
-    invoiceId: result.invoiceId,
-    transactionId: result.transactionId,
-  });
-}
-
 function recordDuration(collection, name, startedAt) {
   const duration = performance.now() - startedAt;
   (collection[name] ??= []).push(duration);
   return duration;
 }
 
-function commandFor(operation, invoiceId, transactionId, index) {
+function commandFor(operation, invoiceId, transactionId, index, runTag = "") {
   return {
     kind: operation === "unlink" ? "remove-link" : "establish-link",
     invoiceId,
     transactionId,
-    idempotencyKey: `synthetic-spending-latency/${operation}/${index}`,
+    idempotencyKey: `synthetic-spending-latency/${operation}/${runTag}/${index}`,
   };
+}
+
+function workerScriptUrl() {
+  return new URL("./spending-financial-latency-worker.mjs", import.meta.url);
+}
+
+function createBenchmarkWorker() {
+  return new Worker(workerScriptUrl(), {
+    type: "module",
+    execArgv: ["--no-warnings", "--experimental-strip-types"],
+  });
+}
+
+function requestWorker(worker, message) {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const onMessage = (response) => {
+      if (response?.id !== message.id) return;
+      cleanup();
+      if (response.ok) resolveRequest(response.value);
+      else rejectRequest(new Error(response.error));
+    };
+    const onError = (error) => {
+      cleanup();
+      rejectRequest(error instanceof Error ? error : new Error(String(error)));
+    };
+    const cleanup = () => {
+      worker.off("message", onMessage);
+      worker.off("error", onError);
+    };
+    worker.on("message", onMessage);
+    worker.on("error", onError);
+    worker.postMessage(message);
+  });
+}
+
+function addWorkerSpan(durations, name, durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  (durations[name] ??= []).push(durationMs);
 }
 
 function contentionLockScript() {
@@ -460,40 +514,74 @@ async function createContentionController(databasePath, delayMs) {
 
 async function measureScenario({ dataset, operation, pairOffset = 0, warmPath, contention, iterations, buildProfile, hardwareProfile, contentionDelayMs }) {
   try { dataset.store?.close(); } catch {}
-  let store = createCanonicalSourceStore(dataset.directory, { commitClock: () => 1_800_000_000_000_000 });
-  const durations = { overall: [], command: [], patch: [] };
+  const worker = createBenchmarkWorker();
+  let requestId = 1;
+  const durations = {
+    overall: [],
+    "renderer-to-worker": [],
+    "worker-response": [],
+    "narrow-validation": [],
+    "canonical-transaction": [],
+    "canonical-commit": [],
+  };
   const contentionController = contention ? await createContentionController(join(dataset.directory, "canonical.sqlite"), contentionDelayMs) : null;
-  const seededLinks = operation === "unlink";
-  if (seededLinks) {
-    for (let index = 0; index < iterations; index += 1) {
-      const pairIndex = pairOffset + index;
-      executeSpendingRecognitionCommand(store, commandFor("direct-pair", dataset.invoiceIds[pairIndex], dataset.transactionIds[pairIndex], `seed-${pairIndex}`));
-    }
-  }
+  const preparationStore = createCanonicalSourceStore(dataset.directory, { commitClock: () => 1_800_000_000_000_000 });
+  const preparationTag = `${operation}-${warmPath ? "warm" : "cold"}-${contention ? "contention" : "normal"}`;
   try {
     for (let index = 0; index < iterations; index += 1) {
-      if (!warmPath) {
-        store.close();
-        store = createCanonicalSourceStore(dataset.directory, { commitClock: () => 1_800_000_000_000_000 });
-        dataset.store = store;
+      const pairIndex = pairOffset + index;
+      const invoiceId = dataset.invoiceIds[pairIndex];
+      const transactionId = dataset.transactionIds[pairIndex];
+      try {
+        executeSpendingRecognitionCommand(preparationStore, commandFor("unlink", invoiceId, transactionId, `prepare-${preparationTag}-${pairIndex}`));
+      } catch { /* the pair may already be unlinked */ }
+      if (operation === "unlink") {
+        executeSpendingRecognitionCommand(preparationStore, commandFor("direct-pair", invoiceId, transactionId, `seed-${preparationTag}-${pairIndex}`));
       }
+    }
+  } finally {
+    preparationStore.close();
+  }
+  try {
+    await requestWorker(worker, { id: requestId++, kind: "open", directory: dataset.directory });
+    for (let index = 0; index < iterations; index += 1) {
+      if (!warmPath) await requestWorker(worker, { id: requestId++, kind: "reset", directory: dataset.directory });
       if (contention) await contentionController.hold();
       const overallStarted = performance.now();
-      const commandStarted = performance.now();
       const pairIndex = pairOffset + index;
-      const result = executeSpendingRecognitionCommand(store, commandFor(operation, dataset.invoiceIds[pairIndex], dataset.transactionIds[pairIndex], pairIndex));
-      recordDuration(durations, "command", commandStarted);
-      const patchStarted = performance.now();
-      const patch = createPatch(result);
-      if (patch.knowledgePoint !== result.knowledgePoint || patch.eventId !== result.eventId) throw new Error("Synthetic patch application failed.");
-      recordDuration(durations, "patch", patchStarted);
+      const request = {
+        id: requestId++,
+        kind: "execute",
+        directory: dataset.directory,
+        buildProfile,
+        hardwareProfile,
+        command: commandFor(
+          operation,
+          dataset.invoiceIds[pairIndex],
+          dataset.transactionIds[pairIndex],
+          pairIndex,
+          `${warmPath ? "warm" : "cold"}-${contention ? "contention" : "normal"}`,
+        ),
+      };
+      const dispatchStarted = performance.now();
+      const responsePromise = requestWorker(worker, request);
+      const dispatchDuration = performance.now() - dispatchStarted;
+      addWorkerSpan(durations, "renderer-to-worker", dispatchDuration);
+      const responseStarted = performance.now();
+      const response = await responsePromise;
+      addWorkerSpan(durations, "worker-response", performance.now() - responseStarted);
+      if (response.kind !== "executed" || !response.result?.knowledgePoint) throw new Error("Worker did not return a durable command result.");
+      for (const span of response.spans ?? []) {
+        if (durations[span.span]) addWorkerSpan(durations, span.span, span.durationMs);
+      }
       recordDuration(durations, "overall", overallStarted);
       if (contention) await contentionController.release();
     }
   } finally {
     contentionController?.close();
-    try { store.close(); } catch {}
-    dataset.store = store;
+    try { await requestWorker(worker, { id: requestId++, kind: "close" }); } catch { /* worker may already have exited */ }
+    await worker.terminate();
+    dataset.store = undefined;
   }
   const overall = summarizeSamples(durations.overall);
   const budget = contention ? FINANCIAL_INTERACTION_SLO_MS.contention : FINANCIAL_INTERACTION_SLO_MS.normal;
@@ -510,8 +598,7 @@ async function measureScenario({ dataset, operation, pairOffset = 0, warmPath, c
     hardwareProfile,
     overall,
     spans: Object.freeze([
-      { name: "canonical-command", stats: summarizeSamples(durations.command) },
-      { name: "patch-applied", stats: summarizeSamples(durations.patch) },
+      ...WORKER_REQUIRED_SPANS.map((name) => ({ name, stats: summarizeSamples(durations[name]) })),
     ]),
   });
 }
@@ -737,6 +824,11 @@ export async function runBenchmark({
     schema: REPORT_SCHEMA,
     mode,
     seed: profile.seed,
+    boundary: {
+      kind: WORKER_EVIDENCE_BOUNDARY,
+      uiVisibleProjectionMeasured: false,
+      syntheticPatchMeasured: false,
+    },
     profile: {
       profileVersion: profile.profileVersion,
       source: profile.source,
