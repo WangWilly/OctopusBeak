@@ -20,6 +20,7 @@ const port = parentPort;
 
 port.on("message", async (request: FinancialPageRequest) => {
   let response: FinancialPageResponse;
+  const requestToken = "requestToken" in request ? request.requestToken : undefined;
   try {
     let value: unknown;
     switch (request.page) {
@@ -61,12 +62,18 @@ port.on("message", async (request: FinancialPageRequest) => {
             : revokeSpendingLink(request.input as Parameters<typeof revokeSpendingLink>[0]);
         break;
     }
-    response = { id: request.id, ok: true, value };
+    response = {
+      id: request.id,
+      ok: true,
+      value,
+      ...(requestToken === undefined ? {} : { requestToken }),
+    };
   } catch (error) {
     response = {
       id: request.id,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      ...(requestToken === undefined ? {} : { requestToken }),
     };
   }
   port.postMessage(response);

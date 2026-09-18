@@ -37,6 +37,9 @@ assert.match(source, /ipcRenderer\.on\("financialFreshness:changed"/);
 assert.match(source, /ipcRenderer\.removeListener\("financialFreshness:changed", onEvent\)/);
 assert.match(source, /ipcRenderer\.invoke\(\s*"financialFreshness:latestKnowledgePoint"/);
 assert.match(source, /financialFreshnessEventFrom/);
+assert.match(source, /financial:\s*\{/);
+assert.match(source, /ipcRenderer\.invoke\(\s*"financial:cancel"/);
+assert.match(source, /financialPageRequestTokenFrom/);
 for (const [route, channel] of [
   ["overview", "overview:load"],
   ["assets", "assets:load"],
@@ -45,7 +48,7 @@ for (const [route, channel] of [
 ]) {
   assert.match(
     source,
-    new RegExp(`load: \\(input\\) => ipcRenderer\\.invoke\\(\\"${channel}\\",`),
+    new RegExp(`load: \\(input, options\\) => ipcRenderer\\.invoke\\(\\"${channel}\\",`),
     `${route} preload load must forward its input to IPC`,
   );
 }
@@ -57,7 +60,7 @@ for (const [route, channel] of [
 ]) {
   assert.match(
     source,
-    new RegExp(`loadSection: \\(section, input\\)[\\s\\S]*?\\"${channel}\\"`),
+    new RegExp(`loadSection: \\(section, input, options\\)[\\s\\S]*?\\"${channel}\\"`),
     `${route} preload section load must cross its IPC channel`,
   );
 }

@@ -102,6 +102,14 @@ export type FinancialPageLoadInput = Readonly<{
   cutoff?: FinancialQueryCutoff;
 }>;
 
+/**
+ * Renderer-owned, non-financial identity for one queued page-read generation.
+ * The desktop boundary treats it as opaque and never uses it as ledger data.
+ */
+export type FinancialPageRequestOptions = Readonly<{
+  requestToken?: string;
+}>;
+
 export function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
@@ -116,28 +124,31 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
   };
   overview: {
-    load(input?: FinancialPageLoadInput): Promise<OverviewPageDto>;
-    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<OverviewPrimarySection>;
-    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<OverviewSecondarySection>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewSecondarySection>;
   };
   assets: {
-    load(input?: FinancialPageLoadInput): Promise<AssetsPageDto>;
-    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<AssetsPrimarySection>;
-    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<AssetsSecondarySection>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsSecondarySection>;
   };
   liabilities: {
-    load(input?: FinancialPageLoadInput): Promise<LiabilitiesPageDto>;
-    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<LiabilitiesPrimarySection>;
-    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<LiabilitiesSecondarySection>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesSecondarySection>;
+  };
+  financial: {
+    cancel(requestToken: string): Promise<void>;
   };
   financialFreshness: {
     subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;
     latestKnowledgePoint(): Promise<number>;
   };
   spending: {
-    load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
-    loadSection(section: "primary", input?: SpendingLoadInput): Promise<SpendingPrimarySection>;
-    loadSection(section: "secondary", input?: SpendingLoadInput): Promise<SpendingSecondarySection>;
+    load(input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingPageDto>;
+    loadSection(section: "primary", input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingPrimarySection>;
+    loadSection(section: "secondary", input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingSecondarySection>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -178,6 +189,7 @@ export const octopusBeakApiChannels = [
   "liabilities:section:load",
   "financialFreshness:changed",
   "financialFreshness:latestKnowledgePoint",
+  "financial:cancel",
   "spending:load",
   "spending:section:load",
   "spending:confirmCandidate",

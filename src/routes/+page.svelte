@@ -110,6 +110,7 @@
   ];
   let freshnessReconcileTimer: ReturnType<typeof setTimeout> | undefined;
   let financialLoadGeneration = 0;
+  let activeFinancialReadRequestToken: string | null = null;
   let routeNavigationEpoch = 0;
   let suppressNormalizedHashChange = false;
 
@@ -466,6 +467,13 @@
     return { cutoff };
   }
 
+  function financialReadRequestToken(generation: number): string {
+    const randomUuid = globalThis.crypto?.randomUUID?.();
+    return randomUuid
+      ? `financial-generation-${generation}-${randomUuid}`
+      : `financial-generation-${generation}`;
+  }
+
   function isCurrentFinancialLoad(next: FinancialRoute, token: number, signal?: AbortSignal) {
     return token === financialLoadGeneration && route === next && !signal?.aborted;
   }
@@ -497,6 +505,36 @@
     };
     const token = ++financialLoadGeneration;
     options.onRequestToken?.(token);
+    const requestToken = financialReadRequestToken(token);
+    const previousRequestToken = activeFinancialReadRequestToken;
+    activeFinancialReadRequestToken = requestToken;
+    if (previousRequestToken) {
+      void window.octopusBeak.financial.cancel(previousRequestToken).catch((error) => {
+        console.warn("financial-read-cancel-failed", error);
+      });
+    }
+    let cancellationRequested = false;
+    const cancelRead = () => {
+      if (cancellationRequested) return;
+      cancellationRequested = true;
+      void window.octopusBeak.financial.cancel(requestToken).catch((error) => {
+        console.warn("financial-read-cancel-failed", error);
+      });
+    };
+    if (options.signal?.aborted) cancelRead();
+    else options.signal?.addEventListener("abort", cancelRead, { once: true });
+    const cleanupRequest = () => {
+      options.signal?.removeEventListener("abort", cancelRead);
+      if (activeFinancialReadRequestToken === requestToken) {
+        activeFinancialReadRequestToken = null;
+      }
+    };
+    if (options.signal?.aborted) {
+      cleanupRequest();
+      return;
+    }
+    let keepCancellationUntilSecondary = false;
+    try {
     const background = Boolean(options.background && currentState.primary.status === "ready");
     if (!background) {
       updateRouteState(next, (state) => ({
@@ -577,27 +615,28 @@
 
     const loaders = (() => {
       const input = sectionInput(cutoff);
+      const requestOptions = { requestToken };
       if (next === "overview") {
         return {
-          primary: () => window.octopusBeak.overview.loadSection("primary", input),
-          secondary: () => window.octopusBeak.overview.loadSection("secondary", input),
+          primary: () => window.octopusBeak.overview.loadSection("primary", input, requestOptions),
+          secondary: () => window.octopusBeak.overview.loadSection("secondary", input, requestOptions),
         };
       }
       if (next === "assets") {
         return {
-          primary: () => window.octopusBeak.assets.loadSection("primary", input),
-          secondary: () => window.octopusBeak.assets.loadSection("secondary", input),
+          primary: () => window.octopusBeak.assets.loadSection("primary", input, requestOptions),
+          secondary: () => window.octopusBeak.assets.loadSection("secondary", input, requestOptions),
         };
       }
       if (next === "liabilities") {
         return {
-          primary: () => window.octopusBeak.liabilities.loadSection("primary", input),
-          secondary: () => window.octopusBeak.liabilities.loadSection("secondary", input),
+          primary: () => window.octopusBeak.liabilities.loadSection("primary", input, requestOptions),
+          secondary: () => window.octopusBeak.liabilities.loadSection("secondary", input, requestOptions),
         };
       }
       return {
-        primary: () => window.octopusBeak.spending.loadSection("primary", input),
-        secondary: () => window.octopusBeak.spending.loadSection("secondary", input),
+        primary: () => window.octopusBeak.spending.loadSection("primary", input, requestOptions),
+        secondary: () => window.octopusBeak.spending.loadSection("secondary", input, requestOptions),
       };
     })();
 
@@ -634,7 +673,7 @@
       }
       throw error;
     });
-    void invokeLoader(loaders.secondary as () => Promise<FinancialSectionResultValue<unknown>>).then((result) => {
+    const secondaryPromise = invokeLoader(loaders.secondary as () => Promise<FinancialSectionResultValue<unknown>>).then((result) => {
       secondarySpan.finish("success", {
         knowledgePointDistance: Math.abs(result.knowledgePoint - cutoff.knowledgePoint),
       });
@@ -644,11 +683,16 @@
       secondaryError = error;
       applySecondaryError(error);
     });
+    keepCancellationUntilSecondary = true;
+    void secondaryPromise.then(cleanupRequest, cleanupRequest);
 
     await primaryPromise;
     if (options.generation === undefined && isCurrent()) {
       generationCoordinator.markRouteLoaded(next, cutoff.knowledgePoint);
       if (next === "overview") overviewLoadedForTaskFinishedAt = taskFinishedAtForOverview();
+    }
+    } finally {
+      if (!keepCancellationUntilSecondary) cleanupRequest();
     }
   }
 

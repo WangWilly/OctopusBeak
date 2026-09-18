@@ -57,7 +57,10 @@ import type {
   SpendingConfirmActionInput,
   SpendingLinkActionInput,
 } from "../src/lib/spending/model.ts";
-import type { FinancialPageLoadInput } from "../src/lib/desktop/api.ts";
+import type {
+  FinancialPageLoadInput,
+  FinancialPageRequestOptions,
+} from "../src/lib/desktop/api.ts";
 import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
@@ -111,6 +114,35 @@ function financialPageLoadInputFrom(
   }
   const cutoff = cutoffFrom(record.cutoff);
   return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function financialPageRequestOptionsFrom(
+  value: unknown,
+): FinancialPageRequestOptions | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page request options must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "requestToken")) {
+    throw new TypeError("Financial page request options contains an unknown field.");
+  }
+  if (record.requestToken === undefined) return {};
+  if (typeof record.requestToken !== "string" || record.requestToken.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (record.requestToken.length > 256) {
+    throw new TypeError("Financial page request token is too long.");
+  }
+  return Object.freeze({ requestToken: record.requestToken });
+}
+
+function financialPageRequestTokenFrom(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (value.length > 256) throw new TypeError("Financial page request token is too long.");
+  return value;
 }
 
 function financialSectionFrom(value: unknown): FinancialSection {
@@ -249,34 +281,74 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", (_event, input: unknown) =>
-    financialPages.load("overview", financialPageLoadInputFrom(input)),
+  ipcMain.handle("overview:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "overview",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
-  ipcMain.handle("overview:section:load", (_event, section: unknown, input: unknown) =>
-    financialPages.loadSection("overview", financialSectionFrom(section), financialPageLoadInputFrom(input)),
+  ipcMain.handle("overview:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "overview",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
-  ipcMain.handle("assets:load", (_event, input: unknown) =>
-    financialPages.load("assets", financialPageLoadInputFrom(input)),
+  ipcMain.handle("assets:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "assets",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
-  ipcMain.handle("assets:section:load", (_event, section: unknown, input: unknown) =>
-    financialPages.loadSection("assets", financialSectionFrom(section), financialPageLoadInputFrom(input)),
+  ipcMain.handle("assets:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "assets",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
-  ipcMain.handle("liabilities:load", (_event, input: unknown) =>
-    financialPages.load("liabilities", financialPageLoadInputFrom(input)),
+  ipcMain.handle("liabilities:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "liabilities",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
-  ipcMain.handle("liabilities:section:load", (_event, section: unknown, input: unknown) =>
-    financialPages.loadSection("liabilities", financialSectionFrom(section), financialPageLoadInputFrom(input)),
+  ipcMain.handle("liabilities:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "liabilities",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
   );
   ipcMain.handle(
     "spending:load",
-    (_event, input: unknown) =>
-      financialPages.load("spending", spendingLoadInputFrom(input)),
+    (_event, input: unknown, options: unknown) =>
+      financialPages.load(
+        "spending",
+        spendingLoadInputFrom(input),
+        financialPageRequestOptionsFrom(options)?.requestToken,
+      ),
   );
   ipcMain.handle(
     "spending:section:load",
-    (_event, section: unknown, input: unknown) =>
-      financialPages.loadSection("spending", financialSectionFrom(section), spendingLoadInputFrom(input)),
+    (_event, section: unknown, input: unknown, options: unknown) =>
+      financialPages.loadSection(
+        "spending",
+        financialSectionFrom(section),
+        spendingLoadInputFrom(input),
+        financialPageRequestOptionsFrom(options)?.requestToken,
+      ),
   );
+  ipcMain.handle("financial:cancel", (_event, requestToken: unknown) => {
+    financialPages.cancel(financialPageRequestTokenFrom(requestToken));
+    return undefined;
+  });
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     publishSpendingMutationResult(
       financialPages.confirmCandidate(spendingConfirmActionFrom(input)),

@@ -16,6 +16,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "liabilities:section:load",
   "financialFreshness:changed",
   "financialFreshness:latestKnowledgePoint",
+  "financial:cancel",
   "spending:load",
   "spending:section:load",
   "spending:confirmCandidate",

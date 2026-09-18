@@ -205,3 +205,92 @@ test("Spending command identity and idempotency inputs cross the worker unchange
     await client.close();
   }
 });
+
+test("cancelling a generation removes queued reads and lets the newer generation proceed", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    let dispatches = 0;
+    parentPort.on("message", ({ id, requestToken }) => {
+      const dispatchIndex = ++dispatches;
+      const delay = dispatchIndex === 1 ? 30 : 0;
+      setTimeout(() => parentPort.postMessage({
+        id,
+        requestToken,
+        ok: true,
+        value: { knowledgePoint: 4, dispatchIndex, requestToken },
+      }), delay);
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const cancelledActive = client.loadSection("spending", "primary", undefined, "generation-old");
+    const cancelledQueued = client.loadSection("spending", "secondary", undefined, "generation-old");
+    const current = client.loadSection("spending", "primary", undefined, "generation-current");
+
+    client.cancel("generation-old");
+
+    await assert.rejects(cancelledActive, { name: "FinancialReadCancelledError" });
+    await assert.rejects(cancelledQueued, { name: "FinancialReadCancelledError" });
+    assert.deepEqual(await current, {
+      knowledgePoint: 4,
+      dispatchIndex: 2,
+      requestToken: "generation-current",
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+test("a mismatched worker token is ignored until the matching response arrives", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, requestToken }) => {
+      parentPort.postMessage({ id, requestToken: "different-generation", ok: true, value: { knowledgePoint: 5 } });
+      setTimeout(() => parentPort.postMessage({ id, requestToken, ok: true, value: { knowledgePoint: 5 } }), 10);
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    let settled = false;
+    const result = client.loadSection("assets", "primary", undefined, "generation-current")
+      .then((value) => {
+        settled = true;
+        return value;
+      });
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    assert.equal(settled, false, "a response from another generation cannot settle the request");
+    await result;
+    assert.equal(settled, true);
+  } finally {
+    await client.close();
+  }
+});
+
+test("cancelling reads never cancels a spending mutation command", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page, requestToken }) => {
+      if (page === "spending-action") {
+        parentPort.postMessage({ id, ok: true, value: { knowledgePoint: 8, action: true } });
+        return;
+      }
+      setTimeout(() => parentPort.postMessage({ id, requestToken, ok: true, value: { knowledgePoint: 8 } }), 20);
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const read = client.loadSection("spending", "primary", undefined, "generation-old");
+    const action = client.confirmCandidate({
+      kind: "candidate",
+      invoiceIdentityId: "invoice",
+      transactionIdentityId: "transaction",
+      idempotencyKey: "mutation-1",
+    });
+    const readOutcome = assert.rejects(read, { name: "FinancialReadCancelledError" });
+    client.cancel("generation-old");
+    assert.deepEqual(await action, { knowledgePoint: 8, action: true });
+    await readOutcome;
+  } finally {
+    await client.close();
+  }
+});

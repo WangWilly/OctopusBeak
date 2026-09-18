@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type {
   FinancialFreshnessEvent,
   FinancialPageLoadInput,
+  FinancialPageRequestOptions,
   OctopusBeakApi,
 } from "../src/lib/desktop/api.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
@@ -66,6 +67,35 @@ function financialPageLoadInputFrom(
   return cutoff === undefined ? {} : Object.freeze({ cutoff });
 }
 
+function financialPageRequestOptionsFrom(
+  value: unknown,
+): FinancialPageRequestOptions | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page request options must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "requestToken")) {
+    throw new TypeError("Financial page request options contains an unknown field.");
+  }
+  if (record.requestToken === undefined) return {};
+  if (typeof record.requestToken !== "string" || record.requestToken.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (record.requestToken.length > 256) {
+    throw new TypeError("Financial page request token is too long.");
+  }
+  return Object.freeze({ requestToken: record.requestToken });
+}
+
+function financialPageRequestTokenFrom(value: unknown): string {
+  const options = financialPageRequestOptionsFrom(value);
+  if (!options?.requestToken) {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  return options.requestToken;
+}
+
 function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -103,27 +133,36 @@ const api: OctopusBeakApi = {
     save: (input) => ipcRenderer.invoke("settings:save", input),
   },
   overview: {
-    load: (input) => ipcRenderer.invoke("overview:load", financialPageLoadInputFrom(input)),
-    loadSection: (section, input) => ipcRenderer.invoke(
+    load: (input, options) => ipcRenderer.invoke("overview:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
       "overview:section:load",
       financialSectionFrom(section),
       financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
     ),
   },
   assets: {
-    load: (input) => ipcRenderer.invoke("assets:load", financialPageLoadInputFrom(input)),
-    loadSection: (section, input) => ipcRenderer.invoke(
+    load: (input, options) => ipcRenderer.invoke("assets:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
       "assets:section:load",
       financialSectionFrom(section),
       financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
     ),
   },
   liabilities: {
-    load: (input) => ipcRenderer.invoke("liabilities:load", financialPageLoadInputFrom(input)),
-    loadSection: (section, input) => ipcRenderer.invoke(
+    load: (input, options) => ipcRenderer.invoke("liabilities:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
       "liabilities:section:load",
       financialSectionFrom(section),
       financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
+    ),
+  },
+  financial: {
+    cancel: (requestToken) => ipcRenderer.invoke(
+      "financial:cancel",
+      financialPageRequestTokenFrom({ requestToken }),
     ),
   },
   financialFreshness: {
@@ -152,11 +191,12 @@ const api: OctopusBeakApi = {
     },
   },
   spending: {
-    load: (input) => ipcRenderer.invoke("spending:load", spendingLoadInputFrom(input)),
-    loadSection: (section, input) => ipcRenderer.invoke(
+    load: (input, options) => ipcRenderer.invoke("spending:load", spendingLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
       "spending:section:load",
       financialSectionFrom(section),
       spendingLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
     ),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),

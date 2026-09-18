@@ -48,16 +48,19 @@ for (const [route, channel] of [
   assert.match(
     source,
     new RegExp(
-      `ipcMain\\.handle\\(\\"${channel}\\", \\(_event, input: unknown\\) =>\\s*financialPages\\.load\\(\\"${route}\\", financialPageLoadInputFrom\\(input\\)\\)`,
+      `ipcMain\\.handle\\(\\"${channel}\\", \\(_event, input: unknown, options: unknown\\) =>\\s*financialPages\\.load\\(\\s*\\"${route}\\",\\s*financialPageLoadInputFrom\\(input\\),`,
     ),
     `${route} IPC load must forward its cutoff input to the worker client`,
   );
 }
 assert.match(
   source,
-  /ipcMain\.handle\(\s*"spending:load",\s*\(_event, input: unknown\) =>\s*financialPages\.load\("spending", spendingLoadInputFrom\(input\)\)/,
+  /ipcMain\.handle\(\s*"spending:load",\s*\(_event, input: unknown, options: unknown\) =>\s*financialPages\.load\(\s*"spending",\s*spendingLoadInputFrom\(input\),/,
 );
 assert.match(source, /function financialPageLoadInputFrom\(/);
+assert.match(source, /function financialPageRequestOptionsFrom\(/);
+assert.match(source, /ipcMain\.handle\(\"financial:cancel\"/);
+assert.match(source, /financialPages\.cancel\(/);
 assert.match(source, /function spendingLoadInputFrom\(/);
 assert.match(source, /function financialSectionFrom\(/);
 assert.match(source, /ipcMain\.handle\("overview:section:load"/);

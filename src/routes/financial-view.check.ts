@@ -24,6 +24,9 @@ test("the renderer exposes the progressive generation invariants", () => {
   assert.match(source, /FinancialSecondaryFallback/);
   assert.match(source, /route === next && !signal\?\.aborted/);
   assert.match(source, /Primary.*generation|new primary generation invalidates the old secondary/u);
+  assert.match(source, /window\.octopusBeak\.financial\.cancel\(requestToken\)/);
+  assert.match(source, /options\.signal\?\.addEventListener\("abort", cancelRead/);
+  assert.match(source, /options\.signal\?\.removeEventListener\("abort", cancelRead/);
 });
 
 test("old secondary data is not composed across a primary knowledge point", () => {
