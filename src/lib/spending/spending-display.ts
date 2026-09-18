@@ -1,9 +1,21 @@
 import type { Locale } from "../i18n/i18n.ts";
+import type { Translation } from "../i18n/i18n.ts";
 import { exactToNumber } from "../shared-money/exact.ts";
 import { formatMoney } from "../shared-money/money.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
 
 type SpendingAmount = SpendingPurchaseRecordView["amount"];
+
+export type SpendingDisplayLabels = Pick<
+  Translation["spending"],
+  | "amountUnavailable"
+  | "merchantUnavailable"
+  | "linkedPurchase"
+  | "eInvoicePurchase"
+  | "refund"
+  | "creditCardPurchase"
+  | "bankTransaction"
+>;
 
 /**
  * Keep purchase amounts, record labels, and source-basis labels consistent
@@ -12,9 +24,10 @@ type SpendingAmount = SpendingPurchaseRecordView["amount"];
 export function spendingAmountText(
   amount: SpendingAmount,
   locale: Locale,
+  labels: SpendingDisplayLabels,
   signed = false,
 ): string {
-  if (!amount) return locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
+  if (!amount) return labels.amountUnavailable;
   return formatMoney(
     {
       currency: amount.currency,
@@ -27,8 +40,8 @@ export function spendingAmountText(
 
 export function spendingRecordLabel(
   record: SpendingPurchaseRecordView,
-  locale: Locale,
-  unavailableLabel = locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable",
+  labels: SpendingDisplayLabels,
+  unavailableLabel = labels.merchantUnavailable,
 ): string {
   return record.description
     ?? record.invoice?.revision.seller.name
@@ -38,13 +51,11 @@ export function spendingRecordLabel(
 
 export function spendingBasisLabel(
   record: Pick<SpendingPurchaseRecordView, "basis" | "transaction">,
-  locale: Locale,
+  labels: SpendingDisplayLabels,
 ): string {
-  if (record.basis === "linked") return locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-  if (record.basis === "invoice") return locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-  if (record.basis === "refund") return locale === "zh-TW" ? "退款" : "Refund";
+  if (record.basis === "linked") return labels.linkedPurchase;
+  if (record.basis === "invoice") return labels.eInvoicePurchase;
+  if (record.basis === "refund") return labels.refund;
   const isCreditCard = record.transaction?.stream === "credit-card";
-  return isCreditCard
-    ? (locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-    : (locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+  return isCreditCard ? labels.creditCardPurchase : labels.bankTransaction;
 }

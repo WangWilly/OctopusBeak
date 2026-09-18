@@ -112,7 +112,7 @@
   })();
 
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    return spendingAmountText(amount, $locale, signed);
+    return spendingAmountText(amount, $locale, $t.spending, signed);
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
@@ -140,11 +140,11 @@
   }
 
   function recordLabel(record: PurchaseRecord) {
-    return spendingRecordLabel(record, $locale);
+    return spendingRecordLabel(record, $t.spending);
   }
 
   function basisLabel(record: PurchaseRecord) {
-    return spendingBasisLabel(record, $locale);
+    return spendingBasisLabel(record, $t.spending);
   }
 
   function occurrenceBasisLabel(record: PurchaseRecord) {
