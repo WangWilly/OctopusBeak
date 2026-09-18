@@ -18,4 +18,3 @@ test("financial error classification never exposes an error payload", () => {
   assert.equal(stableFinancialErrorCode(new Error("idempotency-key-conflict")), "idempotency-key-conflict");
   assert.equal(stableFinancialErrorCode(new Error("financial-section-knowledge-point-mismatch")), "financial-section-knowledge-point-mismatch");
 });
-

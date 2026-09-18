@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./+page.svelte", import.meta.url), "utf8");
+const sectionErrorSource = readFileSync(new URL("./FinancialSectionError.svelte", import.meta.url), "utf8");
 
 test("product routes load primary and secondary sections instead of the full page loaders", () => {
   for (const product of ["overview", "assets", "liabilities", "spending"]) {
@@ -79,16 +80,28 @@ test("initial financial section failures expose a bounded, explicit retry action
   assert.match(source, /loadRoute\(next, \{[\s\S]*force: true,[\s\S]*background: state\.primary\.status === "ready"[\s\S]*\}\)/);
   assert.match(source, /retryingFinancialRoute = next/);
   assert.match(source, /retryingFinancialRoute === next/);
+  assert.match(source, /<FinancialSectionError/);
+  assert.match(sectionErrorSource, /data-financial-retry-primary=\{section === "primary" \? route : undefined\}/);
+  assert.match(sectionErrorSource, /data-financial-retry-secondary=\{section === "secondary" \? route : undefined\}/);
   for (const route of ["overview", "assets", "liabilities", "spending"]) {
-    assert.match(source, new RegExp(`data-financial-retry-primary="${route}"`));
-    assert.match(source, new RegExp(`data-financial-retry-secondary="${route}"`));
+    assert.match(source, new RegExp(`route="${route}"`));
   }
+  assert.match(sectionErrorSource, /disabled=\{retrying\}/);
 });
 
 test("Spending keeps the canonical primary view visible while purchase data waits for a matching secondary", () => {
   assert.match(source, /matchingSecondary\(spending\) !== null/);
   assert.match(source, /purchaseReportReady=\{spendingSecondaryReady\}/);
   assert.match(source, /data-spending-secondary-state="loading"/);
-  assert.match(source, /data-spending-secondary-state="error"/);
-  assert.match(source, /data-spending-secondary-state="error"[\s\S]*data-financial-retry-secondary="spending"/);
+  assert.match(source, /stateMarker="error"/);
+  assert.match(sectionErrorSource, /data-spending-secondary-state=\{stateMarker\}/);
+});
+
+test("financial refresh and retry copy is localized", () => {
+  assert.match(source, /\$t\.financialErrors\.refreshing/);
+  assert.match(source, /\$t\.financialErrors\.newerData/);
+  assert.match(source, /\$t\.financialErrors\.secondaryUnavailable/);
+  assert.match(source, /\$t\.financialErrors\.spendingSecondaryLoading/);
+  assert.match(source, /\$t\.automation\.loadFailed/);
+  assert.doesNotMatch(source, /次要資料載入失敗|購買與配對資料載入中|自動化資料載入失敗/);
 });

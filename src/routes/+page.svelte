@@ -54,6 +54,7 @@
   } from "$lib/welcome/state.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import FinancialSecondaryFallback from "./FinancialSecondaryFallback.svelte";
+  import FinancialSectionError from "./FinancialSectionError.svelte";
   import {
     createFinancialRouteGenerationCoordinator,
     createRouteLoadCache,
@@ -360,13 +361,13 @@
   }
 
   function refreshStatus(state: FinancialRouteState<unknown, unknown>): string | null {
-    if (state.updating) return "更新中…";
-    if (state.refreshError) return "更新失敗，暫時顯示舊資料";
-    return state.stale ? "有較新的資料可用" : null;
+    if (state.updating) return $t.financialErrors.refreshing;
+    if (state.refreshError) return $t.financialErrors.refreshFailed;
+    return state.stale ? $t.financialErrors.newerData : null;
   }
 
   function sectionError(state: SectionState<unknown>): string {
-    return state.status === "error" ? state.message : "資料載入失敗";
+    return state.status === "error" ? state.message : $t.financialErrors.generic;
   }
 
   async function retryFinancialRoute(next: FinancialRoute) {
@@ -789,7 +790,7 @@
           updating: false,
         }));
       }
-      if (next === "automation") automation = { status: "error", message: "自動化資料載入失敗，請稍後重試。" };
+      if (next === "automation") automation = { status: "error", message: $t.automation.loadFailed };
     } finally {
       if (next === "overview") overviewReloading = false;
     }
@@ -886,18 +887,14 @@
       {#if overview.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
       {:else}
-        <div class="financial-section-error">
-          <p class="status" role="alert">{sectionError(overview.primary)}</p>
-          <button
-            class="button secondary financial-retry"
-            type="button"
-            data-financial-retry-primary="overview"
-            disabled={retryingFinancialRoute === "overview"}
-            onclick={() => void retryFinancialRoute("overview")}
-          >
-            {retryingFinancialRoute === "overview" ? $t.common.loading : $t.common.retry}
-          </button>
-        </div>
+        <FinancialSectionError
+          route="overview"
+          section="primary"
+          message={sectionError(overview.primary)}
+          role="alert"
+          retrying={retryingFinancialRoute === "overview"}
+          onRetry={() => void retryFinancialRoute("overview")}
+        />
       {/if}
     </DashboardShell>
   {/if}
@@ -907,18 +904,13 @@
   {/if}
   {#if overview.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if overview.secondary.status === "error"}
-    <div class="financial-section-error" data-financial-secondary-error="overview">
-      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
-      <button
-        class="button secondary financial-retry"
-        type="button"
-        data-financial-retry-secondary="overview"
-        disabled={retryingFinancialRoute === "overview"}
-        onclick={() => void retryFinancialRoute("overview")}
-      >
-        {retryingFinancialRoute === "overview" ? $t.common.loading : $t.common.retry}
-      </button>
-    </div>
+    <FinancialSectionError
+      route="overview"
+      section="secondary"
+      message={$t.financialErrors.secondaryUnavailable}
+      retrying={retryingFinancialRoute === "overview"}
+      onRetry={() => void retryFinancialRoute("overview")}
+    />
   {/if}
 {:else if route === "assets"}
   {#if assetsData}<AssetsDashboard assets={assetsData} {focusAccountId} />{:else}
@@ -926,18 +918,14 @@
       {#if assets.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
       {:else}
-        <div class="financial-section-error">
-          <p class="status" role="alert">{sectionError(assets.primary)}</p>
-          <button
-            class="button secondary financial-retry"
-            type="button"
-            data-financial-retry-primary="assets"
-            disabled={retryingFinancialRoute === "assets"}
-            onclick={() => void retryFinancialRoute("assets")}
-          >
-            {retryingFinancialRoute === "assets" ? $t.common.loading : $t.common.retry}
-          </button>
-        </div>
+        <FinancialSectionError
+          route="assets"
+          section="primary"
+          message={sectionError(assets.primary)}
+          role="alert"
+          retrying={retryingFinancialRoute === "assets"}
+          onRetry={() => void retryFinancialRoute("assets")}
+        />
       {/if}
     </DashboardShell>
   {/if}
@@ -947,18 +935,13 @@
   {/if}
   {#if assets.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if assets.secondary.status === "error"}
-    <div class="financial-section-error" data-financial-secondary-error="assets">
-      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
-      <button
-        class="button secondary financial-retry"
-        type="button"
-        data-financial-retry-secondary="assets"
-        disabled={retryingFinancialRoute === "assets"}
-        onclick={() => void retryFinancialRoute("assets")}
-      >
-        {retryingFinancialRoute === "assets" ? $t.common.loading : $t.common.retry}
-      </button>
-    </div>
+    <FinancialSectionError
+      route="assets"
+      section="secondary"
+      message={$t.financialErrors.secondaryUnavailable}
+      retrying={retryingFinancialRoute === "assets"}
+      onRetry={() => void retryFinancialRoute("assets")}
+    />
   {/if}
 {:else if route === "liabilities"}
   {#if liabilitiesData}<LiabilitiesDashboard liabilities={liabilitiesData} {focusAccountId} />{:else}
@@ -966,18 +949,14 @@
       {#if liabilities.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
       {:else}
-        <div class="financial-section-error">
-          <p class="status" role="alert">{sectionError(liabilities.primary)}</p>
-          <button
-            class="button secondary financial-retry"
-            type="button"
-            data-financial-retry-primary="liabilities"
-            disabled={retryingFinancialRoute === "liabilities"}
-            onclick={() => void retryFinancialRoute("liabilities")}
-          >
-            {retryingFinancialRoute === "liabilities" ? $t.common.loading : $t.common.retry}
-          </button>
-        </div>
+        <FinancialSectionError
+          route="liabilities"
+          section="primary"
+          message={sectionError(liabilities.primary)}
+          role="alert"
+          retrying={retryingFinancialRoute === "liabilities"}
+          onRetry={() => void retryFinancialRoute("liabilities")}
+        />
       {/if}
     </DashboardShell>
   {/if}
@@ -987,18 +966,13 @@
   {/if}
   {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if liabilities.secondary.status === "error"}
-    <div class="financial-section-error" data-financial-secondary-error="liabilities">
-      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
-      <button
-        class="button secondary financial-retry"
-        type="button"
-        data-financial-retry-secondary="liabilities"
-        disabled={retryingFinancialRoute === "liabilities"}
-        onclick={() => void retryFinancialRoute("liabilities")}
-      >
-        {retryingFinancialRoute === "liabilities" ? $t.common.loading : $t.common.retry}
-      </button>
-    </div>
+    <FinancialSectionError
+      route="liabilities"
+      section="secondary"
+      message={$t.financialErrors.secondaryUnavailable}
+      retrying={retryingFinancialRoute === "liabilities"}
+      onRetry={() => void retryFinancialRoute("liabilities")}
+    />
   {/if}
 {:else if route === "spending"}
   {#if spendingData}
@@ -1012,23 +986,19 @@
       {#if spending.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
       {:else}
-        <div class="financial-section-error">
-          <p class="status" role="alert">{sectionError(spending.primary)}</p>
-          <button
-            class="button secondary financial-retry"
-            type="button"
-            data-financial-retry-primary="spending"
-            disabled={retryingFinancialRoute === "spending"}
-            onclick={() => void retryFinancialRoute("spending")}
-          >
-            {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
-          </button>
-        </div>
+        <FinancialSectionError
+          route="spending"
+          section="primary"
+          message={sectionError(spending.primary)}
+          role="alert"
+          retrying={retryingFinancialRoute === "spending"}
+          onRetry={() => void retryFinancialRoute("spending")}
+        />
       {/if}
     </DashboardShell>
   {/if}
   {#if spendingData && !spendingSecondaryReady && spending.secondary.status === "loading"}
-    <p class="route-freshness" data-spending-secondary-state="loading" role="status">購買與配對資料載入中…</p>
+    <p class="route-freshness" data-spending-secondary-state="loading" role="status">{$t.financialErrors.spendingSecondaryLoading}</p>
   {/if}
   {#if refreshStatus(spending)}<p class="route-freshness" role="status">{refreshStatus(spending)}</p>{/if}
   {#if spending.primary.status !== "ready" && spending.secondary.status === "ready"}
@@ -1038,31 +1008,22 @@
     <p class="route-freshness" role="status">{$t.common.loading}</p>
   {/if}
   {#if spendingData && !spendingSecondaryReady && spending.secondary.status === "error"}
-    <div class="financial-section-error" data-spending-secondary-state="error">
-      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
-      <button
-        class="button secondary financial-retry"
-        type="button"
-        data-financial-retry-secondary="spending"
-        disabled={retryingFinancialRoute === "spending"}
-        onclick={() => void retryFinancialRoute("spending")}
-      >
-        {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
-      </button>
-    </div>
+    <FinancialSectionError
+      route="spending"
+      section="secondary"
+      stateMarker="error"
+      message={$t.financialErrors.secondaryUnavailable}
+      retrying={retryingFinancialRoute === "spending"}
+      onRetry={() => void retryFinancialRoute("spending")}
+    />
   {:else if spending.secondary.status === "error"}
-    <div class="financial-section-error" data-financial-secondary-error="spending">
-      <p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>
-      <button
-        class="button secondary financial-retry"
-        type="button"
-        data-financial-retry-secondary="spending"
-        disabled={retryingFinancialRoute === "spending"}
-        onclick={() => void retryFinancialRoute("spending")}
-      >
-        {retryingFinancialRoute === "spending" ? $t.common.loading : $t.common.retry}
-      </button>
-    </div>
+    <FinancialSectionError
+      route="spending"
+      section="secondary"
+      message={$t.financialErrors.secondaryUnavailable}
+      retrying={retryingFinancialRoute === "spending"}
+      onRetry={() => void retryFinancialRoute("spending")}
+    />
   {/if}
 {:else if route === "automation"}
   {#if automation.status === "ready"}
@@ -1110,16 +1071,6 @@
   .status {
     margin: 32px;
     color: var(--muted);
-  }
-
-  .financial-section-error {
-    display: grid;
-    justify-items: start;
-    gap: var(--space-3);
-  }
-
-  .financial-retry {
-    margin: 0 var(--space-4) var(--space-4);
   }
 
   .route-freshness {

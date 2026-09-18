@@ -61,4 +61,3 @@ export function stableFinancialErrorCode(error: unknown): FinancialErrorCode {
   if (/validation|invalid|stale/i.test(candidate)) return "validation-failed";
   return "unknown";
 }
-

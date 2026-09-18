@@ -6,4 +6,3 @@ const source = readFileSync(new URL("./SettingsPage.svelte", import.meta.url), "
 assert.match(source, /stableFinancialErrorCode\(error\)/);
 assert.doesNotMatch(source, /error instanceof Error \? error\.message/);
 assert.doesNotMatch(source, /String\(error\)/);
-
