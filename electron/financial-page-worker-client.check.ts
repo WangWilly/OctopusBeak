@@ -60,6 +60,40 @@ test("cutoff-qualified page reads verify the served knowledge point", async () =
   }
 });
 
+test("cutoff inputs are forwarded for every financial page", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page, input }) => {
+      parentPort.postMessage({
+        id,
+        ok: true,
+        value: { page, knowledgePoint: input?.cutoff?.knowledgePoint ?? 0 },
+      });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const cutoff = { knowledgePoint: 17 };
+    const results = await Promise.all([
+      client.load("overview", { cutoff }),
+      client.load("assets", { cutoff }),
+      client.load("liabilities", { cutoff }),
+      client.load("spending", { cutoff }),
+    ]);
+    assert.deepEqual(results.map((result) => ({
+      page: (result as unknown as { page: string }).page,
+      knowledgePoint: (result as unknown as { knowledgePoint: number }).knowledgePoint,
+    })), [
+      { page: "overview", knowledgePoint: 17 },
+      { page: "assets", knowledgePoint: 17 },
+      { page: "liabilities", knowledgePoint: 17 },
+      { page: "spending", knowledgePoint: 17 },
+    ]);
+  } finally {
+    await client.close();
+  }
+});
+
 test("closing the worker rejects pending and future page requests deterministically", async () => {
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");

@@ -19,6 +19,26 @@ assert.match(source, /ipcMain\.handle\("spending:revokeLink"/);
 assert.match(source, /FINANCIAL_FRESHNESS_LATEST_CHANNEL/);
 assert.match(source, /latestKnowledgePointFromDatabase/);
 assert.match(source, /financialFreshness\.publish\(receipt\)/);
+for (const [route, channel] of [
+  ["overview", "overview:load"],
+  ["assets", "assets:load"],
+  ["liabilities", "liabilities:load"],
+]) {
+  assert.match(
+    source,
+    new RegExp(
+      `ipcMain\\.handle\\(\\"${channel}\\", \\(_event, input: unknown\\) =>\\s*financialPages\\.load\\(\\"${route}\\", financialPageLoadInputFrom\\(input\\)\\)`,
+    ),
+    `${route} IPC load must forward its cutoff input to the worker client`,
+  );
+}
+assert.match(
+  source,
+  /ipcMain\.handle\(\s*"spending:load",\s*\(_event, input: unknown\) =>\s*financialPages\.load\("spending", spendingLoadInputFrom\(input\)\)/,
+);
+assert.match(source, /function financialPageLoadInputFrom\(/);
+assert.match(source, /function spendingLoadInputFrom\(/);
+assert.match(source, /Financial query cutoff must contain a non-negative safe integer knowledge point/);
 assert.match(
   source,
   /createFinancialPageWorkerClient/,

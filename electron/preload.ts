@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type {
   FinancialFreshnessEvent,
+  FinancialPageLoadInput,
   OctopusBeakApi,
 } from "../src/lib/desktop/api.ts";
+import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
@@ -26,6 +28,61 @@ function financialFreshnessEventFrom(
     : Object.freeze({ knowledgePoint });
 }
 
+function cutoffFrom(value: unknown): { knowledgePoint: number } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial query cutoff must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = knowledgePointFrom(record.knowledgePoint);
+  if (knowledgePoint === null || Object.keys(record).length !== 1) {
+    throw new TypeError(
+      "Financial query cutoff must contain a non-negative safe integer knowledge point.",
+    );
+  }
+  return Object.freeze({ knowledgePoint });
+}
+
+function financialPageLoadInputFrom(
+  value: unknown,
+): FinancialPageLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "cutoff")) {
+    throw new TypeError("Financial page load input contains an unknown field.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) =>
+    key !== "selectedMonth" && key !== "selectedCategory" && key !== "cutoff"
+  )) {
+    throw new TypeError("Spending load input contains an unknown field.");
+  }
+  if (record.selectedMonth !== undefined && typeof record.selectedMonth !== "string") {
+    throw new TypeError("Spending selected month must be a string.");
+  }
+  if (record.selectedCategory !== undefined && typeof record.selectedCategory !== "string") {
+    throw new TypeError("Spending selected category must be a string.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return {
+    ...(record.selectedMonth === undefined ? {} : { selectedMonth: record.selectedMonth }),
+    ...(record.selectedCategory === undefined ? {} : { selectedCategory: record.selectedCategory }),
+    ...(cutoff === undefined ? {} : { cutoff }),
+  } as SpendingLoadInput;
+}
+
 const api: OctopusBeakApi = {
   display: {
     setScale(percent) {
@@ -38,13 +95,13 @@ const api: OctopusBeakApi = {
     save: (input) => ipcRenderer.invoke("settings:save", input),
   },
   overview: {
-    load: () => ipcRenderer.invoke("overview:load"),
+    load: (input) => ipcRenderer.invoke("overview:load", financialPageLoadInputFrom(input)),
   },
   assets: {
-    load: () => ipcRenderer.invoke("assets:load"),
+    load: (input) => ipcRenderer.invoke("assets:load", financialPageLoadInputFrom(input)),
   },
   liabilities: {
-    load: () => ipcRenderer.invoke("liabilities:load"),
+    load: (input) => ipcRenderer.invoke("liabilities:load", financialPageLoadInputFrom(input)),
   },
   financialFreshness: {
     subscribe(listener) {
@@ -72,7 +129,7 @@ const api: OctopusBeakApi = {
     },
   },
   spending: {
-    load: (input) => ipcRenderer.invoke("spending:load", input),
+    load: (input) => ipcRenderer.invoke("spending:load", spendingLoadInputFrom(input)),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
     revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),

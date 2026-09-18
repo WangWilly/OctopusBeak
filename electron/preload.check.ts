@@ -33,3 +33,18 @@ assert.match(source, /ipcRenderer\.on\("financialFreshness:changed"/);
 assert.match(source, /ipcRenderer\.removeListener\("financialFreshness:changed", onEvent\)/);
 assert.match(source, /ipcRenderer\.invoke\(\s*"financialFreshness:latestKnowledgePoint"/);
 assert.match(source, /financialFreshnessEventFrom/);
+for (const [route, channel] of [
+  ["overview", "overview:load"],
+  ["assets", "assets:load"],
+  ["liabilities", "liabilities:load"],
+  ["spending", "spending:load"],
+]) {
+  assert.match(
+    source,
+    new RegExp(`load: \\(input\\) => ipcRenderer\\.invoke\\(\\"${channel}\\",`),
+    `${route} preload load must forward its input to IPC`,
+  );
+}
+assert.match(source, /financialPageLoadInputFrom\(input\)/);
+assert.match(source, /spendingLoadInputFrom\(input\)/);
+assert.match(source, /Financial query cutoff must contain a non-negative safe integer knowledge point/);

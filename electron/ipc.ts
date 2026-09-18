@@ -52,6 +52,7 @@ import {
   type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
+import type { FinancialPageLoadInput } from "../src/lib/desktop/api.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
@@ -70,6 +71,66 @@ import {
   FINANCIAL_FRESHNESS_LATEST_CHANNEL,
   latestKnowledgePointFromDatabase,
 } from "./financial-freshness.ts";
+
+function cutoffFrom(value: unknown): { knowledgePoint: number } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial query cutoff must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = record.knowledgePoint;
+  if (
+    typeof knowledgePoint !== "number" ||
+    !Number.isSafeInteger(knowledgePoint) ||
+    knowledgePoint < 0 ||
+    Object.keys(record).length !== 1
+  ) {
+    throw new TypeError(
+      "Financial query cutoff must contain a non-negative safe integer knowledge point.",
+    );
+  }
+  return Object.freeze({ knowledgePoint });
+}
+
+function financialPageLoadInputFrom(
+  value: unknown,
+): FinancialPageLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "cutoff")) {
+    throw new TypeError("Financial page load input contains an unknown field.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) =>
+    key !== "selectedMonth" && key !== "selectedCategory" && key !== "cutoff"
+  )) {
+    throw new TypeError("Spending load input contains an unknown field.");
+  }
+  if (record.selectedMonth !== undefined && typeof record.selectedMonth !== "string") {
+    throw new TypeError("Spending selected month must be a string.");
+  }
+  if (record.selectedCategory !== undefined && typeof record.selectedCategory !== "string") {
+    throw new TypeError("Spending selected category must be a string.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return {
+    ...(record.selectedMonth === undefined ? {} : { selectedMonth: record.selectedMonth }),
+    ...(record.selectedCategory === undefined ? {} : { selectedCategory: record.selectedCategory }),
+    ...(cutoff === undefined ? {} : { cutoff }),
+  } as SpendingLoadInput;
+}
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -108,13 +169,19 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => financialPages.load("overview"));
-  ipcMain.handle("assets:load", () => financialPages.load("assets"));
-  ipcMain.handle("liabilities:load", () => financialPages.load("liabilities"));
+  ipcMain.handle("overview:load", (_event, input: unknown) =>
+    financialPages.load("overview", financialPageLoadInputFrom(input)),
+  );
+  ipcMain.handle("assets:load", (_event, input: unknown) =>
+    financialPages.load("assets", financialPageLoadInputFrom(input)),
+  );
+  ipcMain.handle("liabilities:load", (_event, input: unknown) =>
+    financialPages.load("liabilities", financialPageLoadInputFrom(input)),
+  );
   ipcMain.handle(
     "spending:load",
-    (_event, input: SpendingLoadInput | undefined) =>
-      financialPages.load("spending", input),
+    (_event, input: unknown) =>
+      financialPages.load("spending", spendingLoadInputFrom(input)),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     financialPages.confirmCandidate(input),
