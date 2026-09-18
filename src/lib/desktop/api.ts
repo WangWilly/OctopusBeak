@@ -143,6 +143,7 @@ export type OctopusBeakApi = {
   };
   financialFreshness: {
     subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;
+    subscribeRecovery(listener: () => void): () => void;
     latestKnowledgePoint(): Promise<number>;
   };
   spending: {
@@ -189,6 +190,7 @@ export const octopusBeakApiChannels = [
   "liabilities:section:load",
   "financialFreshness:changed",
   "financialFreshness:latestKnowledgePoint",
+  "financialFreshness:reconnected",
   "financial:cancel",
   "spending:load",
   "spending:section:load",

@@ -97,6 +97,21 @@ test("Spending keeps the canonical primary view visible while purchase data wait
   assert.match(sectionErrorSource, /data-spending-secondary-state=\{stateMarker\}/);
 });
 
+test("uncertain Spending actions remain pending until the complete matching projection is visible", () => {
+  assert.match(source, /waitForSecondary\?: boolean/);
+  assert.match(source, /if \(options\.waitForSecondary\) \{[\s\S]*?await secondaryPromise/);
+  assert.match(source, /waitForSecondary: true/);
+  assert.match(
+    source,
+    /matchingSecondary\(spending\)[\s\S]*?primary\.knowledgePoint === knowledgePoint[\s\S]*?spending-action-reconciliation-incomplete/,
+  );
+});
+
+test("renderer reconnection schedules a debounced freshness recovery for the visible route", () => {
+  assert.match(source, /financialFreshness\s*\?\.subscribeRecovery\(scheduleFreshnessReconciliation\)/);
+  assert.match(source, /unsubscribeFreshnessRecovery\?\.\(\)/);
+});
+
 test("financial refresh and retry copy is localized", () => {
   assert.match(source, /\$t\.financialErrors\.refreshing/);
   assert.match(source, /\$t\.financialErrors\.newerData/);

@@ -10,6 +10,8 @@ assert.match(
 assert.match(source, /initializeCanonicalRuntimeBeforeWindow\(userData\)/);
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
 assert.match(source, /if \(!cdpFixture\)/);
+assert.match(source, /webContents\.on\("did-finish-load"/);
+assert.match(source, /FINANCIAL_FRESHNESS_RECONNECTED_CHANNEL/);
 assert.doesNotMatch(
   source,
   /openLedgerDatabase|migrateLedgerBeforeWindow|recoverAbandonedAutomationSessions|hasSuccessfulTaskRunSince/,

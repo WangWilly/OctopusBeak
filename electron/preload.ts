@@ -179,6 +179,16 @@ const api: OctopusBeakApi = {
         ipcRenderer.removeListener("financialFreshness:changed", onEvent);
       };
     },
+    subscribeRecovery(listener) {
+      if (typeof listener !== "function") {
+        throw new TypeError("Financial freshness recovery listener must be a function.");
+      }
+      const onEvent = () => listener();
+      ipcRenderer.on("financialFreshness:reconnected", onEvent);
+      return () => {
+        ipcRenderer.removeListener("financialFreshness:reconnected", onEvent);
+      };
+    },
     async latestKnowledgePoint() {
       const value = await ipcRenderer.invoke(
         "financialFreshness:latestKnowledgePoint",

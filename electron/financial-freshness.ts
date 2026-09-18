@@ -4,6 +4,8 @@ export const FINANCIAL_FRESHNESS_CHANGED_CHANNEL =
   "financialFreshness:changed" as const;
 export const FINANCIAL_FRESHNESS_LATEST_CHANNEL =
   "financialFreshness:latestKnowledgePoint" as const;
+export const FINANCIAL_FRESHNESS_RECONNECTED_CHANNEL =
+  "financialFreshness:reconnected" as const;
 
 export type FinancialFreshnessEvent = Readonly<{
   knowledgePoint: number;

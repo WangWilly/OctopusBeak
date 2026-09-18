@@ -12,6 +12,7 @@ import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
+import { FINANCIAL_FRESHNESS_RECONNECTED_CHANNEL } from "./financial-freshness.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { initializeCanonicalRuntimeBeforeWindow } from "./startup-ledger.ts";
@@ -131,6 +132,14 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
     mainWindow = window;
     window.on("closed", () => {
       if (mainWindow === window) mainWindow = null;
+    });
+    // A newly loaded renderer has a fresh IPC context and may have missed
+    // commit broadcasts delivered to its predecessor. This operational signal
+    // asks it to reconcile its visible route; no financial payload crosses it.
+    window.webContents.on("did-finish-load", () => {
+      if (!window.isDestroyed()) {
+        window.webContents.send(FINANCIAL_FRESHNESS_RECONNECTED_CHANNEL);
+      }
     });
     guardWindowNavigation(window, rendererUrl);
 

@@ -522,6 +522,7 @@
       cutoff?: FinancialRouteGenerationCutoff;
       generation?: number;
       signal?: AbortSignal;
+      waitForSecondary?: boolean;
       onRequestToken?: (token: number) => void;
     },
   ): Promise<void> {
@@ -714,15 +715,32 @@
         knowledgePointDistance: Math.abs(result.knowledgePoint - cutoff.knowledgePoint),
       });
       applySecondary(result);
+      return result;
     }, (error: unknown) => {
       secondarySpan.finish("error", { error });
       secondaryError = error;
       applySecondaryError(error);
+      return undefined;
     });
     keepCancellationUntilSecondary = true;
     void secondaryPromise.then(cleanupRequest, cleanupRequest);
 
     await primaryPromise;
+    if (options.waitForSecondary) {
+      const completedSecondary = await secondaryPromise;
+      if (secondaryError) throw secondaryError;
+      const completedState = routeState(next);
+      if (
+        !completedSecondary
+        || !isCurrent()
+        || completedState.primary.status !== "ready"
+        || completedState.secondary.status !== "ready"
+        || completedState.primary.knowledgePoint !== cutoff.knowledgePoint
+        || completedState.secondary.knowledgePoint !== cutoff.knowledgePoint
+      ) {
+        throw new Error("financial-secondary-generation-incomplete");
+      }
+    }
     if (options.generation === undefined && isCurrent()) {
       generationCoordinator.markRouteLoaded(next, cutoff.knowledgePoint);
       if (next === "overview") overviewLoadedForTaskFinishedAt = taskFinishedAtForOverview();
@@ -749,6 +767,7 @@
       cutoff?: FinancialRouteGenerationCutoff;
       generation?: number;
       signal?: AbortSignal;
+      waitForSecondary?: boolean;
     } = {},
   ) {
     if (next === "overview") overviewReloading = true;
@@ -803,13 +822,31 @@
    * Spending generation before declaring the outcome known.
    */
   async function reconcileSpendingAction() {
-    if (route !== "spending") return;
-    const knowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
-    await loadRoute("spending", {
-      force: true,
-      background: true,
-      cutoff: { knowledgePoint },
-    });
+    while (route === "spending") {
+      const knowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
+      await loadRoute("spending", {
+        force: true,
+        background: true,
+        cutoff: { knowledgePoint },
+        waitForSecondary: true,
+      });
+      const secondary = matchingSecondary(spending);
+      if (
+        secondary
+        && spending.primary.status === "ready"
+        && spending.primary.knowledgePoint === knowledgePoint
+        && secondary.knowledgePoint === knowledgePoint
+      ) return;
+
+      // A newer commit may have cancelled this exact-cutoff read. Reconcile
+      // directly to the newest point without ever exposing the old response as
+      // a confirmed action outcome.
+      const latestKnowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
+      if (latestKnowledgePoint === knowledgePoint) {
+        throw new Error("spending-action-reconciliation-incomplete");
+      }
+    }
+    throw new Error("spending-action-reconciliation-cancelled");
   }
 
   function scheduleFreshnessReconciliation() {
@@ -842,6 +879,8 @@
     addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
     addEventListener("hashchange", onHashChange);
+    const unsubscribeFreshnessRecovery = window.octopusBeak?.financialFreshness
+      ?.subscribeRecovery(scheduleFreshnessReconciliation);
     scheduleFreshnessReconciliation();
     onboardingState = readOnboardingState(localStorage);
     // Parse the route before any asynchronous bootstrap. This mounts the
@@ -864,6 +903,7 @@
       removeEventListener("focus", onWindowFocus);
       removeEventListener("pageshow", onPageShow);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubscribeFreshnessRecovery?.();
       if (freshnessReconcileTimer) clearTimeout(freshnessReconcileTimer);
       freshnessReconcileTimer = undefined;
       generationCoordinator.stop();
