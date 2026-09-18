@@ -53,6 +53,7 @@
     type FirstRunWelcomeState,
   } from "$lib/welcome/state.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import FinancialSecondaryFallback from "./FinancialSecondaryFallback.svelte";
   import {
     createFinancialRouteGenerationCoordinator,
     createRouteLoadCache,
@@ -193,7 +194,7 @@
         ...state,
         stale: true,
         updating: false,
-        refreshError: error,
+        refreshError: sanitizedFinancialError(error, "更新失敗，暫時顯示舊資料。"),
       }));
     },
   });
@@ -336,8 +337,11 @@
     }
   }
 
-  function message(error: unknown) {
-    return error instanceof Error ? error.message : String(error);
+  function sanitizedFinancialError(error: unknown, fallback = "金融資料載入失敗，請稍後重試。") {
+    if (error instanceof Error && error.message === "financial-section-knowledge-point-mismatch") {
+      return "資料版本已變更，請重新載入。";
+    }
+    return fallback;
   }
 
   function refreshStatus(state: FinancialRouteState<unknown, unknown>): string | null {
@@ -448,8 +452,8 @@
         automation: { tasks: automationData.automation.tasks },
       });
       writeFirstRunWelcomeState(localStorage, firstRunWelcomeState);
-    } catch (error) {
-      console.warn("welcome-eligibility-load-failed", message(error));
+    } catch {
+      console.warn("welcome-eligibility-load-failed");
     }
   }
 
@@ -474,6 +478,7 @@
       cutoff?: FinancialRouteGenerationCutoff;
       generation?: number;
       signal?: AbortSignal;
+      onRequestToken?: (token: number) => void;
     },
   ): Promise<void> {
     const currentState = routeState(next);
@@ -491,6 +496,7 @@
       knowledgePoint: await window.octopusBeak.financialFreshness.latestKnowledgePoint(),
     };
     const token = ++financialLoadGeneration;
+    options.onRequestToken?.(token);
     const background = Boolean(options.background && currentState.primary.status === "ready");
     if (!background) {
       updateRouteState(next, (state) => ({
@@ -563,7 +569,7 @@
         ...state,
         secondary: {
           status: "error",
-          message: message(error),
+          message: sanitizedFinancialError(error, "次要資料載入失敗，請稍後重試。"),
           knowledgePoint: cutoff.knowledgePoint,
         },
       }));
@@ -618,7 +624,11 @@
       if (isCurrent() && !background) {
         updateRouteState(next, (state) => ({
           ...state,
-          primary: { status: "error", message: message(error), knowledgePoint: cutoff.knowledgePoint },
+          primary: {
+            status: "error",
+            message: sanitizedFinancialError(error),
+            knowledgePoint: cutoff.knowledgePoint,
+          },
           updating: false,
         }));
       }
@@ -662,8 +672,16 @@
     } = {},
   ) {
     if (next === "overview") overviewReloading = true;
+    let requestToken: number | undefined;
     try {
-      if (isFinancialRoute(next)) await loadFinancialRouteSections(next, options);
+      if (isFinancialRoute(next)) {
+        await loadFinancialRouteSections(next, {
+          ...options,
+          onRequestToken: (token) => {
+            requestToken = token;
+          },
+        });
+      }
       if (next === "automation") {
         automation = {
           status: "ready",
@@ -672,22 +690,27 @@
       }
     } catch (error) {
       if (options.background && isFinancialRoute(next)) {
+        const activeRequest = requestToken !== undefined
+          && requestToken === financialLoadGeneration
+          && route === next
+          && !options.signal?.aborted;
+        if (!activeRequest) return;
         updateRouteState(next, (state) => ({
           ...state,
           stale: true,
           updating: false,
-          refreshError: message(error),
+          refreshError: sanitizedFinancialError(error, "更新失敗，暫時顯示舊資料。"),
         }));
         throw error;
       }
       if (isFinancialRoute(next)) {
         updateRouteState(next, (state) => ({
           ...state,
-          primary: { status: "error", message: message(error) },
+          primary: { status: "error", message: sanitizedFinancialError(error) },
           updating: false,
         }));
       }
-      if (next === "automation") automation = { status: "error", message: message(error) };
+      if (next === "automation") automation = { status: "error", message: "自動化資料載入失敗，請稍後重試。" };
     } finally {
       if (next === "overview") overviewReloading = false;
     }
@@ -788,10 +811,7 @@
   {/if}
   {#if refreshStatus(overview)}<p class="route-freshness" role="status">{refreshStatus(overview)}</p>{/if}
   {#if overview.primary.status !== "ready" && overview.secondary.status === "ready"}
-    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={overview.secondary.knowledgePoint}>
-      <h2>次要資料</h2>
-      <p>次要資料已載入；核心資料目前無法顯示。</p>
-    </section>
+    <FinancialSecondaryFallback kind="overview" data={overview.secondary.data} />
   {/if}
   {#if overview.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if overview.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
@@ -805,10 +825,7 @@
   {/if}
   {#if refreshStatus(assets)}<p class="route-freshness" role="status">{refreshStatus(assets)}</p>{/if}
   {#if assets.primary.status !== "ready" && assets.secondary.status === "ready"}
-    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={assets.secondary.knowledgePoint}>
-      <h2>次要資料</h2>
-      <p>次要資料已載入；核心資料目前無法顯示。</p>
-    </section>
+    <FinancialSecondaryFallback kind="assets" data={assets.secondary.data} />
   {/if}
   {#if assets.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if assets.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
@@ -822,10 +839,7 @@
   {/if}
   {#if refreshStatus(liabilities)}<p class="route-freshness" role="status">{refreshStatus(liabilities)}</p>{/if}
   {#if liabilities.primary.status !== "ready" && liabilities.secondary.status === "ready"}
-    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={liabilities.secondary.knowledgePoint}>
-      <h2>次要資料</h2>
-      <p>次要資料已載入；核心資料目前無法顯示。</p>
-    </section>
+    <FinancialSecondaryFallback kind="liabilities" data={liabilities.secondary.data} />
   {/if}
   {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if liabilities.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
@@ -839,10 +853,7 @@
   {/if}
   {#if refreshStatus(spending)}<p class="route-freshness" role="status">{refreshStatus(spending)}</p>{/if}
   {#if spending.primary.status !== "ready" && spending.secondary.status === "ready"}
-    <section class="card route-secondary-state" data-secondary-ready data-secondary-knowledge-point={spending.secondary.knowledgePoint}>
-      <h2>次要資料</h2>
-      <p>次要資料已載入；核心資料目前無法顯示。</p>
-    </section>
+    <FinancialSecondaryFallback kind="spending" data={spending.secondary.data} />
   {/if}
   {#if spending.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if spending.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}

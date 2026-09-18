@@ -21,7 +21,7 @@ test("the renderer exposes the progressive generation invariants", () => {
   assert.match(source, /!options\.force\s*&&\s*!options\.background/);
   assert.match(source, /secondaryError = error;\s*applySecondaryError\(error\)/);
   assert.match(source, /if \(!primarySettled && background\) return/);
-  assert.match(source, /data-secondary-ready/);
+  assert.match(source, /FinancialSecondaryFallback/);
   assert.match(source, /route === next && !signal\?\.aborted/);
   assert.match(source, /Primary.*generation|new primary generation invalidates the old secondary/u);
 });
@@ -41,4 +41,17 @@ test("spending invoices are composed only from a matching secondary generation",
     source,
     /function matchingSecondary[\s\S]*?state\.secondary\.knowledgePoint === state\.primary\.knowledgePoint[\s\S]*?function spendingPage[\s\S]*?invoices: secondary\?\.invoices \?\? state\.primary\.data\.invoices/,
   );
+});
+
+test("a primary failure renders section-specific secondary data without enabling writes", () => {
+  assert.match(source, /FinancialSecondaryFallback kind="overview" data=\{overview\.secondary\.data\}/);
+  assert.match(source, /FinancialSecondaryFallback kind="assets" data=\{assets\.secondary\.data\}/);
+  assert.match(source, /FinancialSecondaryFallback kind="liabilities" data=\{liabilities\.secondary\.data\}/);
+  assert.match(source, /FinancialSecondaryFallback kind="spending" data=\{spending\.secondary\.data\}/);
+  assert.match(source, /sanitizedFinancialError\(error/);
+  assert.match(source, /const activeRequest = requestToken !== undefined/);
+  assert.match(source, /if \(!activeRequest\) return/);
+  assert.doesNotMatch(source, /refreshError: message\(error\)/);
+  assert.doesNotMatch(source, /refreshError: error/);
+  assert.doesNotMatch(source, /primary: \{ status: "error", message: message\(error\)/);
 });
