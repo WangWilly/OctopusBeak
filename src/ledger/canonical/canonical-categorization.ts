@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { channel } from "node:diagnostics_channel";
 import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   canonicalDatabaseWriterKey,
@@ -40,6 +41,10 @@ const MAX_EXACT_SCALE = 1_000;
 const UUID_OR_HEX =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$/iu;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+export const canonicalSpendingQueryDiagnostics = channel(
+  "octopus-beak.canonical.spending-query",
+);
 
 export type CanonicalExactAmount = Readonly<{
   coefficient: string | bigint;
@@ -1690,6 +1695,154 @@ function spendingSnapshot(
       display: transaction.display,
       tags: transaction.tags,
     }])),
+  });
+}
+
+/**
+ * Read only the canonical transaction facts needed by purchase matching.
+ *
+ * The Spending page's primary section already owns the complete canonical
+ * spending projection.  Candidate analysis must not load that projection a
+ * second time merely to obtain amount/date/account facts, so this seam reads
+ * the bounded transaction and account families plus the enrichment field
+ * that supplies the inclusion kind.
+ */
+export function queryCanonicalSpendingMatchingFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalSpendingQueryRequest = {},
+): CanonicalSpendingReport {
+  const scope = {
+    ...(request.sourceConnectionKey
+      ? { sourceConnectionKey: request.sourceConnectionKey }
+      : {}),
+    ...(request.accountIds !== undefined
+      ? { accountIds: request.accountIds }
+      : {}),
+    ...(request.transactionIds !== undefined
+      ? { transactionIds: request.transactionIds }
+      : {}),
+    startDate: request.startDate ?? "1900-01-01",
+    endDate: request.endDate ?? "2999-12-31",
+  };
+  if (request.startDate !== undefined && !ISO_DATE.test(request.startDate))
+    throw new Error("Spending startDate is invalid.");
+  if (request.endDate !== undefined && !ISO_DATE.test(request.endDate))
+    throw new Error("Spending endDate is invalid.");
+  if (
+    request.startDate !== undefined &&
+    request.endDate !== undefined &&
+    request.startDate > request.endDate
+  )
+    throw new Error("Spending date range is inverted.");
+
+  const kind = request.financialAt === undefined ? "current" : "historical";
+  if (kind === "historical") {
+    if (!ISO_DATE.test(request.financialAt!))
+      throw new Error("Historical spending queries require financialAt.");
+    if (!Number.isSafeInteger(request.knowledgeAt))
+      throw new Error("Historical spending queries require knowledgeAt.");
+  }
+  if (kind === "current" && request.knowledgeAt !== undefined && !Number.isSafeInteger(request.knowledgeAt))
+    throw new Error("Spending knowledge cutoff is invalid.");
+
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind,
+    families: ["financial-accounts", "transactions", "transaction-enrichment"],
+    scope,
+    ...(kind === "historical"
+      ? {
+          cutoff: {
+            financialAt: request.financialAt!,
+            knowledgeAt: request.knowledgeAt!,
+          },
+        }
+      : request.knowledgeAt === undefined
+        ? {}
+        : { cutoff: { knowledgeAt: request.knowledgeAt } }),
+  });
+  canonicalSpendingQueryDiagnostics.publish({
+    section: "matching",
+    kind,
+    cutoff: request.knowledgeAt,
+    families: ["financial-accounts", "transactions", "transaction-enrichment"],
+  });
+
+  const accountsById = new Map(
+    projection.families["financial-accounts"].map((account) => [account.accountId, account]),
+  );
+  const kindByTransaction = new Map<string, string>();
+  for (const row of projection.families["transaction-enrichment"]) {
+    if (row.fieldName === "kind" && row.taxonomyCode)
+      kindByTransaction.set(row.transactionId, row.taxonomyCode);
+  }
+  const transactions: CanonicalSpendingTransaction[] = [];
+  for (const transaction of projection.families.transactions) {
+    const account = accountsById.get(transaction.accountId);
+    if (!account) throw new Error("Canonical spending projection returned an unknown account.");
+    const kindCode = kindByTransaction.get(transaction.transactionId) ?? null;
+    if (
+      kindCode === null ||
+      !KNOWN_DIRECTIONS.has(transaction.direction) ||
+      !KNOWN_POSTING.has(transaction.postingStatus) ||
+      !KNOWN_ECONOMIC.has(transaction.economicStatus) ||
+      !KNOWN_ADMINISTRATIVE.has(transaction.administrativeState) ||
+      transaction.administrativeState !== "active" ||
+      transaction.economicStatus !== "normal" ||
+      transaction.postingStatus !== "posted" ||
+      transaction.direction !== "outflow" ||
+      isExcludedKind(kindCode)
+    )
+      continue;
+    const consumeDate = transaction.consumeDate ?? null;
+    const postingDate = transaction.postingDate ??
+      (account.stream === "credit-card" ? transaction.effectiveOn : null);
+    transactions.push({
+      transactionId: transaction.transactionId,
+      revisionId: transaction.revisionId,
+      accountId: transaction.accountId,
+      accountNumber: account.accountNo,
+      sourceConnectionKey: account.sourceConnectionKey,
+      integrationNamespace: account.integrationNamespace,
+      stream: account.stream,
+      effectiveOn: transaction.effectiveOn,
+      consumeDate,
+      postingDate,
+      effectiveDateBasis: transaction.effectiveDateBasis ??
+        (account.stream === "credit-card" ? "posting-date-fallback" : null),
+      description: transaction.description,
+      amount: {
+        coefficient: transaction.amountCoefficient,
+        scale: transaction.amountScale,
+        currency: transaction.currency,
+      },
+      direction: transaction.direction,
+      postingStatus: transaction.postingStatus,
+      economicStatus: transaction.economicStatus,
+      administrativeState: transaction.administrativeState,
+      kind: kindCode,
+      categorization: { mode: "absent" },
+      display: {
+        status: "absent",
+        value: null,
+        origin: null,
+        displayKind: null,
+        assertionId: null,
+        referenceId: null,
+      },
+      tags: [],
+      inclusion: "included",
+    });
+  }
+  const report = emptySpendingReport(kind);
+  const knowledgePoint = kind === "current" && !hasCanonicalTransactionFacts(db)
+    ? latestCanonicalKnowledgePoint(db)
+    : projection.knowledgePoint;
+  return Object.freeze({
+    ...report,
+    knowledgePoint,
+    financialAt: projection.financialAt,
+    transactions: Object.freeze(transactions),
+    includedTransactions: Object.freeze(transactions),
   });
 }
 

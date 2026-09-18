@@ -213,15 +213,15 @@ export type SpendingPageDto = {
 };
 
 /**
- * The primary Spending section contains the canonical transaction/invoice
- * facts and the durable report. Ephemeral candidate hints are intentionally
- * omitted by its query and arrive through the secondary section.
+ * The primary Spending section contains the canonical transaction facts.
+ * Compatibility fields remain on the DTO, but invoice matching and purchase
+ * report analysis are supplied by the secondary section.
  */
 export type SpendingPrimaryDto = Omit<SpendingPageDto, "knowledgePoint"> & {
   knowledgePoint: number;
 };
 
-export type SpendingSecondaryDto = Pick<SpendingPageDto, "purchaseReport"> & {
+export type SpendingSecondaryDto = Pick<SpendingPageDto, "purchaseReport" | "invoices"> & {
   knowledgePoint: number;
 };
 

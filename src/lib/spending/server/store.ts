@@ -15,6 +15,7 @@ import {
 } from "../../../ledger/canonical/spending-recognition.ts";
 import {
   composePurchaseReport,
+  canonicalPurchaseUuid,
   evaluateSpendingMatchCandidates,
   type PurchaseReport,
 } from "../../../ledger/canonical/spending-purchase-report.ts";
@@ -90,6 +91,7 @@ const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection
 const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
 const candidateAnalysisDiagnostics = channel("octopus-beak.spending.candidate-analysis");
 const sectionDiagnostics = channel("octopus-beak.financial.section-query");
+const spendingPrimarySnapshots = new WeakMap<object, CurrentSpendingQueryResult>();
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
@@ -391,6 +393,19 @@ function currentSpendingQuery(
     kind: "current",
     product: "spending",
     cutoff,
+  });
+}
+
+function currentSpendingSectionQuery(
+  ledgerDir: string,
+  cutoff: FinancialQueryCutoff | undefined,
+  section: "primary" | "secondary",
+): CurrentSpendingQueryResult {
+  return createFinancialQuery(ledgerDir).current({
+    kind: "current",
+    product: "spending",
+    cutoff,
+    section,
   });
 }
 
@@ -728,20 +743,19 @@ export function loadSpendingSection(
   input: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory"> = {},
 ): SpendingPrimarySection | SpendingSecondarySection {
   sectionDiagnostics.publish({ product: "spending", section });
-  const query = currentSpendingQuery(ledgerDir, input.cutoff);
   if (section === "primary") {
+    const query = currentSpendingSectionQuery(ledgerDir, input.cutoff, section);
     const page = pageFromQuery(query, query.purchaseReport, {
       selectedMonth: input.selectedMonth,
       selectedCategory: input.selectedCategory,
       includeEphemeralCandidates: false,
     });
-    return createFinancialSectionResult(section, spendingPrimary(page));
+    const value = spendingPrimary(page);
+    spendingPrimarySnapshots.set(value, query);
+    return createFinancialSectionResult(section, value);
   }
-  const page = pageFromQuery(query, query.purchaseReport, {
-    selectedMonth: input.selectedMonth,
-    selectedCategory: input.selectedCategory,
-  });
-  return createFinancialSectionResult(section, spendingSecondary(page));
+  const query = currentSpendingSectionQuery(ledgerDir, input.cutoff, section);
+  return createFinancialSectionResult(section, spendingSecondary(query));
 }
 
 export function combineSpendingSections(
@@ -749,11 +763,46 @@ export function combineSpendingSections(
   secondary: SpendingSecondarySection,
 ): SpendingPageDto {
   assertMatchingFinancialSectionKnowledgePoints(primary, secondary);
+  const primarySnapshot = spendingPrimarySnapshots.get(primary.value);
+  const purchaseReport = primarySnapshot
+    ? hydratePurchaseReportTransactions(secondary.value.purchaseReport, primarySnapshot.spending)
+    : secondary.value.purchaseReport;
   return {
     ...primary.value,
-    purchaseReport: secondary.value.purchaseReport,
+    purchaseReport,
+    invoices: secondary.value.invoices,
     knowledgePoint: primary.knowledgePoint,
   };
+}
+
+function hydratePurchaseReportTransactions(
+  report: PurchaseReport,
+  spending: CanonicalSpendingReport,
+): PurchaseReport {
+  const transactionsById = new Map(
+    spending.transactions.map((transaction) => [
+      transaction.transactionId.replaceAll("-", "").toLowerCase(),
+      transaction,
+    ]),
+  );
+  return Object.freeze({
+    ...report,
+    records: Object.freeze(report.records.map((record) => {
+      if (!record.transaction) return record;
+      const transaction = transactionsById.get(
+        record.transaction.transactionId.replaceAll("-", "").toLowerCase(),
+      );
+      return transaction
+        ? {
+            ...record,
+            transaction: {
+              ...transaction,
+              transactionId: canonicalPurchaseUuid(record.transaction.transactionId),
+            },
+          }
+        : record;
+    })),
+  });
 }
 
 function spendingPrimary(page: SpendingPageDto): SpendingPrimaryDto {
@@ -765,10 +814,11 @@ function spendingPrimary(page: SpendingPageDto): SpendingPrimaryDto {
   };
 }
 
-function spendingSecondary(page: SpendingPageDto): SpendingSecondaryDto {
+function spendingSecondary(query: CurrentSpendingQueryResult): SpendingSecondaryDto {
   return {
-    knowledgePoint: page.knowledgePoint ?? 0,
-    purchaseReport: page.purchaseReport,
+    knowledgePoint: query.spending.knowledgePoint,
+    purchaseReport: purchaseReportWithEphemeralCandidates(query),
+    invoices: currentSpendingInvoices(query.invoices),
   };
 }
 

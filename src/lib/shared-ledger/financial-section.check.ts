@@ -4,10 +4,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  commitCathayDomesticDeposit,
+} from "../../ledger/canonical/canonical-source-store.ts";
 import { canonicalOverviewQueryDiagnostics } from "../../ledger/canonical/canonical-overview-query.ts";
 import {
   createFinancialQuery,
   financialQueryDiagnostics,
+  spendingQueryDiagnostics,
 } from "./server/financial-query.ts";
 import {
   combineAssetsSections,
@@ -74,6 +79,42 @@ test("primary sections skip secondary analysis work", async () => {
   } finally {
     overviewSecondary.unsubscribe(onOverviewSecondary);
     candidateAnalysis.unsubscribe(onCandidateAnalysis);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("spending sections use disjoint bounded query work at one cutoff", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "financial-spending-section-bounds-"));
+  const events: Array<{ section?: unknown; cutoff?: unknown; operations?: unknown; families?: unknown }> = [];
+  const onQuery = (event: unknown) => events.push(event as typeof events[number]);
+  spendingQueryDiagnostics.subscribe(onQuery);
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const latest = loadSpendingSection("primary", directory).knowledgePoint;
+    await loadSpendingSection("primary", directory, { cutoff: { knowledgePoint: latest } });
+    await loadSpendingSection("secondary", directory, { cutoff: { knowledgePoint: latest } });
+    const primary = events.findLast((event) => event.section === "primary");
+    const secondary = events.findLast((event) => event.section === "secondary");
+    assert.ok(primary);
+    assert.ok(secondary);
+    assert.equal(primary.cutoff, latest);
+    assert.equal(secondary.cutoff, latest);
+    assert.deepEqual(primary.operations, ["canonical-spending"]);
+    assert.ok(Array.isArray(primary.families));
+    assert.ok(!primary.families.includes("einvoices"));
+    assert.ok(!primary.families.includes("spending-recognition"));
+    assert.deepEqual(secondary.operations, [
+      "matching-transactions",
+      "invoices",
+      "recognition",
+      "purchase-report",
+    ]);
+    assert.ok(Array.isArray(secondary.families));
+    assert.ok(secondary.families.includes("einvoices"));
+    assert.ok(secondary.families.includes("spending-recognition"));
+    assert.ok(!secondary.families.includes("transaction-categorization"));
+  } finally {
+    spendingQueryDiagnostics.unsubscribe(onQuery);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -167,6 +208,23 @@ test("section composition preserves the compatibility page DTO", async () => {
     assert.deepEqual(
       combineSpendingSections(spendingPrimary, spendingSecondary),
       loadSpending(directory),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("spending bounded sections compose to the full compatibility DTO", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "financial-spending-section-composition-"));
+  try {
+    await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+    const primary = loadSpendingSection("primary", directory);
+    const secondary = loadSpendingSection("secondary", directory, {
+      cutoff: { knowledgePoint: primary.knowledgePoint },
+    });
+    assert.deepEqual(
+      combineSpendingSections(primary, secondary),
+      loadSpending(directory, { cutoff: { knowledgePoint: primary.knowledgePoint } }),
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

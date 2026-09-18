@@ -19,6 +19,7 @@ import {
 } from "../../../ledger/canonical/canonical-overview-query.ts";
 import {
   createCanonicalSpendingQuery,
+  queryCanonicalSpendingMatchingFromDatabase,
   queryCanonicalSpendingCurrentFromDatabase,
   queryCanonicalSpendingHistoricalFromDatabase,
   type CanonicalSpendingReport,
@@ -68,6 +69,10 @@ export const financialQueryDiagnostics = channel(
   "octopus-beak.shared-ledger.financial-query",
 );
 
+export const spendingQueryDiagnostics = channel(
+  "octopus-beak.shared-ledger.spending-query",
+);
+
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
   product: "overview";
@@ -107,7 +112,7 @@ export type CurrentCanonicalLedgerQueryRequest<
 type CurrentRequestByProduct = {
   assets: CurrentCanonicalLedgerQueryRequest<"assets">;
   overview: CurrentOverviewLedgerQueryRequest | CurrentOverviewExchangeRateQueryRequest;
-  spending: { kind: "current"; product: "spending"; cutoff?: FinancialQueryCutoff };
+  spending: { kind: "current"; product: "spending"; cutoff?: FinancialQueryCutoff; section?: FinancialQuerySection };
   liabilities: CurrentCanonicalLedgerQueryRequest<"liabilities">;
 };
 
@@ -260,18 +265,56 @@ export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQ
 export function queryCurrentSpendingFromDatabase(
   db: DatabaseSync,
   cutoff?: FinancialQueryCutoff,
+  section: FinancialQuerySection = "full",
 ): CurrentSpendingQueryResult {
   const knowledgePoint = cutoff
     ? validateCanonicalKnowledgePoint(cutoff.knowledgePoint)
     : undefined;
   if (knowledgePoint !== undefined) validateKnowledgePointAvailability(db, knowledgePoint);
+  const families = section === "primary"
+    ? ["financial-accounts", "transactions", "transaction-enrichment", "transaction-categorization"]
+    : section === "secondary"
+      ? ["financial-accounts", "transactions", "transaction-enrichment", "einvoices", "spending-recognition"]
+      : ["financial-accounts", "transactions", "transaction-enrichment", "transaction-categorization", "einvoices", "spending-recognition"];
+  spendingQueryDiagnostics.publish({
+    section,
+    cutoff: knowledgePoint,
+    families,
+    operations: section === "primary"
+      ? ["canonical-spending"]
+      : section === "secondary"
+        ? ["matching-transactions", "invoices", "recognition", "purchase-report"]
+        : ["canonical-spending", "invoices", "recognition", "purchase-report"],
+  });
   return withCanonicalSnapshot(db, () => {
     const spending = knowledgePoint !== undefined
-      ? queryCanonicalSpendingHistoricalFromDatabase(db, {
-        financialAt: "9999-12-31",
-        knowledgeAt: knowledgePoint,
-      })
-      : queryCanonicalSpendingCurrentFromDatabase(db);
+      ? section === "secondary"
+        ? queryCanonicalSpendingMatchingFromDatabase(db, {
+          financialAt: "9999-12-31",
+          knowledgeAt: knowledgePoint,
+        })
+        : queryCanonicalSpendingHistoricalFromDatabase(db, {
+          financialAt: "9999-12-31",
+          knowledgeAt: knowledgePoint,
+        })
+      : section === "secondary"
+        ? queryCanonicalSpendingMatchingFromDatabase(db)
+        : queryCanonicalSpendingCurrentFromDatabase(db);
+    if (section === "primary") {
+      const primaryReport = emptyPurchaseReport(
+        knowledgePoint === undefined ? "current" : "historical",
+        spending.knowledgePoint,
+        knowledgePoint === undefined ? null : spending.financialAt,
+      );
+      return {
+        status: "ok" as const,
+        kind: "current" as const,
+        product: "spending" as const,
+        spending: currentizeSpending(spending, knowledgePoint),
+        invoices: [],
+        purchaseReport: currentizeSpending(primaryReport, knowledgePoint),
+      };
+    }
     const invoices = knowledgePoint !== undefined
       ? queryCanonicalEInvoiceHistoricalFromDatabase(db, {
         knowledgeAt: knowledgePoint,
@@ -304,6 +347,15 @@ export function queryCurrentSpendingFromDatabase(
       purchaseReport: currentize(purchaseReport),
     };
   });
+}
+
+function currentizeSpending<T extends { kind: "current" | "historical"; financialAt: string | null }>(
+  value: T,
+  knowledgePoint: number | undefined,
+): T {
+  return knowledgePoint !== undefined
+    ? { ...value, kind: "current", financialAt: null } as T
+    : value;
 }
 
 function validateKnowledgePointAvailability(
@@ -385,6 +437,21 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
       if (!existsSync(databasePath)) {
         if (cutoff && cutoff.knowledgePoint > 0)
           throw new Error("canonical-cutoff-unavailable");
+        const section = request.section ?? "full";
+        spendingQueryDiagnostics.publish({
+          section,
+          cutoff: cutoff?.knowledgePoint,
+          families: section === "primary"
+            ? ["financial-accounts", "transactions", "transaction-enrichment", "transaction-categorization"]
+            : section === "secondary"
+              ? ["financial-accounts", "transactions", "transaction-enrichment", "einvoices", "spending-recognition"]
+              : ["financial-accounts", "transactions", "transaction-enrichment", "transaction-categorization", "einvoices", "spending-recognition"],
+          operations: section === "primary"
+            ? ["canonical-spending"]
+            : section === "secondary"
+              ? ["matching-transactions", "invoices", "recognition", "purchase-report"]
+              : ["canonical-spending", "invoices", "recognition", "purchase-report"],
+        });
         return {
           status: "ok",
           kind: "current",
@@ -397,7 +464,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
       channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
       const store = createCanonicalSourceStore(this.ledgerDir);
       try {
-        return queryCurrentSpendingFromDatabase(store.db, cutoff);
+        return queryCurrentSpendingFromDatabase(store.db, cutoff, request.section ?? "full");
       } finally {
         store.close();
       }

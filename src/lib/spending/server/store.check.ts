@@ -29,8 +29,10 @@ import { blob, idToString } from "../../../ledger/canonical/canonical-local-iden
 import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
 import {
   confirmSpendingCandidate,
+  combineSpendingSections,
   denySpendingCandidate,
   loadSpending,
+  loadSpendingSection,
   revokeSpendingLink,
 } from "./store.ts";
 import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
@@ -451,6 +453,29 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     store.close();
   }
 }
+
+test("bounded Spending sections preserve invoice candidate DTOs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-bounded-sections-"));
+  try {
+    await seedPurchaseCandidate(directory);
+    const full = loadSpending(directory);
+    const primary = loadSpendingSection("primary", directory, {
+      cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt },
+    });
+    const secondary = loadSpendingSection("secondary", directory, {
+      cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt },
+    });
+    assert.equal(secondary.knowledgePoint, full.purchaseReport.knowledgeAt);
+    assert.equal(primary.knowledgePoint, full.purchaseReport.knowledgeAt);
+    assert.equal(secondary.value.purchaseReport.candidates.length > 0, true);
+    assert.deepEqual(
+      combineSpendingSections(primary, secondary),
+      loadSpending(directory, { cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt } }),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Spending user commands confirm, deny, and revoke only a current deterministic candidate", async () => {
   const confirmDirectory = await mkdtemp(join(tmpdir(), "spending-purchase-confirm-"));
