@@ -7,7 +7,6 @@ import {
 } from "../../../ledger/canonical/canonical-source-store.ts";
 import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
-  confirmSpendingDedupLink,
   denySpendingDedupCandidate,
   executeSpendingRecognitionCommand,
   querySpendingRecognition,
@@ -22,6 +21,7 @@ import {
 import type { SpendingCategory } from "../categories.ts";
 import type {
   SpendingCandidateActionInput,
+  SpendingCandidateConfirmationInput,
   SpendingConfirmActionInput,
   SpendingLinkActionInput,
   SpendingPageDto,
@@ -503,22 +503,10 @@ function candidateActionValue(input: unknown): SpendingCandidateDecisionInput {
     throw new TypeError("Spending candidate action must be an object.");
   const value = input as Record<string, unknown>;
   if (value.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
-  const candidateId = value.candidateId === undefined
-    ? undefined
-    : requiredActionText(value.candidateId, "Candidate id");
-  const invoiceIdentityId = value.invoiceIdentityId === undefined
-    ? undefined
-    : requiredActionText(value.invoiceIdentityId, "Invoice identity id");
-  const transactionIdentityId = value.transactionIdentityId === undefined
-    ? undefined
-    : requiredActionText(value.transactionIdentityId, "Transaction identity id");
-  if (!candidateId && (!invoiceIdentityId || !transactionIdentityId))
-    throw new TypeError("Spending candidate action requires a candidate id or both canonical identities.");
+  const candidateId = requiredActionText(value.candidateId, "Candidate id");
   return {
     kind: "candidate",
-    ...(candidateId === undefined ? {} : { candidateId }),
-    ...(invoiceIdentityId === undefined ? {} : { invoiceIdentityId }),
-    ...(transactionIdentityId === undefined ? {} : { transactionIdentityId }),
+    candidateId,
     ...(value.idempotencyKey === undefined ? {} : { idempotencyKey: commandIdempotencyKey(value.idempotencyKey) }),
   };
 }
@@ -527,7 +515,14 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new TypeError("Spending confirmation must be an object.");
   const value = input as Record<string, unknown>;
-  if (value.kind === "candidate") return candidateActionValue(input);
+  if (value.kind === "candidate") {
+    return {
+      kind: "candidate",
+      invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
+      transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+      idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
+    };
+  }
   if (value.kind !== "direct") throw new TypeError("Spending confirmation kind is invalid.");
   return {
     kind: "direct",
@@ -583,7 +578,7 @@ function decisionEvidence(candidate: ReturnType<typeof resolveCandidate>) {
 function decideCandidate(
   input: unknown,
   ledgerDir: string,
-  kind: "confirmed" | "denied",
+  kind: "denied",
   telemetry: FinancialPerformanceOperation,
 ): SpendingPurchaseActionResult {
   const action = candidateActionValue(input);
@@ -618,8 +613,7 @@ function decideCandidate(
       evidence,
     };
     try {
-      if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
-      else denySpendingDedupCandidate(store, decision);
+      denySpendingDedupCandidate(store, decision);
       commitSpan.finish();
     } catch (error) {
       commitSpan.finish("error", { error });
@@ -632,7 +626,7 @@ function decideCandidate(
 }
 
 function confirmCandidateByIdentity(
-  action: SpendingCandidateDecisionInput,
+  action: SpendingCandidateConfirmationInput,
   ledgerDir: string,
   telemetry: FinancialPerformanceOperation,
 ): SpendingPurchaseActionResult {
@@ -660,14 +654,7 @@ export function confirmSpendingCandidate(
 ): SpendingPurchaseActionResult {
   return withSpendingActionTelemetry((telemetry) => {
     const action = confirmActionValue(input);
-    if (action.kind === "candidate") {
-      // The identity-bearing form is the product command seam.  The old
-      // candidate-id-only form remains as a compatibility adapter for callers
-      // that have not yet moved candidate analysis out of the command path.
-      if (action.invoiceIdentityId && action.transactionIdentityId)
-        return confirmCandidateByIdentity(action, ledgerDir, telemetry);
-      return decideCandidate(action, ledgerDir, "confirmed", telemetry);
-    }
+    if (action.kind === "candidate") return confirmCandidateByIdentity(action, ledgerDir, telemetry);
     const store = recordStore(ledgerDir, telemetry);
     try {
       const result = executeSpendingRecognitionCommand(store, {

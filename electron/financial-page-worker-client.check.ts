@@ -151,7 +151,12 @@ test("Spending decisions use the worker boundary without blocking the caller", a
   const client = createFinancialPageWorkerClient(worker);
   try {
     const startedAt = performance.now();
-    const action = client.confirmCandidate({ kind: "candidate", candidateId: "candidate" });
+    const action = client.confirmCandidate({
+      kind: "candidate",
+      invoiceIdentityId: "invoice",
+      transactionIdentityId: "transaction",
+      idempotencyKey: "candidate-confirmation-1",
+    });
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     assert.ok(performance.now() - startedAt < 100);
     assert.deepEqual(await action, { patch: { kind: "spending-purchase-report-patch" } });

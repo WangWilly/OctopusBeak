@@ -477,6 +477,23 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
     assert.ok(candidateInvoice?.invoice);
     assert.ok(candidateTransaction?.transaction);
 
+    const candidateIdConfirmation = withActionReadCounts(confirmDirectory, () =>
+      assert.throws(() => confirmSpendingCandidate({
+        kind: "candidate",
+        candidateId: candidate.candidateId,
+        idempotencyKey: "candidate-id-only-confirmation",
+      } as never, confirmDirectory), /Invoice identity id is required/));
+    assert.equal(
+      candidateIdConfirmation.fullProjectionCount,
+      0,
+      "candidate confirmation cannot fall back to full candidate analysis",
+    );
+    assert.throws(() => confirmSpendingCandidate({
+      kind: "candidate",
+      invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+      transactionIdentityId: candidateTransaction.transaction!.transactionId,
+    } as never, confirmDirectory), /idempotency key is required/);
+
     const confirmation = withActionReadCounts(confirmDirectory, () =>
       confirmSpendingCandidate({
         kind: "candidate",

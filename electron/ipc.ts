@@ -177,7 +177,6 @@ function spendingConfirmActionFrom(value: unknown): SpendingConfirmActionInput {
     invoiceIdentityId: requiredSpendingActionText(record.invoiceIdentityId, "Invoice identity id"),
     transactionIdentityId: requiredSpendingActionText(record.transactionIdentityId, "Transaction identity id"),
     idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
-    ...(record.candidateId === undefined ? {} : { candidateId: requiredSpendingActionText(record.candidateId, "Candidate id") }),
   };
 }
 
@@ -219,6 +218,13 @@ export function registerOctopusBeakIpc({
   const financialFreshness = createFinancialFreshnessBroadcaster({
     getWindows: () => BrowserWindow.getAllWindows(),
   });
+  const publishSpendingMutationResult = async <T extends { knowledgePoint: number }>(
+    operation: Promise<T>,
+  ): Promise<T> => {
+    const result = await operation;
+    financialFreshness.publish({ commitSequence: result.knowledgePoint });
+    return result;
+  };
   const canonicalLedgerDir =
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
@@ -272,13 +278,19 @@ export function registerOctopusBeakIpc({
       financialPages.loadSection("spending", financialSectionFrom(section), spendingLoadInputFrom(input)),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
-    financialPages.confirmCandidate(spendingConfirmActionFrom(input)),
+    publishSpendingMutationResult(
+      financialPages.confirmCandidate(spendingConfirmActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:denyCandidate", (_event, input) =>
-    financialPages.denyCandidate(spendingCandidateActionFrom(input)),
+    publishSpendingMutationResult(
+      financialPages.denyCandidate(spendingCandidateActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:revokeLink", (_event, input) =>
-    financialPages.revokeLink(spendingLinkActionFrom(input)),
+    publishSpendingMutationResult(
+      financialPages.revokeLink(spendingLinkActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);

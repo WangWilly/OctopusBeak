@@ -19,18 +19,19 @@ export type SpendingPurchaseReportDto = PurchaseReport;
 
 export type SpendingCandidateActionInput = Readonly<{
   kind: "candidate";
-  /**
-   * Candidate ids remain available for denial and legacy callers.  Link
-   * confirmation should send the two canonical identities instead so the
-   * command path does not have to rebuild candidate analysis.
-   */
-  candidateId?: string;
-  invoiceIdentityId?: string;
-  transactionIdentityId?: string;
+  /** Candidate ids are only valid for denying an existing candidate. */
+  candidateId: string;
   idempotencyKey?: string;
 }>;
 
-export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly<{
+export type SpendingCandidateConfirmationInput = Readonly<{
+  kind: "candidate";
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  idempotencyKey: string;
+}>;
+
+export type SpendingConfirmActionInput = SpendingCandidateConfirmationInput | Readonly<{
   kind: "direct";
   invoiceIdentityId: string;
   transactionIdentityId: string;

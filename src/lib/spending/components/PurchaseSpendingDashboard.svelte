@@ -296,12 +296,15 @@
     }
     await runSpendingAction(
       `confirmCandidate:${candidateId}`,
-      (idempotencyKey) => window.octopusBeak.spending.confirmCandidate({
-        kind: "candidate",
-        invoiceIdentityId: invoice.invoiceId,
-        transactionIdentityId: transaction.transactionId,
-        idempotencyKey,
-      }),
+      (idempotencyKey) => {
+        if (!idempotencyKey) throw new Error("Spending command idempotency key is required.");
+        return window.octopusBeak.spending.confirmCandidate({
+          kind: "candidate",
+          invoiceIdentityId: invoice.invoiceId,
+          transactionIdentityId: transaction.transactionId,
+          idempotencyKey,
+        });
+      },
       {
         action: "candidate-confirmation",
         firstId: invoice.invoiceId,

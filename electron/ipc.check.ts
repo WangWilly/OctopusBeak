@@ -27,6 +27,19 @@ assert.match(source, /spendingLinkActionFrom\(input\)/);
 assert.match(source, /FINANCIAL_FRESHNESS_LATEST_CHANNEL/);
 assert.match(source, /latestKnowledgePointFromDatabase/);
 assert.match(source, /financialFreshness\.publish\(receipt\)/);
+for (const [channel, method] of [
+  ["spending:confirmCandidate", "confirmCandidate"],
+  ["spending:denyCandidate", "denyCandidate"],
+  ["spending:revokeLink", "revokeLink"],
+] as const) {
+  assert.match(
+    source,
+    new RegExp(
+      `ipcMain\\.handle\\(\\"${channel}\\"[\\s\\S]*?publishSpendingMutationResult\\(\\s*financialPages\\.${method}\\(`,
+    ),
+    `${channel} must publish freshness only after its worker mutation resolves`,
+  );
+}
 for (const [route, channel] of [
   ["overview", "overview:load"],
   ["assets", "assets:load"],
