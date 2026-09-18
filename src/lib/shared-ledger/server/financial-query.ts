@@ -19,14 +19,20 @@ import {
 import {
   createCanonicalSpendingQuery,
   queryCanonicalSpendingCurrentFromDatabase,
+  queryCanonicalSpendingHistoricalFromDatabase,
   type CanonicalSpendingReport,
 } from "../../../ledger/canonical/canonical-categorization.ts";
 import {
   queryCanonicalEInvoiceCurrent,
   queryCanonicalEInvoiceCurrentFromDatabase,
+  queryCanonicalEInvoiceHistoricalFromDatabase,
   type CanonicalEInvoiceView,
 } from "../../../ledger/canonical/einvoice.ts";
 import { withCanonicalSnapshot } from "../../../ledger/canonical/canonical-runtime.ts";
+import {
+  validateCanonicalKnowledgePoint,
+  type CanonicalKnowledgePointCutoff,
+} from "../../../ledger/canonical/canonical-projection-runtime.ts";
 import type { SpendingPair } from "../../../ledger/canonical/spending-recognition.ts";
 import {
   emptyPurchaseReport,
@@ -52,10 +58,14 @@ export type {
 export type FinancialProduct = "assets" | "overview" | "spending" | "liabilities";
 export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 
+/** A page generation must make every product read use this same cutoff. */
+export type FinancialQueryCutoff = CanonicalKnowledgePointCutoff;
+
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
   product: "overview";
   expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  cutoff?: FinancialQueryCutoff;
 };
 
 export type CurrentOverviewExchangeRateQueryRequest =
@@ -80,12 +90,13 @@ export type CurrentCanonicalLedgerQueryRequest<
   kind: "current";
   product: Product;
   expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  cutoff?: FinancialQueryCutoff;
 };
 
 type CurrentRequestByProduct = {
   assets: CurrentCanonicalLedgerQueryRequest<"assets">;
   overview: CurrentOverviewLedgerQueryRequest | CurrentOverviewExchangeRateQueryRequest;
-  spending: { kind: "current"; product: "spending" };
+  spending: { kind: "current"; product: "spending"; cutoff?: FinancialQueryCutoff };
   liabilities: CurrentCanonicalLedgerQueryRequest<"liabilities">;
 };
 
@@ -235,27 +246,74 @@ export function createFinancialQuery(ledgerDir = DEFAULT_LEDGER_DIR): FinancialQ
  * The snapshot ends before this function returns, so a command may safely use
  * the same validated store for its following recognition mutation.
  */
-export function queryCurrentSpendingFromDatabase(db: DatabaseSync): CurrentSpendingQueryResult {
+export function queryCurrentSpendingFromDatabase(
+  db: DatabaseSync,
+  cutoff?: FinancialQueryCutoff,
+): CurrentSpendingQueryResult {
+  const knowledgePoint = cutoff
+    ? validateCanonicalKnowledgePoint(cutoff.knowledgePoint)
+    : undefined;
+  if (knowledgePoint !== undefined) validateKnowledgePointAvailability(db, knowledgePoint);
   return withCanonicalSnapshot(db, () => {
-    const spending = queryCanonicalSpendingCurrentFromDatabase(db);
-    const invoices = queryCanonicalEInvoiceCurrentFromDatabase(db).invoices;
+    const spending = knowledgePoint !== undefined
+      ? queryCanonicalSpendingHistoricalFromDatabase(db, {
+        financialAt: "9999-12-31",
+        knowledgeAt: knowledgePoint,
+      })
+      : queryCanonicalSpendingCurrentFromDatabase(db);
+    const invoices = knowledgePoint !== undefined
+      ? queryCanonicalEInvoiceHistoricalFromDatabase(db, {
+        knowledgeAt: knowledgePoint,
+      }).invoices
+      : queryCanonicalEInvoiceCurrentFromDatabase(db).invoices;
     const purchaseReport = queryPurchaseReportFromDatabase(
       db,
-      { kind: "current" },
+      knowledgePoint !== undefined
+        ? {
+          kind: "historical",
+          financialAt: "9999-12-31",
+          knowledgeAt: knowledgePoint,
+        }
+        : { kind: "current" },
       {
         invoices,
         transactions: spending.includedTransactions,
       },
     );
+    const currentize = <T extends { kind: "current" | "historical"; financialAt: string | null }>(value: T): T =>
+      knowledgePoint !== undefined
+        ? { ...value, kind: "current", financialAt: null } as T
+        : value;
     return {
       status: "ok" as const,
       kind: "current" as const,
       product: "spending" as const,
-      spending,
+      spending: currentize(spending),
       invoices,
-      purchaseReport,
+      purchaseReport: currentize(purchaseReport),
     };
   });
+}
+
+function validateKnowledgePointAvailability(
+  db: DatabaseSync,
+  knowledgePoint: number,
+): void {
+  const latest = Number(
+    (
+      db
+        .prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits")
+        .get() as { value?: unknown }
+    ).value ?? 0,
+  );
+  if (knowledgePoint > latest) throw new Error("canonical-cutoff-unavailable");
+  if (
+    knowledgePoint > 0 &&
+    !db
+      .prepare("SELECT 1 AS available FROM canonical_commits WHERE commit_sequence = ?")
+      .get(knowledgePoint)
+  )
+    throw new Error("canonical-cutoff-unavailable");
 }
 
 /** Canonical adapter factory for source-specific contract consumers. */
@@ -291,17 +349,24 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
   ): CurrentSpendingQueryResult | Promise<
     CurrentOverviewProjectionQueryResult |
     CurrentOverviewExchangeRateQueryResult |
-    CurrentCanonicalLedgerProjectionQueryResult<"assets" | "liabilities">
+      CurrentCanonicalLedgerProjectionQueryResult<"assets" | "liabilities">
   > {
+    const cutoff = "cutoff" in request && request.cutoff
+      ? { knowledgePoint: validateCanonicalKnowledgePoint(request.cutoff.knowledgePoint) }
+      : undefined;
     if (request.product === "overview" && !("selection" in request)) {
-      if (!request.expectedSources?.length) return this.canonicalOverview.current();
+      if (!request.expectedSources?.length && !cutoff)
+        return this.canonicalOverview.current();
       return createCanonicalOverviewQuery(this.ledgerDir, {
         expectedSources: request.expectedSources,
+        cutoff,
       }).current();
     }
     if (request.product === "spending") {
       const databasePath = canonicalDatabaseWriterKey(this.ledgerDir);
       if (!existsSync(databasePath)) {
+        if (cutoff && cutoff.knowledgePoint > 0)
+          throw new Error("canonical-cutoff-unavailable");
         return {
           status: "ok",
           kind: "current",
@@ -314,15 +379,16 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
       channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
       const store = createCanonicalSourceStore(this.ledgerDir);
       try {
-        return queryCurrentSpendingFromDatabase(store.db);
+        return queryCurrentSpendingFromDatabase(store.db, cutoff);
       } finally {
         store.close();
       }
     }
     if (request.product === "assets" || request.product === "liabilities") {
-      const projectionQuery = request.expectedSources?.length
+      const projectionQuery = request.expectedSources?.length || cutoff
         ? createCanonicalOverviewQuery(this.ledgerDir, {
           expectedSources: request.expectedSources,
+          cutoff,
         })
         : this.canonicalOverview;
       return projectionQuery.current().then((result) => ({

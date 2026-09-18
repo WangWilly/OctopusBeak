@@ -3,6 +3,7 @@ import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import type { FinancialQueryCutoff } from "../src/lib/shared-ledger/server/financial-query.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -12,9 +13,9 @@ import type {
 } from "../src/lib/spending/model.ts";
 
 export type FinancialPageRequest =
-  | { id: number; page: "overview" }
-  | { id: number; page: "assets" }
-  | { id: number; page: "liabilities" }
+  | { id: number; page: "overview"; input?: FinancialPageLoadInput }
+  | { id: number; page: "assets"; input?: FinancialPageLoadInput }
+  | { id: number; page: "liabilities"; input?: FinancialPageLoadInput }
   | { id: number; page: "spending"; input?: SpendingLoadInput }
   | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
@@ -24,12 +25,28 @@ export type FinancialPageResponse =
 
 type WorkerPort = Pick<Worker, "on" | "postMessage" | "terminate">;
 
+export type FinancialPageLoadInput = Readonly<{
+  cutoff?: FinancialQueryCutoff;
+}>;
+
 const WORKER_CLOSED_MESSAGE = "Financial page worker is closed.";
 
+function servedKnowledgePoint(value: unknown): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const candidate = record.knowledgePoint ??
+    (record.canonical && typeof record.canonical === "object" && !Array.isArray(record.canonical)
+      ? (record.canonical as Record<string, unknown>).knowledgePoint
+      : undefined);
+  return typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0
+    ? candidate
+    : null;
+}
+
 export type FinancialPageWorkerClient = {
-  load(page: "overview"): Promise<OverviewPageDto>;
-  load(page: "assets"): Promise<AssetsPageDto>;
-  load(page: "liabilities"): Promise<LiabilitiesPageDto>;
+  load(page: "overview", input?: FinancialPageLoadInput): Promise<OverviewPageDto>;
+  load(page: "assets", input?: FinancialPageLoadInput): Promise<AssetsPageDto>;
+  load(page: "liabilities", input?: FinancialPageLoadInput): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput): Promise<SpendingPageDto>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -45,7 +62,11 @@ export function createFinancialPageWorkerClient(
   let closePromise: Promise<number> | null = null;
   const pending = new Map<
     number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      cutoff?: number;
+    }
   >();
 
   const rejectPending = (error: Error) => {
@@ -57,7 +78,16 @@ export function createFinancialPageWorkerClient(
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    if (message.ok) request.resolve(message.value);
+    if (message.ok) {
+      if (
+        request.cutoff !== undefined &&
+        servedKnowledgePoint(message.value) !== request.cutoff
+      ) {
+        request.reject(new Error("canonical-cutoff-unavailable"));
+        return;
+      }
+      request.resolve(message.value);
+    }
     else request.reject(new Error(message.error));
   });
   worker.on("error", (error) => rejectPending(
@@ -70,15 +100,18 @@ export function createFinancialPageWorkerClient(
 
   function load(
     page: "overview" | "assets" | "liabilities" | "spending",
-    input?: SpendingLoadInput,
+    input?: SpendingLoadInput | FinancialPageLoadInput,
   ): Promise<unknown> {
     if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
     const id = nextId++;
-    const request: FinancialPageRequest = page === "spending"
-      ? { id, page, ...(input ? { input } : {}) }
-      : { id, page };
+    const request: FinancialPageRequest = input
+      ? { id, page, input } as FinancialPageRequest
+      : { id, page } as FinancialPageRequest;
+    const cutoff = input && "cutoff" in input
+      ? input.cutoff?.knowledgePoint
+      : undefined;
     return new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, cutoff });
       worker.postMessage(request);
     });
   }

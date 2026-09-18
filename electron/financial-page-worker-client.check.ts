@@ -42,6 +42,24 @@ test("worker failures reject the matching page request", async () => {
   }
 });
 
+test("cutoff-qualified page reads verify the served knowledge point", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id }) => {
+      parentPort.postMessage({ id, ok: true, value: { knowledgePoint: 6 } });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    await assert.rejects(
+      client.load("assets", { cutoff: { knowledgePoint: 7 } }),
+      { message: "canonical-cutoff-unavailable" },
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("closing the worker rejects pending and future page requests deterministically", async () => {
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");

@@ -3,6 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { canonicalDatabaseWriterKey, openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
+  type CanonicalKnowledgePointCutoff,
+  validateCanonicalKnowledgePoint,
   type CanonicalProjectionCreditCardBalance,
   type CanonicalProjectionDepositoryBalance,
   type CanonicalProjectionFinancialAccount,
@@ -261,14 +263,23 @@ export function selectCanonicalOverviewDepositoryBalances(
  */
 export function createCanonicalOverviewQuery(
   ledgerDir: string,
-  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
+  input: {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+    cutoff?: CanonicalKnowledgePointCutoff;
+  } = {},
 ): CanonicalOverviewCurrentQuery {
   const expectedSources = input.expectedSources ?? [];
   return Object.freeze({
     async current(): Promise<CanonicalOverviewCurrentQueryResult> {
+      const knowledgePoint = input.cutoff
+        ? validateCanonicalKnowledgePoint(input.cutoff.knowledgePoint)
+        : undefined;
       const databasePath = canonicalDatabaseWriterKey(ledgerDir);
-      if (!existsSync(databasePath))
+      if (!existsSync(databasePath)) {
+        if (knowledgePoint !== undefined && knowledgePoint > 0)
+          throw new Error("canonical-cutoff-unavailable");
         return result(withExpectedSourceGaps(EMPTY_PROJECTION, expectedSources));
+      }
 
       let db: ReturnType<typeof openCanonicalDatabaseHandle> | undefined;
       try {
@@ -291,6 +302,9 @@ export function createCanonicalOverviewQuery(
               "credit-card-statements",
             ],
             scope: ALL_TIME_SCOPE,
+            ...(knowledgePoint !== undefined
+              ? { cutoff: { knowledgeAt: knowledgePoint } }
+              : {}),
           });
           return mapProjection(
             snapshot,
@@ -302,7 +316,13 @@ export function createCanonicalOverviewQuery(
           );
         });
         return result(projection);
-      } catch {
+      } catch (error) {
+        if (
+          input.cutoff &&
+          error instanceof Error &&
+          error.message === "canonical-cutoff-unavailable"
+        )
+          throw error;
         return result(unavailableProjection(expectedSources));
       } finally {
         db?.close();

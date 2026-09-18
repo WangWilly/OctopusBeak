@@ -12,17 +12,22 @@ import type {
 import type { OverviewPageDto } from "../types.ts";
 import { buildCanonicalOverviewSankeyGraph } from "./overview-sankey.ts";
 import { createFinancialQuery } from "../../shared-ledger/server/financial-query.ts";
+import type { FinancialQueryCutoff } from "../../shared-ledger/server/financial-query.ts";
 import { mapCanonicalCreditCard } from "../../shared-ledger/server/canonical-product.ts";
 
 export async function loadOverview(
   ledgerDir = DEFAULT_LEDGER_DIR,
-  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
+  input: {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+    cutoff?: FinancialQueryCutoff;
+  } = {},
 ): Promise<OverviewPageDto> {
   const query = createFinancialQuery(ledgerDir);
   const current = await query.current({
     kind: "current",
     product: "overview",
     expectedSources: input.expectedSources,
+    cutoff: input.cutoff,
   });
   const projection = current.projection;
   const accounts = projection.accounts.map((account): AccountRowDto => ({
@@ -63,6 +68,7 @@ export async function loadOverview(
   );
 
   return {
+    knowledgePoint: projection.knowledgePoint,
     availability: projection.availability,
     coverage: projection.availability === "unavailable"
       ? "unavailable"

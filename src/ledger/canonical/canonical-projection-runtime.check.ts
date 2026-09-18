@@ -556,6 +556,55 @@ test("historical reads require dual cutoffs and never use retired generations", 
   }
 });
 
+test("current reads honor an exact generation cutoff after later commits", async () => {
+  const { directory, runtime, scope } = await fixture();
+  try {
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
+    let cutoff: number;
+    try {
+      cutoff = Number(
+        (
+          db
+            .prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits")
+            .get() as { value?: unknown }
+        ).value,
+      );
+    } finally {
+      db.close();
+    }
+    const before = runtime.read({
+      kind: "current",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { knowledgeAt: cutoff },
+    });
+    assert.equal(before.kind, "current");
+    assert.equal(before.knowledgePoint, cutoff);
+    assert.equal(before.financialAt, null);
+
+    await commitCathayAutomaticEnrichmentFromDescriptions(directory);
+    const after = runtime.read({
+      kind: "current",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { knowledgeAt: cutoff },
+    });
+    assert.deepEqual(after, before);
+    assert.throws(
+      () =>
+        runtime.read({
+          kind: "current",
+          families: ["transactions"],
+          scope,
+          cutoff: { knowledgeAt: cutoff + 10 },
+        }),
+      { message: "canonical-cutoff-unavailable" },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("transaction enrichment is a Runtime family at current and historical cutoffs", async () => {
   const { directory, runtime, scope } = await fixture();
   try {

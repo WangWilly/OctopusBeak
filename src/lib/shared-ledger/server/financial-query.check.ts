@@ -115,6 +115,15 @@ try {
   assert.deepEqual(spending.invoices, []);
   assert.deepEqual(spending.purchaseReport.records, []);
   assert.equal(spending.purchaseReport.totalStatus, "complete");
+  assert.equal(spending.purchaseReport.knowledgeAt, 0);
+  assert.throws(
+    () => productQuery.current({
+      kind: "current",
+      product: "spending",
+      cutoff: { knowledgePoint: 1 },
+    }),
+    { message: "canonical-cutoff-unavailable" },
+  );
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

@@ -38,6 +38,8 @@ export type OverviewSankeyGraphDto = {
 };
 
 export type OverviewPageDto = {
+  /** Canonical knowledge point used to build this page payload. */
+  knowledgePoint?: number;
   availability: "empty" | "awaiting" | "available" | "unavailable";
   /** Whether all displayed totals have a typed current value. */
   coverage: "complete" | "partial" | "unavailable";

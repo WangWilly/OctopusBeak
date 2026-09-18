@@ -19,6 +19,7 @@ import type {
   SpendingLoadInput,
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
+import type { FinancialQueryCutoff } from "$lib/shared-ledger/server/financial-query.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
   HumanAssistanceContract,
@@ -81,6 +82,10 @@ export type ViewerInputResult = {
   resumed: boolean;
 };
 
+export type FinancialPageLoadInput = Readonly<{
+  cutoff?: FinancialQueryCutoff;
+}>;
+
 export function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
@@ -95,13 +100,13 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
   };
   overview: {
-    load(): Promise<OverviewPageDto>;
+    load(input?: FinancialPageLoadInput): Promise<OverviewPageDto>;
   };
   assets: {
-    load(): Promise<AssetsPageDto>;
+    load(input?: FinancialPageLoadInput): Promise<AssetsPageDto>;
   };
   liabilities: {
-    load(): Promise<LiabilitiesPageDto>;
+    load(input?: FinancialPageLoadInput): Promise<LiabilitiesPageDto>;
   };
   financialFreshness: {
     subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;

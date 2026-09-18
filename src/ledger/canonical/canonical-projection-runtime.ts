@@ -97,12 +97,38 @@ export type CanonicalProjectionScope = Readonly<{
   endDate?: string;
 }>;
 
+/**
+ * A renderer-facing generation cutoff.  The value is intentionally kept as a
+ * small serializable request object at the process boundary; the projection
+ * runtime validates it before it can influence a read.
+ */
+export type CanonicalKnowledgePointCutoff = Readonly<{
+  knowledgePoint: number;
+}>;
+
+/** A validated knowledge point used inside canonical query implementations. */
+export type CanonicalKnowledgePoint = number & {
+  readonly __canonicalKnowledgePoint: unique symbol;
+};
+
+export function validateCanonicalKnowledgePoint(
+  value: unknown,
+): CanonicalKnowledgePoint {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  )
+    throw new Error("canonical-cutoff-unavailable");
+  return value as CanonicalKnowledgePoint;
+}
+
 export type CanonicalProjectionReadRequest = Readonly<{
   kind: "current" | "historical";
   families: readonly CanonicalProjectionFamily[];
   scope: CanonicalProjectionScope;
   cutoff?: Readonly<{
-    financialAt: string;
+    financialAt?: string;
     knowledgeAt: number;
   }>;
 }>;
@@ -3198,9 +3224,12 @@ function readSnapshotInTransaction(
   )
     throw new Error("Unknown canonical projection family.");
   requireScope(request.scope);
+  const hasExplicitCurrentCutoff =
+    request.kind === "current" && request.cutoff !== undefined;
   if (
     request.kind === "historical" &&
     (!request.cutoff ||
+      !request.cutoff.financialAt ||
       !ISO_DATE.test(request.cutoff.financialAt) ||
       !Number.isSafeInteger(request.cutoff.knowledgeAt))
   )
@@ -3217,13 +3246,17 @@ function readSnapshotInTransaction(
     ).value ?? 0,
   );
   const active =
-    request.kind === "current" ? activeGenerationForRead(db, latest) : null;
+    request.kind === "current" && !hasExplicitCurrentCutoff
+      ? activeGenerationForRead(db, latest)
+      : null;
   const cutoff = request.cutoff;
   const knowledgeAt =
     request.kind === "current"
-      ? active === null
-        ? 0
-        : currentProjectionCommitSequence(db)
+      ? hasExplicitCurrentCutoff
+        ? validateCurrentCutoff(db, latest, cutoff?.knowledgeAt)
+        : active === null
+          ? 0
+          : currentProjectionCommitSequence(db)
       : cutoff?.knowledgeAt;
   if (
     knowledgeAt === undefined ||
@@ -3232,6 +3265,16 @@ function readSnapshotInTransaction(
     knowledgeAt > latest
   )
     throw new Error("Canonical projection knowledge cutoff is invalid.");
+  const effectiveRequest: CanonicalProjectionReadRequest = hasExplicitCurrentCutoff
+    ? {
+        ...request,
+        kind: "historical",
+        cutoff: {
+          financialAt: cutoff?.financialAt ?? "9999-12-31",
+          knowledgeAt,
+        },
+      }
+    : request;
   const requested = new Set(request.families);
   const familyRows = <Family extends CanonicalProjectionFamily>(family: Family) =>
     requested.has(family)
@@ -3243,7 +3286,7 @@ function readSnapshotInTransaction(
                 readFamily(
                   db,
                   family,
-                  request,
+                  effectiveRequest,
                   knowledgeAt,
                   active?.generationId ?? null,
                 ),
@@ -3251,7 +3294,7 @@ function readSnapshotInTransaction(
             : readFamily(
                 db,
                 family,
-                request,
+                effectiveRequest,
                 knowledgeAt,
                 active?.generationId ?? null,
               ),
@@ -3286,6 +3329,22 @@ function readSnapshotInTransaction(
     financialAt: cutoff?.financialAt ?? null,
     families,
   });
+}
+
+function validateCurrentCutoff(
+  db: DatabaseSync,
+  latest: number,
+  value: unknown,
+): number {
+  const knowledgeAt = validateCanonicalKnowledgePoint(value);
+  if (knowledgeAt > latest)
+    throw new Error("canonical-cutoff-unavailable");
+  if (knowledgeAt === 0) return knowledgeAt;
+  const row = db
+    .prepare("SELECT 1 AS available FROM canonical_commits WHERE commit_sequence = ?")
+    .get(knowledgeAt) as { available?: unknown } | undefined;
+  if (!row) throw new Error("canonical-cutoff-unavailable");
+  return knowledgeAt;
 }
 
 function createRuntime(

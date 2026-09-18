@@ -36,6 +36,7 @@ import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
 import {
   createFinancialQuery,
   queryCurrentSpendingFromDatabase,
+  type FinancialQueryCutoff,
   type CurrentSpendingQueryResult,
 } from "../../shared-ledger/server/financial-query.ts";
 import { exactToNumber } from "../../shared-money/exact.ts";
@@ -62,6 +63,7 @@ export type SpendingOverrideUpdate =
 export type SpendingLoadInput = {
   selectedMonth?: string;
   selectedCategory?: SpendingCategory | string;
+  cutoff?: FinancialQueryCutoff;
 };
 
 const LOCAL_SPENDING_USER_ID = "local-user";
@@ -350,9 +352,16 @@ function purchaseReportWithEphemeralCandidates(
   });
 }
 
-function currentSpendingQuery(ledgerDir: string): CurrentSpendingQueryResult {
+function currentSpendingQuery(
+  ledgerDir: string,
+  cutoff?: FinancialQueryCutoff,
+): CurrentSpendingQueryResult {
   fullProjectionDiagnostics.publish({ ledgerDir });
-  return createFinancialQuery(ledgerDir).current({ kind: "current", product: "spending" });
+  return createFinancialQuery(ledgerDir).current({
+    kind: "current",
+    product: "spending",
+    cutoff,
+  });
 }
 
 function currentSpendingQueryFromStore(
@@ -376,6 +385,7 @@ function pageFromQuery(
   { selectedMonth, selectedCategory }: SpendingLoadInput = {},
 ): SpendingPageDto {
   return {
+    knowledgePoint: query.spending.knowledgePoint,
     canonical: canonicalView(query.spending, selectedMonth, selectedCategory),
     purchaseReport: purchaseReportWithEphemeralCandidates(query, purchaseReport),
     invoices: currentSpendingInvoices(query.invoices),
@@ -591,9 +601,9 @@ export function revokeSpendingLink(
 
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
-  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
+  { selectedMonth, selectedCategory, cutoff }: SpendingLoadInput = {},
 ): SpendingPageDto {
-  const query = currentSpendingQuery(ledgerDir);
+  const query = currentSpendingQuery(ledgerDir, cutoff);
   return pageFromQuery(query, query.purchaseReport, { selectedMonth, selectedCategory });
 }
 

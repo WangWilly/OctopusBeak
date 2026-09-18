@@ -21,11 +21,14 @@ port.on("message", async (request: FinancialPageRequest) => {
   let response: FinancialPageResponse;
   try {
     const value = request.page === "overview"
-      ? await loadOverview(undefined, { expectedSources: configuredOverviewSources() })
+      ? await loadOverview(undefined, {
+        expectedSources: configuredOverviewSources(),
+        cutoff: request.input?.cutoff,
+      })
       : request.page === "assets"
-        ? await loadAssets()
+        ? await loadAssets(undefined, request.input)
         : request.page === "liabilities"
-          ? await loadLiabilities()
+          ? await loadLiabilities(undefined, request.input)
           : request.page === "spending-action"
             ? request.action === "confirmCandidate"
               ? confirmSpendingCandidate(request.input as Parameters<typeof confirmSpendingCandidate>[0])

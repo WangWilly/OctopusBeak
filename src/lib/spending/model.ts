@@ -187,6 +187,8 @@ export type SpendingModel = {
 /** Active desktop Spending payload. Legacy model fields stay available only to
  * the compatibility model builder and are not emitted by the product loader. */
 export type SpendingPageDto = {
+  /** Canonical knowledge point used to build this page payload. */
+  knowledgePoint?: number;
   canonical: CanonicalSpendingView;
   /** Purchase-basis canonical report used by the active Spending page. */
   purchaseReport: SpendingPurchaseReportDto;
