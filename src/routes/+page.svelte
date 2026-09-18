@@ -39,6 +39,10 @@
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
+  import {
+    spendingActionOutcomeConfirmed,
+    type SpendingPendingCommandIdentity,
+  } from "$lib/spending/spending-action-lifecycle.ts";
   import type {
     SpendingPageDto,
     SpendingPrimaryDto,
@@ -821,7 +825,7 @@
    * component asks the page coordinator for one complete, cutoff-pinned
    * Spending generation before declaring the outcome known.
    */
-  async function reconcileSpendingAction() {
+  async function reconcileSpendingAction(identity?: SpendingPendingCommandIdentity) {
     while (route === "spending") {
       const knowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
       await loadRoute("spending", {
@@ -836,7 +840,12 @@
         && spending.primary.status === "ready"
         && spending.primary.knowledgePoint === knowledgePoint
         && secondary.knowledgePoint === knowledgePoint
-      ) return;
+      ) {
+        if (identity && !spendingActionOutcomeConfirmed(secondary.purchaseReport, identity)) {
+          throw new Error("spending-action-outcome-unconfirmed");
+        }
+        return;
+      }
 
       // A newer commit may have cancelled this exact-cutoff read. Reconcile
       // directly to the newest point without ever exposing the old response as

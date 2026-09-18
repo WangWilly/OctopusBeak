@@ -5,7 +5,7 @@
 
   export let spending: SpendingPageDto;
   /** Reconcile an uncertain write by loading a fresh Spending generation. */
-  export let onActionReconciliation: (() => Promise<void>) | undefined = undefined;
+  export let onActionReconciliation: ((identity?: import("./spending-action-lifecycle.ts").SpendingPendingCommandIdentity) => Promise<void>) | undefined = undefined;
   /** Purchase matching is secondary data and may lag the canonical primary view. */
   export let purchaseReportReady = true;
 </script>

@@ -62,6 +62,7 @@ assert.doesNotMatch(source, /return .*String\(error\)/);
 assert.doesNotMatch(source, /console\.warn\([^\n]*,\s*error\)/);
 assert.match(source, /讀取中/);
 assert.match(source, /onActionReconciliation/);
+assert.match(source, /onActionReconciliation\(identity\)/);
 assert.match(source, /invoiceIdentityId/);
 assert.match(source, /transactionIdentityId/);
 assert.match(source, /slice\(0, paymentVisibleCount\)/);

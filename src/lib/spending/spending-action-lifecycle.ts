@@ -181,6 +181,22 @@ export function isSpendingActionUncertain(error: unknown): boolean {
 }
 
 /**
+ * A transport failure is resolved only by a complete current projection that
+ * proves the requested link state. Merely loading a newer knowledge point is
+ * insufficient: the command may never have reached the main process.
+ */
+export function spendingActionOutcomeConfirmed(
+  report: Pick<SpendingPurchaseReportView, "records">,
+  identity: SpendingPendingCommandIdentity,
+): boolean {
+  const linkExists = report.records.some((record) =>
+    record.link?.invoiceId === identity.firstId
+    && record.link.transactionId === identity.secondId
+  );
+  return identity.action === "unlink" ? !linkExists : linkExists;
+}
+
+/**
  * Validate both the command receipt and the patch boundary before changing
  * the displayed report. A mismatch means the renderer cannot prove that the
  * sparse patch belongs to the visible generation and must reconcile instead.

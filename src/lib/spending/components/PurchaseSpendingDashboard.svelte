@@ -27,7 +27,7 @@
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
-  export let onActionReconciliation: (() => Promise<void>) | undefined = undefined;
+  export let onActionReconciliation: ((identity?: SpendingPendingCommandIdentity) => Promise<void>) | undefined = undefined;
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
@@ -403,13 +403,14 @@
 
   async function reconcileSpendingAction(
     command?: SpendingPendingCommand,
+    identity?: SpendingPendingCommandIdentity,
     options: { dataChanged?: boolean } = {},
   ): Promise<boolean> {
     actionReconciliationPending = true;
     actionError = "";
     try {
       if (!onActionReconciliation) throw new Error("spending-action-reconciliation-unavailable");
-      await onActionReconciliation();
+      await onActionReconciliation(identity);
       if (command) completeSpendingPendingCommand(command);
       if (options.dataChanged) {
         actionNotice = $locale === "zh-TW"
@@ -431,6 +432,7 @@
   async function applySpendingActionResult(
     result: SpendingPurchaseActionResult,
     command?: SpendingPendingCommand,
+    identity?: SpendingPendingCommandIdentity,
     telemetry?: ReturnType<typeof financialPerformanceTelemetry.startOperation>,
   ): Promise<boolean> {
     try {
@@ -444,7 +446,7 @@
       return true;
     } catch (error) {
       telemetry?.startSpan("patch-applied").finish("error", { error });
-      await reconcileSpendingAction(command, {
+      await reconcileSpendingAction(command, identity, {
         dataChanged: spendingActionErrorCode(error) === "spending-pair-stale" ||
           (error instanceof Error && error.message === "spending-action-stale"),
       });
@@ -467,7 +469,7 @@
     try {
       command = identity ? beginSpendingPendingCommand(identity) : undefined;
       const result = await request(command?.idempotencyKey);
-      if (await applySpendingActionResult(result, command, telemetry)) {
+      if (await applySpendingActionResult(result, command, identity, telemetry)) {
         await tick();
         telemetry.finish("paint-ready");
         telemetryFinished = true;
@@ -479,7 +481,7 @@
         if (command) completeSpendingPendingCommand(command);
         actionError = actionErrorText(error);
       } else if (code === "spending-pair-stale" || isSpendingActionUncertain(error)) {
-        await reconcileSpendingAction(command, { dataChanged: code === "spending-pair-stale" });
+        await reconcileSpendingAction(command, identity, { dataChanged: code === "spending-pair-stale" });
       } else {
         actionError = actionErrorText(error);
       }

@@ -4,6 +4,7 @@ import {
   applyValidatedSpendingActionResult,
   beginSpendingPendingCommand,
   completeSpendingPendingCommand,
+  spendingActionOutcomeConfirmed,
   spendingActionErrorCode,
   spendingPendingCommandStorageKey,
 } from "./spending-action-lifecycle.ts";
@@ -151,4 +152,24 @@ test("action receipts cannot apply a patch from another displayed generation", (
     () => applyValidatedSpendingActionResult(current, result),
     /spending-action-stale/iu,
   );
+});
+
+test("a reconciled projection confirms pair and unlink outcomes explicitly", () => {
+  const linked = {
+    ...report(12),
+    records: [{
+      link: { invoiceId: "invoice-1", transactionId: "transaction-1" },
+    } as SpendingPurchaseReportView["records"][number]],
+  };
+  const pair = {
+    action: "direct-pair" as const,
+    firstId: "invoice-1",
+    secondId: "transaction-1",
+  };
+  const unlink = { ...pair, action: "unlink" as const };
+
+  assert.equal(spendingActionOutcomeConfirmed(linked, pair), true);
+  assert.equal(spendingActionOutcomeConfirmed(linked, unlink), false);
+  assert.equal(spendingActionOutcomeConfirmed(report(12), pair), false);
+  assert.equal(spendingActionOutcomeConfirmed(report(12), unlink), true);
 });
