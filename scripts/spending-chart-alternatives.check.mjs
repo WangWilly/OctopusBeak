@@ -55,12 +55,35 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(({ model }) => {
     window.__spendingLoadCount = 0;
+    window.__spendingSectionCalls = [];
     window.octopusBeak = {
       settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
+      financialFreshness: {
+        subscribe: () => () => {},
+        latestKnowledgePoint: async () => model.knowledgePoint,
+      },
       spending: {
         load: async () => {
           window.__spendingLoadCount += 1;
           return { canonical: model };
+        },
+        loadSection: async (section, input = {}) => {
+          window.__spendingLoadCount += 1;
+          window.__spendingSectionCalls.push({
+            section,
+            knowledgePoint: input.cutoff?.knowledgePoint ?? null,
+          });
+          const knowledgePoint = model.knowledgePoint;
+          return {
+            section,
+            knowledgePoint,
+            value: {
+              knowledgePoint,
+              canonical: model,
+              purchaseReport: null,
+              invoices: [],
+            },
+          };
         },
         updateTransactionOverride: async () => {
           throw new Error("legacy Spending mutation invoked");
@@ -75,17 +98,19 @@ try {
 
   const chart = page.locator("[data-chart]");
   await chart.waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__spendingSectionCalls.map(({ section }) => section).sort()), ["primary", "secondary"]);
+  assert.deepEqual(await page.evaluate(() => [...new Set(window.__spendingSectionCalls.map(({ knowledgePoint }) => knowledgePoint))]), [42]);
   assert.equal(await page.locator("[data-spending-canonical]").count(), 1);
   assert.equal(await chart.locator(".canonical-chart-row").count(), 31);
   assert.equal(await chart.locator(".canonical-chart-row").filter({ hasText: "USD" }).count(), 1);
   assert.match((await page.locator(".canonical-chart-card .panel-meta").first().textContent()) ?? "", /All months.*all categories.*currencies remain separate/u);
   assert.equal(await page.locator('[data-total-status="incomplete"]').count(), 0);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 2);
 
   await page.getByRole("button", { name: "September 2026" }).click();
   assert.match((await page.locator(".canonical-summary-card .panel-meta").textContent()) ?? "", /September 2026.*All categories.*included/u);
   assert.equal(await page.locator(".canonical-category-chart .canonical-chart-row").count(), 2);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 2);
 
   const summaryBeforeCategory = await page.locator(".canonical-summary-card").textContent();
   await page.getByRole("button", { name: "Transportation" }).click();
@@ -94,7 +119,7 @@ try {
   assert.equal(await page.locator(".canonical-summary-card").textContent(), summaryBeforeCategory);
   await page.getByRole("button", { name: "All" }).click();
   assert.equal(await page.locator(".canonical-record-list .canonical-record").count(), 1);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 2);
 
   assert.deepEqual(errors, []);
 } finally {
