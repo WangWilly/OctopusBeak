@@ -1,9 +1,29 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
-import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import type {
+  FinancialFreshnessEvent,
+  OctopusBeakApi,
+} from "../src/lib/desktop/api.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
+}
+
+function knowledgePointFrom(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function financialFreshnessEventFrom(
+  value: unknown,
+): FinancialFreshnessEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = knowledgePointFrom(record.knowledgePoint);
+  return knowledgePoint === null || Object.keys(record).length !== 1
+    ? null
+    : Object.freeze({ knowledgePoint });
 }
 
 const api: OctopusBeakApi = {
@@ -25,6 +45,31 @@ const api: OctopusBeakApi = {
   },
   liabilities: {
     load: () => ipcRenderer.invoke("liabilities:load"),
+  },
+  financialFreshness: {
+    subscribe(listener) {
+      if (typeof listener !== "function") {
+        throw new TypeError("Financial freshness listener must be a function.");
+      }
+      const onEvent = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        const event = financialFreshnessEventFrom(payload);
+        if (event) listener(event);
+      };
+      ipcRenderer.on("financialFreshness:changed", onEvent);
+      return () => {
+        ipcRenderer.removeListener("financialFreshness:changed", onEvent);
+      };
+    },
+    async latestKnowledgePoint() {
+      const value = await ipcRenderer.invoke(
+        "financialFreshness:latestKnowledgePoint",
+      );
+      const knowledgePoint = knowledgePointFrom(value);
+      if (knowledgePoint === null) {
+        throw new Error("Financial freshness response is invalid.");
+      }
+      return knowledgePoint;
+    },
   },
   spending: {
     load: (input) => ipcRenderer.invoke("spending:load", input),

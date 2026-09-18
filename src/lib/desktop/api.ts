@@ -55,6 +55,10 @@ export type AutomationDesktopModel = {
   credentialGroups: CredentialGroupDto[];
 };
 
+export type FinancialFreshnessEvent = Readonly<{
+  knowledgePoint: number;
+}>;
+
 export type AutomationActionResult =
   | { started: string }
   | { resumed: string }
@@ -99,6 +103,10 @@ export type OctopusBeakApi = {
   liabilities: {
     load(): Promise<LiabilitiesPageDto>;
   };
+  financialFreshness: {
+    subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;
+    latestKnowledgePoint(): Promise<number>;
+  };
   spending: {
     load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
@@ -136,6 +144,8 @@ export const octopusBeakApiChannels = [
   "overview:load",
   "assets:load",
   "liabilities:load",
+  "financialFreshness:changed",
+  "financialFreshness:latestKnowledgePoint",
   "spending:load",
   "spending:confirmCandidate",
   "spending:denyCandidate",

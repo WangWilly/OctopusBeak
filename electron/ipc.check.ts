@@ -7,6 +7,8 @@ assert.equal(octopusBeakApiChannels.includes("settings:save"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:confirmCandidate"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:denyCandidate"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:revokeLink"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:changed"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:latestKnowledgePoint"), true);
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
@@ -14,6 +16,9 @@ assert.match(source, /ipcMain\.handle\("settings:save"/);
 assert.match(source, /ipcMain\.handle\("spending:confirmCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:denyCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:revokeLink"/);
+assert.match(source, /FINANCIAL_FRESHNESS_LATEST_CHANNEL/);
+assert.match(source, /latestKnowledgePointFromDatabase/);
+assert.match(source, /financialFreshness\.publish\(receipt\)/);
 assert.match(
   source,
   /createFinancialPageWorkerClient/,
@@ -34,7 +39,7 @@ assert.doesNotMatch(
   /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
   "liabilities projection must not execute synchronously on Electron main",
 );
-assert.match(source, /return \{\s*close: \(\) => financialPages\.close\(\),?\s*\}/);
+assert.match(source, /return \{[\s\S]*close: \(\) => financialPages\.close\(\)/);
 assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
 assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);

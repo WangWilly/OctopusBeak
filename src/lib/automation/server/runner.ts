@@ -67,6 +67,7 @@ import { readAutomationSettings } from "./settings.ts";
 import {
   runCaptchaRetryCampaign,
 } from "./captcha-retry-coordinator.ts";
+import type { CanonicalFinancialCommitReceipt } from "../../../ledger/canonical/canonical-financial-commit-receipt.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 
 export { closeLibrettoSession };
@@ -77,6 +78,9 @@ let librettoRunCdpPatched = false;
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void | Promise<void>;
 };
 
 type AutomationTaskExecutionRunnerInput = {
@@ -87,6 +91,9 @@ type AutomationTaskExecutionRunnerInput = {
   currentTaskRunId: () => string | null;
   onRunCreated: (taskRunId: string) => void;
   isCancellationRequested: () => boolean;
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void | Promise<void>;
   runExecution?: typeof runAutomationTaskExecution;
 };
 
@@ -113,6 +120,9 @@ export function createAutomationTaskExecutionRunner(
         taskRunId:
           executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
         isCancellationRequested: input.isCancellationRequested,
+        onCanonicalFinancialCommitReceipt:
+          executionOptions.onCanonicalFinancialCommitReceipt ??
+          input.onCanonicalFinancialCommitReceipt,
       },
       input.onRunCreated,
     );
@@ -247,6 +257,8 @@ export function startAutomationTask(
   void runAutomationTask(taskId, ledgerDir, {
     claimed: true,
     scheduledAtUtc: options.scheduledAtUtc,
+    onCanonicalFinancialCommitReceipt:
+      options.onCanonicalFinancialCommitReceipt,
   }).catch((error) => {
     console.error("automation-task-run-failed", error);
   });
@@ -255,6 +267,7 @@ export function startAutomationTask(
 export function startAutomationTasks(
   taskIds: readonly string[],
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  options: StartAutomationTaskOptions = {},
 ) {
   const uniqueTaskIds = [...new Set(taskIds)];
   let settings: ReturnType<typeof readAutomationSettings> | undefined;
@@ -289,7 +302,11 @@ export function startAutomationTasks(
         if (activeTaskRunIds.get(taskId) !== "queued") return;
         activeTaskRunIds.set(taskId, "pending");
       }
-      await runAutomationTask(taskId, ledgerDir, { claimed }).catch((error) => {
+      await runAutomationTask(taskId, ledgerDir, {
+        claimed,
+        onCanonicalFinancialCommitReceipt:
+          options.onCanonicalFinancialCommitReceipt,
+      }).catch((error) => {
         console.error("automation-task-run-failed", error);
       });
     }).catch((error) => {
@@ -302,6 +319,7 @@ export function startAutomationResume(
   taskId: string,
   session: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  options: StartAutomationTaskOptions = {},
 ) {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
   if (!session.match(/^[\w-]+$/))
@@ -310,6 +328,8 @@ export function startAutomationResume(
   void runAutomationTask(taskId, ledgerDir, {
     claimed: true,
     resumeSession: session,
+    onCanonicalFinancialCommitReceipt:
+      options.onCanonicalFinancialCommitReceipt,
   }).catch((error) => {
     console.error("automation-task-resume-failed", error);
   });
@@ -486,6 +506,8 @@ export async function runAutomationTask(
       onRunCreated,
       isCancellationRequested: () =>
         automationTaskCancellationRequested(taskId),
+      onCanonicalFinancialCommitReceipt:
+        options.onCanonicalFinancialCommitReceipt,
     });
     return await runCaptchaRetryCampaign({
       taskId,
@@ -495,6 +517,8 @@ export async function runAutomationTask(
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
         resumeSession: options.resumeSession,
+        onCanonicalFinancialCommitReceipt:
+          options.onCanonicalFinancialCommitReceipt,
       },
       execute: execution,
       isCancellationRequested: () =>

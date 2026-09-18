@@ -7,6 +7,8 @@ assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:changed"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:latestKnowledgePoint"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
@@ -24,5 +26,10 @@ for (const [method, channel] of [
   ["setCathayGmailOtpEnabled", "automation:setCathayGmailOtpEnabled"],
   ["disconnectCathayGmailOtp", "automation:disconnectCathayGmailOtp"],
 ]) {
-  assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
+assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
 }
+assert.match(source, /financialFreshness:\s*\{/);
+assert.match(source, /ipcRenderer\.on\("financialFreshness:changed"/);
+assert.match(source, /ipcRenderer\.removeListener\("financialFreshness:changed", onEvent\)/);
+assert.match(source, /ipcRenderer\.invoke\(\s*"financialFreshness:latestKnowledgePoint"/);
+assert.match(source, /financialFreshnessEventFrom/);

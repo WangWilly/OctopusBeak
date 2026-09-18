@@ -44,6 +44,7 @@ import {
   validateCertificateFilePath,
 } from "./credential-file.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import type { CanonicalFinancialCommitReceipt } from "../../../ledger/canonical/canonical-financial-commit-receipt.ts";
 import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
 import type {
   CathayGmailOtpConnectionError,
@@ -390,15 +391,23 @@ export function automationSaveCredentials(updates: Record<string, string>) {
 export function automationRun(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void | Promise<void>,
 ) {
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-  startAutomationTask(task.id, ledgerDir);
+  startAutomationTask(task.id, ledgerDir, {
+    onCanonicalFinancialCommitReceipt,
+  });
   return { started: task.id };
 }
 
 export function automationRunMany(
   taskIds: string[],
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void | Promise<void>,
 ) {
   if (
     !Array.isArray(taskIds) ||
@@ -414,6 +423,7 @@ export function automationRunMany(
   startAutomationTasks(
     tasks.map((task) => task.id),
     ledgerDir,
+    { onCanonicalFinancialCommitReceipt },
   );
   return { started: tasks.map((task) => task.id) };
 }
@@ -456,6 +466,9 @@ export function assertHumanAssistanceCompletionCanResume(
 export function automationResume(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void | Promise<void>,
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
@@ -470,6 +483,8 @@ export function automationResume(
   const session = resumeSessionFromLog(row.logTail);
   if (!session)
     throw new Error("Missing Libretto resume session in latest log.");
-  startAutomationResume(task.id, session, ledgerDir);
+  startAutomationResume(task.id, session, ledgerDir, {
+    onCanonicalFinancialCommitReceipt,
+  });
   return { resumed: task.id };
 }

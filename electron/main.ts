@@ -190,7 +190,12 @@ async function start() {
       hasSuccessSince: () => false,
       isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
       startTask: (scheduledAtUtc) => {
-        startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });
+        startAutomationTask("exchange-rates", ledgerDir, {
+          scheduledAtUtc,
+          onCanonicalFinancialCommitReceipt: (receipt) => {
+            ipcRegistration?.publishCanonicalFinancialCommitReceipt(receipt);
+          },
+        });
       },
       reportError: (error) => console.error("exchange-rate-scheduler-error", error),
     });

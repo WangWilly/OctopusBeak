@@ -64,6 +64,12 @@ import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
 } from "./window-options.ts";
+import { openCanonicalDatabaseHandle } from "../src/ledger/canonical/canonical-database.ts";
+import {
+  createFinancialFreshnessBroadcaster,
+  FINANCIAL_FRESHNESS_LATEST_CHANNEL,
+  latestKnowledgePointFromDatabase,
+} from "./financial-freshness.ts";
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -75,6 +81,13 @@ export function registerOctopusBeakIpc({
   const financialPages = createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
+  const financialFreshness = createFinancialFreshnessBroadcaster({
+    getWindows: () => BrowserWindow.getAllWindows(),
+  });
+  const canonicalLedgerDir =
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    "data/ledger";
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -123,6 +136,16 @@ export function registerOctopusBeakIpc({
       return { ok: true as const };
     },
   );
+  ipcMain.handle(FINANCIAL_FRESHNESS_LATEST_CHANNEL, () => {
+    const database = openCanonicalDatabaseHandle(canonicalLedgerDir, {
+      readOnly: true,
+    });
+    try {
+      return latestKnowledgePointFromDatabase(database.db);
+    } finally {
+      database.close();
+    }
+  });
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
@@ -187,13 +210,19 @@ export function registerOctopusBeakIpc({
     },
   );
   ipcMain.handle("automation:run", (_event, taskId: string) =>
-    automationRun(taskId),
+    automationRun(taskId, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:runMany", (_event, taskIds: string[]) =>
-    automationRunMany(taskIds),
+    automationRunMany(taskIds, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:resume", (_event, taskId: string) =>
-    automationResume(taskId),
+    automationResume(taskId, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
     automationCancel(taskId),
@@ -335,5 +364,7 @@ export function registerOctopusBeakIpc({
   });
   return {
     close: () => financialPages.close(),
+    publishCanonicalFinancialCommitReceipt: (receipt: Parameters<typeof financialFreshness.publish>[0]) =>
+      financialFreshness.publish(receipt),
   };
 }
