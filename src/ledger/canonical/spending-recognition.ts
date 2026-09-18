@@ -227,6 +227,45 @@ function requireActivePair(db: DatabaseSync, pair: SpendingPair): void {
   if (!transactionState || transactionState.administrativeState !== "active")
     throw new Error("Direct Spending confirmation transaction identity is stale, replaced, or inactive.");
 }
+
+const SPENDING_LINK_EXCLUDED_KIND_PREFIXES = [
+  "transfer",
+  "cash",
+  "investment",
+  "payment.credit_card",
+  "payment.loan",
+] as const;
+
+/**
+ * Apply the current Spending inclusion predicate to one command pair without
+ * rebuilding the full Spending report.  This mirrors the bounded
+ * gross-posted-outflow query policy: an active transaction is linkable only
+ * when its typed kind is known and it is a normal, posted outflow whose kind
+ * is not reserved for transfers, cash, investments, or debt payments.
+ */
+function requireCurrentSpendingEligibility(db: DatabaseSync, pair: SpendingPair): void {
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment"],
+    scope: { transactionIds: [pair.transactionId] },
+  });
+  const transaction = projection.families.transactions[0];
+  const kind = projection.families["transaction-enrichment"].find(
+    (row) => row.fieldName === "kind",
+  )?.taxonomyCode ?? null;
+  const excludedKind = kind !== null && SPENDING_LINK_EXCLUDED_KIND_PREFIXES.some(
+    (prefix) => kind === prefix || kind.startsWith(`${prefix}.`),
+  );
+  if (
+    !transaction ||
+    transaction.administrativeState !== "active" ||
+    transaction.postingStatus !== "posted" ||
+    transaction.economicStatus !== "normal" ||
+    transaction.direction !== "outflow" ||
+    kind === null ||
+    excludedKind
+  ) throw new Error("Direct Spending confirmation pair is not currently eligible.");
+}
 function write<T>(
   store: CanonicalSourceStore,
   operation: (db: DatabaseSync) => T,
@@ -301,10 +340,12 @@ function commandEvent(
 function assertCommandPairCurrent(
   db: DatabaseSync,
   pair: SpendingPair,
+  requireSpendingEligibility: boolean,
 ): { invoice: Buffer; transaction: Buffer } {
   try {
     const identities = requirePair(db, pair);
     requireActivePair(db, pair);
+    if (requireSpendingEligibility) requireCurrentSpendingEligibility(db, pair);
     return identities;
   } catch (error) {
     if (error instanceof SpendingRecognitionCommandError) throw error;
@@ -368,7 +409,7 @@ export function executeSpendingRecognitionCommand(
           return commandResult(commandInput, prior, "replayed");
         }
 
-        const identities = assertCommandPairCurrent(db, pair);
+        const identities = assertCommandPairCurrent(db, pair, input.kind === "establish-link");
         if (input.kind === "establish-link") {
           if (commandPairHasConflict(db, identities))
             throw commandError("spending-pair-stale");

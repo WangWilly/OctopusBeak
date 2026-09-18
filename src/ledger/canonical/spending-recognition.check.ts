@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { CATHAY_DOMESTIC_DEPOSIT_FIXTURE, commitCathayDomesticDeposit } from "./cathay-domestic-deposit.ts";
+import { queryCanonicalSpendingCurrentFromDatabase } from "./canonical-categorization.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 import { commitCanonicalEInvoiceCapture, E_INVOICE_CONTRACT_VERSION, E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_ROUTE } from "./einvoice.ts";
 import { commitSpendingRefundRevision, confirmSpendingDedupLink, denySpendingDedupCandidate, executeSpendingRecognitionCommand, querySpendingRecognition, querySpendingRecognitionLineage, querySpendingRefundLineage, recordSpendingMatchCandidate, revokeSpendingDedupLink, SpendingRecognitionCommandError } from "./spending-recognition.ts";
@@ -83,13 +84,23 @@ async function setupRestartable() {
     invoices: [{ stableInvoiceKey: "AA00000001", sourceRevisionKey: "invoice-v1", revisionNumber: 1, revisionKind: "issued", sourceIdentifiers: { invoiceNumber: "AA00000001" }, seller: { taxId: "12345678" }, total: { coefficient: "1000", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY }, occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" }, items: [], authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION }, provenance: { kind: "fixture", reference: "fixture/restart-invoice" } }],
   });
   const invoice = dbRow(store.db.prepare("SELECT invoice_id FROM einvoice_invoices LIMIT 1").get());
-  const transactions = store.db.prepare("SELECT transaction_id FROM financial_transactions ORDER BY rowid LIMIT 2").all() as Array<{ transaction_id: unknown }>;
+  const transactions = store.db.prepare("SELECT transaction_id FROM financial_transactions ORDER BY rowid").all() as Array<{ transaction_id: unknown }>;
+  const eligibleTransactionId = queryCanonicalSpendingCurrentFromDatabase(store.db)
+    .includedTransactions[0]?.transactionId;
+  if (!eligibleTransactionId) throw new Error("Restartable fixture must contain a Spending-eligible transaction.");
+  const eligibleCommandTransactionId = eligibleTransactionId.includes("-")
+    ? eligibleTransactionId
+    : textId(Buffer.from(eligibleTransactionId, "hex"));
+  const secondTransactionId = transactions
+    .map((row) => textId(row.transaction_id))
+    .find((transactionId) => transactionId !== eligibleCommandTransactionId) ??
+    "ffffffff-ffff-ffff-ffff-ffffffffffff";
   return {
     directory,
     store,
     invoiceId: textId(invoice.invoice_id),
-    firstId: textId(transactions[0]!.transaction_id),
-    secondId: textId(transactions[1]!.transaction_id),
+    firstId: eligibleCommandTransactionId,
+    secondId: secondTransactionId,
   };
 }
 
@@ -285,6 +296,109 @@ test("canonical spending commands replay durably, reject key conflicts, and fail
       throw error;
     }
   } finally {
+    try { fixture.store.close(); } catch {}
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("canonical spending establish command rejects pairs outside the current Spending inclusion policy", async () => {
+  const fixture = await setupRestartable();
+  const transaction = Buffer.from(fixture.firstId.replaceAll("-", ""), "hex");
+  const originalKind = fixture.store.db.prepare(`
+    SELECT taxonomy_code, value_text
+      FROM current_transaction_enrichment
+     WHERE transaction_id = ? AND field_name = 'kind'
+  `).get(transaction) as { taxonomy_code: string; value_text: string };
+
+  const assertRejectedWithoutWrites = (idempotencyKey: string) => {
+    const beforeEvents = Number((fixture.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM spending_dedup_decision_events",
+    ).get() as { count: number }).count);
+    const beforeCommits = Number((fixture.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM canonical_commits",
+    ).get() as { count: number }).count);
+    assert.throws(
+      () => executeSpendingRecognitionCommand(fixture.store, {
+        kind: "establish-link",
+        invoiceId: fixture.invoiceId,
+        transactionId: fixture.firstId,
+        idempotencyKey,
+      }),
+      (error: unknown) => error instanceof SpendingRecognitionCommandError &&
+        error.code === "spending-pair-stale",
+    );
+    assert.equal(Number((fixture.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM spending_dedup_decision_events",
+    ).get() as { count: number }).count), beforeEvents);
+    assert.equal(Number((fixture.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM canonical_commits",
+    ).get() as { count: number }).count), beforeCommits);
+  };
+
+  try {
+    for (const [column, ineligible, eligible, key] of [
+      ["administrative_state", "deleted", "active", "forged-inactive-transaction"],
+      ["posting_status", "pending", "posted", "forged-pending-transaction"],
+      ["economic_status", "refund", "normal", "forged-refund-transaction"],
+      ["direction", "inflow", "outflow", "forged-inflow-transaction"],
+    ] as const) {
+      fixture.store.db.prepare(
+        `UPDATE transaction_revisions SET ${column} = ? WHERE transaction_id = ?`,
+      ).run(ineligible, transaction);
+      assertRejectedWithoutWrites(key);
+      fixture.store.db.prepare(
+        `UPDATE transaction_revisions SET ${column} = ? WHERE transaction_id = ?`,
+      ).run(eligible, transaction);
+    }
+
+    fixture.store.db.prepare(`
+      UPDATE current_transaction_enrichment
+         SET taxonomy_code = NULL
+       WHERE transaction_id = ? AND field_name = 'kind'
+    `).run(transaction);
+    assertRejectedWithoutWrites("forged-missing-kind");
+
+    fixture.store.db.prepare(`
+      UPDATE current_transaction_enrichment
+         SET taxonomy_code = 'payment.loan', value_text = 'payment.loan'
+       WHERE transaction_id = ? AND field_name = 'kind'
+    `).run(transaction);
+    assertRejectedWithoutWrites("forged-excluded-kind");
+
+    fixture.store.db.prepare(`
+      UPDATE current_transaction_enrichment
+         SET taxonomy_code = ?, value_text = ?
+       WHERE transaction_id = ? AND field_name = 'kind'
+    `).run(originalKind.taxonomy_code, originalKind.value_text, transaction);
+    await commitCanonicalEInvoiceCapture(fixture.store, {
+      captureId: "spending-recognition-revoked-invoice",
+      sourceConnectionKey: "sha256:spending-recognition-restart-connection",
+      identityEpoch: "sha256:spending-recognition-restart-epoch",
+      subjectDigest: "sha256:spending-recognition-restart-subject",
+      observedAt: "2026-10-01T00:00:00Z",
+      scope: { startDate: "2026-09-01", endDate: "2026-09-30", kind: "bounded-range", completeness: "complete-range", invoiceCompleteness: "complete", itemCompleteness: "complete", absenceAuthority: "comparable-complete-range" },
+      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { fixture: true } }],
+      invoices: [{
+        stableInvoiceKey: "AA00000001",
+        sourceRevisionKey: "invoice-v2-revoked",
+        revisionNumber: 2,
+        revisionKind: "revoked",
+        sourceIdentifiers: { invoiceNumber: "AA00000001" },
+        seller: { taxId: "12345678" },
+        occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+        items: [],
+        authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+        provenance: { kind: "provider-revocation", reference: "fixture/restart-invoice-revoked" },
+        revocationReason: "provider-declared-void",
+      }],
+    });
+    assertRejectedWithoutWrites("forged-inactive-invoice");
+  } finally {
+    fixture.store.db.prepare(`
+      UPDATE current_transaction_enrichment
+         SET taxonomy_code = ?, value_text = ?
+       WHERE transaction_id = ? AND field_name = 'kind'
+    `).run(originalKind.taxonomy_code, originalKind.value_text, transaction);
     try { fixture.store.close(); } catch {}
     await rm(fixture.directory, { recursive: true, force: true });
   }
