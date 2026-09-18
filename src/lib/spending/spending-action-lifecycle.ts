@@ -31,12 +31,16 @@ type PendingCommandStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
 const STORAGE_KEY = "octopus-beak.spending.pending-commands.v1";
 const STORAGE_VERSION = 1;
 const MAX_PENDING_COMMANDS = 32;
-const MAX_PENDING_COMMAND_AGE_MS = 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_STORAGE_UNAVAILABLE = "idempotency-storage-unavailable";
 
-function storageFrom(value?: PendingCommandStorage): PendingCommandStorage | null {
+function storageFrom(value?: PendingCommandStorage): PendingCommandStorage {
   if (value) return value;
-  if (typeof localStorage === "undefined") return null;
-  return localStorage;
+  try {
+    if (typeof localStorage === "undefined") throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+    return localStorage;
+  } catch {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+  }
 }
 
 function identityFor(value: SpendingPendingCommandIdentity): string {
@@ -47,33 +51,46 @@ function identityFor(value: SpendingPendingCommandIdentity): string {
   return `${action}:${firstId}:${secondId}`;
 }
 
-function readStored(storage: PendingCommandStorage, now: number): StoredPendingCommand[] {
+function readStored(storage: PendingCommandStorage): StoredPendingCommand[] {
+  let serialized: string | null;
+  try {
+    serialized = storage.getItem(STORAGE_KEY);
+  } catch {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+  }
+  if (!serialized) return [];
+
   let value: unknown;
   try {
-    const serialized = storage.getItem(STORAGE_KEY);
-    value = serialized ? JSON.parse(serialized) : null;
+    value = JSON.parse(serialized);
   } catch {
-    storage.removeItem(STORAGE_KEY);
-    return [];
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+  }
   const record = value as Record<string, unknown>;
-  if (record.version !== STORAGE_VERSION || !Array.isArray(record.commands)) return [];
-  const commands = record.commands.filter((entry): entry is StoredPendingCommand => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  if (record.version !== STORAGE_VERSION || !Array.isArray(record.commands)) {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+  }
+  const commands: StoredPendingCommand[] = [];
+  for (const entry of record.commands) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+    }
     const command = entry as Record<string, unknown>;
-    return (
+    if (!(
       (command.action === "candidate-confirmation" || command.action === "direct-pair" || command.action === "unlink") &&
       typeof command.identity === "string" && command.identity.length > 0 &&
       typeof command.idempotencyKey === "string" && command.idempotencyKey.length > 0 &&
       typeof command.createdAt === "number" && Number.isFinite(command.createdAt) &&
-      typeof command.lastUsedAt === "number" && Number.isFinite(command.lastUsedAt) &&
-      now - command.lastUsedAt <= MAX_PENDING_COMMAND_AGE_MS
-    );
-  });
+      typeof command.lastUsedAt === "number" && Number.isFinite(command.lastUsedAt)
+    )) throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+    commands.push(command as StoredPendingCommand);
+  }
+  if (commands.length > MAX_PENDING_COMMANDS) throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
   return commands
     .sort((left, right) => right.lastUsedAt - left.lastUsedAt)
-    .slice(0, MAX_PENDING_COMMANDS);
 }
 
 function writeStored(storage: PendingCommandStorage, commands: readonly StoredPendingCommand[]): void {
@@ -107,27 +124,26 @@ export function beginSpendingPendingCommand(
 ): SpendingPendingCommand {
   const storage = storageFrom(storageValue);
   const normalizedIdentity = identityFor(identity);
-  if (!storage) return { action: identity.action, identity: normalizedIdentity, idempotencyKey: opaqueKey() };
-  try {
-    const commands = readStored(storage, now);
-    const existing = commands.find((command) => command.identity === normalizedIdentity && command.action === identity.action);
-    const command: StoredPendingCommand = existing
-      ? { ...existing, lastUsedAt: now }
-      : {
-          action: identity.action,
-          identity: normalizedIdentity,
-          idempotencyKey: opaqueKey(),
-          createdAt: now,
-          lastUsedAt: now,
-        };
-    writeStored(storage, [command, ...commands.filter((entry) => entry !== existing)].slice(0, MAX_PENDING_COMMANDS));
-    return { action: command.action, identity: command.identity, idempotencyKey: command.idempotencyKey };
-  } catch {
-    // A blocked or full browser storage must not prevent the canonical action
-    // from running. The command remains safe because the server still owns
-    // idempotency; this renderer simply cannot survive a reload in this case.
-    return { action: identity.action, identity: normalizedIdentity, idempotencyKey: opaqueKey() };
+  const commands = readStored(storage);
+  const existing = commands.find((command) => command.identity === normalizedIdentity && command.action === identity.action);
+  if (!existing && commands.length >= MAX_PENDING_COMMANDS) {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
   }
+  const command: StoredPendingCommand = existing
+    ? { ...existing, lastUsedAt: now }
+    : {
+        action: identity.action,
+        identity: normalizedIdentity,
+        idempotencyKey: opaqueKey(),
+        createdAt: now,
+        lastUsedAt: now,
+      };
+  try {
+    writeStored(storage, [command, ...commands.filter((entry) => entry !== existing)]);
+  } catch {
+    throw new Error(IDEMPOTENCY_STORAGE_UNAVAILABLE);
+  }
+  return { action: command.action, identity: command.identity, idempotencyKey: command.idempotencyKey };
 }
 
 /** Remove a key only after the command outcome is known to be durable. */
@@ -136,10 +152,10 @@ export function completeSpendingPendingCommand(
   storageValue?: PendingCommandStorage,
   now = Date.now(),
 ): void {
-  const storage = storageFrom(storageValue);
-  if (!storage) return;
+  void now;
   try {
-    const commands = readStored(storage, now).filter((entry) =>
+    const storage = storageFrom(storageValue);
+    const commands = readStored(storage).filter((entry) =>
       entry.identity !== command.identity || entry.idempotencyKey !== command.idempotencyKey,
     );
     writeStored(storage, commands);
@@ -150,12 +166,14 @@ export function completeSpendingPendingCommand(
 
 export function spendingActionErrorCode(error: unknown): string | null {
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
-    return error.code === "spending-pair-stale" || error.code === "idempotency-key-conflict"
+    return error.code === "spending-pair-stale" || error.code === "idempotency-key-conflict" || error.code === IDEMPOTENCY_STORAGE_UNAVAILABLE
       ? error.code
       : null;
   }
   const text = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return text === "spending-pair-stale" || text === "idempotency-key-conflict" ? text : null;
+  return text === "spending-pair-stale" || text === "idempotency-key-conflict" || text === IDEMPOTENCY_STORAGE_UNAVAILABLE
+    ? text
+    : null;
 }
 
 export function isSpendingActionUncertain(error: unknown): boolean {

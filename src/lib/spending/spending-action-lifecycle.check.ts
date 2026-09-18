@@ -4,6 +4,7 @@ import {
   applyValidatedSpendingActionResult,
   beginSpendingPendingCommand,
   completeSpendingPendingCommand,
+  spendingActionErrorCode,
   spendingPendingCommandStorageKey,
 } from "./spending-action-lifecycle.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
@@ -40,8 +41,10 @@ test("a logical Spending action reuses its opaque key after renderer reload", ()
   };
   const first = beginSpendingPendingCommand(identity, storage, 100);
   const afterReload = beginSpendingPendingCommand(identity, storage, 200);
+  const afterDay = beginSpendingPendingCommand(identity, storage, 100 + 25 * 60 * 60 * 1000);
 
   assert.equal(first.idempotencyKey, afterReload.idempotencyKey);
+  assert.equal(first.idempotencyKey, afterDay.idempotencyKey);
   assert.match(first.idempotencyKey, /^renderer-/u);
   const serialized = storage.read(spendingPendingCommandStorageKey);
   assert.ok(serialized);
@@ -51,9 +54,9 @@ test("a logical Spending action reuses its opaque key after renderer reload", ()
   assert.equal(storage.read(spendingPendingCommandStorageKey), null);
 });
 
-test("pending Spending commands are bounded and action identities stay distinct", () => {
+test("pending Spending commands keep distinct action identities", () => {
   const storage = memoryStorage();
-  for (let index = 0; index < 40; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     beginSpendingPendingCommand({
       action: "unlink",
       firstId: `invoice-${index}`,
@@ -61,10 +64,73 @@ test("pending Spending commands are bounded and action identities stay distinct"
     }, storage, 1_000 + index);
   }
   const parsed = JSON.parse(storage.read(spendingPendingCommandStorageKey) ?? "null") as { commands: unknown[] };
-  assert.equal(parsed.commands.length, 32);
-  const first = beginSpendingPendingCommand({ action: "unlink", firstId: "invoice-39", secondId: "transaction-39" }, storage, 2_000);
-  const different = beginSpendingPendingCommand({ action: "unlink", firstId: "invoice-38", secondId: "transaction-38" }, storage, 2_001);
+  assert.equal(parsed.commands.length, 2);
+  const first = beginSpendingPendingCommand({ action: "unlink", firstId: "invoice-0", secondId: "transaction-0" }, storage, 2_000);
+  const different = beginSpendingPendingCommand({ action: "unlink", firstId: "invoice-1", secondId: "transaction-1" }, storage, 2_001);
   assert.notEqual(first.idempotencyKey, different.idempotencyKey);
+});
+
+test("pending command capacity fails closed without evicting an unresolved key", () => {
+  const storage = memoryStorage();
+  const first = beginSpendingPendingCommand({
+    action: "unlink",
+    firstId: "invoice-0",
+    secondId: "transaction-0",
+  }, storage, 1_000);
+  for (let index = 1; index < 32; index += 1) {
+    beginSpendingPendingCommand({
+      action: "unlink",
+      firstId: `invoice-${index}`,
+      secondId: `transaction-${index}`,
+    }, storage, 1_000 + index);
+  }
+
+  assert.throws(
+    () => beginSpendingPendingCommand({
+      action: "unlink",
+      firstId: "invoice-over-capacity",
+      secondId: "transaction-over-capacity",
+    }, storage, 2_000),
+    /idempotency-storage-unavailable/iu,
+  );
+  const afterCapacityFailure = beginSpendingPendingCommand({
+    action: "unlink",
+    firstId: "invoice-0",
+    secondId: "transaction-0",
+  }, storage, 2_001);
+  assert.equal(afterCapacityFailure.idempotencyKey, first.idempotencyKey);
+});
+
+test("storage read and write failures fail closed without issuing an ephemeral key", () => {
+  const readFailure = {
+    getItem() { throw new Error("storage read failed"); },
+    setItem() { throw new Error("storage write failed"); },
+    removeItem() { throw new Error("storage remove failed"); },
+  };
+  const identity = {
+    action: "direct-pair" as const,
+    firstId: "invoice-1",
+    secondId: "transaction-1",
+  };
+
+  assert.throws(
+    () => beginSpendingPendingCommand(identity, readFailure),
+    /idempotency-storage-unavailable/iu,
+  );
+  assert.equal(
+    spendingActionErrorCode(new Error("idempotency-storage-unavailable")),
+    "idempotency-storage-unavailable",
+  );
+
+  const writeFailure = {
+    getItem() { return null; },
+    setItem() { throw new Error("storage write failed"); },
+    removeItem() { return undefined; },
+  };
+  assert.throws(
+    () => beginSpendingPendingCommand(identity, writeFailure),
+    /idempotency-storage-unavailable/iu,
+  );
 });
 
 test("action receipts cannot apply a patch from another displayed generation", () => {

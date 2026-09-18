@@ -389,6 +389,11 @@
         ? "這個操作識別碼已被其他操作使用，請重新執行。"
         : "This action key was used by another operation. Please try again.";
     }
+    if (code === "idempotency-storage-unavailable") {
+      return $locale === "zh-TW"
+        ? "無法安全保存操作識別碼，已停止送出；請稍後重試。"
+        : "This action cannot be safely saved, so it was not sent. Please try again later.";
+    }
     return error instanceof Error ? error.message : String(error);
   }
 
@@ -442,8 +447,9 @@
     const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
     telemetry.startSpan("action-start").finish();
     let telemetryFinished = false;
-    const command = identity ? beginSpendingPendingCommand(identity) : undefined;
+    let command: SpendingPendingCommand | undefined;
     try {
+      command = identity ? beginSpendingPendingCommand(identity) : undefined;
       const result = await request(command?.idempotencyKey);
       if (await applySpendingActionResult(result, command, telemetry)) {
         await tick();

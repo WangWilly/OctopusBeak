@@ -48,6 +48,8 @@ assert.match(source, /beginSpendingPendingCommand/);
 assert.match(source, /completeSpendingPendingCommand/);
 assert.match(source, /spending-pair-stale/);
 assert.match(source, /idempotency-key-conflict/);
+assert.match(source, /idempotency-storage-unavailable/);
+assert.match(source, /無法安全保存操作識別碼/);
 assert.match(source, /讀取中/);
 assert.match(source, /onActionReconciliation/);
 assert.match(source, /invoiceIdentityId/);
