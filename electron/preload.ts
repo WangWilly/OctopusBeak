@@ -5,6 +5,7 @@ import type {
   OctopusBeakApi,
 } from "../src/lib/desktop/api.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
@@ -41,6 +42,13 @@ function cutoffFrom(value: unknown): { knowledgePoint: number } | undefined {
     );
   }
   return Object.freeze({ knowledgePoint });
+}
+
+function financialSectionFrom(value: unknown): FinancialSection {
+  if (value !== "primary" && value !== "secondary") {
+    throw new TypeError("Financial section must be primary or secondary.");
+  }
+  return value;
 }
 
 function financialPageLoadInputFrom(
@@ -96,12 +104,27 @@ const api: OctopusBeakApi = {
   },
   overview: {
     load: (input) => ipcRenderer.invoke("overview:load", financialPageLoadInputFrom(input)),
+    loadSection: (section, input) => ipcRenderer.invoke(
+      "overview:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+    ),
   },
   assets: {
     load: (input) => ipcRenderer.invoke("assets:load", financialPageLoadInputFrom(input)),
+    loadSection: (section, input) => ipcRenderer.invoke(
+      "assets:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+    ),
   },
   liabilities: {
     load: (input) => ipcRenderer.invoke("liabilities:load", financialPageLoadInputFrom(input)),
+    loadSection: (section, input) => ipcRenderer.invoke(
+      "liabilities:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+    ),
   },
   financialFreshness: {
     subscribe(listener) {
@@ -130,6 +153,11 @@ const api: OctopusBeakApi = {
   },
   spending: {
     load: (input) => ipcRenderer.invoke("spending:load", spendingLoadInputFrom(input)),
+    loadSection: (section, input) => ipcRenderer.invoke(
+      "spending:section:load",
+      financialSectionFrom(section),
+      spendingLoadInputFrom(input),
+    ),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
     revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),

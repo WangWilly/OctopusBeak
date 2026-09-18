@@ -94,6 +94,32 @@ test("cutoff inputs are forwarded for every financial page", async () => {
   }
 });
 
+test("cutoff inputs and section names are forwarded through the worker seam", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page, section, input }) => {
+      parentPort.postMessage({
+        id,
+        ok: true,
+        value: { page, section, knowledgePoint: input?.cutoff?.knowledgePoint ?? 0 },
+      });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const result = await client.loadSection("spending", "primary", {
+      cutoff: { knowledgePoint: 23 },
+    });
+    assert.deepEqual(result, {
+      page: "spending-section",
+      section: "primary",
+      knowledgePoint: 23,
+    });
+  } finally {
+    await client.close();
+  }
+});
+
 test("closing the worker rejects pending and future page requests deterministically", async () => {
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");

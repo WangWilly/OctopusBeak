@@ -9,6 +9,10 @@ assert.equal(octopusBeakApiChannels.includes("spending:denyCandidate"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:revokeLink"), true);
 assert.equal(octopusBeakApiChannels.includes("financialFreshness:changed"), true);
 assert.equal(octopusBeakApiChannels.includes("financialFreshness:latestKnowledgePoint"), true);
+assert.equal(octopusBeakApiChannels.includes("overview:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("assets:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("liabilities:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("spending:section:load"), true);
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
@@ -38,6 +42,11 @@ assert.match(
 );
 assert.match(source, /function financialPageLoadInputFrom\(/);
 assert.match(source, /function spendingLoadInputFrom\(/);
+assert.match(source, /function financialSectionFrom\(/);
+assert.match(source, /ipcMain\.handle\("overview:section:load"/);
+assert.match(source, /ipcMain\.handle\("assets:section:load"/);
+assert.match(source, /ipcMain\.handle\("liabilities:section:load"/);
+assert.match(source, /ipcMain\.handle\(\s*"spending:section:load"/);
 assert.match(source, /Financial query cutoff must contain a non-negative safe integer knowledge point/);
 assert.match(
   source,

@@ -49,6 +49,17 @@ import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
 } from "../../../ledger/canonical/transaction-taxonomy.ts";
 import type { SpendingInvoiceDto, SpendingItemDto } from "../model.ts";
+import type {
+  SpendingPrimaryDto,
+  SpendingPrimarySection,
+  SpendingSecondaryDto,
+  SpendingSecondarySection,
+} from "../model.ts";
+import {
+  assertMatchingFinancialSectionKnowledgePoints,
+  createFinancialSectionResult,
+  type FinancialSectionQueryInput,
+} from "../../shared-ledger/financial-section.ts";
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -69,6 +80,8 @@ export type SpendingLoadInput = {
 const LOCAL_SPENDING_USER_ID = "local-user";
 const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");
 const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
+const candidateAnalysisDiagnostics = channel("octopus-beak.spending.candidate-analysis");
+const sectionDiagnostics = channel("octopus-beak.financial.section-query");
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
@@ -285,6 +298,7 @@ function purchaseReportWithEphemeralCandidates(
   query: CurrentSpendingQueryResult,
   report: PurchaseReport = query.purchaseReport,
 ): PurchaseReport {
+  candidateAnalysisDiagnostics.publish({});
   const activeLinkPairs = new Set(
     report.records
       .filter((record) => record.basis === "linked" && record.link)
@@ -382,12 +396,18 @@ function recordStore(ledgerDir: string) {
 function pageFromQuery(
   query: CurrentSpendingQueryResult,
   purchaseReport: PurchaseReport = query.purchaseReport,
-  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
+  {
+    selectedMonth,
+    selectedCategory,
+    includeEphemeralCandidates = true,
+  }: SpendingLoadInput & { includeEphemeralCandidates?: boolean } = {},
 ): SpendingPageDto {
   return {
     knowledgePoint: query.spending.knowledgePoint,
     canonical: canonicalView(query.spending, selectedMonth, selectedCategory),
-    purchaseReport: purchaseReportWithEphemeralCandidates(query, purchaseReport),
+    purchaseReport: includeEphemeralCandidates
+      ? purchaseReportWithEphemeralCandidates(query, purchaseReport)
+      : purchaseReport,
     invoices: currentSpendingInvoices(query.invoices),
   };
 }
@@ -605,6 +625,71 @@ export function loadSpending(
 ): SpendingPageDto {
   const query = currentSpendingQuery(ledgerDir, cutoff);
   return pageFromQuery(query, query.purchaseReport, { selectedMonth, selectedCategory });
+}
+
+export function loadSpendingSection(
+  section: "primary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingPrimarySection;
+export function loadSpendingSection(
+  section: "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingSecondarySection;
+export function loadSpendingSection(
+  section: "primary" | "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingPrimarySection | SpendingSecondarySection;
+export function loadSpendingSection(
+  section: "primary" | "secondary",
+  ledgerDir = DEFAULT_LEDGER_DIR,
+  input: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory"> = {},
+): SpendingPrimarySection | SpendingSecondarySection {
+  sectionDiagnostics.publish({ product: "spending", section });
+  const query = currentSpendingQuery(ledgerDir, input.cutoff);
+  if (section === "primary") {
+    const page = pageFromQuery(query, query.purchaseReport, {
+      selectedMonth: input.selectedMonth,
+      selectedCategory: input.selectedCategory,
+      includeEphemeralCandidates: false,
+    });
+    return createFinancialSectionResult(section, spendingPrimary(page));
+  }
+  const page = pageFromQuery(query, query.purchaseReport, {
+    selectedMonth: input.selectedMonth,
+    selectedCategory: input.selectedCategory,
+  });
+  return createFinancialSectionResult(section, spendingSecondary(page));
+}
+
+export function combineSpendingSections(
+  primary: SpendingPrimarySection,
+  secondary: SpendingSecondarySection,
+): SpendingPageDto {
+  assertMatchingFinancialSectionKnowledgePoints(primary, secondary);
+  return {
+    ...primary.value,
+    purchaseReport: secondary.value.purchaseReport,
+    knowledgePoint: primary.knowledgePoint,
+  };
+}
+
+function spendingPrimary(page: SpendingPageDto): SpendingPrimaryDto {
+  return {
+    knowledgePoint: page.knowledgePoint ?? 0,
+    canonical: page.canonical,
+    purchaseReport: page.purchaseReport,
+    invoices: page.invoices,
+  };
+}
+
+function spendingSecondary(page: SpendingPageDto): SpendingSecondaryDto {
+  return {
+    knowledgePoint: page.knowledgePoint ?? 0,
+    purchaseReport: page.purchaseReport,
+  };
 }
 
 export function updateSpendingTransactionOverride(

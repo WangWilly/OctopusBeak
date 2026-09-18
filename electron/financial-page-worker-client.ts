@@ -4,6 +4,23 @@ import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
 import type { FinancialQueryCutoff } from "../src/lib/shared-ledger/server/financial-query.ts";
+import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
+import type {
+  OverviewPrimarySection,
+  OverviewSecondarySection,
+} from "../src/lib/overview/types.ts";
+import type {
+  AssetsPrimarySection,
+  AssetsSecondarySection,
+} from "../src/lib/assets/types.ts";
+import type {
+  LiabilitiesPrimarySection,
+  LiabilitiesSecondarySection,
+} from "../src/lib/liabilities/types.ts";
+import type {
+  SpendingPrimarySection,
+  SpendingSecondarySection,
+} from "../src/lib/spending/model.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -17,6 +34,10 @@ export type FinancialPageRequest =
   | { id: number; page: "assets"; input?: FinancialPageLoadInput }
   | { id: number; page: "liabilities"; input?: FinancialPageLoadInput }
   | { id: number; page: "spending"; input?: SpendingLoadInput }
+  | { id: number; page: "overview-section"; section: FinancialSection; input?: FinancialPageLoadInput }
+  | { id: number; page: "assets-section"; section: FinancialSection; input?: FinancialPageLoadInput }
+  | { id: number; page: "liabilities-section"; section: FinancialSection; input?: FinancialPageLoadInput }
+  | { id: number; page: "spending-section"; section: FinancialSection; input?: SpendingLoadInput }
   | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
 export type FinancialPageResponse =
@@ -28,6 +49,17 @@ type WorkerPort = Pick<Worker, "on" | "postMessage" | "terminate">;
 export type FinancialPageLoadInput = Readonly<{
   cutoff?: FinancialQueryCutoff;
 }>;
+
+export type FinancialSectionPage = "overview" | "assets" | "liabilities" | "spending";
+export type FinancialSectionResult =
+  | OverviewPrimarySection
+  | OverviewSecondarySection
+  | AssetsPrimarySection
+  | AssetsSecondarySection
+  | LiabilitiesPrimarySection
+  | LiabilitiesSecondarySection
+  | SpendingPrimarySection
+  | SpendingSecondarySection;
 
 const WORKER_CLOSED_MESSAGE = "Financial page worker is closed.";
 
@@ -48,6 +80,66 @@ export type FinancialPageWorkerClient = {
   load(page: "assets", input?: FinancialPageLoadInput): Promise<AssetsPageDto>;
   load(page: "liabilities", input?: FinancialPageLoadInput): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  loadSection(
+    page: "overview",
+    section: "primary",
+    input?: FinancialPageLoadInput,
+  ): Promise<OverviewPrimarySection>;
+  loadSection(
+    page: "overview",
+    section: "secondary",
+    input?: FinancialPageLoadInput,
+  ): Promise<OverviewSecondarySection>;
+  loadSection(
+    page: "overview",
+    section: FinancialSection,
+    input?: FinancialPageLoadInput,
+  ): Promise<OverviewPrimarySection | OverviewSecondarySection>;
+  loadSection(
+    page: "assets",
+    section: "primary",
+    input?: FinancialPageLoadInput,
+  ): Promise<AssetsPrimarySection>;
+  loadSection(
+    page: "assets",
+    section: "secondary",
+    input?: FinancialPageLoadInput,
+  ): Promise<AssetsSecondarySection>;
+  loadSection(
+    page: "assets",
+    section: FinancialSection,
+    input?: FinancialPageLoadInput,
+  ): Promise<AssetsPrimarySection | AssetsSecondarySection>;
+  loadSection(
+    page: "liabilities",
+    section: "primary",
+    input?: FinancialPageLoadInput,
+  ): Promise<LiabilitiesPrimarySection>;
+  loadSection(
+    page: "liabilities",
+    section: "secondary",
+    input?: FinancialPageLoadInput,
+  ): Promise<LiabilitiesSecondarySection>;
+  loadSection(
+    page: "liabilities",
+    section: FinancialSection,
+    input?: FinancialPageLoadInput,
+  ): Promise<LiabilitiesPrimarySection | LiabilitiesSecondarySection>;
+  loadSection(
+    page: "spending",
+    section: "primary",
+    input?: SpendingLoadInput,
+  ): Promise<SpendingPrimarySection>;
+  loadSection(
+    page: "spending",
+    section: "secondary",
+    input?: SpendingLoadInput,
+  ): Promise<SpendingSecondarySection>;
+  loadSection(
+    page: "spending",
+    section: FinancialSection,
+    input?: SpendingLoadInput,
+  ): Promise<SpendingPrimarySection | SpendingSecondarySection>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
   revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -116,6 +208,29 @@ export function createFinancialPageWorkerClient(
     });
   }
 
+  function loadSection(
+    page: FinancialSectionPage,
+    section: FinancialSection,
+    input?: SpendingLoadInput | FinancialPageLoadInput,
+  ): Promise<FinancialSectionResult> {
+    if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
+    const id = nextId++;
+    const sectionPage = `${page}-section` as FinancialPageRequest["page"];
+    const request = {
+      id,
+      page: sectionPage,
+      section,
+      ...(input === undefined ? {} : { input }),
+    } as FinancialPageRequest;
+    const cutoff = input && "cutoff" in input
+      ? input.cutoff?.knowledgePoint
+      : undefined;
+    return new Promise<FinancialSectionResult>((resolve, reject) => {
+      pending.set(id, { resolve: resolve as unknown as (value: unknown) => void, reject, cutoff });
+      worker.postMessage(request);
+    });
+  }
+
   function action(
     actionName: Extract<FinancialPageRequest, { page: "spending-action" }>["action"],
     input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput,
@@ -136,6 +251,7 @@ export function createFinancialPageWorkerClient(
 
   return {
     load: load as FinancialPageWorkerClient["load"],
+    loadSection: loadSection as FinancialPageWorkerClient["loadSection"],
     confirmCandidate: (input) => action("confirmCandidate", input),
     denyCandidate: (input) => action("denyCandidate", input),
     revokeLink: (input) => action("revokeLink", input),

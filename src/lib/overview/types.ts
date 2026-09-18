@@ -4,6 +4,7 @@ import type {
   ExchangeRateDto,
   SummaryMetricDto,
 } from "$lib/shared-ledger/types.ts";
+import type { FinancialSectionResult } from "$lib/shared-ledger/financial-section.ts";
 
 export type OverviewSankeyNodeDto = {
   id: string;
@@ -55,6 +56,17 @@ export type OverviewPageDto = {
   exchangeRates: ExchangeRateDto[];
   latestExchangeRateDate: string | null;
 };
+
+export type OverviewPrimaryDto = Omit<OverviewPageDto, "knowledgePoint" | "historyAvailability" | "dailyHistory" | "sankey" | "sankeyExchangeRates" | "sankeyLatestExchangeRateDate" | "exchangeRates" | "latestExchangeRateDate"> & {
+  knowledgePoint: number;
+};
+
+export type OverviewSecondaryDto = Pick<OverviewPageDto, "historyAvailability" | "dailyHistory" | "sankey" | "sankeyExchangeRates" | "sankeyLatestExchangeRateDate" | "exchangeRates" | "latestExchangeRateDate"> & {
+  knowledgePoint: number;
+};
+
+export type OverviewPrimarySection = FinancialSectionResult<"primary", OverviewPrimaryDto>;
+export type OverviewSecondarySection = FinancialSectionResult<"secondary", OverviewSecondaryDto>;
 
 export type OverviewSourceGapDto = {
   accountId: string;

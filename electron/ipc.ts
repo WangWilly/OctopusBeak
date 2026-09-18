@@ -53,6 +53,7 @@ import {
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
 import type { FinancialPageLoadInput } from "../src/lib/desktop/api.ts";
+import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
@@ -105,6 +106,13 @@ function financialPageLoadInputFrom(
   }
   const cutoff = cutoffFrom(record.cutoff);
   return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function financialSectionFrom(value: unknown): FinancialSection {
+  if (value !== "primary" && value !== "secondary") {
+    throw new TypeError("Financial section must be primary or secondary.");
+  }
+  return value;
 }
 
 function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
@@ -172,16 +180,30 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("overview:load", (_event, input: unknown) =>
     financialPages.load("overview", financialPageLoadInputFrom(input)),
   );
+  ipcMain.handle("overview:section:load", (_event, section: unknown, input: unknown) =>
+    financialPages.loadSection("overview", financialSectionFrom(section), financialPageLoadInputFrom(input)),
+  );
   ipcMain.handle("assets:load", (_event, input: unknown) =>
     financialPages.load("assets", financialPageLoadInputFrom(input)),
   );
+  ipcMain.handle("assets:section:load", (_event, section: unknown, input: unknown) =>
+    financialPages.loadSection("assets", financialSectionFrom(section), financialPageLoadInputFrom(input)),
+  );
   ipcMain.handle("liabilities:load", (_event, input: unknown) =>
     financialPages.load("liabilities", financialPageLoadInputFrom(input)),
+  );
+  ipcMain.handle("liabilities:section:load", (_event, section: unknown, input: unknown) =>
+    financialPages.loadSection("liabilities", financialSectionFrom(section), financialPageLoadInputFrom(input)),
   );
   ipcMain.handle(
     "spending:load",
     (_event, input: unknown) =>
       financialPages.load("spending", spendingLoadInputFrom(input)),
+  );
+  ipcMain.handle(
+    "spending:section:load",
+    (_event, section: unknown, input: unknown) =>
+      financialPages.loadSection("spending", financialSectionFrom(section), spendingLoadInputFrom(input)),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     financialPages.confirmCandidate(input),

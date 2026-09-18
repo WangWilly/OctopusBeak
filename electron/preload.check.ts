@@ -9,6 +9,10 @@ assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
 assert.equal(octopusBeakApiChannels.includes("financialFreshness:changed"), true);
 assert.equal(octopusBeakApiChannels.includes("financialFreshness:latestKnowledgePoint"), true);
+assert.equal(octopusBeakApiChannels.includes("overview:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("assets:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("liabilities:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("spending:section:load"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
@@ -45,6 +49,19 @@ for (const [route, channel] of [
     `${route} preload load must forward its input to IPC`,
   );
 }
+for (const [route, channel] of [
+  ["overview", "overview:section:load"],
+  ["assets", "assets:section:load"],
+  ["liabilities", "liabilities:section:load"],
+  ["spending", "spending:section:load"],
+]) {
+  assert.match(
+    source,
+    new RegExp(`loadSection: \\(section, input\\)[\\s\\S]*?\\"${channel}\\"`),
+    `${route} preload section load must cross its IPC channel`,
+  );
+}
+assert.match(source, /Financial section must be primary or secondary/);
 assert.match(source, /financialPageLoadInputFrom\(input\)/);
 assert.match(source, /spendingLoadInputFrom\(input\)/);
 assert.match(source, /Financial query cutoff must contain a non-negative safe integer knowledge point/);

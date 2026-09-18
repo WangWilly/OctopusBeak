@@ -20,6 +20,22 @@ import type {
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
 import type { FinancialQueryCutoff } from "$lib/shared-ledger/server/financial-query.ts";
+import type {
+  OverviewPrimarySection,
+  OverviewSecondarySection,
+} from "$lib/overview/types.ts";
+import type {
+  AssetsPrimarySection,
+  AssetsSecondarySection,
+} from "$lib/assets/types.ts";
+import type {
+  LiabilitiesPrimarySection,
+  LiabilitiesSecondarySection,
+} from "$lib/liabilities/types.ts";
+import type {
+  SpendingPrimarySection,
+  SpendingSecondarySection,
+} from "$lib/spending/model.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
   HumanAssistanceContract,
@@ -101,12 +117,18 @@ export type OctopusBeakApi = {
   };
   overview: {
     load(input?: FinancialPageLoadInput): Promise<OverviewPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<OverviewPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<OverviewSecondarySection>;
   };
   assets: {
     load(input?: FinancialPageLoadInput): Promise<AssetsPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<AssetsPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<AssetsSecondarySection>;
   };
   liabilities: {
     load(input?: FinancialPageLoadInput): Promise<LiabilitiesPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput): Promise<LiabilitiesPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput): Promise<LiabilitiesSecondarySection>;
   };
   financialFreshness: {
     subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;
@@ -114,6 +136,8 @@ export type OctopusBeakApi = {
   };
   spending: {
     load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+    loadSection(section: "primary", input?: SpendingLoadInput): Promise<SpendingPrimarySection>;
+    loadSection(section: "secondary", input?: SpendingLoadInput): Promise<SpendingSecondarySection>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -147,11 +171,15 @@ export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
   "overview:load",
+  "overview:section:load",
   "assets:load",
+  "assets:section:load",
   "liabilities:load",
+  "liabilities:section:load",
   "financialFreshness:changed",
   "financialFreshness:latestKnowledgePoint",
   "spending:load",
+  "spending:section:load",
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",

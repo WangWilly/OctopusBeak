@@ -3,6 +3,7 @@ import {
   type SpendingCategory,
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+import type { FinancialSectionResult } from "$lib/shared-ledger/financial-section.ts";
 export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
 
 /**
@@ -195,6 +196,22 @@ export type SpendingPageDto = {
   /** Compatibility projection kept for existing non-product fixtures. */
   invoices: readonly SpendingInvoiceDto[];
 };
+
+/**
+ * The primary Spending section contains the canonical transaction/invoice
+ * facts and the durable report. Ephemeral candidate hints are intentionally
+ * omitted by its query and arrive through the secondary section.
+ */
+export type SpendingPrimaryDto = Omit<SpendingPageDto, "knowledgePoint"> & {
+  knowledgePoint: number;
+};
+
+export type SpendingSecondaryDto = Pick<SpendingPageDto, "purchaseReport"> & {
+  knowledgePoint: number;
+};
+
+export type SpendingPrimarySection = FinancialSectionResult<"primary", SpendingPrimaryDto>;
+export type SpendingSecondarySection = FinancialSectionResult<"secondary", SpendingSecondaryDto>;
 
 export type CanonicalSpendingAmountDto = {
   currency: string;
