@@ -47,6 +47,18 @@ assert.equal(translations.en.nav.spending, "Spending");
 assert.equal(translations["zh-TW"].nav.spending, "消費");
 assert.equal(translations.en.spending.title, "Personal spending");
 assert.equal(translations["zh-TW"].spending.title, "個人消費");
+assert.equal(translations.en.spending.actionReconciliationPending, "Checking the latest pairing result…");
+assert.equal(translations["zh-TW"].spending.actionReconciliationPending, "讀取中…");
+assert.equal(translations.en.spending.dismissActionNotice, "Dismiss");
+assert.equal(translations["zh-TW"].spending.dismissActionNotice, "知道了");
+assert.equal(
+  translations.en.spending.actionReconciliationFailed,
+  "The pairing result could not be confirmed. Please refresh the data.",
+);
+assert.equal(
+  translations["zh-TW"].spending.actionReconciliationFailed,
+  "無法確認配對結果，請重新整理資料。",
+);
 assert.equal(translations.en.spending.chartDragHint, "Drag or horizontal scroll to browse · Pinch to zoom");
 assert.equal(translations["zh-TW"].spending.chartDragHint, "拖曳或左右滾輪瀏覽 · 觸控板縮放");
 assert.equal(

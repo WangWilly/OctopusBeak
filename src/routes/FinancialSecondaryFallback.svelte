@@ -6,8 +6,11 @@
   import type { LiabilitiesSecondaryDto } from "$lib/liabilities/types.ts";
   import type { OverviewSecondaryDto } from "$lib/overview/types.ts";
   import type { SpendingSecondaryDto } from "$lib/spending/model.ts";
-  import { exactToNumber } from "$lib/shared-money/exact.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
+  import {
+    spendingAmountText,
+    spendingBasisLabel,
+    spendingRecordLabel,
+  } from "$lib/spending/spending-display.ts";
 
   type FinancialSecondaryFallbackKind = "overview" | "assets" | "liabilities" | "spending";
   type FinancialSecondaryData = OverviewSecondaryDto | AssetsSecondaryDto | LiabilitiesSecondaryDto | SpendingSecondaryDto;
@@ -21,22 +24,15 @@
   $: spending = kind === "spending" ? data as SpendingSecondaryDto : null;
 
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null) {
-    if (!amount) return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
-    return formatMoney({ currency: amount.currency, value: exactToNumber(amount), exact: amount }, { locale: $locale });
+    return spendingAmountText(amount, $locale);
   }
 
   function recordLabel(record: NonNullable<SpendingSecondaryDto["purchaseReport"]>["records"][number]) {
-    return record.description
-      ?? record.invoice?.revision.seller.name
-      ?? record.transaction?.description
-      ?? ($locale === "zh-TW" ? "未提供描述" : "Description unavailable");
+    return spendingRecordLabel(record, $locale, $locale === "zh-TW" ? "未提供描述" : "Description unavailable");
   }
 
-  function basisLabel(value: string) {
-    if (value === "linked") return $locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-    if (value === "invoice") return $locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-    if (value === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
-    return $locale === "zh-TW" ? "銀行交易" : "Bank transaction";
+  function basisLabel(record: NonNullable<SpendingSecondaryDto["purchaseReport"]>["records"][number]) {
+    return spendingBasisLabel(record, $locale);
   }
 </script>
 
@@ -105,7 +101,7 @@
           <article class="secondary-record" role="listitem" data-secondary-record={record.purchaseId}>
             <div>
               <strong>{recordLabel(record)}</strong>
-              <span>{record.occurrence.value.slice(0, 10)} · {basisLabel(record.basis)}</span>
+              <span>{record.occurrence.value.slice(0, 10)} · {basisLabel(record)}</span>
             </div>
             <strong class="money" data-sensitive>{amountText(record.amount)}</strong>
           </article>

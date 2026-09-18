@@ -12,6 +12,10 @@ test("secondary fallback renders actual values for every financial route", () =>
   assert.match(source, /spending\.purchaseReport\.records as record/);
   assert.match(source, /record\.occurrence\.value/);
   assert.match(source, /amountText\(record\.amount\)/);
+  assert.match(source, /spending-display\.ts/);
+  assert.match(source, /spendingAmountText\(/);
+  assert.match(source, /spendingBasisLabel\(/);
+  assert.match(source, /spendingRecordLabel\(/);
   assert.match(source, /data-secondary-knowledge-point=\{data\.knowledgePoint\}/);
   assert.match(source, /data-secondary-ready/);
 });

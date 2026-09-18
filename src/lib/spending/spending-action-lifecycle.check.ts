@@ -6,6 +6,7 @@ import {
   completeSpendingPendingCommand,
   spendingActionOutcomeConfirmed,
   spendingActionErrorCode,
+  spendingActionOutcomeRequiresProof,
   spendingPendingCommandStorageKey,
 } from "./spending-action-lifecycle.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
@@ -172,4 +173,10 @@ test("a reconciled projection confirms pair and unlink outcomes explicitly", () 
   assert.equal(spendingActionOutcomeConfirmed(linked, unlink), false);
   assert.equal(spendingActionOutcomeConfirmed(report(12), pair), false);
   assert.equal(spendingActionOutcomeConfirmed(report(12), unlink), true);
+});
+
+test("known stale rejection completes without link proof while response loss still requires it", () => {
+  assert.equal(spendingActionOutcomeRequiresProof({ knownStale: true }), false);
+  assert.equal(spendingActionOutcomeRequiresProof(), true);
+  assert.equal(spendingActionOutcomeRequiresProof({ knownStale: false }), true);
 });

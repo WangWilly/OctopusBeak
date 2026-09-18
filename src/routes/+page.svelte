@@ -41,6 +41,8 @@
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import {
     spendingActionOutcomeConfirmed,
+    spendingActionOutcomeRequiresProof,
+    type SpendingActionReconciliationOptions,
     type SpendingPendingCommandIdentity,
   } from "$lib/spending/spending-action-lifecycle.ts";
   import type {
@@ -820,12 +822,14 @@
   }
 
   /**
-   * Spending commands use a sparse response on their fast path. If that
-   * response is stale or its transport outcome is uncertain, the command
-   * component asks the page coordinator for one complete, cutoff-pinned
-   * Spending generation before declaring the outcome known.
+   * Spending commands use a sparse response on their fast path. A known stale
+   * rejection only needs a fresh cutoff-pinned generation; a transport outcome
+   * remains uncertain until that generation proves the requested link state.
    */
-  async function reconcileSpendingAction(identity?: SpendingPendingCommandIdentity) {
+  async function reconcileSpendingAction(
+    identity?: SpendingPendingCommandIdentity,
+    options: SpendingActionReconciliationOptions = {},
+  ) {
     while (route === "spending") {
       const knowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
       await loadRoute("spending", {
@@ -841,7 +845,11 @@
         && spending.primary.knowledgePoint === knowledgePoint
         && secondary.knowledgePoint === knowledgePoint
       ) {
-        if (identity && !spendingActionOutcomeConfirmed(secondary.purchaseReport, identity)) {
+        if (
+          identity
+          && spendingActionOutcomeRequiresProof(options)
+          && !spendingActionOutcomeConfirmed(secondary.purchaseReport, identity)
+        ) {
           throw new Error("spending-action-outcome-unconfirmed");
         }
         return;

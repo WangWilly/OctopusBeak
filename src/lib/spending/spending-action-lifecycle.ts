@@ -21,6 +21,19 @@ export type SpendingPendingCommandIdentity = Readonly<{
   secondId: string;
 }>;
 
+/**
+ * Describes why a Spending command needs a fresh projection before its
+ * renderer-side pending key can be completed.
+ *
+ * A server-side `spending-pair-stale` rejection is already a durable outcome:
+ * no link was written, so the refreshed projection does not need to contain
+ * the requested link. Transport/worker failures remain uncertain and must
+ * prove the requested link state before the key is cleared.
+ */
+export type SpendingActionReconciliationOptions = Readonly<{
+  knownStale?: boolean;
+}>;
+
 type StoredPendingCommand = SpendingPendingCommand & Readonly<{
   createdAt: number;
   lastUsedAt: number;
@@ -178,6 +191,12 @@ export function spendingActionErrorCode(error: unknown): string | null {
 
 export function isSpendingActionUncertain(error: unknown): boolean {
   return spendingActionErrorCode(error) === null;
+}
+
+export function spendingActionOutcomeRequiresProof(
+  options?: SpendingActionReconciliationOptions,
+): boolean {
+  return options?.knownStale !== true;
 }
 
 /**

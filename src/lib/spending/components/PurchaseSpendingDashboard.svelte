@@ -2,7 +2,6 @@
   import { tick } from "svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
@@ -17,6 +16,7 @@
     completeSpendingPendingCommand,
     isSpendingActionUncertain,
     spendingActionErrorCode,
+    type SpendingActionReconciliationOptions,
     type SpendingPendingCommand,
     type SpendingPendingCommandIdentity,
   } from "../spending-action-lifecycle.ts";
@@ -24,10 +24,18 @@
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
+  import {
+    spendingAmountText,
+    spendingBasisLabel,
+    spendingRecordLabel,
+  } from "../spending-display.ts";
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
-  export let onActionReconciliation: ((identity?: SpendingPendingCommandIdentity) => Promise<void>) | undefined = undefined;
+  export let onActionReconciliation: ((
+    identity?: SpendingPendingCommandIdentity,
+    options?: SpendingActionReconciliationOptions,
+  ) => Promise<void>) | undefined = undefined;
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
@@ -103,17 +111,8 @@
     return index;
   })();
 
-  function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
-    return {
-      currency: amount.currency,
-      value: exactToNumber(amount),
-      exact: { coefficient: amount.coefficient, scale: amount.scale },
-    };
-  }
-
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    if (!amount) return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
-    return formatMoney(moneyValue(amount), { locale: $locale, signed });
+    return spendingAmountText(amount, $locale, signed);
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
@@ -141,17 +140,11 @@
   }
 
   function recordLabel(record: PurchaseRecord) {
-    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+    return spendingRecordLabel(record, $locale);
   }
 
   function basisLabel(record: PurchaseRecord) {
-    if (record.basis === "linked") return $locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-    if (record.basis === "invoice") return $locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-    if (record.basis === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
-    const isCreditCard = record.transaction?.stream === "credit-card";
-    return isCreditCard
-      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+    return spendingBasisLabel(record, $locale);
   }
 
   function occurrenceBasisLabel(record: PurchaseRecord) {
@@ -404,24 +397,20 @@
   async function reconcileSpendingAction(
     command?: SpendingPendingCommand,
     identity?: SpendingPendingCommandIdentity,
-    options: { dataChanged?: boolean } = {},
+    options: SpendingActionReconciliationOptions & { dataChanged?: boolean } = {},
   ): Promise<boolean> {
     actionReconciliationPending = true;
     actionError = "";
     try {
       if (!onActionReconciliation) throw new Error("spending-action-reconciliation-unavailable");
-      await onActionReconciliation(identity);
+      await onActionReconciliation(identity, { knownStale: options.knownStale });
       if (command) completeSpendingPendingCommand(command);
       if (options.dataChanged) {
-        actionNotice = $locale === "zh-TW"
-          ? "資料已更新，已重新載入最新配對狀態。"
-          : "The data changed; the latest pairing state has been loaded.";
+        actionNotice = $t.spending.actionReconciliationNotice;
       }
       return true;
     } catch (error) {
-      actionError = $locale === "zh-TW"
-        ? "無法確認配對結果，請重新整理資料。"
-        : "The pairing result could not be confirmed. Please refresh the data.";
+      actionError = $t.spending.actionReconciliationFailed;
       console.warn("spending-action-reconciliation-failed", stableFinancialErrorCode(error));
       return false;
     } finally {
@@ -447,8 +436,7 @@
     } catch (error) {
       telemetry?.startSpan("patch-applied").finish("error", { error });
       await reconcileSpendingAction(command, identity, {
-        dataChanged: spendingActionErrorCode(error) === "spending-pair-stale" ||
-          (error instanceof Error && error.message === "spending-action-stale"),
+        dataChanged: error instanceof Error && error.message === "spending-action-stale",
       });
       return false;
     }
@@ -481,7 +469,10 @@
         if (command) completeSpendingPendingCommand(command);
         actionError = actionErrorText(error);
       } else if (code === "spending-pair-stale" || isSpendingActionUncertain(error)) {
-        await reconcileSpendingAction(command, identity, { dataChanged: code === "spending-pair-stale" });
+        await reconcileSpendingAction(command, identity, {
+          dataChanged: code === "spending-pair-stale",
+          knownStale: code === "spending-pair-stale",
+        });
       } else {
         actionError = actionErrorText(error);
       }
@@ -529,13 +520,13 @@
     </section>
 
     {#if actionReconciliationPending}
-      <section class="card purchase-action-pending" role="status" aria-live="polite">{$locale === "zh-TW" ? "讀取中…" : "Checking the latest pairing result…"}</section>
+      <section class="card purchase-action-pending" role="status" aria-live="polite">{$t.spending.actionReconciliationPending}</section>
     {/if}
 
     {#if actionNotice}
       <section class="card purchase-action-status" data-action-notice role="status" aria-live="polite">
         <span>{actionNotice}</span>
-        <button type="button" class="button secondary" onclick={() => actionNotice = ""}>{$locale === "zh-TW" ? "知道了" : "Dismiss"}</button>
+        <button type="button" class="button secondary" onclick={() => actionNotice = ""}>{$t.spending.dismissActionNotice}</button>
       </section>
     {/if}
 

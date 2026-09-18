@@ -106,6 +106,8 @@ test("uncertain Spending actions remain pending until the complete matching proj
     /matchingSecondary\(spending\)[\s\S]*?primary\.knowledgePoint === knowledgePoint[\s\S]*?spending-action-reconciliation-incomplete/,
   );
   assert.match(source, /spendingActionOutcomeConfirmed\(secondary\.purchaseReport, identity\)/);
+  assert.match(source, /spendingActionOutcomeRequiresProof\(options\)/);
+  assert.match(source, /type SpendingActionReconciliationOptions/);
 });
 
 test("renderer reconnection schedules a debounced freshness recovery for the visible route", () => {

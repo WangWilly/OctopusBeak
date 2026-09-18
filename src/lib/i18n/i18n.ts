@@ -289,6 +289,10 @@ const en = {
     savingCategory: "Saving category...",
     categorySaveError: "Could not save the category. Try again.",
     thisPurchase: "This purchase",
+    actionReconciliationPending: "Checking the latest pairing result…",
+    actionReconciliationNotice: "The data changed; the latest pairing state has been loaded.",
+    actionReconciliationFailed: "The pairing result could not be confirmed. Please refresh the data.",
+    dismissActionNotice: "Dismiss",
   },
   accounts: {
     assetFiltersAria: "Asset filters",
@@ -1065,6 +1069,10 @@ const zh: typeof en = {
     savingCategory: "正在儲存類別...",
     categorySaveError: "無法儲存類別，請再試一次。",
     thisPurchase: "本次消費",
+    actionReconciliationPending: "讀取中…",
+    actionReconciliationNotice: "資料已更新，已重新載入最新配對狀態。",
+    actionReconciliationFailed: "無法確認配對結果，請重新整理資料。",
+    dismissActionNotice: "知道了",
   },
   accounts: {
     assetFiltersAria: "資產篩選",
