@@ -286,76 +286,134 @@ function optionalAmount(value: string, label: string) {
   const normalized = normalizedSourceLabel(value);
   if (!normalized || ["-", "—", "N/A", "NA"].includes(normalized))
     return undefined;
-  return parseCanonicalLoanAmount(normalized, label);
+  return normalizedAmountForIdentity(parseCanonicalLoanAmount(normalized, label));
+}
+
+function normalizedAmountForIdentity(value: {
+  coefficient: string;
+  scale: number;
+}): { coefficient: string; scale: number } {
+  if (value.coefficient === "0") return { coefficient: "0", scale: 0 };
+  let coefficient = value.coefficient;
+  let scale = value.scale;
+  while (scale > 0 && coefficient.endsWith("0")) {
+    coefficient = coefficient.slice(0, -1);
+    scale -= 1;
+  }
+  return { coefficient, scale };
 }
 
 function canonicalRows(
   input: FubonLoanCaptureBuildInput,
 ): CanonicalLoanStatementRow[] {
-  return input.rows.map((row, index) => {
-    const sourceCode = sourceCodeFor(row.transactionContent);
-    const mapping = LOAN_EVENT_CONTRACT_MAPPINGS.fubon[sourceCode]!;
-    const effectiveOn = parseCanonicalLoanDate(
-      row.transactionDate,
-      "Fubon loan transaction date",
+  const account = normalizedSourceLabel(input.accountValue);
+  if (!account)
+    throw new CanonicalLoanAdmissionError(
+      "Fubon loan account value is required.",
     );
-    const sourceRecordKey = canonicalLoanToken(
-      "fubon",
-      "loan-source-record-v2",
-      input.accountValue,
-      String(index),
-      row.transactionDate,
-      row.transactionContent,
-      row.transactionAmount,
-      row.balanceAfterTransaction,
-    );
-    const amount = parseCanonicalLoanAmount(
-      row.transactionAmount,
-      "Fubon loan transaction amount",
-    );
-    const balance = optionalAmount(
-      row.balanceAfterTransaction,
-      "Fubon loan balance",
-    );
-    const balanceEffectiveAt = effectiveOn;
-    const balanceIsHistorical =
-      balance !== undefined &&
-      isCanonicalLoanSourceDateBeforeObservedAt(
-        balanceEffectiveAt,
-        input.observedAt,
+  const preparedRows = input.rows
+    .map((row, inputIndex) => {
+      const sourceCode = sourceCodeFor(row.transactionContent);
+      const mapping = LOAN_EVENT_CONTRACT_MAPPINGS.fubon[sourceCode]!;
+      const effectiveOn = parseCanonicalLoanDate(
+        row.transactionDate,
+        "Fubon loan transaction date",
       );
-    return {
-      sourceRecordKey,
-      occurrenceIndex: index + 1,
-      effectiveOn,
-      sourceTime: {
-        localTime: "00:00:00",
-        precision: "date",
-        timeOrigin: "defaulted_local_midnight",
-      },
-      sourceCode,
-      eventKind: mapping.eventKind,
-      direction: mapping.direction,
-      amount,
-      description: normalizedSourceLabel(row.transactionContent),
-      ...(balanceIsHistorical
-        ? {
-            balance: {
-              observationKey: canonicalLoanToken(
-                "fubon",
-                "loan-balance-observation-v2",
-                sourceRecordKey,
-              ),
-              balance,
-              effectiveAt: balanceEffectiveAt,
-              effectiveAtPrecision: "date",
-              effectiveAtTimeOrigin: "source_reported",
-              effectiveAtField: "transaction-date",
-            },
-          }
-        : {}),
-    };
-  });
+      const amount = parseCanonicalLoanAmount(
+        row.transactionAmount,
+        "Fubon loan transaction amount",
+      );
+      const identityAmount = normalizedAmountForIdentity(amount);
+      return {
+        row,
+        inputIndex,
+        sourceCode,
+        mapping,
+        effectiveOn,
+        amount,
+        fingerprint: canonicalLoanToken(
+          "fubon",
+          "loan-source-record-v2",
+          account,
+          effectiveOn,
+          sourceCode,
+          mapping.direction,
+          identityAmount.coefficient,
+          String(identityAmount.scale),
+          "TWD",
+        ),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.effectiveOn.localeCompare(right.effectiveOn) ||
+        left.inputIndex - right.inputIndex,
+    );
+  const ordinals = new Map<string, number>();
+  return preparedRows.map(
+    ({ row, sourceCode, mapping, effectiveOn, amount, fingerprint }, index) => {
+      const ordinal = (ordinals.get(fingerprint) ?? 0) + 1;
+      ordinals.set(fingerprint, ordinal);
+      const identityAmount = normalizedAmountForIdentity(amount);
+      const sourceRecordKey = canonicalLoanToken(
+        "fubon",
+        "loan-source-record-v2",
+        account,
+        effectiveOn,
+        sourceCode,
+        mapping.direction,
+        identityAmount.coefficient,
+        String(identityAmount.scale),
+        "TWD",
+        String(ordinal),
+      );
+      const balance = optionalAmount(
+        row.balanceAfterTransaction,
+        "Fubon loan balance",
+      );
+      const balanceEffectiveAt = effectiveOn;
+      const balanceIsHistorical =
+        balance !== undefined &&
+        isCanonicalLoanSourceDateBeforeObservedAt(
+          balanceEffectiveAt,
+          input.observedAt,
+        );
+      return {
+        sourceRecordKey,
+        // The sequence remains useful source evidence, but never enters the
+        // semantic occurrence, collision, or provider identity.
+        occurrenceIndex: index + 1,
+        effectiveOn,
+        sourceTime: {
+          localTime: "00:00:00",
+          precision: "date",
+          timeOrigin: "defaulted_local_midnight",
+        },
+        sourceCode,
+        eventKind: mapping.eventKind,
+        direction: mapping.direction,
+        amount,
+        description: sourceCode,
+        sourceDescription: row.transactionContent,
+        ...(balanceIsHistorical
+          ? {
+              balance: {
+                observationKey: canonicalLoanToken(
+                  "fubon",
+                  "loan-balance-observation-v2",
+                  sourceRecordKey,
+                ),
+                balance,
+                effectiveAt: balanceEffectiveAt,
+                effectiveAtPrecision: "date",
+                effectiveAtTimeOrigin: "source_reported",
+                effectiveAtField: "transaction-date",
+              },
+            }
+          : {}),
+      };
+    },
+  );
 }
 
 export function buildFubonLoanCapture(
