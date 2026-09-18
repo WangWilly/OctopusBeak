@@ -19,6 +19,11 @@ import {
   withCanonicalSourceCaptureAdmissionTransaction,
 } from "./canonical-source-capture-admission.ts";
 import type { ValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import {
+  createCanonicalFinancialCommitReceipt,
+  createEnvironmentCanonicalFinancialCommitReceiptPublisher,
+  type CanonicalFinancialCommitReceiptPublisher,
+} from "./canonical-financial-commit-receipt.ts";
 
 /** The four outcomes a controlled provider persistence run can report. */
 export type CanonicalFinancialCommitRunStatus =
@@ -130,6 +135,8 @@ export type CanonicalFinancialCommitRunRequest<T> = Readonly<{
   /** Optional fallback labels for a run-fatal error before an item exists. */
   provider?: string;
   product?: string;
+  /** Optional host callback; otherwise a child stdout publisher is used. */
+  onCommitReceipt?: CanonicalFinancialCommitReceiptPublisher;
 }>;
 
 export type CanonicalFinancialCommitItemResult<T> =
@@ -142,6 +149,7 @@ export type CanonicalFinancialCommitItemResult<T> =
       admissionSummaries: readonly CanonicalFinancialCommitAdmissionSummary[];
       value: T;
       relationWarnings: readonly CanonicalFinancialCommitDiagnostic[];
+      receiptWarnings: readonly CanonicalFinancialCommitDiagnostic[];
     }>
   | Readonly<{
       itemKey: string;
@@ -166,6 +174,7 @@ export type CanonicalFinancialCommitRunOptions = Readonly<{
   commitClock?: () => number;
   provider?: string;
   product?: string;
+  onCommitReceipt?: CanonicalFinancialCommitReceiptPublisher;
 }>;
 
 export class CanonicalFinancialCommitItemError extends Error {
@@ -278,6 +287,19 @@ function diagnosticMessage(
   code: string,
 ): string {
   return `Canonical ${stage} failed (${code}).`;
+}
+
+function receiptDiagnostic(
+  item: Pick<CanonicalFinancialCommitItem<unknown>, "provider" | "product" | "itemKey">,
+): CanonicalFinancialCommitDiagnostic {
+  return Object.freeze({
+    provider: safeLabel(item.provider, "unknown-provider"),
+    product: safeLabel(item.product, "unknown-product"),
+    itemKey: safeIdentity(item.itemKey, "unknown-item"),
+    stage: "run" as const,
+    errorCode: "receipt-publish-failed",
+    message: "Canonical commit receipt publication failed.",
+  });
 }
 
 function diagnosticFor(
@@ -534,6 +556,7 @@ async function executeItem<T>(
   item: CanonicalFinancialCommitItem<T>,
   signal: AbortSignal | undefined,
   ledgerDir: string,
+  receiptPublisher: CanonicalFinancialCommitReceiptPublisher | undefined,
 ): Promise<CanonicalFinancialCommitItemResult<T>> {
   const writer = writerView(store);
   const relationWriter = relationWriterView(store);
@@ -563,6 +586,27 @@ async function executeItem<T>(
     ),
   );
 
+  const receiptWarnings: CanonicalFinancialCommitDiagnostic[] = [];
+  if (receiptPublisher) {
+    try {
+      const commitSequence = Math.max(
+        ...committed.admissionSummaries.map(({ commitSequence }) => commitSequence),
+      );
+      await receiptPublisher(
+        createCanonicalFinancialCommitReceipt({
+          provider: item.provider,
+          product: item.product,
+          itemKey: item.itemKey,
+          commitSequence,
+        }),
+      );
+    } catch {
+      // The durable commit is already visible. Receipt delivery is an
+      // operational signal and must never retract or downgrade that fact.
+      receiptWarnings.push(receiptDiagnostic(item));
+    }
+  }
+
   const relationWarnings: CanonicalFinancialCommitDiagnostic[] = [];
   if (item.resolveRelations) {
     try {
@@ -589,6 +633,7 @@ async function executeItem<T>(
     admissionSummaries: committed.admissionSummaries,
     value: committed.value,
     relationWarnings: Object.freeze(relationWarnings),
+    receiptWarnings: Object.freeze(receiptWarnings),
   });
 }
 
@@ -624,6 +669,9 @@ export async function executeCanonicalFinancialCommitRun<T>(
     );
   rejectLegacyLedgerAliases(request);
   const canonicalLedgerDir = request.canonicalLedgerDir.trim();
+  const receiptPublisher =
+    request.onCommitReceipt ??
+    createEnvironmentCanonicalFinancialCommitReceiptPublisher();
 
   const diagnostics: CanonicalFinancialCommitDiagnostic[] = [];
   const results: CanonicalFinancialCommitItemResult<T>[] = [];
@@ -706,11 +754,16 @@ export async function executeCanonicalFinancialCommitRun<T>(
             item,
             request.signal,
             canonicalLedgerDir,
+            receiptPublisher,
           );
           results.push(committed);
           const last = results.at(-1);
-          if (last?.status === "committed" && last.relationWarnings.length > 0)
-            diagnostics.push(...last.relationWarnings);
+          if (last?.status === "committed") {
+            if (last.receiptWarnings.length > 0)
+              diagnostics.push(...last.receiptWarnings);
+            if (last.relationWarnings.length > 0)
+              diagnostics.push(...last.relationWarnings);
+          }
           // A resolver may finish after the user cancels.  The Capture is
           // already durable, but no subsequent Capture may enter the queue;
           // retain this committed result and report the run as cancelled.

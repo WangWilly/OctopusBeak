@@ -395,6 +395,69 @@ test("post-commit relation failures are warnings and do not hide financial facts
   }
 });
 
+test("successful commits publish one receipt after durability, while rollback publishes none", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-commit-receipt-"));
+  try {
+    const receipts: Array<{
+      provider: string;
+      product: string;
+      itemKey: string;
+      commitSequence: number;
+    }> = [];
+    const result = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir: directory,
+      onCommitReceipt: (receipt) => {
+        receipts.push(receipt);
+      },
+      items: [
+        item<string>("receipt-success", (transaction) => {
+          admit(transaction, "receipt-success");
+          return "committed";
+        }, {
+          resolveRelations: () => {
+            throw new Error("post-commit relation warning");
+          },
+        }),
+        item<string>("receipt-rollback", (transaction) => {
+          admit(transaction, "receipt-rollback");
+          throw new CanonicalFinancialCommitItemError("capture validation failed");
+        }),
+      ],
+    });
+    assert.equal(result.status, "partially-completed");
+    assert.deepEqual(receipts.map(({ itemKey }) => itemKey), ["receipt-success"]);
+    assert.equal(receipts[0]?.commitSequence, 1);
+    assert.equal(result.diagnostics.some(({ stage }) => stage === "relation-resolution"), true);
+    assert.deepEqual(await rowsFor(directory), { captures: 1, commits: 1 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("receipt delivery failure is an operational warning after the commit", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-commit-receipt-warning-"));
+  try {
+    const result = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir: directory,
+      onCommitReceipt: () => {
+        throw new Error("renderer transport unavailable");
+      },
+      items: [
+        item("receipt-warning", (transaction) => {
+          admit(transaction, "receipt-warning");
+          return "committed";
+        }),
+      ],
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(result.committedCount, 1);
+    assert.equal(result.diagnostics[0]?.errorCode, "receipt-publish-failed");
+    assert.deepEqual(await rowsFor(directory), { captures: 1, commits: 1 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("cancellation rolls back the active Capture and stops subsequent items", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-commit-cancel-"));
   try {
