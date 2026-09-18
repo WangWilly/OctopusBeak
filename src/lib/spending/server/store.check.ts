@@ -34,6 +34,7 @@ import {
   revokeSpendingLink,
 } from "./store.ts";
 import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+import { financialPerformanceTelemetry } from "../../performance/financial-performance-telemetry.ts";
 
 function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
   result: T;
@@ -632,6 +633,49 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
     const unlinked = applySpendingPurchaseReportPatch(linkedReport, revokeResult.patch);
     assert.deepEqual(unlinked, loadSpending(directory).purchaseReport,
       "the sparse revoke patch reproduces the cross-currency report");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Spending action command telemetry keeps identity out of stage events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-purchase-telemetry-"));
+  try {
+    await seedPurchaseCandidate(directory, true);
+    const before = loadSpending(directory);
+    const invoice = before.purchaseReport.records.find((record) => record.basis === "invoice");
+    const payment = before.purchaseReport.records.find((record) => record.basis === "bank-transaction");
+    assert.ok(invoice?.invoice);
+    assert.ok(payment?.transaction);
+    const events: Array<{ span: string; operation: string; correlationId: string }> = [];
+    financialPerformanceTelemetry.clear();
+    const unsubscribe = financialPerformanceTelemetry.subscribe((event) => {
+      events.push({ operation: event.operation, span: event.span, correlationId: event.correlationId });
+    });
+    try {
+      const linked = confirmSpendingCandidate({
+        kind: "direct",
+        invoiceIdentityId: invoice.invoice.invoiceId,
+        transactionIdentityId: payment.transaction.transactionId,
+        idempotencyKey: "telemetry-confirm-1",
+      }, directory);
+      revokeSpendingLink({
+        invoiceId: invoice.invoice.invoiceId,
+        transactionId: payment.transaction.transactionId,
+        idempotencyKey: "telemetry-revoke-1",
+      }, directory);
+      assert.equal(linked.patch.kind, "spending-recognition-patch");
+    } finally {
+      unsubscribe();
+    }
+    assert.ok(events.some((event) => event.span === "store-open"));
+    assert.ok(events.some((event) => event.span === "narrow-validation"));
+    assert.ok(events.some((event) => event.span === "canonical-transaction"));
+    assert.ok(events.some((event) => event.span === "canonical-commit"));
+    assert.ok(events.every((event) => event.operation === "spending-action"));
+    assert.ok(new Set(events.map((event) => event.correlationId)).size >= 2);
+    assert.equal(JSON.stringify(events).includes(invoice.invoice.invoiceId), false);
+    assert.equal(JSON.stringify(events).includes(payment.transaction.transactionId), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

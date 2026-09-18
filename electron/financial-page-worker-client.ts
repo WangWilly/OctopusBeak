@@ -28,6 +28,10 @@ import type {
   SpendingPageDto,
   SpendingPurchaseActionResult,
 } from "../src/lib/spending/model.ts";
+import {
+  financialPerformanceTelemetry,
+  type FinancialPerformanceOperation,
+} from "../src/lib/performance/financial-performance-telemetry.ts";
 
 export type FinancialPageRequest =
   | { id: number; page: "overview"; input?: FinancialPageLoadInput }
@@ -158,11 +162,16 @@ export function createFinancialPageWorkerClient(
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
       cutoff?: number;
+      telemetry: FinancialPerformanceOperation;
     }
   >();
 
   const rejectPending = (error: Error) => {
-    for (const request of pending.values()) request.reject(error);
+    for (const request of pending.values()) {
+      const response = request.telemetry.startSpan("worker-response");
+      response.finish("error", { error });
+      request.reject(error);
+    }
     pending.clear();
   };
 
@@ -170,17 +179,30 @@ export function createFinancialPageWorkerClient(
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
+    const response = request.telemetry.startSpan("worker-response");
     if (message.ok) {
+      const served = servedKnowledgePoint(message.value);
       if (
         request.cutoff !== undefined &&
-        servedKnowledgePoint(message.value) !== request.cutoff
+        served !== request.cutoff
       ) {
-        request.reject(new Error("canonical-cutoff-unavailable"));
+        const error = new Error("canonical-cutoff-unavailable");
+        response.finish("error", { error });
+        request.reject(error);
         return;
       }
+      response.finish("success", {
+        knowledgePointDistance: request.cutoff === undefined || served === null
+          ? null
+          : Math.abs(served - request.cutoff),
+      });
       request.resolve(message.value);
     }
-    else request.reject(new Error(message.error));
+    else {
+      const error = new Error(message.error);
+      response.finish("error", { error });
+      request.reject(error);
+    }
   });
   worker.on("error", (error) => rejectPending(
     error instanceof Error ? error : new Error(String(error)),
@@ -199,12 +221,21 @@ export function createFinancialPageWorkerClient(
     const request: FinancialPageRequest = input
       ? { id, page, input } as FinancialPageRequest
       : { id, page } as FinancialPageRequest;
+    const telemetry = financialPerformanceTelemetry.startOperation("financial-load");
     const cutoff = input && "cutoff" in input
       ? input.cutoff?.knowledgePoint
       : undefined;
     return new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject, cutoff });
-      worker.postMessage(request);
+      pending.set(id, { resolve, reject, cutoff, telemetry });
+      const dispatch = telemetry.startSpan("worker-dispatch");
+      try {
+        worker.postMessage(request);
+        dispatch.finish();
+      } catch (error) {
+        pending.delete(id);
+        dispatch.finish("error", { error });
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -222,12 +253,26 @@ export function createFinancialPageWorkerClient(
       section,
       ...(input === undefined ? {} : { input }),
     } as FinancialPageRequest;
+    const telemetry = financialPerformanceTelemetry.startOperation("financial-load");
     const cutoff = input && "cutoff" in input
       ? input.cutoff?.knowledgePoint
       : undefined;
     return new Promise<FinancialSectionResult>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as unknown as (value: unknown) => void, reject, cutoff });
-      worker.postMessage(request);
+      pending.set(id, {
+        resolve: resolve as unknown as (value: unknown) => void,
+        reject,
+        cutoff,
+        telemetry,
+      });
+      const dispatch = telemetry.startSpan("worker-dispatch");
+      try {
+        worker.postMessage(request);
+        dispatch.finish();
+      } catch (error) {
+        pending.delete(id);
+        dispatch.finish("error", { error });
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -243,9 +288,18 @@ export function createFinancialPageWorkerClient(
       action: actionName,
       input,
     };
+    const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
     return new Promise<unknown>((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      worker.postMessage(request);
+      pending.set(id, { resolve, reject, telemetry });
+      const dispatch = telemetry.startSpan("worker-dispatch");
+      try {
+        worker.postMessage(request);
+        dispatch.finish();
+      } catch (error) {
+        pending.delete(id);
+        dispatch.finish("error", { error });
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     }) as Promise<SpendingPurchaseActionResult>;
   }
 

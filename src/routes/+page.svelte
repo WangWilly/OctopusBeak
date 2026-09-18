@@ -58,6 +58,7 @@
     createRouteLoadCache,
     type FinancialRouteGenerationCutoff,
   } from "./route-loader.ts";
+  import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
 
   type RouteId = OnboardingRoute;
   type FinancialRoute = "overview" | "assets" | "liabilities" | "spending";
@@ -474,6 +475,8 @@
     },
   ): Promise<void> {
     const currentState = routeState(next);
+    const telemetry = financialPerformanceTelemetry.startOperation("financial-load");
+    telemetry.startSpan("page-shell").finish();
     if (
       !options.force
       && !options.background
@@ -586,10 +589,26 @@
       };
     })();
 
-    const primaryPromise = Promise.resolve(loaders.primary()).then((result) => {
+    const primarySpan = telemetry.startSpan("primary-load", {
+      knowledgePointDistance: currentState.knowledgePoint === null
+        ? null
+        : Math.max(0, cutoff.knowledgePoint - currentState.knowledgePoint),
+    });
+    const secondarySpan = telemetry.startSpan("secondary-load", {
+      knowledgePointDistance: currentState.knowledgePoint === null
+        ? null
+        : Math.max(0, cutoff.knowledgePoint - currentState.knowledgePoint),
+    });
+    const invokeLoader = (loader: () => Promise<FinancialSectionResultValue<unknown>>) =>
+      Promise.resolve().then(() => loader());
+    const primaryPromise = invokeLoader(loaders.primary as () => Promise<FinancialSectionResultValue<unknown>>).then((result) => {
+      primarySpan.finish("success", {
+        knowledgePointDistance: Math.abs(result.knowledgePoint - cutoff.knowledgePoint),
+      });
       applyPrimary(result);
       return result;
     }, (error: unknown) => {
+      primarySpan.finish("error", { error });
       if (isCurrent() && !background) {
         updateRouteState(next, (state) => ({
           ...state,
@@ -599,9 +618,13 @@
       }
       throw error;
     });
-    void Promise.resolve(loaders.secondary()).then((result) => {
+    void invokeLoader(loaders.secondary as () => Promise<FinancialSectionResultValue<unknown>>).then((result) => {
+      secondarySpan.finish("success", {
+        knowledgePointDistance: Math.abs(result.knowledgePoint - cutoff.knowledgePoint),
+      });
       applySecondary(result);
     }, (error: unknown) => {
+      secondarySpan.finish("error", { error });
       secondaryError = error;
       applySecondaryError(error);
     });

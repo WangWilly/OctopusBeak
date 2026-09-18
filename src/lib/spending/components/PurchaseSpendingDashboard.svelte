@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { locale } from "$lib/i18n/i18n.ts";
+  import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -409,13 +411,18 @@
   async function applySpendingActionResult(
     result: SpendingPurchaseActionResult,
     command?: SpendingPendingCommand,
+    telemetry?: ReturnType<typeof financialPerformanceTelemetry.startOperation>,
   ): Promise<boolean> {
     try {
       report = applyValidatedSpendingActionResult(report, result);
+      telemetry?.startSpan("patch-applied", {
+        knowledgePointDistance: 0,
+      }).finish();
       selectedMonth = activeMonth;
       if (command) completeSpendingPendingCommand(command);
       return true;
-    } catch {
+    } catch (error) {
+      telemetry?.startSpan("patch-applied").finish("error", { error });
       await reconcileSpendingAction(command);
       return false;
     }
@@ -429,10 +436,18 @@
   ): Promise<void> {
     busyAction = action;
     actionError = "";
+    const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
+    telemetry.startSpan("action-start").finish();
+    let telemetryFinished = false;
     const command = identity ? beginSpendingPendingCommand(identity) : undefined;
     try {
       const result = await request(command?.idempotencyKey);
-      if (await applySpendingActionResult(result, command)) onSuccess?.();
+      if (await applySpendingActionResult(result, command, telemetry)) {
+        await tick();
+        telemetry.finish("paint-ready");
+        telemetryFinished = true;
+        onSuccess?.();
+      }
     } catch (error) {
       const code = spendingActionErrorCode(error);
       if (code === "idempotency-key-conflict") {
@@ -444,6 +459,9 @@
         actionError = actionErrorText(error);
       }
     } finally {
+      if (!telemetryFinished) {
+        telemetry.finish("action-result", "error", { error: actionError || undefined });
+      }
       busyAction = null;
     }
   }

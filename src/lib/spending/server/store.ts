@@ -64,6 +64,10 @@ import {
   createFinancialSectionResult,
   type FinancialSectionQueryInput,
 } from "../../shared-ledger/financial-section.ts";
+import {
+  financialPerformanceTelemetry,
+  type FinancialPerformanceOperation,
+} from "../../performance/financial-performance-telemetry.ts";
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -398,11 +402,37 @@ function currentSpendingQueryFromStore(
   return queryCurrentSpendingFromDatabase(store.db);
 }
 
-function recordStore(ledgerDir: string) {
-  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
-  if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
-  storeOpenDiagnostics.publish({ ledgerDir });
-  return createCanonicalSourceStore(ledgerDir);
+function recordStore(
+  ledgerDir: string,
+  telemetry?: FinancialPerformanceOperation,
+) {
+  const span = telemetry?.startSpan("store-open");
+  try {
+    const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+    if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+    storeOpenDiagnostics.publish({ ledgerDir });
+    const store = createCanonicalSourceStore(ledgerDir);
+    span?.finish();
+    return store;
+  } catch (error) {
+    span?.finish("error", { error });
+    throw error;
+  }
+}
+
+function withSpendingActionTelemetry<T>(
+  operation: (telemetry: FinancialPerformanceOperation) => T,
+): T {
+  const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
+  telemetry.startSpan("action-start").finish();
+  try {
+    const result = operation(telemetry);
+    telemetry.startSpan("action-result").finish();
+    return result;
+  } catch (error) {
+    telemetry.startSpan("action-result").finish("error", { error });
+    throw error;
+  }
 }
 
 function pageFromQuery(
@@ -554,14 +584,30 @@ function decideCandidate(
   input: unknown,
   ledgerDir: string,
   kind: "confirmed" | "denied",
+  telemetry: FinancialPerformanceOperation,
 ): SpendingPurchaseActionResult {
   const action = candidateActionValue(input);
   if (!action.candidateId) throw new TypeError("Candidate id is required for candidate denial.");
-  const store = recordStore(ledgerDir);
+  const store = recordStore(ledgerDir, telemetry);
   try {
     const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const candidate = resolveCandidate(query, action.candidateId);
-    const materialized = recordSpendingMatchCandidate(store, candidate);
+    const validation = telemetry.startSpan("narrow-validation");
+    let candidate: ReturnType<typeof resolveCandidate>;
+    try {
+      candidate = resolveCandidate(query, action.candidateId);
+      validation.finish();
+    } catch (error) {
+      validation.finish("error", { error });
+      throw error;
+    }
+    const commitSpan = telemetry.startSpan("canonical-commit");
+    let materialized: ReturnType<typeof recordSpendingMatchCandidate>;
+    try {
+      materialized = recordSpendingMatchCandidate(store, candidate);
+    } catch (error) {
+      commitSpan.finish("error", { error });
+      throw error;
+    }
     const evidence = decisionEvidence(candidate);
     const decision = {
       decisionKey: `spending/user/${kind}/${candidate.candidateKey}`,
@@ -571,8 +617,14 @@ function decideCandidate(
       evidenceKnowledgeSequence: Math.max(query.purchaseReport.knowledgeAt, materialized.commitSequence),
       evidence,
     };
-    if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
-    else denySpendingDedupCandidate(store, decision);
+    try {
+      if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
+      else denySpendingDedupCandidate(store, decision);
+      commitSpan.finish();
+    } catch (error) {
+      commitSpan.finish("error", { error });
+      throw error;
+    }
     return actionResultAfterRecognitionMutation(query, store);
   } finally {
     store.close();
@@ -582,19 +634,20 @@ function decideCandidate(
 function confirmCandidateByIdentity(
   action: SpendingCandidateDecisionInput,
   ledgerDir: string,
+  telemetry: FinancialPerformanceOperation,
 ): SpendingPurchaseActionResult {
   const invoiceId = action.invoiceIdentityId;
   const transactionId = action.transactionIdentityId;
   if (!invoiceId || !transactionId)
     throw new TypeError("Candidate confirmation requires canonical invoice and transaction identities.");
-  const store = recordStore(ledgerDir);
+  const store = recordStore(ledgerDir, telemetry);
   try {
     const result = executeSpendingRecognitionCommand(store, {
       kind: "establish-link",
       invoiceId: invoiceId.toLowerCase(),
       transactionId: transactionId.toLowerCase(),
       idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
-    });
+    }, telemetry);
     return recognitionActionResult(result);
   } finally {
     store.close();
@@ -605,53 +658,58 @@ export function confirmSpendingCandidate(
   input: SpendingConfirmActionInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  const action = confirmActionValue(input);
-  if (action.kind === "candidate") {
-    // The identity-bearing form is the product command seam.  The old
-    // candidate-id-only form remains as a compatibility adapter for callers
-    // that have not yet moved candidate analysis out of the command path.
-    if (action.invoiceIdentityId && action.transactionIdentityId)
-      return confirmCandidateByIdentity(action, ledgerDir);
-    return decideCandidate(action, ledgerDir, "confirmed");
-  }
-  const store = recordStore(ledgerDir);
-  try {
-    const result = executeSpendingRecognitionCommand(store, {
-      kind: "establish-link",
-      invoiceId: action.invoiceIdentityId.toLowerCase(),
-      transactionId: action.transactionIdentityId.toLowerCase(),
-      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
-    });
-    return recognitionActionResult(result);
-  } finally {
-    store.close();
-  }
+  return withSpendingActionTelemetry((telemetry) => {
+    const action = confirmActionValue(input);
+    if (action.kind === "candidate") {
+      // The identity-bearing form is the product command seam.  The old
+      // candidate-id-only form remains as a compatibility adapter for callers
+      // that have not yet moved candidate analysis out of the command path.
+      if (action.invoiceIdentityId && action.transactionIdentityId)
+        return confirmCandidateByIdentity(action, ledgerDir, telemetry);
+      return decideCandidate(action, ledgerDir, "confirmed", telemetry);
+    }
+    const store = recordStore(ledgerDir, telemetry);
+    try {
+      const result = executeSpendingRecognitionCommand(store, {
+        kind: "establish-link",
+        invoiceId: action.invoiceIdentityId.toLowerCase(),
+        transactionId: action.transactionIdentityId.toLowerCase(),
+        idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+      }, telemetry);
+      return recognitionActionResult(result);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 export function denySpendingCandidate(
   input: SpendingCandidateDecisionInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  return decideCandidate(input, ledgerDir, "denied");
+  return withSpendingActionTelemetry((telemetry) =>
+    decideCandidate(input, ledgerDir, "denied", telemetry));
 }
 
 export function revokeSpendingLink(
   input: SpendingLinkRevokeInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  const action = linkActionValue(input);
-  const store = recordStore(ledgerDir);
-  try {
-    const result = executeSpendingRecognitionCommand(store, {
-      kind: "remove-link",
-      invoiceId: action.invoiceId.toLowerCase(),
-      transactionId: action.transactionId.toLowerCase(),
-      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
-    });
-    return recognitionActionResult(result);
-  } finally {
-    store.close();
-  }
+  return withSpendingActionTelemetry((telemetry) => {
+    const action = linkActionValue(input);
+    const store = recordStore(ledgerDir, telemetry);
+    try {
+      const result = executeSpendingRecognitionCommand(store, {
+        kind: "remove-link",
+        invoiceId: action.invoiceId.toLowerCase(),
+        transactionId: action.transactionId.toLowerCase(),
+        idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+      }, telemetry);
+      return recognitionActionResult(result);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 export function loadSpending(
