@@ -27,6 +27,10 @@ assert.match(source, /spendingLinkActionFrom\(input\)/);
 assert.match(source, /FINANCIAL_FRESHNESS_LATEST_CHANNEL/);
 assert.match(source, /latestKnowledgePointFromDatabase/);
 assert.match(source, /financialFreshness\.publish\(receipt\)/);
+assert.match(
+  source,
+  /if \(resumed\) \{\s*automationResume\(taskId, undefined, \(receipt\) => \{\s*financialFreshness\.publish\(receipt\);\s*\}\);\s*\}/,
+);
 for (const [channel, method] of [
   ["spending:confirmCandidate", "confirmCandidate"],
   ["spending:denyCandidate", "denyCandidate"],

@@ -569,7 +569,11 @@ export function registerOctopusBeakIpc({
           record.targetId,
           verified,
         );
-      if (resumed) automationResume(taskId);
+      if (resumed) {
+        automationResume(taskId, undefined, (receipt) => {
+          financialFreshness.publish(receipt);
+        });
+      }
       return { ok: true as const, contract: updatedContract, resumed };
     },
   );

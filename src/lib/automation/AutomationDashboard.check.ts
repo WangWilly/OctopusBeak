@@ -465,3 +465,9 @@ assert.match(
 );
 assert.doesNotMatch(source, /src=""/);
 assert.match(source, /viewerError \|\| \$t\.automation\.screenshotUnavailable/);
+assert.match(source, /export let onAutomationRunSettled: \(\) => void = \(\) => \{\};/);
+assert.match(source, /async function reloadAfterAutomationRun\(\)[\s\S]*?onAutomationRunSettled\(\);/);
+assert.match(source, /async function settleAutomationRun\(operation: \(\) => Promise<unknown>\)/);
+assert.match(source, /automation\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
+assert.match(source, /automation\.resume\(task\.id\)/);
+assert.match(source, /taskSettled\)[\s\S]*?onAutomationRunSettled\(\)/);
