@@ -43,15 +43,18 @@ function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
   fullProjectionCount: number;
   storeOpenCount: number;
 } {
+  void ledgerDir;
   const projectionDiagnostics = channel("octopus-beak.spending.full-projection");
   const storeDiagnostics = channel("octopus-beak.spending.canonical-store-open");
   let count = 0;
   let storeOpenCount = 0;
   const observer = (message: unknown) => {
-    if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) count += 1;
+    assertDiagnosticIsPrivacySafe(message);
+    count += 1;
   };
   const storeObserver = (message: unknown) => {
-    if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) storeOpenCount += 1;
+    assertDiagnosticIsPrivacySafe(message);
+    storeOpenCount += 1;
   };
   projectionDiagnostics.subscribe(observer);
   storeDiagnostics.subscribe(storeObserver);
@@ -61,6 +64,16 @@ function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
     projectionDiagnostics.unsubscribe(observer);
     storeDiagnostics.unsubscribe(storeObserver);
   }
+}
+
+function assertDiagnosticIsPrivacySafe(message: unknown): void {
+  assert.ok(message && typeof message === "object" && !Array.isArray(message));
+  const payload = message as Record<string, unknown>;
+  assert.equal("ledgerDir" in payload, false);
+  assert.equal("path" in payload, false);
+  assert.equal("sql" in payload, false);
+  assert.equal("payload" in payload, false);
+  assert.equal("identity" in payload, false);
 }
 
 test("Spending loader uses the canonical report and exposes eligibility gaps", async () => {

@@ -388,7 +388,7 @@ function currentSpendingQuery(
   ledgerDir: string,
   cutoff?: FinancialQueryCutoff,
 ): CurrentSpendingQueryResult {
-  fullProjectionDiagnostics.publish({ ledgerDir });
+  fullProjectionDiagnostics.publish({ operation: "current-spending-projection" });
   return createFinancialQuery(ledgerDir).current({
     kind: "current",
     product: "spending",
@@ -413,7 +413,7 @@ function currentSpendingQueryFromStore(
   store: CanonicalSourceStore,
   ledgerDir: string,
 ): CurrentSpendingQueryResult {
-  fullProjectionDiagnostics.publish({ ledgerDir });
+  fullProjectionDiagnostics.publish({ operation: "current-spending-projection" });
   return queryCurrentSpendingFromDatabase(store.db);
 }
 
@@ -425,7 +425,7 @@ function recordStore(
   try {
     const databasePath = canonicalDatabaseWriterKey(ledgerDir);
     if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
-    storeOpenDiagnostics.publish({ ledgerDir });
+    storeOpenDiagnostics.publish({ operation: "spending-store-open" });
     const store = createCanonicalSourceStore(ledgerDir);
     span?.finish();
     return store;

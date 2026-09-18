@@ -59,6 +59,10 @@
     createRouteLoadCache,
     type FinancialRouteGenerationCutoff,
   } from "./route-loader.ts";
+  import {
+    stableFinancialErrorCode,
+    type FinancialErrorCode,
+  } from "$lib/shared-ledger/financial-error.ts";
   import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
 
   type RouteId = OnboardingRoute;
@@ -195,7 +199,7 @@
         ...state,
         stale: true,
         updating: false,
-        refreshError: sanitizedFinancialError(error, "更新失敗，暫時顯示舊資料。"),
+        refreshError: sanitizedFinancialError(error, $t.financialErrors.refreshFailed),
       }));
     },
   });
@@ -333,16 +337,24 @@
     const load = loadRoute(route);
     if (isFinancialRoute(route)) {
       void load.then(() => generationCoordinator.reconcile()).catch((error) => {
-        console.warn("financial-freshness-route-reconcile-failed", error);
+        console.warn("financial-freshness-route-reconcile-failed", stableFinancialErrorCode(error));
       });
     }
   }
 
-  function sanitizedFinancialError(error: unknown, fallback = "金融資料載入失敗，請稍後重試。") {
-    if (error instanceof Error && error.message === "financial-section-knowledge-point-mismatch") {
-      return "資料版本已變更，請重新載入。";
-    }
-    return fallback;
+  function sanitizedFinancialError(error: unknown, fallback = $t.financialErrors.generic) {
+    const code = stableFinancialErrorCode(error);
+    const messages: Partial<Record<FinancialErrorCode, string>> = {
+      "financial-section-knowledge-point-mismatch": $t.financialErrors.knowledgePointMismatch,
+      "canonical-cutoff-unavailable": $t.financialErrors.cutoffUnavailable,
+      "validation-failed": $t.financialErrors.validationFailed,
+      "worker-closed": $t.financialErrors.workerClosed,
+      "worker-exit": $t.financialErrors.workerExit,
+      "worker-error": $t.financialErrors.workerError,
+      contention: $t.financialErrors.contention,
+      cancelled: $t.financialErrors.cancelled,
+    };
+    return messages[code] ?? fallback;
   }
 
   function refreshStatus(state: FinancialRouteState<unknown, unknown>): string | null {
@@ -510,7 +522,7 @@
     activeFinancialReadRequestToken = requestToken;
     if (previousRequestToken) {
       void window.octopusBeak.financial.cancel(previousRequestToken).catch((error) => {
-        console.warn("financial-read-cancel-failed", error);
+        console.warn("financial-read-cancel-failed", stableFinancialErrorCode(error));
       });
     }
     let cancellationRequested = false;
@@ -518,7 +530,7 @@
       if (cancellationRequested) return;
       cancellationRequested = true;
       void window.octopusBeak.financial.cancel(requestToken).catch((error) => {
-        console.warn("financial-read-cancel-failed", error);
+        console.warn("financial-read-cancel-failed", stableFinancialErrorCode(error));
       });
     };
     if (options.signal?.aborted) cancelRead();
@@ -607,7 +619,7 @@
         ...state,
         secondary: {
           status: "error",
-          message: sanitizedFinancialError(error, "次要資料載入失敗，請稍後重試。"),
+          message: sanitizedFinancialError(error, $t.financialErrors.generic),
           knowledgePoint: cutoff.knowledgePoint,
         },
       }));
@@ -743,7 +755,7 @@
           ...state,
           stale: true,
           updating: false,
-          refreshError: sanitizedFinancialError(error, "更新失敗，暫時顯示舊資料。"),
+          refreshError: sanitizedFinancialError(error, $t.financialErrors.refreshFailed),
         }));
         throw error;
       }
@@ -782,7 +794,7 @@
       freshnessReconcileTimer = undefined;
       if (!settingsReady || !isFinancialRoute(route)) return;
       void generationCoordinator.reconcile().catch((error) => {
-        console.warn("financial-freshness-reconcile-failed", error);
+        console.warn("financial-freshness-reconcile-failed", stableFinancialErrorCode(error));
       });
     }, 50);
   }
@@ -816,7 +828,7 @@
     const welcomeStartedAtNavigationEpoch = routeNavigationEpoch;
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
-      .catch((error) => console.warn("system-settings-load-failed", error))
+      .catch((error) => console.warn("system-settings-load-failed", stableFinancialErrorCode(error)))
       .then(() => {
         settingsReady = true;
         generationCoordinator.start();

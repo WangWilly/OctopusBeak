@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { locale } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
   import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
@@ -20,6 +20,7 @@
     type SpendingPendingCommand,
     type SpendingPendingCommandIdentity,
   } from "../spending-action-lifecycle.ts";
+  import { stableFinancialErrorCode } from "$lib/shared-ledger/financial-error.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
@@ -381,21 +382,23 @@
   }
 
   function actionErrorText(error: unknown): string {
-    const code = spendingActionErrorCode(error);
+    const code = stableFinancialErrorCode(error);
     if (code === "spending-pair-stale") {
-      return $locale === "zh-TW" ? "資料已更新，正在讀取最新配對狀態。" : "The data changed; loading the latest pairing state.";
+      return $t.financialErrors.spendingPairStale;
     }
     if (code === "idempotency-key-conflict") {
-      return $locale === "zh-TW"
-        ? "這個操作識別碼已被其他操作使用，請重新執行。"
-        : "This action key was used by another operation. Please try again.";
+      return $t.financialErrors.idempotencyConflict;
     }
     if (code === "idempotency-storage-unavailable") {
-      return $locale === "zh-TW"
-        ? "無法安全保存操作識別碼，已停止送出；請稍後重試。"
-        : "This action cannot be safely saved, so it was not sent. Please try again later.";
+      return $t.financialErrors.idempotencyStorageUnavailable;
     }
-    return error instanceof Error ? error.message : String(error);
+    if (code === "canonical-cutoff-unavailable") return $t.financialErrors.cutoffUnavailable;
+    if (code === "contention") return $t.financialErrors.contention;
+    if (code === "cancelled") return $t.financialErrors.cancelled;
+    if (code === "worker-closed") return $t.financialErrors.workerClosed;
+    if (code === "worker-exit") return $t.financialErrors.workerExit;
+    if (code === "worker-error") return $t.financialErrors.workerError;
+    return $t.financialErrors.generic;
   }
 
   async function reconcileSpendingAction(
@@ -418,7 +421,7 @@
       actionError = $locale === "zh-TW"
         ? "無法確認配對結果，請重新整理資料。"
         : "The pairing result could not be confirmed. Please refresh the data.";
-      console.warn("spending-action-reconciliation-failed", error);
+      console.warn("spending-action-reconciliation-failed", stableFinancialErrorCode(error));
       return false;
     } finally {
       actionReconciliationPending = false;

@@ -72,6 +72,7 @@ export const financialQueryDiagnostics = channel(
 export const spendingQueryDiagnostics = channel(
   "octopus-beak.shared-ledger.spending-query",
 );
+const spendingStoreDiagnostics = channel("octopus-beak.spending.canonical-store-open");
 
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
@@ -461,7 +462,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
           purchaseReport: emptyPurchaseReport("current"),
         };
       }
-      channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
+      spendingStoreDiagnostics.publish({ operation: "spending-store-open" });
       const store = createCanonicalSourceStore(this.ledgerDir);
       try {
         return queryCurrentSpendingFromDatabase(store.db, cutoff, request.section ?? "full");

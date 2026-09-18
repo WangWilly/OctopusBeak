@@ -27,6 +27,9 @@ test("the renderer exposes the progressive generation invariants", () => {
   assert.match(source, /window\.octopusBeak\.financial\.cancel\(requestToken\)/);
   assert.match(source, /options\.signal\?\.addEventListener\("abort", cancelRead/);
   assert.match(source, /options\.signal\?\.removeEventListener\("abort", cancelRead/);
+  assert.match(source, /stableFinancialErrorCode\(error\)/);
+  assert.doesNotMatch(source, /console\.warn\([^\n]*,\s*error\)/);
+  assert.doesNotMatch(source, /return error instanceof Error \? error\.message/);
 });
 
 test("old secondary data is not composed across a primary knowledge point", () => {
@@ -57,4 +60,5 @@ test("a primary failure renders section-specific secondary data without enabling
   assert.doesNotMatch(source, /refreshError: message\(error\)/);
   assert.doesNotMatch(source, /refreshError: error/);
   assert.doesNotMatch(source, /primary: \{ status: "error", message: message\(error\)/);
+  assert.doesNotMatch(source, /console\.warn\([^\n]*,\s*error\)/);
 });
