@@ -10,7 +10,10 @@ import type {
 import { configuredOverviewSources } from "../../overview/server/expected-sources.ts";
 import { mapCanonicalProduct } from "../../shared-ledger/server/canonical-product.ts";
 import { createFinancialQuery } from "../../shared-ledger/server/financial-query.ts";
-import type { FinancialQueryCutoff } from "../../shared-ledger/server/financial-query.ts";
+import type {
+  FinancialQueryCutoff,
+  FinancialQuerySection,
+} from "../../shared-ledger/server/financial-query.ts";
 import type { AccountRowDto } from "../../shared-ledger/types.ts";
 import {
   assertMatchingFinancialSectionKnowledgePoints,
@@ -23,6 +26,7 @@ export async function loadAssets(
   input: {
     expectedSources?: readonly CanonicalOverviewExpectedSource[];
     cutoff?: FinancialQueryCutoff;
+    section?: FinancialQuerySection;
   } = {},
 ): Promise<AssetsPageDto> {
   const expectedSources = input.expectedSources ?? configuredOverviewSources();
@@ -31,6 +35,7 @@ export async function loadAssets(
     product: "assets",
     expectedSources,
     cutoff: input.cutoff,
+    section: input.section,
   });
   return mapCanonicalProduct(result.projection, "assets");
 }
@@ -63,7 +68,7 @@ export async function loadAssetsSection(
     expectedSources?: readonly CanonicalOverviewExpectedSource[];
   } = {},
 ): Promise<AssetsPrimarySection | AssetsSecondarySection> {
-  const page = await loadAssets(ledgerDir, input);
+  const page = await loadAssets(ledgerDir, { ...input, section });
   return section === "primary"
     ? createFinancialSectionResult(section, assetsPrimary(page))
     : createFinancialSectionResult(section, assetsSecondary(page));

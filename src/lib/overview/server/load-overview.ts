@@ -101,6 +101,7 @@ async function loadOverviewWithSection(
     product: "overview",
     expectedSources: input.expectedSources,
     cutoff: input.cutoff,
+    section: section === "full" ? undefined : section,
   });
   const projection = current.projection;
   const accounts = projection.accounts.map((account): AccountRowDto => ({
@@ -160,6 +161,7 @@ async function loadOverviewWithSection(
       product: "overview",
       selection: "latest",
       currencies,
+      cutoff: input.cutoff,
     })).exchangeRates;
   const sankeyRates = new Map(
     sankeyExchangeRates.map((rate) => [rate.currency, rate]),

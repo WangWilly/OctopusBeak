@@ -13,6 +13,7 @@ import {
 import {
   createCanonicalOverviewQuery,
   type CanonicalOverviewExpectedSource,
+  type CanonicalOverviewQuerySection,
   type CanonicalOverviewProjection,
   type CanonicalOverviewCurrentQueryResult,
 } from "../../../ledger/canonical/canonical-overview-query.ts";
@@ -61,11 +62,18 @@ export type LedgerFinancialProduct = Exclude<FinancialProduct, "spending">;
 /** A page generation must make every product read use this same cutoff. */
 export type FinancialQueryCutoff = CanonicalKnowledgePointCutoff;
 
+export type FinancialQuerySection = CanonicalOverviewQuerySection;
+
+export const financialQueryDiagnostics = channel(
+  "octopus-beak.shared-ledger.financial-query",
+);
+
 export type CurrentOverviewLedgerQueryRequest = {
   kind: "current";
   product: "overview";
   expectedSources?: readonly CanonicalOverviewExpectedSource[];
   cutoff?: FinancialQueryCutoff;
+  section?: FinancialQuerySection;
 };
 
 export type CurrentOverviewExchangeRateQueryRequest =
@@ -74,6 +82,7 @@ export type CurrentOverviewExchangeRateQueryRequest =
     product: "overview";
     selection: "latest";
     currencies: string[];
+    cutoff?: FinancialQueryCutoff;
   }
   | {
     kind: "current";
@@ -82,6 +91,7 @@ export type CurrentOverviewExchangeRateQueryRequest =
     currencies: string[];
     firstDate: string;
     lastDate: string;
+    cutoff?: FinancialQueryCutoff;
   };
 
 export type CurrentCanonicalLedgerQueryRequest<
@@ -91,6 +101,7 @@ export type CurrentCanonicalLedgerQueryRequest<
   product: Product;
   expectedSources?: readonly CanonicalOverviewExpectedSource[];
   cutoff?: FinancialQueryCutoff;
+  section?: FinancialQuerySection;
 };
 
 type CurrentRequestByProduct = {
@@ -354,12 +365,19 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
     const cutoff = "cutoff" in request && request.cutoff
       ? { knowledgePoint: validateCanonicalKnowledgePoint(request.cutoff.knowledgePoint) }
       : undefined;
+    financialQueryDiagnostics.publish({
+      product: request.product,
+      section: "section" in request ? request.section ?? "full" : "full",
+      cutoff: cutoff?.knowledgePoint,
+      ...("selection" in request ? { selection: request.selection } : {}),
+    });
     if (request.product === "overview" && !("selection" in request)) {
-      if (!request.expectedSources?.length && !cutoff)
+      if (!request.expectedSources?.length && !cutoff && !request.section)
         return this.canonicalOverview.current();
       return createCanonicalOverviewQuery(this.ledgerDir, {
         expectedSources: request.expectedSources,
         cutoff,
+        section: request.section,
       }).current();
     }
     if (request.product === "spending") {
@@ -389,8 +407,11 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
         ? createCanonicalOverviewQuery(this.ledgerDir, {
           expectedSources: request.expectedSources,
           cutoff,
+          section: request.section,
         })
-        : this.canonicalOverview;
+        : request.section
+          ? createCanonicalOverviewQuery(this.ledgerDir, { section: request.section })
+          : this.canonicalOverview;
       return projectionQuery.current().then((result) => ({
         ...result,
         product: request.product,

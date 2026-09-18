@@ -4,6 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { canonicalOverviewQueryDiagnostics } from "../../ledger/canonical/canonical-overview-query.ts";
+import {
+  createFinancialQuery,
+  financialQueryDiagnostics,
+} from "./server/financial-query.ts";
 import {
   combineAssetsSections,
   loadAssets,
@@ -69,6 +74,66 @@ test("primary sections skip secondary analysis work", async () => {
   } finally {
     overviewSecondary.unsubscribe(onOverviewSecondary);
     candidateAnalysis.unsubscribe(onCandidateAnalysis);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("asset and liability sections request only their bounded query families", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "financial-section-families-"));
+  const events: Array<{ section: string; families: string[] }> = [];
+  const onQuery = (event: unknown) => {
+    const value = event as { section?: unknown; families?: unknown };
+    if (typeof value.section !== "string" || !Array.isArray(value.families)) return;
+    events.push({
+      section: value.section,
+      families: value.families.filter((family): family is string => typeof family === "string"),
+    });
+  };
+  canonicalOverviewQueryDiagnostics.subscribe(onQuery);
+  try {
+    await loadAssetsSection("primary", directory, { expectedSources: [] });
+    await loadAssetsSection("secondary", directory, { expectedSources: [] });
+    await loadLiabilitiesSection("primary", directory, { expectedSources: [] });
+    await loadLiabilitiesSection("secondary", directory, { expectedSources: [] });
+
+    const primary = events.find((event) => event.section === "primary");
+    const secondary = events.find((event) => event.section === "secondary");
+    assert.ok(primary);
+    assert.ok(secondary);
+    assert.ok(primary.families.includes("transactions"));
+    assert.ok(primary.families.includes("investment-transactions"));
+    assert.ok(!secondary.families.includes("transactions"));
+    assert.ok(!secondary.families.includes("investment-transactions"));
+    assert.ok(secondary.families.includes("investment-holdings"));
+  } finally {
+    canonicalOverviewQueryDiagnostics.unsubscribe(onQuery);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("overview secondary subqueries carry the same generation cutoff", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "financial-section-cutoff-"));
+  const events: Array<{ product?: unknown; section?: unknown; cutoff?: unknown; selection?: unknown }> = [];
+  const onQuery = (event: unknown) => events.push(event as typeof events[number]);
+  financialQueryDiagnostics.subscribe(onQuery);
+  try {
+    await loadOverviewSection("secondary", directory, {
+      expectedSources: [],
+      cutoff: { knowledgePoint: 0 },
+    });
+    await createFinancialQuery(directory).current({
+      kind: "current",
+      product: "overview",
+      selection: "latest",
+      currencies: ["USD"],
+      cutoff: { knowledgePoint: 0 },
+    });
+    const overviewQueries = events.filter((event) => event.product === "overview");
+    assert.equal(overviewQueries.length, 2);
+    assert.ok(overviewQueries.every((event) => event.cutoff === 0));
+    assert.equal(overviewQueries[1]?.selection, "latest");
+  } finally {
+    financialQueryDiagnostics.unsubscribe(onQuery);
     await rm(directory, { recursive: true, force: true });
   }
 });
