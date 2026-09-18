@@ -179,6 +179,12 @@ export type LoanTransactionInput = {
   amount: LoanExactAmount;
   currency: "TWD";
   description?: string;
+  /**
+   * The provider's original display label. This is retained in compact
+   * source evidence when the canonical description is derived from a
+   * standardized event code.
+   */
+  sourceDescription?: string;
   principal?: LoanExactAmount;
   interest?: LoanExactAmount;
   fee?: LoanExactAmount;
@@ -379,6 +385,7 @@ export type CanonicalLoanStatementRow = {
   direction: "inflow" | "outflow";
   amount: LoanExactAmount;
   description?: string;
+  sourceDescription?: string;
   balance?: {
     observationKey: string;
     balance: LoanExactAmount;
@@ -732,6 +739,9 @@ export function createCanonicalLoanCapture(
     amount: row.amount,
     currency: "TWD" as const,
     ...(row.description === undefined ? {} : { description: row.description }),
+    ...(row.sourceDescription === undefined
+      ? {}
+      : { sourceDescription: row.sourceDescription }),
     ...(row.balance === undefined
       ? {}
       : {
@@ -1183,6 +1193,13 @@ function validateCapture(capture: LoanCaptureInput): void {
         "Loan transaction status/currency is unsupported.",
       );
     if (
+      record.sourceDescription !== undefined &&
+      typeof record.sourceDescription !== "string"
+    )
+      throw new CanonicalLoanAdmissionError(
+        "Loan source description evidence must be a string.",
+      );
+    if (
       record.eventEvidence?.kind !== "source-coded-loan-event" ||
       record.eventEvidence.sourceRecordKey !== sourceRecordKey ||
       record.eventEvidence.contractVersion !== contractVersion ||
@@ -1549,6 +1566,9 @@ function compactRecord(
     ...(record.description === undefined
       ? {}
       : { description: record.description }),
+    ...(record.sourceDescription === undefined
+      ? {}
+      : { sourceDescription: record.sourceDescription }),
     ...(record.principal === undefined
       ? {}
       : {
@@ -1585,6 +1605,21 @@ function compactHash(compact: Record<string, unknown>): `sha256:${string}` {
     .digest("base64url")}`;
 }
 
+/**
+ * Fubon's statement rows contain mutable observations alongside the booked
+ * transaction. Keep those observations in the immutable compact payload, but
+ * hash only the transaction core so a later balance or display-label change
+ * cannot manufacture a transaction revision.
+ */
+function fubonStableCompact(
+  compact: Record<string, unknown>,
+): Record<string, unknown> {
+  const stable = { ...compact };
+  delete stable.balanceSourceEvidence;
+  delete stable.sourceDescription;
+  return stable;
+}
+
 function canonicalDateTime(record: LoanTransactionInput): string {
   return dateFromSourceTime(record.effectiveOn, record.sourceTime.localTime);
 }
@@ -1594,6 +1629,7 @@ function canonicalLoanSpineCapture(
 ): CanonicalFinancialDepositValidatedCapture {
   const records = capture.records.map((record) => {
     const semanticOccurrence =
+      capture.sourceId === "fubon" ||
       record.sourceOccurrenceIdentityRuleVersion ===
       YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION;
     const compact = compactRecord(
@@ -1622,31 +1658,44 @@ function canonicalLoanSpineCapture(
     return {
       occurrenceKey: record.sourceRecordKey,
       collisionKey: semanticOccurrence
-        ? token(
-            capture.sourceId,
-            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
-            "collision",
-            capture.identity.accountKey,
-            record.sourceRecordKey,
-          )
+        ? capture.sourceId === "fubon"
+          ? token(
+              capture.sourceId,
+              "collision",
+              capture.identity.accountKey,
+              record.sourceRecordKey,
+            )
+          : token(
+              capture.sourceId,
+              YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+              "collision",
+              capture.identity.accountKey,
+              record.sourceRecordKey,
+            )
         : token(
             capture.sourceId,
             capture.identity.accountKey,
             String(record.occurrenceIndex),
           ),
       providerKey: semanticOccurrence
-        ? token(
-            capture.sourceId,
-            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
-            "provider",
-            record.sourceRecordKey,
-          )
+        ? capture.sourceId === "fubon"
+          ? token(capture.sourceId, "provider", record.sourceRecordKey)
+          : token(
+              capture.sourceId,
+              YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+              "provider",
+              record.sourceRecordKey,
+            )
         : token(
             capture.sourceId,
             record.eventEvidence.sourceCode,
             String(record.occurrenceIndex),
           ),
-      contentHash: compactHash(compact),
+      contentHash: compactHash(
+        capture.sourceId === "fubon"
+          ? fubonStableCompact(compact)
+          : compact,
+      ),
       sequenceLexeme: String(record.occurrenceIndex),
       compactJson: JSON.stringify(compact),
       amount: record.amount,
@@ -2197,8 +2246,9 @@ function persistLoanTransactionFacts(
         // typed-fact overwrite conflict.
         if (
           key === "occurrence_index" &&
-          record.sourceOccurrenceIdentityRuleVersion ===
-            YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION
+          (capture.sourceId === "fubon" ||
+            record.sourceOccurrenceIdentityRuleVersion ===
+              YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION)
         )
           continue;
         if (existing[key] !== value)
@@ -2301,6 +2351,9 @@ function persistLoanExtensions(
     });
   }
   persistLoanTransactionFacts(db, context, capture);
+  const isSemanticFubonCapture =
+    capture.sourceId === "fubon" &&
+    capture.records.every((record) => record.sourceDescription !== undefined);
   for (const observation of capture.balanceObservations) {
     const sourceRecordId = sourceRecordContext(
       db,
@@ -2308,23 +2361,24 @@ function persistLoanExtensions(
       observation.sourceRecordKey,
     );
     const correction = observation.correctionEvidence;
-    const existingObservation = correction
-      ? (db
-          .prepare(
-            `SELECT observation.observation_id
-             FROM balance_observations observation
-             JOIN canonical_commits created
-               ON created.commit_id = observation.created_commit_id
-             WHERE observation.account_id = ? AND observation.observation_key = ?
-               AND observation.balance_kind = ?
-             ORDER BY created.commit_sequence DESC LIMIT 1`,
-          )
-          .get(
-            context.accountId,
-            correction.observationKey,
-            observation.balanceKind,
-          ) as { observation_id?: unknown } | undefined)
-      : undefined;
+    const existingObservation =
+      correction || isSemanticFubonCapture
+        ? (db
+            .prepare(
+              `SELECT observation.observation_id
+               FROM balance_observations observation
+               JOIN canonical_commits created
+                 ON created.commit_id = observation.created_commit_id
+               WHERE observation.account_id = ? AND observation.observation_key = ?
+                 AND observation.balance_kind = ?
+               ORDER BY created.commit_sequence DESC LIMIT 1`,
+            )
+            .get(
+              context.accountId,
+              correction?.observationKey ?? observation.observationKey,
+              observation.balanceKind,
+            ) as { observation_id?: unknown } | undefined)
+        : undefined;
     if (!existingObservation && correction)
       throw new CanonicalLoanConflictError(
         "Loan correction evidence must target an existing observation.",
@@ -2357,13 +2411,17 @@ function persistLoanExtensions(
       .prepare(
         `SELECT revision_id FROM balance_observation_revisions
          WHERE observation_id = ? AND balance_coefficient = ? AND balance_scale = ?
-           AND effective_at = ? AND effective_time_evidence_value = ?`,
+           AND currency = ? AND effective_at = ?
+           AND effective_time_evidence_source_field = ?
+           AND effective_time_evidence_value = ?`,
       )
       .get(
         observationId,
         observation.balance.coefficient,
         observation.balance.scale,
+        observation.currency,
         observation.effectiveAt,
+        observation.effectiveTimeEvidence.sourceField,
         observation.effectiveTimeEvidence.value,
       );
     if (duplicateRevision) continue;

@@ -896,6 +896,28 @@ function esunAllowedTransactionEvolution(
     stableCanonicalSourceJson(normalizedNext);
 }
 
+/**
+ * Fubon loan records carry mutable statement observations in the same compact
+ * payload as the booked event. Their semantic occurrence key is independent
+ * of those observations, so compare only the immutable transaction core when
+ * a source record is recaptured.
+ */
+function fubonAllowedLoanEvolution(
+  prior: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const stablePrior = { ...prior };
+  const stableNext = { ...next };
+  delete stablePrior.balanceSourceEvidence;
+  delete stableNext.balanceSourceEvidence;
+  delete stablePrior.sourceDescription;
+  delete stableNext.sourceDescription;
+  return (
+    stableCanonicalSourceJson(stablePrior) ===
+    stableCanonicalSourceJson(stableNext)
+  );
+}
+
 function sourceRecordContentMatches(
   recordKind: string,
   row: Record<string, unknown>,
@@ -926,19 +948,24 @@ function sourceRecordContentMatches(
   const esunTransactionEvolution =
     recordKind === "esun-credit-card-transaction" &&
     esunAllowedTransactionEvolution(prior, next);
+  const fubonLoanEvolution =
+    recordKind === "fubon-loan-transaction" &&
+    fubonAllowedLoanEvolution(prior, next);
 
   // Financial content hashes are part of the immutable source contract. Only
   // Yuanta's explicitly derived settlement-linkage enrichment may change the
   // hash while preserving the normalized source transaction content, plus
   // E.SUN's optional issuer statement-period appearance/disappearance or its
-  // one-way unbilled-to-billed lifecycle advance.
+  // one-way unbilled-to-billed lifecycle advance, plus Fubon's balance and
+  // raw display-label observations.
   if (
     String(row.content_hash) !== record.contentHash &&
     recordKind !== "yuanta-foreign-currency-deposit" &&
-    !esunTransactionEvolution
+    !esunTransactionEvolution &&
+    !fubonLoanEvolution
   )
     return false;
-  if (esunTransactionEvolution) return true;
+  if (esunTransactionEvolution || fubonLoanEvolution) return true;
   return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
 }
 
