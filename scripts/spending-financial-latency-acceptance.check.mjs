@@ -3,6 +3,7 @@ import test from "node:test";
 import { parseAcceptanceEvidence, ACCEPTANCE_SCHEMA } from "./spending-financial-latency-acceptance.mjs";
 import { WORKER_REQUIRED_SPANS, REPORT_SCHEMA as WORKER_REPORT_SCHEMA, expectedFormalScenarioKeys, summarizeSamples } from "./spending-financial-latency-benchmark.mjs";
 import { EVIDENCE_BOUNDARY, REPORT_SCHEMA as ELECTRON_REPORT_SCHEMA } from "./spending-financial-latency-electron.mjs";
+import { FIXTURE_MODE } from "./spending-financial-latency-fixture.mjs";
 import profile from "./spending-financial-latency-profile.json" with { type: "json" };
 
 function reports() {
@@ -35,9 +36,10 @@ function reports() {
     electronReport: {
       schema: ELECTRON_REPORT_SCHEMA, mode: "formal", seed: profile.seed,
       boundary: { kind: EVIDENCE_BOUNDARY, domPaintMeasured: true, syntheticPatchMeasured: false },
+      fixtureEvidence: { mode: FIXTURE_MODE, scaleControllersVerified: true, coldReloadsVerified: true, contentionBracketsVerified: true, projectionOracleVerified: true },
       profile: { profileVersion: profile.profileVersion, source: profile.source, baseCardinalities: profile.formal.baseCardinalities, stressMultiplier: profile.formal.stressMultiplier },
       datasets: [{ scale: "1x", multiplier: 1, cardinalities: profile.formal.baseCardinalities, synthetic: true }],
-      scenarios: scenarios.map((scenario) => ({ ...scenario, visibilityEvidence: "renderer-dom-visible-after-paint", spans: [{ name: "renderer-visible-paint", stats }] })),
+      scenarios: scenarios.map((scenario) => ({ ...scenario, visibilityEvidence: "renderer-dom-visible-after-paint", projectionEvidence: "durable-knowledge-point-and-affected-link-state", spans: [{ name: "renderer-visible-paint", stats }] })),
     },
   };
 }

@@ -74,21 +74,34 @@ Electron/CDP acceptance measures the missing boundary:
 node --no-warnings --experimental-strip-types \
   scripts/spending-financial-latency-electron.mjs \
   --mode formal --cdp-endpoint http://127.0.0.1:9222 \
+  --fixture-user-data /tmp/octopusbeak-171-cdp \
   --route 'file:///path/to/app/#/spending' \
   --hardware medium \
   --output reports/spending-financial-latency-electron-formal.json \
   --checkpoint reports/spending-financial-latency-electron-formal.checkpoint.json
 ```
 
-The CDP runner measures from confirmation click through two renderer animation
-frames after the affected section visibly changes. Its boundary is
-`renderer-confirmation-to-visible-current-projection`, with
+The CDP runner requires the disposable user-data root created by
+`desktop:dev:cdp-fixture`; `--fixture-user-data` is fail-closed for normal user
+stores. It prepares deterministic 1x/2x datasets, snapshots each scale for
+fast scenario reset, reloads the renderer for cold iterations, and brackets
+contention iterations with a real SQLite `BEGIN IMMEDIATE` writer lock. These
+controls live in the benchmark fixture module, not in the production renderer
+API.
+
+The runner measures from confirmation click through two renderer animation
+frames after the affected section visibly changes. The visibility oracle
+requires a ready `[data-purchase-report]` projection, an expected link or
+candidate state transition, and a durable knowledge point that advanced (or a
+known replay whose current state is already visible). Spinner changes, error
+states, unrelated DOM mutations, and synthetic patches cannot pass. Its
+boundary is `renderer-confirmation-to-visible-current-projection`, with
 `domPaintMeasured: true` and `syntheticPatchMeasured: false`. It covers direct
 pair, candidate confirmation, and unlink operations. Formal mode requires at
 least 1,000 operations for every scenario and supports the same atomic,
-privacy-bounded checkpoint/resume flow. Use a disposable fixture or resettable
-acceptance page so each operation has a valid action; the runner never fakes a
-paint or puts financial identifiers in the report.
+privacy-bounded checkpoint/resume flow. The report contains only cardinality
+and control-readiness markers; it never includes financial identifiers,
+amounts, SQL, paths, or source payloads.
 
 The formal acceptance aggregator requires both reports:
 
@@ -101,3 +114,12 @@ checks the complete 24-scenario matrix and applies the 200 ms normal / 500 ms
 contention p99 budget independently to the worker and renderer-visible
 measurements. The worker report diagnoses command latency, but only the
 Electron-visible report proves the affected projection reached the screen.
+
+For efficient local verification, run the focused contract checks first; do not
+run the formal 24,000-operation Electron matrix in a worker checkout:
+
+```bash
+node --no-warnings --experimental-strip-types --test \
+  scripts/spending-financial-latency-electron.check.mjs \
+  scripts/spending-financial-latency-fixture.check.mjs
+```
