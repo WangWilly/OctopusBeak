@@ -664,6 +664,22 @@
     }
   }
 
+  /**
+   * Spending commands use a sparse response on their fast path. If that
+   * response is stale or its transport outcome is uncertain, the command
+   * component asks the page coordinator for one complete, cutoff-pinned
+   * Spending generation before declaring the outcome known.
+   */
+  async function reconcileSpendingAction() {
+    if (route !== "spending") return;
+    const knowledgePoint = await window.octopusBeak.financialFreshness.latestKnowledgePoint();
+    await loadRoute("spending", {
+      force: true,
+      background: true,
+      cutoff: { knowledgePoint },
+    });
+  }
+
   function scheduleFreshnessReconciliation() {
     if (freshnessReconcileTimer) clearTimeout(freshnessReconcileTimer);
     freshnessReconcileTimer = setTimeout(() => {
@@ -754,7 +770,7 @@
   {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
   {#if liabilities.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "spending"}
-  {#if spendingData}<SpendingDashboard spending={spendingData} />{:else}
+  {#if spendingData}<SpendingDashboard spending={spendingData} onActionReconciliation={reconcileSpendingAction} />{:else}
     <DashboardShell active="spending" eyebrow={$t.spending.eyebrow} title={$t.spending.title} sideLabel={$t.spending.sideLabel}>
       {#if spending.primary.status === "loading"}
         <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>

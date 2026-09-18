@@ -8,20 +8,30 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
   } from "../purchase-matching.ts";
-  import type { SpendingPageDto } from "../model.ts";
-  import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+  import type { SpendingPageDto, SpendingPurchaseActionResult } from "../model.ts";
+  import {
+    applyValidatedSpendingActionResult,
+    beginSpendingPendingCommand,
+    completeSpendingPendingCommand,
+    isSpendingActionUncertain,
+    spendingActionErrorCode,
+    type SpendingPendingCommand,
+    type SpendingPendingCommandIdentity,
+  } from "../spending-action-lifecycle.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
+  export let onActionReconciliation: (() => Promise<void>) | undefined = undefined;
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
   let selectedMonth: string | null = null;
   let busyAction: string | null = null;
   let actionError = "";
+  let actionReconciliationPending = false;
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
   let paymentVisibleCount = 10;
@@ -273,7 +283,29 @@
   }
 
   async function confirmCandidate(candidateId: string) {
-    await decideCandidate(candidateId, "confirmCandidate");
+    const invoice = candidateRecord(candidateId, "invoice")?.invoice;
+    const transaction = candidateRecord(candidateId, "transaction")?.transaction;
+    if (!invoice || !transaction) {
+      busyAction = `confirmCandidate:${candidateId}`;
+      actionError = "";
+      await reconcileSpendingAction();
+      busyAction = null;
+      return;
+    }
+    await runSpendingAction(
+      `confirmCandidate:${candidateId}`,
+      (idempotencyKey) => window.octopusBeak.spending.confirmCandidate({
+        kind: "candidate",
+        invoiceIdentityId: invoice.invoiceId,
+        transactionIdentityId: transaction.transactionId,
+        idempotencyKey,
+      }),
+      {
+        action: "candidate-confirmation",
+        firstId: invoice.invoiceId,
+        secondId: transaction.transactionId,
+      },
+    );
   }
 
   async function denyCandidate(candidateId: string) {
@@ -281,19 +313,14 @@
   }
 
   async function decideCandidate(candidateId: string, action: "confirmCandidate" | "denyCandidate") {
-    busyAction = `${action}:${candidateId}`;
-    actionError = "";
-    try {
-      const next = action === "confirmCandidate"
-        ? await window.octopusBeak.spending.confirmCandidate({ kind: "candidate", candidateId })
-        : await window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
+    if (action === "confirmCandidate") {
+      await confirmCandidate(candidateId);
+      return;
     }
+    await runSpendingAction(
+      `${action}:${candidateId}`,
+      () => window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId }),
+    );
   }
 
   function openPairing(record: PurchaseRecord) {
@@ -311,37 +338,111 @@
   async function confirmDirectPair() {
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
     if (!invoiceIdentityId || !selectedPaymentId) return;
-    busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-    actionError = "";
-    try {
-      const next = await window.octopusBeak.spending.confirmCandidate({
+    await runSpendingAction(
+      `direct:${invoiceIdentityId}/${selectedPaymentId}`,
+      (idempotencyKey) => window.octopusBeak.spending.confirmCandidate({
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      closePairing();
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
-    }
+        idempotencyKey,
+      }),
+      {
+        action: "direct-pair",
+        firstId: invoiceIdentityId,
+        secondId: selectedPaymentId,
+      },
+      closePairing,
+    );
   }
 
   async function revokeLink(record: PurchaseRecord) {
-    if (!record.link) return;
-    const action = `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`;
-    busyAction = action;
+    const link = record.link;
+    if (!link) return;
+    const action = `revokeLink:${link.invoiceId}/${link.transactionId}`;
+    await runSpendingAction(
+      action,
+      (idempotencyKey) => window.octopusBeak.spending.revokeLink({
+        invoiceId: link.invoiceId,
+        transactionId: link.transactionId,
+        idempotencyKey,
+      }),
+      {
+        action: "unlink",
+        firstId: link.invoiceId,
+        secondId: link.transactionId,
+      },
+    );
+  }
+
+  function actionErrorText(error: unknown): string {
+    const code = spendingActionErrorCode(error);
+    if (code === "spending-pair-stale") {
+      return $locale === "zh-TW" ? "資料已更新，正在讀取最新配對狀態。" : "The data changed; loading the latest pairing state.";
+    }
+    if (code === "idempotency-key-conflict") {
+      return $locale === "zh-TW"
+        ? "這個操作識別碼已被其他操作使用，請重新執行。"
+        : "This action key was used by another operation. Please try again.";
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  async function reconcileSpendingAction(command?: SpendingPendingCommand): Promise<boolean> {
+    actionReconciliationPending = true;
     actionError = "";
     try {
-      const next = await window.octopusBeak.spending.revokeLink({
-        invoiceId: record.link.invoiceId,
-        transactionId: record.link.transactionId,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
+      if (!onActionReconciliation) throw new Error("spending-action-reconciliation-unavailable");
+      await onActionReconciliation();
+      if (command) completeSpendingPendingCommand(command);
+      return true;
     } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = $locale === "zh-TW"
+        ? "無法確認配對結果，請重新整理資料。"
+        : "The pairing result could not be confirmed. Please refresh the data.";
+      console.warn("spending-action-reconciliation-failed", error);
+      return false;
+    } finally {
+      actionReconciliationPending = false;
+    }
+  }
+
+  async function applySpendingActionResult(
+    result: SpendingPurchaseActionResult,
+    command?: SpendingPendingCommand,
+  ): Promise<boolean> {
+    try {
+      report = applyValidatedSpendingActionResult(report, result);
+      selectedMonth = activeMonth;
+      if (command) completeSpendingPendingCommand(command);
+      return true;
+    } catch {
+      await reconcileSpendingAction(command);
+      return false;
+    }
+  }
+
+  async function runSpendingAction(
+    action: string,
+    request: (idempotencyKey: string | undefined) => Promise<SpendingPurchaseActionResult>,
+    identity?: SpendingPendingCommandIdentity,
+    onSuccess?: () => void,
+  ): Promise<void> {
+    busyAction = action;
+    actionError = "";
+    const command = identity ? beginSpendingPendingCommand(identity) : undefined;
+    try {
+      const result = await request(command?.idempotencyKey);
+      if (await applySpendingActionResult(result, command)) onSuccess?.();
+    } catch (error) {
+      const code = spendingActionErrorCode(error);
+      if (code === "idempotency-key-conflict") {
+        if (command) completeSpendingPendingCommand(command);
+        actionError = actionErrorText(error);
+      } else if (code === "spending-pair-stale" || isSpendingActionUncertain(error)) {
+        await reconcileSpendingAction(command);
+      } else {
+        actionError = actionErrorText(error);
+      }
     } finally {
       busyAction = null;
     }
@@ -381,6 +482,10 @@
           : ($locale === "zh-TW" ? "所有來源已確認" : "All sources confirmed")}
       </span>
     </section>
+
+    {#if actionReconciliationPending}
+      <section class="card purchase-action-pending" role="status" aria-live="polite">{$locale === "zh-TW" ? "讀取中…" : "Checking the latest pairing result…"}</section>
+    {/if}
 
     {#if actionError}
       <section class="card purchase-action-error" role="alert">{actionError}</section>
