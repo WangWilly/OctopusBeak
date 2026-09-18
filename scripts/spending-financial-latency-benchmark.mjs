@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -11,6 +11,7 @@ import { executeSpendingRecognitionCommand } from "../src/ledger/canonical/spend
 import { FINANCIAL_INTERACTION_SLO_MS } from "../src/lib/performance/financial-performance-telemetry.ts";
 
 export const REPORT_SCHEMA = "spending-financial-latency-report-v1";
+export const CHECKPOINT_SCHEMA = "spending-financial-latency-checkpoint-v1";
 export const PROFILE_SCHEMA = "spending-financial-latency-profile-v1";
 export const FORMAL_MIN_ITERATIONS = 1_000;
 export const SCENARIO_OPERATIONS = Object.freeze(["direct-pair", "candidate-confirmation", "unlink"]);
@@ -172,6 +173,7 @@ export function parseLatencyReport(value) {
   if (value.mode === "formal" && value.scenarios.some((scenario) => scenario.iterations < FORMAL_MIN_ITERATIONS)) {
     throw new Error(`Formal report requires at least ${FORMAL_MIN_ITERATIONS} iterations per scenario.`);
   }
+  if (value.mode === "formal") assertScenarioSet(value.scenarios, expectedFormalScenarioKeys(), "Formal report");
   return value;
 }
 
@@ -201,6 +203,39 @@ export function evaluateRegressionBudget(report, budget) {
 
 function scenarioKey(scenario) {
   return `${scenario.operation}/${scenario.datasetScale}/${scenario.warmPath ? "warm" : "cold"}/${scenario.contention ? "contention" : "normal"}`;
+}
+
+function selectedScenarioKeys(selection) {
+  const keys = [];
+  for (const scale of selection.scales) {
+    for (const operation of selection.operations) {
+      for (const warmPath of selection.warmPaths) {
+        for (const contention of selection.contention) {
+          keys.push(scenarioKey({ operation, datasetScale: scale, warmPath, contention }));
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+export function expectedFormalScenarioKeys() {
+  return Object.freeze(selectedScenarioKeys(scenarioSelection("formal", {})));
+}
+
+function assertScenarioSet(scenarios, expectedKeys, label) {
+  const actualKeys = scenarios.map(scenarioKey);
+  const actualSet = new Set(actualKeys);
+  if (actualSet.size !== actualKeys.length) throw new Error(`${label} contains duplicate scenario keys.`);
+  const expectedSet = new Set(expectedKeys);
+  const missing = expectedKeys.filter((key) => !actualSet.has(key));
+  const unexpected = actualKeys.filter((key) => !expectedSet.has(key));
+  if (missing.length > 0 || unexpected.length > 0 || actualKeys.length !== expectedKeys.length) {
+    const details = [];
+    if (missing.length > 0) details.push(`missing ${missing.join(", ")}`);
+    if (unexpected.length > 0) details.push(`unexpected ${unexpected.join(", ")}`);
+    throw new Error(`${label} must contain the complete expected scenario set (${details.join("; ") || "cardinality mismatch"}).`);
+  }
 }
 
 function hashId(seed, kind, index) {
@@ -491,6 +526,116 @@ function scenarioSelection(mode, options) {
   return { operations, scales, warmPaths, contention };
 }
 
+function fingerprint(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function checkpointSelection(selection, selectedIterations, contentionDelayMs) {
+  return {
+    iterations: selectedIterations,
+    operations: [...selection.operations],
+    scales: [...selection.scales],
+    warmPaths: [...selection.warmPaths],
+    contention: [...selection.contention],
+    contentionDelayMs,
+  };
+}
+
+function checkpointMetadata({ mode, profile, buildProfile, hardwareProfile, selection, selectedIterations, contentionDelayMs }) {
+  return {
+    schema: CHECKPOINT_SCHEMA,
+    mode,
+    seed: profile.seed,
+    profile: {
+      profileVersion: profile.profileVersion,
+      source: profile.source,
+      fingerprint: fingerprint(profile),
+    },
+    buildProfile,
+    hardwareProfile,
+    selection: checkpointSelection(selection, selectedIterations, contentionDelayMs),
+    scenarioKeys: selectedScenarioKeys(selection),
+  };
+}
+
+export function validateBenchmarkCheckpoint(value, expected) {
+  if (!isPlainObject(value)) throw new Error("Benchmark checkpoint must be an object.");
+  assertAllowedKeys(value, new Set(["schema", "mode", "seed", "profile", "buildProfile", "hardwareProfile", "selection", "scenarioKeys", "scenarios"]), "checkpoint");
+  if (value.schema !== CHECKPOINT_SCHEMA) throw new Error("Benchmark checkpoint schema is invalid.");
+  requireEnum(value.mode, new Set(["smoke", "ci", "formal"]), "checkpoint.mode");
+  requireString(value.seed, "checkpoint.seed");
+  if (!isPlainObject(value.profile)) throw new Error("checkpoint.profile must be an object.");
+  assertAllowedKeys(value.profile, new Set(["profileVersion", "source", "fingerprint"]), "checkpoint.profile");
+  requireString(value.profile.profileVersion, "checkpoint.profile.profileVersion");
+  requireString(value.profile.source, "checkpoint.profile.source");
+  requireString(value.profile.fingerprint, "checkpoint.profile.fingerprint");
+  requireEnum(value.buildProfile, VALID_BUILD, "checkpoint.buildProfile");
+  requireEnum(value.hardwareProfile, VALID_HARDWARE, "checkpoint.hardwareProfile");
+  if (!isPlainObject(value.selection)) throw new Error("checkpoint.selection must be an object.");
+  assertAllowedKeys(value.selection, new Set(["iterations", "operations", "scales", "warmPaths", "contention", "contentionDelayMs"]), "checkpoint.selection");
+  requireInteger(value.selection.iterations, "checkpoint.selection.iterations", 1);
+  requireInteger(value.selection.contentionDelayMs, "checkpoint.selection.contentionDelayMs", 0);
+  if (!Array.isArray(value.selection.operations) || !Array.isArray(value.selection.scales) || !Array.isArray(value.selection.warmPaths) || !Array.isArray(value.selection.contention)) {
+    throw new Error("checkpoint.selection arrays are invalid.");
+  }
+  value.selection.operations.forEach((operation) => requireEnum(operation, VALID_OPERATIONS, "checkpoint.selection.operation"));
+  value.selection.scales.forEach((scale) => requireEnum(scale, VALID_SCALES, "checkpoint.selection.scale"));
+  value.selection.warmPaths.forEach((warmPath) => requireBoolean(warmPath, "checkpoint.selection.warmPath"));
+  value.selection.contention.forEach((isContention) => requireBoolean(isContention, "checkpoint.selection.contention"));
+  if (!Array.isArray(value.scenarioKeys) || value.scenarioKeys.length === 0) throw new Error("checkpoint.scenarioKeys must not be empty.");
+  value.scenarioKeys.forEach((key) => requireString(key, "checkpoint.scenarioKeys[]"));
+  if (!Array.isArray(value.scenarios)) throw new Error("checkpoint.scenarios must be an array.");
+  const completedKeys = [];
+  value.scenarios.forEach((scenario, index) => {
+    validateScenario(scenario, index);
+    completedKeys.push(scenarioKey(scenario));
+  });
+  const expectedKeys = expected?.scenarioKeys ?? value.scenarioKeys;
+  if (JSON.stringify(value.scenarioKeys) !== JSON.stringify(expectedKeys)) {
+    throw new Error("Benchmark checkpoint selection is incompatible.");
+  }
+  if (new Set(value.scenarioKeys).size !== value.scenarioKeys.length) throw new Error("checkpoint.scenarioKeys contains duplicates.");
+  const allowedKeys = new Set(expectedKeys);
+  if (completedKeys.some((key) => !allowedKeys.has(key))) throw new Error("Benchmark checkpoint contains an unselected scenario.");
+  if (new Set(completedKeys).size !== completedKeys.length) throw new Error("Benchmark checkpoint contains duplicate completed scenarios.");
+  if (value.mode !== expected?.mode || value.seed !== expected?.seed || value.buildProfile !== expected?.buildProfile || value.hardwareProfile !== expected?.hardwareProfile) {
+    throw new Error("Benchmark checkpoint run identity is incompatible.");
+  }
+  if (value.profile.profileVersion !== expected.profile.profileVersion || value.profile.source !== expected.profile.source || value.profile.fingerprint !== expected.profile.fingerprint) {
+    throw new Error("Benchmark checkpoint profile is incompatible.");
+  }
+  if (JSON.stringify(value.selection) !== JSON.stringify(expected.selection)) {
+    throw new Error("Benchmark checkpoint selection is incompatible.");
+  }
+  return value;
+}
+
+async function writeAtomicJson(path, value) {
+  const target = resolve(path);
+  await mkdir(dirname(target), { recursive: true });
+  const temporary = `${target}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function readCheckpoint(path, expected) {
+  let value;
+  try {
+    value = JSON.parse(await readFile(resolve(path), "utf8"));
+  } catch (error) {
+    throw new Error(`Unable to read benchmark checkpoint safely: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return validateBenchmarkCheckpoint(value, expected);
+}
+
+function defaultProgress(message) {
+  process.stderr.write(`[spending-latency] ${message}\n`);
+}
+
 export async function runBenchmark({
   mode = "smoke",
   profile,
@@ -502,11 +647,18 @@ export async function runBenchmark({
   buildProfile = DEFAULT_BUILD_PROFILE,
   hardwareProfile = DEFAULT_HARDWARE_PROFILE,
   contentionDelayMs = 3,
+  checkpointPath,
+  resume = false,
+  onProgress = defaultProgress,
 } = {}) {
   requireEnum(mode, new Set(["smoke", "ci", "formal"]), "mode");
+  if (!isPlainObject(profile) || profile.profileVersion !== PROFILE_SCHEMA) throw new Error("Invalid latency profile.");
   requireEnum(buildProfile, VALID_BUILD, "buildProfile");
   requireEnum(hardwareProfile, VALID_HARDWARE, "hardwareProfile");
+  if (typeof onProgress !== "function") throw new Error("onProgress must be a function.");
+  if (resume && !checkpointPath) throw new Error("--resume requires a benchmark checkpoint path.");
   const modeProfile = profile[mode];
+  if (!isPlainObject(modeProfile)) throw new Error(`Latency profile does not define ${mode}.`);
   const selectedIterations = iterations ?? modeProfile.iterations;
   requireInteger(selectedIterations, "iterations", 1);
   if (mode === "formal" && selectedIterations < FORMAL_MIN_ITERATIONS) {
@@ -518,17 +670,38 @@ export async function runBenchmark({
   for (const scale of selection.scales) requireEnum(scale, VALID_SCALES, "scale");
   for (const warmPath of selection.warmPaths) requireBoolean(warmPath, "warmPath");
   for (const isContention of selection.contention) requireBoolean(isContention, "contention");
+  const checkpoint = checkpointMetadata({ mode, profile, buildProfile, hardwareProfile, selection, selectedIterations, contentionDelayMs });
+  const selectedKeys = checkpoint.scenarioKeys;
+  const completed = new Map();
+  if (resume) {
+    const saved = await readCheckpoint(checkpointPath, checkpoint);
+    for (const scenario of saved.scenarios) completed.set(scenarioKey(scenario), scenario);
+  } else if (checkpointPath) {
+    await writeAtomicJson(checkpointPath, { ...checkpoint, scenarios: [] });
+  }
+  const totalScenarios = selectedKeys.length;
+  onProgress(`${resume ? "resuming" : "starting"} ${mode} benchmark: ${completed.size}/${totalScenarios} scenarios complete`);
   const datasets = [];
-  const reports = [];
+  const datasetReports = [];
   try {
-    for (const scale of selection.scales) {
+    for (const [scaleIndex, scale] of selection.scales.entries()) {
       const plan = createDeterministicDatasetPlan(profile, mode, scale);
+      datasetReports.push({ scale, multiplier: plan.multiplier, cardinalities: plan.cardinalities, synthetic: true });
+      const scaleHasPendingScenario = selectedKeys
+        .filter((key) => key.split("/")[1] === scale)
+        .some((key) => !completed.has(key));
+      if (!scaleHasPendingScenario) continue;
+      onProgress(`preparing ${scale} dataset (${scaleIndex + 1}/${selection.scales.length})`);
       const dataset = await createSyntheticLedger(plan);
       datasets.push(dataset);
-      reports.push({ scale, multiplier: plan.multiplier, cardinalities: plan.cardinalities, synthetic: true });
       for (const [operationIndex, operation] of selection.operations.entries()) {
         for (const warmPath of selection.warmPaths) {
           for (const isContention of selection.contention) {
+            const key = scenarioKey({ operation, datasetScale: scale, warmPath, contention: isContention });
+            if (completed.has(key)) {
+              onProgress(`skipped completed ${completed.size}/${totalScenarios} ${key}`);
+              continue;
+            }
             const scenario = await measureScenario({
               dataset,
               operation,
@@ -540,7 +713,11 @@ export async function runBenchmark({
               hardwareProfile,
               contentionDelayMs,
             });
-            reports.push(scenario);
+            completed.set(key, scenario);
+            if (checkpointPath) {
+              await writeAtomicJson(checkpointPath, { ...checkpoint, scenarios: selectedKeys.filter((scenarioKeyValue) => completed.has(scenarioKeyValue)).map((scenarioKeyValue) => completed.get(scenarioKeyValue)) });
+            }
+            onProgress(`completed ${completed.size}/${totalScenarios} ${key} (p99 ${scenario.overall.p99Ms}ms)`);
           }
         }
       }
@@ -551,6 +728,11 @@ export async function runBenchmark({
       await rm(dataset.directory, { recursive: true, force: true });
     }
   }
+  if (completed.size !== totalScenarios) {
+    const missing = selectedKeys.filter((key) => !completed.has(key));
+    throw new Error(`Benchmark did not complete the selected scenario set: ${missing.join(", ")}`);
+  }
+  const reports = selectedKeys.map((key) => completed.get(key));
   const report = {
     schema: REPORT_SCHEMA,
     mode,
@@ -561,8 +743,8 @@ export async function runBenchmark({
       baseCardinalities: profile["formal"].baseCardinalities,
       stressMultiplier: profile.formal.stressMultiplier,
     },
-    datasets: reports.filter((entry) => entry.synthetic),
-    scenarios: reports.filter((entry) => entry.operation),
+    datasets: datasetReports,
+    scenarios: reports,
   };
   return parseLatencyReport(report);
 }
@@ -578,12 +760,18 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") return { help: true };
     if (!arg.startsWith("--")) throw new Error(`Unknown argument: ${arg}`);
     const [key, inline] = arg.slice(2).split("=", 2);
+    if (key === "resume") {
+      if (inline !== undefined && inline !== "true") throw new Error("--resume does not accept a false value.");
+      options.resume = true;
+      continue;
+    }
     const value = inline ?? argv[++index];
     if (value === undefined) throw new Error(`Missing value for --${key}.`);
     if (key === "mode") options.mode = value;
     else if (key === "profile") options.profilePath = value;
     else if (key === "budget") options.budgetPath = value;
     else if (key === "output") options.outputPath = value;
+    else if (key === "checkpoint") options.checkpointPath = value;
     else if (key === "iterations") options.iterations = Number(value);
     else if (key === "contention-delay-ms") options.contentionDelayMs = Number(value);
     else if (key === "hardware") options.hardwareProfile = value;
@@ -605,6 +793,8 @@ Options:
   --profile PATH               Cardinality profile JSON
   --budget PATH                CI regression budget JSON
   --output PATH                Machine-readable report destination
+  --checkpoint PATH            Atomic per-scenario progress checkpoint
+  --resume                     Resume from the compatible checkpoint
   --iterations N               Override operations per scenario (formal >= 1000)
   --operations a,b,c           direct-pair,candidate-confirmation,unlink
   --scales 1x,2x               Synthetic dataset scales
@@ -623,7 +813,13 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   const profile = await readJson(resolve(args.profilePath ?? DEFAULT_PROFILE_PATH));
-  const report = await runBenchmark({ ...args, profile });
+  const outputPath = args.outputPath ? resolve(args.outputPath) : undefined;
+  const checkpointPath = args.checkpointPath
+    ? resolve(args.checkpointPath)
+    : (args.mode === "formal"
+      ? `${outputPath ?? resolve("reports/spending-financial-latency-formal.json")}.checkpoint.json`
+      : undefined);
+  const report = await runBenchmark({ ...args, profile, checkpointPath });
   if (args.mode === "ci") {
     const budget = await readJson(resolve(args.budgetPath ?? DEFAULT_BUDGET_PATH));
     const evaluation = evaluateRegressionBudget(report, budget);

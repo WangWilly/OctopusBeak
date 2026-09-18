@@ -38,8 +38,27 @@ example:
 node --no-warnings --experimental-strip-types \
   scripts/spending-financial-latency-benchmark.mjs \
   --mode formal --hardware medium \
-  --output reports/spending-financial-latency-formal.json
+  --output reports/spending-financial-latency-formal.json \
+  --checkpoint reports/spending-financial-latency-formal.checkpoint.json
 ```
+
+The formal command writes an atomic checkpoint after every completed scenario
+to `reports/spending-financial-latency-formal.checkpoint.json`. Progress is
+printed as privacy-bounded scenario keys on stderr, so a long run remains
+observable without exposing account, invoice, transaction, amount, SQL, or
+payload data. If the process is interrupted, continue with:
+
+```bash
+npm run bench:spending-latency:formal -- --resume
+```
+
+Resume accepts a checkpoint only when its schema, profile fingerprint, seed,
+build profile, hardware profile, iteration/selection matrix, and contention
+delay match the current command. It skips only scenario records that pass the
+complete scenario contract validation; corrupt, truncated, incompatible, or
+unexpected checkpoint data fails closed. The final formal report is accepted
+only when all 24 expected scenario keys are present. A partial checkpoint is
+progress evidence, never a formal success report.
 
 The machine-readable report schema is
 `spending-financial-latency-report-v1`. It reports p50/p95/p99/max, bounded

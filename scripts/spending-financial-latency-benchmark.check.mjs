@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import profile from "./spending-financial-latency-profile.json" with { type: "json" };
 import {
   FORMAL_MIN_ITERATIONS,
   createDeterministicDatasetPlan,
   evaluateRegressionBudget,
+  runBenchmark,
   parseLatencyReport,
   percentile,
   summarizeSamples,
@@ -125,4 +128,74 @@ test("CI regression budget reports threshold failures", () => {
   });
   assert.equal(failing.passed, false);
   assert.deepEqual(failing.violations.map((entry) => entry.reason), ["iterations-below-budget", "p99-exceeds-budget", "max-exceeds-budget"]);
+});
+
+async function runCheckpointFixture(checkpointPath, overrides = {}) {
+  return runBenchmark({
+    mode: "smoke",
+    profile,
+    iterations: 1,
+    operations: ["direct-pair"],
+    scales: ["1x"],
+    warmPaths: [true],
+    contention: false,
+    checkpointPath,
+    onProgress: () => {},
+    ...overrides,
+  });
+}
+
+test("checkpoint is atomically written after a completed scenario and resume skips it", async () => {
+  const directory = await mkdtemp(join("/tmp", "spending-latency-checkpoint-"));
+  const checkpointPath = join(directory, "benchmark.checkpoint.json");
+  const progress = [];
+  try {
+    const first = await runCheckpointFixture(checkpointPath, { onProgress: (message) => progress.push(message) });
+    assert.equal(first.scenarios.length, 1);
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+    assert.equal(checkpoint.schema, "spending-financial-latency-checkpoint-v1");
+    assert.equal(checkpoint.scenarios.length, 1);
+    assert.equal(checkpoint.scenarioKeys.length, 1);
+    assert.equal(progress.some((message) => message.includes("completed 1/1 direct-pair/1x/warm/normal")), true);
+
+    const resumedProgress = [];
+    const resumed = await runCheckpointFixture(checkpointPath, { resume: true, onProgress: (message) => resumedProgress.push(message) });
+    assert.deepEqual(resumed.scenarios, first.scenarios);
+    assert.equal(resumedProgress[0], "resuming smoke benchmark: 1/1 scenarios complete");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("resume rejects incompatible selection and corrupt checkpoints safely", async () => {
+  const directory = await mkdtemp(join("/tmp", "spending-latency-checkpoint-"));
+  const checkpointPath = join(directory, "benchmark.checkpoint.json");
+  try {
+    await runCheckpointFixture(checkpointPath);
+    await assert.rejects(
+      runCheckpointFixture(checkpointPath, { resume: true, iterations: 2 }),
+      /checkpoint selection is incompatible/u,
+    );
+    await writeFile(checkpointPath, "{", "utf8");
+    await assert.rejects(
+      runCheckpointFixture(checkpointPath, { resume: true }),
+      /Unable to read benchmark checkpoint safely/u,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("formal reports reject a partial scenario matrix even when iteration minimum is met", () => {
+  const completeIterationStats = summarizeSamples(Array.from({ length: FORMAL_MIN_ITERATIONS }, () => 1));
+  const partial = report([scenario({
+    iterations: FORMAL_MIN_ITERATIONS,
+    overall: completeIterationStats,
+    spans: [
+      { name: "canonical-command", stats: completeIterationStats },
+      { name: "patch-applied", stats: completeIterationStats },
+    ],
+  })]);
+  partial.mode = "formal";
+  assert.throws(() => parseLatencyReport(partial), /complete expected scenario set/u);
 });

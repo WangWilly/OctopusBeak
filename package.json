@@ -38,7 +38,7 @@
     "check:canonical-schema-seam": "node scripts/check-canonical-schema-seam.mjs",
     "bench:spending-latency": "node --no-warnings --experimental-strip-types scripts/spending-financial-latency-benchmark.mjs --mode smoke",
     "bench:spending-latency:ci": "node --no-warnings --experimental-strip-types scripts/spending-financial-latency-benchmark.mjs --mode ci --output reports/spending-financial-latency-ci.json",
-    "bench:spending-latency:formal": "node --no-warnings --experimental-strip-types scripts/spending-financial-latency-benchmark.mjs --mode formal --output reports/spending-financial-latency-formal.json",
+    "bench:spending-latency:formal": "node --no-warnings --experimental-strip-types scripts/spending-financial-latency-benchmark.mjs --mode formal --output reports/spending-financial-latency-formal.json --checkpoint reports/spending-financial-latency-formal.checkpoint.json",
     "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:welcome-assets": "node --test scripts/welcome-assets.check.mjs",
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
