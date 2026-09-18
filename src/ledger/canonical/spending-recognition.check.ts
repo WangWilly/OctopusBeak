@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { CATHAY_DOMESTIC_DEPOSIT_FIXTURE, commitCathayDomesticDeposit } from "./cathay-domestic-deposit.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 import { commitCanonicalEInvoiceCapture, E_INVOICE_CONTRACT_VERSION, E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_ROUTE } from "./einvoice.ts";
-import { commitSpendingRefundRevision, confirmSpendingDedupLink, denySpendingDedupCandidate, querySpendingRecognition, querySpendingRecognitionLineage, querySpendingRefundLineage, recordSpendingMatchCandidate, revokeSpendingDedupLink } from "./spending-recognition.ts";
+import { commitSpendingRefundRevision, confirmSpendingDedupLink, denySpendingDedupCandidate, executeSpendingRecognitionCommand, querySpendingRecognition, querySpendingRecognitionLineage, querySpendingRefundLineage, recordSpendingMatchCandidate, revokeSpendingDedupLink, SpendingRecognitionCommandError } from "./spending-recognition.ts";
 
 const bytes = (fill: number) => Buffer.alloc(16, fill);
 const textId = (value: unknown) => { const h = Buffer.from(value as Uint8Array).toString("hex"); return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`; };
@@ -62,6 +63,38 @@ async function setup() {
   db.prepare("INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES ('fixture/refund/v1', 'fixture', 'refunds', 'v1', ?)").run(Buffer.from(seedCommit.commit_id as Uint8Array));
   const invoice = db.prepare("SELECT invoice_id FROM einvoice_invoices").get() as { invoice_id: unknown };
   return { directory, path, store, invoiceId: textId(invoice.invoice_id), firstId: textId(first), secondId: textId(second) };
+}
+
+/** Build a lifecycle-valid ledger so the command replay test exercises a real
+ * close/reopen boundary rather than the intentionally hand-seeded recognition
+ * fixture above. */
+async function setupRestartable() {
+  const directory = await mkdtemp(join(tmpdir(), "spending-recognition-restart-"));
+  await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
+  const store = createCanonicalSourceStore(directory, { commitClock: () => 1_800_000_000_000_000 });
+  await commitCanonicalEInvoiceCapture(store, {
+    captureId: "spending-recognition-restart-invoice",
+    sourceConnectionKey: "sha256:spending-recognition-restart-connection",
+    identityEpoch: "sha256:spending-recognition-restart-epoch",
+    subjectDigest: "sha256:spending-recognition-restart-subject",
+    observedAt: "2026-09-01T00:00:00Z",
+    scope: { startDate: "2026-09-01", endDate: "2026-09-30", kind: "bounded-range", completeness: "complete-range", invoiceCompleteness: "complete", itemCompleteness: "complete", absenceAuthority: "comparable-complete-range" },
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { fixture: true } }],
+    invoices: [{ stableInvoiceKey: "AA00000001", sourceRevisionKey: "invoice-v1", revisionNumber: 1, revisionKind: "issued", sourceIdentifiers: { invoiceNumber: "AA00000001" }, seller: { taxId: "12345678" }, total: { coefficient: "1000", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY }, occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" }, items: [], authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION }, provenance: { kind: "fixture", reference: "fixture/restart-invoice" } }],
+  });
+  const invoice = dbRow(store.db.prepare("SELECT invoice_id FROM einvoice_invoices LIMIT 1").get());
+  const transactions = store.db.prepare("SELECT transaction_id FROM financial_transactions ORDER BY rowid LIMIT 2").all() as Array<{ transaction_id: unknown }>;
+  return {
+    directory,
+    store,
+    invoiceId: textId(invoice.invoice_id),
+    firstId: textId(transactions[0]!.transaction_id),
+    secondId: textId(transactions[1]!.transaction_id),
+  };
+}
+
+function dbRow(value: unknown): Record<string, unknown> {
+  return value as Record<string, unknown>;
 }
 
 test("spending recognition keeps ambiguity until evidence, preserves history, refunds, and restart state", async () => {
@@ -169,6 +202,88 @@ test("a user can directly confirm active identities without similarity or source
       decisionKey: "direct-user-replaced-transaction",
       transactionIdentityId: fixture.secondId,
     }), /stale, replaced, or inactive/);
+  } finally {
+    try { fixture.store.close(); } catch {}
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("canonical spending commands replay durably, reject key conflicts, and fail stale pairs without writes", async () => {
+  const fixture = await setupRestartable();
+  const establish = {
+    kind: "establish-link" as const,
+    invoiceId: fixture.invoiceId,
+    transactionId: fixture.firstId,
+    idempotencyKey: "renderer-command-1",
+  };
+  try {
+    const committed = executeSpendingRecognitionCommand(fixture.store, establish);
+    assert.equal(committed.outcome, "committed");
+    assert.equal(committed.knowledgePoint, committed.commitSequence);
+    const afterCommit = Number((fixture.store.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count);
+    const afterCommitSequences = Number((fixture.store.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count: number }).count);
+
+    fixture.store.close();
+    const reopened = createCanonicalSourceStore(fixture.directory, { commitClock: () => 1_800_000_000_000_001 });
+    try {
+      const replayed = executeSpendingRecognitionCommand(reopened, establish);
+      assert.equal(replayed.outcome, "replayed");
+      assert.equal(replayed.eventId, committed.eventId);
+      assert.equal(replayed.commitSequence, committed.commitSequence);
+      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count), afterCommit);
+      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count: number }).count), afterCommitSequences);
+
+      assert.throws(
+        () => executeSpendingRecognitionCommand(reopened, {
+          ...establish,
+          transactionId: fixture.secondId,
+        }),
+        (error: unknown) => error instanceof SpendingRecognitionCommandError && error.code === "idempotency-key-conflict",
+      );
+      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count), afterCommit);
+
+      assert.throws(
+        () => executeSpendingRecognitionCommand(reopened, {
+          ...establish,
+          idempotencyKey: "renderer-command-stale",
+        }),
+        (error: unknown) => error instanceof SpendingRecognitionCommandError && error.code === "spending-pair-stale",
+      );
+      assert.equal(Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count), afterCommit);
+
+      const removed = executeSpendingRecognitionCommand(reopened, {
+        kind: "remove-link",
+        invoiceId: fixture.invoiceId,
+        transactionId: fixture.firstId,
+        idempotencyKey: "renderer-command-remove-1",
+      });
+      assert.equal(removed.outcome, "committed");
+      assert.equal(querySpendingRecognition(reopened).activeLinks.length, 0);
+      const afterRemove = Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count);
+      const afterRemoveSequences = Number((reopened.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count: number }).count);
+      assert.equal(afterRemove, afterCommit + 1);
+      assert.equal(afterRemoveSequences, afterCommitSequences + 1);
+
+      reopened.close();
+      const reopenedAgain = createCanonicalSourceStore(fixture.directory, { commitClock: () => 1_800_000_000_000_002 });
+      try {
+        const removeReplay = executeSpendingRecognitionCommand(reopenedAgain, {
+          kind: "remove-link",
+          invoiceId: fixture.invoiceId,
+          transactionId: fixture.firstId,
+          idempotencyKey: "renderer-command-remove-1",
+        });
+        assert.equal(removeReplay.outcome, "replayed");
+        assert.equal(removeReplay.eventId, removed.eventId);
+        assert.equal(Number((reopenedAgain.db.prepare("SELECT COUNT(*) AS count FROM spending_dedup_decision_events").get() as { count: number }).count), afterRemove);
+        assert.equal(Number((reopenedAgain.db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get() as { count: number }).count), afterRemoveSequences);
+      } finally {
+        reopenedAgain.close();
+      }
+    } catch (error) {
+      try { reopened.close(); } catch {}
+      throw error;
+    }
   } finally {
     try { fixture.store.close(); } catch {}
     await rm(fixture.directory, { recursive: true, force: true });
