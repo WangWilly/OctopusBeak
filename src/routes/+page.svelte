@@ -274,6 +274,7 @@
     return {
       ...state.primary.data,
       purchaseReport: secondary?.purchaseReport ?? state.primary.data.purchaseReport,
+      invoices: secondary?.invoices ?? state.primary.data.invoices,
       knowledgePoint: state.primary.knowledgePoint,
     };
   }

@@ -34,3 +34,11 @@ test("old secondary data is not composed across a primary knowledge point", () =
   assert.match(source, /dailyHistoryByAccount: secondary\?\.dailyHistoryByAccount \?\? \{\}/);
   assert.match(source, /purchaseReport: secondary\?\.purchaseReport \?\? state\.primary\.data\.purchaseReport/);
 });
+
+test("spending invoices are composed only from a matching secondary generation", () => {
+  assert.match(source, /invoices: secondary\?\.invoices \?\? state\.primary\.data\.invoices/);
+  assert.match(
+    source,
+    /function matchingSecondary[\s\S]*?state\.secondary\.knowledgePoint === state\.primary\.knowledgePoint[\s\S]*?function spendingPage[\s\S]*?invoices: secondary\?\.invoices \?\? state\.primary\.data\.invoices/,
+  );
+});
