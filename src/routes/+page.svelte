@@ -1,12 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
-  import type { AssetsPageDto } from "$lib/assets/types.ts";
+  import type {
+    AssetsPageDto,
+    AssetsPrimaryDto,
+    AssetsSecondaryDto,
+  } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
-  import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
+  import type {
+    LiabilitiesPageDto,
+    LiabilitiesPrimaryDto,
+    LiabilitiesSecondaryDto,
+  } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
     completedSourceTaskFinishedAt,
@@ -23,11 +31,19 @@
     type OnboardingRoute,
   } from "$lib/onboarding/progression.ts";
   import OverviewDashboard from "$lib/overview/OverviewDashboard.svelte";
-  import type { OverviewPageDto } from "$lib/overview/types.ts";
+  import type {
+    OverviewPageDto,
+    OverviewPrimaryDto,
+    OverviewSecondaryDto,
+  } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
-  import type { SpendingPageDto } from "$lib/spending/model.ts";
+  import type {
+    SpendingPageDto,
+    SpendingPrimaryDto,
+    SpendingSecondaryDto,
+  } from "$lib/spending/model.ts";
   import FirstRunWelcome from "$lib/welcome/FirstRunWelcome.svelte";
   import { resolveCompletedFirstRunWelcome } from "$lib/welcome/integration.ts";
   import {
@@ -36,6 +52,7 @@
     writeFirstRunWelcomeState,
     type FirstRunWelcomeState,
   } from "$lib/welcome/state.ts";
+  import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
     createFinancialRouteGenerationCoordinator,
     createRouteLoadCache,
@@ -54,22 +71,27 @@
   type LoadState<T> =
     | { status: "loading" }
     | { status: "error"; message: string }
-    | {
-      status: "ready";
-      data: T;
-      knowledgePoint?: number | null;
-      stale?: boolean;
-      updating?: boolean;
-      refreshError?: string;
-    };
+    | { status: "ready"; data: T };
+  type SectionState<T> =
+    | { status: "loading"; knowledgePoint?: number; updating?: boolean }
+    | { status: "error"; message: string; knowledgePoint?: number }
+    | { status: "ready"; data: T; knowledgePoint: number };
+  type FinancialRouteState<Primary, Secondary> = {
+    primary: SectionState<Primary>;
+    secondary: SectionState<Secondary>;
+    knowledgePoint: number | null;
+    stale: boolean;
+    updating: boolean;
+    refreshError?: string;
+  };
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
   let initialized = false;
-  let overview: LoadState<OverviewPageDto> = { status: "loading" };
-  let assets: LoadState<AssetsPageDto> = { status: "loading" };
-  let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
-  let spending: LoadState<SpendingPageDto> = { status: "loading" };
+  let overview: FinancialRouteState<OverviewPrimaryDto, OverviewSecondaryDto> = createFinancialRouteState();
+  let assets: FinancialRouteState<AssetsPrimaryDto, AssetsSecondaryDto> = createFinancialRouteState();
+  let liabilities: FinancialRouteState<LiabilitiesPrimaryDto, LiabilitiesSecondaryDto> = createFinancialRouteState();
+  let spending: FinancialRouteState<SpendingPrimaryDto, SpendingSecondaryDto> = createFinancialRouteState();
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
   let onboardingState: OnboardingState | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
@@ -84,12 +106,23 @@
     "spending",
   ];
   let freshnessReconcileTimer: ReturnType<typeof setTimeout> | undefined;
+  let financialLoadGeneration = 0;
+
+  function createFinancialRouteState<Primary, Secondary>(): FinancialRouteState<Primary, Secondary> {
+    return {
+      primary: { status: "loading" },
+      secondary: { status: "loading" },
+      knowledgePoint: null,
+      stale: false,
+      updating: false,
+    };
+  }
 
   function isFinancialRoute(value: RouteId): value is FinancialRoute {
     return financialRoutes.includes(value as FinancialRoute);
   }
 
-  function routeState(nextRoute: FinancialRoute): LoadState<unknown> {
+  function routeState(nextRoute: FinancialRoute): FinancialRouteState<unknown, unknown> {
     if (nextRoute === "overview") return overview;
     if (nextRoute === "assets") return assets;
     if (nextRoute === "liabilities") return liabilities;
@@ -98,15 +131,14 @@
 
   function updateRouteState(
     nextRoute: FinancialRoute,
-    update: (state: Extract<LoadState<unknown>, { status: "ready" }>) => Extract<LoadState<unknown>, { status: "ready" }>,
+    update: (state: FinancialRouteState<unknown, unknown>) => FinancialRouteState<unknown, unknown>,
   ) {
     const current = routeState(nextRoute);
-    if (current.status !== "ready") return;
     const next = update(current);
-    if (nextRoute === "overview") overview = next as LoadState<OverviewPageDto>;
-    if (nextRoute === "assets") assets = next as LoadState<AssetsPageDto>;
-    if (nextRoute === "liabilities") liabilities = next as LoadState<LiabilitiesPageDto>;
-    if (nextRoute === "spending") spending = next as LoadState<SpendingPageDto>;
+    if (nextRoute === "overview") overview = next as FinancialRouteState<OverviewPrimaryDto, OverviewSecondaryDto>;
+    if (nextRoute === "assets") assets = next as FinancialRouteState<AssetsPrimaryDto, AssetsSecondaryDto>;
+    if (nextRoute === "liabilities") liabilities = next as FinancialRouteState<LiabilitiesPrimaryDto, LiabilitiesSecondaryDto>;
+    if (nextRoute === "spending") spending = next as FinancialRouteState<SpendingPrimaryDto, SpendingSecondaryDto>;
   }
 
   const generationCoordinator = createFinancialRouteGenerationCoordinator<FinancialRoute>({
@@ -135,7 +167,12 @@
       }));
     },
     onRouteRefreshStart: (nextRoute) => {
-      updateRouteState(nextRoute, (state) => ({ ...state, stale: true, updating: true }));
+      updateRouteState(nextRoute, (state) => ({
+        ...state,
+        stale: true,
+        updating: true,
+        refreshError: undefined,
+      }));
     },
     onRouteFresh: (nextRoute, knowledgePoint) => {
       routeDataCache.markFresh(nextRoute, knowledgePoint);
@@ -179,10 +216,73 @@
     };
   }
 
+  function matchingSecondary<Primary extends { knowledgePoint: number }, Secondary extends { knowledgePoint: number }>(
+    state: FinancialRouteState<Primary, Secondary>,
+  ): Secondary | null {
+    return state.primary.status === "ready"
+      && state.secondary.status === "ready"
+      && state.secondary.knowledgePoint === state.primary.knowledgePoint
+      ? state.secondary.data
+      : null;
+  }
+
+  function overviewPage(state: FinancialRouteState<OverviewPrimaryDto, OverviewSecondaryDto>): OverviewPageDto | null {
+    if (state.primary.status !== "ready") return null;
+    const secondary = matchingSecondary(state);
+    return {
+      ...state.primary.data,
+      historyAvailability: secondary?.historyAvailability ?? "unavailable",
+      dailyHistory: secondary?.dailyHistory ?? [],
+      sankey: secondary?.sankey ?? null,
+      sankeyExchangeRates: secondary?.sankeyExchangeRates ?? [],
+      sankeyLatestExchangeRateDate: secondary?.sankeyLatestExchangeRateDate ?? null,
+      exchangeRates: secondary?.exchangeRates ?? [],
+      latestExchangeRateDate: secondary?.latestExchangeRateDate ?? null,
+      knowledgePoint: state.primary.knowledgePoint,
+    };
+  }
+
+  function assetsPage(state: FinancialRouteState<AssetsPrimaryDto, AssetsSecondaryDto>): AssetsPageDto | null {
+    if (state.primary.status !== "ready") return null;
+    const secondary = matchingSecondary(state);
+    return {
+      ...state.primary.data,
+      dailyHistoryByAccount: secondary?.dailyHistoryByAccount ?? {},
+      dailyHistory: secondary?.dailyHistory ?? [],
+      knowledgePoint: state.primary.knowledgePoint,
+    };
+  }
+
+  function liabilitiesPage(state: FinancialRouteState<LiabilitiesPrimaryDto, LiabilitiesSecondaryDto>): LiabilitiesPageDto | null {
+    if (state.primary.status !== "ready") return null;
+    const secondary = matchingSecondary(state);
+    return {
+      ...state.primary.data,
+      dailyHistoryByAccount: secondary?.dailyHistoryByAccount ?? {},
+      dailyHistory: secondary?.dailyHistory ?? [],
+      knowledgePoint: state.primary.knowledgePoint,
+    };
+  }
+
+  function spendingPage(state: FinancialRouteState<SpendingPrimaryDto, SpendingSecondaryDto>): SpendingPageDto | null {
+    if (state.primary.status !== "ready") return null;
+    const secondary = matchingSecondary(state);
+    return {
+      ...state.primary.data,
+      purchaseReport: secondary?.purchaseReport ?? state.primary.data.purchaseReport,
+      knowledgePoint: state.primary.knowledgePoint,
+    };
+  }
+
+  $: overviewData = overviewPage(overview);
+  $: assetsData = assetsPage(assets);
+  $: liabilitiesData = liabilitiesPage(liabilities);
+  $: spendingData = spendingPage(spending);
+
   $: onboardingFacts = factsForOnboarding(
     route,
     automation.status === "ready" ? automation.data : null,
-    overview.status === "ready" ? overview.data : null,
+    overviewData,
     overviewLoadedForTaskFinishedAt,
   );
   $: onboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
@@ -202,7 +302,6 @@
       onboardingState?.selectedCredentialGroupId ?? null,
     ) !== overviewLoadedForTaskFinishedAt
   ) {
-    routeDataCache.clearAll();
     void loadRoute("overview", { force: true });
   }
 
@@ -232,32 +331,14 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  function knowledgePointFrom(value: unknown, fallback: number | null = null): number | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
-    const knowledgePoint = (value as { knowledgePoint?: unknown }).knowledgePoint;
-    return typeof knowledgePoint === "number"
-      && Number.isSafeInteger(knowledgePoint)
-      && knowledgePoint >= 0
-      ? knowledgePoint
-      : fallback;
-  }
-
-  function shouldDiscardOlderRouteResult(
-    nextRoute: FinancialRoute,
-    data: unknown,
-    options: { generation?: number; cutoff?: FinancialRouteGenerationCutoff },
-  ) {
-    if (options.generation !== undefined) return false;
-    const loaded = knowledgePointFrom(data, options.cutoff?.knowledgePoint ?? null);
-    const cached = routeDataCache.knowledgePoint(nextRoute);
-    return loaded !== null && cached !== null && cached > loaded;
-  }
-
-  function refreshStatus<T>(state: LoadState<T>): string | null {
-    if (state.status !== "ready") return null;
+  function refreshStatus(state: FinancialRouteState<unknown, unknown>): string | null {
     if (state.updating) return "更新中…";
     if (state.refreshError) return "更新失敗，暫時顯示舊資料";
     return state.stale ? "有較新的資料可用" : null;
+  }
+
+  function sectionError(state: SectionState<unknown>): string {
+    return state.status === "error" ? state.message : "資料載入失敗";
   }
 
   function saveOnboarding(next: OnboardingState) {
@@ -342,15 +423,15 @@
     }
 
     try {
-      const [automationData, overviewData] = await Promise.all([
+      const [automationData, overviewSection] = await Promise.all([
         routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
-        routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
+        window.octopusBeak.overview.loadSection("primary"),
       ]);
       automation = { status: "ready", data: automationData };
-      const knowledgePoint = knowledgePointFrom(overviewData);
+      const knowledgePoint = overviewSection.knowledgePoint;
       overview = {
-        status: "ready",
-        data: overviewData,
+        primary: { status: "ready", data: overviewSection.value, knowledgePoint },
+        secondary: { status: "loading", knowledgePoint },
         knowledgePoint,
         stale: false,
         updating: false,
@@ -360,13 +441,185 @@
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
         welcomeState: null,
         onboardingState: null,
-        overview: { accounts: overviewData.accounts, importedAt: overviewData.importedAt },
+        overview: { accounts: overviewSection.value.accounts, importedAt: overviewSection.value.importedAt },
         automation: { tasks: automationData.automation.tasks },
       });
       writeFirstRunWelcomeState(localStorage, firstRunWelcomeState);
     } catch (error) {
       console.warn("welcome-eligibility-load-failed", message(error));
     }
+  }
+
+  type FinancialSectionResultValue<T> = Readonly<{
+    knowledgePoint: number;
+    value: T;
+  }>;
+
+  function sectionInput(cutoff: FinancialRouteGenerationCutoff) {
+    return { cutoff };
+  }
+
+  function isCurrentFinancialLoad(next: FinancialRoute, token: number, signal?: AbortSignal) {
+    return token === financialLoadGeneration && route === next && !signal?.aborted;
+  }
+
+  async function loadFinancialRouteSections(
+    next: FinancialRoute,
+    options: {
+      force?: boolean;
+      background?: boolean;
+      cutoff?: FinancialRouteGenerationCutoff;
+      generation?: number;
+      signal?: AbortSignal;
+    },
+  ): Promise<void> {
+    const currentState = routeState(next);
+    if (
+      !options.force
+      && !options.background
+      && options.generation === undefined
+      && currentState.primary.status === "ready"
+      && (currentState.secondary.status === "ready" || currentState.stale)
+    ) return;
+
+    const cutoff = options.cutoff ?? {
+      knowledgePoint: await window.octopusBeak.financialFreshness.latestKnowledgePoint(),
+    };
+    const token = ++financialLoadGeneration;
+    const background = Boolean(options.background && currentState.primary.status === "ready");
+    if (!background) {
+      updateRouteState(next, (state) => ({
+        ...state,
+        primary: { status: "loading", knowledgePoint: cutoff.knowledgePoint },
+        secondary: { status: "loading", knowledgePoint: cutoff.knowledgePoint },
+        knowledgePoint: state.knowledgePoint,
+        stale: false,
+        updating: false,
+        refreshError: undefined,
+      }));
+    }
+
+    let secondaryResult: FinancialSectionResultValue<unknown> | undefined;
+    let secondaryError: unknown;
+    let primarySettled = false;
+    const isCurrent = () => isCurrentFinancialLoad(next, token, options.signal);
+
+    const applyPrimary = (result: FinancialSectionResultValue<unknown>) => {
+      if (!isCurrent()) return;
+      if (result.knowledgePoint !== cutoff.knowledgePoint) {
+        throw new Error("financial-section-knowledge-point-mismatch");
+      }
+      primarySettled = true;
+      updateRouteState(next, (state) => ({
+        ...state,
+        primary: {
+          status: "ready",
+          data: result.value,
+          knowledgePoint: result.knowledgePoint,
+        },
+        // A new primary generation invalidates the old secondary. It cannot
+        // remain visible while its query is still at the previous cutoff.
+        secondary: { status: "loading", knowledgePoint: cutoff.knowledgePoint, updating: background },
+        knowledgePoint: result.knowledgePoint,
+        updating: background,
+        refreshError: undefined,
+      }));
+      if (secondaryResult) applySecondary(secondaryResult);
+      if (secondaryError) applySecondaryError(secondaryError);
+    };
+
+    const applySecondary = (result: FinancialSectionResultValue<unknown>) => {
+      if (!isCurrent()) return;
+      if (result.knowledgePoint !== cutoff.knowledgePoint) {
+        const error = new Error("financial-section-knowledge-point-mismatch");
+        secondaryError = error;
+        applySecondaryError(error);
+        return;
+      }
+      secondaryResult = result;
+      if (!primarySettled) return;
+      updateRouteState(next, (state) => ({
+        ...state,
+        secondary: {
+          status: "ready",
+          data: result.value,
+          knowledgePoint: result.knowledgePoint,
+        },
+      }));
+    };
+
+    const applySecondaryError = (error: unknown) => {
+      if (!isCurrent() || !primarySettled) return;
+      updateRouteState(next, (state) => ({
+        ...state,
+        secondary: {
+          status: "error",
+          message: message(error),
+          knowledgePoint: cutoff.knowledgePoint,
+        },
+      }));
+    };
+
+    const loaders = (() => {
+      const input = sectionInput(cutoff);
+      if (next === "overview") {
+        return {
+          primary: () => window.octopusBeak.overview.loadSection("primary", input),
+          secondary: () => window.octopusBeak.overview.loadSection("secondary", input),
+        };
+      }
+      if (next === "assets") {
+        return {
+          primary: () => window.octopusBeak.assets.loadSection("primary", input),
+          secondary: () => window.octopusBeak.assets.loadSection("secondary", input),
+        };
+      }
+      if (next === "liabilities") {
+        return {
+          primary: () => window.octopusBeak.liabilities.loadSection("primary", input),
+          secondary: () => window.octopusBeak.liabilities.loadSection("secondary", input),
+        };
+      }
+      return {
+        primary: () => window.octopusBeak.spending.loadSection("primary", input),
+        secondary: () => window.octopusBeak.spending.loadSection("secondary", input),
+      };
+    })();
+
+    const primaryPromise = Promise.resolve(loaders.primary()).then((result) => {
+      applyPrimary(result);
+      return result;
+    }, (error: unknown) => {
+      if (isCurrent() && !background) {
+        updateRouteState(next, (state) => ({
+          ...state,
+          primary: { status: "error", message: message(error), knowledgePoint: cutoff.knowledgePoint },
+          updating: false,
+        }));
+      }
+      throw error;
+    });
+    void Promise.resolve(loaders.secondary()).then((result) => {
+      applySecondary(result);
+    }, (error: unknown) => {
+      secondaryError = error;
+      applySecondaryError(error);
+    });
+
+    await primaryPromise;
+    if (options.generation === undefined && isCurrent()) {
+      generationCoordinator.markRouteLoaded(next, cutoff.knowledgePoint);
+      if (next === "overview") overviewLoadedForTaskFinishedAt = taskFinishedAtForOverview();
+    }
+  }
+
+  function taskFinishedAtForOverview() {
+    return automation.status === "ready"
+      ? completedSourceTaskFinishedAt(
+        automation.data.automation.tasks,
+        onboardingState?.selectedCredentialGroupId ?? null,
+      )
+      : null;
   }
 
   async function loadRoute(
@@ -379,99 +632,9 @@
       signal?: AbortSignal;
     } = {},
   ) {
-    const taskFinishedAt = next === "overview" && automation.status === "ready"
-      ? completedSourceTaskFinishedAt(
-        automation.data.automation.tasks,
-        onboardingState?.selectedCredentialGroupId ?? null,
-      )
-      : null;
     if (next === "overview") overviewReloading = true;
     try {
-      if (next === "overview") {
-        const data = await routeDataCache.load(
-          "overview",
-          () => window.octopusBeak.overview.load(options.cutoff ? { cutoff: options.cutoff } : undefined),
-          options,
-        );
-        if (options.generation !== undefined && (options.signal?.aborted || route !== next)) return;
-        if (shouldDiscardOlderRouteResult(next, data, options)) return;
-        const knowledgePoint = knowledgePointFrom(data, options.cutoff?.knowledgePoint ?? null);
-        overview = {
-          status: "ready",
-          data,
-          knowledgePoint,
-          stale: routeDataCache.isStale(next),
-          updating: Boolean(options.background),
-        };
-        if (options.generation === undefined) {
-          routeDataCache.markFresh(next, knowledgePoint);
-          generationCoordinator.markRouteLoaded(next, knowledgePoint);
-        }
-        overviewLoadedForTaskFinishedAt = taskFinishedAt;
-      }
-      if (next === "assets") {
-        const data = await routeDataCache.load(
-          "assets",
-          () => window.octopusBeak.assets.load(options.cutoff ? { cutoff: options.cutoff } : undefined),
-          options,
-        );
-        if (options.generation !== undefined && (options.signal?.aborted || route !== next)) return;
-        if (shouldDiscardOlderRouteResult(next, data, options)) return;
-        const knowledgePoint = knowledgePointFrom(data, options.cutoff?.knowledgePoint ?? null);
-        assets = {
-          status: "ready",
-          data,
-          knowledgePoint,
-          stale: routeDataCache.isStale(next),
-          updating: Boolean(options.background),
-        };
-        if (options.generation === undefined) {
-          routeDataCache.markFresh(next, knowledgePoint);
-          generationCoordinator.markRouteLoaded(next, knowledgePoint);
-        }
-      }
-      if (next === "liabilities") {
-        const data = await routeDataCache.load(
-          "liabilities",
-          () => window.octopusBeak.liabilities.load(options.cutoff ? { cutoff: options.cutoff } : undefined),
-          options,
-        );
-        if (options.generation !== undefined && (options.signal?.aborted || route !== next)) return;
-        if (shouldDiscardOlderRouteResult(next, data, options)) return;
-        const knowledgePoint = knowledgePointFrom(data, options.cutoff?.knowledgePoint ?? null);
-        liabilities = {
-          status: "ready",
-          data,
-          knowledgePoint,
-          stale: routeDataCache.isStale(next),
-          updating: Boolean(options.background),
-        };
-        if (options.generation === undefined) {
-          routeDataCache.markFresh(next, knowledgePoint);
-          generationCoordinator.markRouteLoaded(next, knowledgePoint);
-        }
-      }
-      if (next === "spending") {
-        const data = await routeDataCache.load(
-          "spending",
-          () => window.octopusBeak.spending.load(options.cutoff ? { cutoff: options.cutoff } : undefined),
-          options,
-        );
-        if (options.generation !== undefined && (options.signal?.aborted || route !== next)) return;
-        if (shouldDiscardOlderRouteResult(next, data, options)) return;
-        const knowledgePoint = knowledgePointFrom(data, options.cutoff?.knowledgePoint ?? null);
-        spending = {
-          status: "ready",
-          data,
-          knowledgePoint,
-          stale: routeDataCache.isStale(next),
-          updating: Boolean(options.background),
-        };
-        if (options.generation === undefined) {
-          routeDataCache.markFresh(next, knowledgePoint);
-          generationCoordinator.markRouteLoaded(next, knowledgePoint);
-        }
-      }
+      if (isFinancialRoute(next)) await loadFinancialRouteSections(next, options);
       if (next === "automation") {
         automation = {
           status: "ready",
@@ -488,12 +651,14 @@
         }));
         throw error;
       }
-      const failed = { status: "error" as const, message: message(error) };
-      if (next === "overview") overview = failed;
-      if (next === "assets") assets = failed;
-      if (next === "liabilities") liabilities = failed;
-      if (next === "spending") spending = failed;
-      if (next === "automation") automation = failed;
+      if (isFinancialRoute(next)) {
+        updateRouteState(next, (state) => ({
+          ...state,
+          primary: { status: "error", message: message(error) },
+          updating: false,
+        }));
+      }
+      if (next === "automation") automation = { status: "error", message: message(error) };
     } finally {
       if (next === "overview") overviewReloading = false;
     }
@@ -526,8 +691,10 @@
       .catch((error) => console.warn("system-settings-load-failed", error))
       .then(async () => {
         onboardingState = readOnboardingState(localStorage);
-        await resolveFirstRunWelcome();
+        // Mount the shell before product reads complete. Financial sections
+        // can then reveal their primary and secondary states independently.
         initialized = true;
+        await resolveFirstRunWelcome();
         normalizeRoute();
     });
     addEventListener("hashchange", normalizeRoute);
@@ -554,25 +721,49 @@
     />
   {/if}
 {:else if route === "overview"}
-  {#if overview.status === "ready"}<OverviewDashboard overview={overview.data} />{/if}
+  {#if overviewData}<OverviewDashboard overview={overviewData} />{:else}
+    <DashboardShell active="overview" eyebrow={$t.overview.eyebrow} title={$t.overview.title} sideLabel={$t.overview.sideLabel}>
+      {#if overview.primary.status === "loading"}
+        <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+      {:else}<p class="status" role="alert">{sectionError(overview.primary)}</p>{/if}
+    </DashboardShell>
+  {/if}
   {#if refreshStatus(overview)}<p class="route-freshness" role="status">{refreshStatus(overview)}</p>{/if}
-  {#if overview.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
-  {#if overview.status === "error"}<p class="status">{overview.message}</p>{/if}
+  {#if overview.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
+  {#if overview.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "assets"}
-  {#if assets.status === "ready"}<AssetsDashboard assets={assets.data} {focusAccountId} />{/if}
+  {#if assetsData}<AssetsDashboard assets={assetsData} {focusAccountId} />{:else}
+    <DashboardShell active="assets" eyebrow={$t.assets.eyebrow} title={$t.assets.title} sideLabel={$t.assets.sideLabel} searchPlaceholder={$t.assets.searchPlaceholder}>
+      {#if assets.primary.status === "loading"}
+        <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+      {:else}<p class="status" role="alert">{sectionError(assets.primary)}</p>{/if}
+    </DashboardShell>
+  {/if}
   {#if refreshStatus(assets)}<p class="route-freshness" role="status">{refreshStatus(assets)}</p>{/if}
-  {#if assets.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
-  {#if assets.status === "error"}<p class="status">{assets.message}</p>{/if}
+  {#if assets.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
+  {#if assets.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "liabilities"}
-  {#if liabilities.status === "ready"}<LiabilitiesDashboard liabilities={liabilities.data} {focusAccountId} />{/if}
+  {#if liabilitiesData}<LiabilitiesDashboard liabilities={liabilitiesData} {focusAccountId} />{:else}
+    <DashboardShell active="liabilities" eyebrow={$t.liabilities.eyebrow} title={$t.liabilities.title} sideLabel={$t.liabilities.sideLabel} searchPlaceholder={$t.liabilities.searchPlaceholder}>
+      {#if liabilities.primary.status === "loading"}
+        <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+      {:else}<p class="status" role="alert">{sectionError(liabilities.primary)}</p>{/if}
+    </DashboardShell>
+  {/if}
   {#if refreshStatus(liabilities)}<p class="route-freshness" role="status">{refreshStatus(liabilities)}</p>{/if}
-  {#if liabilities.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
-  {#if liabilities.status === "error"}<p class="status">{liabilities.message}</p>{/if}
+  {#if liabilities.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
+  {#if liabilities.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "spending"}
-  {#if spending.status === "ready"}<SpendingDashboard spending={spending.data} />{/if}
+  {#if spendingData}<SpendingDashboard spending={spendingData} />{:else}
+    <DashboardShell active="spending" eyebrow={$t.spending.eyebrow} title={$t.spending.title} sideLabel={$t.spending.sideLabel}>
+      {#if spending.primary.status === "loading"}
+        <div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>
+      {:else}<p class="status" role="alert">{sectionError(spending.primary)}</p>{/if}
+    </DashboardShell>
+  {/if}
   {#if refreshStatus(spending)}<p class="route-freshness" role="status">{refreshStatus(spending)}</p>{/if}
-  {#if spending.status === "loading"}<div class="status loading-status" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>{$t.common.loading}</span></div>{/if}
-  {#if spending.status === "error"}<p class="status">{spending.message}</p>{/if}
+  {#if spending.secondary.status === "loading"}<p class="route-freshness" role="status">{$t.common.loading}</p>{/if}
+  {#if spending.secondary.status === "error"}<p class="status" role="status">次要資料載入失敗，核心資料仍可使用。</p>{/if}
 {:else if route === "automation"}
   {#if automation.status === "ready"}
     <AutomationDashboard
