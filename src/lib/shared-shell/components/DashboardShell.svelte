@@ -1,8 +1,14 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { getContext, onMount, tick } from "svelte";
+  import { readable } from "svelte/store";
   import { fade, fly } from "svelte/transition";
   import { isMacPlatform } from "$lib/desktop/platform.ts";
   import { t } from "$lib/i18n/i18n.ts";
+  import {
+    initialRefreshUiState,
+    REFRESH_CONTEXT_KEY,
+    type RefreshUiContext,
+  } from "$lib/shared-shell/refresh-context.ts";
   import {
     DISPLAY_SCALE_DEFAULT,
     DISPLAY_SCALE_MAX,
@@ -42,6 +48,8 @@
   let searchInput: HTMLInputElement | null = null;
 
   const searchPopoverId = "dashboard-search-popover";
+  const refreshContext = getContext<RefreshUiContext | undefined>(REFRESH_CONTEXT_KEY);
+  const refreshState = refreshContext?.state ?? readable(initialRefreshUiState);
 
   $: writeStoredValuesVisible(valuesVisible);
 
@@ -128,6 +136,13 @@
     return typeof localStorage !== "undefined" && localStorage.getItem(sidebarStorageKey) === "1";
   }
 
+  function refreshLabel() {
+    if ($refreshState.status === "refreshing") return $t.common.refreshing;
+    if ($refreshState.status === "stale") return $t.common.newData;
+    if ($refreshState.status === "error") return $t.common.refreshFailed;
+    return $t.common.refresh;
+  }
+
   $: nav = [
     {
       id: "overview",
@@ -199,6 +214,28 @@
     <h1 class="topbar-title"><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
 
     <div class="topbar-actions">
+      <button
+        class:refreshing={$refreshState.status === "refreshing"}
+        class:stale={$refreshState.status === "stale"}
+        class:error={$refreshState.status === "error"}
+        class="topbar-tool refresh-trigger"
+        type="button"
+        aria-label={refreshLabel()}
+        title={refreshLabel()}
+        aria-busy={$refreshState.status === "refreshing"}
+        data-refresh-state={$refreshState.status}
+        disabled={!refreshContext || $refreshState.status === "refreshing"}
+        onclick={() => refreshContext && void refreshContext.refresh()}
+      >
+        {#if $refreshState.status === "refreshing"}
+          <span class="refresh-spinner" aria-hidden="true"></span>
+        {:else}
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-4.9 6H5.02A7 7 0 1 0 17.65 6.35Z" />
+          </svg>
+        {/if}
+        <span class="visually-hidden">{refreshLabel()}</span>
+      </button>
       <slot name="topbar-actions">
         {#if searchPlaceholder}
           <button
@@ -297,6 +334,49 @@
 </div>
 
 <style>
+  .refresh-trigger {
+    position: relative;
+  }
+
+  .refresh-trigger.stale::after,
+  .refresh-trigger.error::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .refresh-trigger.error {
+    color: var(--danger, #b42318);
+    border-color: color-mix(in srgb, currentColor 45%, var(--border));
+  }
+
+  .refresh-trigger:disabled {
+    cursor: wait;
+    opacity: 0.78;
+  }
+
+  .refresh-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: refresh-spin 700ms linear infinite;
+  }
+
+  @keyframes refresh-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .refresh-spinner { animation: none; }
+  }
+
   .visually-hidden {
     position: absolute;
     width: 1px;
