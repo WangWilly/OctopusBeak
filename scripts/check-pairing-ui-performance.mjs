@@ -306,6 +306,7 @@ async function runSingle(runNumber) {
         longTaskObserverAvailable: "PerformanceObserver" in window,
       };
       window.__pairingPrewarmVersions = [];
+      window.__pairingPrewarmStarted = false;
       let previousRafAt = performance.now();
       const observeRaf = (now) => {
         window.__pairingPerformance.rafGaps.push({
@@ -345,6 +346,7 @@ async function runSingle(runNumber) {
       window.octopusBeak.spending.rankPairingCandidates = (input) => window.__pairingRankThroughWorker(input);
       window.octopusBeak.spending.confirmCandidate = (input) => window.__pairingConfirmThroughWorker(input);
       window.octopusBeak.spending.prewarmPairingCandidates = async (input) => {
+        window.__pairingPrewarmStarted = true;
         const result = await window.__pairingPrewarmThroughWorker(input);
         window.__pairingPrewarmVersions.push(result.dataVersion);
         window.__pairingPrewarmDone = true;
@@ -357,9 +359,10 @@ async function runSingle(runNumber) {
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
     const initialRenderedRecordCount = await page.locator("[data-purchase-record]").count();
+    await page.waitForFunction(() => window.__pairingPrewarmStarted === true, undefined, { timeout: 30_000 });
+    const prewarmDoneAtClick = await page.evaluate(() => window.__pairingPrewarmDone === true);
+    assert.equal(prewarmDoneAtClick, false, "cold Pairing must start while prewarm is still pending");
     const prewarmStartedAt = performance.now();
-    await page.waitForFunction(() => window.__pairingPrewarmDone === true, undefined, { timeout: 30_000 });
-    const prewarmElapsedMs = performance.now() - prewarmStartedAt;
 
     await page.evaluate(() => {
       window.__pairingStartInteraction("open-feedback");
@@ -414,6 +417,7 @@ async function runSingle(runNumber) {
     assert.equal(persistedLink.count, 1, "the canonical store must persist the selected Pairing link");
     assert.equal(activeLinkCount.count, 10_000);
     const postConfirmRenderedRecordCount = await page.locator("[data-purchase-record]").count();
+    const prewarmElapsedMs = performance.now() - prewarmStartedAt;
     assert.deepEqual(errors, []);
     assert.equal(rankBridgeCallCount, 1);
     assert.equal(confirmBridgeCallCount, 1);
@@ -465,6 +469,7 @@ async function runSingle(runNumber) {
       postConfirmRenderedRecordCount,
       setupMs: fixture.setupMs,
       prewarmElapsedMs,
+      prewarmDoneAtClick,
       openFeedbackElapsedMs,
       openElapsedMs,
       confirmFeedbackElapsedMs,
