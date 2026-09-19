@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { createServer } from "vite";
 import {
   allocatedCategory,
   record,
   singleCategory,
   view,
 } from "./spending-canonical-fixture.mjs";
+import {
+  createSpendingViteServer,
+  spendingDesktopApiInitScript,
+} from "./spending-browser-harness.mjs";
 
 const months = Array.from({ length: 30 }, (_, index) => {
   const date = new Date(Date.UTC(2024, 7 + index, 1));
@@ -39,9 +42,7 @@ const model = view(records, {
   selectedCategory: null,
 });
 
-const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
-await server.listen();
-await server.watcher.close();
+const server = await createSpendingViteServer();
 const address = server.httpServer?.address();
 assert.ok(address && typeof address === "object");
 const browser = await chromium.launch({ headless: true });
@@ -53,24 +54,7 @@ try {
     if (message.type() === "error") errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(({ model }) => {
-    window.__spendingLoadCount = 0;
-    window.octopusBeak = {
-      settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
-      spending: {
-        load: async () => {
-          window.__spendingLoadCount += 1;
-          return { canonical: model };
-        },
-        updateTransactionOverride: async () => {
-          throw new Error("legacy Spending mutation invoked");
-        },
-        updateItemCategory: async () => {
-          throw new Error("legacy Spending mutation invoked");
-        },
-      },
-    };
-  }, { model });
+  await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
   const chart = page.locator("[data-chart]");
