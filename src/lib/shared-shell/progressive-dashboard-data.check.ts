@@ -5,13 +5,17 @@ import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type { SpendingPageDto } from "$lib/spending/model.ts";
+import type { SpendingPurchaseReportView } from "$lib/spending/purchase-matching.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
 import {
   isEmptySpendingPage,
+  resolveAutomationBlock,
+  resolveSpendingPurchaseReport,
   resolveAssetsList,
   resolveLiabilitiesDetails,
   resolveOverviewSummary,
 } from "./progressive-dashboard-data.ts";
+import type { AutomationPageModel } from "$lib/automation/types.ts";
 
 const account = (id: string): AccountRowDto => ({
   id,
@@ -139,4 +143,48 @@ test("an empty spending block keeps empty availability instead of fabricating ze
   };
   assert.equal(block.canonical.availability, "empty");
   assert.equal(isEmptySpendingPage({ ...page, canonical: block.canonical, purchaseReport: block.purchaseReport }), true);
+});
+
+test("settled spending and automation blocks provide their own content without replacing siblings", () => {
+  const fallbackSpending = emptySpending().purchaseReport as unknown as SpendingPurchaseReportView;
+  const chartSpending = { ...fallbackSpending, knowledgeAt: 2 };
+  const listSpending = { ...fallbackSpending, knowledgeAt: 3 };
+
+  assert.equal(
+    resolveSpendingPurchaseReport(
+      fallbackSpending,
+      { canonical: emptySpending().canonical, purchaseReport: chartSpending } as unknown as DashboardBlockValueMap["spending"]["chart"],
+    ),
+    chartSpending,
+  );
+  assert.equal(
+    resolveSpendingPurchaseReport(
+      fallbackSpending,
+      { canonical: emptySpending().canonical, purchaseReport: listSpending, invoices: [] } as unknown as DashboardBlockValueMap["spending"]["list"],
+    ),
+    listSpending,
+  );
+  assert.equal(resolveSpendingPurchaseReport(fallbackSpending), fallbackSpending);
+
+  const fallbackAutomation = {
+    tasks: [{ id: "fallback-task" }],
+  } as unknown as AutomationPageModel;
+  const listAutomation = {
+    ...fallbackAutomation,
+    tasks: [{ id: "list-task" }],
+  } as unknown as AutomationPageModel;
+  const detailsAutomation = {
+    ...fallbackAutomation,
+    tasks: [{ id: "details-task" }],
+  } as unknown as AutomationPageModel;
+
+  assert.equal(
+    resolveAutomationBlock(fallbackAutomation, { automation: listAutomation, credentialGroups: [] }).tasks[0]?.id,
+    "list-task",
+  );
+  assert.equal(
+    resolveAutomationBlock(fallbackAutomation, { automation: detailsAutomation, credentialGroups: [] }).tasks[0]?.id,
+    "details-task",
+  );
+  assert.equal(resolveAutomationBlock(fallbackAutomation)?.tasks[0]?.id, "fallback-task");
 });

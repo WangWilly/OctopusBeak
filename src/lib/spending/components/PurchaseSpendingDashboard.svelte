@@ -6,6 +6,7 @@
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
+  import { resolveSpendingPurchaseReport } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
@@ -176,6 +177,68 @@
 
   function candidateRecord(candidateId: string, kind: "invoice" | "transaction") {
     return candidateRecordsByKey.get(`${candidateId}:${kind}`) ?? null;
+  }
+
+  function candidateRecordsByKeyFor(sourceReport: PurchaseReport) {
+    const index = new Map<string, PurchaseRecord>();
+    for (const record of sourceReport.records) {
+      for (const candidateId of record.candidateIds) {
+        if (record.invoice) index.set(`${candidateId}:invoice`, record);
+        if (record.transaction) index.set(`${candidateId}:transaction`, record);
+      }
+    }
+    return index;
+  }
+
+  function monthsForReport(sourceReport: PurchaseReport) {
+    return [...new Set(sourceReport.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+  }
+
+  function activeMonthForReport(sourceReport: PurchaseReport, preferred: string | null) {
+    const months = monthsForReport(sourceReport);
+    return preferred && months.includes(preferred) ? preferred : months.at(-1) ?? null;
+  }
+
+  function purchaseListView(
+    sourceReport: PurchaseReport,
+    preferredMonth: string | null,
+    showAll: boolean,
+    visibleCount: number,
+  ) {
+    const active = activeMonthForReport(sourceReport, preferredMonth);
+    const recordsByKey = candidateRecordsByKeyFor(sourceReport);
+    const pending = sourceReport.candidates.filter((candidate) => candidate.status === "candidate");
+    const month = pending.filter((candidate) => {
+      const invoice = recordsByKey.get(`${candidate.candidateId}:invoice`);
+      const transaction = recordsByKey.get(`${candidate.candidateId}:transaction`);
+      return active === null
+        || invoice?.occurrence.value.startsWith(`${active}-`)
+        || transaction?.occurrence.value.startsWith(`${active}-`);
+    });
+    const visible = showAll ? pending : month;
+    return {
+      pending,
+      month,
+      visible,
+      rows: visible.slice(0, visibleCount),
+      recordsByKey,
+    };
+  }
+
+  function chartDataFor(
+    sourceReport: PurchaseReport,
+    mode: "day" | "month",
+    preferredMonth: string | null,
+    currency: string,
+  ) {
+    const active = activeMonthForReport(sourceReport, preferredMonth);
+    return mode === "day"
+      ? dailyChartData(sourceReport.records, active, currency)
+      : monthlyChartData(totalsByMonth(sourceReport.records), currency);
+  }
+
+  function currenciesForReport(sourceReport: PurchaseReport) {
+    return [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
   }
 
   function totalsByMonth(records: readonly PurchaseRecord[]) {
@@ -531,12 +594,16 @@
       </section>
       </ProgressiveBlock>
 
-      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
+      {@const chartReport = resolveSpendingPurchaseReport(report, spendingBlockData("chart", data))}
+      {@const chartCurrencies = currenciesForReport(chartReport)}
+      {@const chartCurrency = chartCurrencies.includes(selectedCurrency) ? selectedCurrency : chartCurrencies[0] ?? "TWD"}
+      {@const blockChartData = chartDataFor(chartReport, chartMode, activeMonth, chartCurrency)}
       <section class="card purchase-chart-card" aria-label={$locale === "zh-TW" ? "消費圖表" : "Spending chart"} data-chart>
         <div class="section-heading chart-heading">
           <div>
             <h2>{chartMode === "day" ? ($locale === "zh-TW" ? "每日消費" : "Daily spending") : ($locale === "zh-TW" ? "每月消費" : "Monthly spending")}</h2>
-            <p>{selectedCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "最近月份" : "Recent months")}</p>
+            <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "最近月份" : "Recent months")}</p>
           </div>
           <div class="chart-mode-switch" role="group" aria-label={$locale === "zh-TW" ? "圖表範圍" : "Chart range"}>
             <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$locale === "zh-TW" ? "每日" : "Daily"}</button>
@@ -544,7 +611,7 @@
           </div>
         </div>
         <PurchaseActivityBarChart
-          data={chartData}
+          data={blockChartData}
           selectedKey={chartMode === "day" ? selectedDay : activeMonth}
           label={chartMode === "day" ? ($locale === "zh-TW" ? "每日消費金額" : "Daily spending amount") : ($locale === "zh-TW" ? "每月消費金額" : "Monthly spending amount")}
           onSelect={selectChartPeriod}
@@ -557,8 +624,8 @@
             onchange={(event) => selectChartPeriodFromControl(event.currentTarget.value)}
           >
             {#if chartMode === "day"}<option value="">{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</option>{/if}
-            {#each chartData as datum (datum.key)}
-              <option value={datum.key}>{datum.label} · {selectedCurrency} {datum.value.toLocaleString($locale)}</option>
+            {#each blockChartData as datum (datum.key)}
+              <option value={datum.key}>{datum.label} · {chartCurrency} {datum.value.toLocaleString($locale)}</option>
             {/each}
           </select>
         </label>
@@ -569,25 +636,27 @@
       </ProgressiveBlock>
     </div>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
-    {#if pendingCandidates.length > 0}
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+    {@const listReport = resolveSpendingPurchaseReport(report, spendingBlockData("list", data))}
+    {@const listView = purchaseListView(listReport, activeMonth, showAllCandidates, candidateVisibleCount)}
+    {#if listView.pending.length > 0}
       <section class="card purchase-candidates-card" data-candidates>
         <div class="section-heading">
           <div><h2>{$locale === "zh-TW" ? "待確認配對" : "Pending matches"}</h2><p>{$locale === "zh-TW" ? "確認同一筆消費，避免發票與付款重複計入。" : "Confirm matching purchases to avoid counting an invoice and payment twice."}</p></div>
           <div class="candidate-scope">
-            <span>{visibleCandidates.length} {$locale === "zh-TW" ? "筆" : "items"}</span>
-            {#if pendingCandidates.length !== monthCandidates.length}
-              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? ($locale === "zh-TW" ? "只看本月" : "This month") : ($locale === "zh-TW" ? `查看全部 ${pendingCandidates.length} 筆` : `View all ${pendingCandidates.length}`)}</button>
+            <span>{listView.visible.length} {$locale === "zh-TW" ? "筆" : "items"}</span>
+            {#if listView.pending.length !== listView.month.length}
+              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? ($locale === "zh-TW" ? "只看本月" : "This month") : ($locale === "zh-TW" ? `查看全部 ${listView.pending.length} 筆` : `View all ${listView.pending.length}`)}</button>
             {/if}
           </div>
         </div>
         <div class="candidate-list">
-          {#if visibleCandidates.length === 0}
+          {#if listView.visible.length === 0}
             <p class="candidate-empty">{$locale === "zh-TW" ? "這個月沒有待確認配對。你可以查看其他月份的候選。" : "There are no pending matches this month. You can review candidates from other months."}</p>
           {/if}
-          {#each visibleCandidateRows as candidate (candidate.candidateId)}
-            {@const invoiceRecord = candidateRecord(candidate.candidateId, "invoice")}
-            {@const transactionRecord = candidateRecord(candidate.candidateId, "transaction")}
+          {#each listView.rows as candidate (candidate.candidateId)}
+            {@const invoiceRecord = listView.recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null}
+            {@const transactionRecord = listView.recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null}
             <article class="candidate-row" data-candidate-id={candidate.candidateId}>
               <div class="candidate-side">
                 <strong>{$locale === "zh-TW" ? "發票來源" : "Invoice source"}</strong>
@@ -606,22 +675,30 @@
               </div>
             </article>
           {/each}
-          {#if visibleCandidates.length > candidateVisibleCount}
-            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, visibleCandidates.length)}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+          {#if listView.visible.length > candidateVisibleCount}
+            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
           {/if}
         </div>
       </section>
     {/if}
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+    {@const detailsReport = resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
+    {@const detailsActiveMonth = activeMonthForReport(detailsReport, activeMonth)}
+    {@const detailsMonthRecords = detailsReport.records.filter((record) => detailsActiveMonth === null || record.occurrence.value.startsWith(`${detailsActiveMonth}-`))}
+    {@const detailsVisibleRecords = detailsMonthRecords
+      .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId))}
+    {@const detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords)}
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
-        <div><h2>{$locale === "zh-TW" ? "購買明細" : "Purchases"}</h2><p>{selectedDay ? dateText(selectedDay) : activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "全部紀錄" : "All records")} · {visibleRecords.length} {$locale === "zh-TW" ? "筆" : "records"}</p></div>
+        <div><h2>{$locale === "zh-TW" ? "購買明細" : "Purchases"}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : ($locale === "zh-TW" ? "全部紀錄" : "All records")} · {detailsVisibleRecords.length} {$locale === "zh-TW" ? "筆" : "records"}</p></div>
         {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</button>{/if}
       </div>
       <div class="purchase-record-list">
-        {#each recordGroups as group (group.date)}
+        {#each detailsRecordGroups as group (group.date)}
           <section class="purchase-day-group" data-purchase-day={group.date}>
             <header class="purchase-day-heading">
               <div><strong>{dateText(group.date)}</strong><span>{group.records.length} {$locale === "zh-TW" ? "筆消費" : "purchases"}</span></div>
