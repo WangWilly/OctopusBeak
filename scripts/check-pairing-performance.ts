@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createFinancialPageWorkerClient } from "../electron/financial-page-worker-client.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
@@ -459,7 +460,7 @@ function insertSetupLinks(directory: string): void {
   }
 }
 
-async function createFixture(): Promise<BenchmarkFixture> {
+export async function createPairingBenchmarkFixture(): Promise<BenchmarkFixture> {
   const directory = await mkdtemp(join("/private/tmp", "pairing-performance-e2e-"));
   try {
     const setupStartedAt = performance.now();
@@ -489,7 +490,7 @@ async function createFixture(): Promise<BenchmarkFixture> {
 
 async function main(): Promise<void> {
   const overallStartedAt = performance.now();
-  const fixture = await createFixture();
+  const fixture = await createPairingBenchmarkFixture();
   process.env.LEDGER_DIR = fixture.directory;
   const worker = new Worker(new URL("../electron/financial-page-worker.ts", import.meta.url), { type: "module" });
   await new Promise<void>((resolve, reject) => {
@@ -680,4 +681,5 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  await main();
