@@ -11,6 +11,8 @@ import type { SpendingCategory } from "$lib/spending/categories.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
+  SpendingPairingCandidatesInput,
+  SpendingPairingCandidatesResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
@@ -105,6 +107,7 @@ export type OctopusBeakApi = {
   };
   spending: {
     load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+    rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -146,6 +149,7 @@ export const octopusBeakApiChannels = [
   "assets:load",
   "liabilities:load",
   "spending:load",
+  "spending:pairing-candidates",
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",

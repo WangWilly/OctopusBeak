@@ -4,7 +4,6 @@
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
-    rankSpendingManualPaymentCandidates,
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
   } from "../purchase-matching.ts";
@@ -31,6 +30,9 @@
   let selectedCurrency = "";
   let selectedDay: string | null = null;
   let showAllCandidates = false;
+  let pairingCandidates: readonly string[] | null = null;
+  let pairingCandidatesLoading = false;
+  let pairingRequestToken = 0;
 
   $: if (previousReport !== purchaseReport) {
     previousReport = purchaseReport;
@@ -64,8 +66,9 @@
   $: eligiblePayments = (() => {
     if (!pairingInvoice?.invoice) return allEligiblePayments;
     const paymentById = new Map(allEligiblePayments.map((record) => [record.transaction!.transactionId, record]));
-    return rankSpendingManualPaymentCandidates(pairingInvoice.invoice, allEligiblePayments.map((record) => record.transaction!))
-      .map((candidate) => paymentById.get(candidate.transactionId))
+    if (!pairingCandidates) return [];
+    return pairingCandidates
+      .map((transactionId) => paymentById.get(transactionId))
       .filter((record): record is PurchaseRecord => record !== undefined);
   })();
   $: visibleEligiblePayments = eligiblePayments.slice(0, paymentVisibleCount);
@@ -300,12 +303,40 @@
     pairingInvoice = record;
     selectedPaymentId = "";
     paymentVisibleCount = 10;
+    pairingCandidates = null;
+    pairingCandidatesLoading = true;
+    const requestToken = ++pairingRequestToken;
     actionError = "";
+    void loadPairingCandidates(record, requestToken);
   }
 
   function closePairing() {
+    pairingRequestToken += 1;
     pairingInvoice = null;
     selectedPaymentId = "";
+    pairingCandidates = null;
+    pairingCandidatesLoading = false;
+  }
+
+  async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
+    const invoiceIdentityId = record.invoice?.invoiceId;
+    if (!invoiceIdentityId) return;
+    try {
+      const result = await window.octopusBeak.spending.rankPairingCandidates({
+        invoiceIdentityId,
+        dataVersion: report.knowledgeAt,
+      });
+      if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
+      if (result.dataVersion !== report.knowledgeAt)
+        throw new Error("Spending pairing data changed; close and reopen the pairing dialog.");
+      pairingCandidates = result.transactionIds;
+    } catch (error) {
+      if (requestToken !== pairingRequestToken) return;
+      pairingCandidates = [];
+      actionError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
+    }
   }
 
   async function confirmDirectPair() {
@@ -565,14 +596,18 @@
           </div>
           <fieldset class="payment-options">
             <legend>{$locale === "zh-TW" ? "可配對的付款交易" : "Eligible payment transactions"}</legend>
-            {#each visibleEligiblePayments as payment (payment.purchaseId)}
-              <label class="payment-option">
-                <input type="radio" name="spending-payment" value={payment.transaction!.transactionId} bind:group={selectedPaymentId} />
-                <span><strong>{basisLabel(payment)}</strong><span>{recordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount?.currency}</small></span>
-              </label>
+            {#if pairingCandidatesLoading}
+              <span class="panel-meta pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$locale === "zh-TW" ? "準備配對候選…" : "Preparing pairing candidates…"}</span>
             {:else}
-              <span class="panel-meta">{$locale === "zh-TW" ? "沒有可配對的付款交易" : "No eligible payment transactions"}</span>
-            {/each}
+              {#each visibleEligiblePayments as payment (payment.purchaseId)}
+                <label class="payment-option">
+                  <input type="radio" name="spending-payment" value={payment.transaction!.transactionId} bind:group={selectedPaymentId} />
+                  <span><strong>{basisLabel(payment)}</strong><span>{recordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount?.currency}</small></span>
+                </label>
+              {:else}
+                <span class="panel-meta">{$locale === "zh-TW" ? "沒有可配對的付款交易" : "No eligible payment transactions"}</span>
+              {/each}
+            {/if}
             {#if eligiblePayments.length > paymentVisibleCount}
               <button type="button" class="button secondary show-more-payments" data-show-more-payments onclick={() => paymentVisibleCount += 10}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
             {/if}
@@ -689,6 +724,9 @@
   .payment-option span { display: grid; gap: 3px; }
   .payment-option small { color: var(--muted); }
   .pairing-effect { margin-bottom: var(--space-4); }
+  .pairing-loading { display: inline-flex; align-items: center; gap: 7px; }
+  .pairing-spinner { width: 12px; height: 12px; border: 2px solid color-mix(in oklch, var(--accent) 25%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: pairing-spin 700ms linear infinite; }
+  @keyframes pairing-spin { to { transform: rotate(360deg); } }
 
   @media (max-width: 1050px) {
     .purchase-analysis-grid { grid-template-columns: 1fr; }

@@ -31,6 +31,7 @@ import {
   confirmSpendingCandidate,
   denySpendingCandidate,
   loadSpending,
+  rankSpendingPaymentCandidates,
   revokeSpendingLink,
 } from "./store.ts";
 import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
@@ -38,24 +39,30 @@ import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
 function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
   result: T;
   fullProjectionCount: number;
+  fullReportComposeCount: number;
   storeOpenCount: number;
 } {
   const projectionDiagnostics = channel("octopus-beak.spending.full-projection");
+  const reportComposeDiagnostics = channel("octopus-beak.spending.full-report-compose");
   const storeDiagnostics = channel("octopus-beak.spending.canonical-store-open");
   let count = 0;
+  let reportComposeCount = 0;
   let storeOpenCount = 0;
   const observer = (message: unknown) => {
     if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) count += 1;
   };
+  const reportComposeObserver = () => reportComposeCount += 1;
   const storeObserver = (message: unknown) => {
     if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) storeOpenCount += 1;
   };
   projectionDiagnostics.subscribe(observer);
+  reportComposeDiagnostics.subscribe(reportComposeObserver);
   storeDiagnostics.subscribe(storeObserver);
   try {
-    return { result: operation(), fullProjectionCount: count, storeOpenCount };
+    return { result: operation(), fullProjectionCount: count, fullReportComposeCount: reportComposeCount, storeOpenCount };
   } finally {
     projectionDiagnostics.unsubscribe(observer);
+    reportComposeDiagnostics.unsubscribe(reportComposeObserver);
     storeDiagnostics.unsubscribe(storeObserver);
   }
 }
@@ -471,6 +478,7 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
     const confirmation = withActionReadCounts(confirmDirectory, () =>
       confirmSpendingCandidate({ kind: "candidate", candidateId: candidate.candidateId }, confirmDirectory));
     assert.equal(confirmation.fullProjectionCount, 1, "confirmation performs one full Spending projection");
+    assert.equal(confirmation.fullReportComposeCount, 0, "confirmation returns a targeted report patch without recomposing the full report");
     assert.equal(confirmation.storeOpenCount, 1, "confirmation uses one canonical store lifecycle");
     const confirmed = applySpendingPurchaseReportPatch(pending.purchaseReport, confirmation.result.patch);
     assert.deepEqual(confirmed, loadSpending(confirmDirectory).purchaseReport,
@@ -505,6 +513,7 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       transactionId: linked!.link!.transactionId,
     }, confirmDirectory));
     assert.equal(revocation.fullProjectionCount, 1, "revocation performs one full Spending projection");
+    assert.equal(revocation.fullReportComposeCount, 1, "revocation still recomposes while its split-record patch remains covered by the canonical report");
     assert.equal(revocation.storeOpenCount, 1, "revocation uses one canonical store lifecycle");
     const revoked = applySpendingPurchaseReportPatch(confirmed, revocation.result.patch);
     assert.deepEqual(revoked, loadSpending(confirmDirectory).purchaseReport,
@@ -572,6 +581,7 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       transactionIdentityId,
     }, directory));
     assert.equal(directConfirmation.fullProjectionCount, 1, "direct confirmation performs one full Spending projection");
+    assert.equal(directConfirmation.fullReportComposeCount, 0, "direct confirmation returns a targeted report patch without recomposing the full report");
     assert.equal(directConfirmation.storeOpenCount, 1, "direct confirmation uses one canonical store lifecycle");
     const linked = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch).records;
     assert.deepEqual(
@@ -591,6 +601,31 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       invoiceIdentityId: invoice.invoice!.invoiceId,
       transactionIdentityId: payment.transaction!.transactionId,
     }, directory), /stale, linked, revoked, or missing/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Spending pairing rank is bound to the displayed data version and excludes linked payments", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-pairing-rank-"));
+  try {
+    await seedPurchaseCandidate(directory, true);
+    const before = loadSpending(directory);
+    const invoice = before.purchaseReport.records.find((record) => record.basis === "invoice");
+    const invoiceView = invoice?.invoice;
+    assert.ok(invoiceView);
+    const ranked = withActionReadCounts(directory, () => rankSpendingPaymentCandidates({
+      invoiceIdentityId: invoiceView.invoiceId,
+      dataVersion: before.purchaseReport.knowledgeAt,
+    }, directory));
+    assert.equal(ranked.fullProjectionCount, 0, "pairing rank reuses the worker's loaded report snapshot");
+    assert.deepEqual(ranked.result.transactionIds, before.purchaseReport.records
+      .filter((record) => record.basis === "bank-transaction")
+      .map((record) => record.transaction!.transactionId));
+    assert.throws(() => rankSpendingPaymentCandidates({
+      invoiceIdentityId: invoiceView.invoiceId,
+      dataVersion: before.purchaseReport.knowledgeAt - 1,
+    }, directory), /data version is stale/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

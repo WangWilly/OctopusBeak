@@ -18,10 +18,15 @@ import {
   evaluateSpendingMatchCandidates,
   type PurchaseReport,
 } from "../../../ledger/canonical/spending-purchase-report.ts";
+import {
+  type SpendingRecognitionSnapshot,
+} from "../../../ledger/canonical/spending-recognition.ts";
 import type { SpendingCategory } from "../categories.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
+  SpendingPairingCandidatesInput,
+  SpendingPairingCandidatesResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
@@ -33,6 +38,11 @@ import type {
   CanonicalSpendingView,
 } from "../model.ts";
 import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+import {
+  exactMoneyEqual,
+  rankSpendingManualPaymentCandidates,
+} from "../purchase-matching.ts";
+import { SpendingPairingIndexCache } from "../pairing-index.ts";
 import {
   createFinancialQuery,
   queryCurrentSpendingFromDatabase,
@@ -67,6 +77,9 @@ export type SpendingLoadInput = {
 const LOCAL_SPENDING_USER_ID = "local-user";
 const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");
 const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
+const fullReportComposeDiagnostics = channel("octopus-beak.spending.full-report-compose");
+const pairingIndexCache = new SpendingPairingIndexCache();
+let latestSpendingQuery: Readonly<{ ledgerDir: string; query: CurrentSpendingQueryResult }> | null = null;
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
@@ -274,6 +287,126 @@ function pairKey(invoiceId: string, transactionId: string): string {
   return `${invoiceId}/${transactionId}`;
 }
 
+type RecognitionMutation = Readonly<{
+  kind: "confirmed" | "denied";
+  invoiceId: string;
+  transactionId: string;
+}>;
+
+function comparePurchaseRecordOrder(
+  left: PurchaseReport["records"][number],
+  right: PurchaseReport["records"][number],
+): number {
+  return left.occurrence.value.localeCompare(right.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId);
+}
+
+function insertPurchaseRecord(
+  records: readonly PurchaseReport["records"][number][],
+  value: PurchaseReport["records"][number],
+): readonly PurchaseReport["records"][number][] {
+  let low = 0;
+  let high = records.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (comparePurchaseRecordOrder(records[middle]!, value) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  return Object.freeze([...records.slice(0, low), value, ...records.slice(low)]);
+}
+
+function adjustPurchaseTotals(
+  totals: PurchaseReport["totalsByCurrency"],
+  removed: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
+): PurchaseReport["totalsByCurrency"] {
+  if (!removed) return totals;
+  const next = totals.map((entry) => {
+    if (entry.currency !== removed.currency) return entry;
+    const scale = Math.max(entry.scale, removed.scale);
+    const coefficient = BigInt(entry.coefficient) * 10n ** BigInt(scale - entry.scale) -
+      BigInt(removed.coefficient) * 10n ** BigInt(scale - removed.scale);
+    return { currency: entry.currency, coefficient: coefficient.toString(), scale, count: entry.count - 1 };
+  }).filter((entry) => entry.count > 0);
+  return Object.freeze(next);
+}
+
+function targetedPurchaseReportAfterRecognitionMutation(
+  before: PurchaseReport,
+  recognition: SpendingRecognitionSnapshot,
+  mutation: RecognitionMutation,
+): PurchaseReport {
+  const target = pairKey(mutation.invoiceId, mutation.transactionId);
+  const candidates = before.candidates
+    .map((candidate) => {
+      if (pairKey(candidate.invoiceId, candidate.transactionId) !== target) return candidate;
+      return recognition.candidates.find((next) =>
+        pairKey(next.invoiceId, next.transactionId) === target && next.candidateId === candidate.candidateId,
+      ) ?? null;
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+  const knownCandidateIds = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (const candidate of recognition.candidates) {
+    if (pairKey(candidate.invoiceId, candidate.transactionId) !== target) continue;
+    if (!knownCandidateIds.has(candidate.candidateId)) candidates.push(candidate);
+  }
+  const pendingCandidateIds = new Set(candidates
+    .filter((candidate) => candidate.status === "candidate")
+    .map((candidate) => candidate.candidateId));
+  let records: readonly PurchaseReport["records"][number][] = before.records
+    .filter((record) => mutation.kind !== "confirmed" ||
+      (record.invoice?.invoiceId !== mutation.invoiceId && record.transaction?.transactionId !== mutation.transactionId))
+    .map((record) => {
+      const candidateIds = record.candidateIds.filter((candidateId) => pendingCandidateIds.has(candidateId));
+      const possibleDuplicate = candidateIds.length > 0;
+      if (candidateIds.length === record.candidateIds.length && record.possibleDuplicate === possibleDuplicate) return record;
+      return { ...record, candidateIds: Object.freeze(candidateIds), possibleDuplicate };
+    });
+  let totals = before.totalsByCurrency;
+  if (mutation.kind === "confirmed") {
+    const invoiceRecord = before.records.find((record) => record.invoice?.invoiceId === mutation.invoiceId);
+    const paymentRecord = before.records.find((record) => record.transaction?.transactionId === mutation.transactionId);
+    if (!invoiceRecord?.invoice || !paymentRecord?.transaction)
+      throw new Error("Spending confirmation cannot build a targeted report patch.");
+    const link = recognition.activeLinks.find((candidate) =>
+      pairKey(candidate.invoiceId, candidate.transactionId) === target,
+    );
+    if (!link) throw new Error("Spending confirmation did not produce an active link.");
+    const invoiceAmount = invoiceRecord.amount;
+    const paymentAmount = paymentRecord.transaction.amount;
+    const linked: PurchaseReport["records"][number] = {
+      purchaseId: `link:${link.eventId}`,
+      basis: "linked",
+      amount: paymentAmount,
+      occurrence: invoiceRecord.occurrence,
+      description: invoiceRecord.invoice.revision.seller.name ?? paymentRecord.transaction.description,
+      invoice: invoiceRecord.invoice,
+      transaction: paymentRecord.transaction,
+      items: invoiceRecord.invoice.revision.items,
+      possibleDuplicate: false,
+      candidateIds: [],
+      link: { ...link, invoiceId: mutation.invoiceId, transactionId: mutation.transactionId },
+      difference: {
+        invoiceAmount,
+        bankAmount: paymentAmount,
+        sameCurrency: invoiceAmount?.currency === paymentAmount.currency,
+        exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, paymentAmount) : false,
+      },
+      refund: null,
+    };
+    records = insertPurchaseRecord(records, linked);
+    totals = adjustPurchaseTotals(totals, invoiceAmount);
+  }
+  return Object.freeze({
+    ...before,
+    knowledgeAt: recognition.knowledgeAt,
+    records: Object.freeze(records),
+    totalsByCurrency: totals,
+    totalStatus: records.some((record) => record.possibleDuplicate)
+      ? "includes-pending-confirmation"
+      : "complete",
+    candidates: Object.freeze(candidates),
+  });
+}
+
 /**
  * Candidate hints are deliberately kept ephemeral until a person acts on one.
  * This lets the report show both sides of a possible duplicate without
@@ -352,7 +485,9 @@ function purchaseReportWithEphemeralCandidates(
 
 function currentSpendingQuery(ledgerDir: string): CurrentSpendingQueryResult {
   fullProjectionDiagnostics.publish({ ledgerDir });
-  return createFinancialQuery(ledgerDir).current({ kind: "current", product: "spending" });
+  const query = createFinancialQuery(ledgerDir).current({ kind: "current", product: "spending" });
+  latestSpendingQuery = { ledgerDir, query };
+  return query;
 }
 
 function currentSpendingQueryFromStore(
@@ -361,6 +496,53 @@ function currentSpendingQueryFromStore(
 ): CurrentSpendingQueryResult {
   fullProjectionDiagnostics.publish({ ledgerDir });
   return queryCurrentSpendingFromDatabase(store.db);
+}
+
+function pairingCandidatesInput(input: unknown): SpendingPairingCandidatesInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new TypeError("Spending pairing candidates input must be an object.");
+  const value = input as Record<string, unknown>;
+  if (typeof value.invoiceIdentityId !== "string" || value.invoiceIdentityId.trim() === "")
+    throw new TypeError("Invoice identity id is required.");
+  if (!Number.isSafeInteger(value.dataVersion) || (value.dataVersion as number) < 0)
+    throw new TypeError("Spending pairing data version must be a non-negative integer.");
+  return {
+    invoiceIdentityId: value.invoiceIdentityId.trim(),
+    dataVersion: value.dataVersion as number,
+  };
+}
+
+/**
+ * Rank manual pairing candidates in the financial worker. The renderer sends
+ * only the invoice identity and the report version; transaction facts stay on
+ * the worker and are indexed once per immutable data version.
+ */
+export function rankSpendingPaymentCandidates(
+  input: SpendingPairingCandidatesInput,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): SpendingPairingCandidatesResult {
+  const action = pairingCandidatesInput(input);
+  const query = latestSpendingQuery?.ledgerDir === ledgerDir &&
+    latestSpendingQuery.query.purchaseReport.knowledgeAt === action.dataVersion
+    ? latestSpendingQuery.query
+    : currentSpendingQuery(ledgerDir);
+  const currentVersion = query.purchaseReport.knowledgeAt;
+  if (currentVersion !== action.dataVersion)
+    throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
+  const invoice = query.purchaseReport.records.find((record) =>
+    record.basis === "invoice" && record.invoice?.invoiceId === action.invoiceIdentityId,
+  )?.invoice;
+  if (!invoice || invoice.revision.state === "revoked")
+    throw new Error("Spending invoice selection is stale, revoked, or missing.");
+  const eligibleTransactions = query.purchaseReport.records
+    .filter((record) => record.basis === "bank-transaction" && record.transaction)
+    .map((record) => record.transaction!);
+  const { index } = pairingIndexCache.get(currentVersion, eligibleTransactions);
+  const ranked = rankSpendingManualPaymentCandidates(invoice, index);
+  return Object.freeze({
+    dataVersion: currentVersion,
+    transactionIds: Object.freeze(ranked.map((candidate) => candidate.transactionId)),
+  });
 }
 
 function recordStore(ledgerDir: string) {
@@ -391,9 +573,15 @@ function pageFromQuery(
 function actionResultAfterRecognitionMutation(
   query: CurrentSpendingQueryResult,
   store: CanonicalSourceStore,
+  mutation?: RecognitionMutation,
 ): SpendingPurchaseActionResult {
   const before = purchaseReportWithEphemeralCandidates(query);
   const recognition = querySpendingRecognition(store);
+  if (mutation) {
+    const after = targetedPurchaseReportAfterRecognitionMutation(before, recognition, mutation);
+    return { patch: createSpendingPurchaseReportPatch(before, after) };
+  }
+  fullReportComposeDiagnostics.publish({});
   const purchaseReport = composePurchaseReport({
     request: { kind: "current" },
     knowledgeAt: recognition.knowledgeAt,
@@ -495,7 +683,11 @@ function decideCandidate(
     };
     if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
     else denySpendingDedupCandidate(store, decision);
-    return actionResultAfterRecognitionMutation(query, store);
+    return actionResultAfterRecognitionMutation(query, store, {
+      kind,
+      invoiceId: candidate.invoiceId,
+      transactionId: candidate.transactionId,
+    });
   } finally {
     store.close();
   }
@@ -545,7 +737,11 @@ export function confirmSpendingCandidate(
         },
       },
     });
-    return actionResultAfterRecognitionMutation(query, store);
+    return actionResultAfterRecognitionMutation(query, store, {
+      kind: "confirmed",
+      invoiceId: action.invoiceIdentityId,
+      transactionId: action.transactionIdentityId,
+    });
   } finally {
     store.close();
   }

@@ -6,6 +6,8 @@ import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
+  SpendingPairingCandidatesInput,
+  SpendingPairingCandidatesResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
@@ -16,6 +18,7 @@ export type FinancialPageRequest =
   | { id: number; page: "assets" }
   | { id: number; page: "liabilities" }
   | { id: number; page: "spending"; input?: SpendingLoadInput }
+  | { id: number; page: "spending-pairing"; input: SpendingPairingCandidatesInput }
   | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
 export type FinancialPageResponse =
@@ -31,6 +34,7 @@ export type FinancialPageWorkerClient = {
   load(page: "assets"): Promise<AssetsPageDto>;
   load(page: "liabilities"): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
   revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -101,8 +105,21 @@ export function createFinancialPageWorkerClient(
     }) as Promise<SpendingPurchaseActionResult>;
   }
 
+  function rankPairingCandidates(
+    input: SpendingPairingCandidatesInput,
+  ): Promise<SpendingPairingCandidatesResult> {
+    if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
+    const id = nextId++;
+    const request: FinancialPageRequest = { id, page: "spending-pairing", input };
+    return new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage(request);
+    }) as Promise<SpendingPairingCandidatesResult>;
+  }
+
   return {
     load: load as FinancialPageWorkerClient["load"],
+    rankPairingCandidates,
     confirmCandidate: (input) => action("confirmCandidate", input),
     denyCandidate: (input) => action("denyCandidate", input),
     revokeLink: (input) => action("revokeLink", input),
