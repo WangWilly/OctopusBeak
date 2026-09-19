@@ -11,6 +11,9 @@ assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"),
 assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:disconnectCathayGmailOtp"), true);
+assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
+assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
+assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
 
 const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
 assert.deepEqual(
@@ -26,3 +29,7 @@ for (const [method, channel] of [
 ]) {
   assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
 }
+assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
+assert.match(source, /acknowledgeVersion: .*ipcRenderer\.invoke\("data:acknowledgeVersion"/);
+assert.match(source, /onInvalidated\(listener\)/);
+assert.match(source, /ipcRenderer\.on\("data:invalidated"/);

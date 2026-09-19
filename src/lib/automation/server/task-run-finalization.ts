@@ -38,6 +38,10 @@ import {
   type AutomationTaskStatus,
 } from "./store.ts";
 import { taskById, type AutomationTaskKind } from "./tasks.ts";
+import {
+  dataVersionStore,
+  type DataVersionStore,
+} from "../../shared-shell/data-version.ts";
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -57,6 +61,7 @@ export type AutomationTaskRunFinalizationContext = {
   taskRunId: string;
   logPath: string;
   ledgerDir: string;
+  dataVersionStore?: DataVersionStore;
 };
 
 export type AutomationTaskProcessResult = {
@@ -384,6 +389,9 @@ export async function finalizeAutomationTaskRun(
     scheduleAutomationTaskRunTimeout(context);
   }
   if (!transition.skipped) {
+    if (transition.status === "completed" || transition.status === "partial") {
+      (context.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
+    }
     const task = taskById(context.taskId);
     const prerequisites = new Map(
       (task?.externalPrerequisites ?? [])

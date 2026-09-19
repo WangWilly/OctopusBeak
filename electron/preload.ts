@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
@@ -54,6 +55,17 @@ const api: OctopusBeakApi = {
     viewerInput: (taskId, input) => ipcRenderer.invoke("automation:viewerInput", taskId, input),
     viewerCompletionCheck: (taskId) => ipcRenderer.invoke("automation:viewerCompletionCheck", taskId),
     forceQuit: (taskId) => ipcRenderer.invoke("automation:forceQuit", taskId),
+  },
+  data: {
+    getVersion: () => ipcRenderer.invoke("data:getVersion"),
+    acknowledgeVersion: (version) => ipcRenderer.invoke("data:acknowledgeVersion", version),
+    onInvalidated(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, event: DataInvalidationEvent) => {
+        listener(event);
+      };
+      ipcRenderer.on("data:invalidated", handler);
+      return () => ipcRenderer.removeListener("data:invalidated", handler);
+    },
   },
 };
 
