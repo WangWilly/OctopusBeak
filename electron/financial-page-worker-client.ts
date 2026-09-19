@@ -5,6 +5,7 @@ import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
 import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+import type { DashboardBlockPayload } from "../src/lib/shared-shell/dashboard-blocks.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -47,7 +48,7 @@ export type FinancialPageWorkerClient = {
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
     block: DashboardBlockKey,
     options?: DataReadOptions,
-  ): Promise<unknown>;
+  ): Promise<DashboardBlockPayload>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -108,14 +109,14 @@ export function createFinancialPageWorkerClient(
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
     block: DashboardBlockKey,
     options?: DataReadOptions,
-  ): Promise<unknown> {
+  ): Promise<DashboardBlockPayload> {
     if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
     const id = nextId++;
     const request: FinancialPageRequest = { id, page: "block", target: page, block, options };
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       worker.postMessage(request);
-    });
+    }) as Promise<DashboardBlockPayload>;
   }
 
   function action(

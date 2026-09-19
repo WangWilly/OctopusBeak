@@ -20,18 +20,31 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type {
+    DashboardBlockPayload,
+    DashboardBlockValueMap,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function assetsBlockData<Key extends keyof DashboardBlockValueMap["assets"]>(
+    key: Key,
+    payload: DashboardBlockPayload | undefined,
+  ): DashboardBlockValueMap["assets"][Key] | undefined {
+    return payload?.route === "assets" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["assets"][Key]
+      : undefined;
   }
 
   $: assetBreakdown = [
@@ -145,13 +158,15 @@
 >
   <div class="content">
     <ProjectionStateBanner projection={assets} />
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+      {@const summaryBlock = assetsBlockData("summary", data)}
       <section aria-label={$t.assets.metricsAria}>
-        <SummaryStrip {metrics} />
+        <SummaryStrip metrics={buildMetrics(summaryBlock?.accounts ?? assetAccounts, $t)} />
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
+      {@const chartBlock = assetsBlockData("chart", data)}
       <section class="card balance-history" aria-label={$t.assets.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.assets.assetBalance}</h2>
@@ -173,20 +188,31 @@
         <span class="chip">{$t.common.days30}</span>
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart chart={chartData} currency={chartCurrency} label={$t.overview.assetAllocation} />
+        <StackedBalanceChart
+          chart={chartBlock ? buildStackedBalanceChartData({
+            accounts: chartBlock.accounts,
+            dailyHistoryByAccount: chartBlock.dailyHistoryByAccount,
+            filter: accountFilter,
+            currency: chartCurrency,
+            mode: "asset",
+          }) : chartData}
+          currency={chartCurrency}
+          label={$t.overview.assetAllocation}
+        />
       </div>
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+      {@const listBlock = assetsBlockData("list", data)}
       <AccountTable
-        accounts={assetAccounts}
+        accounts={listBlock?.accounts ?? assetAccounts}
         mode="asset"
         bind:search
         bind:filter={accountFilter}
-        positionsByAccount={assets.positionsByAccount}
-        transactionsByAccount={assets.transactionsByAccount}
-        dailyHistoryByAccount={assets.dailyHistoryByAccount}
+        positionsByAccount={listBlock?.positionsByAccount ?? assets.positionsByAccount}
+        transactionsByAccount={listBlock?.transactionsByAccount ?? assets.transactionsByAccount}
+        dailyHistoryByAccount={listBlock?.dailyHistoryByAccount ?? assets.dailyHistoryByAccount}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>

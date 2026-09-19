@@ -2,6 +2,22 @@ import type { DataVersionSnapshot } from "./data-version.ts";
 
 export type RefreshLoader = (snapshot: DataVersionSnapshot) => Promise<unknown>;
 
+/**
+ * A route can complete its own DTO while one or more independently loaded
+ * blocks fail.  Throwing this error keeps the coordinator's existing loader
+ * seam small while preserving the precise block keys for the global partial
+ * status.
+ */
+export class RefreshLoadError extends Error {
+  readonly failedKeys: readonly string[];
+
+  constructor(message: string, failedKeys: readonly string[]) {
+    super(message);
+    this.name = "RefreshLoadError";
+    this.failedKeys = [...new Set(failedKeys)];
+  }
+}
+
 export type RefreshItemError = Readonly<{
   key: string;
   error: unknown;
@@ -63,14 +79,28 @@ export function createRefreshCoordinator(
     await Promise.all(background.map((key) => load(key)));
 
     const successful = keys.filter((key) => results[key]?.status === "fulfilled");
-    const failed = keys.filter((key) => results[key]?.status === "rejected");
+    const failed = [...new Set(keys.flatMap((key) => {
+      const result = results[key];
+      if (result?.status !== "rejected") return [];
+      const extraKeys = result.error instanceof RefreshLoadError
+        ? result.error.failedKeys
+        : [];
+      return [key, ...extraKeys];
+    }))];
     const values: Record<string, unknown> = {};
     const errors: RefreshItemError[] = [];
     for (const key of keys) {
       const result = results[key];
       if (!result) continue;
       if (result.status === "fulfilled") values[key] = result.value;
-      else errors.push({ key, error: result.error });
+      else {
+        errors.push({ key, error: result.error });
+        if (result.error instanceof RefreshLoadError) {
+          for (const failedKey of result.error.failedKeys) {
+            if (failedKey !== key) errors.push({ key: failedKey, error: result.error });
+          }
+        }
+      }
     }
 
     const acknowledged = failed.length === 0

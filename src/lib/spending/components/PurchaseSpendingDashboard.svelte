@@ -5,6 +5,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
@@ -17,11 +18,18 @@
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function spendingBlockData(
+    key: "summary" | "chart" | "list" | "details",
+    payload: DashboardBlockPayload | undefined,
+  ) {
+    return payload?.route === "spending" && payload.block === key ? payload.data : undefined;
   }
 
   let report = purchaseReport;
@@ -464,7 +472,8 @@
     {/if}
 
     <div class="purchase-analysis-grid">
-      <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+      <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+      {@const summaryBlock = spendingBlockData("summary", data)}
       <section class="card purchase-summary-card">
         <div class="section-heading">
           <div>
@@ -483,7 +492,9 @@
           {/if}
         </div>
         <div class="summary-amount">
-          <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
+          <strong class="money" data-sensitive>{summaryBlock
+            ? amountText(summaryBlock.purchaseReport.totalsByCurrency[0] ?? selectedMonthTotal)
+            : amountText(selectedMonthTotal)}</strong>
         </div>
         <dl class="summary-facts">
           <div><dt>{$locale === "zh-TW" ? "消費筆數" : "Purchases"}</dt><dd>{monthRecords.length}</dd></div>
@@ -497,7 +508,7 @@
             {/each}
           </div>
         {/if}
-        {#if report.totalStatus === "includes-pending-confirmation"}
+        {#if (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
           <p class="pending-total-note" data-pending-total>{$locale === "zh-TW" ? "待確認的發票與付款目前分開計入。完成配對後，總額會自動去重。" : "Pending invoices and payments currently count separately. The total is deduplicated after confirmation."}</p>
         {/if}
       </section>

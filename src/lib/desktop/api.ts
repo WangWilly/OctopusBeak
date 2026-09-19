@@ -32,6 +32,7 @@ import type {
   DataVersionSnapshot,
 } from "$lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "$lib/shared-shell/block-load-state.ts";
+import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -100,19 +101,19 @@ export type OctopusBeakApi = {
   };
   overview: {
     load(options?: DataReadOptions): Promise<OverviewPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
   };
   assets: {
     load(options?: DataReadOptions): Promise<AssetsPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
   };
   liabilities: {
     load(options?: DataReadOptions): Promise<LiabilitiesPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
   };
   spending: {
     load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -122,7 +123,7 @@ export type OctopusBeakApi = {
   };
   automation: {
     load(options?: DataReadOptions): Promise<AutomationDesktopModel>;
-    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
     cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
     enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;

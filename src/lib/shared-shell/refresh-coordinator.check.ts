@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRefreshCoordinator } from "./refresh-coordinator.ts";
+import { createRefreshCoordinator, RefreshLoadError } from "./refresh-coordinator.ts";
 
 test("refreshes the current page first, fans out the rest, and shares one snapshot", async () => {
   const events: string[] = [];
@@ -90,4 +90,46 @@ test("a successful refresh acknowledges its snapshot and can run again afterward
   assert.equal(calls, 2);
   assert.equal(snapshotReads, 2);
   assert.equal(acknowledgements, 2);
+});
+
+test("a route loader can keep refresh pending until all independent blocks settle", async () => {
+  let releaseBlock!: () => void;
+  const blockSettled = new Promise<void>((resolve) => { releaseBlock = resolve; });
+  let settled = false;
+  const coordinator = createRefreshCoordinator({
+    readSnapshot: async () => ({ version: 3, stale: true, changedAt: null }),
+    acknowledgeSnapshot: async () => true,
+    loaders: {
+      overview: async () => {
+        await blockSettled;
+        settled = true;
+        return "route-and-blocks";
+      },
+    },
+  });
+
+  const pending = coordinator.refresh("overview");
+  await Promise.resolve();
+  assert.equal(settled, false, "the refresh promise must include the slow block");
+  releaseBlock();
+  assert.equal((await pending).status, "complete");
+  assert.equal(settled, true);
+});
+
+test("a failed block is surfaced as a partial refresh without hiding sibling data", async () => {
+  const coordinator = createRefreshCoordinator({
+    readSnapshot: async () => ({ version: 4, stale: true, changedAt: null }),
+    acknowledgeSnapshot: async () => true,
+    loaders: {
+      overview: async () => {
+        throw new RefreshLoadError("chart failed", ["overview:chart"]);
+      },
+      assets: async () => "assets-ready",
+    },
+  });
+
+  const result = await coordinator.refresh("overview");
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.failed, ["overview", "overview:chart"]);
+  assert.deepEqual(result.values.assets, "assets-ready");
 });

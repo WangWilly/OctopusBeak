@@ -26,3 +26,10 @@ test("route blocks start before the full route DTO and remain retryable", () => 
   assert.match(source, /loadRouteBlock\(nextRoute, key, options\)/);
   assert.doesNotMatch(source, /hydrateRouteBlocks|blockPayload/);
 });
+
+test("a settled block can render before the full route DTO and refresh waits for it", () => {
+  assert.match(source, /overviewRenderValue = overviewValue \?\? progressiveOverview\(\)/);
+  assert.match(source, /<OverviewDashboard\s+overview=\{overviewRenderValue\}/);
+  assert.match(source, /if \(options\.awaitBlocks && blockLoads\)/);
+  assert.match(source, /const failedBlocks = Object\.entries\(states\)/);
+});

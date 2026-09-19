@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadIndependentBlocks } from "./block-load-state.ts";
+import { loadIndependentBlocks, renderBlockContent } from "./block-load-state.ts";
+
+test("a ready block passes its payload into the renderer", () => {
+  const rendered = renderBlockContent(
+    { status: "ready", data: { title: "summary payload" } },
+    (data) => data.title,
+  );
+  assert.equal(rendered, "summary payload");
+  assert.equal(renderBlockContent({ status: "loading" }, () => "should not render"), undefined);
+});
 
 test("a slow or failed block does not suppress a sibling block", async () => {
   let releaseChart!: (value: string) => void;

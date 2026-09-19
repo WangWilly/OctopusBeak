@@ -62,6 +62,40 @@ test("a failed forced refresh keeps the last successful view available for retry
   assert.deepEqual(cache.read("overview"), { version: 1 });
 });
 
+test("a pending route load is keyed by its immutable refresh snapshot", async () => {
+  const cache = createRouteLoadCache<{ overview: { version: number } }>();
+  let releaseFirst!: (value: { version: number }) => void;
+  const first = new Promise<{ version: number }>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let calls = 0;
+
+  const current = cache.load(
+    "overview",
+    () => {
+      calls += 1;
+      return first;
+    },
+    { snapshot: { version: 7, stale: true, changedAt: null } },
+  );
+  const next = cache.load(
+    "overview",
+    async () => {
+      calls += 1;
+      return { version: 8 };
+    },
+    { snapshot: { version: 8, stale: true, changedAt: null } },
+  );
+
+  assert.notStrictEqual(next, current, "a new generation must not reuse old pending work");
+  assert.equal(calls, 2);
+  assert.deepEqual(await next, { version: 8 });
+
+  releaseFirst({ version: 7 });
+  assert.deepEqual(await current, { version: 7 });
+  assert.deepEqual(cache.read("overview"), { version: 8 }, "old completion cannot overwrite the newer generation");
+});
+
 test("independent first-run loads preserve a sibling when one route fails", async () => {
   const settled = await settleIndependentLoads({
     automation: async () => ({ tasks: ["ready"] }),

@@ -1,17 +1,19 @@
 <script lang="ts">
   import { t } from "$lib/i18n/i18n.ts";
-  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import { renderBlockContent, type BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
 
-  export let state: BlockState<unknown> = { status: "ready", data: null };
+  export let state: BlockState<DashboardBlockPayload> = { status: "loading" };
   export let label = "data block";
   export let retry: () => void = () => {};
 
   $: hasData = "data" in state && state.data !== undefined;
+  $: blockData = renderBlockContent(state, (data) => data);
 </script>
 
 {#if hasData}
   <div class="block-frame" data-progressive-block={label} data-block-state={state.status} aria-busy={state.status === "loading"}>
-    <slot />
+    <slot data={blockData} />
     {#if state.status === "loading"}
       <span class="block-spinner" role="status" aria-label={$t.common.refreshing}></span>
     {:else if state.status === "error"}
