@@ -38,7 +38,7 @@
     "check:canonical-schema-seam": "node scripts/check-canonical-schema-seam.mjs",
     "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:pairing-performance": "node --no-warnings --experimental-strip-types scripts/check-pairing-performance.ts",
-    "check:pairing-ui": "node --no-warnings --experimental-strip-types scripts/spending-ui-pairing.check.mjs",
+    "check:pairing-ui-performance": "node --no-warnings --experimental-strip-types scripts/check-pairing-ui-performance.mjs",
     "check:welcome-assets": "node --test scripts/welcome-assets.check.mjs",
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
