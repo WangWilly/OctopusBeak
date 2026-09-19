@@ -1,0 +1,142 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { AccountRowDto, SummaryMetricDto } from "$lib/shared-ledger/types.ts";
+import type { AssetsPageDto } from "$lib/assets/types.ts";
+import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
+import type { OverviewPageDto } from "$lib/overview/types.ts";
+import type { SpendingPageDto } from "$lib/spending/model.ts";
+import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
+import {
+  isEmptySpendingPage,
+  resolveAssetsList,
+  resolveLiabilitiesDetails,
+  resolveOverviewSummary,
+} from "./progressive-dashboard-data.ts";
+
+const account = (id: string): AccountRowDto => ({
+  id,
+  label: id,
+  institution: id,
+  product: id,
+  group: "asset",
+  kind: "bank",
+  typeLabel: id,
+  amountLines: [],
+  transactionCount: 0,
+  assetPositionCount: 0,
+  lastUpdated: null,
+  valueAvailability: "available",
+});
+
+const overview = (summary: SummaryMetricDto[]): OverviewPageDto => ({
+  availability: "available",
+  coverage: "complete",
+  historyAvailability: "unavailable",
+  sourceGaps: [],
+  importedAt: null,
+  summary,
+  dailyHistory: [],
+  accounts: [],
+  sankey: null,
+  sankeyExchangeRates: [],
+  sankeyLatestExchangeRateDate: null,
+  exchangeRates: [],
+  latestExchangeRateDate: null,
+});
+
+const emptySpending = (): SpendingPageDto => ({
+  canonical: {
+    availability: "empty",
+    policy: { id: "gross-posted-outflow", version: "v1", name: "Gross posted outflow" },
+    knowledgePoint: 1,
+    selectedMonth: null,
+    selectedCategory: null,
+    transactions: [],
+    includedTransactions: [],
+    totalsByCurrency: [],
+    categoryTotalsByCurrency: [],
+    unclassifiedByCurrency: [],
+    classificationCoverage: {
+      includedCount: 0,
+      classifiedCount: 0,
+      unclassifiedCount: 0,
+      includedAmountByCurrency: [],
+      classifiedAmountByCurrency: [],
+      unclassifiedAmountByCurrency: [],
+    },
+    reportEligibility: { status: "complete", gapCount: 0, gapAmountByCurrency: [] },
+    totalStatus: "complete",
+  },
+  purchaseReport: {
+    status: "ok",
+    kind: "current",
+    knowledgeAt: 1,
+    financialAt: null,
+    records: [],
+    totalsByCurrency: [],
+    totalStatus: "complete",
+    candidates: [],
+  },
+  invoices: [],
+});
+
+test("progressive dashboard adapters prefer a settled block and fall back to the route DTO", () => {
+  const fallbackOverview = overview([{ label: "fallback", amounts: [], breakdown: [] }]);
+  const blockSummary: DashboardBlockValueMap["overview"]["summary"] = {
+    availability: "available",
+    coverage: "complete",
+    sourceGaps: [],
+    importedAt: null,
+    summary: [{ label: "block", amounts: [], breakdown: [] }],
+  };
+  assert.equal(resolveOverviewSummary(fallbackOverview, blockSummary)[0]?.label, "block");
+  assert.equal(resolveOverviewSummary(fallbackOverview)[0]?.label, "fallback");
+
+  const fallbackAssets = {
+    availability: "available",
+    coverage: "complete",
+    sourceGaps: [],
+    importedAt: null,
+    accounts: [account("fallback")],
+    positionsByAccount: {},
+    transactionsByAccount: {},
+    dailyHistoryByAccount: {},
+    dailyHistory: [],
+  } as AssetsPageDto;
+  const blockAssets: DashboardBlockValueMap["assets"]["list"] = {
+    accounts: [account("block")],
+    positionsByAccount: {},
+    transactionsByAccount: {},
+    dailyHistoryByAccount: {},
+  };
+  assert.equal(resolveAssetsList(fallbackAssets, blockAssets).accounts[0]?.id, "block");
+  assert.equal(resolveAssetsList(fallbackAssets).accounts[0]?.id, "fallback");
+
+  const fallbackLiabilities = {
+    availability: "available",
+    coverage: "complete",
+    sourceGaps: [],
+    importedAt: null,
+    marginAccounts: [account("fallback")],
+    transactionsByAccount: {},
+    accounts: [],
+    dailyHistoryByAccount: {},
+    dailyHistory: [],
+  } as LiabilitiesPageDto;
+  const blockLiabilities: DashboardBlockValueMap["liabilities"]["details"] = {
+    marginAccounts: [account("block")],
+    transactionsByAccount: {},
+  };
+  assert.equal(resolveLiabilitiesDetails(fallbackLiabilities, blockLiabilities).marginAccounts[0]?.id, "block");
+  assert.equal(resolveLiabilitiesDetails(fallbackLiabilities).marginAccounts[0]?.id, "fallback");
+});
+
+test("an empty spending block keeps empty availability instead of fabricating zero totals", () => {
+  const page = emptySpending();
+  const block: DashboardBlockValueMap["spending"]["summary"] = {
+    canonical: page.canonical,
+    purchaseReport: page.purchaseReport,
+  };
+  assert.equal(block.canonical.availability, "empty");
+  assert.equal(isEmptySpendingPage({ ...page, canonical: block.canonical, purchaseReport: block.purchaseReport }), true);
+});

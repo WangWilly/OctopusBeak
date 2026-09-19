@@ -23,6 +23,12 @@
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
+  import {
+    resolveOverviewChart,
+    resolveOverviewDetails,
+    resolveOverviewList,
+    resolveOverviewSummary,
+  } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -174,13 +180,14 @@
     >
       {@const summaryBlock = overviewBlockData("summary", data)}
       <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
-        <SummaryStrip metrics={metricsFor(summaryBlock?.summary ?? overview.summary)} />
+        <SummaryStrip metrics={metricsFor(resolveOverviewSummary(overview, summaryBlock))} />
       </section>
     </ProgressiveBlock>
 
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
       {@const chartBlock = overviewBlockData("chart", data)}
-      {@const chartHistory = chartBlock?.dailyHistory ?? overview.dailyHistory}
+      {@const chartData = resolveOverviewChart(overview, chartBlock)}
+      {@const chartHistory = chartData.dailyHistory}
       <section class="grid layout-2">
       <article class="card">
         <div class="panel-title">
@@ -200,7 +207,7 @@
           </label>
           <span class="chip">{$t.common.days30}</span>
         </div>
-        {#if overview.historyAvailability === "unavailable"}
+        {#if chartData.historyAvailability === "unavailable"}
           <div class="card pad projection-state history-state" role="status" data-overview-state="history-unavailable">
             {$t.overview.historyUnavailable}
           </div>
@@ -215,15 +222,16 @@
       </article>
 
       <div class="overview-allocation-stack">
-        <AllocationDonutCard title={$t.overview.assetAllocation} accounts={chartBlock?.accounts ?? overview.accounts} mode="asset" />
-        <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={chartBlock?.accounts ?? overview.accounts} mode="liability" />
+        <AllocationDonutCard title={$t.overview.assetAllocation} accounts={chartData.accounts} mode="asset" />
+        <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={chartData.accounts} mode="liability" />
       </div>
       </section>
     </ProgressiveBlock>
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
       {@const listBlock = overviewBlockData("list", data)}
-      {@const latestRateDate = listBlock?.latestExchangeRateDate ?? overview.latestExchangeRateDate}
+      {@const listData = resolveOverviewList(overview, listBlock)}
+      {@const latestRateDate = listData.latestExchangeRateDate}
       <section class="card daily-card">
       <div class="panel-title">
         <h2>{$t.overview.dailyAssetChanges}</h2>
@@ -252,11 +260,11 @@
           </span>
         {/if}
       </div>
-      {#if overview.historyAvailability === "unavailable"}
+      {#if listData.historyAvailability === "unavailable"}
         <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
       {:else}
         {#key dailyCurrency}
-          <DailyHistoryTable rows={listBlock?.dailyHistory ?? convertedDailyHistory} currency={dailyCurrency} paginate />
+          <DailyHistoryTable rows={listData.dailyHistory ?? convertedDailyHistory} currency={dailyCurrency} paginate />
         {/key}
       {/if}
       </section>
@@ -264,7 +272,8 @@
 
     <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
       {@const detailsBlock = overviewBlockData("details", data)}
-      {@const sankey = detailsBlock?.sankey ?? overview.sankey}
+      {@const detailsData = resolveOverviewDetails(overview, detailsBlock)}
+      {@const sankey = detailsData.sankey}
       {#if sankey}
         <section class="card sankey-card">
         <div class="panel-title">
@@ -284,9 +293,9 @@
               </select>
             </label>
           {/if}
-          {#if overview.sankeyLatestExchangeRateDate}
+          {#if detailsData.sankeyLatestExchangeRateDate}
             <span class="chip">
-              {$t.overview.exchangeRatesThrough(overview.sankeyLatestExchangeRateDate)}
+              {$t.overview.exchangeRatesThrough(detailsData.sankeyLatestExchangeRateDate)}
             </span>
           {/if}
         </div>
@@ -294,7 +303,7 @@
           <OverviewSankeyCard
             graph={sankey}
             currency={sankeyCurrency}
-            exchangeRates={detailsBlock?.sankeyExchangeRates ?? overview.sankeyExchangeRates}
+            exchangeRates={detailsData.sankeyExchangeRates}
           />
         </div>
         </section>

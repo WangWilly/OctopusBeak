@@ -24,6 +24,11 @@
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
+  import {
+    resolveAssetsChart,
+    resolveAssetsList,
+    resolveAssetsSummary,
+  } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
@@ -161,12 +166,13 @@
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
       {@const summaryBlock = assetsBlockData("summary", data)}
       <section aria-label={$t.assets.metricsAria}>
-        <SummaryStrip metrics={buildMetrics(summaryBlock?.accounts ?? assetAccounts, $t)} />
+        <SummaryStrip metrics={buildMetrics(resolveAssetsSummary(assets, summaryBlock).accounts, $t)} />
       </section>
     </ProgressiveBlock>
 
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
       {@const chartBlock = assetsBlockData("chart", data)}
+      {@const chartDataBlock = resolveAssetsChart(assets, chartBlock)}
       <section class="card balance-history" aria-label={$t.assets.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.assets.assetBalance}</h2>
@@ -190,8 +196,8 @@
       <div class="pad balance-chart">
         <StackedBalanceChart
           chart={chartBlock ? buildStackedBalanceChartData({
-            accounts: chartBlock.accounts,
-            dailyHistoryByAccount: chartBlock.dailyHistoryByAccount,
+            accounts: chartDataBlock.accounts,
+            dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
             filter: accountFilter,
             currency: chartCurrency,
             mode: "asset",
@@ -205,14 +211,15 @@
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
       {@const listBlock = assetsBlockData("list", data)}
+      {@const listDataBlock = resolveAssetsList(assets, listBlock)}
       <AccountTable
-        accounts={listBlock?.accounts ?? assetAccounts}
+        accounts={listDataBlock.accounts}
         mode="asset"
         bind:search
         bind:filter={accountFilter}
-        positionsByAccount={listBlock?.positionsByAccount ?? assets.positionsByAccount}
-        transactionsByAccount={listBlock?.transactionsByAccount ?? assets.transactionsByAccount}
-        dailyHistoryByAccount={listBlock?.dailyHistoryByAccount ?? assets.dailyHistoryByAccount}
+        positionsByAccount={listDataBlock.positionsByAccount}
+        transactionsByAccount={listDataBlock.transactionsByAccount}
+        dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>
