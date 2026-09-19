@@ -35,6 +35,8 @@ type PendingRoute = {
   kind: "pending";
   promise: Promise<unknown>;
   previous: unknown;
+  /** A pending read is reusable only for the generation it captured. */
+  snapshotVersion: number | null;
 };
 
 type RouteEntry = PendingRoute | {
@@ -52,7 +54,11 @@ export function createRouteLoadCache<Routes extends object>() {
       options: RouteLoadOptions = {},
     ) {
       const existing = entries.get(route);
-      if (existing?.kind === "pending") {
+      const snapshotVersion = options.snapshot?.version ?? null;
+      if (
+        existing?.kind === "pending"
+        && existing.snapshotVersion === snapshotVersion
+      ) {
         return existing.promise as Promise<Routes[Route]>;
       }
       if (!options.force && existing?.kind === "ready") {
@@ -60,7 +66,11 @@ export function createRouteLoadCache<Routes extends object>() {
       }
 
       let entry: RouteEntry;
-      const previous = existing?.kind === "ready" ? existing.value : undefined;
+      const previous = existing?.kind === "ready"
+        ? existing.value
+        : existing?.kind === "pending"
+          ? existing.previous
+          : undefined;
       const promise = loader().then((value) => {
         if (entries.get(route) === entry) entries.set(route, { kind: "ready", value });
         return value;
@@ -71,7 +81,7 @@ export function createRouteLoadCache<Routes extends object>() {
         }
         throw error;
       });
-      entry = { kind: "pending", promise, previous };
+      entry = { kind: "pending", promise, previous, snapshotVersion };
       entries.set(route, entry);
       return promise;
     },

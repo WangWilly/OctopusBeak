@@ -33,6 +33,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
@@ -44,7 +45,7 @@
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
@@ -53,8 +54,15 @@
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function automationBlockData(
+    key: "summary" | "list" | "details",
+    payload: DashboardBlockPayload | undefined,
+  ) {
+    return payload?.route === "automation" && payload.block === key ? payload.data : undefined;
   }
 
   let credentialsOpen = false;
@@ -1216,15 +1224,16 @@
   </svelte:fragment>
 
   <div class:sync-sheet-open={syncOpen} class="content automation-content">
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
-    <section class:active={automation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+    {@const summaryAutomation = automationBlockData("summary", data)?.automation ?? automation}
+    <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
-        {#if automation.active}
+        {#if summaryAutomation.active}
           <span class="running-kicker"><CloudDownload size={16} strokeWidth={2.2} aria-hidden="true" />{$t.automation.syncInProgress}</span>
         {/if}
         <h2>
-          {automation.active
-            ? $t.automation.runningTaskHeading(automation.activeTaskCount)
+          {summaryAutomation.active
+            ? $t.automation.runningTaskHeading(summaryAutomation.activeTaskCount)
             : $t.automation.startSyncHeading}
         </h2>
         {#if iconTasks.length}

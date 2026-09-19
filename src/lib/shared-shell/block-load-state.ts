@@ -24,6 +24,20 @@ export function beginIndependentBlocks<T>(
 }
 
 /**
+ * Presentation seam used by ProgressiveBlock: data-bearing states are handed
+ * to the block renderer immediately, while skeleton/error states render no
+ * content payload.  Keeping this pure makes the data handoff testable without
+ * mounting the entire desktop shell.
+ */
+export function renderBlockContent<T, Result>(
+  state: BlockState<T>,
+  render: (data: T) => Result,
+): Result | undefined {
+  if (!("data" in state) || state.data === undefined) return undefined;
+  return render(state.data);
+}
+
+/**
  * Resolve a set of presentation loaders independently.  This is intentionally
  * a block-level seam rather than a route-level Promise.all: a failed chart or
  * detail panel remains retryable while already-resolved siblings render.

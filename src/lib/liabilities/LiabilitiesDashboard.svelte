@@ -20,10 +20,14 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type {
+    DashboardBlockPayload,
+    DashboardBlockValueMap,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
 
   export let liabilities: LiabilitiesPageDto;
   export let focusAccountId: string | null = null;
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
   let search = "";
@@ -31,8 +35,17 @@
   let accountFilter: BalanceChartFilter = "all";
   let marginFilter: AccountKind | "all" = "all";
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function liabilitiesBlockData<Key extends keyof DashboardBlockValueMap["liabilities"]>(
+    key: Key,
+    payload: DashboardBlockPayload | undefined,
+  ): DashboardBlockValueMap["liabilities"][Key] | undefined {
+    return payload?.route === "liabilities" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["liabilities"][Key]
+      : undefined;
   }
 
   $: liabilityAccounts = liabilities.accounts;
@@ -149,9 +162,10 @@
 >
   <div class="content">
     <ProjectionStateBanner projection={liabilities} />
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+      {@const summaryBlock = liabilitiesBlockData("summary", data)}
       <section aria-label={$t.liabilities.metricsAria}>
-        <SummaryStrip {metrics} />
+        <SummaryStrip metrics={buildMetrics(summaryBlock?.accounts ?? liabilityAccounts, $t)} />
         {#if usesEstimatedCredit}
           <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
             {$t.overview.creditCardEstimateBasis}
@@ -160,7 +174,8 @@
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
+      {@const chartBlock = liabilitiesBlockData("chart", data)}
       <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.liabilities.debtBalance}</h2>
@@ -182,35 +197,47 @@
         <span class="chip">{$t.common.days30}</span>
       </div>
       <div class="pad balance-chart">
-        <StackedBalanceChart chart={chartData} currency={chartCurrency} label={$t.liabilities.debtExposure} />
+        <StackedBalanceChart
+          chart={chartBlock ? buildStackedBalanceChartData({
+            accounts: chartBlock.accounts,
+            dailyHistoryByAccount: chartBlock.dailyHistoryByAccount,
+            filter: accountFilter,
+            currency: chartCurrency,
+            mode: "liability",
+          }) : chartData}
+          currency={chartCurrency}
+          label={$t.liabilities.debtExposure}
+        />
       </div>
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+      {@const listBlock = liabilitiesBlockData("list", data)}
       <AccountTable
-        accounts={liabilityAccounts}
+        accounts={listBlock?.accounts ?? liabilityAccounts}
         mode="liability"
         bind:search
         bind:filter={accountFilter}
-        transactionsByAccount={liabilities.transactionsByAccount}
-        dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+        transactionsByAccount={listBlock?.transactionsByAccount ?? liabilities.transactionsByAccount}
+        dailyHistoryByAccount={listBlock?.dailyHistoryByAccount ?? liabilities.dailyHistoryByAccount}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
-      {#if liabilities.marginAccounts.length > 0}
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+      {@const detailsBlock = liabilitiesBlockData("details", data)}
+      {#if (detailsBlock?.marginAccounts ?? liabilities.marginAccounts).length > 0}
         <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
         <div class="panel-title">
           <h2>{$t.liabilities.marginExposure}</h2>
         </div>
         <AccountTable
-          accounts={liabilities.marginAccounts}
+          accounts={detailsBlock?.marginAccounts ?? liabilities.marginAccounts}
           mode="liability"
           bind:search
           bind:filter={marginFilter}
-          transactionsByAccount={liabilities.transactionsByAccount}
+          transactionsByAccount={detailsBlock?.transactionsByAccount ?? liabilities.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
         />
         </section>

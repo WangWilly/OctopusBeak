@@ -4,7 +4,6 @@ import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { loadAutomationDesktopModel } from "../src/lib/automation/server/desktop-api.ts";
-import { createFinancialQuery } from "../src/lib/shared-ledger/server/financial-query.ts";
 import {
   createFinancialPageBlockLoader,
   type FinancialBlockTarget,
@@ -26,29 +25,16 @@ const port = parentPort;
 
 const blockLoader = createFinancialPageBlockLoader(async (target: FinancialBlockTarget) => {
   if (target === "automation") return loadAutomationDesktopModel();
-  const query = createFinancialQuery();
-  if (target === "spending") {
-    return query.current({ kind: "current", product: "spending" });
-  }
   if (target === "overview") {
-    return (await query.current({
-      kind: "current",
-      product: "overview",
-      expectedSources: configuredOverviewSources(),
-    })).projection;
+    return loadOverview(undefined, { expectedSources: configuredOverviewSources() });
   }
   if (target === "assets") {
-    return (await query.current({
-      kind: "current",
-      product: "assets",
-      expectedSources: configuredOverviewSources(),
-    })).projection;
+    return loadAssets(undefined, { expectedSources: configuredOverviewSources() });
   }
-  return (await query.current({
-    kind: "current",
-    product: "liabilities",
-    expectedSources: configuredOverviewSources(),
-  })).projection;
+  if (target === "liabilities") {
+    return loadLiabilities(undefined, { expectedSources: configuredOverviewSources() });
+  }
+  return loadSpending();
 });
 
 port.postMessage({ id: 0, ok: true, value: { ready: true } });

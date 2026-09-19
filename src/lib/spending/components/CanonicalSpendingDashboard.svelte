@@ -4,6 +4,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
   import {
     aggregateCanonicalByMonth,
     canonicalSpendingCategoryMatches,
@@ -18,11 +19,18 @@
 
   export let spending: CanonicalSpendingView;
   export let invoices: readonly SpendingInvoiceDto[] = [];
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function spendingBlockData(
+    key: "summary" | "chart" | "list" | "details",
+    payload: DashboardBlockPayload | undefined,
+  ) {
+    return payload?.route === "spending" && payload.block === key ? payload.data : undefined;
   }
 
   let selectedMonth: string | undefined;
@@ -196,7 +204,8 @@
       </section>
     {/if}
 
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+    {@const summaryBlock = spendingBlockData("summary", data)}
     <section class="card canonical-summary-card">
       <div class="panel-title">
         <div>
@@ -206,7 +215,7 @@
         <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {period.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
       </div>
       <div class="canonical-amount-list">
-        {#each period.totalsByCurrency as amount (amount.currency)}
+        {#each (summaryBlock?.canonical ?? spending).totalsByCurrency as amount (amount.currency)}
           <div class="canonical-amount-row">
             <span>{amount.currency}</span>
             <strong class="money" data-sensitive>{amountText(amount)}</strong>

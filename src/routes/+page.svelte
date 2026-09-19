@@ -42,6 +42,7 @@
   import RouteLoadNotice from "$lib/shared-shell/components/RouteLoadNotice.svelte";
   import {
     createRefreshCoordinator,
+    RefreshLoadError,
     type RefreshResult,
   } from "$lib/shared-shell/refresh-coordinator.ts";
   import {
@@ -51,6 +52,12 @@
     type BlockState,
     type BlockStateMap,
   } from "$lib/shared-shell/block-load-state.ts";
+  import {
+    type DashboardBlockPayload,
+    type DashboardBlockRoute,
+    type DashboardBlockValue,
+    type DashboardBlockKeyForRoute,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
   import {
     type DataReadOptions,
     type DataVersionSnapshot,
@@ -106,7 +113,7 @@
     spending: ["summary", "chart", "list", "details"],
     automation: ["summary", "list", "details"],
   };
-  let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<unknown>>> = {};
+  let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<DashboardBlockPayload>>> = {};
   let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
 
   setContext(REFRESH_CONTEXT_KEY, {
@@ -209,16 +216,121 @@
 
   function setRouteBlocks(
     nextRoute: DashboardRoute,
-    states: BlockStateMap<unknown>,
+    states: BlockStateMap<DashboardBlockPayload>,
   ) {
     routeBlocks = { ...routeBlocks, [nextRoute]: states };
   }
+
+  function blockData<
+    Route extends DashboardBlockRoute,
+    Key extends DashboardBlockKeyForRoute<Route>,
+  >(
+    nextRoute: Route,
+    key: Key,
+  ): DashboardBlockValue<Route, Key> | undefined {
+    const state = routeBlocks[nextRoute]?.[key as string] as BlockState<DashboardBlockPayload> | undefined;
+    if (!state || !("data" in state) || state.data === undefined) return undefined;
+    const payload = state.data as unknown as Extract<DashboardBlockPayload, { route: Route; block: Key }>;
+    return payload.data as unknown as DashboardBlockValue<Route, Key>;
+  }
+
+  function progressiveOverview(): OverviewPageDto | undefined {
+    const summary = blockData("overview", "summary");
+    const chart = blockData("overview", "chart");
+    const list = blockData("overview", "list");
+    const details = blockData("overview", "details");
+    if (!summary && !chart && !list && !details) return undefined;
+    return {
+      availability: summary?.availability ?? "awaiting",
+      coverage: summary?.coverage ?? "partial",
+      sourceGaps: summary?.sourceGaps ?? [],
+      importedAt: summary?.importedAt ?? null,
+      summary: summary?.summary ?? [],
+      dailyHistory: list?.dailyHistory ?? chart?.dailyHistory ?? [],
+      accounts: chart?.accounts ?? [],
+      sankey: details?.sankey ?? null,
+      sankeyExchangeRates: details?.sankeyExchangeRates ?? [],
+      sankeyLatestExchangeRateDate: details?.sankeyLatestExchangeRateDate ?? null,
+      exchangeRates: list?.exchangeRates ?? chart?.exchangeRates ?? [],
+      latestExchangeRateDate: list?.latestExchangeRateDate ?? null,
+      historyAvailability: list?.historyAvailability ?? chart?.historyAvailability ?? "unavailable",
+    };
+  }
+
+  function progressiveAssets(): AssetsPageDto | undefined {
+    const summary = blockData("assets", "summary");
+    const chart = blockData("assets", "chart");
+    const list = blockData("assets", "list");
+    if (!summary && !chart && !list) return undefined;
+    return {
+      availability: "available",
+      coverage: "partial",
+      sourceGaps: [],
+      importedAt: null,
+      accounts: list?.accounts ?? chart?.accounts ?? summary?.accounts ?? [],
+      positionsByAccount: list?.positionsByAccount ?? {},
+      transactionsByAccount: list?.transactionsByAccount ?? {},
+      dailyHistoryByAccount: list?.dailyHistoryByAccount ?? chart?.dailyHistoryByAccount ?? {},
+      dailyHistory: chart?.dailyHistory ?? [],
+    };
+  }
+
+  function progressiveLiabilities(): LiabilitiesPageDto | undefined {
+    const summary = blockData("liabilities", "summary");
+    const chart = blockData("liabilities", "chart");
+    const list = blockData("liabilities", "list");
+    const details = blockData("liabilities", "details");
+    if (!summary && !chart && !list && !details) return undefined;
+    return {
+      availability: "available",
+      coverage: "partial",
+      sourceGaps: [],
+      importedAt: null,
+      accounts: list?.accounts ?? chart?.accounts ?? summary?.accounts ?? [],
+      marginAccounts: details?.marginAccounts ?? [],
+      transactionsByAccount: list?.transactionsByAccount ?? details?.transactionsByAccount ?? {},
+      dailyHistoryByAccount: list?.dailyHistoryByAccount ?? chart?.dailyHistoryByAccount ?? {},
+      dailyHistory: chart?.dailyHistory ?? [],
+    };
+  }
+
+  function progressiveSpending(): SpendingPageDto | undefined {
+    const summary = blockData("spending", "summary");
+    const chart = blockData("spending", "chart");
+    const list = blockData("spending", "list");
+    const details = blockData("spending", "details");
+    const source = summary ?? chart ?? list ?? details;
+    if (!source) return undefined;
+    return {
+      canonical: source.canonical,
+      purchaseReport: source.purchaseReport,
+      invoices: list?.invoices ?? details?.invoices ?? [],
+    };
+  }
+
+  function progressiveAutomation(): AutomationDesktopModel | undefined {
+    const summary = blockData("automation", "summary");
+    const list = blockData("automation", "list");
+    const details = blockData("automation", "details");
+    const source = summary ?? list ?? details;
+    if (!source) return undefined;
+    return {
+      automation: source.automation,
+      credentialGroups: list?.credentialGroups ?? details?.credentialGroups ?? [],
+    };
+  }
+
+  $: overviewRenderValue = overviewValue ?? progressiveOverview();
+  $: assetsRenderValue = assetsValue ?? progressiveAssets();
+  $: liabilitiesRenderValue = liabilitiesValue ?? progressiveLiabilities();
+  $: spendingRenderValue = spendingValue ?? progressiveSpending();
+  $: automationRenderValue = automationValue ?? progressiveAutomation();
 
   function loadRouteBlock(
     nextRoute: DashboardRoute,
     key: DashboardBlockKey,
     options: DataReadOptions | undefined,
-  ): Promise<unknown> {
+  ): Promise<DashboardBlockPayload> {
     if (nextRoute === "overview") return window.octopusBeak.overview.loadBlock(key, options);
     if (nextRoute === "assets") return window.octopusBeak.assets.loadBlock(key, options);
     if (nextRoute === "liabilities") return window.octopusBeak.liabilities.loadBlock(key, options);
@@ -230,7 +342,7 @@
     nextRoute: DashboardRoute,
     options: DataReadOptions | undefined,
     onlyKey?: DashboardBlockKey,
-  ) {
+  ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
     const loadId = (routeBlockLoadIds[nextRoute] ?? 0) + 1;
     routeBlockLoadIds = { ...routeBlockLoadIds, [nextRoute]: loadId };
     const keys = onlyKey ? [onlyKey] : blockKeys[nextRoute];
@@ -246,14 +358,15 @@
     const loaders = Object.fromEntries(keys.map((key) => [
       key,
       () => loadRouteBlock(nextRoute, key, options),
-    ])) as Record<string, () => Promise<unknown>>;
-    void loadIndependentBlocks(loaders, (key, state) => {
+    ])) as Record<string, () => Promise<DashboardBlockPayload>>;
+    const settled = loadIndependentBlocks(loaders, (key, state) => {
       if (routeBlockLoadIds[nextRoute] !== loadId) return;
       setRouteBlocks(nextRoute, {
         ...(routeBlocks[nextRoute] ?? {}),
         [key]: state,
       });
     });
+    return settled;
   }
 
   function retryRouteBlock(nextRoute: DashboardRoute, key: string) {
@@ -288,11 +401,11 @@
       return snapshot.version === version && !snapshot.stale;
     },
     loaders: {
-      overview: (snapshot) => loadRoute("overview", { force: true, rethrow: true, snapshot }),
-      assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, snapshot }),
-      liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, snapshot }),
-      spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, snapshot }),
-      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, snapshot }),
+      overview: (snapshot) => loadRoute("overview", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
     },
   });
 
@@ -442,7 +555,7 @@
 
   async function loadRoute(
     next: RouteId,
-    options: { force?: boolean; rethrow?: boolean; snapshot?: DataVersionSnapshot } = {},
+    options: { force?: boolean; rethrow?: boolean; awaitBlocks?: boolean; snapshot?: DataVersionSnapshot } = {},
   ) {
     const readOptions: DataReadOptions | undefined = options.snapshot
       ? { expectedVersion: options.snapshot.version }
@@ -454,10 +567,11 @@
       )
       : null;
     startRouteLoad(next);
+    let blockLoads: Promise<Record<string, BlockState<DashboardBlockPayload>>> | null = null;
     if (next !== "settings") {
       const hasCachedData = routeDataCache.read(next) !== undefined;
       const hasBlockRead = Object.values(routeBlocks[next] ?? {}).some((state) => state.status === "loading");
-      if (options.force || !hasCachedData && !hasBlockRead) startRouteBlockLoads(next, readOptions);
+      if (options.force || !hasCachedData && !hasBlockRead) blockLoads = startRouteBlockLoads(next, readOptions);
     }
     if (next === "overview") overviewReloading = true;
     try {
@@ -486,7 +600,20 @@
         const data = await routeDataCache.load("automation", () => window.octopusBeak.automation.load(readOptions), options);
         automation = finishViewLoad(data);
       }
+      if (options.awaitBlocks && blockLoads) {
+        const states = await blockLoads;
+        const failedBlocks = Object.entries(states)
+          .filter(([, state]) => state.status === "error")
+          .map(([key]) => `${next}:${key}`);
+        if (failedBlocks.length > 0) {
+          throw new RefreshLoadError(
+            `${next} block refresh failed`,
+            failedBlocks,
+          );
+        }
+      }
     } catch (error) {
+      if (options.awaitBlocks && blockLoads) await blockLoads;
       failRouteLoad(next, error);
       if (options.rethrow) throw error;
     } finally {
@@ -530,9 +657,9 @@
     />
   {/if}
 {:else if route === "overview"}
-  {#if overviewValue}
+  {#if overviewRenderValue}
     <OverviewDashboard
-      overview={overviewValue}
+      overview={overviewRenderValue}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("overview", key)}
     />
@@ -543,9 +670,9 @@
     </DashboardShell>
   {/if}
 {:else if route === "assets"}
-  {#if assetsValue}
+  {#if assetsRenderValue}
     <AssetsDashboard
-      assets={assetsValue}
+      assets={assetsRenderValue}
       {focusAccountId}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("assets", key)}
@@ -557,9 +684,9 @@
     </DashboardShell>
   {/if}
 {:else if route === "liabilities"}
-  {#if liabilitiesValue}
+  {#if liabilitiesRenderValue}
     <LiabilitiesDashboard
-      liabilities={liabilitiesValue}
+      liabilities={liabilitiesRenderValue}
       {focusAccountId}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("liabilities", key)}
@@ -571,9 +698,9 @@
     </DashboardShell>
   {/if}
 {:else if route === "spending"}
-  {#if spendingValue}
+  {#if spendingRenderValue}
     <SpendingDashboard
-      spending={spendingValue}
+      spending={spendingRenderValue}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("spending", key)}
     />
@@ -584,10 +711,10 @@
     </DashboardShell>
   {/if}
 {:else if route === "automation"}
-  {#if automationValue}
+  {#if automationRenderValue}
     <AutomationDashboard
-      automation={automationValue.automation}
-      credentialGroups={automationValue.credentialGroups}
+      automation={automationRenderValue.automation}
+      credentialGroups={automationRenderValue.credentialGroups}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}

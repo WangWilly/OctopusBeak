@@ -9,7 +9,11 @@ test("concurrent blocks share one generation-bound raw snapshot", async () => {
   let reads = 0;
   let release!: () => void;
   const rawSnapshot = new Promise((resolve) => {
-    release = () => resolve({ summary: "summary", chart: "chart" });
+    release = () => resolve({
+      summary: [{ label: "Net position", amounts: [], breakdown: [] }],
+      dailyHistory: [{ date: "2026-09-19" }],
+      accounts: [{ id: "account" }],
+    });
   });
   const loader = createFinancialPageBlockLoader(async () => {
     reads += 1;
@@ -20,21 +24,28 @@ test("concurrent blocks share one generation-bound raw snapshot", async () => {
   const chart = loader.load("overview", "chart", { expectedVersion: 11 });
   assert.equal(reads, 1);
   release();
-  assert.equal(await summary, "summary");
-  assert.equal(await chart, "chart");
+  const summaryPayload = await summary;
+  const chartPayload = await chart;
+  assert.equal(summaryPayload.route, "overview");
+  assert.equal(summaryPayload.block, "summary");
+  assert.equal(chartPayload.route, "overview");
+  assert.equal(chartPayload.block, "chart");
+  if (summaryPayload.block !== "summary" || chartPayload.block !== "chart") throw new Error("wrong block payload");
+  assert.deepEqual(summaryPayload.data.summary, [{ label: "Net position", amounts: [], breakdown: [] }]);
+  assert.deepEqual(chartPayload.data.dailyHistory, [{ date: "2026-09-19" }]);
 });
 
 test("synchronous raw reads remain shared for the current message turn", async () => {
   let reads = 0;
   const loader = createFinancialPageBlockLoader(() => {
     reads += 1;
-    return { summary: "summary", chart: "chart" };
+    return { automation: { active: false } };
   });
   const summary = loader.load("automation", "summary", { expectedVersion: 12 });
   const chart = loader.load("automation", "chart", { expectedVersion: 12 });
   assert.equal(reads, 1);
-  assert.equal(await summary, "summary");
-  assert.equal(await chart, "chart");
+  assert.deepEqual((await summary).data, { automation: { active: false } });
+  assert.deepEqual((await chart).data, { automation: { active: false } });
 });
 
 test("different generations never share a raw snapshot", async () => {
@@ -42,11 +53,15 @@ test("different generations never share a raw snapshot", async () => {
   const loader = createFinancialPageBlockLoader((_, options) => {
     const version = options?.expectedVersion ?? 0;
     generations.push(version);
-    return { summary: version };
+    return { accounts: [{ id: String(version) }] };
   });
 
-  assert.equal(await loader.load("assets", "summary", { expectedVersion: 3 }), 3);
-  assert.equal(await loader.load("assets", "summary", { expectedVersion: 4 }), 4);
+  assert.deepEqual((await loader.load("assets", "summary", { expectedVersion: 3 })).data, {
+    accounts: [{ id: "3" }],
+  });
+  assert.deepEqual((await loader.load("assets", "summary", { expectedVersion: 4 })).data, {
+    accounts: [{ id: "4" }],
+  });
   assert.deepEqual(generations, [3, 4]);
 });
 

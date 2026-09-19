@@ -19,6 +19,10 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type {
+    DashboardBlockPayload,
+    DashboardBlockValueMap,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -28,18 +32,31 @@
   const sankeyCurrencyStorageKey = "overview.portfolioFlow.currency";
 
   export let overview: OverviewPageDto;
-  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
   let sankeyCurrency = "TWD";
 
-  function blockState(key: string): BlockState<unknown> {
-    return blocks[key] ?? { status: "ready", data: null };
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
   }
 
-  $: metrics = overview.summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
+  function overviewBlockData<Key extends keyof DashboardBlockValueMap["overview"]>(
+    key: Key,
+    payload: DashboardBlockPayload | undefined,
+  ): DashboardBlockValueMap["overview"][Key] | undefined {
+    return payload?.route === "overview" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["overview"][Key]
+      : undefined;
+  }
+
+  function metricsFor(summary: SummaryMetricDto[]) {
+    return summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
+  }
+
+  $: metrics = metricsFor(overview.summary);
   $: netMetric = metrics[0] ?? null;
   $: netAmounts = netMetric?.amounts ?? [];
   $: sideValue = formatAmountLines(netAmounts.slice(0, 1));
@@ -153,13 +170,17 @@
       label="summary"
       state={blockState("summary")}
       retry={() => retryBlock("summary")}
+      let:data
     >
+      {@const summaryBlock = overviewBlockData("summary", data)}
       <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
-        <SummaryStrip {metrics} />
+        <SummaryStrip metrics={metricsFor(summaryBlock?.summary ?? overview.summary)} />
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
+      {@const chartBlock = overviewBlockData("chart", data)}
+      {@const chartHistory = chartBlock?.dailyHistory ?? overview.dailyHistory}
       <section class="grid layout-2">
       <article class="card">
         <div class="panel-title">
@@ -185,22 +206,24 @@
           </div>
         {:else}
           <div class="card pad">
-            <SnapshotSparkline rows={snapshotHistory} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
+            <SnapshotSparkline rows={chartHistory.slice(-30)} currency={snapshotCurrency} label={$t.overview.snapshotHistory} diverging />
             {#key snapshotCurrency}
-              <DailyHistoryTable rows={snapshotHistory} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
+              <DailyHistoryTable rows={chartHistory.slice(-30)} compact netLabel={$t.overview.sideLabel} currency={snapshotCurrency} />
             {/key}
           </div>
         {/if}
       </article>
 
       <div class="overview-allocation-stack">
-        <AllocationDonutCard title={$t.overview.assetAllocation} accounts={overview.accounts} mode="asset" />
-        <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={overview.accounts} mode="liability" />
+        <AllocationDonutCard title={$t.overview.assetAllocation} accounts={chartBlock?.accounts ?? overview.accounts} mode="asset" />
+        <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={chartBlock?.accounts ?? overview.accounts} mode="liability" />
       </div>
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+      {@const listBlock = overviewBlockData("list", data)}
+      {@const latestRateDate = listBlock?.latestExchangeRateDate ?? overview.latestExchangeRateDate}
       <section class="card daily-card">
       <div class="panel-title">
         <h2>{$t.overview.dailyAssetChanges}</h2>
@@ -223,9 +246,9 @@
             </select>
           </label>
         {/if}
-        {#if overview.latestExchangeRateDate}
+        {#if latestRateDate}
           <span class="chip">
-            {$t.overview.exchangeRatesThrough(overview.latestExchangeRateDate)}
+            {$t.overview.exchangeRatesThrough(latestRateDate)}
           </span>
         {/if}
       </div>
@@ -233,14 +256,16 @@
         <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
       {:else}
         {#key dailyCurrency}
-          <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
+          <DailyHistoryTable rows={listBlock?.dailyHistory ?? convertedDailyHistory} currency={dailyCurrency} paginate />
         {/key}
       {/if}
       </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
-      {#if overview.sankey}
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+      {@const detailsBlock = overviewBlockData("details", data)}
+      {@const sankey = detailsBlock?.sankey ?? overview.sankey}
+      {#if sankey}
         <section class="card sankey-card">
         <div class="panel-title">
           <h2>{$t.overview.portfolioFlow}</h2>
@@ -267,9 +292,9 @@
         </div>
         <div class="card pad overview-sankey-panel">
           <OverviewSankeyCard
-            graph={overview.sankey}
+            graph={sankey}
             currency={sankeyCurrency}
-            exchangeRates={overview.sankeyExchangeRates}
+            exchangeRates={detailsBlock?.sankeyExchangeRates ?? overview.sankeyExchangeRates}
           />
         </div>
         </section>
