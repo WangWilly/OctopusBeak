@@ -371,14 +371,31 @@
       pairingNextOffset !== null &&
       nextVisibleCount > (pairingCandidates?.length ?? 0)
     ) {
+      const requestToken = pairingRequestToken;
+      const invoiceIdentityId = pairingInvoice.invoice.invoiceId;
+      const expectedDataVersion = report.knowledgeAt;
       pairingCandidatesLoading = true;
       try {
         const result = await window.octopusBeak.spending.rankPairingCandidates({
-          invoiceIdentityId: pairingInvoice.invoice.invoiceId,
-          dataVersion: report.knowledgeAt,
+          invoiceIdentityId,
+          dataVersion: expectedDataVersion,
           offset: pairingNextOffset,
           limit: 50,
         });
+        if (
+          requestToken !== pairingRequestToken ||
+          pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId
+        ) return;
+        if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt) {
+          pairingCandidates = null;
+          pairingCandidateTotal = 0;
+          pairingNextOffset = null;
+          paymentVisibleCount = 10;
+          pairingCandidatesLoading = true;
+          const restartToken = ++pairingRequestToken;
+          void loadPairingCandidates(pairingInvoice, restartToken);
+          return;
+        }
         pairingCandidates = Object.freeze([...(pairingCandidates ?? []), ...result.candidates]);
         pairingCandidateTotal = result.totalCandidateCount;
         pairingNextOffset = result.nextOffset;
@@ -674,7 +691,7 @@
               {/each}
             {/if}
             {#if pairingCandidateTotal > paymentVisibleCount}
-              <button type="button" class="button secondary show-more-payments" data-show-more-payments onclick={() => void showMorePayments()}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+              <button type="button" class="button secondary show-more-payments" disabled={pairingCandidatesLoading} data-show-more-payments onclick={() => void showMorePayments()}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
             {/if}
           </fieldset>
           {#if selectedPayment}

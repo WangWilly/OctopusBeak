@@ -12,6 +12,7 @@ import {
   confirmSpendingDedupLink,
   denySpendingDedupCandidate,
   querySpendingRecognition,
+  querySpendingRecognitionFromDatabase,
   recordSpendingMatchCandidate,
   revokeSpendingDedupLink,
 } from "../../../ledger/canonical/spending-recognition.ts";
@@ -89,6 +90,7 @@ const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open
 const fullReportComposeDiagnostics = channel("octopus-beak.spending.full-report-compose");
 const pairingIndexCaches = new Map<string, SpendingPairingIndexCache>();
 let latestSpendingQuery: Readonly<{ ledgerDir: string; query: CurrentSpendingQueryResult }> | null = null;
+type DirectPairingReportContext = NonNullable<Extract<SpendingConfirmActionInput, { kind: "direct" }>["pairingReportContext"]>;
 
 function pairingProgress(stage: string, startedAt: number): void {
   if (process.env.PAIRING_BENCHMARK_PROGRESS === "1")
@@ -343,6 +345,49 @@ function adjustPurchaseTotals(
   return Object.freeze(next);
 }
 
+function linkedPurchaseRecord(
+  invoice: CanonicalEInvoiceView,
+  payment: CanonicalSpendingTransaction,
+  link: SpendingRecognitionSnapshot["activeLinks"][number],
+  candidateIds: readonly string[],
+): PurchaseReport["records"][number] {
+  const invoiceAmount = invoice.revision.total
+    ? {
+        coefficient: invoice.revision.total.coefficient,
+        scale: invoice.revision.total.scale,
+        currency: invoice.revision.total.currency,
+      }
+    : null;
+  const occurrence = {
+    value: invoice.revision.occurrence.value,
+    precision: invoice.revision.occurrence.precision,
+    timeZone: invoice.revision.occurrence.timeZone,
+    basis: invoice.revision.occurrence.origin === "source-reported"
+      ? "purchase-date" as const
+      : "posting-date-fallback" as const,
+  };
+  return {
+    purchaseId: `link:${link.eventId}`,
+    basis: "linked",
+    amount: payment.amount,
+    occurrence,
+    description: invoice.revision.seller.name ?? payment.description,
+    invoice,
+    transaction: payment,
+    items: invoice.revision.items,
+    possibleDuplicate: candidateIds.length > 0,
+    candidateIds: Object.freeze([...candidateIds]),
+    link,
+    difference: {
+      invoiceAmount,
+      bankAmount: payment.amount,
+      sameCurrency: invoiceAmount?.currency === payment.amount.currency,
+      exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, payment.amount) : false,
+    },
+    refund: null,
+  };
+}
+
 function targetedPurchaseReportAfterRecognitionMutation(
   before: PurchaseReport,
   recognition: SpendingRecognitionSnapshot,
@@ -365,6 +410,10 @@ function targetedPurchaseReportAfterRecognitionMutation(
   const pendingCandidateIds = new Set(candidates
     .filter((candidate) => candidate.status === "candidate")
     .map((candidate) => candidate.candidateId));
+  const linkedCandidateIds = candidates
+    .filter((candidate) => candidate.status === "candidate" &&
+      (candidate.invoiceId === mutation.invoiceId || candidate.transactionId === mutation.transactionId))
+    .map((candidate) => candidate.candidateId);
   let records: readonly PurchaseReport["records"][number][] = before.records
     .filter((record) => mutation.kind !== "confirmed" ||
       (record.invoice?.invoiceId !== mutation.invoiceId && record.transaction?.transactionId !== mutation.transactionId))
@@ -384,30 +433,14 @@ function targetedPurchaseReportAfterRecognitionMutation(
       pairKey(candidate.invoiceId, candidate.transactionId) === target,
     );
     if (!link) throw new Error("Spending confirmation did not produce an active link.");
-    const invoiceAmount = invoiceRecord.amount;
-    const paymentAmount = paymentRecord.transaction.amount;
-    const linked: PurchaseReport["records"][number] = {
-      purchaseId: `link:${link.eventId}`,
-      basis: "linked",
-      amount: paymentAmount,
-      occurrence: invoiceRecord.occurrence,
-      description: invoiceRecord.invoice.revision.seller.name ?? paymentRecord.transaction.description,
-      invoice: invoiceRecord.invoice,
-      transaction: paymentRecord.transaction,
-      items: invoiceRecord.invoice.revision.items,
-      possibleDuplicate: false,
-      candidateIds: [],
-      link: { ...link, invoiceId: mutation.invoiceId, transactionId: mutation.transactionId },
-      difference: {
-        invoiceAmount,
-        bankAmount: paymentAmount,
-        sameCurrency: invoiceAmount?.currency === paymentAmount.currency,
-        exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, paymentAmount) : false,
-      },
-      refund: null,
-    };
+    const linked = linkedPurchaseRecord(
+      invoiceRecord.invoice,
+      paymentRecord.transaction,
+      link,
+      linkedCandidateIds,
+    );
     records = insertPurchaseRecord(records, linked);
-    totals = adjustPurchaseTotals(totals, invoiceAmount);
+    totals = adjustPurchaseTotals(totals, invoiceRecord.amount);
   }
   return Object.freeze({
     ...before,
@@ -419,6 +452,60 @@ function targetedPurchaseReportAfterRecognitionMutation(
       : "complete",
     candidates: Object.freeze(candidates),
   });
+}
+
+function directPairingPatchFromContext(
+  input: Readonly<{
+    context: DirectPairingReportContext;
+    invoice: CanonicalEInvoiceView;
+    payment: CanonicalSpendingTransaction;
+    recognition: SpendingRecognitionSnapshot;
+    invoiceId: string;
+    transactionId: string;
+    dataVersion: number;
+    totalsByCurrency: SpendingPurchaseReportDto["totalsByCurrency"];
+  }>,
+): SpendingPurchaseActionResult {
+  const { context, invoice, payment, recognition, invoiceId, transactionId, dataVersion, totalsByCurrency } = input;
+  const target = pairKey(invoiceId, transactionId);
+  const link = recognition.activeLinks.find((candidate) =>
+    pairKey(candidate.invoiceId, candidate.transactionId) === target,
+  );
+  if (!link) throw new Error("Spending confirmation did not produce an active link.");
+  const linkedCandidateIds = recognition.candidates
+    .filter((candidate) => candidate.status === "candidate" &&
+      (candidate.invoiceId === invoiceId || candidate.transactionId === transactionId))
+    .map((candidate) => candidate.candidateId);
+  const inferred = evaluateSpendingMatchCandidates([invoice], [payment])[0];
+  const candidateOperations = inferred && context.candidateIds.includes(inferred.candidateKey)
+    ? Object.freeze([{ kind: "remove" as const, id: inferred.candidateKey }])
+    : Object.freeze([]);
+  const linked = linkedPurchaseRecord(invoice, payment, link, linkedCandidateIds);
+  const invoiceAmount = invoice.revision.total
+    ? {
+        coefficient: invoice.revision.total.coefficient,
+        scale: invoice.revision.total.scale,
+        currency: invoice.revision.total.currency,
+      }
+    : null;
+  return {
+    patch: Object.freeze({
+      kind: "spending-purchase-report-patch",
+      baseKnowledgeAt: dataVersion,
+      status: "ok",
+      reportKind: "current",
+      knowledgeAt: recognition.knowledgeAt,
+      financialAt: null,
+      totalsByCurrency: adjustPurchaseTotals(totalsByCurrency, invoiceAmount),
+      totalStatus: context.totalStatusAfter,
+      recordOperations: Object.freeze([
+        { kind: "remove" as const, id: `invoice:${invoiceId}` },
+        { kind: "remove" as const, id: `transaction:${transactionId}` },
+        { kind: "upsert" as const, index: context.recordInsertIndex, value: linked },
+      ]),
+      candidateOperations,
+    }),
+  };
 }
 
 /**
@@ -901,6 +988,18 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
   const value = input as Record<string, unknown>;
   if (value.kind === "candidate") return candidateActionValue(input);
   if (value.kind !== "direct") throw new TypeError("Spending confirmation kind is invalid.");
+  const pairingReportContext = value.pairingReportContext;
+  if (pairingReportContext !== undefined) {
+    if (!pairingReportContext || typeof pairingReportContext !== "object" || Array.isArray(pairingReportContext))
+      throw new TypeError("Spending pairing report context must be an object.");
+    const context = pairingReportContext as Record<string, unknown>;
+    if (!Number.isSafeInteger(context.recordInsertIndex) || (context.recordInsertIndex as number) < 0)
+      throw new TypeError("Spending pairing report insert index must be a non-negative integer.");
+    if (!Array.isArray(context.candidateIds) || context.candidateIds.some((candidateId) => typeof candidateId !== "string"))
+      throw new TypeError("Spending pairing report candidate ids must be an array of strings.");
+    if (context.totalStatusAfter !== "complete" && context.totalStatusAfter !== "includes-pending-confirmation")
+      throw new TypeError("Spending pairing report total status is invalid.");
+  }
   return {
     kind: "direct",
     invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
@@ -910,6 +1009,15 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
       : {}),
     ...(Array.isArray(value.totalsByCurrency)
       ? { totalsByCurrency: value.totalsByCurrency as SpendingPurchaseReportDto["totalsByCurrency"] }
+      : {}),
+    ...(pairingReportContext
+      ? {
+          pairingReportContext: {
+            recordInsertIndex: (pairingReportContext as Record<string, unknown>).recordInsertIndex as number,
+            candidateIds: Object.freeze([...(pairingReportContext as Record<string, unknown>).candidateIds as string[]]),
+            totalStatusAfter: (pairingReportContext as Record<string, unknown>).totalStatusAfter as SpendingPurchaseReportDto["totalStatus"],
+          },
+        }
       : {}),
   };
 }
@@ -996,6 +1104,17 @@ export function confirmSpendingCandidate(
   if (action.kind === "candidate") return decideCandidate(action, ledgerDir, "confirmed");
   if (action.dataVersion !== undefined && action.totalsByCurrency !== undefined) {
     const startedAt = performance.now();
+    const cachedBefore = latestSpendingQuery?.ledgerDir === ledgerDir &&
+        latestSpendingQuery.query.purchaseReport.knowledgeAt === action.dataVersion
+      ? purchaseReportWithEphemeralCandidates(latestSpendingQuery.query)
+      : action.pairingReportContext
+        ? null
+        : (() => {
+          const query = currentSpendingQuery(ledgerDir);
+          return purchaseReportWithEphemeralCandidates(query);
+        })();
+    if (cachedBefore && cachedBefore.knowledgeAt !== action.dataVersion)
+      throw new Error("Spending confirmation data version is stale; reload Spending before pairing.");
     const databasePath = canonicalDatabaseWriterKey(ledgerDir);
     if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
     const db = new NodeDatabaseSync(databasePath);
@@ -1045,71 +1164,31 @@ export function confirmSpendingCandidate(
         evidence,
       });
       pairingProgress("confirm committed", startedAt);
-      const link = {
+      const recognition = querySpendingRecognitionFromDatabase(store.db, { knowledgeAt: committed.knowledgeAt });
+      if (cachedBefore) {
+        const after = targetedPurchaseReportAfterRecognitionMutation(
+          cachedBefore,
+          recognition,
+          {
+            kind: "confirmed",
+            invoiceId: action.invoiceIdentityId,
+            transactionId: action.transactionIdentityId,
+          },
+        );
+        return { patch: createSpendingPurchaseReportPatch(cachedBefore, after) };
+      }
+      if (!action.pairingReportContext)
+        throw new Error("Spending confirmation report context is unavailable; reload Spending before pairing.");
+      return directPairingPatchFromContext({
+        context: action.pairingReportContext,
+        invoice,
+        payment,
+        recognition,
         invoiceId: action.invoiceIdentityId,
         transactionId: action.transactionIdentityId,
-        eventId: committed.eventId,
-        origin: "user" as const,
-        evidenceKnowledgeSequence: currentVersion,
-        decisionCommitSequence: committed.knowledgeAt,
-        evidence,
-        userId: LOCAL_SPENDING_USER_ID,
-        authorityRoute: null,
-        stableCrossSourceReference: null,
-      };
-      const invoiceAmount = invoice.revision.total
-        ? {
-            coefficient: invoice.revision.total.coefficient,
-            scale: invoice.revision.total.scale,
-            currency: invoice.revision.total.currency,
-          }
-        : null;
-      const occurrence = {
-        value: invoice.revision.occurrence.value,
-        precision: invoice.revision.occurrence.precision,
-        timeZone: invoice.revision.occurrence.timeZone,
-        basis: invoice.revision.occurrence.origin === "source-reported"
-          ? "purchase-date" as const
-          : "posting-date-fallback" as const,
-      };
-      const linked: PurchaseReport["records"][number] = {
-        purchaseId: `link:${link.eventId}`,
-        basis: "linked",
-        amount: payment.amount,
-        occurrence,
-        description: invoice.revision.seller.name ?? payment.description,
-        invoice,
-        transaction: payment,
-        items: invoice.revision.items,
-        possibleDuplicate: false,
-        candidateIds: [],
-        link: { ...link, invoiceId: action.invoiceIdentityId, transactionId: action.transactionIdentityId },
-        difference: {
-          invoiceAmount,
-          bankAmount: payment.amount,
-          sameCurrency: invoiceAmount?.currency === payment.amount.currency,
-          exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, payment.amount) : false,
-        },
-        refund: null,
-      };
-      return {
-        patch: Object.freeze({
-          kind: "spending-purchase-report-patch",
-          baseKnowledgeAt: currentVersion,
-          status: "ok",
-          reportKind: "current",
-          knowledgeAt: committed.knowledgeAt,
-          financialAt: null,
-          totalsByCurrency: adjustPurchaseTotals(action.totalsByCurrency, invoiceAmount),
-          totalStatus: "complete",
-          recordOperations: Object.freeze([
-            { kind: "remove" as const, id: `invoice:${action.invoiceIdentityId}` },
-            { kind: "remove" as const, id: `transaction:${action.transactionIdentityId}` },
-            { kind: "upsert" as const, index: 0, value: linked },
-          ]),
-          candidateOperations: Object.freeze([]),
-        }),
-      };
+        dataVersion: currentVersion,
+        totalsByCurrency: action.totalsByCurrency,
+      });
     } finally {
       db.close();
     }

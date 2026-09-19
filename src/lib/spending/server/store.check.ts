@@ -16,7 +16,10 @@ import {
   E_INVOICE_CURRENCY_AUTHORITY,
   E_INVOICE_ROUTE,
 } from "../../../ledger/canonical/einvoice.ts";
-import { querySpendingRecognition } from "../../../ledger/canonical/spending-recognition.ts";
+import {
+  querySpendingRecognition,
+  recordSpendingMatchCandidate,
+} from "../../../ledger/canonical/spending-recognition.ts";
 import {
   applyCanonicalTransactionTag,
   commitCanonicalAutomaticEnrichmentRun,
@@ -336,7 +339,7 @@ test("a canonical E-Invoice admission is visible in Spending without legacy repl
   }
 });
 
-async function seedPurchaseCandidate(directory: string, directOnly = false) {
+async function seedPurchaseCandidate(directory: string, directOnly = false, exactDirect = false) {
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
   const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   const transactions = createCanonicalProjectionRuntime(db).read({
@@ -393,7 +396,7 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     const fixtureDb = openCanonicalDatabaseHandle(directory);
     const triggers = fixtureDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'transaction_revisions'").all() as Array<{ name: string; sql: string }>;
     for (const trigger of triggers) fixtureDb.exec(`DROP TRIGGER "${trigger.name}"`);
-    fixtureDb.prepare("UPDATE transaction_revisions SET currency = 'USD' WHERE direction = 'outflow' AND amount_coefficient = '300'").run();
+    fixtureDb.prepare(`UPDATE transaction_revisions SET currency = '${exactDirect ? "TWD" : "USD"}' WHERE direction = 'outflow' AND amount_coefficient = '300'`).run();
     for (const trigger of triggers) fixtureDb.exec(trigger.sql);
     fixtureDb.close();
   }
@@ -603,6 +606,186 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       invoiceIdentityId: invoice.invoice!.invoiceId,
       transactionIdentityId: payment.transaction!.transactionId,
     }, directory), /stale, linked, revoked, or missing/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("direct pairing preserves canonical order and unrelated pending candidates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-purchase-direct-order-"));
+  try {
+    await seedPurchaseCandidate(directory, true);
+    const invoiceStore = createCanonicalSourceStore(directory);
+    try {
+      await commitCanonicalEInvoiceCapture(invoiceStore, {
+        captureId: "spending-purchase-direct-ordering-invoices",
+        sourceConnectionKey: "sha256:spending-purchase-action-connection",
+        identityEpoch: "sha256:spending-purchase-action-epoch",
+        subjectDigest: "sha256:spending-purchase-action-subject",
+        observedAt: "2026-08-02T02:00:00Z",
+        scope: {
+          startDate: "2026-01-01",
+          endDate: "2026-12-31",
+          kind: "bounded-range",
+          completeness: "complete-range",
+          invoiceCompleteness: "complete",
+          itemCompleteness: "incomplete",
+          absenceAuthority: "comparable-complete-range",
+        },
+        pages: [{
+          pageOrdinal: 0,
+          responseCode: "200",
+          rowCount: 3,
+          terminal: true,
+          metadata: { fixture: "purchase-action-ordering" },
+        }],
+        invoices: [
+          {
+            stableInvoiceKey: "purchase-action-ordering-earlier",
+            sourceRevisionKey: "purchase-action-ordering-earlier-v1",
+            revisionNumber: 1,
+            revisionKind: "issued",
+            sourceIdentifiers: { invoiceNumber: "PA00000002" },
+            seller: { taxId: "11112222", name: "Earlier Shop" },
+            total: { coefficient: "50", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY },
+            occurrence: { value: "2026-05-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+            items: [],
+            authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+            provenance: { kind: "fixture", reference: "fixture:purchase-action-ordering-earlier" },
+          },
+          {
+            stableInvoiceKey: "purchase-action-ordering-candidate",
+            sourceRevisionKey: "purchase-action-ordering-candidate-v1",
+            revisionNumber: 1,
+            revisionKind: "issued",
+            sourceIdentifiers: { invoiceNumber: "PA00000003" },
+            seller: { taxId: "11112222", name: "Candidate Shop" },
+            total: { coefficient: "300", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY },
+            occurrence: { value: "2026-07-02", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+            items: [],
+            authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+            provenance: { kind: "fixture", reference: "fixture:purchase-action-ordering-candidate" },
+          },
+          {
+            stableInvoiceKey: "purchase-action-ordering-later",
+            sourceRevisionKey: "purchase-action-ordering-later-v1",
+            revisionNumber: 1,
+            revisionKind: "issued",
+            sourceIdentifiers: { invoiceNumber: "PA00000004" },
+            seller: { taxId: "11112222", name: "Later Shop" },
+            total: { coefficient: "70", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY },
+            occurrence: { value: "2026-08-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+            items: [],
+            authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+            provenance: { kind: "fixture", reference: "fixture:purchase-action-ordering-later" },
+          },
+        ],
+      });
+    } finally {
+      invoiceStore.close();
+    }
+
+    let before = loadSpending(directory).purchaseReport;
+    const targetInvoice = before.records.find((record) => record.description === "Synthetic Shop");
+    const payment = before.records.find((record) => record.basis === "bank-transaction");
+    const candidateInvoice = before.records.find((record) => record.description === "Candidate Shop");
+    assert.ok(targetInvoice?.invoice);
+    assert.ok(payment?.transaction);
+    assert.ok(candidateInvoice?.invoice);
+
+    const candidateStore = createCanonicalSourceStore(directory);
+    try {
+      recordSpendingMatchCandidate(candidateStore, {
+        invoiceId: candidateInvoice.invoice.invoiceId,
+        transactionId: payment.transaction.transactionId,
+        candidateKey: "sha256:purchase-action-ordering-candidate",
+        algorithm: "test-ordering",
+        algorithmVersion: "v1",
+        similarityEvidence: { fixture: true },
+      });
+    } finally {
+      candidateStore.close();
+    }
+    before = loadSpending(directory).purchaseReport;
+    const refreshedTarget = before.records.find((record) => record.description === "Synthetic Shop");
+    assert.ok(refreshedTarget?.invoice);
+
+    const confirmation = confirmSpendingCandidate({
+      kind: "direct",
+      invoiceIdentityId: refreshedTarget.invoice.invoiceId,
+      transactionIdentityId: payment.transaction.transactionId,
+      dataVersion: before.knowledgeAt,
+      totalsByCurrency: before.totalsByCurrency,
+    }, directory);
+    const patched = applySpendingPurchaseReportPatch(before, confirmation.patch);
+    const full = loadSpending(directory).purchaseReport;
+    assert.deepEqual(patched, full, "targeted direct patch must reproduce canonical ordering and pending state");
+    assert.equal(patched.records[0]?.description, "Earlier Shop");
+    assert.equal(patched.records.some((record) => record.basis === "linked"), true);
+    assert.equal(patched.totalStatus, "includes-pending-confirmation");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("direct pairing removes an ephemeral candidate from the targeted patch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-purchase-direct-ephemeral-"));
+  try {
+    await seedPurchaseCandidate(directory, true, true);
+    const invoiceStore = createCanonicalSourceStore(directory);
+    try {
+      await commitCanonicalEInvoiceCapture(invoiceStore, {
+        captureId: "spending-purchase-direct-ephemeral-invoice",
+        sourceConnectionKey: "sha256:spending-purchase-action-connection",
+        identityEpoch: "sha256:spending-purchase-action-epoch",
+        subjectDigest: "sha256:spending-purchase-action-subject",
+        observedAt: "2026-07-03T02:00:00Z",
+        scope: {
+          startDate: "2026-07-01",
+          endDate: "2026-07-31",
+          kind: "bounded-range",
+          completeness: "complete-range",
+          invoiceCompleteness: "complete",
+          itemCompleteness: "incomplete",
+          absenceAuthority: "comparable-complete-range",
+        },
+        pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { fixture: "purchase-action-ephemeral" } }],
+        invoices: [{
+          stableInvoiceKey: "purchase-action-direct-ephemeral-invoice",
+          sourceRevisionKey: "purchase-action-direct-ephemeral-invoice-v1",
+          revisionNumber: 1,
+          revisionKind: "issued",
+          sourceIdentifiers: { invoiceNumber: "PA00000005" },
+          seller: { taxId: "11112222", name: "Ephemeral Shop" },
+          total: { coefficient: "300", scale: 0, currency: "TWD", currencyAuthority: E_INVOICE_CURRENCY_AUTHORITY },
+          occurrence: { value: "2026-07-02", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+          items: [],
+          authority: { routeKey: E_INVOICE_ROUTE, contractVersion: E_INVOICE_CONTRACT_VERSION },
+          provenance: { kind: "fixture", reference: "fixture:purchase-action-ephemeral" },
+        }],
+      });
+    } finally {
+      invoiceStore.close();
+    }
+
+    const before = loadSpending(directory).purchaseReport;
+    const invoice = before.records.find((record) => record.description === "Ephemeral Shop");
+    const payment = before.records.find((record) => record.basis === "bank-transaction");
+    assert.ok(invoice?.invoice);
+    assert.ok(payment?.transaction);
+    assert.equal(before.candidates.some((candidate) => candidate.invoiceId === invoice.invoice!.invoiceId), true);
+
+    const confirmation = confirmSpendingCandidate({
+      kind: "direct",
+      invoiceIdentityId: invoice.invoice.invoiceId,
+      transactionIdentityId: payment.transaction.transactionId,
+      dataVersion: before.knowledgeAt,
+      totalsByCurrency: before.totalsByCurrency,
+    }, directory);
+    const patched = applySpendingPurchaseReportPatch(before, confirmation.patch);
+    const full = loadSpending(directory).purchaseReport;
+    assert.deepEqual(patched, full, "direct pairing must remove the inferred candidate exactly once linked");
+    assert.equal(patched.candidates.some((candidate) => candidate.invoiceId === invoice.invoice!.invoiceId), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

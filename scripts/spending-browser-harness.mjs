@@ -113,8 +113,11 @@ export function createSpendingDesktopApi(
   { spendingLoad } = {},
 ) {
   let version = { ...currentDataVersion };
-  const loadSpending = spendingLoad ?? (async () => ({ canonical: model }));
-  const blockValue = async () => model;
+  const spendingPage = model && typeof model === "object" && ("canonical" in model || "purchaseReport" in model)
+    ? model
+    : { canonical: model };
+  const loadSpending = spendingLoad ?? (async () => spendingPage);
+  const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   return {
     display: { setScale: () => {} },
@@ -232,7 +235,10 @@ function installSpendingDesktopApi(model) {
     credentialGroups: [],
   };
   let version = { version: 0, stale: false, changedAt: null };
-  const blockValue = async () => model;
+  const spendingPage = model && typeof model === "object" && ("canonical" in model || "purchaseReport" in model)
+    ? model
+    : { canonical: model };
+  const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   window.__spendingLoadCount = 0;
   localStorage.setItem("octopusbeak-welcome-v1", JSON.stringify({
@@ -253,7 +259,7 @@ function installSpendingDesktopApi(model) {
     spending: {
       load: async () => {
         window.__spendingLoadCount += 1;
-        return { canonical: model };
+        return spendingPage;
       },
       loadBlock: blockValue,
       rankPairingCandidates: async (input) => ({ dataVersion: input.dataVersion, candidates: [], totalCandidateCount: 0, nextOffset: null }),
