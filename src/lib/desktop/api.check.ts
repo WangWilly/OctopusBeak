@@ -17,6 +17,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "spending:load",
   "spending:block",
   "spending:pairing-candidates",
+  "spending:pairing-prewarm",
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",

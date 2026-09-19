@@ -13,6 +13,8 @@ import type {
   SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
+  SpendingPairingPrewarmInput,
+  SpendingPairingPrewarmResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
@@ -115,6 +117,7 @@ export type OctopusBeakApi = {
     load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
+    prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -162,6 +165,7 @@ export const octopusBeakApiChannels = [
   "spending:load",
   "spending:block",
   "spending:pairing-candidates",
+  "spending:pairing-prewarm",
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",

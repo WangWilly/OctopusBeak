@@ -30,6 +30,8 @@ import type {
   SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
+  SpendingPairingPrewarmInput,
+  SpendingPairingPrewarmResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseReportDto,
@@ -617,6 +619,15 @@ function pairingCandidatesInput(input: unknown): SpendingPairingCandidatesInput 
   };
 }
 
+function pairingPrewarmInput(input: unknown): SpendingPairingPrewarmInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new TypeError("Spending pairing prewarm input must be an object.");
+  const value = input as Record<string, unknown>;
+  if (!Number.isSafeInteger(value.dataVersion) || (value.dataVersion as number) < 0)
+    throw new TypeError("Spending pairing prewarm data version must be a non-negative integer.");
+  return { dataVersion: value.dataVersion as number };
+}
+
 function canonicalUuidFromBlob(value: unknown, label: string): string {
   if (!(value instanceof Uint8Array) || value.byteLength !== 16)
     throw new Error(`${label} is not a canonical UUID.`);
@@ -916,6 +927,36 @@ export function rankSpendingPaymentCandidates(
       totalCandidateCount: ranked.length,
       nextOffset: offset + candidates.length < ranked.length ? offset + candidates.length : null,
     });
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Prepare the worker-owned candidate index without making the renderer wait.
+ * The immutable data version is the cache boundary; a new version replaces
+ * the old index before any subsequent rank request can reuse it.
+ */
+export function prewarmSpendingPairingCandidates(
+  input: SpendingPairingPrewarmInput,
+  ledgerDir = DEFAULT_LEDGER_DIR,
+): SpendingPairingPrewarmResult {
+  const action = pairingPrewarmInput(input);
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+  if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+  const db = new NodeDatabaseSync(databasePath, { readOnly: true });
+  const store = { db: db as CanonicalSourceStore["db"] };
+  try {
+    const currentVersion = Number((store.db.prepare(
+      "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+    ).get() as { value: number }).value);
+    if (currentVersion !== action.dataVersion)
+      throw new Error("Spending pairing prewarm data version is stale; reload Spending before pairing.");
+    const prepared = pairingIndexCache(ledgerDir).prewarm(
+      currentVersion,
+      pairingTransactionsFromDatabase(store),
+    );
+    return Object.freeze({ dataVersion: currentVersion, reused: prepared.reused });
   } finally {
     db.close();
   }

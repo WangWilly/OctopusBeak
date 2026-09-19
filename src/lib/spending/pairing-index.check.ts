@@ -61,6 +61,20 @@ test("pairing index cache treats the immutable data version as its invalidation 
   assert.equal(cache.get(10, [transaction("tx", "1010")]).reused, true);
 });
 
+test("pairing index prewarm deduplicates the current version and invalidates on change", () => {
+  const cache = new SpendingPairingIndexCache();
+  const firstTransactions = [transaction("tx", "1000")];
+  const first = cache.prewarm(12, firstTransactions);
+  const duplicate = cache.prewarm(12, [transaction("tx", "1010")]);
+  assert.equal(first.reused, false);
+  assert.equal(duplicate.reused, true);
+  assert.strictEqual(duplicate.index, first.index);
+  const refreshed = cache.prewarm(13, [transaction("tx", "1010")]);
+  assert.equal(refreshed.reused, false);
+  assert.notStrictEqual(refreshed.index, first.index);
+  assert.equal(cache.currentVersion, 13);
+});
+
 test("indexed rank results are cached per invoice within a data version", () => {
   const index = createSpendingManualPairingIndex(11, [transaction("tx", "1000")]);
   const first = rankSpendingManualPaymentCandidates(invoice(), index);

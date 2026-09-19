@@ -185,6 +185,9 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
     financialPages.rankPairingCandidates(input),
   );
+  ipcMain.handle("spending:pairing-prewarm", (_event, input) =>
+    financialPages.prewarmPairingCandidates(input),
+  );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     financialPages.confirmCandidate(input),
   );
