@@ -1,6 +1,8 @@
 import type { AssetsPageDto } from "../assets/types.ts";
+import type { AutomationPageModel } from "../automation/types.ts";
 import type { LiabilitiesPageDto } from "../liabilities/types.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
+import type { SpendingPurchaseReportView } from "../spending/purchase-matching.ts";
 import type { SpendingPageDto } from "../spending/model.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
 
@@ -113,6 +115,39 @@ export function resolveLiabilitiesDetails(
     marginAccounts: block?.marginAccounts ?? fallback.marginAccounts,
     transactionsByAccount: block?.transactionsByAccount ?? fallback.transactionsByAccount,
   };
+}
+
+/**
+ * Keep each purchase block bound to the payload that settled for that block.
+ * An absent/failed block intentionally falls back to the last route snapshot
+ * so a sibling can continue rendering while this block retries.
+ */
+export function resolveSpendingPurchaseReport(
+  fallback: SpendingPurchaseReportView,
+  block?:
+    | DashboardBlockValueMap["spending"]["summary"]
+    | DashboardBlockValueMap["spending"]["chart"]
+    | DashboardBlockValueMap["spending"]["list"]
+    | DashboardBlockValueMap["spending"]["details"],
+): SpendingPurchaseReportView {
+  // The desktop block projection is the canonical report shape while this
+  // renderer consumes its browser-safe view shape.  The projection contract
+  // is intentionally the same at runtime; keep this conversion at the seam
+  // rather than weakening every dashboard block to `unknown`.
+  return block?.purchaseReport
+    ? block.purchaseReport as unknown as SpendingPurchaseReportView
+    : fallback;
+}
+
+/** Resolve an automation section from its own settled block payload. */
+export function resolveAutomationBlock(
+  fallback: AutomationPageModel,
+  block?:
+    | DashboardBlockValueMap["automation"]["summary"]
+    | DashboardBlockValueMap["automation"]["list"]
+    | DashboardBlockValueMap["automation"]["details"],
+): AutomationPageModel {
+  return block?.automation ?? fallback;
 }
 
 /**

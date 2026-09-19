@@ -62,6 +62,7 @@
     type DataReadOptions,
     type DataVersionSnapshot,
   } from "$lib/shared-shell/data-version.ts";
+  import { installDataVersionLifecycle } from "$lib/shared-shell/data-version-lifecycle.ts";
   import {
     initialRefreshUiState,
     REFRESH_CONTEXT_KEY,
@@ -628,21 +629,49 @@
       .catch((error) => console.warn("system-settings-load-failed", error));
     void resolveFirstRunWelcome();
     normalizeRoute();
-    void window.octopusBeak.data.getVersion()
-      .then((snapshot) => refreshUi.set({
-        status: snapshot.stale ? "stale" : "current",
-        version: snapshot.version,
-        changedAt: snapshot.changedAt,
-        failed: [],
-        staleDuringRefresh: false,
-      }))
-      .catch((error) => console.warn("data-version-query-failed", error));
-    const unsubscribe = window.octopusBeak.data.onInvalidated((event) => {
-      refreshUi.update((state) => markRefreshInvalidated(state, event));
+    const dataVersionLifecycle = installDataVersionLifecycle({
+      data: window.octopusBeak.data,
+      resumeTarget: window,
+      visibilityTarget: document,
+      isVisible: () => document.visibilityState === "visible",
+      onInvalidated: (event) => {
+        refreshUi.update((state) => markRefreshInvalidated(state, event));
+      },
+      onSnapshot: (snapshot) => {
+        refreshUi.update((state) => {
+          // A reconnect response can have been captured before an event that
+          // is already visible to the renderer.  Never let that older/current
+          // response hide the newer stale marker.
+          if (snapshot.version < state.version) return state;
+          if (state.status === "stale" && snapshot.version === state.version && !snapshot.stale) {
+            return state;
+          }
+          // A reconnect query must not make an in-flight refresh look settled.
+          // An observed stale snapshot is still latched until that round ends.
+          if (state.status === "refreshing") {
+            return snapshot.stale
+              ? {
+                ...state,
+                version: Math.max(state.version, snapshot.version),
+                changedAt: snapshot.changedAt,
+                staleDuringRefresh: true,
+              }
+              : state;
+          }
+          return {
+            status: snapshot.stale ? "stale" : "current",
+            version: snapshot.version,
+            changedAt: snapshot.changedAt,
+            failed: [],
+            staleDuringRefresh: false,
+          };
+        });
+      },
+      onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
     addEventListener("hashchange", normalizeRoute);
     return () => {
-      unsubscribe();
+      dataVersionLifecycle.dispose();
       removeEventListener("hashchange", normalizeRoute);
     };
   });

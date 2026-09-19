@@ -34,6 +34,7 @@
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
+  import { resolveAutomationBlock } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
@@ -132,26 +133,8 @@
   $: credentialReadyCount = syncTasks.filter((task) =>
     task.credentialKeys.every((key) => automation.credentials[key]),
   ).length;
-  $: taskStages = [
-    {
-      id: "sync",
-      title: $t.automation.syncStage,
-      tasks: automation.tasks,
-    },
-  ];
-  $: prerequisiteNoticeGroups = [...automation.externalPrerequisiteNotices.reduce(
-    (groups, notice) => {
-      const notices = groups.get(notice.prerequisiteId) ?? [];
-      notices.push(notice);
-      groups.set(notice.prerequisiteId, notices);
-      return groups;
-    },
-    new Map<string, AutomationTaskPrerequisiteNotice[]>(),
-  )].map(([prerequisiteId, notices]) => ({
-    prerequisiteId,
-    prerequisite: notices[0].prerequisite,
-    notices,
-  }));
+  $: taskStages = taskStagesFor(automation);
+  $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: cathayGmailOtpStatus = automation.cathayGmailOtp ?? defaultCathayGmailOtpStatus;
@@ -281,12 +264,36 @@
     }
   }
 
-  function stageRunnableTasks(tasks: AutomationTaskRow[]) {
-    return tasks.filter((task) => parallelTaskIds.has(task.id));
+  function taskStagesFor(sourceAutomation: AutomationPageModel) {
+    return [{
+      id: "sync",
+      title: $t.automation.syncStage,
+      tasks: sourceAutomation.tasks,
+    }];
   }
 
-  function openSyncSheet(tasks: AutomationTaskRow[]) {
-    syncTasks = stageRunnableTasks(tasks);
+  function prerequisiteNoticeGroupsFor(sourceAutomation: AutomationPageModel) {
+    return [...sourceAutomation.externalPrerequisiteNotices.reduce(
+      (groups, notice) => {
+        const notices = groups.get(notice.prerequisiteId) ?? [];
+        notices.push(notice);
+        groups.set(notice.prerequisiteId, notices);
+        return groups;
+      },
+      new Map<string, AutomationTaskPrerequisiteNotice[]>(),
+    )].map(([prerequisiteId, notices]) => ({
+      prerequisiteId,
+      prerequisite: notices[0].prerequisite,
+      notices,
+    }));
+  }
+
+  function stageRunnableTasks(tasks: AutomationTaskRow[], runnableTaskIds = parallelTaskIds) {
+    return tasks.filter((task) => runnableTaskIds.has(task.id));
+  }
+
+  function openSyncSheet(tasks: AutomationTaskRow[], runnableTaskIds = parallelTaskIds) {
+    syncTasks = stageRunnableTasks(tasks, runnableTaskIds);
     if (syncTasks.length) syncOpen = true;
   }
 
@@ -298,8 +305,8 @@
     return formatTime(task.latestFinishedAt ?? task.latestStartedAt);
   }
 
-  function taskCredentialsReady(task: AutomationTaskRow) {
-    return task.status !== "needs_setup" && task.credentialKeys.every((key) => automation.credentials[key]);
+  function taskCredentialsReady(task: AutomationTaskRow, sourceAutomation = automation) {
+    return task.status !== "needs_setup" && task.credentialKeys.every((key) => sourceAutomation.credentials[key]);
   }
 
   function localizedText(value: { en: string; "zh-TW": string }) {
@@ -1285,8 +1292,10 @@
     </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
-    {#if prerequisiteNoticeGroups.length}
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+    {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data))}
+    {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
+    {#if detailsNoticeGroups.length}
       <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
         <div class="prerequisite-notices-head">
           <div>
@@ -1296,7 +1305,7 @@
           </div>
         </div>
         <div class="prerequisite-notice-list">
-          {#each prerequisiteNoticeGroups as group (group.prerequisiteId)}
+          {#each detailsNoticeGroups as group (group.prerequisiteId)}
             <article class="prerequisite-notice" role="alert">
               <div class="prerequisite-notice-copy">
                 <span class="prerequisite-provider">{group.prerequisite.provider}</span>
@@ -1311,7 +1320,7 @@
               <div class="prerequisite-affected-tasks">
                 <strong>{$t.automation.prerequisiteAffectedTasks}</strong>
                 {#each group.notices as notice (notice.noticeId)}
-                  {@const task = automation.tasks.find((candidate) => candidate.id === notice.taskId)}
+                  {@const task = detailsAutomation.tasks.find((candidate) => candidate.id === notice.taskId)}
                   <div class="prerequisite-task-row">
                     <span>{task ? taskLabel(task, $t) : notice.taskId}</span>
                     {#if task}
@@ -1338,13 +1347,16 @@
     {/if}
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+    {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data))}
+    {@const listTaskStages = taskStagesFor(listAutomation)}
+    {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
-      {#each taskStages as stage, stageIndex}
+      {#each listTaskStages as stage, stageIndex}
         <section class="stage-section">
           <div class="stage-head">
             <div class="stage-head-content">
-              <span class:muted={!stageRunnableTasks(stage.tasks).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              <span class:muted={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
               <span class="stage-copy">
                 <span class="stage-title-row">
                   <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
@@ -1354,8 +1366,8 @@
                 <button
                   class="button primary stage-sync-action"
                   type="button"
-                  disabled={!stageRunnableTasks(stage.tasks).length}
-                  onclick={() => openSyncSheet(stage.tasks)}
+                  disabled={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length}
+                  onclick={() => openSyncSheet(stage.tasks, listParallelTaskIds)}
                 >
                   {$t.automation.syncAll}
                 </button>
@@ -1403,8 +1415,8 @@
                   </div>
                 </td>
                 <td>
-                  <span class={`credential-state ${taskCredentialsReady(task) ? "good" : "bad"}`}>
-                    {taskCredentialsReady(task) ? $t.common.ready : $t.common.missing}
+                  <span class={`credential-state ${taskCredentialsReady(task, listAutomation) ? "good" : "bad"}`}>
+                    {taskCredentialsReady(task, listAutomation) ? $t.common.ready : $t.common.missing}
                   </span>
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
