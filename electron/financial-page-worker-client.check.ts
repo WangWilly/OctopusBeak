@@ -81,3 +81,24 @@ test("Spending decisions use the worker boundary without blocking the caller", a
     await client.close();
   }
 });
+
+test("pairing candidate ranking uses the worker boundary without blocking the caller", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page }) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 180) {}
+      parentPort.postMessage({ id, ok: true, value: { page, dataVersion: 7, transactionIds: ["tx"] } });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const startedAt = performance.now();
+    const pairing = client.rankPairingCandidates({ invoiceIdentityId: "invoice", dataVersion: 7 });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    assert.ok(performance.now() - startedAt < 100);
+    assert.deepEqual(await pairing, { page: "spending-pairing", dataVersion: 7, transactionIds: ["tx"] });
+  } finally {
+    await client.close();
+  }
+});

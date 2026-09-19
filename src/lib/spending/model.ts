@@ -23,6 +23,17 @@ export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly
   transactionIdentityId: string;
 }>;
 
+/** A pairing request is bound to the report version shown in the renderer. */
+export type SpendingPairingCandidatesInput = Readonly<{
+  invoiceIdentityId: string;
+  dataVersion: number;
+}>;
+
+export type SpendingPairingCandidatesResult = Readonly<{
+  dataVersion: number;
+  transactionIds: readonly string[];
+}>;
+
 export type SpendingLinkActionInput = Readonly<{
   invoiceId: string;
   transactionId: string;

@@ -6,6 +6,13 @@
  * report builder without pulling the server-only dependency graph into Vite.
  */
 
+import {
+  cachedSpendingPairingRank,
+  cacheSpendingPairingRank,
+  createSpendingPairingIndex,
+  type SpendingPairingIndex,
+} from "./pairing-index.ts";
+
 export type SpendingMatchingMoney = Readonly<{
   coefficient: string;
   scale: number;
@@ -212,10 +219,101 @@ export type SpendingManualPaymentCandidate = Readonly<{
  * retained; tiers only determine order, so a person can review a mismatch
  * rather than losing it to an amount filter.
  */
+
+export type { SpendingPairingIndex } from "./pairing-index.ts";
+
+function manualCandidateCacheKey(invoice: SpendingMatchingInvoice): string {
+  const amount = invoiceMatchingMoney(invoice);
+  return JSON.stringify([
+    amount ? exactMoneyKey(amount) : null,
+    invoice.revision.occurrence.value,
+    invoice.revision.seller.name ?? null,
+  ]);
+}
+
+function compareManualCandidates(left: SpendingManualPaymentCandidate, right: SpendingManualPaymentCandidate): number {
+  if (left.tier !== right.tier) return left.tier - right.tier;
+  if (left.dateDistanceDays !== right.dateDistanceDays) return left.dateDistanceDays - right.dateDistanceDays;
+  if (left.tier === 2) {
+    const amountOrder = compareExactDecimals(
+      { coefficient: BigInt(left.amountDifference?.coefficient ?? "0"), scale: left.amountDifference?.scale ?? 0 },
+      { coefficient: BigInt(right.amountDifference?.coefficient ?? "0"), scale: right.amountDifference?.scale ?? 0 },
+    );
+    if (amountOrder !== 0) return amountOrder;
+  }
+  if (left.merchantSimilarity !== right.merchantSimilarity) return right.merchantSimilarity - left.merchantSimilarity;
+  return left.transactionId.localeCompare(right.transactionId);
+}
+
+function compareDateDistances(left: number, right: number): number {
+  if (left === right) return 0;
+  if (!Number.isFinite(left)) return 1;
+  if (!Number.isFinite(right)) return -1;
+  return left - right;
+}
+
+function rankIndexedManualPaymentCandidates(
+  invoice: SpendingMatchingInvoice,
+  index: SpendingPairingIndex,
+): readonly SpendingManualPaymentCandidate[] {
+  const invoiceAmount = invoiceMatchingMoney(invoice);
+  if (!invoiceAmount) return Object.freeze([]);
+  const cacheKey = manualCandidateCacheKey(invoice);
+  const cached = cachedSpendingPairingRank(index, cacheKey);
+  if (cached) return cached;
+
+  const invoiceCurrency = invoiceAmount.currency.trim().toUpperCase();
+  const invoiceAmountKey = exactMoneyKey(invoiceAmount);
+  const invoiceDay = calendarDayNumber(invoice.revision.occurrence.value);
+  const buckets = new Map<string, {
+    tier: 1 | 2 | 3;
+    distance: number;
+    candidates: SpendingManualPaymentCandidate[];
+  }>();
+  for (const entry of index.entries) {
+    const sameCurrency = invoiceCurrency === entry.currency;
+    const exactAmount = sameCurrency && invoiceAmountKey === entry.amountKey;
+    const tier = exactAmount ? 1 as const : sameCurrency ? 2 as const : 3 as const;
+    const distance = Number.isFinite(invoiceDay) && Number.isFinite(entry.purchaseDay)
+      ? Math.abs(invoiceDay - entry.purchaseDay)
+      : Number.POSITIVE_INFINITY;
+    const difference = sameCurrency ? exactMoneyDifference(invoiceAmount, entry.transaction.amount) : null;
+    const candidate = {
+      transactionId: entry.transaction.transactionId,
+      tier,
+      dateDistanceDays: distance,
+      amountDifference: difference
+        ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
+        : null,
+      merchantSimilarity: merchantSimilarity(invoice.revision.seller.name, entry.transaction.description),
+    } satisfies SpendingManualPaymentCandidate;
+    const key = `${tier}:${Number.isFinite(distance) ? distance : "infinity"}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.candidates.push(candidate);
+    else buckets.set(key, { tier, distance, candidates: [candidate] });
+  }
+
+  const ordered = [...buckets.values()].sort((left, right) =>
+    left.tier - right.tier || compareDateDistances(left.distance, right.distance));
+  const ranked: SpendingManualPaymentCandidate[] = [];
+  for (const bucket of ordered) {
+    bucket.candidates.sort(compareManualCandidates);
+    ranked.push(...bucket.candidates);
+  }
+  return cacheSpendingPairingRank(index, cacheKey, Object.freeze(ranked));
+}
+
+function isSpendingPairingIndex(
+  value: readonly SpendingMatchingTransaction[] | SpendingPairingIndex,
+): value is SpendingPairingIndex {
+  return !Array.isArray(value);
+}
+
 export function rankSpendingManualPaymentCandidates(
   invoice: SpendingMatchingInvoice,
-  transactions: readonly SpendingMatchingTransaction[],
+  transactions: readonly SpendingMatchingTransaction[] | SpendingPairingIndex,
 ): readonly SpendingManualPaymentCandidate[] {
+  if (isSpendingPairingIndex(transactions)) return rankIndexedManualPaymentCandidates(invoice, transactions);
   const invoiceAmount = invoiceMatchingMoney(invoice);
   if (!invoiceAmount) return Object.freeze([]);
   const invoiceDescription = invoice.revision.seller.name;
@@ -234,17 +332,17 @@ export function rankSpendingManualPaymentCandidates(
       merchantSimilarity: merchantSimilarity(invoiceDescription, transaction.description),
     } satisfies SpendingManualPaymentCandidate;
   });
-  return Object.freeze(ranked.sort((left, right) => {
-    if (left.tier !== right.tier) return left.tier - right.tier;
-    if (left.dateDistanceDays !== right.dateDistanceDays) return left.dateDistanceDays - right.dateDistanceDays;
-    if (left.tier === 2) {
-      const amountOrder = compareExactDecimals(
-        { coefficient: BigInt(left.amountDifference?.coefficient ?? "0"), scale: left.amountDifference?.scale ?? 0 },
-        { coefficient: BigInt(right.amountDifference?.coefficient ?? "0"), scale: right.amountDifference?.scale ?? 0 },
-      );
-      if (amountOrder !== 0) return amountOrder;
-    }
-    if (left.merchantSimilarity !== right.merchantSimilarity) return right.merchantSimilarity - left.merchantSimilarity;
-    return left.transactionId.localeCompare(right.transactionId);
-  }));
+  return Object.freeze(ranked.sort(compareManualCandidates));
+}
+
+/**
+ * Build a reusable index for one immutable Spending data version. The index
+ * owns the rank cache, so opening the same invoice again is O(1), while a new
+ * data version receives a fresh cache and cannot observe stale transactions.
+ */
+export function createSpendingManualPairingIndex(
+  dataVersion: number,
+  transactions: readonly SpendingMatchingTransaction[],
+): SpendingPairingIndex {
+  return createSpendingPairingIndex(dataVersion, transactions);
 }

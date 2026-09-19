@@ -7,6 +7,7 @@ import {
   confirmSpendingCandidate,
   denySpendingCandidate,
   loadSpending,
+  rankSpendingPaymentCandidates,
   revokeSpendingLink,
 } from "../src/lib/spending/server/store.ts";
 import type {
@@ -26,13 +27,15 @@ port.on("message", async (request: FinancialPageRequest) => {
         ? await loadAssets()
         : request.page === "liabilities"
           ? await loadLiabilities()
-          : request.page === "spending-action"
-            ? request.action === "confirmCandidate"
-              ? confirmSpendingCandidate(request.input as Parameters<typeof confirmSpendingCandidate>[0])
-              : request.action === "denyCandidate"
-                ? denySpendingCandidate(request.input as Parameters<typeof denySpendingCandidate>[0])
-                : revokeSpendingLink(request.input as Parameters<typeof revokeSpendingLink>[0])
-            : loadSpending(undefined, request.input);
+          : request.page === "spending-pairing"
+            ? rankSpendingPaymentCandidates(request.input)
+            : request.page === "spending-action"
+              ? request.action === "confirmCandidate"
+                ? confirmSpendingCandidate(request.input as Parameters<typeof confirmSpendingCandidate>[0])
+                : request.action === "denyCandidate"
+                  ? denySpendingCandidate(request.input as Parameters<typeof denySpendingCandidate>[0])
+                  : revokeSpendingLink(request.input as Parameters<typeof revokeSpendingLink>[0])
+              : loadSpending(undefined, request.input);
     response = { id: request.id, ok: true, value };
   } catch (error) {
     response = {

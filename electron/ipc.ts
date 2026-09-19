@@ -109,6 +109,9 @@ export function registerOctopusBeakIpc({
     (_event, input: SpendingLoadInput | undefined) =>
       financialPages.load("spending", input),
   );
+  ipcMain.handle("spending:pairing-candidates", (_event, input) =>
+    financialPages.rankPairingCandidates(input),
+  );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     financialPages.confirmCandidate(input),
   );
