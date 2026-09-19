@@ -42,6 +42,16 @@ export type SpendingPairingCandidatesInput = Readonly<{
   limit?: number;
 }>;
 
+/** Prepare the worker-owned pairing index for the report snapshot shown in the renderer. */
+export type SpendingPairingPrewarmInput = Readonly<{
+  dataVersion: number;
+}>;
+
+export type SpendingPairingPrewarmResult = Readonly<{
+  dataVersion: number;
+  reused: boolean;
+}>;
+
 export type SpendingPairingCandidatesResult = Readonly<{
   dataVersion: number;
   candidates: readonly SpendingPairingCandidateView[];

@@ -34,6 +34,7 @@ const api: OctopusBeakApi = {
     load: (input, options) => ipcRenderer.invoke("spending:load", input, options),
     loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
     rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
+    prewarmPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-prewarm", input),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
     revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),

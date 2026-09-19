@@ -52,12 +52,20 @@
   let pairingNextOffset: number | null = null;
   let pairingCandidatesLoading = false;
   let pairingRequestToken = 0;
+  let pairingPrewarmVersion: number | null = null;
 
   $: if (previousReport !== purchaseReport) {
     previousReport = purchaseReport;
     report = purchaseReport;
     selectedMonth = null;
     actionError = "";
+  }
+  // Candidate preparation stays in the financial worker.  Fire it once for
+  // each immutable report version without delaying the shell or renderer.
+  $: if (report.knowledgeAt !== pairingPrewarmVersion) {
+    const dataVersion = report.knowledgeAt;
+    pairingPrewarmVersion = dataVersion;
+    void window.octopusBeak.spending.prewarmPairingCandidates({ dataVersion }).catch(() => {});
   }
   $: months = [...new Set(report.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;

@@ -92,6 +92,21 @@ export function cacheSpendingPairingRank(
 export class SpendingPairingIndexCache {
   private current: SpendingPairingIndex | null = null;
 
+  /**
+   * Prepare the immutable index as soon as a Spending snapshot is available.
+   * Repeating the request for the same data version must not replace the
+   * prepared index with a different transaction snapshot.
+   */
+  prewarm(
+    dataVersion: number,
+    transactions: readonly SpendingMatchingTransaction[],
+  ): Readonly<{ index: SpendingPairingIndex; reused: boolean }> {
+    if (this.current?.dataVersion === dataVersion) return { index: this.current, reused: true };
+    const index = createSpendingPairingIndex(dataVersion, transactions);
+    this.current = index;
+    return { index, reused: false };
+  }
+
   forVersion(dataVersion: number): SpendingPairingIndex | null {
     return this.current?.dataVersion === dataVersion ? this.current : null;
   }
@@ -100,10 +115,7 @@ export class SpendingPairingIndexCache {
     dataVersion: number,
     transactions: readonly SpendingMatchingTransaction[],
   ): Readonly<{ index: SpendingPairingIndex; reused: boolean }> {
-    if (this.current?.dataVersion === dataVersion) return { index: this.current, reused: true };
-    const index = createSpendingPairingIndex(dataVersion, transactions);
-    this.current = index;
-    return { index, reused: false };
+    return this.prewarm(dataVersion, transactions);
   }
 
   get currentVersion(): number | null {

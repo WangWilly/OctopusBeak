@@ -12,6 +12,7 @@ import {
   confirmSpendingCandidate,
   denySpendingCandidate,
   loadSpending,
+  prewarmSpendingPairingCandidates,
   rankSpendingPaymentCandidates,
   revokeSpendingLink,
 } from "../src/lib/spending/server/store.ts";
@@ -52,6 +53,8 @@ port.on("message", async (request: FinancialPageRequest) => {
           ? await loadLiabilities()
           : request.page === "spending-pairing"
             ? rankSpendingPaymentCandidates(request.input)
+            : request.page === "spending-pairing-prewarm"
+              ? prewarmSpendingPairingCandidates(request.input)
             : request.page === "spending-action"
               ? request.action === "confirmCandidate"
                 ? confirmSpendingCandidate(request.input as Parameters<typeof confirmSpendingCandidate>[0])

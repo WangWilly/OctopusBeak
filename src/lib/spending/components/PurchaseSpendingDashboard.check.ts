@@ -71,6 +71,7 @@ assert.match(chartSource, /import \{ BarChart, defaultChartPadding \} from "laye
 assert.match(chartSource, /onBarClick=\{selectBar\}/);
 assert.match(chartSource, /cRange=\{\["var\(--accent\)", "var\(--danger\)"\]\}/);
 assert.match(source, /rankPairingCandidates/);
+assert.match(source, /prewarmPairingCandidates/);
 assert.doesNotMatch(source, /rankSpendingManualPaymentCandidates/);
 assert.match(source, /pairingCandidates: readonly SpendingPairingCandidateView\[\] \| null/);
 assert.doesNotMatch(source, /report\.records\.filter\(\(record\) => record\.basis === "bank-transaction"/);

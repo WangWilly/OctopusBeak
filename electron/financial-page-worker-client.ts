@@ -11,6 +11,8 @@ import type {
   SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
+  SpendingPairingPrewarmInput,
+  SpendingPairingPrewarmResult,
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
@@ -29,6 +31,7 @@ export type FinancialPageRequest =
     options?: DataReadOptions;
   }
   | { id: number; page: "spending-pairing"; input: SpendingPairingCandidatesInput }
+  | { id: number; page: "spending-pairing-prewarm"; input: SpendingPairingPrewarmInput }
   | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
 export type FinancialPageResponse =
@@ -50,6 +53,7 @@ export type FinancialPageWorkerClient = {
     options?: DataReadOptions,
   ): Promise<DashboardBlockPayload>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
+  prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
   revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -149,10 +153,23 @@ export function createFinancialPageWorkerClient(
     }) as Promise<SpendingPairingCandidatesResult>;
   }
 
+  function prewarmPairingCandidates(
+    input: SpendingPairingPrewarmInput,
+  ): Promise<SpendingPairingPrewarmResult> {
+    if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
+    const id = nextId++;
+    const request: FinancialPageRequest = { id, page: "spending-pairing-prewarm", input };
+    return new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage(request);
+    }) as Promise<SpendingPairingPrewarmResult>;
+  }
+
   return {
     load: load as FinancialPageWorkerClient["load"],
     loadBlock,
     rankPairingCandidates,
+    prewarmPairingCandidates,
     confirmCandidate: (input) => action("confirmCandidate", input),
     denyCandidate: (input) => action("denyCandidate", input),
     revokeLink: (input) => action("revokeLink", input),

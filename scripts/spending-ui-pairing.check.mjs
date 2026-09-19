@@ -129,16 +129,8 @@ async function startWorker() {
   return { worker, client: createFinancialPageWorkerClient(worker) };
 }
 
-async function main() {
+async function runSingle(runNumber) {
   const overallStartedAt = performance.now();
-  for (const [environmentName, expected] of [
-    ["PAIRING_BENCHMARK_TRANSACTIONS", EXPECTED_FIXTURE_SHAPE.transactions],
-    ["PAIRING_BENCHMARK_INVOICES", EXPECTED_FIXTURE_SHAPE.invoices],
-    ["PAIRING_BENCHMARK_LINKS", EXPECTED_FIXTURE_SHAPE.links],
-  ]) {
-    if (process.env[environmentName] !== undefined && Number(process.env[environmentName]) !== expected)
-      throw new Error(`${environmentName} must remain ${expected} for the real UI acceptance check.`);
-  }
   const fixture = await createPairingBenchmarkFixture();
   let preflight;
   let actual;
@@ -170,8 +162,10 @@ async function main() {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
     const bridgeTimings = [];
+    const prewarmVersions = [];
     let rankBridgeCallCount = 0;
     let confirmBridgeCallCount = 0;
+    let prewarmBridgeCallCount = 0;
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
@@ -205,13 +199,27 @@ async function main() {
         if (process.env.PAIRING_UI_PROGRESS === "1") console.error(`[pairing-ui] confirm bridge: ${elapsedMs.toFixed(1)}ms`);
       }
     });
-    // The harness supplies shell data APIs; these two methods are replaced below
-    // before navigation, so Pairing never uses its no-op action defaults.
+    await page.exposeFunction("__pairingPrewarmThroughWorker", async (input) => {
+      prewarmBridgeCallCount += 1;
+      const startedAt = performance.now();
+      try {
+        const result = await actual.client.prewarmPairingCandidates(input);
+        prewarmVersions.push(result.dataVersion);
+        return result;
+      } finally {
+        const elapsedMs = performance.now() - startedAt;
+        bridgeTimings.push({ kind: "prewarm", elapsedMs });
+        if (process.env.PAIRING_UI_PROGRESS === "1") console.error(`[pairing-ui] prewarm bridge: ${elapsedMs.toFixed(1)}ms`);
+      }
+    });
+    // The harness supplies shell data APIs; these Pairing methods are replaced
+    // below before navigation, so Pairing never uses no-op action defaults.
     await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
     await page.addInitScript(() => {
       window.__pairingLongTasks = [];
       window.__pairingInteractionStarts = [];
       window.__pairingTimerDelay = 0;
+      window.__pairingPrewarmVersions = [];
       let expectedTick = performance.now() + 10;
       setInterval(() => {
         const now = performance.now();
@@ -229,12 +237,21 @@ async function main() {
       }
       window.octopusBeak.spending.rankPairingCandidates = (input) => window.__pairingRankThroughWorker(input);
       window.octopusBeak.spending.confirmCandidate = (input) => window.__pairingConfirmThroughWorker(input);
+      window.octopusBeak.spending.prewarmPairingCandidates = async (input) => {
+        const result = await window.__pairingPrewarmThroughWorker(input);
+        window.__pairingPrewarmVersions.push(result.dataVersion);
+        window.__pairingPrewarmDone = true;
+        return result;
+      };
     });
     await page.addInitScript(() => {
       localStorage.setItem("octopusbeak-locale", "en");
     });
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
+    const prewarmStartedAt = performance.now();
+    await page.waitForFunction(() => window.__pairingPrewarmDone === true, undefined, { timeout: 30_000 });
+    const prewarmElapsedMs = performance.now() - prewarmStartedAt;
 
     const openStartedAt = await page.evaluate(() => {
       const now = performance.now();
@@ -244,7 +261,6 @@ async function main() {
     await page.locator("[data-open-pairing]").first().click();
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
     const openElapsedMs = await page.evaluate((startedAt) => performance.now() - startedAt, openStartedAt);
-    assert.ok(openElapsedMs <= SLA_MS, `real UI Pairing opening exceeded ${SLA_MS}ms: ${openElapsedMs.toFixed(1)}ms`);
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).check();
 
     const confirmStartedAt = await page.evaluate(() => {
@@ -256,7 +272,11 @@ async function main() {
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
     await page.locator('[data-purchase-record][data-basis="linked"]').waitFor({ timeout: 30_000 });
     const confirmElapsedMs = await page.evaluate((startedAt) => performance.now() - startedAt, confirmStartedAt);
-    assert.ok(confirmElapsedMs <= SLA_MS, `real UI Pairing confirmation exceeded ${SLA_MS}ms: ${confirmElapsedMs.toFixed(1)}ms`);
+    await page.waitForFunction(
+      (version) => window.__pairingPrewarmVersions.includes(version),
+      fixture.dataVersion + 1,
+      { timeout: 30_000 },
+    );
 
     const publicReadStartedAt = performance.now();
     const postConfirmRank = await actual.client.rankPairingCandidates({
@@ -286,17 +306,18 @@ async function main() {
     assert.deepEqual(errors, []);
     assert.equal(rankBridgeCallCount, 1);
     assert.equal(confirmBridgeCallCount, 1);
+    assert.deepEqual([...new Set(prewarmVersions)].sort((left, right) => left - right), [
+      fixture.dataVersion,
+      fixture.dataVersion + 1,
+    ]);
     const browserEvidence = await page.evaluate(() => ({
       longTasks: window.__pairingLongTasks,
       maxTimerDelayMs: window.__pairingTimerDelay,
     }));
-    assert.equal(browserEvidence.longTasks.some((entry) => entry.duration > 200), false,
-      `Pairing UI had a >200ms long task: ${JSON.stringify(browserEvidence.longTasks)}`);
-    assert.ok(browserEvidence.maxTimerDelayMs < 200,
-      `Pairing UI timer response exceeded 200ms: ${browserEvidence.maxTimerDelayMs.toFixed(1)}ms`);
 
     const totalMs = performance.now() - overallStartedAt;
     const evidence = {
+      runNumber,
       machine: `${process.arch}/${platform()}`,
       machineModel: cpus()[0]?.model ?? "unknown",
       memoryBytes: totalmem(),
@@ -309,6 +330,7 @@ async function main() {
       existingLinkCountBefore: EXPECTED_FIXTURE_SHAPE.links - 1,
       existingLinkCountAfter: EXPECTED_FIXTURE_SHAPE.links,
       setupMs: fixture.setupMs,
+      prewarmElapsedMs,
       openElapsedMs,
       confirmElapsedMs,
       publicReadMs,
@@ -318,11 +340,24 @@ async function main() {
       bridgeTimings,
       rankBridgeCallCount,
       confirmBridgeCallCount,
+      prewarmBridgeCallCount,
       transport: "Playwright Svelte UI -> exposed Node binding -> FinancialPageWorkerClient -> worker_threads -> canonical store",
       store: "temporary canonical SQLite",
     };
     console.log(JSON.stringify(evidence, null, 2));
+    const timingFailures = [
+      openElapsedMs > SLA_MS ? `open ${openElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
+      confirmElapsedMs > SLA_MS ? `confirm ${confirmElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
+      browserEvidence.longTasks.some((entry) => entry.duration > 200)
+        ? `long task ${JSON.stringify(browserEvidence.longTasks)}`
+        : null,
+      browserEvidence.maxTimerDelayMs >= 200
+        ? `timer delay ${browserEvidence.maxTimerDelayMs.toFixed(1)}ms >= 200ms`
+        : null,
+    ].filter(Boolean);
+    assert.deepEqual(timingFailures, [], `Pairing UI timing contract failed: ${timingFailures.join("; ")}`);
     assert.ok(totalMs < 5 * 60_000, "real UI Pairing suite exceeded five minutes");
+    return evidence;
   } finally {
     await actual?.client.close();
     await preflight?.client.close();
@@ -330,6 +365,31 @@ async function main() {
     await server?.close();
     await rm(fixture.directory, { recursive: true, force: true });
   }
+}
+
+async function main() {
+  for (const [environmentName, expected] of [
+    ["PAIRING_BENCHMARK_TRANSACTIONS", EXPECTED_FIXTURE_SHAPE.transactions],
+    ["PAIRING_BENCHMARK_INVOICES", EXPECTED_FIXTURE_SHAPE.invoices],
+    ["PAIRING_BENCHMARK_LINKS", EXPECTED_FIXTURE_SHAPE.links],
+  ]) {
+    if (process.env[environmentName] !== undefined && Number(process.env[environmentName]) !== expected)
+      throw new Error(`${environmentName} must remain ${expected} for the real UI acceptance check.`);
+  }
+  const suiteStartedAt = performance.now();
+  const evidence = [];
+  for (let runNumber = 1; runNumber <= 3; runNumber += 1)
+    evidence.push(await runSingle(runNumber));
+  const suiteElapsedMs = performance.now() - suiteStartedAt;
+  assert.ok(suiteElapsedMs < 5 * 60_000, "three fresh real UI Pairing runs exceeded five minutes");
+  console.log(JSON.stringify({
+    suiteRuns: evidence.length,
+    suiteElapsedMs,
+    openElapsedMs: evidence.map((run) => run.openElapsedMs),
+    confirmElapsedMs: evidence.map((run) => run.confirmElapsedMs),
+    maxTimerDelayMs: evidence.map((run) => run.maxTimerDelayMs),
+    longTaskCounts: evidence.map((run) => run.longTasks.length),
+  }, null, 2));
 }
 
 await main();
