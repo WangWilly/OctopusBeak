@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import {
   CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_ID,
   CREDIT_CARD_SOURCE_CONNECTION_V1_PURGE_NAMESPACES,
@@ -22,11 +21,12 @@ import {
   validateCanonicalContractPurgeSchema,
   validateCanonicalDatabaseAfterLifecycle,
   quotedSqlIdentifier,
-  blob,
   relationType,
   tableExists,
   currentUtcMicros,
 } from "./canonical-schema-implementation.ts";
+import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import { blob } from "./canonical-local-identifier.ts";
 
 function bridgeRetiredFubonV18SourceCommits(db: DatabaseSync): void {
   if (!isExactRetiredFubonV18BridgeState(db)) return;

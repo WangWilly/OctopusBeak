@@ -11,22 +11,29 @@ import { z } from "zod";
 import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
-  commitCanonicalCtbcDomesticDepositCaptureBatch,
-  commitCtbcDomesticDepositSourceEvidenceBatch,
+  createCtbcDomesticDepositSourceEvidence,
   CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   deriveCtbcDomesticDepositAccountNumberEvidence,
   type CtbcDomesticDepositCaptureEvidence,
   type CtbcDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/ctbc-domestic-deposit.ts";
-import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalFinancialDepositCaptureBatchInTransaction,
+} from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
+} from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
+  ensureCtbcHumanAttestationEvents,
   getCtbcHumanAttestedV1Manifest,
+  recordInitialCtbcHumanAttestationIfMissing,
 } from "../ledger/canonical/ctbc-human-attestation.ts";
 import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
+  CanonicalFinancialCommitItemError,
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   ctbcResponseDiagnosticDirectoryFromEnvironment,
@@ -39,7 +46,7 @@ import {
 } from "./ctbc-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -234,8 +241,8 @@ export type CtbcStatementsRunDependencies = {
     page: Page,
     input: z.infer<typeof inputSchema>,
   ) => Promise<CtbcCollectedStatements>;
-  canonicalSourceLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
+  /** Directory containing the shared canonical.sqlite source store. */
+  canonicalLedgerDir?: string;
   observedAt?: string;
   /** Injected in checks; production passively reads the authenticated summary POST. */
   readCurrentDepositBalances?: typeof readCtbcCurrentDepositBalances;
@@ -1283,113 +1290,110 @@ export async function runCtbcStatements(
     captures.push(admission.capture);
   }
 
-  const sourceLedgerDir =
-    overrides.canonicalSourceLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
+  const canonicalLedgerDir =
+    overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
-  const sourceStore = createCanonicalSourceStore(
-    canonicalSqlitePath(sourceLedgerDir),
-  );
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
-    : null;
-  const financialStore = financialDatabasePath
-    ? financialDatabasePath === canonicalSqlitePath(sourceLedgerDir)
-      ? sourceStore
-      : createCanonicalSourceStore(financialDatabasePath)
-    : null;
-  const financialWriter: CanonicalFinancialDepositWriterStore | null =
-    financialStore
-      ? {
-          db: financialStore.db,
-          databasePath: financialStore.databasePath,
-          commitClock: () => financialStore.commitClock(),
-        }
-      : null;
-  const financialUsesSourceStore = financialStore === sourceStore;
   const captureEntries = captures.map((capture, index) => ({
     capture,
     captureId: `ctbc-${observedAt}-${index}`,
   }));
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
-  let status: CtbcStatementsOutput["status"] = "source-only";
-
-  try {
-    if (!financialWriter || !financialUsesSourceStore) {
-      await commitCtbcDomesticDepositSourceEvidenceBatch(
-        sourceStore,
-        captureEntries,
-      );
-    }
-    if (financialWriter) {
-      const manifest = getCtbcHumanAttestedV1Manifest();
-      const financialInputs = captureEntries.map(({ capture, captureId }) => ({
-        capture,
-        captureId: `ctbc-financial-${captureId}`,
-        humanAttestation: manifest,
-      }));
-      const admissions = financialInputs.map(
-        admitCtbcDomesticDepositFinancialCapture,
-      );
-      if (admissions.every((admission) => admission.status === "admitted")) {
-        await commitCanonicalCtbcDomesticDepositCaptureBatch(
-          financialWriter,
-          financialInputs,
+  const manifest = getCtbcHumanAttestedV1Manifest();
+  const financialCaptures: ExistingCtbcFinancialCapture[] = [];
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = captureEntries.map(
+    ({ capture, captureId }) => ({
+      provider: "ctbc",
+      product: "domestic-deposit",
+      itemKey: captureId,
+      commit: (transaction) => {
+        transaction.admission.admit(
+          createCtbcDomesticDepositSourceEvidence(capture, captureId),
         );
-        status = "financial-admitted";
-
-        // The balance POST is collected only after every ordinary statement
-        // capture is financially admitted. Every provider row must join the
-        // existing human-attested CTBC identity by its exact accountId.
-        const financialCaptures = admissions.map((admission) => {
-          if (!admission.capture)
-            throw new Error("CTBC financial admission lost its canonical identity.");
-          return admission.capture;
+        // An empty, terminal provider response is still a valid Source
+        // Capture, but it has no financial rows to admit. Preserve the
+        // source-only result without manufacturing an empty financial scope.
+        if (capture.responses.every((response) => response.rows.length === 0))
+          return captureId;
+        ensureCtbcHumanAttestationEvents(transaction.database);
+        recordInitialCtbcHumanAttestationIfMissing(
+          transaction.database,
+          capture.observedAt,
+        );
+        const admission = admitCtbcDomesticDepositFinancialCapture({
+          capture,
+          captureId: `ctbc-financial-${captureId}`,
+          humanAttestation: manifest,
         });
-        if (financialCaptures.length > 0) {
-          const currentRows = await readCurrent(page, {
-            observedAt: ctbcObservedAt(),
-          });
-          const existing = indexCtbcCurrentDepositFinancialCaptures(
-            financialCaptures,
+        if (admission.status !== "admitted" || !admission.capture)
+          throw new CanonicalFinancialCommitItemError(
+            `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
           );
-          const currentCaptures = currentRows.map((row) => {
-            const matching = existing.get(
-              `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-            );
-            if (!matching)
-              throw new Error(
-                "CTBC current deposit snapshot contains an account without an existing admitted identity.",
-              );
-            return admitCurrentDepositBalanceCapture(
-              buildCtbcCurrentDepositBalanceCapture(row, matching),
-            );
-          });
-          for (const currentCapture of currentCaptures)
-            await commitCurrentDepositBalanceCapture(
-              financialStore!,
-              currentCapture,
-            );
-        }
-      } else if (financialUsesSourceStore) {
-        await commitCtbcDomesticDepositSourceEvidenceBatch(
-          sourceStore,
-          captureEntries,
+        const result = commitCanonicalFinancialDepositCaptureBatchInTransaction(
+          transaction.writer,
+          [admission.capture],
+          transaction.admission,
+          (db, results) =>
+            commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
+              db,
+              results.map((entry) => entry.captureId),
+            ),
         );
-      }
+        financialCaptures.push(admission.capture);
+        return result;
+      },
+    }),
+  );
+  const currentBalanceItems = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+    if (financialCaptures.length === 0) return;
+    // The balance POST is deliberately collected after ordinary statement
+    // items have committed, while the execution seam still owns the handle.
+    const currentRows = await readCurrent(page, {
+      observedAt: ctbcObservedAt(),
+    });
+    const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+    for (const row of currentRows) {
+      const matching = existing.get(
+        `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+      );
+      if (!matching)
+        throw new Error(
+          "CTBC current deposit snapshot contains an account without an existing admitted identity.",
+        );
+      const balanceCapture = buildCtbcCurrentDepositBalanceCapture(row, matching);
+      yield {
+        provider: "ctbc",
+        product: "current-balance",
+        itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
+        commit: (transaction) =>
+          commitCurrentDepositBalanceCaptureInTransaction(
+            transaction.writer,
+            admitCurrentDepositBalanceCapture(balanceCapture),
+            transaction.admission,
+          ),
+      };
     }
-  } finally {
-    if (financialStore && !financialUsesSourceStore) financialStore.close();
-    sourceStore.close();
-  }
+  };
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+      yield* executionItems;
+      yield* currentBalanceItems();
+    })(),
+    provider: "ctbc",
+    product: "financial",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `CTBC canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
+    );
 
   return {
     ...collected.output,
     sourceCaptureCount: captures.length,
-    status,
+    status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
   };
 }
 
@@ -1417,9 +1421,11 @@ export default workflow("ctbcStatements", {
 
     console.log("automation-progress: 25");
     const result = await runCtbcStatements(page, input, {
-      canonicalFinancialLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
-        ? process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR
-        : undefined,
+      canonicalLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
+        ? process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+          process.env.LEDGER_DIR ??
+          DEFAULT_LEDGER_DIR
+        : DEFAULT_LEDGER_DIR,
     });
     console.log("automation-progress: 100");
     return result;

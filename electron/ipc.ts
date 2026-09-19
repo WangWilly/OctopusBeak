@@ -52,6 +52,16 @@ import {
   type SpendingLoadInput,
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
+import type {
+  SpendingCandidateActionInput,
+  SpendingConfirmActionInput,
+  SpendingLinkActionInput,
+} from "../src/lib/spending/model.ts";
+import type {
+  FinancialPageLoadInput,
+  FinancialPageRequestOptions,
+} from "../src/lib/desktop/api.ts";
+import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
@@ -64,6 +74,168 @@ import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
 } from "./window-options.ts";
+import { openCanonicalDatabaseHandle } from "../src/ledger/canonical/canonical-database.ts";
+import {
+  createFinancialFreshnessBroadcaster,
+  FINANCIAL_FRESHNESS_LATEST_CHANNEL,
+  latestKnowledgePointFromDatabase,
+} from "./financial-freshness.ts";
+
+function cutoffFrom(value: unknown): { knowledgePoint: number } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial query cutoff must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = record.knowledgePoint;
+  if (
+    typeof knowledgePoint !== "number" ||
+    !Number.isSafeInteger(knowledgePoint) ||
+    knowledgePoint < 0 ||
+    Object.keys(record).length !== 1
+  ) {
+    throw new TypeError(
+      "Financial query cutoff must contain a non-negative safe integer knowledge point.",
+    );
+  }
+  return Object.freeze({ knowledgePoint });
+}
+
+function financialPageLoadInputFrom(
+  value: unknown,
+): FinancialPageLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "cutoff")) {
+    throw new TypeError("Financial page load input contains an unknown field.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function financialPageRequestOptionsFrom(
+  value: unknown,
+): FinancialPageRequestOptions | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page request options must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "requestToken")) {
+    throw new TypeError("Financial page request options contains an unknown field.");
+  }
+  if (record.requestToken === undefined) return {};
+  if (typeof record.requestToken !== "string" || record.requestToken.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (record.requestToken.length > 256) {
+    throw new TypeError("Financial page request token is too long.");
+  }
+  return Object.freeze({ requestToken: record.requestToken });
+}
+
+function financialPageRequestTokenFrom(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (value.length > 256) throw new TypeError("Financial page request token is too long.");
+  return value;
+}
+
+function financialSectionFrom(value: unknown): FinancialSection {
+  if (value !== "primary" && value !== "secondary") {
+    throw new TypeError("Financial section must be primary or secondary.");
+  }
+  return value;
+}
+
+function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) =>
+    key !== "selectedMonth" && key !== "selectedCategory" && key !== "cutoff"
+  )) {
+    throw new TypeError("Spending load input contains an unknown field.");
+  }
+  if (record.selectedMonth !== undefined && typeof record.selectedMonth !== "string") {
+    throw new TypeError("Spending selected month must be a string.");
+  }
+  if (record.selectedCategory !== undefined && typeof record.selectedCategory !== "string") {
+    throw new TypeError("Spending selected category must be a string.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return {
+    ...(record.selectedMonth === undefined ? {} : { selectedMonth: record.selectedMonth }),
+    ...(record.selectedCategory === undefined ? {} : { selectedCategory: record.selectedCategory }),
+    ...(cutoff === undefined ? {} : { cutoff }),
+  } as SpendingLoadInput;
+}
+
+function requiredSpendingActionText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${label} is required.`);
+  }
+  return value;
+}
+
+function spendingIdempotencyKeyFrom(value: unknown): string {
+  const key = requiredSpendingActionText(value, "Spending command idempotency key");
+  if (key.length > 256) throw new TypeError("Spending command idempotency key is too long.");
+  return key;
+}
+
+function spendingConfirmActionFrom(value: unknown): SpendingConfirmActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending confirmation must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "direct") {
+    return {
+      kind: "direct",
+      invoiceIdentityId: requiredSpendingActionText(record.invoiceIdentityId, "Invoice identity id"),
+      transactionIdentityId: requiredSpendingActionText(record.transactionIdentityId, "Transaction identity id"),
+      idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+    };
+  }
+  if (record.kind !== "candidate") throw new TypeError("Spending confirmation kind is invalid.");
+  return {
+    kind: "candidate",
+    invoiceIdentityId: requiredSpendingActionText(record.invoiceIdentityId, "Invoice identity id"),
+    transactionIdentityId: requiredSpendingActionText(record.transactionIdentityId, "Transaction identity id"),
+    idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+  };
+}
+
+function spendingCandidateActionFrom(value: unknown): SpendingCandidateActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending candidate action must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
+  return {
+    kind: "candidate",
+    candidateId: requiredSpendingActionText(record.candidateId, "Candidate id"),
+    ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey) }),
+  };
+}
+
+function spendingLinkActionFrom(value: unknown): SpendingLinkActionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending link action must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    invoiceId: requiredSpendingActionText(record.invoiceId, "Invoice id"),
+    transactionId: requiredSpendingActionText(record.transactionId, "Transaction id"),
+    idempotencyKey: spendingIdempotencyKeyFrom(record.idempotencyKey),
+  };
+}
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -75,6 +247,20 @@ export function registerOctopusBeakIpc({
   const financialPages = createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
+  const financialFreshness = createFinancialFreshnessBroadcaster({
+    getWindows: () => BrowserWindow.getAllWindows(),
+  });
+  const publishSpendingMutationResult = async <T extends { knowledgePoint: number }>(
+    operation: Promise<T>,
+  ): Promise<T> => {
+    const result = await operation;
+    financialFreshness.publish({ commitSequence: result.knowledgePoint });
+    return result;
+  };
+  const canonicalLedgerDir =
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    "data/ledger";
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -95,22 +281,88 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => financialPages.load("overview"));
-  ipcMain.handle("assets:load", () => financialPages.load("assets"));
-  ipcMain.handle("liabilities:load", () => financialPages.load("liabilities"));
+  ipcMain.handle("overview:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "overview",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
+  ipcMain.handle("overview:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "overview",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
+  ipcMain.handle("assets:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "assets",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
+  ipcMain.handle("assets:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "assets",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
+  ipcMain.handle("liabilities:load", (_event, input: unknown, options: unknown) =>
+    financialPages.load(
+      "liabilities",
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
+  ipcMain.handle("liabilities:section:load", (_event, section: unknown, input: unknown, options: unknown) =>
+    financialPages.loadSection(
+      "liabilities",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options)?.requestToken,
+    ),
+  );
   ipcMain.handle(
     "spending:load",
-    (_event, input: SpendingLoadInput | undefined) =>
-      financialPages.load("spending", input),
+    (_event, input: unknown, options: unknown) =>
+      financialPages.load(
+        "spending",
+        spendingLoadInputFrom(input),
+        financialPageRequestOptionsFrom(options)?.requestToken,
+      ),
   );
+  ipcMain.handle(
+    "spending:section:load",
+    (_event, section: unknown, input: unknown, options: unknown) =>
+      financialPages.loadSection(
+        "spending",
+        financialSectionFrom(section),
+        spendingLoadInputFrom(input),
+        financialPageRequestOptionsFrom(options)?.requestToken,
+      ),
+  );
+  ipcMain.handle("financial:cancel", (_event, requestToken: unknown) => {
+    financialPages.cancel(financialPageRequestTokenFrom(requestToken));
+    return undefined;
+  });
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
-    financialPages.confirmCandidate(input),
+    publishSpendingMutationResult(
+      financialPages.confirmCandidate(spendingConfirmActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:denyCandidate", (_event, input) =>
-    financialPages.denyCandidate(input),
+    publishSpendingMutationResult(
+      financialPages.denyCandidate(spendingCandidateActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:revokeLink", (_event, input) =>
-    financialPages.revokeLink(input),
+    publishSpendingMutationResult(
+      financialPages.revokeLink(spendingLinkActionFrom(input)),
+    ),
   );
   ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
     await updateSpendingItemCategory(input);
@@ -123,6 +375,16 @@ export function registerOctopusBeakIpc({
       return { ok: true as const };
     },
   );
+  ipcMain.handle(FINANCIAL_FRESHNESS_LATEST_CHANNEL, () => {
+    const database = openCanonicalDatabaseHandle(canonicalLedgerDir, {
+      readOnly: true,
+    });
+    try {
+      return latestKnowledgePointFromDatabase(database.db);
+    } finally {
+      database.close();
+    }
+  });
   ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
@@ -187,13 +449,19 @@ export function registerOctopusBeakIpc({
     },
   );
   ipcMain.handle("automation:run", (_event, taskId: string) =>
-    automationRun(taskId),
+    automationRun(taskId, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:runMany", (_event, taskIds: string[]) =>
-    automationRunMany(taskIds),
+    automationRunMany(taskIds, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:resume", (_event, taskId: string) =>
-    automationResume(taskId),
+    automationResume(taskId, undefined, (receipt) => {
+      financialFreshness.publish(receipt);
+    }),
   );
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
     automationCancel(taskId),
@@ -301,7 +569,11 @@ export function registerOctopusBeakIpc({
           record.targetId,
           verified,
         );
-      if (resumed) automationResume(taskId);
+      if (resumed) {
+        automationResume(taskId, undefined, (receipt) => {
+          financialFreshness.publish(receipt);
+        });
+      }
       return { ok: true as const, contract: updatedContract, resumed };
     },
   );
@@ -335,5 +607,7 @@ export function registerOctopusBeakIpc({
   });
   return {
     close: () => financialPages.close(),
+    publishCanonicalFinancialCommitReceipt: (receipt: Parameters<typeof financialFreshness.publish>[0]) =>
+      financialFreshness.publish(receipt),
   };
 }

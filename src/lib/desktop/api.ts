@@ -19,6 +19,23 @@ import type {
   SpendingLoadInput,
   SpendingOverrideUpdate,
 } from "$lib/spending/server/store.ts";
+import type { FinancialQueryCutoff } from "$lib/shared-ledger/server/financial-query.ts";
+import type {
+  OverviewPrimarySection,
+  OverviewSecondarySection,
+} from "$lib/overview/types.ts";
+import type {
+  AssetsPrimarySection,
+  AssetsSecondarySection,
+} from "$lib/assets/types.ts";
+import type {
+  LiabilitiesPrimarySection,
+  LiabilitiesSecondarySection,
+} from "$lib/liabilities/types.ts";
+import type {
+  SpendingPrimarySection,
+  SpendingSecondarySection,
+} from "$lib/spending/model.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
   HumanAssistanceContract,
@@ -55,6 +72,10 @@ export type AutomationDesktopModel = {
   credentialGroups: CredentialGroupDto[];
 };
 
+export type FinancialFreshnessEvent = Readonly<{
+  knowledgePoint: number;
+}>;
+
 export type AutomationActionResult =
   | { started: string }
   | { resumed: string }
@@ -77,6 +98,18 @@ export type ViewerInputResult = {
   resumed: boolean;
 };
 
+export type FinancialPageLoadInput = Readonly<{
+  cutoff?: FinancialQueryCutoff;
+}>;
+
+/**
+ * Renderer-owned, non-financial identity for one queued page-read generation.
+ * The desktop boundary treats it as opaque and never uses it as ledger data.
+ */
+export type FinancialPageRequestOptions = Readonly<{
+  requestToken?: string;
+}>;
+
 export function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
@@ -91,16 +124,32 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
   };
   overview: {
-    load(): Promise<OverviewPageDto>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<OverviewSecondarySection>;
   };
   assets: {
-    load(): Promise<AssetsPageDto>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<AssetsSecondarySection>;
   };
   liabilities: {
-    load(): Promise<LiabilitiesPageDto>;
+    load(input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesPageDto>;
+    loadSection(section: "primary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesPrimarySection>;
+    loadSection(section: "secondary", input?: FinancialPageLoadInput, options?: FinancialPageRequestOptions): Promise<LiabilitiesSecondarySection>;
+  };
+  financial: {
+    cancel(requestToken: string): Promise<void>;
+  };
+  financialFreshness: {
+    subscribe(listener: (event: FinancialFreshnessEvent) => void): () => void;
+    subscribeRecovery(listener: () => void): () => void;
+    latestKnowledgePoint(): Promise<number>;
   };
   spending: {
-    load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+    load(input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingPageDto>;
+    loadSection(section: "primary", input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingPrimarySection>;
+    loadSection(section: "secondary", input?: SpendingLoadInput, options?: FinancialPageRequestOptions): Promise<SpendingSecondarySection>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
@@ -134,9 +183,17 @@ export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
   "overview:load",
+  "overview:section:load",
   "assets:load",
+  "assets:section:load",
   "liabilities:load",
+  "liabilities:section:load",
+  "financialFreshness:changed",
+  "financialFreshness:latestKnowledgePoint",
+  "financialFreshness:reconnected",
+  "financial:cancel",
   "spending:load",
+  "spending:section:load",
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",

@@ -2,25 +2,27 @@ import { existsSync } from "node:fs";
 import { channel } from "node:diagnostics_channel";
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   type CanonicalSourceStore,
 } from "../../../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
-  confirmSpendingDedupLink,
   denySpendingDedupCandidate,
+  executeSpendingRecognitionCommand,
   querySpendingRecognition,
   recordSpendingMatchCandidate,
   revokeSpendingDedupLink,
 } from "../../../ledger/canonical/spending-recognition.ts";
 import {
   composePurchaseReport,
+  canonicalPurchaseUuid,
   evaluateSpendingMatchCandidates,
   type PurchaseReport,
 } from "../../../ledger/canonical/spending-purchase-report.ts";
 import type { SpendingCategory } from "../categories.ts";
 import type {
   SpendingCandidateActionInput,
+  SpendingCandidateConfirmationInput,
   SpendingConfirmActionInput,
   SpendingLinkActionInput,
   SpendingPageDto,
@@ -32,10 +34,14 @@ import type {
   CanonicalSpendingRecordDto,
   CanonicalSpendingView,
 } from "../model.ts";
-import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+import {
+  createSpendingPurchaseReportPatch,
+  type SpendingRecognitionReportPatch,
+} from "../purchase-report-patch.ts";
 import {
   createFinancialQuery,
   queryCurrentSpendingFromDatabase,
+  type FinancialQueryCutoff,
   type CurrentSpendingQueryResult,
 } from "../../shared-ledger/server/financial-query.ts";
 import { exactToNumber } from "../../shared-money/exact.ts";
@@ -48,6 +54,21 @@ import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
 } from "../../../ledger/canonical/transaction-taxonomy.ts";
 import type { SpendingInvoiceDto, SpendingItemDto } from "../model.ts";
+import type {
+  SpendingPrimaryDto,
+  SpendingPrimarySection,
+  SpendingSecondaryDto,
+  SpendingSecondarySection,
+} from "../model.ts";
+import {
+  assertMatchingFinancialSectionKnowledgePoints,
+  createFinancialSectionResult,
+  type FinancialSectionQueryInput,
+} from "../../shared-ledger/financial-section.ts";
+import {
+  financialPerformanceTelemetry,
+  type FinancialPerformanceOperation,
+} from "../../performance/financial-performance-telemetry.ts";
 
 export type SpendingOverrideUpdate =
   | { statementRowId: string; state: null }
@@ -62,14 +83,26 @@ export type SpendingOverrideUpdate =
 export type SpendingLoadInput = {
   selectedMonth?: string;
   selectedCategory?: SpendingCategory | string;
+  cutoff?: FinancialQueryCutoff;
 };
 
 const LOCAL_SPENDING_USER_ID = "local-user";
 const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");
 const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
+const candidateAnalysisDiagnostics = channel("octopus-beak.spending.candidate-analysis");
+const sectionDiagnostics = channel("octopus-beak.financial.section-query");
+const spendingPrimarySnapshots = new WeakMap<object, CurrentSpendingQueryResult>();
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
+
+function commandIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "")
+    throw new TypeError("Spending command idempotency key is required.");
+  if (value.length > 256)
+    throw new TypeError("Spending command idempotency key is too long.");
+  return value;
+}
 
 function taxonomyLabels(
   code: string | null | undefined,
@@ -283,6 +316,7 @@ function purchaseReportWithEphemeralCandidates(
   query: CurrentSpendingQueryResult,
   report: PurchaseReport = query.purchaseReport,
 ): PurchaseReport {
+  candidateAnalysisDiagnostics.publish({});
   const activeLinkPairs = new Set(
     report.records
       .filter((record) => record.basis === "linked" && record.link)
@@ -350,34 +384,87 @@ function purchaseReportWithEphemeralCandidates(
   });
 }
 
-function currentSpendingQuery(ledgerDir: string): CurrentSpendingQueryResult {
-  fullProjectionDiagnostics.publish({ ledgerDir });
-  return createFinancialQuery(ledgerDir).current({ kind: "current", product: "spending" });
+function currentSpendingQuery(
+  ledgerDir: string,
+  cutoff?: FinancialQueryCutoff,
+): CurrentSpendingQueryResult {
+  fullProjectionDiagnostics.publish({ operation: "current-spending-projection" });
+  return createFinancialQuery(ledgerDir).current({
+    kind: "current",
+    product: "spending",
+    cutoff,
+  });
+}
+
+function currentSpendingSectionQuery(
+  ledgerDir: string,
+  cutoff: FinancialQueryCutoff | undefined,
+  section: "primary" | "secondary",
+): CurrentSpendingQueryResult {
+  return createFinancialQuery(ledgerDir).current({
+    kind: "current",
+    product: "spending",
+    cutoff,
+    section,
+  });
 }
 
 function currentSpendingQueryFromStore(
   store: CanonicalSourceStore,
   ledgerDir: string,
 ): CurrentSpendingQueryResult {
-  fullProjectionDiagnostics.publish({ ledgerDir });
+  fullProjectionDiagnostics.publish({ operation: "current-spending-projection" });
   return queryCurrentSpendingFromDatabase(store.db);
 }
 
-function recordStore(ledgerDir: string) {
-  const databasePath = canonicalSqlitePath(ledgerDir);
-  if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
-  storeOpenDiagnostics.publish({ ledgerDir });
-  return createCanonicalSourceStore(databasePath);
+function recordStore(
+  ledgerDir: string,
+  telemetry?: FinancialPerformanceOperation,
+) {
+  const span = telemetry?.startSpan("store-open");
+  try {
+    const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+    if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+    storeOpenDiagnostics.publish({ operation: "spending-store-open" });
+    const store = createCanonicalSourceStore(ledgerDir);
+    span?.finish();
+    return store;
+  } catch (error) {
+    span?.finish("error", { error });
+    throw error;
+  }
+}
+
+function withSpendingActionTelemetry<T>(
+  operation: (telemetry: FinancialPerformanceOperation) => T,
+): T {
+  const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
+  telemetry.startSpan("action-start").finish();
+  try {
+    const result = operation(telemetry);
+    telemetry.startSpan("action-result").finish();
+    return result;
+  } catch (error) {
+    telemetry.startSpan("action-result").finish("error", { error });
+    throw error;
+  }
 }
 
 function pageFromQuery(
   query: CurrentSpendingQueryResult,
   purchaseReport: PurchaseReport = query.purchaseReport,
-  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
+  {
+    selectedMonth,
+    selectedCategory,
+    includeEphemeralCandidates = true,
+  }: SpendingLoadInput & { includeEphemeralCandidates?: boolean } = {},
 ): SpendingPageDto {
   return {
+    knowledgePoint: query.spending.knowledgePoint,
     canonical: canonicalView(query.spending, selectedMonth, selectedCategory),
-    purchaseReport: purchaseReportWithEphemeralCandidates(query, purchaseReport),
+    purchaseReport: includeEphemeralCandidates
+      ? purchaseReportWithEphemeralCandidates(query, purchaseReport)
+      : purchaseReport,
     invoices: currentSpendingInvoices(query.invoices),
   };
 }
@@ -402,7 +489,23 @@ function actionResultAfterRecognitionMutation(
     recognition,
   });
   const after = purchaseReportWithEphemeralCandidates(query, purchaseReport);
-  return { patch: createSpendingPurchaseReportPatch(before, after) };
+  const patch = createSpendingPurchaseReportPatch(before, after);
+  return { knowledgePoint: patch.knowledgeAt, patch };
+}
+
+function recognitionActionResult(
+  result: ReturnType<typeof executeSpendingRecognitionCommand>,
+): SpendingPurchaseActionResult {
+  const patch: SpendingRecognitionReportPatch = Object.freeze({
+    kind: "spending-recognition-patch",
+    baseKnowledgeAt: result.knowledgePoint - 1,
+    knowledgeAt: result.knowledgePoint,
+    operation: result.kind,
+    invoiceId: result.invoiceId,
+    transactionId: result.transactionId,
+    eventId: result.eventId,
+  });
+  return Object.freeze({ knowledgePoint: result.knowledgePoint, patch });
 }
 
 function requiredActionText(value: unknown, label: string): string {
@@ -415,19 +518,32 @@ function candidateActionValue(input: unknown): SpendingCandidateDecisionInput {
     throw new TypeError("Spending candidate action must be an object.");
   const value = input as Record<string, unknown>;
   if (value.kind !== "candidate") throw new TypeError("Spending candidate action kind must be candidate.");
-  return { kind: "candidate", candidateId: requiredActionText(value.candidateId, "Candidate id") };
+  const candidateId = requiredActionText(value.candidateId, "Candidate id");
+  return {
+    kind: "candidate",
+    candidateId,
+    ...(value.idempotencyKey === undefined ? {} : { idempotencyKey: commandIdempotencyKey(value.idempotencyKey) }),
+  };
 }
 
 function confirmActionValue(input: unknown): SpendingConfirmActionInput {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new TypeError("Spending confirmation must be an object.");
   const value = input as Record<string, unknown>;
-  if (value.kind === "candidate") return candidateActionValue(input);
+  if (value.kind === "candidate") {
+    return {
+      kind: "candidate",
+      invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
+      transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+      idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
+    };
+  }
   if (value.kind !== "direct") throw new TypeError("Spending confirmation kind is invalid.");
   return {
     kind: "direct",
     invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
     transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+    idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
   };
 }
 
@@ -438,6 +554,7 @@ function linkActionValue(input: unknown): SpendingLinkRevokeInput {
   return {
     invoiceId: requiredActionText(value.invoiceId, "Invoice id"),
     transactionId: requiredActionText(value.transactionId, "Transaction id"),
+    idempotencyKey: commandIdempotencyKey(value.idempotencyKey),
   };
 }
 
@@ -476,14 +593,31 @@ function decisionEvidence(candidate: ReturnType<typeof resolveCandidate>) {
 function decideCandidate(
   input: unknown,
   ledgerDir: string,
-  kind: "confirmed" | "denied",
+  kind: "denied",
+  telemetry: FinancialPerformanceOperation,
 ): SpendingPurchaseActionResult {
   const action = candidateActionValue(input);
-  const store = recordStore(ledgerDir);
+  if (!action.candidateId) throw new TypeError("Candidate id is required for candidate denial.");
+  const store = recordStore(ledgerDir, telemetry);
   try {
     const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const candidate = resolveCandidate(query, action.candidateId);
-    const materialized = recordSpendingMatchCandidate(store, candidate);
+    const validation = telemetry.startSpan("narrow-validation");
+    let candidate: ReturnType<typeof resolveCandidate>;
+    try {
+      candidate = resolveCandidate(query, action.candidateId);
+      validation.finish();
+    } catch (error) {
+      validation.finish("error", { error });
+      throw error;
+    }
+    const commitSpan = telemetry.startSpan("canonical-commit");
+    let materialized: ReturnType<typeof recordSpendingMatchCandidate>;
+    try {
+      materialized = recordSpendingMatchCandidate(store, candidate);
+    } catch (error) {
+      commitSpan.finish("error", { error });
+      throw error;
+    }
     const evidence = decisionEvidence(candidate);
     const decision = {
       decisionKey: `spending/user/${kind}/${candidate.candidateKey}`,
@@ -493,9 +627,37 @@ function decideCandidate(
       evidenceKnowledgeSequence: Math.max(query.purchaseReport.knowledgeAt, materialized.commitSequence),
       evidence,
     };
-    if (kind === "confirmed") confirmSpendingDedupLink(store, decision);
-    else denySpendingDedupCandidate(store, decision);
+    try {
+      denySpendingDedupCandidate(store, decision);
+      commitSpan.finish();
+    } catch (error) {
+      commitSpan.finish("error", { error });
+      throw error;
+    }
     return actionResultAfterRecognitionMutation(query, store);
+  } finally {
+    store.close();
+  }
+}
+
+function confirmCandidateByIdentity(
+  action: SpendingCandidateConfirmationInput,
+  ledgerDir: string,
+  telemetry: FinancialPerformanceOperation,
+): SpendingPurchaseActionResult {
+  const invoiceId = action.invoiceIdentityId;
+  const transactionId = action.transactionIdentityId;
+  if (!invoiceId || !transactionId)
+    throw new TypeError("Candidate confirmation requires canonical invoice and transaction identities.");
+  const store = recordStore(ledgerDir, telemetry);
+  try {
+    const result = executeSpendingRecognitionCommand(store, {
+      kind: "establish-link",
+      invoiceId: invoiceId.toLowerCase(),
+      transactionId: transactionId.toLowerCase(),
+      idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+    }, telemetry);
+    return recognitionActionResult(result);
   } finally {
     store.close();
   }
@@ -505,96 +667,159 @@ export function confirmSpendingCandidate(
   input: SpendingConfirmActionInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  const action = confirmActionValue(input);
-  if (action.kind === "candidate") return decideCandidate(action, ledgerDir, "confirmed");
-  const store = recordStore(ledgerDir);
-  try {
-    const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const invoice = query.purchaseReport.records.find((record) =>
-      record.basis === "invoice" && record.invoice?.invoiceId === action.invoiceIdentityId,
-    );
-    const payment = query.purchaseReport.records.find((record) =>
-      record.basis === "bank-transaction" && record.transaction?.transactionId === action.transactionIdentityId,
-    );
-    if (!invoice?.invoice) throw new Error("Spending invoice selection is stale, linked, revoked, or missing.");
-    if (!payment?.transaction) throw new Error("Spending payment selection is stale, linked, or ineligible.");
-    confirmSpendingDedupLink(store, {
-      invoiceIdentityId: action.invoiceIdentityId,
-      transactionIdentityId: action.transactionIdentityId,
-      decisionKey: `spending/user/direct/${action.invoiceIdentityId}/${action.transactionIdentityId}/${query.purchaseReport.knowledgeAt}`,
-      userId: LOCAL_SPENDING_USER_ID,
-      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
-      evidence: {
-        decisionOrigin: "explicit-user-selection",
-        invoice: {
-          identityId: action.invoiceIdentityId,
-          sourceRecordId: invoice.invoice.revision.sourceRecordId,
-          date: invoice.occurrence.value,
-          amount: invoice.amount,
-          label: invoice.description,
-        },
-        payment: {
-          identityId: action.transactionIdentityId,
-          sourceConnectionKey: payment.transaction.sourceConnectionKey,
-          date: payment.transaction.effectiveOn,
-          consumeDate: payment.transaction.consumeDate ?? null,
-          postingDate: payment.transaction.postingDate ?? null,
-          dateBasis: payment.transaction.effectiveDateBasis ?? "effective-date",
-          amount: payment.amount,
-          label: payment.description,
-        },
-      },
-    });
-    return actionResultAfterRecognitionMutation(query, store);
-  } finally {
-    store.close();
-  }
+  return withSpendingActionTelemetry((telemetry) => {
+    const action = confirmActionValue(input);
+    if (action.kind === "candidate") return confirmCandidateByIdentity(action, ledgerDir, telemetry);
+    const store = recordStore(ledgerDir, telemetry);
+    try {
+      const result = executeSpendingRecognitionCommand(store, {
+        kind: "establish-link",
+        invoiceId: action.invoiceIdentityId.toLowerCase(),
+        transactionId: action.transactionIdentityId.toLowerCase(),
+        idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+      }, telemetry);
+      return recognitionActionResult(result);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 export function denySpendingCandidate(
   input: SpendingCandidateDecisionInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  return decideCandidate(input, ledgerDir, "denied");
+  return withSpendingActionTelemetry((telemetry) =>
+    decideCandidate(input, ledgerDir, "denied", telemetry));
 }
 
 export function revokeSpendingLink(
   input: SpendingLinkRevokeInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPurchaseActionResult {
-  const action = linkActionValue(input);
-  const store = recordStore(ledgerDir);
-  try {
-    const query = currentSpendingQueryFromStore(store, ledgerDir);
-    const linked = query.purchaseReport.records.find((record) =>
-      record.basis === "linked" &&
-      record.link?.invoiceId === action.invoiceId &&
-      record.link?.transactionId === action.transactionId,
-    );
-    if (!linked?.link) throw new Error("Spending link is stale, missing, or inactive.");
-    revokeSpendingDedupLink(store, {
-      decisionKey: `spending/user/revoke/${action.invoiceId}/${action.transactionId}/${query.purchaseReport.knowledgeAt}`,
-      invoiceId: action.invoiceId,
-      transactionId: action.transactionId,
-      origin: { kind: "user", userId: LOCAL_SPENDING_USER_ID },
-      evidenceKnowledgeSequence: query.purchaseReport.knowledgeAt,
-      evidence: {
-        reason: "user-revoked-link",
-        priorEventId: linked.link.eventId,
-      },
-    });
-    return actionResultAfterRecognitionMutation(query, store);
-  } finally {
-    store.close();
-  }
+  return withSpendingActionTelemetry((telemetry) => {
+    const action = linkActionValue(input);
+    const store = recordStore(ledgerDir, telemetry);
+    try {
+      const result = executeSpendingRecognitionCommand(store, {
+        kind: "remove-link",
+        invoiceId: action.invoiceId.toLowerCase(),
+        transactionId: action.transactionId.toLowerCase(),
+        idempotencyKey: commandIdempotencyKey(action.idempotencyKey),
+      }, telemetry);
+      return recognitionActionResult(result);
+    } finally {
+      store.close();
+    }
+  });
 }
 
 export function loadSpending(
   ledgerDir = DEFAULT_LEDGER_DIR,
-  { selectedMonth, selectedCategory }: SpendingLoadInput = {},
+  { selectedMonth, selectedCategory, cutoff }: SpendingLoadInput = {},
 ): SpendingPageDto {
-  const query = currentSpendingQuery(ledgerDir);
+  const query = currentSpendingQuery(ledgerDir, cutoff);
   return pageFromQuery(query, query.purchaseReport, { selectedMonth, selectedCategory });
+}
+
+export function loadSpendingSection(
+  section: "primary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingPrimarySection;
+export function loadSpendingSection(
+  section: "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingSecondarySection;
+export function loadSpendingSection(
+  section: "primary" | "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory">,
+): SpendingPrimarySection | SpendingSecondarySection;
+export function loadSpendingSection(
+  section: "primary" | "secondary",
+  ledgerDir = DEFAULT_LEDGER_DIR,
+  input: FinancialSectionQueryInput & Pick<SpendingLoadInput, "selectedMonth" | "selectedCategory"> = {},
+): SpendingPrimarySection | SpendingSecondarySection {
+  sectionDiagnostics.publish({ product: "spending", section });
+  if (section === "primary") {
+    const query = currentSpendingSectionQuery(ledgerDir, input.cutoff, section);
+    const page = pageFromQuery(query, query.purchaseReport, {
+      selectedMonth: input.selectedMonth,
+      selectedCategory: input.selectedCategory,
+      includeEphemeralCandidates: false,
+    });
+    const value = spendingPrimary(page);
+    spendingPrimarySnapshots.set(value, query);
+    return createFinancialSectionResult(section, value);
+  }
+  const query = currentSpendingSectionQuery(ledgerDir, input.cutoff, section);
+  return createFinancialSectionResult(section, spendingSecondary(query));
+}
+
+export function combineSpendingSections(
+  primary: SpendingPrimarySection,
+  secondary: SpendingSecondarySection,
+): SpendingPageDto {
+  assertMatchingFinancialSectionKnowledgePoints(primary, secondary);
+  const primarySnapshot = spendingPrimarySnapshots.get(primary.value);
+  const purchaseReport = primarySnapshot
+    ? hydratePurchaseReportTransactions(secondary.value.purchaseReport, primarySnapshot.spending)
+    : secondary.value.purchaseReport;
+  return {
+    ...primary.value,
+    purchaseReport,
+    invoices: secondary.value.invoices,
+    knowledgePoint: primary.knowledgePoint,
+  };
+}
+
+function hydratePurchaseReportTransactions(
+  report: PurchaseReport,
+  spending: CanonicalSpendingReport,
+): PurchaseReport {
+  const transactionsById = new Map(
+    spending.transactions.map((transaction) => [
+      transaction.transactionId.replaceAll("-", "").toLowerCase(),
+      transaction,
+    ]),
+  );
+  return Object.freeze({
+    ...report,
+    records: Object.freeze(report.records.map((record) => {
+      if (!record.transaction) return record;
+      const transaction = transactionsById.get(
+        record.transaction.transactionId.replaceAll("-", "").toLowerCase(),
+      );
+      return transaction
+        ? {
+            ...record,
+            transaction: {
+              ...transaction,
+              transactionId: canonicalPurchaseUuid(record.transaction.transactionId),
+            },
+          }
+        : record;
+    })),
+  });
+}
+
+function spendingPrimary(page: SpendingPageDto): SpendingPrimaryDto {
+  return {
+    knowledgePoint: page.knowledgePoint ?? 0,
+    canonical: page.canonical,
+    purchaseReport: page.purchaseReport,
+    invoices: page.invoices,
+  };
+}
+
+function spendingSecondary(query: CurrentSpendingQueryResult): SpendingSecondaryDto {
+  return {
+    knowledgePoint: query.spending.knowledgePoint,
+    purchaseReport: purchaseReportWithEphemeralCandidates(query),
+    invoices: currentSpendingInvoices(query.invoices),
+  };
 }
 
 export function updateSpendingTransactionOverride(

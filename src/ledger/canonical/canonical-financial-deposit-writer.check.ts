@@ -18,7 +18,10 @@ import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
+  type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical-financial-admission.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "./canonical-source-capture-admission.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
@@ -126,7 +129,7 @@ try {
           db: rawWriterDb,
           databasePath: ":memory:",
           commitClock: () => Date.now() * 1_000,
-        },
+        } as unknown as CanonicalFinancialDepositWriterStore,
         admittedCapture,
       ),
     /canonical database capability|lifecycle/i,
@@ -381,7 +384,7 @@ assert.throws(
 
 const directory = await mkdtemp(join(tmpdir(), "yuanta-financial-writer-v1-"));
 try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   const committed = await commitCanonicalFinancialDepositCapture(
     store,
     admittedCapture,
@@ -410,9 +413,7 @@ try {
   );
   store.close();
 
-  const reopened = createCanonicalSourceStore(
-    join(directory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(directory);
   assert.equal(
     (
       reopened.db
@@ -479,9 +480,7 @@ const batchRollbackDirectory = await mkdtemp(
   join(tmpdir(), "canonical-financial-batch-rollback-"),
 );
 try {
-  const batchStore = createCanonicalSourceStore(
-    join(batchRollbackDirectory, "canonical.sqlite"),
-  );
+  const batchStore = createCanonicalSourceStore(batchRollbackDirectory);
   try {
     await assert.rejects(
       () =>
@@ -515,15 +514,61 @@ try {
   await rm(batchRollbackDirectory, { recursive: true, force: true });
 }
 
+// The closed admission adapter must preserve the generic writer's all-or-
+// nothing behavior while using a caller-owned transaction capability.
+const closedAdmissionBatchRollbackDirectory = await mkdtemp(
+  join(tmpdir(), "canonical-financial-admission-batch-rollback-"),
+);
+try {
+  const store = createCanonicalSourceStore(closedAdmissionBatchRollbackDirectory);
+  try {
+    await assert.rejects(
+      () =>
+        withCanonicalSourceCaptureAdmissionTransaction(
+          store,
+          (capability) =>
+            commitCanonicalFinancialAdmissionInTransaction(
+              store,
+              { kind: "generic", captures: [admittedCapture, admittedCapture] },
+              capability,
+            ),
+        ),
+      /overwrite|capture/i,
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM source_captures")
+          .get() as { value?: number }
+      ).value,
+      0,
+      "a failed generic admission group rolls back every source spine",
+    );
+    assert.equal(
+      (
+        store.db
+          .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
+          .get() as { value?: number }
+      ).value,
+      0,
+    );
+  } finally {
+    store.close();
+  }
+} finally {
+  await rm(closedAdmissionBatchRollbackDirectory, {
+    recursive: true,
+    force: true,
+  });
+}
+
 const mixedDirectory = await mkdtemp(join(tmpdir(), "yuanta-mixed-ledger-v1-"));
 try {
   await commitCathayDomesticDeposit(
     mixedDirectory,
     CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   );
-  const mixedStore = createCanonicalSourceStore(
-    join(mixedDirectory, "canonical.sqlite"),
-  );
+  const mixedStore = createCanonicalSourceStore(mixedDirectory);
   await commitCanonicalFinancialDepositCapture(mixedStore, admittedCapture);
   assert.equal(
     (
@@ -552,9 +597,7 @@ const creditCardVersionDirectory = await mkdtemp(
   join(tmpdir(), "yuanta-credit-card-v1-v2-coexistence-"),
 );
 try {
-  const versionedStore = createCanonicalSourceStore(
-    join(creditCardVersionDirectory, "canonical.sqlite"),
-  );
+  const versionedStore = createCanonicalSourceStore(creditCardVersionDirectory);
   await commitCanonicalFinancialDepositCapture(
     versionedStore,
     yuantaCreditCardRouteAdmission,

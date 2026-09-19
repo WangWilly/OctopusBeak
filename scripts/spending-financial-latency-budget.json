@@ -1,0 +1,12 @@
+{
+  "budgetVersion": "spending-financial-latency-budget-v1",
+  "normal": {
+    "maxP99Ms": 200,
+    "maxMaxMs": 5000
+  },
+  "contention": {
+    "maxP99Ms": 500,
+    "maxMaxMs": 10000
+  },
+  "minIterations": 5
+}

@@ -133,7 +133,7 @@ function capture(
 
 async function fixture<T>(run: (store: ReturnType<typeof createCanonicalSourceStore>) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "canonical-einvoice-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     return await run(store);
   } finally {

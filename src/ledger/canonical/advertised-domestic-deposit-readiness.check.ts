@@ -154,9 +154,7 @@ const linebankReleaseDirectory = await mkdtemp(
   join(tmpdir(), "linebank-release-readiness-check-"),
 );
 try {
-  const store = createDomesticDepositStore(
-    join(linebankReleaseDirectory, "canonical.sqlite"),
-  );
+  const store = createDomesticDepositStore(linebankReleaseDirectory);
   try {
     const before = buildLineBankDomesticDepositReadinessFromLedger(store.db);
     assert.equal(before.capability, "preflight-only");

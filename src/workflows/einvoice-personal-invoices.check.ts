@@ -18,11 +18,8 @@ import {
   validatePaginationEnvelope,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { queryCanonicalEInvoiceCurrent } from "../ledger/canonical/einvoice.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
+import { queryCanonicalEInvoiceCurrentFromDatabase } from "../ledger/canonical/einvoice.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "einvoice-personal-invoices.ts"),
@@ -31,6 +28,14 @@ const workflowSource = readFileSync(
 assert.doesNotMatch(workflowSource, /writeInvoicesFile|purchased_invoice|rowsToCsv|csvPath/u);
 assert.match(workflowSource, /const commit = await commitCanonicalCapture/u);
 assert.match(workflowSource, /startUrl: LOGIN_URL/u);
+assert.match(
+  workflowSource,
+  /executeCanonicalFinancialCommitRun[\s\S]*?commitCanonicalEInvoiceCaptureInTransaction/u,
+);
+assert.doesNotMatch(
+  workflowSource,
+  /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
+);
 
 const browser = await chromium.launch();
 try {
@@ -599,9 +604,9 @@ try {
   assert.equal(revokedCapture.invoices[0]?.total, null);
   await commitCanonicalCapture(revokedCapture, workflowLedgerDir);
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(workflowLedgerDir));
+  const store = openCanonicalDatabaseHandle(workflowLedgerDir);
   try {
-    const current = queryCanonicalEInvoiceCurrent(store);
+    const current = queryCanonicalEInvoiceCurrentFromDatabase(store.db);
     const revoked = current.invoices.find((invoice) => invoice.stableInvoiceKey === mapped.stableInvoiceKey);
     assert.equal(revoked?.revision.state, "revoked");
     const fractionalString = current.invoices.find(
@@ -649,12 +654,12 @@ try {
         captureInput([missingTotal], "einvoice-workflow-missing-total", "2026-09-10T05:04:00Z"),
         failingDir,
       ),
-      /requires a total/,
+      /canonical persistence failed/u,
       "workflow success must not be reported when canonical admission fails",
     );
-    const failedStore = createCanonicalSourceStore(canonicalSqlitePath(failingDir));
+    const failedStore = openCanonicalDatabaseHandle(failingDir);
     try {
-      assert.equal(queryCanonicalEInvoiceCurrent(failedStore).invoices.length, 0);
+      assert.equal(queryCanonicalEInvoiceCurrentFromDatabase(failedStore.db).invoices.length, 0);
     } finally {
       failedStore.close();
     }

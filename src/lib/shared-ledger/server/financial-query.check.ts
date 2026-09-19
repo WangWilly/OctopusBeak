@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { channel } from "node:diagnostics_channel";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -45,6 +46,7 @@ assert.doesNotMatch(boundarySource, /LegacyFinancialQueryAdapter|openLedger(?:Da
 assert.doesNotMatch(boundarySource, /ledger\/db\/schema|data-issues\/server/);
 assert.match(boundarySource, /request\.product === "assets" \|\| request\.product === "liabilities"/);
 assert.match(boundarySource, /createCanonicalOverviewQuery\(this\.ledgerDir/);
+assert.doesNotMatch(boundarySource, /publish\(\{[^}]*ledgerDir/);
 
 type Assert<T extends true> = T;
 type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
@@ -98,6 +100,30 @@ const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "financial-qu
 try {
   seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
   const productQuery = createFinancialQuery(ledgerDir);
+  const diagnosticChannels = [
+    channel("octopus-beak.shared-ledger.financial-query"),
+    channel("octopus-beak.shared-ledger.spending-query"),
+    channel("octopus-beak.spending.canonical-store-open"),
+  ];
+  const diagnostics: unknown[] = [];
+  const observer = (message: unknown) => diagnostics.push(message);
+  for (const diagnosticChannel of diagnosticChannels) diagnosticChannel.subscribe(observer);
+  try {
+    await productQuery.current({ kind: "current", product: "overview" });
+    productQuery.current({ kind: "current", product: "spending" });
+  } finally {
+    for (const diagnosticChannel of diagnosticChannels) diagnosticChannel.unsubscribe(observer);
+  }
+  assert.ok(diagnostics.length > 0);
+  for (const diagnostic of diagnostics) {
+    assert.ok(diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic));
+    const payload = diagnostic as Record<string, unknown>;
+    assert.equal("ledgerDir" in payload, false);
+    assert.equal("path" in payload, false);
+    assert.equal("sql" in payload, false);
+    assert.equal("payload" in payload, false);
+    assert.equal("identity" in payload, false);
+  }
   const assets = await productQuery.current({ kind: "current", product: "assets" });
   assert.equal(assets.product, "assets");
   assert.equal(assets.projection.availability, "empty");
@@ -115,6 +141,15 @@ try {
   assert.deepEqual(spending.invoices, []);
   assert.deepEqual(spending.purchaseReport.records, []);
   assert.equal(spending.purchaseReport.totalStatus, "complete");
+  assert.equal(spending.purchaseReport.knowledgeAt, 0);
+  assert.throws(
+    () => productQuery.current({
+      kind: "current",
+      product: "spending",
+      cutoff: { knowledgePoint: 1 },
+    }),
+    { message: "canonical-cutoff-unavailable" },
+  );
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

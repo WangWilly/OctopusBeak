@@ -1,14 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
 import {
-  canonicalSqlitePath,
+  canonicalDatabaseWriterKey,
   currentUtcMicros,
+  openCanonicalDatabaseHandle,
+} from "./canonical-database.ts";
+import {
   idFromString,
   idToString,
   uuidV7,
   blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-local-identifier.ts";
 import {
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
@@ -237,7 +239,7 @@ function commitCounterpartyDisplayOnce(
   const userId = input.userId?.trim() || "local-user";
   const action = displayInputAction(input);
   const label = input.label ?? input.value ?? null;
-  const db = openCanonicalDatabase(ledgerDir);
+  const db = openCanonicalDatabaseHandle(ledgerDir);
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -370,7 +372,7 @@ export function commitCanonicalCounterpartyDisplay(
   options: { clock?: () => string; runtime?: CanonicalRuntimeOptions } = {},
 ): Promise<CanonicalCounterpartyDisplayResult> {
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => commitCounterpartyDisplayOnce(ledgerDir, input, options.clock ?? (() => new Date().toISOString())),
     options.runtime,
   );
@@ -524,7 +526,7 @@ function commitTagOnce(
   const action = input.action ?? (input.transactionId ? "apply" : "create");
   const userId = input.userId?.trim() || "local-user";
   const rawLabel = input.label ?? input.name;
-  const db = openCanonicalDatabase(ledgerDir);
+  const db = openCanonicalDatabaseHandle(ledgerDir);
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -686,7 +688,7 @@ export function commitCanonicalTransactionTag(
   options: { clock?: () => string; runtime?: CanonicalRuntimeOptions } = {},
 ): Promise<CanonicalTransactionTagResult> {
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => commitTagOnce(ledgerDir, input, options.clock ?? (() => new Date().toISOString())),
     options.runtime,
   );

@@ -7,6 +7,12 @@ assert.equal(octopusBeakApiChannels.includes("settings:save"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:confirmCandidate"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:denyCandidate"), true);
 assert.equal(octopusBeakApiChannels.includes("spending:revokeLink"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:changed"), true);
+assert.equal(octopusBeakApiChannels.includes("financialFreshness:latestKnowledgePoint"), true);
+assert.equal(octopusBeakApiChannels.includes("overview:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("assets:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("liabilities:section:load"), true);
+assert.equal(octopusBeakApiChannels.includes("spending:section:load"), true);
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
@@ -14,6 +20,58 @@ assert.match(source, /ipcMain\.handle\("settings:save"/);
 assert.match(source, /ipcMain\.handle\("spending:confirmCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:denyCandidate"/);
 assert.match(source, /ipcMain\.handle\("spending:revokeLink"/);
+assert.match(source, /function spendingConfirmActionFrom\(/);
+assert.match(source, /function spendingIdempotencyKeyFrom\(/);
+assert.match(source, /spendingConfirmActionFrom\(input\)/);
+assert.match(source, /spendingLinkActionFrom\(input\)/);
+assert.match(source, /FINANCIAL_FRESHNESS_LATEST_CHANNEL/);
+assert.match(source, /latestKnowledgePointFromDatabase/);
+assert.match(source, /financialFreshness\.publish\(receipt\)/);
+assert.match(
+  source,
+  /if \(resumed\) \{\s*automationResume\(taskId, undefined, \(receipt\) => \{\s*financialFreshness\.publish\(receipt\);\s*\}\);\s*\}/,
+);
+for (const [channel, method] of [
+  ["spending:confirmCandidate", "confirmCandidate"],
+  ["spending:denyCandidate", "denyCandidate"],
+  ["spending:revokeLink", "revokeLink"],
+] as const) {
+  assert.match(
+    source,
+    new RegExp(
+      `ipcMain\\.handle\\(\\"${channel}\\"[\\s\\S]*?publishSpendingMutationResult\\(\\s*financialPages\\.${method}\\(`,
+    ),
+    `${channel} must publish freshness only after its worker mutation resolves`,
+  );
+}
+for (const [route, channel] of [
+  ["overview", "overview:load"],
+  ["assets", "assets:load"],
+  ["liabilities", "liabilities:load"],
+]) {
+  assert.match(
+    source,
+    new RegExp(
+      `ipcMain\\.handle\\(\\"${channel}\\", \\(_event, input: unknown, options: unknown\\) =>\\s*financialPages\\.load\\(\\s*\\"${route}\\",\\s*financialPageLoadInputFrom\\(input\\),`,
+    ),
+    `${route} IPC load must forward its cutoff input to the worker client`,
+  );
+}
+assert.match(
+  source,
+  /ipcMain\.handle\(\s*"spending:load",\s*\(_event, input: unknown, options: unknown\) =>\s*financialPages\.load\(\s*"spending",\s*spendingLoadInputFrom\(input\),/,
+);
+assert.match(source, /function financialPageLoadInputFrom\(/);
+assert.match(source, /function financialPageRequestOptionsFrom\(/);
+assert.match(source, /ipcMain\.handle\(\"financial:cancel\"/);
+assert.match(source, /financialPages\.cancel\(/);
+assert.match(source, /function spendingLoadInputFrom\(/);
+assert.match(source, /function financialSectionFrom\(/);
+assert.match(source, /ipcMain\.handle\("overview:section:load"/);
+assert.match(source, /ipcMain\.handle\("assets:section:load"/);
+assert.match(source, /ipcMain\.handle\("liabilities:section:load"/);
+assert.match(source, /ipcMain\.handle\(\s*"spending:section:load"/);
+assert.match(source, /Financial query cutoff must contain a non-negative safe integer knowledge point/);
 assert.match(
   source,
   /createFinancialPageWorkerClient/,
@@ -34,7 +92,7 @@ assert.doesNotMatch(
   /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
   "liabilities projection must not execute synchronously on Electron main",
 );
-assert.match(source, /return \{\s*close: \(\) => financialPages\.close\(\),?\s*\}/);
+assert.match(source, /return \{[\s\S]*close: \(\) => financialPages\.close\(\)/);
 assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
 assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);

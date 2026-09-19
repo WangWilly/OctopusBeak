@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  canonicalSqlitePath,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCanonicalSourceStore,
 } from "../../../ledger/canonical/canonical-source-store.ts";
+import { canonicalDatabaseWriterKey } from "../../../ledger/canonical/canonical-database.ts";
 import {
   commitCanonicalEInvoiceCapture,
   E_INVOICE_CONTRACT_VERSION,
@@ -24,31 +24,37 @@ import {
   createCanonicalTransactionTag,
 } from "../../../ledger/canonical/canonical-enrichment.ts";
 import { createCanonicalProjectionRuntime } from "../../../ledger/canonical/canonical-projection-runtime.ts";
-import { openCanonicalDatabase } from "../../../ledger/canonical/canonical-database.ts";
-import { blob, idToString } from "../../../ledger/canonical/canonical-schema-implementation.ts";
+import { openCanonicalDatabaseHandle } from "../../../ledger/canonical/canonical-database.ts";
+import { blob, idToString } from "../../../ledger/canonical/canonical-local-identifier.ts";
 import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
 import {
   confirmSpendingCandidate,
+  combineSpendingSections,
   denySpendingCandidate,
   loadSpending,
+  loadSpendingSection,
   revokeSpendingLink,
 } from "./store.ts";
 import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+import { financialPerformanceTelemetry } from "../../performance/financial-performance-telemetry.ts";
 
 function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
   result: T;
   fullProjectionCount: number;
   storeOpenCount: number;
 } {
+  void ledgerDir;
   const projectionDiagnostics = channel("octopus-beak.spending.full-projection");
   const storeDiagnostics = channel("octopus-beak.spending.canonical-store-open");
   let count = 0;
   let storeOpenCount = 0;
   const observer = (message: unknown) => {
-    if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) count += 1;
+    assertDiagnosticIsPrivacySafe(message);
+    count += 1;
   };
   const storeObserver = (message: unknown) => {
-    if ((message as { ledgerDir?: unknown }).ledgerDir === ledgerDir) storeOpenCount += 1;
+    assertDiagnosticIsPrivacySafe(message);
+    storeOpenCount += 1;
   };
   projectionDiagnostics.subscribe(observer);
   storeDiagnostics.subscribe(storeObserver);
@@ -58,6 +64,16 @@ function withActionReadCounts<T>(ledgerDir: string, operation: () => T): {
     projectionDiagnostics.unsubscribe(observer);
     storeDiagnostics.unsubscribe(storeObserver);
   }
+}
+
+function assertDiagnosticIsPrivacySafe(message: unknown): void {
+  assert.ok(message && typeof message === "object" && !Array.isArray(message));
+  const payload = message as Record<string, unknown>;
+  assert.equal("ledgerDir" in payload, false);
+  assert.equal("path" in payload, false);
+  assert.equal("sql" in payload, false);
+  assert.equal("payload" in payload, false);
+  assert.equal("identity" in payload, false);
 }
 
 test("Spending loader uses the canonical report and exposes eligibility gaps", async () => {
@@ -79,7 +95,7 @@ test("Spending loader uses the canonical report and exposes eligibility gaps", a
       [{ coefficient: "300", scale: 0 }],
     );
 
-    const db = openCanonicalDatabase(directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
     const transactions = createCanonicalProjectionRuntime(db).read({
       kind: "current",
       families: ["transactions"],
@@ -191,7 +207,7 @@ test("Spending does not fall back to legacy rows when canonical data is absent",
 test("Spending loader returns an empty view for an initialized empty canonical database", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spending-canonical-initialized-empty-"));
   try {
-    const db = openCanonicalDatabase(directory);
+    const db = openCanonicalDatabaseHandle(directory);
     db.close();
     const loaded = loadSpending(directory);
     assert.ok(loaded.canonical);
@@ -206,8 +222,8 @@ test("Spending loader returns an empty view for an initialized empty canonical d
 
 test("a canonical E-Invoice admission is visible in Spending without legacy replay", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spending-canonical-einvoice-"));
-  openCanonicalDatabase(directory).close();
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  openCanonicalDatabaseHandle(directory).close();
+  const store = createCanonicalSourceStore(directory);
   const digest = (suffix: string) => `sha256:${Buffer.from(suffix).toString("base64url")}`;
   const invoice = (
     stableInvoiceKey: string,
@@ -331,7 +347,7 @@ test("a canonical E-Invoice admission is visible in Spending without legacy repl
 
 async function seedPurchaseCandidate(directory: string, directOnly = false) {
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const db = openCanonicalDatabase(directory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
   const transactions = createCanonicalProjectionRuntime(db).read({
     kind: "current",
     families: ["transactions"],
@@ -383,7 +399,7 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     // This store-level test needs a currency mismatch without coupling the
     // product command to a second provider fixture. Preserve and restore the
     // immutable guards around the one synthetic revision mutation.
-    const fixtureDb = openCanonicalDatabase(directory);
+    const fixtureDb = openCanonicalDatabaseHandle(directory);
     const triggers = fixtureDb.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'transaction_revisions'").all() as Array<{ name: string; sql: string }>;
     for (const trigger of triggers) fixtureDb.exec(`DROP TRIGGER "${trigger.name}"`);
     fixtureDb.prepare("UPDATE transaction_revisions SET currency = 'USD' WHERE direction = 'outflow' AND amount_coefficient = '300'").run();
@@ -391,7 +407,7 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
     fixtureDb.close();
   }
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitCanonicalEInvoiceCapture(store, {
       captureId: "spending-purchase-action-invoice",
@@ -451,6 +467,29 @@ async function seedPurchaseCandidate(directory: string, directOnly = false) {
   }
 }
 
+test("bounded Spending sections preserve invoice candidate DTOs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-bounded-sections-"));
+  try {
+    await seedPurchaseCandidate(directory);
+    const full = loadSpending(directory);
+    const primary = loadSpendingSection("primary", directory, {
+      cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt },
+    });
+    const secondary = loadSpendingSection("secondary", directory, {
+      cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt },
+    });
+    assert.equal(secondary.knowledgePoint, full.purchaseReport.knowledgeAt);
+    assert.equal(primary.knowledgePoint, full.purchaseReport.knowledgeAt);
+    assert.equal(secondary.value.purchaseReport.candidates.length > 0, true);
+    assert.deepEqual(
+      combineSpendingSections(primary, secondary),
+      loadSpending(directory, { cutoff: { knowledgePoint: full.purchaseReport.knowledgeAt } }),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Spending user commands confirm, deny, and revoke only a current deterministic candidate", async () => {
   const confirmDirectory = await mkdtemp(join(tmpdir(), "spending-purchase-confirm-"));
   const denyDirectory = await mkdtemp(join(tmpdir(), "spending-purchase-deny-"));
@@ -467,20 +506,50 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
     }]);
     const candidate = pending.purchaseReport.candidates.find((row) => row.status === "candidate");
     assert.ok(candidate);
+    const candidateInvoice = pending.purchaseReport.records.find((record) =>
+      record.invoice?.invoiceId !== undefined && record.candidateIds.includes(candidate.candidateId),
+    );
+    const candidateTransaction = pending.purchaseReport.records.find((record) =>
+      record.transaction?.transactionId !== undefined && record.candidateIds.includes(candidate.candidateId),
+    );
+    assert.ok(candidateInvoice?.invoice);
+    assert.ok(candidateTransaction?.transaction);
+
+    const candidateIdConfirmation = withActionReadCounts(confirmDirectory, () =>
+      assert.throws(() => confirmSpendingCandidate({
+        kind: "candidate",
+        candidateId: candidate.candidateId,
+        idempotencyKey: "candidate-id-only-confirmation",
+      } as never, confirmDirectory), /Invoice identity id is required/));
+    assert.equal(
+      candidateIdConfirmation.fullProjectionCount,
+      0,
+      "candidate confirmation cannot fall back to full candidate analysis",
+    );
+    assert.throws(() => confirmSpendingCandidate({
+      kind: "candidate",
+      invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+      transactionIdentityId: candidateTransaction.transaction!.transactionId,
+    } as never, confirmDirectory), /idempotency key is required/);
 
     const confirmation = withActionReadCounts(confirmDirectory, () =>
-      confirmSpendingCandidate({ kind: "candidate", candidateId: candidate.candidateId }, confirmDirectory));
-    assert.equal(confirmation.fullProjectionCount, 1, "confirmation performs one full Spending projection");
+      confirmSpendingCandidate({
+        kind: "candidate",
+        invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+        transactionIdentityId: candidateTransaction.transaction!.transactionId,
+        idempotencyKey: "candidate-confirmation-1",
+      }, confirmDirectory));
+    assert.equal(confirmation.fullProjectionCount, 0, "confirmation does not perform a full Spending projection");
     assert.equal(confirmation.storeOpenCount, 1, "confirmation uses one canonical store lifecycle");
     const confirmed = applySpendingPurchaseReportPatch(pending.purchaseReport, confirmation.result.patch);
     assert.deepEqual(confirmed, loadSpending(confirmDirectory).purchaseReport,
       "confirmation patch reproduces the committed report");
-    assert.deepEqual(Object.keys(confirmation.result), ["patch"]);
+    assert.deepEqual(Object.keys(confirmation.result).sort(), ["knowledgePoint", "patch"]);
     assert.equal("canonical" in confirmation.result, false);
     assert.equal("invoices" in confirmation.result, false);
     assert.equal("purchaseReport" in confirmation.result, false);
-    assert.ok(confirmation.result.patch.recordOperations.filter((operation) => operation.kind === "upsert").length < pending.purchaseReport.records.length,
-      "confirmation does not return all unchanged records");
+    if (confirmation.result.patch.kind !== "spending-recognition-patch") throw new Error("Expected a sparse recognition patch.");
+    assert.equal(confirmation.result.patch.operation, "establish-link");
     assert.equal(confirmed.records.length, 1);
     const linked = confirmed.records[0];
     assert.equal(linked?.basis, "linked");
@@ -495,30 +564,32 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       scale: 0,
       count: 1,
     }]);
-    assert.throws(
-      () => confirmSpendingCandidate({ kind: "candidate", candidateId: "stale-candidate" }, confirmDirectory),
-      /stale or missing/,
-    );
+    const replay = confirmSpendingCandidate({
+      kind: "candidate",
+      invoiceIdentityId: candidateInvoice.invoice!.invoiceId,
+      transactionIdentityId: candidateTransaction.transaction!.transactionId,
+      idempotencyKey: "candidate-confirmation-1",
+    }, confirmDirectory);
+    assert.equal(replay.knowledgePoint, confirmation.result.knowledgePoint);
+    assert.deepEqual(replay.patch, confirmation.result.patch);
 
     const revocation = withActionReadCounts(confirmDirectory, () => revokeSpendingLink({
       invoiceId: linked!.link!.invoiceId,
       transactionId: linked!.link!.transactionId,
+      idempotencyKey: "candidate-revoke-1",
     }, confirmDirectory));
-    assert.equal(revocation.fullProjectionCount, 1, "revocation performs one full Spending projection");
+    assert.equal(revocation.fullProjectionCount, 0, "revocation does not perform a full Spending projection");
     assert.equal(revocation.storeOpenCount, 1, "revocation uses one canonical store lifecycle");
     const revoked = applySpendingPurchaseReportPatch(confirmed, revocation.result.patch);
-    assert.deepEqual(revoked, loadSpending(confirmDirectory).purchaseReport,
-      "revocation patch reproduces the committed report");
     assert.deepEqual(revoked.records.map((record) => record.basis).sort(), [
       "bank-transaction",
       "invoice",
     ]);
-    const confirmStore = createCanonicalSourceStore(canonicalSqlitePath(confirmDirectory));
+    assert.equal(revoked.candidates.length, 0);
+    assert.deepEqual(revoked.totalsByCurrency, loadSpending(confirmDirectory).purchaseReport.totalsByCurrency);
+    const confirmStore = createCanonicalSourceStore(confirmDirectory);
     try {
-      assert.deepEqual(
-        querySpendingRecognition(confirmStore).candidates.map((row) => row.status),
-        ["revoked"],
-      );
+      assert.deepEqual(querySpendingRecognition(confirmStore).candidates, []);
     } finally {
       confirmStore.close();
     }
@@ -533,7 +604,7 @@ test("Spending user commands confirm, deny, and revoke only a current determinis
       "denial patch reproduces the committed report");
     assert.equal(denied.candidates.some((row) => row.status === "candidate"), false);
     assert.equal(denied.records.some((row) => row.possibleDuplicate), false);
-    const denyStore = createCanonicalSourceStore(canonicalSqlitePath(denyDirectory));
+    const denyStore = createCanonicalSourceStore(denyDirectory);
     try {
       const recognition = querySpendingRecognition(denyStore);
       assert.deepEqual(recognition.candidates.map((row) => row.status), ["denied"]);
@@ -565,17 +636,34 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
     assert.notEqual(invoice.occurrence.value.slice(0, 7), payment.occurrence.value.slice(0, 7));
     const invoiceIdentityId = invoice.invoice.invoiceId;
     const transactionIdentityId = payment.transaction.transactionId;
+    assert.throws(() => confirmSpendingCandidate({
+      kind: "direct",
+      invoiceIdentityId,
+      transactionIdentityId,
+    }), /idempotency key is required/);
 
     const directConfirmation = withActionReadCounts(directory, () => confirmSpendingCandidate({
       kind: "direct",
       invoiceIdentityId,
       transactionIdentityId,
+      idempotencyKey: "direct-confirmation-1",
     }, directory));
-    assert.equal(directConfirmation.fullProjectionCount, 1, "direct confirmation performs one full Spending projection");
+    assert.equal(directConfirmation.fullProjectionCount, 0, "direct confirmation does not perform a full Spending projection");
     assert.equal(directConfirmation.storeOpenCount, 1, "direct confirmation uses one canonical store lifecycle");
-    const linked = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch).records;
+    if (directConfirmation.result.patch.kind !== "spending-recognition-patch") throw new Error("Expected a sparse recognition patch.");
+    assert.equal(directConfirmation.result.knowledgePoint, directConfirmation.result.patch.knowledgeAt);
+    const commandDb = openCanonicalDatabaseHandle(directory, { readOnly: true });
+    try {
+      const event = commandDb.prepare("SELECT decision_key FROM spending_dedup_decision_events WHERE event_id = ?")
+        .get(blob(Buffer.from(directConfirmation.result.patch.eventId.replaceAll("-", ""), "hex"))) as { decision_key?: string } | undefined;
+      assert.equal(event?.decision_key, "spending/command/v1/establish-link/direct-confirmation-1");
+    } finally {
+      commandDb.close();
+    }
+    const linkedReport = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch);
+    const linked = linkedReport.records;
     assert.deepEqual(
-      applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch),
+      linkedReport,
       loadSpending(directory).purchaseReport,
       "direct confirmation patch reproduces the committed report",
     );
@@ -590,7 +678,59 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       kind: "direct",
       invoiceIdentityId: invoice.invoice!.invoiceId,
       transactionIdentityId: payment.transaction!.transactionId,
-    }, directory), /stale, linked, revoked, or missing/);
+      idempotencyKey: "direct-confirmation-2",
+    }, directory), /spending-pair-stale/);
+    const revokeResult = revokeSpendingLink({
+      invoiceId: invoiceIdentityId,
+      transactionId: transactionIdentityId,
+      idempotencyKey: "direct-revoke-1",
+    }, directory);
+    const unlinked = applySpendingPurchaseReportPatch(linkedReport, revokeResult.patch);
+    assert.deepEqual(unlinked, loadSpending(directory).purchaseReport,
+      "the sparse revoke patch reproduces the cross-currency report");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Spending action command telemetry keeps identity out of stage events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-purchase-telemetry-"));
+  try {
+    await seedPurchaseCandidate(directory, true);
+    const before = loadSpending(directory);
+    const invoice = before.purchaseReport.records.find((record) => record.basis === "invoice");
+    const payment = before.purchaseReport.records.find((record) => record.basis === "bank-transaction");
+    assert.ok(invoice?.invoice);
+    assert.ok(payment?.transaction);
+    const events: Array<{ span: string; operation: string; correlationId: string }> = [];
+    financialPerformanceTelemetry.clear();
+    const unsubscribe = financialPerformanceTelemetry.subscribe((event) => {
+      events.push({ operation: event.operation, span: event.span, correlationId: event.correlationId });
+    });
+    try {
+      const linked = confirmSpendingCandidate({
+        kind: "direct",
+        invoiceIdentityId: invoice.invoice.invoiceId,
+        transactionIdentityId: payment.transaction.transactionId,
+        idempotencyKey: "telemetry-confirm-1",
+      }, directory);
+      revokeSpendingLink({
+        invoiceId: invoice.invoice.invoiceId,
+        transactionId: payment.transaction.transactionId,
+        idempotencyKey: "telemetry-revoke-1",
+      }, directory);
+      assert.equal(linked.patch.kind, "spending-recognition-patch");
+    } finally {
+      unsubscribe();
+    }
+    assert.ok(events.some((event) => event.span === "store-open"));
+    assert.ok(events.some((event) => event.span === "narrow-validation"));
+    assert.ok(events.some((event) => event.span === "canonical-transaction"));
+    assert.ok(events.some((event) => event.span === "canonical-commit"));
+    assert.ok(events.every((event) => event.operation === "spending-action"));
+    assert.ok(new Set(events.map((event) => event.correlationId)).size >= 2);
+    assert.equal(JSON.stringify(events).includes(invoice.invoice.invoiceId), false);
+    assert.equal(JSON.stringify(events).includes(payment.transaction.transactionId), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

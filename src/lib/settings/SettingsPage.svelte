@@ -17,6 +17,7 @@
     exchangeRateUpdateTime,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
+  import { stableFinancialErrorCode } from "$lib/shared-ledger/financial-error.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
 
   export let onboardingStatus: "active" | "paused" | "completed" | null = null;
@@ -83,7 +84,7 @@
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
-        saveError = error instanceof Error ? error.message : String(error);
+        saveError = settingsSaveErrorText(error);
         saveStatus = "error";
       }
     });
@@ -100,6 +101,16 @@
 
   function saveTimezone() {
     saveSystemSettings();
+  }
+
+  function settingsSaveErrorText(error: unknown): string {
+    const code = stableFinancialErrorCode(error);
+    if (code === "contention") return $t.financialErrors.contention;
+    if (code === "cancelled") return $t.financialErrors.cancelled;
+    if (code === "worker-closed") return $t.financialErrors.workerClosed;
+    if (code === "worker-exit") return $t.financialErrors.workerExit;
+    if (code === "worker-error") return $t.financialErrors.workerError;
+    return $t.financialErrors.generic;
   }
 
   function restartOnboarding() {

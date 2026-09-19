@@ -12,26 +12,39 @@ import {
 } from "./cathay-statements.js";
 import {
   admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureBatch,
+  commitForeignCurrencyDepositCaptureInTransaction,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
-  commitCathayCurrentDepositBalanceCaptures,
 } from "./cathay-current-deposit-canonical.ts";
 import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
 import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositBalanceCommitResult,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
+import type { CanonicalFinancialDepositCommitResult } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
+
+function configuredCathayCanonicalLedgerDir(): string {
+  return (
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
+    process.env.LEDGER_DIR?.trim() ||
+    DEFAULT_LEDGER_DIR
+  );
+}
 
 const dateRangeSchema = z.enum([
   "one_week",
@@ -527,8 +540,44 @@ export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
   /** Focused-check seam; production uses the authenticated UI reader. */
   readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
   /** Focused-check seam; production uses the canonical current-balance writer. */
-  commitCurrentDepositBalances?: typeof commitCathayCurrentDepositBalanceCaptures;
+  commitCurrentDepositBalances?: (
+    canonicalLedgerDir: string,
+    captures: readonly CurrentDepositBalanceCaptureInput[],
+  ) => Promise<readonly CurrentDepositBalanceCommitResult[]>;
 }>;
+
+type CathayForeignCommitValue = ReturnType<
+  typeof commitForeignCurrencyDepositCaptureInTransaction
+>;
+type CathayCanonicalCommitValue =
+  | CathayForeignCommitValue
+  | CurrentDepositBalanceCommitResult;
+
+function cathayForeignCommitItems(
+  captures: readonly ForeignCurrencyDepositCaptureInput[],
+  onCommitted?: (capture: ForeignCurrencyDepositCaptureInput) => void,
+): CanonicalFinancialCommitItem<CathayForeignCommitValue>[] {
+  return captures.map((capture) => ({
+    provider: "cathay",
+    product: "foreign-currency-deposit",
+    itemKey: capture.accountNo,
+    commit: ({ writer, admission }) =>
+      commitForeignCurrencyDepositCaptureInTransaction(
+        writer,
+        capture,
+        admission,
+      ),
+    ...(onCommitted
+      ? {
+          // Run only after the item transaction has committed, so current
+          // balances never use an uncommitted account identity.
+          resolveRelations: async () => {
+            onCommitted(capture);
+          },
+        }
+      : {}),
+  }));
+}
 
 /** Keep provider collection and canonical admission on one reusable seam.
  * Retries reset the pending batch before recollecting; only a successfully
@@ -566,38 +615,67 @@ export function createCathayForeignCanonicalCaptureCollector(
 }
 
 export async function commitCathayForeignCanonicalCaptures(
-  financialLedgerDir: string | undefined,
+  canonicalLedgerDir: string | undefined,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
-) {
-  if (!financialLedgerDir || captures.length === 0) return [];
-  const financialStore = createCanonicalSourceStore(
-    canonicalSqlitePath(financialLedgerDir),
-  );
-  try {
-    return await commitForeignCurrencyDepositCaptureBatch(
-      financialStore,
-      captures,
+): Promise<readonly CanonicalFinancialDepositCommitResult[]> {
+  if (!canonicalLedgerDir || captures.length === 0) return [];
+  const items = cathayForeignCommitItems(captures);
+  const result = await executeCanonicalFinancialCommitRun<CathayForeignCommitValue>({
+    canonicalLedgerDir,
+    items,
+    provider: "cathay",
+    product: "foreign-currency-deposit",
+  });
+  if (result.status === "failed" || result.status === "cancelled")
+    throw new Error(
+      `Cathay foreign canonical persistence ${result.status}: ${result.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
     );
-  } finally {
-    financialStore.close();
-  }
+  return result.items.flatMap((item) =>
+    item.status === "committed" ? [item.value] : [],
+  );
 }
 
-/** Capture current FX balances only after the statement capture has admitted the
- * existing account identity. The provider response is grouped by account so
- * multiple currencies remain one canonical depository identity. */
-export async function captureCathayCurrentForeignDepositBalances(
+async function commitCathayCurrentForeignDepositBalancesThroughExecution(
+  canonicalLedgerDir: string,
+  captures: readonly CurrentDepositBalanceCaptureInput[],
+): Promise<readonly CurrentDepositBalanceCommitResult[]> {
+  const result = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: captures.map((capture) => ({
+      provider: "cathay",
+      product: "current-deposit-balance",
+      itemKey: capture.identity.sourceAccountKey,
+      commit: ({ writer, admission }) =>
+        commitCurrentDepositBalanceCaptureInTransaction(
+          writer,
+          admitCurrentDepositBalanceCapture(capture),
+          admission,
+        ),
+    })),
+    provider: "cathay",
+    product: "current-deposit-balance",
+  });
+  if (result.status === "failed" || result.status === "cancelled")
+    throw new Error(
+      `Cathay current foreign balance persistence ${result.status}: ${result.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
+  return result.items.flatMap((item) =>
+    item.status === "committed" ? [item.value] : [],
+  );
+}
+
+async function collectCathayCurrentForeignDepositBalanceCaptures(
   page: Page,
   accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
-  financialLedgerDir: string | undefined,
-  options: CathayCurrentForeignDepositBalanceCaptureOptions = {},
-): Promise<readonly CurrentDepositBalanceCommitResult[]> {
-  if (accountCaptures.length === 0) return [];
-  if (!financialLedgerDir) {
-    throw new Error(
-      "Cathay current foreign balance capture requires the canonical financial ledger directory.",
-    );
-  }
+  options: Pick<
+    CathayCurrentForeignDepositBalanceCaptureOptions,
+    "readCurrentDepositBalances"
+  > = {},
+): Promise<CurrentDepositBalanceCaptureInput[]> {
   const identities = new Map<
     string,
     Readonly<{
@@ -652,12 +730,96 @@ export async function captureCathayCurrentForeignDepositBalances(
       }),
     );
   }
-  return await (
-    options.commitCurrentDepositBalances ?? commitCathayCurrentDepositBalanceCaptures
-  )(
-    financialLedgerDir,
-    captures,
+  return captures;
+}
+
+/** Execute foreign statements and current balances through one lifecycle-owned
+ * handle. Only foreign captures that committed may feed current-balance items.
+ */
+async function commitCathayForeignAndCurrentCanonicalCaptures(
+  page: Page,
+  canonicalLedgerDir: string | undefined,
+  captures: readonly ForeignCurrencyDepositCaptureInput[],
+): Promise<void> {
+  if (!canonicalLedgerDir || captures.length === 0) return;
+  const committedForeignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
+  const items = async function* (): AsyncGenerator<
+    CanonicalFinancialCommitItem<CathayCanonicalCommitValue>
+  > {
+    for (const capture of captures) {
+      yield {
+        provider: "cathay",
+        product: "foreign-currency-deposit",
+        itemKey: capture.accountNo,
+        commit: ({ writer, admission }) =>
+          commitForeignCurrencyDepositCaptureInTransaction(
+            writer,
+            capture,
+            admission,
+          ),
+        resolveRelations: async () => {
+          committedForeignCaptures.push(capture);
+        },
+      };
+    }
+    if (committedForeignCaptures.length === 0) return;
+    const currentCaptures =
+      await collectCathayCurrentForeignDepositBalanceCaptures(
+        page,
+        committedForeignCaptures,
+      );
+    for (const capture of currentCaptures) {
+      yield {
+        provider: "cathay",
+        product: "current-deposit-balance",
+        itemKey: capture.identity.sourceAccountKey,
+        commit: ({ writer, admission }) =>
+          commitCurrentDepositBalanceCaptureInTransaction(
+            writer,
+            admitCurrentDepositBalanceCapture(capture),
+            admission,
+          ),
+      };
+    }
+  };
+  const result = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: items(),
+    provider: "cathay",
+    product: "financial",
+  });
+  if (result.status === "failed" || result.status === "cancelled")
+    throw new Error(
+      `Cathay foreign canonical persistence ${result.status}: ${result.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
+}
+
+/** Capture current FX balances only after the statement capture has admitted the
+ * existing account identity. The provider response is grouped by account so
+ * multiple currencies remain one canonical depository identity. */
+export async function captureCathayCurrentForeignDepositBalances(
+  page: Page,
+  accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
+  canonicalLedgerDir: string | undefined,
+  options: CathayCurrentForeignDepositBalanceCaptureOptions = {},
+): Promise<readonly CurrentDepositBalanceCommitResult[]> {
+  if (accountCaptures.length === 0) return [];
+  if (!canonicalLedgerDir) {
+    throw new Error(
+      "Cathay current foreign balance capture requires the canonical ledger directory.",
+    );
+  }
+  const captures = await collectCathayCurrentForeignDepositBalanceCaptures(
+    page,
+    accountCaptures,
+    options,
   );
+  return await (
+    options.commitCurrentDepositBalances ??
+    commitCathayCurrentForeignDepositBalancesThroughExecution
+  )(canonicalLedgerDir, captures);
 }
 
 class CathayForeignApiClient {
@@ -925,14 +1087,11 @@ export default workflow("cathayForeignStatements", {
       canonicalCollector.onStatement,
     );
 
-    await commitCathayForeignCanonicalCaptures(
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
-      canonicalCollector.captures,
-    );
-    await captureCathayCurrentForeignDepositBalances(
+    const canonicalLedgerDir = configuredCathayCanonicalLedgerDir();
+    await commitCathayForeignAndCurrentCanonicalCaptures(
       page,
+      canonicalLedgerDir,
       canonicalCollector.captures,
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
     );
 
     return {

@@ -3,7 +3,10 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
-import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import {
+  assertValidatedCanonicalDatabase,
+  type ValidatedCanonicalDatabase,
+} from "./canonical-schema-lifecycle.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 import {
   withCanonicalSourceCaptureAdmissionTransaction,
@@ -175,11 +178,10 @@ export type CanonicalFinancialDepositValidatedCapture =
     readonly __runtimeValidatedCanonicalFinancialDeposit: true;
   };
 
-export type CanonicalFinancialDepositWriterStore = {
-  readonly db: DatabaseSync;
-  readonly databasePath: string;
-  readonly commitClock: () => number;
-};
+export type CanonicalFinancialDepositWriterStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock" | "withWriter"
+>;
 
 /**
  * The writer type is kept narrow for adapter compatibility, but the runtime
@@ -1918,7 +1920,7 @@ export async function commitCanonicalFinancialDepositCapture(
   store: CanonicalFinancialDepositWriterStore,
   capture: CanonicalFinancialDepositValidatedCapture,
   beforeCommit?: (
-    db: DatabaseSync,
+    db: ValidatedCanonicalDatabase,
     results: readonly CanonicalFinancialDepositCommitResult[],
   ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult> {
@@ -1940,7 +1942,7 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
   store: CanonicalFinancialDepositWriterStore,
   captures: readonly CanonicalFinancialDepositValidatedCapture[],
   beforeCommit?: (
-    db: DatabaseSync,
+    db: ValidatedCanonicalDatabase,
     results: readonly CanonicalFinancialDepositCommitResult[],
   ) => void,
 ): Promise<CanonicalFinancialDepositCommitResult[]> {
@@ -1948,7 +1950,7 @@ export async function commitCanonicalFinancialDepositCaptureBatch(
   if (captures.length === 0)
     throw new Error("Financial deposit capture batch cannot be empty.");
   return withCanonicalSourceCaptureAdmissionTransaction(
-    store as CanonicalSourceStore,
+    store as unknown as CanonicalSourceStore,
     (capability) =>
       commitCanonicalFinancialDepositCaptureBatchInTransaction(
         store,
@@ -1973,7 +1975,7 @@ export function commitCanonicalFinancialDepositCaptureBatchInTransaction(
   captures: readonly CanonicalFinancialDepositValidatedCapture[],
   capability: CanonicalSourceCaptureAdmissionTransactionCapability,
   beforeCommit?: (
-    db: DatabaseSync,
+    db: ValidatedCanonicalDatabase,
     results: readonly CanonicalFinancialDepositCommitResult[],
   ) => void,
 ): CanonicalFinancialDepositCommitResult[] {
@@ -1992,4 +1994,29 @@ export function commitCanonicalFinancialDepositCaptureBatchInTransaction(
   );
   beforeCommit?.(store.db, results);
   return results;
+}
+
+/**
+ * Commit one validated financial Capture in an execution-owned transaction.
+ * The supplied capability is the only admission authority, so this adapter
+ * performs exactly one source admission and never opens, queues, or closes a
+ * store.  Batch callers retain the batch adapter above for their existing
+ * all-or-nothing semantics.
+ */
+export function commitCanonicalFinancialDepositCaptureInTransaction(
+  store: CanonicalFinancialDepositWriterStore,
+  capture: CanonicalFinancialDepositValidatedCapture,
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+  beforeCommit?: (
+    db: ValidatedCanonicalDatabase,
+    results: readonly CanonicalFinancialDepositCommitResult[],
+  ) => void,
+): CanonicalFinancialDepositCommitResult {
+  const [result] = commitCanonicalFinancialDepositCaptureBatchInTransaction(
+    store,
+    [capture],
+    capability,
+    beforeCommit,
+  );
+  return result!;
 }

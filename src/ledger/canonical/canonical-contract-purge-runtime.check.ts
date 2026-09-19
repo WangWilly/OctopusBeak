@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -10,13 +10,13 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCanonicalSourceStore,
-  openCanonicalDatabase,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
   resumeCanonicalDeletionScrub,
   submitCanonicalContractPurge,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import { commitCathayAutomaticEnrichmentFromDescriptions } from "./cathay-automatic-enrichment.ts";
 import {
   applyCanonicalTransactionTag,
@@ -24,7 +24,7 @@ import {
 } from "./canonical-enrichment.ts";
 import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
-import { blob, idFromString, idToString } from "./canonical-schema-implementation.ts";
+import { blob, idFromString, idToString } from "./canonical-local-identifier.ts";
 import {
   LOAN_CONTRACT_FIXTURES,
   admitCanonicalLoanCapture,
@@ -100,7 +100,7 @@ async function withStore(
     join(tmpdir(), "canonical-contract-purge-runtime-"),
   );
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(dirname(path));
   try {
     await callback(path, store);
   } finally {
@@ -184,7 +184,7 @@ test("source-scoped purge removes only its closure and disables recollection acr
     assert.doesNotMatch(String(audit.deleted_table_counts_json), /compact|payload/iu);
 
     store.close();
-    const reopened = createCanonicalSourceStore(path);
+    const reopened = createCanonicalSourceStore(dirname(path));
     try {
       const reopenedAdmission = createCanonicalSourceCaptureAdmission(reopened);
       assert.deepEqual(
@@ -252,7 +252,7 @@ test("source-scoped purge removes identifier observations with the account closu
       directory,
       accountCapture("purge-identifier-retained", "012345678902"),
     );
-    const store = createCanonicalSourceStore(path);
+    const store = createCanonicalSourceStore(dirname(path));
     try {
       const observationCounts = store.db
         .prepare(
@@ -341,7 +341,7 @@ test("source-scoped purge removes credit estimate and current-account closure", 
     join(tmpdir(), "canonical-contract-purge-credit-current-"),
   );
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(dirname(path));
   const route = "yuanta/credit-card/current-used-credit-v1";
   const contractVersion = route;
   const selected = {
@@ -672,7 +672,7 @@ test("purge removes owned transaction tag assertion links while retaining shared
   try {
     await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
     const identity = (() => {
-      const db = openCanonicalDatabase(directory, { readOnly: true });
+      const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
       try {
         const row = db
           .prepare(`
@@ -708,7 +708,7 @@ test("purge removes owned transaction tag assertion links while retaining shared
       transactionId: identity.transactionId,
       userId: "alice",
     });
-    const before = openCanonicalDatabase(directory, { readOnly: true });
+    const before = openCanonicalDatabaseHandle(directory, { readOnly: true });
     try {
       assert.equal(
         Number(
@@ -726,7 +726,7 @@ test("purge removes owned transaction tag assertion links while retaining shared
       before.close();
     }
 
-    const store = createCanonicalSourceStore(path);
+    const store = createCanonicalSourceStore(dirname(path));
     try {
       await submitCanonicalContractPurge(store, {
         scope: {
@@ -817,7 +817,7 @@ test("public purge removes investment, loan, enrichment, and sync closure while 
   const yuantaLoan = structuredClone(LOAN_CONTRACT_FIXTURES.yuanta);
   try {
     await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-    const loanStore = createCanonicalLoanStore(path);
+    const loanStore = createCanonicalLoanStore(dirname(path));
     try {
       await commitCanonicalLoanCapture(loanStore, admitCanonicalLoanCapture(fubonLoan));
       await commitCanonicalLoanCapture(loanStore, admitCanonicalLoanCapture(yuantaLoan));
@@ -828,7 +828,7 @@ test("public purge removes investment, loan, enrichment, and sync closure while 
     }
     await commitCathayAutomaticEnrichmentFromDescriptions(directory);
 
-    const store = createCanonicalSourceStore(path);
+    const store = createCanonicalSourceStore(dirname(path));
     try {
       const knowledgeAt = Number(
         (store.db.prepare("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits").get() as { value?: unknown }).value ?? 0,

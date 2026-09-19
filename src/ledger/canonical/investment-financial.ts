@@ -10,10 +10,12 @@ import { commitCanonicalFinancialAdmission } from "./canonical-financial-admissi
 import { runCanonicalInvestmentRelationFollowThrough } from "./canonical-relation-followthrough.ts";
 import {
   createCanonicalSourceStore,
-  validateCanonicalInvestmentExtensionSchema,
-  validateCanonicalInvestmentFundingRelationSchema,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import {
+  validateCanonicalInvestmentExtensionSchema,
+  validateCanonicalInvestmentFundingRelationSchema,
+} from "./canonical-database.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
@@ -1056,9 +1058,9 @@ function canonicalMarginCreditSpine(
   });
 }
 export function createCanonicalInvestmentStore(
-  path: string,
+  ledgerDir: string,
 ): CanonicalInvestmentStore {
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(ledgerDir);
   validateCanonicalInvestmentExtensionSchema(store.db);
   validateCanonicalInvestmentFundingRelationSchema(store.db);
   return store;

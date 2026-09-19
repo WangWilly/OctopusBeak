@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { openCanonicalDatabase } from "../src/ledger/canonical/canonical-database.ts";
+import { openCanonicalDatabaseHandle } from "../src/ledger/canonical/canonical-database.ts";
 
 /** Bump this when the set or meaning of reset targets changes. */
 export const CANONICAL_RESET_VERSION = 1 as const;
@@ -327,7 +327,7 @@ function removePartialCanonicalTargets(marker: ResetMarker) {
 function canonicalSeams(seams?: CanonicalResetSeams): CanonicalResetSeams {
   return seams ?? {
     openCanonical: (ledgerDir) => {
-      const db = openCanonicalDatabase(ledgerDir);
+      const db = openCanonicalDatabaseHandle(ledgerDir);
       return { close: () => db.close() };
     },
   };

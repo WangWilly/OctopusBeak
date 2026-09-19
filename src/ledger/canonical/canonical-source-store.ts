@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  CanonicalBusyRetryExhaustedError,
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
 import {
+  assertValidatedCanonicalDatabase,
   isValidatedCanonicalDatabase,
+  type ValidatedCanonicalDatabase,
 } from "./canonical-schema-lifecycle.ts";
 import {
   CANONICAL_SOURCE_ADMISSION,
@@ -23,7 +25,7 @@ import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
 import {
-  withCanonicalSourceCaptureAdmissionExistingTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
 } from "./canonical-source-capture-admission.ts";
 import {
   commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
@@ -35,6 +37,7 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
   CATHAY_DERIVED_ORIGIN,
+  canonicalDatabaseWriterKey,
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
@@ -42,11 +45,6 @@ import {
   ESUN_CREDIT_CARD_QUERY_ROUTES,
   YUANTA_CREDIT_CARD_QUERY_ROUTES,
   CANONICAL_SCHEMA_VERSION,
-  canonicalSqlitePath,
-  uuidV7,
-  idToString,
-  idFromString,
-  blob,
   validateV8SourceEvidenceSchema,
   validateCanonicalCompatibilityViews,
   projectionRelevantCommitCount,
@@ -54,8 +52,14 @@ import {
   validateCanonicalInvestmentExtensionSchema,
   validateCanonicalLoanRepaymentRelationSchema,
   validateCanonicalRelationResolutionCommitSchema,
+} from "./canonical-database.ts";
+import {
+  uuidV7,
+  idToString,
+  idFromString,
+  blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import type {
   CanonicalProjectionKnowledgePoint,
   CanonicalProjectionRebuildFailureInjection,
@@ -66,8 +70,7 @@ import {
   validateRequiredCanonicalContractPurges,
 } from "./canonical-contract-purge.ts";
 import {
-  openCanonicalDatabase,
-  openCanonicalDatabasePath,
+  openCanonicalDatabaseHandle,
 } from "./canonical-database.ts";
 import {
   addSelectedFields,
@@ -86,7 +89,7 @@ async function withCanonicalWriter<T>(
   runtime?: CanonicalRuntimeOptions,
 ): Promise<T> {
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     operation,
     runtime,
   );
@@ -99,19 +102,7 @@ export {
   CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
   CATHAY_DERIVED_ORIGIN,
-  CANONICAL_SQLITE_FILE,
-  CANONICAL_SCHEMA_VERSION,
-  SCHEMA_V15_INVESTMENTS,
-  SCHEMA_V16_INVESTMENT_FUNDING_RELATIONS,
-  canonicalSqlitePath,
-  createCanonicalSchemaLifecyclePlan,
-  isKnownRetiredFubonV18Fingerprint,
-  isRetiredFubonV18RecoveryEligible,
-  validateCanonicalInvestmentExtensionSchema,
-  validateCanonicalInvestmentFundingRelationSchema,
-  validateCanonicalLoanExtensionSchema,
-  validateCanonicalLoanRepaymentRelationSchema,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-database.ts";
 export {
   resumeCanonicalDeletionScrub,
 } from "./canonical-contract-purge-runtime.ts";
@@ -124,9 +115,7 @@ export type {
 } from "./canonical-contract-purge-runtime.ts";
 export type {
   CanonicalDatabaseOptions,
-  CanonicalMigrationFailureInjection,
-} from "./canonical-schema-implementation.ts";
-export { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-database.ts";
 export {
   canonicalProjectionRuntimeRebuildInternal,
   canonicalProjectionRuntimeSyncInternal,
@@ -1018,6 +1007,14 @@ function validateSyncInput(
   };
 }
 
+/** Validate a staged Cathay sync before opening a canonical execution run.
+ * The in-transaction adapter repeats this validation at the persistence seam. */
+export function validateCathayDomesticDepositSyncInput(
+  input: CathayDomesticDepositSyncInput,
+): void {
+  validateSyncInput(input);
+}
+
 export type CanonicalAmount = { coefficient: string; scale: number };
 export type CanonicalAssertionSupportState = "supported" | "withdrawn";
 export type CanonicalEconomicStatus =
@@ -1240,6 +1237,160 @@ export type CathayCanonicalCommitOptions = {
   runtime?: CanonicalRuntimeOptions;
 };
 
+export type CathayDomesticDepositSyncTransactionStore = Pick<
+  CanonicalSourceStore,
+  "db" | "commitClock"
+>;
+
+function cathayOpaqueIdentity(value: string): string {
+  const normalized = value.trim();
+  if (/^sha256:[A-Za-z0-9_-]+$/u.test(normalized)) return normalized;
+  return `sha256:${createHash("sha256")
+    .update(`cathay/source-identity/v1|${normalized}`, "utf8")
+    .digest("base64url")}`;
+}
+
+function cathaySyncAdmissionEvidence(
+  input: ValidatedCathaySync,
+  sourceConnectionKey: string,
+  identityEpoch: string,
+): {
+  captureId: string;
+  integrationNamespace: string;
+  sourceConnectionKey: string;
+  identityEpoch: string;
+  stream: string;
+  recordKind: string;
+  routeKey: string;
+  contractVersion: string;
+  subjectDigest: string;
+  observedAt: string;
+  scope: {
+    startDate: string;
+    endDate: string;
+    dateFormat: "YYYY-MM-DD";
+    kind: "bounded-range";
+    completeness: "complete-range";
+    ruleVersion: string;
+    completenessBasis: string;
+    absenceAuthority?: CathayAbsenceAuthority;
+    sourceAccountKey: string | null;
+    accountNo: string | null;
+  };
+  pages: Array<{
+    pageOrdinal: number;
+    responseCode: "200";
+    rowCount: number;
+    terminal: boolean;
+    metadata: Record<string, unknown>;
+    responseDigest: string;
+    proofKind: string;
+    contractFingerprint: string;
+    preflightFingerprint: string;
+  }>;
+  records: Array<{
+    occurrenceKey: string;
+    collisionKey: string;
+    providerKey: string;
+    contentHash: string;
+    compact: Record<string, unknown>;
+    sequenceLexeme: string;
+    description: string | null;
+  }>;
+} {
+  const first = input.scopes[0]!;
+  const subjectDigest = cathayOpaqueIdentity(
+    [
+      "cathay/domestic-deposit/subject/v1",
+      sourceConnectionKey,
+      identityEpoch,
+      ...input.scopes.map((scope) => scope.accountNo).sort(),
+    ].join("|"),
+  );
+  const pages = input.scopes.flatMap((scope) =>
+    scope.pages.map((page) => ({
+      pageOrdinal: 0,
+      responseCode: "200" as const,
+      rowCount: page.rowCount,
+      terminal: false,
+      metadata: {
+        source: "cathay",
+        accountNo: scope.accountNo,
+        scopeStart: scope.startDate,
+        scopeEnd: scope.endDate,
+        pageOrdinal: page.pageOrdinal,
+        responseDigest: page.responseDigest,
+      },
+      responseDigest: page.responseDigest,
+      proofKind: CATHAY_COMPLETENESS_PROOF.basis,
+      contractFingerprint: cathayOpaqueIdentity(scope.contractFingerprint),
+      preflightFingerprint: cathayOpaqueIdentity(scope.preflightFingerprint),
+    })),
+  );
+  pages.forEach((page, index) => {
+    page.pageOrdinal = index;
+    page.terminal = index === pages.length - 1;
+  });
+  const records = input.scopes.flatMap((scope) =>
+    scope.rows.map((row) => ({
+      occurrenceKey: cathayOpaqueIdentity(
+        `cathay/domestic-deposit/occurrence/v1|${scope.accountNo}|${row.sequence}|${row.payload}`,
+      ),
+      collisionKey: cathayOpaqueIdentity(
+        `cathay/domestic-deposit/collision/v1|${scope.accountNo}|${row.sequence}|${row.payload}`,
+      ),
+      providerKey: cathayOpaqueIdentity(
+        `cathay/domestic-deposit/provider/v1|${scope.accountNo}|${row.sequence}`,
+      ),
+      contentHash: cathayOpaqueIdentity(
+        `cathay/domestic-deposit/content/v1|${scope.accountNo}|${row.payload}`,
+      ),
+      compact: JSON.parse(row.payload) as Record<string, unknown>,
+      sequenceLexeme:
+        input.scopes.length === 1
+          ? row.sequence
+          : `${scope.accountNo}:${row.sequence}`,
+      description: row.description,
+    })),
+  );
+  const captureStart = [...input.scopes]
+    .map((scope) => scope.startDate)
+    .sort()[0]!;
+  const captureEnd = [...input.scopes]
+    .map((scope) => scope.endDate)
+    .sort()
+    .at(-1)!;
+  return {
+    captureId: idToString(uuidV7()),
+    integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
+    sourceConnectionKey,
+    identityEpoch,
+    stream: input.stream,
+    recordKind: "cathay-domestic-deposit",
+    routeKey: input.authorityRoute,
+    contractVersion: "v1",
+    subjectDigest,
+    observedAt: input.observedAt,
+    scope: {
+      startDate: captureStart,
+      endDate: captureEnd,
+      dateFormat: "YYYY-MM-DD",
+      kind: "bounded-range",
+      completeness: CATHAY_COMPLETENESS_PROOF.kind,
+      ruleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
+      completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
+      ...(first.absenceAuthority
+        ? { absenceAuthority: first.absenceAuthority }
+        : {}),
+      sourceAccountKey:
+        input.scopes.length === 1 ? first.accountNo : null,
+      accountNo: input.scopes.length === 1 ? first.accountNo : null,
+    },
+    pages,
+    records,
+  };
+}
+
 type LifecycleEventKind = CathayCanonicalLifecycleEvent["kind"];
 function insertLifecycleEvent(
   db: DatabaseSync,
@@ -1279,154 +1430,176 @@ function latestLifecycleEvent(
   return row?.event_kind as LifecycleEventKind | null;
 }
 
-function commitCathayDomesticDepositSyncOnce(
-  ledgerDir: string,
+function commitCathayDomesticDepositSyncInStore(
+  store: CathayDomesticDepositSyncTransactionStore,
   input: ValidatedCathaySync,
   admissionClock: CanonicalAdmissionClock,
-  runtime?: CanonicalRuntimeOptions,
+  admissionCapability: CanonicalSourceCaptureAdmissionTransactionCapability,
 ): CathayCanonicalCommitResult {
-  const db = openCanonicalDatabase(ledgerDir, { runtime });
-  let inTransaction = false;
-  try {
-    const priorCurrentTransactions = new Set(
-      createCanonicalProjectionRuntime(db)
-        .read({
-          kind: "current",
-          families: ["transactions"],
-          scope: { sourceConnectionKey: input.sourceConnectionId },
-        })
-        .families.transactions.map(
-          (row) => `${row.transactionId}:${row.revisionId}`,
-        ),
-    );
-    db.exec("BEGIN IMMEDIATE");
-    inTransaction = true;
-    return withCanonicalSourceCaptureAdmissionExistingTransaction(
-      {
-        db,
-        databasePath: canonicalSqlitePath(ledgerDir),
-        commitClock: () => recordedAtUtcUs(admissionClock()),
-      } as CanonicalSourceStore,
-      (sourceAdmissionCapability) => {
-    const commitId = uuidV7();
-    const maxSequence = Number(
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(MAX(commit_sequence), 0) AS max_sequence FROM canonical_commits",
-          )
-          .get() as { max_sequence?: number }
-      ).max_sequence ?? 0,
-    );
-    const commitSequence = maxSequence + 1;
+  assertValidatedCanonicalDatabase(store.db);
+  void admissionClock;
+  const db = store.db;
+  const priorCurrentTransactions = new Set(
+    createCanonicalProjectionRuntime(db)
+      .read({
+        kind: "current",
+        families: ["transactions"],
+        scope: { sourceConnectionKey: input.sourceConnectionId },
+      })
+      .families.transactions.map(
+        (row) => `${row.transactionId}:${row.revisionId}`,
+      ),
+  );
+  const admissionSourceConnectionKey = cathayOpaqueIdentity(
+    input.sourceConnectionId,
+  );
+  const admissionIdentityEpoch = cathayOpaqueIdentity(input.identityEpoch);
+  if (admissionSourceConnectionKey !== input.sourceConnectionId) {
+    const existing = db
+      .prepare(
+        "SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?",
+      )
+      .get(CATHAY_INTEGRATION_NAMESPACE, input.sourceConnectionId) as
+      | { source_connection_id?: unknown }
+      | undefined;
+    if (existing)
+      db.prepare(
+        "UPDATE source_connections SET source_connection_key = ? WHERE source_connection_id = ?",
+      ).run(admissionSourceConnectionKey, blob(existing.source_connection_id));
+  }
+  const sourceConnectionForEpoch = db
+    .prepare(
+      "SELECT source_connection_id FROM source_connections WHERE integration_namespace = ? AND source_connection_key = ?",
+    )
+    .get(CATHAY_INTEGRATION_NAMESPACE, admissionSourceConnectionKey) as
+    | { source_connection_id?: unknown }
+    | undefined;
+  if (admissionIdentityEpoch !== input.identityEpoch && sourceConnectionForEpoch) {
+    const existingEpoch = db
+      .prepare(
+        "SELECT identity_epoch_id FROM identity_epochs WHERE source_connection_id = ? AND epoch_key = ?",
+      )
+      .get(blob(sourceConnectionForEpoch.source_connection_id), input.identityEpoch) as
+      | { identity_epoch_id?: unknown }
+      | undefined;
+    if (existingEpoch)
+      db.prepare(
+        "UPDATE identity_epochs SET epoch_key = ? WHERE identity_epoch_id = ?",
+      ).run(admissionIdentityEpoch, blob(existingEpoch.identity_epoch_id));
+  }
+  const sourceEvidence = cathaySyncAdmissionEvidence(
+    input,
+    admissionSourceConnectionKey,
+    admissionIdentityEpoch,
+  );
+  const admitted = admissionCapability.admit(sourceEvidence);
+  const {
+    captureId,
+    commitId,
+    receipt,
+    sourceConnectionId,
+    identityEpochId,
+    sourceSubjectId,
+    sourceRecordIds,
+  } = admitted;
+  const commitSequence = receipt.knowledgePoint;
+  // The admission capability uses opaque identity keys at its public seam.
+  // Restore the historical Cathay keys only after every source and financial
+  // row has been attached to the admitted IDs. If any write fails, the outer
+  // transaction rolls the temporary key migration back with the rest.
+
+  const sourceRecordCount = input.scopes.reduce(
+    (sum, scope) => sum + scope.rows.length,
+    0,
+  );
+  if (sourceRecordIds.length !== sourceRecordCount)
+    throw new Error("Cathay source admission record count is incomplete.");
+  // Legacy Cathay source records carry their Capture directly and financial
+  // lineage through assertion_provenance. The pre-execution writer did not
+  // add the generic source_record_provenance projection, so remove only those
+  // admission-created compatibility rows to preserve the frozen lineage shape.
+  for (const sourceRecordId of sourceRecordIds)
     db.prepare(
-      "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES (?, ?, ?, ?, ?)",
-    ).run(
-      commitId,
-      commitSequence,
-      recordedAtUtcUs(admissionClock()),
-      input.authorityRoute,
-      "source_capture",
-    );
-    sourceAdmissionCapability.persistLegacyAuthorityRoute({
-      authorityRoute: input.authorityRoute,
-      integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
-      stream: input.stream,
-      contractVersion: CATHAY_DOMESTIC_DEPOSIT_CONTRACT_VERSION,
-      commitId,
-    });
-    const sourceConnectionId =
-      sourceAdmissionCapability.ensureLegacySourceConnection({
-        integrationNamespace: CATHAY_INTEGRATION_NAMESPACE,
-        sourceConnectionKey: input.sourceConnectionId,
-        commitId,
-      });
-    const identityEpochId = sourceAdmissionCapability.ensureLegacyIdentityEpoch({
-      sourceConnectionId,
-      epochKey: input.identityEpoch,
-      commitId,
-    });
-    const accountIds = new Map<string, CanonicalId>();
-    for (const scope of input.scopes) {
-      const existing = db
-        .prepare(
-          "SELECT account_id, currency, account_type, account_no FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND source_account_key = ?",
-        )
-        .get(
-          sourceConnectionId,
-          identityEpochId,
-          input.stream,
-          scope.accountNo,
+      "DELETE FROM source_record_provenance WHERE source_record_id = ? AND capture_id = ?",
+    ).run(sourceRecordId, captureId);
+  const captureStart = [...input.scopes]
+    .map((scope) => scope.startDate)
+    .sort()[0]!;
+  const captureEnd = [...input.scopes]
+    .map((scope) => scope.endDate)
+    .sort()
+    .at(-1)!;
+  db.prepare(
+    `UPDATE source_captures
+       SET source_account_key = ?, observed_at = ?, scope_start = ?, scope_end = ?,
+           completeness_basis = ?
+     WHERE capture_id = ?`,
+  ).run(
+    input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
+    input.observedAt,
+    captureStart,
+    captureEnd,
+    CATHAY_COMPLETENESS_PROOF.basis,
+    captureId,
+  );
+  const accountIds = new Map<string, CanonicalId>();
+  for (const scope of input.scopes) {
+    const existing = db
+      .prepare(
+        "SELECT account_id, currency, account_type, account_no FROM financial_accounts WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ? AND source_account_key = ?",
+      )
+      .get(
+        sourceConnectionId,
+        identityEpochId,
+        input.stream,
+        scope.accountNo,
+      );
+    const accountId = existing
+      ? blob(dbRow<{ account_id: unknown }>(existing).account_id)
+      : uuidV7();
+    if (existing) {
+      const row = dbRow<{
+        currency: string;
+        account_type: string;
+        account_no?: unknown;
+      }>(existing);
+      if (
+        row.currency !== scope.currency ||
+        row.account_type !== "depository"
+      )
+        throw new Error(
+          "Cathay account identity has conflicting required classification.",
         );
-      const accountId = existing
-        ? blob(dbRow<{ account_id: unknown }>(existing).account_id)
-        : uuidV7();
-      if (existing) {
-        const row = dbRow<{
-          currency: string;
-          account_type: string;
-          account_no?: unknown;
-        }>(existing);
-        if (
-          row.currency !== scope.currency ||
-          row.account_type !== "depository"
-        )
-          throw new Error(
-            "Cathay account identity has conflicting required classification.",
-          );
-        if (
-          scope.accountNumber &&
-          row.account_no != null &&
-          String(row.account_no) !== scope.accountNumber.value
-        )
-          throw new Error(
-            "Cathay provider account number changed without a versioned account revision.",
-          );
-        if (scope.accountNumber && row.account_no == null)
-          db.prepare(
-            "UPDATE financial_accounts SET account_no = ? WHERE account_id = ? AND account_no IS NULL",
-          ).run(scope.accountNumber.value, accountId);
-      } else
+      if (
+        scope.accountNumber &&
+        row.account_no != null &&
+        String(row.account_no) !== scope.accountNumber.value
+      )
+        throw new Error(
+          "Cathay provider account number changed without a versioned account revision.",
+        );
+      if (scope.accountNumber && row.account_no == null)
         db.prepare(
-          "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ).run(
-          accountId,
-          sourceConnectionId,
-          identityEpochId,
-          input.stream,
-          scope.accountNo,
-          scope.accountNumber?.value ?? null,
-          "depository",
-          scope.currency,
-          commitId,
-        );
-      accountIds.set(scope.accountNo, accountId);
-    }
-    const captureId = uuidV7();
-    const captureStart = [...input.scopes]
-      .map((scope) => scope.startDate)
-      .sort()[0]!;
-    const captureEnd = [...input.scopes]
-      .map((scope) => scope.endDate)
-      .sort()
-      .at(-1)!;
-    sourceAdmissionCapability.persistLegacyCapture({
-      captureId,
-      sourceConnectionId,
-      identityEpochId,
-      authorityRoute: input.authorityRoute,
-      stream: input.stream,
-      sourceAccountKey:
-        input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
-      accountNo: input.scopes.length === 1 ? input.scopes[0]!.accountNo : null,
-      observedAt: input.observedAt,
-      scopeStart: captureStart,
-      scopeEnd: captureEnd,
-      completeness: CATHAY_COMPLETENESS_PROOF.kind,
-      completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
-      completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
-      commitId,
-    });
+          "UPDATE financial_accounts SET account_no = ? WHERE account_id = ? AND account_no IS NULL",
+        ).run(scope.accountNumber.value, accountId);
+    } else
+      db.prepare(
+        "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        accountId,
+        sourceConnectionId,
+        identityEpochId,
+        input.stream,
+        scope.accountNo,
+        scope.accountNumber?.value ?? null,
+        "depository",
+        scope.currency,
+        commitId,
+      );
+    accountIds.set(scope.accountNo, accountId);
+  }
+    const allTransactions: CathayCommitTransactionResult[] = [];
+    const scopeResults: CathayCanonicalCommitScopeResult[] = [];
     for (const scope of input.scopes) {
       if (!scope.accountNumber) continue;
       db.prepare(
@@ -1448,65 +1621,165 @@ function commitCathayDomesticDepositSyncOnce(
         input.observedAt,
       );
     }
-    const allTransactions: CathayCommitTransactionResult[] = [];
-    const scopeResults: CathayCanonicalCommitScopeResult[] = [];
-    for (const scope of input.scopes) {
+    const scopeIds = new Map<string, CanonicalId>();
+    let sourceRecordOffset = 0;
+    db.prepare("DELETE FROM capture_scope_pages WHERE scope_id = ?").run(
+      blob(admitted.scopeId),
+    );
+    for (const [scopeIndex, scope] of input.scopes.entries()) {
       const accountId = accountIds.get(scope.accountNo)!;
-      const scopeId = uuidV7();
-      sourceAdmissionCapability.persistLegacyScope({
-        scopeId,
-        captureId,
-        sourceConnectionId,
-        identityEpochId,
-        accountId,
-        sourceAccountKey: scope.accountNo,
-        accountNo: scope.accountNo,
-        stream: input.stream,
-        scopeStart: scope.startDate,
-        scopeEnd: scope.endDate,
-        scopeKind: "bounded-range",
-        completeness: CATHAY_COMPLETENESS_PROOF.kind,
-        completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
-        completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
-        absenceAuthority: scope.absenceAuthority ?? null,
-        contractFingerprint: scope.contractFingerprint,
-        preflightFingerprint: scope.preflightFingerprint,
-        pageCount: scope.pages.length,
-        commitId,
-      });
-      for (const page of scope.pages)
-        sourceAdmissionCapability.persistLegacyPage({
-          scopePageId: uuidV7(),
-          scopeId,
-          pageOrdinal: page.pageOrdinal,
-          terminal: page.terminal,
-          rowCount: page.rowCount,
-          responseDigest: page.responseDigest,
-          proofKind: CATHAY_COMPLETENESS_PROOF.basis,
-          contractFingerprint: scope.contractFingerprint,
-          preflightFingerprint: scope.preflightFingerprint,
+      const scopeId = scopeIndex === 0 ? blob(admitted.scopeId) : uuidV7();
+      const scopeSubjectDigest = cathayOpaqueIdentity(
+        `cathay/domestic-deposit/scope-subject/v1|${admissionSourceConnectionKey}|${admissionIdentityEpoch}|${scope.accountNo}|${scope.startDate}|${scope.endDate}|${scope.contractFingerprint}`,
+      );
+      let scopeSubjectId = sourceSubjectId;
+      if (scopeIndex !== 0) {
+        const candidateSubjectId = uuidV7();
+        db.prepare(
+          `INSERT INTO source_subjects(
+             source_subject_id, source_connection_id, identity_epoch_id, stream,
+             record_kind, subject_digest, created_commit_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source_connection_id, identity_epoch_id, stream, record_kind, subject_digest)
+           DO NOTHING`,
+        ).run(
+          candidateSubjectId,
+          sourceConnectionId,
+          identityEpochId,
+          input.stream,
+          "cathay-domestic-deposit",
+          scopeSubjectDigest,
           commitId,
-        });
+        );
+        const persistedSubject = db
+          .prepare(
+            `SELECT source_subject_id FROM source_subjects
+             WHERE source_connection_id = ? AND identity_epoch_id = ? AND stream = ?
+               AND record_kind = ? AND subject_digest = ?`,
+          )
+          .get(
+            sourceConnectionId,
+            identityEpochId,
+            input.stream,
+            "cathay-domestic-deposit",
+            scopeSubjectDigest,
+          ) as { source_subject_id?: unknown } | undefined;
+        if (!persistedSubject)
+          throw new Error("Cathay source subject was not created.");
+        scopeSubjectId = blob(persistedSubject.source_subject_id);
+      }
+      scopeIds.set(scope.accountNo, scopeId);
+      if (scopeIndex === 0) {
+        db.prepare(
+          `UPDATE capture_scopes SET source_connection_id = ?, identity_epoch_id = ?,
+             account_id = ?, source_subject_id = ?, source_account_key = ?, stream = ?,
+             scope_start = ?, scope_end = ?, scope_kind = ?, completeness = ?,
+             completeness_basis = ?, completeness_rule_version = ?, absence_authority = ?,
+             contract_fingerprint = ?, preflight_fingerprint = ?, page_count = ?,
+             terminal = 1, commit_id = ? WHERE scope_id = ? AND capture_id = ?`,
+        ).run(
+          sourceConnectionId,
+          identityEpochId,
+          accountId,
+          scopeSubjectId,
+          scope.accountNo,
+          input.stream,
+          scope.startDate,
+          scope.endDate,
+          "bounded-range",
+          CATHAY_COMPLETENESS_PROOF.kind,
+          CATHAY_COMPLETENESS_PROOF.basis,
+          CATHAY_COMPLETENESS_PROOF.ruleVersion,
+          scope.absenceAuthority ?? null,
+          scope.contractFingerprint,
+          scope.preflightFingerprint,
+          scope.pages.length,
+          commitId,
+          scopeId,
+          captureId,
+        );
+      } else {
+        db.prepare(
+          `INSERT INTO capture_scopes(
+             scope_id, capture_id, source_connection_id, identity_epoch_id, account_id,
+             source_subject_id, source_account_key, stream, scope_start, scope_end,
+             scope_kind, completeness, completeness_basis, completeness_rule_version,
+             absence_authority, contract_fingerprint, preflight_fingerprint, page_count,
+             terminal, commit_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        ).run(
+          scopeId,
+          captureId,
+          sourceConnectionId,
+          identityEpochId,
+          accountId,
+          scopeSubjectId,
+          scope.accountNo,
+          input.stream,
+          scope.startDate,
+          scope.endDate,
+          "bounded-range",
+          CATHAY_COMPLETENESS_PROOF.kind,
+          CATHAY_COMPLETENESS_PROOF.basis,
+          CATHAY_COMPLETENESS_PROOF.ruleVersion,
+          scope.absenceAuthority ?? null,
+          scope.contractFingerprint,
+          scope.preflightFingerprint,
+          scope.pages.length,
+          commitId,
+        );
+      }
+      for (const page of scope.pages)
+        db.prepare(
+          `INSERT INTO capture_scope_pages(
+             scope_page_id, scope_id, page_ordinal, response_code, terminal, row_count,
+             response_digest, proof_kind, contract_fingerprint, preflight_fingerprint,
+             metadata_json, commit_id
+           ) VALUES (?, ?, ?, '200', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          uuidV7(),
+          scopeId,
+          page.pageOrdinal,
+          page.terminal ? 1 : 0,
+          page.rowCount,
+          page.responseDigest,
+          CATHAY_COMPLETENESS_PROOF.basis,
+          scope.contractFingerprint,
+          scope.preflightFingerprint,
+          JSON.stringify({
+            source: "cathay",
+            accountNo: scope.accountNo,
+            scopeStart: scope.startDate,
+            scopeEnd: scope.endDate,
+          }),
+          commitId,
+        );
       const seenSequences = new Set(scope.rows.map((row) => row.sequence));
       const scopeTransactions: CathayCommitTransactionResult[] = [];
       for (const detail of scope.rows) {
-        const sourceRecordId = uuidV7();
-        sourceAdmissionCapability.persistLegacyRecord({
-          sourceRecordId,
-          captureId,
-          commitId,
-          sequenceLexeme: detail.sequence,
-          description: detail.description,
-          payloadJson: detail.payload,
-        });
-        sourceAdmissionCapability.persistLegacyRecordScope({
-          sourceRecordId,
+        const sourceRecordId = sourceRecordIds[sourceRecordOffset++];
+        if (!sourceRecordId)
+          throw new Error("Cathay source admission record mapping is incomplete.");
+        db.prepare(
+          `UPDATE source_record_scopes
+              SET scope_id = ?, account_id = ?, source_subject_id = ?, sequence_lexeme = ?,
+                  occurrence_key = ?, commit_id = ?
+            WHERE source_record_id = ? AND capture_id = ?`,
+        ).run(
           scopeId,
-          captureId,
           accountId,
-          sequenceLexeme: detail.sequence,
+          scopeSubjectId,
+          detail.sequence,
+          cathayOpaqueIdentity(
+            `cathay/domestic-deposit/occurrence/v1|${scope.accountNo}|${detail.sequence}|${detail.payload}`,
+          ),
           commitId,
-        });
+          sourceRecordId,
+          captureId,
+        );
+        db.prepare(
+          "UPDATE source_records SET sequence_lexeme = ? WHERE source_record_id = ? AND capture_id = ?",
+        ).run(detail.sequence, sourceRecordId, captureId);
         const existingTransaction = db
           .prepare(
             "SELECT transaction_id FROM financial_transactions WHERE account_id = ? AND source_sequence = ?",
@@ -1754,6 +2027,8 @@ function commitCathayDomesticDepositSyncOnce(
         transactions: scopeTransactions,
       });
     }
+    if (sourceRecordOffset !== sourceRecordIds.length)
+      throw new Error("Cathay source admission record mapping has extra records.");
     createCanonicalProjectionRuntime(db).applyCommit({
       commitId,
       kind: "source_capture",
@@ -1762,8 +2037,14 @@ function commitCathayDomesticDepositSyncOnce(
       db,
       [idToString(captureId)],
     );
-    db.exec("COMMIT");
-    inTransaction = false;
+    if (admissionSourceConnectionKey !== input.sourceConnectionId)
+      db.prepare(
+        "UPDATE source_connections SET source_connection_key = ? WHERE source_connection_id = ?",
+      ).run(input.sourceConnectionId, sourceConnectionId);
+    if (admissionIdentityEpoch !== input.identityEpoch)
+      db.prepare(
+        "UPDATE identity_epochs SET epoch_key = ? WHERE identity_epoch_id = ?",
+      ).run(input.identityEpoch, identityEpochId);
     return {
       captureId: idToString(captureId),
       commitSequence,
@@ -1771,14 +2052,79 @@ function commitCathayDomesticDepositSyncOnce(
       transactions: allTransactions,
       scopes: scopeResults,
     };
+}
+
+export function commitCathayDomesticDepositSyncInTransaction(
+  store: CathayDomesticDepositSyncTransactionStore,
+  input: CathayDomesticDepositSyncInput,
+  admissionCapability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CathayCanonicalCommitResult {
+  assertValidatedCanonicalDatabase(store.db);
+  return commitCathayDomesticDepositSyncInStore(
+    store,
+    validateSyncInput(input),
+    () => new Date().toISOString(),
+    admissionCapability,
+  );
+}
+
+async function commitCathayDomesticDepositSyncStandalone(
+  ledgerDir: string,
+  input: CathayDomesticDepositSyncInput,
+  admissionClock: CanonicalAdmissionClock,
+  runtime?: CanonicalRuntimeOptions,
+): Promise<CathayCanonicalCommitResult> {
+  // Keep this compatibility entry point on the same ledger-operation queue as
+  // production providers. The dynamic import avoids the execution module's
+  // intentional source-store dependency becoming a static initialization cycle.
+  const { executeCanonicalFinancialCommitRun } = await import(
+    "./canonical-financial-commit-execution.ts"
+  );
+  const execution = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: ledgerDir,
+    provider: "cathay",
+    product: "domestic-deposit",
+    runtime,
+    commitClock: () => recordedAtUtcUs(admissionClock()),
+    items: [
+      {
+        provider: "cathay",
+        product: "domestic-deposit",
+        itemKey: "compatibility-sync",
+        commit: (transaction) =>
+          commitCathayDomesticDepositSyncInTransaction(
+            transaction.writer,
+            input,
+            transaction.admission,
+          ),
       },
+    ],
+  });
+  const item = execution.items[0];
+  if (execution.status === "completed" && item?.status === "committed")
+    return item.value;
+  const explicitRuntime =
+    runtime !== undefined &&
+    Object.values(runtime).some((value) => value !== undefined);
+  const exhaustedBeforeItem =
+    execution.status === "failed" &&
+    execution.items.length === 0 &&
+    execution.diagnostics.some(
+      (diagnostic) => diagnostic.errorCode === "writer-serialization",
     );
-  } catch (error) {
-    if (inTransaction) db.exec("ROLLBACK");
-    throw error;
-  } finally {
-    db.close();
+  if (explicitRuntime && exhaustedBeforeItem) {
+    const attempts = Math.max(1, Math.floor(runtime.maxAttempts ?? 3));
+    throw new CanonicalBusyRetryExhaustedError(
+      attempts,
+      [],
+      new Error("Canonical lifecycle open exhausted its busy retry policy."),
+    );
   }
+  throw new Error(
+    `Cathay canonical financial commit ${execution.status}: ${execution.diagnostics
+      .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+      .join(", ")}`,
+  );
 }
 
 export function commitCathayDomesticDeposit(
@@ -1788,7 +2134,7 @@ export function commitCathayDomesticDeposit(
 ): Promise<CathayCanonicalCommitResult> {
   const validated = validateCapture(input);
   const admissionClock = options.clock ?? (() => new Date().toISOString());
-  const sync = validateSyncInput({
+  const sync: CathayDomesticDepositSyncInput = {
     sourceConnectionId: input.sourceConnectionId,
     identityEpoch: input.identityEpoch,
     authorityRoute: input.authorityRoute,
@@ -1810,16 +2156,12 @@ export function commitCathayDomesticDeposit(
         absenceAuthority: input.absenceAuthority,
       },
     ],
-  });
-  return withCanonicalWriter(
+  };
+  validateSyncInput(sync);
+  return commitCathayDomesticDepositSyncStandalone(
     ledgerDir,
-    () =>
-      commitCathayDomesticDepositSyncOnce(
-        ledgerDir,
-        sync,
-        admissionClock,
-        options.runtime,
-      ),
+    sync,
+    admissionClock,
     options.runtime,
   );
 }
@@ -1829,17 +2171,12 @@ export function commitCathayDomesticDepositSync(
   input: CathayDomesticDepositSyncInput,
   options: CathayCanonicalCommitOptions = {},
 ): Promise<CathayCanonicalCommitResult> {
-  const validated = validateSyncInput(input);
+  validateSyncInput(input);
   const admissionClock = options.clock ?? (() => new Date().toISOString());
-  return withCanonicalWriter(
+  return commitCathayDomesticDepositSyncStandalone(
     ledgerDir,
-    () =>
-      commitCathayDomesticDepositSyncOnce(
-        ledgerDir,
-        validated,
-        admissionClock,
-        options.runtime,
-      ),
+    input,
+    admissionClock,
     options.runtime,
   );
 }
@@ -1992,7 +2329,7 @@ function validateDerivedImportSubjects(
   input: CathayDerivedImportRunInput,
   coordinates: CathayDerivedImportCoordinate[],
 ): void {
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     const connection = db
       .prepare(
@@ -2109,7 +2446,7 @@ function commitCathayDerivedImportRunOnce(
   clock: CanonicalAdmissionClock,
   runtime?: CanonicalRuntimeOptions,
 ): { runId: string; commitSequence: number; assertionIds: string[] } {
-  const db = openCanonicalDatabase(ledgerDir, { runtime });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { runtime });
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -2477,7 +2814,7 @@ export async function commitCathayUserAssertion(
   return withCanonicalWriter(
     ledgerDir,
     () => {
-      const db = openCanonicalDatabase(ledgerDir, { runtime: options.runtime });
+      const db = openCanonicalDatabaseHandle(ledgerDir, { runtime: options.runtime });
       let inTransaction = false;
       try {
         db.exec("BEGIN IMMEDIATE");
@@ -2836,7 +3173,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     const yuantaV2CurrentRead =
       this.profile.integrationNamespace === "yuanta" &&
       this.profile.postingRuleVersion === YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2;
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const accountEligibility = yuantaV1CurrentSupersession
@@ -2965,7 +3302,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
       throw new Error(
         "Canonical historical knowledgeAt is outside the supported sequence range.",
       );
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const rows = db
@@ -3015,7 +3352,7 @@ class CathayCanonicalFinancialQueryAdapter implements CathayCanonicalFinancialQu
     if (request.subject.kind !== "transaction" || !request.subject.id)
       throw new Error("Cathay lineage queries require a transaction subject.");
     const transactionId = idFromString(request.subject.id);
-    const db = openCanonicalDatabase(this.ledgerDir, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(this.ledgerDir, { readOnly: true });
     try {
       return withCanonicalSnapshot(db, () => {
         const revisionRows = db
@@ -3210,18 +3547,28 @@ export function createCanonicalFinancialQuery(
   return new CathayCanonicalFinancialQueryAdapter(ledgerDir, profile);
 }
 
-export const CANONICAL_SOURCE_SCHEMA_VERSION = CANONICAL_SCHEMA_VERSION;
 const CANONICAL_SOURCE_STORE_BRAND = Symbol(
   "canonical-source-store-lifecycle-validated-v1",
 );
 const CANONICAL_SOURCE_STORE_OBJECTS = new WeakSet<object>();
 export type CanonicalSourceStore = {
   readonly [CANONICAL_SOURCE_STORE_BRAND]: true;
-  readonly db: DatabaseSync;
-  readonly databasePath: string;
+  readonly db: ValidatedCanonicalDatabase;
   readonly commitClock: () => number;
+  withWriter<T>(
+    operation: () => T,
+    runtime?: CanonicalRuntimeOptions,
+  ): Promise<T>;
   close(): void;
 };
+const CANONICAL_SOURCE_STORE_HANDLES = new WeakMap<
+  object,
+  Readonly<{
+    handle: ReturnType<typeof openCanonicalDatabaseHandle>;
+    writerKey: ReturnType<typeof canonicalDatabaseWriterKey>;
+    databasePath: string;
+  }>
+>();
 
 function requireValidatedCanonicalSourceStore(
   value: unknown,
@@ -3308,30 +3655,50 @@ export type CanonicalSourceCommitResult = {
   observationCount: number;
   provenanceCount: number;
 };
-export type CanonicalSourceStoreOptions = { commitClock?: () => number };
+export type CanonicalSourceStoreOptions = {
+  commitClock?: () => number;
+  /**
+   * Runtime policy for the store's private writer queue.  The execution
+   * module uses this to disable retries after a transaction may have become
+   * visible; existing callers retain the historical default when omitted.
+   */
+  writerRuntime?: CanonicalRuntimeOptions;
+};
+
+function normalizeCanonicalLedgerDirectory(ledgerDir: string): string {
+  return ledgerDir;
+}
+
 export function createCanonicalSourceStore(
-  databasePath: string,
+  ledgerDir: string,
   options: CanonicalSourceStoreOptions = {},
 ): CanonicalSourceStore {
-  const path = requireCanonicalSourceText(
-    databasePath,
-    "Canonical SQLite path",
+  const directory = normalizeCanonicalLedgerDirectory(
+    requireCanonicalSourceText(ledgerDir, "Canonical ledger directory"),
   );
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const db = openCanonicalDatabasePath(path);
+  const handle = openCanonicalDatabaseHandle(directory);
+  const db = handle.db;
   const commitClock = options.commitClock ?? currentUtcMicros;
+  const writerRuntime = options.writerRuntime;
   let closed = false;
   const store: CanonicalSourceStore = {
     [CANONICAL_SOURCE_STORE_BRAND]: true,
     db,
-    databasePath: path,
     commitClock,
+    withWriter(operation, runtime) {
+      return withCanonicalWriterQueue(
+        canonicalDatabaseWriterKey(directory),
+        operation,
+        runtime ?? writerRuntime,
+      );
+    },
     close() {
       if (!closed) {
         try {
-          db.close();
+          handle.close();
         } finally {
           closed = true;
+          CANONICAL_SOURCE_STORE_HANDLES.delete(store);
           CANONICAL_SOURCE_STORE_OBJECTS.delete(store);
         }
       }
@@ -3339,6 +3706,12 @@ export function createCanonicalSourceStore(
   };
   Object.freeze(store);
   CANONICAL_SOURCE_STORE_OBJECTS.add(store);
+  const writerKey = canonicalDatabaseWriterKey(directory);
+  CANONICAL_SOURCE_STORE_HANDLES.set(store, {
+    handle,
+    writerKey,
+    databasePath: writerKey,
+  });
   return store;
 }
 
@@ -3352,9 +3725,14 @@ export function submitCanonicalContractPurge(
   request: CanonicalContractPurgeRequest,
 ): Promise<CanonicalContractPurgeResult> {
   requireValidatedCanonicalSourceStore(store);
-  return withCanonicalWriterQueue(
-    store.databasePath,
-    () => submitCanonicalContractPurgeInValidatedStore(store.db, store.databasePath, request),
+  const state = CANONICAL_SOURCE_STORE_HANDLES.get(store)!;
+  return store.withWriter(
+    () =>
+      submitCanonicalContractPurgeInValidatedStore(
+        store.db,
+        state.databasePath,
+        request,
+      ),
     request.runtime,
   );
 }

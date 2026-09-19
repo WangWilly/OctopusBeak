@@ -19,6 +19,8 @@ assert.match(
   source,
   /statementTypes: z\.array\(statementTypeSchema\)\.min\(1\)\.optional\(\)/,
 );
+assert.match(source, /canonicalLedgerDir/);
+assert.doesNotMatch(source, /canonical(Source|Financial)LedgerDir/);
 assert.match(
   authSource,
   /export async function waitForStableLocatorBox\([\s\S]*?locator\.boundingBox\(\)/,
@@ -246,10 +248,9 @@ assert.deepEqual(allProductsOutput.downloads, [
 const canonicalLedgerDirectory = await mkdtemp(
   join(tmpdir(), "cathay-all-canonical-"),
 );
-const previousCanonicalLedgerDirectory =
-  process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR =
-  canonicalLedgerDirectory;
+const canonicalLedgerKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
+const previousCanonicalLedgerDirectory = process.env[canonicalLedgerKey];
+process.env[canonicalLedgerKey] = canonicalLedgerDirectory;
 const foreignCanonicalAccount = {
   account: "CATHAY-FOREIGN-ALL-133",
   currencyList: [{ currencyCode: "USD" }],
@@ -331,9 +332,7 @@ try {
         currentForeignBalanceCaptures += 1;
         assert.equal(captures.length, 1);
         assert.ok(ledgerDir);
-        const committedStore = createCanonicalSourceStore(
-          join(ledgerDir, "canonical.sqlite"),
-        );
+        const committedStore = createCanonicalSourceStore(ledgerDir);
         try {
           assert.equal(
             Number(
@@ -355,18 +354,14 @@ try {
   );
 } finally {
   if (previousCanonicalLedgerDirectory === undefined)
-    delete process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-  else
-    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR =
-      previousCanonicalLedgerDirectory;
+    delete process.env[canonicalLedgerKey];
+  else process.env[canonicalLedgerKey] = previousCanonicalLedgerDirectory;
 }
 assert.equal(foreignCanonicalAttempts, 2);
 assert.equal(currentForeignBalanceCaptures, 1);
 assert.deepEqual(foreignCanonicalLifecycle, ["foreign-account-commit-complete"]);
 assert.equal(foreignCanonicalOutput.count, 1);
-const canonicalStore = createCanonicalSourceStore(
-  join(canonicalLedgerDirectory, "canonical.sqlite"),
-);
+const canonicalStore = createCanonicalSourceStore(canonicalLedgerDirectory);
 try {
   assert.equal(
     Number(

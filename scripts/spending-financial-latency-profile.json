@@ -1,0 +1,30 @@
+{
+  "profileVersion": "spending-financial-latency-profile-v1",
+  "seed": "octopusbeak-spending-latency-v1",
+  "source": "checked-in-deidentified-cardinality-envelope",
+  "formal": {
+    "baseCardinalities": {
+      "invoices": 4096,
+      "transactions": 4096,
+      "candidates": 4096
+    },
+    "stressMultiplier": 2,
+    "iterations": 1000
+  },
+  "ci": {
+    "baseCardinalities": {
+      "invoices": 128,
+      "transactions": 128,
+      "candidates": 128
+    },
+    "iterations": 25
+  },
+  "smoke": {
+    "baseCardinalities": {
+      "invoices": 32,
+      "transactions": 32,
+      "candidates": 32
+    },
+    "iterations": 5
+  }
+}

@@ -872,6 +872,52 @@ function sourceRecordComparisonPayload(
   return payload;
 }
 
+function esunAllowedTransactionEvolution(
+  prior: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const priorPresent = prior.statementPeriod !== undefined && prior.statementPeriod !== null;
+  const nextPresent = next.statementPeriod !== undefined && next.statementPeriod !== null;
+  const optionalPeriodChanged = priorPresent !== nextPresent;
+  const billingStatusAdvanced =
+    prior.billingStatus === "unbilled" && next.billingStatus === "billed";
+  if (!optionalPeriodChanged && !billingStatusAdvanced) return false;
+  const normalizedPrior = { ...prior };
+  const normalizedNext = { ...next };
+  if (optionalPeriodChanged) {
+    delete normalizedPrior.statementPeriod;
+    delete normalizedNext.statementPeriod;
+  }
+  if (billingStatusAdvanced) {
+    delete normalizedPrior.billingStatus;
+    delete normalizedNext.billingStatus;
+  }
+  return stableCanonicalSourceJson(normalizedPrior) ===
+    stableCanonicalSourceJson(normalizedNext);
+}
+
+/**
+ * Fubon loan records carry mutable statement observations in the same compact
+ * payload as the booked event. Their semantic occurrence key is independent
+ * of those observations, so compare only the immutable transaction core when
+ * a source record is recaptured.
+ */
+function fubonAllowedLoanEvolution(
+  prior: Record<string, unknown>,
+  next: Record<string, unknown>,
+): boolean {
+  const stablePrior = { ...prior };
+  const stableNext = { ...next };
+  delete stablePrior.balanceSourceEvidence;
+  delete stableNext.balanceSourceEvidence;
+  delete stablePrior.sourceDescription;
+  delete stableNext.sourceDescription;
+  return (
+    stableCanonicalSourceJson(stablePrior) ===
+    stableCanonicalSourceJson(stableNext)
+  );
+}
+
 function sourceRecordContentMatches(
   recordKind: string,
   row: Record<string, unknown>,
@@ -899,14 +945,27 @@ function sourceRecordContentMatches(
     return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
   }
 
+  const esunTransactionEvolution =
+    recordKind === "esun-credit-card-transaction" &&
+    esunAllowedTransactionEvolution(prior, next);
+  const fubonLoanEvolution =
+    recordKind === "fubon-loan-transaction" &&
+    fubonAllowedLoanEvolution(prior, next);
+
   // Financial content hashes are part of the immutable source contract. Only
   // Yuanta's explicitly derived settlement-linkage enrichment may change the
-  // hash while preserving the normalized source transaction content.
+  // hash while preserving the normalized source transaction content, plus
+  // E.SUN's optional issuer statement-period appearance/disappearance or its
+  // one-way unbilled-to-billed lifecycle advance, plus Fubon's balance and
+  // raw display-label observations.
   if (
     String(row.content_hash) !== record.contentHash &&
-    recordKind !== "yuanta-foreign-currency-deposit"
+    recordKind !== "yuanta-foreign-currency-deposit" &&
+    !esunTransactionEvolution &&
+    !fubonLoanEvolution
   )
     return false;
+  if (esunTransactionEvolution || fubonLoanEvolution) return true;
   return stableCanonicalSourceJson(prior) === stableCanonicalSourceJson(next);
 }
 
@@ -1377,7 +1436,7 @@ function persistStandalone(
   evidence: RuntimeValidatedSourceEvidence,
 ): Promise<CanonicalSourceCaptureAdmissionTransactionResult> {
   validateCanonicalSourceStore(store);
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const result = persistWithinTransaction(store, evidence);
@@ -1404,7 +1463,7 @@ function persistBatchStandalone(
       "empty-batch",
       "Canonical source capture admission batch cannot be empty.",
     );
-  return withCanonicalWriterQueue(store.databasePath, () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const results = evidences.map((evidence) =>
@@ -1430,7 +1489,7 @@ export async function withCanonicalSourceCaptureAdmissionTransaction<T>(
   ) => T | Promise<T>,
 ): Promise<T> {
   assertValidatedCanonicalDatabase(store.db);
-  return withCanonicalWriterQueue(store.databasePath, async () => {
+  return store.withWriter(async () => {
     store.db.exec("BEGIN IMMEDIATE");
     const capability = mintTransactionCapability(store);
     try {

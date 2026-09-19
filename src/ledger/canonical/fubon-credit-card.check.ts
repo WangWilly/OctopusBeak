@@ -182,6 +182,73 @@ function capture(
   };
 }
 
+function fubonBillingTransitionCapture(input: {
+  captureId: string;
+  observedAt: string;
+  billingStatus: "billed" | "unbilled";
+  sourceRecordKey: string;
+  statementKey?: string;
+}): FubonCreditCardCaptureInput {
+  const billed = input.billingStatus === "billed";
+  const identity = capture().identity;
+  const baseTransaction = transaction({
+    sourceRecordKey: input.sourceRecordKey,
+    billingStatus: input.billingStatus,
+    statementKey: input.statementKey,
+  });
+  const transitionCompleteness = {
+    ...completeness,
+    periodRowCounts: [billed ? 1 : 0, 0, 0, 0, 0, 0],
+    unbilledRowCount: billed ? 0 : 1,
+    recordCount: 1,
+    grids: completeness.grids.map((grid, index) => {
+      const count = billed ? (index === 0 ? 1 : 0) : index === 6 ? 1 : 0;
+      return {
+        ...grid,
+        capturedRowCount: count,
+        sourceDeclaredRowCount: count,
+        sourceDeclaredScopeRowCount: count,
+      };
+    }),
+  };
+  return capture({
+    captureId: input.captureId,
+    observedAt: input.observedAt,
+    scope: { ...capture().scope, completeness: transitionCompleteness },
+    instruments: [
+      {
+        ...primaryInstrument,
+        evidence: {
+          ...primaryInstrument.evidence,
+          sourceRecordKey: input.sourceRecordKey,
+        },
+      },
+    ],
+    transactions: [baseTransaction],
+    statements: billed
+      ? [
+          {
+            ...capture().statements[0]!,
+            transactionSourceKeys: [input.sourceRecordKey],
+            statementKey: input.statementKey!,
+            evidence: {
+              kind: "issuer-settled-cycle-summary",
+              sourceRecordKey: buildFubonCreditCardStatementEvidenceKey(
+                identity,
+                {
+                  statementKey: input.statementKey!,
+                  cycleStart: "2026-07-01",
+                  cycleEnd: "2026-07-31",
+                },
+              ),
+              settled: true,
+            },
+          },
+        ]
+      : [],
+  });
+}
+
 function portfolioCapture(): FubonCreditCardCaptureInput {
   const base = capture();
   return {
@@ -478,7 +545,7 @@ test("financial-account card masks honor the projection knowledge cutoff", async
 test("instrument mask column is added idempotently to a legacy extension table", () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-instrument-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const initial = createCanonicalSourceStore(databasePath);
+  const initial = createCanonicalSourceStore(directory);
   initial.close();
   const legacy = new DatabaseSync(databasePath);
   try {
@@ -496,7 +563,7 @@ test("instrument mask column is added idempotently to a legacy extension table",
   } finally {
     legacy.close();
   }
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
@@ -516,7 +583,7 @@ test("instrument role evidence rejects source payload mask drift", async () => {
       commitFubonCreditCardCapture(
         {
           db: store.db,
-          databasePath: store.databasePath,
+          withWriter: store.withWriter,
           commitClock: store.commitClock,
           beforeFubonCreditExtensionCommit: (db) => {
             const row = db.prepare(
@@ -696,6 +763,152 @@ test("billing status is independent and excluded from the transaction identity t
   assert.equal(admitted.transactions[0]?.billingStatus, "billed");
   assert.equal(admitted.transactions[1]?.postingStatus, "posted");
   assert.equal(admitted.transactions[1]?.billingStatus, "unbilled");
+});
+
+test("same-capture billed and unbilled economic overlap is rejected before key splitting", () => {
+  const overlap = capture({
+    instruments: [
+      {
+        ...primaryInstrument,
+        evidence: {
+          ...primaryInstrument.evidence,
+          sourceRecordKey: "row-overlap-billed",
+        },
+      },
+    ],
+    statements: [
+      {
+        ...capture().statements[0]!,
+        transactionSourceKeys: ["row-overlap-billed"],
+      },
+    ],
+    transactions: [
+      transaction({
+        sourceRecordKey: "row-overlap-billed",
+        billingStatus: "billed",
+        statementKey: "statement-2026-07",
+      }),
+      transaction({
+        sourceRecordKey: "row-overlap-unbilled",
+        billingStatus: "unbilled",
+        statementKey: undefined,
+      }),
+    ],
+  });
+  assert.throws(
+    () => admitFubonCreditCardCapture(overlap),
+    /same economic transaction.*billed.*unbilled|billed.*unbilled.*same economic transaction/i,
+  );
+});
+
+test("Fubon billing lifecycle preserves one transaction across billed recurrence", async () => {
+  const store = createCanonicalSourceStore(":memory:");
+  try {
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(
+        fubonBillingTransitionCapture({
+          captureId: "capture-fubon-unbilled",
+          observedAt: "2026-08-25T00:00:00.000Z",
+          billingStatus: "unbilled",
+          sourceRecordKey: "row-fubon-transition-unbilled",
+        }),
+      ),
+    );
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(
+        fubonBillingTransitionCapture({
+          captureId: "capture-fubon-billed",
+          observedAt: "2026-09-01T00:00:00.000Z",
+          billingStatus: "billed",
+          sourceRecordKey: "row-fubon-transition-billed",
+          statementKey: "statement-2026-07",
+        }),
+      ),
+    );
+    await commitFubonCreditCardCapture(
+      store,
+      admitFubonCreditCardCapture(
+        fubonBillingTransitionCapture({
+          captureId: "capture-fubon-billed-recurrence",
+          observedAt: "2026-09-02T00:00:00.000Z",
+          billingStatus: "billed",
+          sourceRecordKey: "row-fubon-transition-billed-recurrence",
+          statementKey: "statement-2026-07",
+        }),
+      ),
+    );
+
+    const count = (table: string): number =>
+      Number(
+        (store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+          value?: number;
+        }).value ?? 0,
+      );
+    assert.equal(count("financial_transactions"), 1);
+    assert.equal(count("transaction_revisions"), 1);
+    assert.equal(count("source_records"), 5);
+    assert.equal(count("fubon_credit_transaction_details"), 3);
+    assert.equal(count("fubon_credit_statement_membership_details"), 1);
+    assert.equal(count("fubon_credit_statement_summary_evidence"), 2);
+
+    const lifecycle = store.db.prepare(`
+      SELECT detail.billing_status, detail.statement_key,
+             detail.source_record_id
+      FROM fubon_credit_transaction_details detail
+      JOIN financial_transactions transaction_row
+        ON transaction_row.transaction_id = detail.transaction_id
+      JOIN source_captures capture
+        ON capture.capture_id = detail.capture_id
+      JOIN canonical_commits canonical_commit
+        ON canonical_commit.commit_id = capture.commit_id
+      ORDER BY canonical_commit.commit_sequence, detail.rowid
+    `).all() as Array<{
+      billing_status?: string;
+      statement_key?: string | null;
+      source_record_id?: Uint8Array;
+    }>;
+    assert.deepEqual(
+      lifecycle.map(({ billing_status, statement_key }) => ({
+        billing_status,
+        statement_key,
+      })),
+      [
+        { billing_status: "unbilled", statement_key: null },
+        { billing_status: "billed", statement_key: "statement-2026-07" },
+        { billing_status: "billed", statement_key: "statement-2026-07" },
+      ],
+    );
+    assert.equal(
+      new Set(lifecycle.map(({ source_record_id }) => Buffer.from(source_record_id ?? []).toString("hex"))).size,
+      3,
+    );
+    const current = lifecycle.at(-1);
+    assert.equal(current?.billing_status, "billed");
+    assert.equal(current?.statement_key, "statement-2026-07");
+
+    await assert.rejects(
+      () =>
+        commitFubonCreditCardCapture(
+          store,
+          admitFubonCreditCardCapture(
+            fubonBillingTransitionCapture({
+              captureId: "capture-fubon-billing-regression",
+              observedAt: "2026-09-02T00:00:00.000Z",
+              billingStatus: "unbilled",
+              sourceRecordKey: "row-fubon-transition-regression",
+            }),
+          ),
+        ),
+      /cannot regress from billed to unbilled/,
+    );
+    assert.equal(count("financial_transactions"), 1);
+    assert.equal(count("transaction_revisions"), 1);
+    assert.equal(count("fubon_credit_transaction_details"), 3);
+  } finally {
+    store.close();
+  }
 });
 
 test("statement identity scopes credit-card transaction source keys", () => {
@@ -1265,7 +1478,7 @@ test("restores the attestation state after the focused event check", () => {
 test("persistence uses the shared canonical spine and typed credit extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-canonical-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     const first = await commitFubonCreditCardCapture(
@@ -1485,7 +1698,7 @@ test("persistence uses the shared canonical spine and typed credit extensions", 
 test("idempotently migrates legacy statement evidence lineage without losing rows", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-legacy-summary-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const initial = createCanonicalSourceStore(databasePath);
+  const initial = createCanonicalSourceStore(directory);
   initial.close();
   const legacy = new DatabaseSync(databasePath);
   try {
@@ -1512,7 +1725,7 @@ END;
     legacy.close();
   }
 
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   try {
     ensureFubonCreditCardSchema(store.db);
     ensureFubonCreditCardSchema(store.db);
@@ -1562,13 +1775,13 @@ END;
 
 test("extension failure rolls back initial attestation and the shared capture atomically", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-atomic-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitFubonCreditCardCapture(
         {
           db: base.db,
-          databasePath: base.databasePath,
+          withWriter: base.withWriter,
           commitClock: base.commitClock,
           beforeFubonCreditExtensionCommit: () => {
             throw new Error("injected extension failure");
@@ -1602,7 +1815,7 @@ test("extension failure rolls back initial attestation and the shared capture at
 
 test("direction fallback enriches Fubon outflows and inflows in the current projection", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-direction-kind-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1661,7 +1874,7 @@ test("direction fallback enriches Fubon outflows and inflows in the current proj
 
 test("identical occurrences remain distinct while repeated captures add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-occurrence-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1690,7 +1903,7 @@ test("identical occurrences remain distinct while repeated captures add provenan
 
 test("Statement revisions pin billed membership and revision keys cannot be reused", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-statement-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       store,
@@ -1737,7 +1950,7 @@ test("Statement revisions pin billed membership and revision keys cannot be reus
 test("durable revocation survives reopen until a durable restore event", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-revocation-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const first = createCanonicalSourceStore(databasePath);
+  const first = createCanonicalSourceStore(directory);
   try {
     await commitFubonCreditCardCapture(
       first,
@@ -1755,7 +1968,7 @@ test("durable revocation survives reopen until a durable restore event", async (
     "2026-08-25T04:01:00.000Z",
     "simulate active code manifest after restart",
   );
-  const reopened = createCanonicalSourceStore(databasePath);
+  const reopened = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitFubonCreditCardCapture(
@@ -1786,7 +1999,7 @@ test("durable revocation survives reopen until a durable restore event", async (
 test("generic current, historical, and lineage queries see Fubon after reopen", async () => {
   const directory = mkdtempSync(join("/tmp", "fubon-credit-card-query-"));
   const databasePath = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(databasePath);
+  const store = createCanonicalSourceStore(directory);
   let firstCommitSequence = 0;
   try {
     ensureFubonCreditCardSchema(store.db);

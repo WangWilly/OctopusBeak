@@ -1,14 +1,17 @@
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+import { channel } from "node:diagnostics_channel";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
-  canonicalSqlitePath,
+  canonicalDatabaseWriterKey,
   currentUtcMicros,
+  openCanonicalDatabaseHandle,
+} from "./canonical-database.ts";
+import {
   idToString,
   uuidV7,
   blob,
   type CanonicalId,
-} from "./canonical-schema-implementation.ts";
+} from "./canonical-local-identifier.ts";
 import {
   withCanonicalSnapshot,
   withCanonicalWriterQueue,
@@ -27,6 +30,7 @@ import {
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_VERSION,
 } from "./transaction-taxonomy.ts";
+import { isCanonicalSpendingTransactionKindIncluded } from "./spending-inclusion-policy.ts";
 import {
   queryCanonicalEnrichmentCurrentFromDatabase,
   queryCanonicalEnrichmentHistoricalFromDatabase,
@@ -38,6 +42,10 @@ const MAX_EXACT_SCALE = 1_000;
 const UUID_OR_HEX =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$/iu;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+export const canonicalSpendingQueryDiagnostics = channel(
+  "octopus-beak.canonical.spending-query",
+);
 
 export type CanonicalExactAmount = Readonly<{
   coefficient: string | bigint;
@@ -799,7 +807,8 @@ function commitCanonicalUserCategorizationOnce(
   validateObservedAt(input.observedAt);
   const userId = input.userId?.trim() || "local-user";
   if (!userId) throw new Error("Categorization user identity is required.");
-  const db = openCanonicalDatabase(ledgerDir);
+  const handle = openCanonicalDatabaseHandle(ledgerDir);
+  const db = handle.db;
   let inTransaction = false;
   try {
     db.exec("BEGIN IMMEDIATE");
@@ -865,7 +874,7 @@ function commitCanonicalUserCategorizationOnce(
     if (inTransaction) db.exec("ROLLBACK");
     throw error;
   } finally {
-    db.close();
+    handle.close();
   }
 }
 
@@ -876,7 +885,7 @@ export function commitCanonicalUserCategorization(
 ): Promise<CanonicalUserCategorizationResult> {
   const clock = options.clock ?? (() => new Date().toISOString());
   return withCanonicalWriterQueue(
-    canonicalSqlitePath(ledgerDir),
+    canonicalDatabaseWriterKey(ledgerDir),
     () => commitCanonicalUserCategorizationOnce(ledgerDir, input, clock),
     options.runtime,
   );
@@ -1081,13 +1090,6 @@ export type CanonicalSpendingLineageResult = Readonly<
   }
 >;
 
-const EXCLUDED_KIND_PREFIXES = [
-  "transfer",
-  "cash",
-  "investment",
-  "payment.credit_card",
-  "payment.loan",
-];
 const KNOWN_DIRECTIONS = new Set(["inflow", "outflow"]);
 const KNOWN_POSTING = new Set(["pending", "posted"]);
 const KNOWN_ECONOMIC = new Set(["normal", "canceled", "refund", "reversal"]);
@@ -1246,12 +1248,6 @@ function selectedUserCategorization(
   };
 }
 
-function isExcludedKind(kind: string): boolean {
-  return EXCLUDED_KIND_PREFIXES.some(
-    (prefix) => kind === prefix || kind.startsWith(prefix + "."),
-  );
-}
-
 type RuntimeSpendingSnapshot = Readonly<{
   kind: "current" | "historical";
   knowledgePoint: number;
@@ -1392,7 +1388,7 @@ function reportForSnapshot(
       transaction.economicStatus !== "normal" ||
       transaction.postingStatus !== "posted" ||
       transaction.direction !== "outflow" ||
-      isExcludedKind(kind!)
+      !isCanonicalSpendingTransactionKindIncluded(kind!)
     ) {
       inclusion = "excluded";
     } else {
@@ -1690,6 +1686,154 @@ function spendingSnapshot(
   });
 }
 
+/**
+ * Read only the canonical transaction facts needed by purchase matching.
+ *
+ * The Spending page's primary section already owns the complete canonical
+ * spending projection.  Candidate analysis must not load that projection a
+ * second time merely to obtain amount/date/account facts, so this seam reads
+ * the bounded transaction and account families plus the enrichment field
+ * that supplies the inclusion kind.
+ */
+export function queryCanonicalSpendingMatchingFromDatabase(
+  db: DatabaseSync,
+  request: CanonicalSpendingQueryRequest = {},
+): CanonicalSpendingReport {
+  const scope = {
+    ...(request.sourceConnectionKey
+      ? { sourceConnectionKey: request.sourceConnectionKey }
+      : {}),
+    ...(request.accountIds !== undefined
+      ? { accountIds: request.accountIds }
+      : {}),
+    ...(request.transactionIds !== undefined
+      ? { transactionIds: request.transactionIds }
+      : {}),
+    startDate: request.startDate ?? "1900-01-01",
+    endDate: request.endDate ?? "2999-12-31",
+  };
+  if (request.startDate !== undefined && !ISO_DATE.test(request.startDate))
+    throw new Error("Spending startDate is invalid.");
+  if (request.endDate !== undefined && !ISO_DATE.test(request.endDate))
+    throw new Error("Spending endDate is invalid.");
+  if (
+    request.startDate !== undefined &&
+    request.endDate !== undefined &&
+    request.startDate > request.endDate
+  )
+    throw new Error("Spending date range is inverted.");
+
+  const kind = request.financialAt === undefined ? "current" : "historical";
+  if (kind === "historical") {
+    if (!ISO_DATE.test(request.financialAt!))
+      throw new Error("Historical spending queries require financialAt.");
+    if (!Number.isSafeInteger(request.knowledgeAt))
+      throw new Error("Historical spending queries require knowledgeAt.");
+  }
+  if (kind === "current" && request.knowledgeAt !== undefined && !Number.isSafeInteger(request.knowledgeAt))
+    throw new Error("Spending knowledge cutoff is invalid.");
+
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind,
+    families: ["financial-accounts", "transactions", "transaction-enrichment"],
+    scope,
+    ...(kind === "historical"
+      ? {
+          cutoff: {
+            financialAt: request.financialAt!,
+            knowledgeAt: request.knowledgeAt!,
+          },
+        }
+      : request.knowledgeAt === undefined
+        ? {}
+        : { cutoff: { knowledgeAt: request.knowledgeAt } }),
+  });
+  canonicalSpendingQueryDiagnostics.publish({
+    section: "matching",
+    kind,
+    cutoff: request.knowledgeAt,
+    families: ["financial-accounts", "transactions", "transaction-enrichment"],
+  });
+
+  const accountsById = new Map(
+    projection.families["financial-accounts"].map((account) => [account.accountId, account]),
+  );
+  const kindByTransaction = new Map<string, string>();
+  for (const row of projection.families["transaction-enrichment"]) {
+    if (row.fieldName === "kind" && row.taxonomyCode)
+      kindByTransaction.set(row.transactionId, row.taxonomyCode);
+  }
+  const transactions: CanonicalSpendingTransaction[] = [];
+  for (const transaction of projection.families.transactions) {
+    const account = accountsById.get(transaction.accountId);
+    if (!account) throw new Error("Canonical spending projection returned an unknown account.");
+    const kindCode = kindByTransaction.get(transaction.transactionId) ?? null;
+    if (
+      kindCode === null ||
+      !KNOWN_DIRECTIONS.has(transaction.direction) ||
+      !KNOWN_POSTING.has(transaction.postingStatus) ||
+      !KNOWN_ECONOMIC.has(transaction.economicStatus) ||
+      !KNOWN_ADMINISTRATIVE.has(transaction.administrativeState) ||
+      transaction.administrativeState !== "active" ||
+      transaction.economicStatus !== "normal" ||
+      transaction.postingStatus !== "posted" ||
+      transaction.direction !== "outflow" ||
+      !isCanonicalSpendingTransactionKindIncluded(kindCode)
+    )
+      continue;
+    const consumeDate = transaction.consumeDate ?? null;
+    const postingDate = transaction.postingDate ??
+      (account.stream === "credit-card" ? transaction.effectiveOn : null);
+    transactions.push({
+      transactionId: transaction.transactionId,
+      revisionId: transaction.revisionId,
+      accountId: transaction.accountId,
+      accountNumber: account.accountNo,
+      sourceConnectionKey: account.sourceConnectionKey,
+      integrationNamespace: account.integrationNamespace,
+      stream: account.stream,
+      effectiveOn: transaction.effectiveOn,
+      consumeDate,
+      postingDate,
+      effectiveDateBasis: transaction.effectiveDateBasis ??
+        (account.stream === "credit-card" ? "posting-date-fallback" : null),
+      description: transaction.description,
+      amount: {
+        coefficient: transaction.amountCoefficient,
+        scale: transaction.amountScale,
+        currency: transaction.currency,
+      },
+      direction: transaction.direction,
+      postingStatus: transaction.postingStatus,
+      economicStatus: transaction.economicStatus,
+      administrativeState: transaction.administrativeState,
+      kind: kindCode,
+      categorization: { mode: "absent" },
+      display: {
+        status: "absent",
+        value: null,
+        origin: null,
+        displayKind: null,
+        assertionId: null,
+        referenceId: null,
+      },
+      tags: [],
+      inclusion: "included",
+    });
+  }
+  const report = emptySpendingReport(kind);
+  const knowledgePoint = kind === "current" && !hasCanonicalTransactionFacts(db)
+    ? latestCanonicalKnowledgePoint(db)
+    : projection.knowledgePoint;
+  return Object.freeze({
+    ...report,
+    knowledgePoint,
+    financialAt: projection.financialAt,
+    transactions: Object.freeze(transactions),
+    includedTransactions: Object.freeze(transactions),
+  });
+}
+
 function lineageId(value: unknown): string | null {
   return value instanceof Uint8Array ? idToString(blob(value)) : null;
 }
@@ -1957,16 +2101,16 @@ export function createCanonicalSpendingQuery(
   ledgerDir: string,
 ): CanonicalSpendingQuery {
   const run = <T>(operation: (db: DatabaseSync) => T): T => {
-    const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+    const handle = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
     try {
-      return withCanonicalSnapshot(db, () => operation(db));
+      return withCanonicalSnapshot(handle, () => operation(handle.db));
     } finally {
-      db.close();
+      handle.close();
     }
   };
   return Object.freeze({
     current(request: CanonicalSpendingQueryRequest = {}) {
-      if (!existsSync(canonicalSqlitePath(ledgerDir))) {
+      if (!existsSync(canonicalDatabaseWriterKey(ledgerDir))) {
         return emptySpendingReport("current");
       }
       return run((db) => spendingSnapshot(db, request, "current"));

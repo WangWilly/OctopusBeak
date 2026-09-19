@@ -1712,5 +1712,9 @@ try {
 } finally {
   rollingStore.close();
 }
-assert.match(source, /commitFubonCreditCardCaptureBatch/);
-assert.match(source, /canonicalFinancialLedgerDir/);
+assert.match(source, /commitFubonCreditCardCaptureInTransaction/);
+assert.match(source, /executeCanonicalFinancialCommitRun/);
+assert.doesNotMatch(
+  source,
+  /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey/,
+);

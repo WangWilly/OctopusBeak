@@ -1,4 +1,5 @@
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
+import { channel } from "node:diagnostics_channel";
 import type {
   CanonicalOverviewAmount,
   CanonicalOverviewExpectedSource,
@@ -9,20 +10,98 @@ import type {
   CurrencyAmountDto,
   SummaryMetricDto,
 } from "../../shared-ledger/types.ts";
-import type { OverviewPageDto } from "../types.ts";
+import type {
+  OverviewPageDto,
+  OverviewPrimaryDto,
+  OverviewPrimarySection,
+  OverviewSecondaryDto,
+  OverviewSecondarySection,
+} from "../types.ts";
+import {
+  assertMatchingFinancialSectionKnowledgePoints,
+  createFinancialSectionResult,
+  type FinancialSectionQueryInput,
+} from "../../shared-ledger/financial-section.ts";
 import { buildCanonicalOverviewSankeyGraph } from "./overview-sankey.ts";
 import { createFinancialQuery } from "../../shared-ledger/server/financial-query.ts";
+import type { FinancialQueryCutoff } from "../../shared-ledger/server/financial-query.ts";
 import { mapCanonicalCreditCard } from "../../shared-ledger/server/canonical-product.ts";
+
+const overviewSectionDiagnostics = channel("octopus-beak.financial.section-query");
+const overviewSecondaryDiagnostics = channel("octopus-beak.overview.secondary-analysis");
 
 export async function loadOverview(
   ledgerDir = DEFAULT_LEDGER_DIR,
-  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
+  input: {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+    cutoff?: FinancialQueryCutoff;
+  } = {},
 ): Promise<OverviewPageDto> {
+  return loadOverviewWithSection(ledgerDir, input, "full");
+}
+
+export function loadOverviewSection(
+  section: "primary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  },
+): Promise<OverviewPrimarySection>;
+export function loadOverviewSection(
+  section: "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  },
+): Promise<OverviewSecondarySection>;
+export function loadOverviewSection(
+  section: "primary" | "secondary",
+  ledgerDir?: string,
+  input?: FinancialSectionQueryInput & {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  },
+): Promise<OverviewPrimarySection | OverviewSecondarySection>;
+export async function loadOverviewSection(
+  section: "primary" | "secondary",
+  ledgerDir = DEFAULT_LEDGER_DIR,
+  input: FinancialSectionQueryInput & {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+  } = {},
+): Promise<OverviewPrimarySection | OverviewSecondarySection> {
+  const page = await loadOverviewWithSection(ledgerDir, input, section);
+  return section === "primary"
+    ? createFinancialSectionResult(section, overviewPrimary(page))
+    : createFinancialSectionResult(section, overviewSecondary(page));
+}
+
+export function combineOverviewSections(
+  primary: OverviewPrimarySection,
+  secondary: OverviewSecondarySection,
+): OverviewPageDto {
+  assertMatchingFinancialSectionKnowledgePoints(primary, secondary);
+  return {
+    ...primary.value,
+    ...secondary.value,
+    knowledgePoint: primary.knowledgePoint,
+  };
+}
+
+async function loadOverviewWithSection(
+  ledgerDir: string,
+  input: {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+    cutoff?: FinancialQueryCutoff;
+  },
+  section: "full" | "primary" | "secondary",
+): Promise<OverviewPageDto> {
+  overviewSectionDiagnostics.publish({ product: "overview", section });
   const query = createFinancialQuery(ledgerDir);
   const current = await query.current({
     kind: "current",
     product: "overview",
     expectedSources: input.expectedSources,
+    cutoff: input.cutoff,
+    section: section === "full" ? undefined : section,
   });
   const projection = current.projection;
   const accounts = projection.accounts.map((account): AccountRowDto => ({
@@ -45,6 +124,31 @@ export async function loadOverview(
       : {}),
   }));
 
+  if (section === "primary") {
+    return {
+      knowledgePoint: projection.knowledgePoint,
+      availability: projection.availability,
+      coverage: projection.availability === "unavailable"
+        ? "unavailable"
+        : projection.sourceGaps.length > 0 || projection.availability !== "available"
+          ? "partial"
+          : "complete",
+      historyAvailability: "unavailable",
+      sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
+      importedAt: projection.importedAt,
+      summary: buildCanonicalSummary(accounts),
+      dailyHistory: [],
+      accounts,
+      sankey: null,
+      sankeyExchangeRates: [],
+      sankeyLatestExchangeRateDate: null,
+      exchangeRates: [],
+      latestExchangeRateDate: null,
+    };
+  }
+
+  overviewSecondaryDiagnostics.publish({ kind: "sankey" });
+
   const currencies = [...new Set(
     projection.positions
       .map((position) => position.currency)
@@ -57,12 +161,14 @@ export async function loadOverview(
       product: "overview",
       selection: "latest",
       currencies,
+      cutoff: input.cutoff,
     })).exchangeRates;
   const sankeyRates = new Map(
     sankeyExchangeRates.map((rate) => [rate.currency, rate]),
   );
 
   return {
+    knowledgePoint: projection.knowledgePoint,
     availability: projection.availability,
     coverage: projection.availability === "unavailable"
       ? "unavailable"
@@ -80,6 +186,31 @@ export async function loadOverview(
     sankeyLatestExchangeRateDate: latestRateDate(sankeyExchangeRates),
     exchangeRates: [],
     latestExchangeRateDate: null,
+  };
+}
+
+function overviewPrimary(page: OverviewPageDto): OverviewPrimaryDto {
+  return {
+    knowledgePoint: page.knowledgePoint ?? 0,
+    availability: page.availability,
+    coverage: page.coverage,
+    sourceGaps: page.sourceGaps,
+    importedAt: page.importedAt,
+    summary: page.summary,
+    accounts: page.accounts,
+  };
+}
+
+function overviewSecondary(page: OverviewPageDto): OverviewSecondaryDto {
+  return {
+    knowledgePoint: page.knowledgePoint ?? 0,
+    historyAvailability: page.historyAvailability,
+    dailyHistory: page.dailyHistory,
+    sankey: page.sankey,
+    sankeyExchangeRates: page.sankeyExchangeRates,
+    sankeyLatestExchangeRateDate: page.sankeyLatestExchangeRateDate,
+    exchangeRates: page.exchangeRates,
+    latestExchangeRateDate: page.latestExchangeRateDate,
   };
 }
 

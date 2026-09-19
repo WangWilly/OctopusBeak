@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCapture,
+  commitForeignCurrencyDepositCaptureInTransaction,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
+import { executeCanonicalFinancialCommitRun } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-relations.ts";
+
+const syntheticYuantaForeignAccountNumber = ["0012", "3456", "7890"].join("");
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -51,7 +54,11 @@ assert.match(
 );
 assert.match(
   foreignWorkflowSource,
-  /await commitForeignCurrencyDepositCaptureBatch\([\s\S]*?runCanonicalInvestmentRelationFollowThrough\(financialStore\)/,
+  /executeCanonicalFinancialCommitRun[\s\S]*?commitForeignCurrencyDepositCaptureInTransaction/,
+);
+assert.doesNotMatch(
+  foreignWorkflowSource,
+  /createCanonicalSourceStore|canonicalDatabaseWriterKey|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
 );
 
 const fixedForeignDateRange = {
@@ -80,8 +87,8 @@ const yuantaForeignCurrentCapture = buildYuantaForeignCurrentDepositBalanceCaptu
     source: "yuanta",
     kind: "foreign",
     stream: "foreign-currency-deposit",
-    accountNumber: "001234567890",
-    sourceAccountKey: "001234567890",
+    accountNumber: syntheticYuantaForeignAccountNumber,
+    sourceAccountKey: syntheticYuantaForeignAccountNumber,
     currency: "USD",
     available: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
     ledger: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
@@ -101,8 +108,8 @@ const yuantaForeignCurrentCapture = buildYuantaForeignCurrentDepositBalanceCaptu
       sourceConnectionKey: "sha256:yuanta-fx-current-connection",
       identityEpochKey: "sha256:yuanta-fx-current-epoch",
       subjectDigest: "sha256:yuanta-fx-current-subject",
-      accountNo: "001234567890",
-      sourceAccountKey: "001234567890",
+      accountNo: syntheticYuantaForeignAccountNumber,
+      sourceAccountKey: syntheticYuantaForeignAccountNumber,
     },
   },
 );
@@ -1271,7 +1278,7 @@ const yuantaNumberedCapture = buildYuantaForeignCurrencyCaptureInput(
   [
     {
       accountLabel: "外幣綜合存款",
-      accountValue: "001234567890",
+      accountValue: syntheticYuantaForeignAccountNumber,
       queryCurrencyLabel: "全部幣別",
       queryCurrencyValue: "ALL",
       values: [
@@ -1291,14 +1298,14 @@ const yuantaNumberedCapture = buildYuantaForeignCurrencyCaptureInput(
     },
   ],
   { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
-  "001234567890",
+  syntheticYuantaForeignAccountNumber,
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-numbered-account",
   undefined,
   "synthetic-yuanta-login",
 );
 assert.deepEqual(yuantaNumberedCapture.accountNumber, {
-  value: "001234567890",
+  value: syntheticYuantaForeignAccountNumber,
   kind: "depository-account",
   evidenceVersion: "yuanta/foreign-account/account-number-v1",
   sourceField: "#acctno option.value",
@@ -1676,12 +1683,26 @@ const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
 );
 const yuantaEmptyDirectory = await mkdtemp(join(tmpdir(), "yuanta-foreign-empty-133-"));
 try {
-  const store = createCanonicalSourceStore(join(yuantaEmptyDirectory, "canonical.sqlite"));
-  const result = await commitForeignCurrencyDepositCapture(
-    store,
-    admitForeignCurrencyDepositCapture(emptyYuantaCapture),
-  );
-  assert.equal(result.transactionCount, 0);
+  const execution = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir: yuantaEmptyDirectory,
+    items: [
+      {
+        provider: "yuanta",
+        product: "foreign-currency-deposit",
+        itemKey: emptyYuantaCapture.accountNo,
+        commit: ({ writer, admission }) =>
+          commitForeignCurrencyDepositCaptureInTransaction(
+            writer,
+            emptyYuantaCapture,
+            admission,
+          ),
+      },
+    ],
+  });
+  const result = execution.items[0];
+  assert.equal(result?.status, "committed");
+  if (result?.status === "committed") assert.equal(result.value.transactionCount, 0);
+  const store = openCanonicalDatabaseHandle(yuantaEmptyDirectory);
   assert.equal(
     Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
     1,

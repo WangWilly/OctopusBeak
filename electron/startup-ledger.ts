@@ -1,4 +1,4 @@
-import { openCanonicalDatabase } from "../src/ledger/canonical/canonical-database.ts";
+import { openCanonicalDatabaseHandle } from "../src/ledger/canonical/canonical-database.ts";
 import {
   initializeCanonicalRuntime,
   type CanonicalResetDatabaseHandle,
@@ -15,7 +15,7 @@ export function initializeCanonicalRuntimeBeforeWindow(
   userData: string = process.env.OCTOPUSBEAK_USER_DATA ?? process.cwd(),
   seams: StartupLedgerSeams = {
     openCanonical: (ledgerDir) => {
-      const db = openCanonicalDatabase(ledgerDir);
+      const db = openCanonicalDatabaseHandle(ledgerDir);
       const handle: CanonicalResetDatabaseHandle = {
         close: () => db.close(),
       };
@@ -26,8 +26,7 @@ export function initializeCanonicalRuntimeBeforeWindow(
   return initializeCanonicalRuntime({
     userData,
     canonicalLedgerDir:
-      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ?? process.env.LEDGER_DIR,
     seams,
   });
 }

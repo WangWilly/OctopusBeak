@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import type { SQLInputValue } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCaptureBatch,
+  commitCanonicalFinancialDepositCaptureInTransaction,
   type CanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCommitResult,
   type CanonicalFinancialDepositConversionEvidence,
@@ -14,6 +15,11 @@ import {
   type FinancialDepositSourceTime,
   type CanonicalFinancialDepositWriterStore,
 } from "./canonical-financial-deposit-writer.ts";
+import {
+  withCanonicalSourceCaptureAdmissionTransaction,
+  type CanonicalSourceCaptureAdmissionTransactionCapability,
+} from "./canonical-source-capture-admission.ts";
+import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
@@ -728,22 +734,34 @@ export function admitForeignCurrencyDepositCapture(
   return admitCanonicalFinancialDepositCapture(capture);
 }
 
-export async function commitForeignCurrencyDepositCapture(
+export function commitForeignCurrencyDepositCaptureInTransaction(
   store: ForeignCurrencyDepositCommitStore,
   capture: ForeignCurrencyDepositCaptureInput | ForeignCurrencyDepositAdmittedCapture,
-): Promise<CanonicalFinancialDepositCommitResult> {
+  capability: CanonicalSourceCaptureAdmissionTransactionCapability,
+): CanonicalFinancialDepositCommitResult {
   const admitted =
     "source" in capture
       ? admitForeignCurrencyDepositCapture(capture as ForeignCurrencyDepositCaptureInput)
       : (capture as ForeignCurrencyDepositAdmittedCapture);
-  return commitCanonicalFinancialDepositCapture(
+  const result = commitCanonicalFinancialDepositCaptureInTransaction(
     store,
     admitted,
+    capability,
     (db, results) =>
       commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
         db,
-        results.map((result) => result.captureId),
+        results.map((entry) => entry.captureId),
       ),
+  );
+  return result;
+}
+
+export async function commitForeignCurrencyDepositCapture(
+  store: ForeignCurrencyDepositCommitStore,
+  capture: ForeignCurrencyDepositCaptureInput | ForeignCurrencyDepositAdmittedCapture,
+): Promise<CanonicalFinancialDepositCommitResult> {
+  return withCanonicalSourceCaptureAdmissionTransaction(store as unknown as CanonicalSourceStore, (capability) =>
+    commitForeignCurrencyDepositCaptureInTransaction(store, capture, capability),
   );
 }
 

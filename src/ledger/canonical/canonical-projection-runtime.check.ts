@@ -7,11 +7,11 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
-  canonicalSqlitePath,
   commitCathayDomesticDeposit,
   commitCathayUserAssertion,
-  openCanonicalDatabase,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
   type CanonicalProjectionCommitKind,
@@ -102,7 +102,7 @@ test("applyCommit joins the caller transaction and is idempotent", async () => {
       families: ["transactions"],
       scope,
     });
-    const db = openCanonicalDatabase(directory);
+    const db = openCanonicalDatabaseHandle(directory);
     try {
       const transactionRuntime = createCanonicalProjectionRuntime(db);
       const latest = db
@@ -206,7 +206,7 @@ test("closed impact registry rejects unknown kinds and accepts explicit no-op", 
       scope,
     }).families.transactions;
     let latestSequence = 0;
-    const db = openCanonicalDatabase(directory);
+    const db = openCanonicalDatabaseHandle(directory);
     try {
       const transactionRuntime = createCanonicalProjectionRuntime(db);
       const latest = db
@@ -311,7 +311,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
   let laterCommitId: Buffer | null = null;
   let laterCommitSequence: number | null = null;
   try {
-    const db = openCanonicalDatabase(directory);
+    const db = openCanonicalDatabaseHandle(directory);
     try {
       const sourceConnectionId = (
         db
@@ -354,7 +354,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
     );
     await runtime.rebuild();
 
-    const writer = openCanonicalDatabase(directory);
+    const writer = openCanonicalDatabaseHandle(directory);
     try {
       laterCommitId = randomBytes(16);
       laterCommitSequence = Number(
@@ -418,7 +418,7 @@ test("an explicit older rebuild reports one generation Knowledge Point", async (
       scope,
     });
     assert.ok(laterCommitId);
-    const replay = openCanonicalDatabase(directory);
+    const replay = openCanonicalDatabaseHandle(directory);
     try {
       replay.exec("BEGIN IMMEDIATE");
       createCanonicalProjectionRuntime(replay).applyCommit({
@@ -556,10 +556,59 @@ test("historical reads require dual cutoffs and never use retired generations", 
   }
 });
 
+test("current reads honor an exact generation cutoff after later commits", async () => {
+  const { directory, runtime, scope } = await fixture();
+  try {
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
+    let cutoff: number;
+    try {
+      cutoff = Number(
+        (
+          db
+            .prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits")
+            .get() as { value?: unknown }
+        ).value,
+      );
+    } finally {
+      db.close();
+    }
+    const before = runtime.read({
+      kind: "current",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { knowledgeAt: cutoff },
+    });
+    assert.equal(before.kind, "current");
+    assert.equal(before.knowledgePoint, cutoff);
+    assert.equal(before.financialAt, null);
+
+    await commitCathayAutomaticEnrichmentFromDescriptions(directory);
+    const after = runtime.read({
+      kind: "current",
+      families: ["transactions", "transaction-enrichment"],
+      scope,
+      cutoff: { knowledgeAt: cutoff },
+    });
+    assert.deepEqual(after, before);
+    assert.throws(
+      () =>
+        runtime.read({
+          kind: "current",
+          families: ["transactions"],
+          scope,
+          cutoff: { knowledgeAt: cutoff + 10 },
+        }),
+      { message: "canonical-cutoff-unavailable" },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("transaction enrichment is a Runtime family at current and historical cutoffs", async () => {
   const { directory, runtime, scope } = await fixture();
   try {
-    const db = openCanonicalDatabase(directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
     let captureSequence: number;
     try {
       captureSequence = Number((db.prepare("SELECT MAX(commit_sequence) AS value FROM canonical_commits WHERE commit_kind = 'source_capture'").get() as { value?: unknown }).value);
@@ -609,7 +658,7 @@ test("transaction enrichment is a Runtime family at current and historical cutof
 
 test("historical selection ignores revisions that become effective after the financial cutoff", async () => {
   const { directory, runtime, scope } = await fixture();
-  const db = openCanonicalDatabase(directory);
+  const db = openCanonicalDatabaseHandle(directory);
   try {
     const latest = db
       .prepare(
@@ -668,10 +717,10 @@ test("historical selection ignores revisions that become effective after the fin
   }
 });
 
-test("runtime accepts a canonical sqlite file path", async () => {
+test("runtime accepts a canonical ledger directory", async () => {
   const { directory, scope } = await fixture();
   try {
-    const runtime = createCanonicalProjectionRuntime(canonicalSqlitePath(directory));
+    const runtime = createCanonicalProjectionRuntime(directory);
     assert.equal(
       runtime.read({ kind: "current", families: ["transactions"], scope })
         .families.transactions?.length,
@@ -686,7 +735,7 @@ test("investment families are derived inside the Runtime snapshot", async () => 
   const directory = await mkdtemp(join(tmpdir(), "canonical-projection-investment-"));
   const path = join(directory, "canonical.sqlite");
   try {
-    const store = createCanonicalInvestmentStore(path);
+    const store = createCanonicalInvestmentStore(directory);
     await commitCanonicalInvestmentCapture(
       store,
       admitCanonicalInvestmentCapture({
@@ -765,7 +814,7 @@ test("investment families are derived inside the Runtime snapshot", async () => 
     );
     store.close();
 
-    const snapshot = createCanonicalProjectionRuntime(path).read({
+    const snapshot = createCanonicalProjectionRuntime(directory).read({
       kind: "current",
       families: [
         "investment-accounts",
@@ -783,7 +832,7 @@ test("investment families are derived inside the Runtime snapshot", async () => 
       snapshot.families["investment-transactions"]?.[0]?.action,
       "buy",
     );
-    const outside = createCanonicalProjectionRuntime(path).read({
+    const outside = createCanonicalProjectionRuntime(directory).read({
       kind: "current",
       families: [
         "investment-holdings",
@@ -800,7 +849,7 @@ test("investment families are derived inside the Runtime snapshot", async () => 
     assert.equal(outside.families["investment-transactions"].length, 0);
     assert.equal(outside.families["investment-margin-balances"].length, 0);
 
-    const reader = openCanonicalDatabase(directory);
+    const reader = openCanonicalDatabaseHandle(directory);
     const writer = new DatabaseSync(path);
     writer.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON");
     const prepare = DatabaseSync.prototype.prepare;
@@ -870,7 +919,7 @@ test("runtime accepts a production-admitted MaiCoin investment route", async () 
   const sourceRecordKey = token("maicoin-route-transaction-record");
   const securityKey = "maicoin:BTC";
   try {
-    const store = createCanonicalInvestmentStore(path);
+    const store = createCanonicalInvestmentStore(directory);
     const capture = admitCanonicalInvestmentCapture({
       captureId: "projection-runtime-maicoin-route",
       sourceId: "maicoin",
@@ -935,7 +984,7 @@ test("runtime accepts a production-admitted MaiCoin investment route", async () 
     await commitCanonicalInvestmentCapture(store, capture);
     store.close();
 
-    const runtime = createCanonicalProjectionRuntime(path);
+    const runtime = createCanonicalProjectionRuntime(directory);
     const snapshot = runtime.read({
       kind: "current",
       families: ["investment-transactions"],
@@ -953,7 +1002,7 @@ test("current holdings keep financial effective time across later recollections"
   const identityEpochKey = token("projection-runtime-time-epoch");
   const accountKey = token("projection-runtime-time-account");
   try {
-    const store = createCanonicalInvestmentStore(join(directory, "canonical.sqlite"));
+    const store = createCanonicalInvestmentStore(directory);
     const commit = async (input: {
       captureId: string;
       observedAt: string;
@@ -1038,7 +1087,7 @@ test("current holdings keep financial effective time across later recollections"
     });
     store.close();
 
-    const rows = createCanonicalProjectionRuntime(join(directory, "canonical.sqlite"))
+    const rows = createCanonicalProjectionRuntime(directory)
       .read({
         kind: "current",
         families: ["investment-holdings"],
@@ -1079,7 +1128,7 @@ test("credit-card statements distinguish lifecycle-ready empty profiles from mis
 
   const allMissing = await fixture();
   try {
-    const path = canonicalSqlitePath(allMissing.directory);
+    const path = canonicalDatabaseWriterKey(allMissing.directory);
     const db = new DatabaseSync(path);
     try {
       db.exec("PRAGMA foreign_keys = OFF");
@@ -1117,7 +1166,7 @@ test("credit-card statements distinguish lifecycle-ready empty profiles from mis
 
   const partial = await fixture();
   try {
-    const db = new DatabaseSync(canonicalSqlitePath(partial.directory));
+    const db = new DatabaseSync(canonicalDatabaseWriterKey(partial.directory));
     try {
       db.exec("PRAGMA foreign_keys = OFF");
       db.exec("DROP TABLE canonical_credit_card_statement_memberships");

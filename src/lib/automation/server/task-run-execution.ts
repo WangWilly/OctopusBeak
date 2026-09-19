@@ -1,9 +1,14 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import {
+  CANONICAL_FINANCIAL_COMMIT_RECEIPT_TOKEN_ENV,
+  createCanonicalFinancialCommitReceiptFrameParser,
+  type CanonicalFinancialCommitReceipt,
+} from "../../../ledger/canonical/canonical-financial-commit-receipt.ts";
 import {
   parseStatementRunSummary,
   type StatementRunSummary,
@@ -71,6 +76,10 @@ export type AutomationTaskExecutionOptions = {
   maxAttempts?: number;
   /** Stop before launching a child when the host task was cancelled. */
   isCancellationRequested?: () => boolean;
+  /** Validated post-commit receipts for future Electron invalidation events. */
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void;
 };
 
 export function createAutomationSessionId(
@@ -260,6 +269,9 @@ function createAutomationTaskRunExecution(
 async function executeAutomationTaskProcess(
   execution: AutomationTaskRunExecution,
   isCancellationRequested?: () => boolean,
+  onCanonicalFinancialCommitReceipt?: (
+    receipt: CanonicalFinancialCommitReceipt,
+  ) => void,
 ): Promise<AutomationTaskProcessResult> {
   let logTail = "";
   let detectedResumeFailure: string | null = null;
@@ -267,6 +279,19 @@ async function executeAutomationTaskProcess(
   let statementSummary: StatementRunSummary | null = null;
   const externalPrerequisiteIds = new Set<string>();
   const outputPersistenceWarnings: string[] = [];
+  const canonicalReceiptToken = randomBytes(32).toString("base64url");
+  const canonicalReceiptParser = createCanonicalFinancialCommitReceiptFrameParser({
+    token: canonicalReceiptToken,
+    onReceipt: (receipt) => {
+      try {
+        onCanonicalFinancialCommitReceipt?.(receipt);
+      } catch {
+        const warning = "canonical-commit-receipt-callback-failed";
+        console.error(warning);
+        outputPersistenceWarnings.push(warning);
+      }
+    },
+  });
   const humanAssistancePath = join(
     "data",
     "automation",
@@ -382,6 +407,7 @@ async function executeAutomationTaskProcess(
         { logTail, resumeFailure: detectedResumeFailure },
         chunk.toString("utf8"),
       );
+      canonicalReceiptParser.push(output.logChunk);
       statementSummary =
         parseStatementRunSummary(`${logTail}${output.logChunk}`) ??
         statementSummary;
@@ -409,6 +435,7 @@ async function executeAutomationTaskProcess(
       stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
       env: {
         ...execution.command.env,
+        [CANONICAL_FINANCIAL_COMMIT_RECEIPT_TOKEN_ENV]: canonicalReceiptToken,
         [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
         [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
         [GMAIL_OTP_IPC_ENDPOINT_ENV]: gmailOtpServer.endpoint,
@@ -431,6 +458,7 @@ async function executeAutomationTaskProcess(
       if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
       readHumanAssistanceFile();
       hostContractParser.flush();
+      canonicalReceiptParser.flush();
       outputBuffer.flush();
       rmSync(humanAssistancePath, { force: true });
       void gmailOtpServer.close().then(
@@ -493,6 +521,7 @@ export async function runAutomationTaskExecution(
     const result = await executeAutomationTaskProcess(
       execution,
       options.isCancellationRequested,
+      options.onCanonicalFinancialCommitReceipt,
     );
     const finalizationContext: AutomationTaskRunFinalizationContext = {
       taskDb,

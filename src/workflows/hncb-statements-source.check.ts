@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type { Frame, Page } from "playwright";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   queryCanonicalSourceCurrent,
 } from "../ledger/canonical/canonical-source-store.ts";
@@ -111,7 +110,7 @@ try {
     },
     {
       usedExistingSession: true,
-      canonicalSourceLedgerDir: directory,
+      canonicalLedgerDir: directory,
       readAccountOptions: async (_page, filters) => {
         seenFilters.push(filters);
         return [
@@ -136,6 +135,7 @@ try {
         jsonBytes: 10,
         rowCount: 1,
       }),
+      readCurrentDepositBalances: async () => [],
     },
   );
   assert.deepEqual(seenFilters, [[]]);
@@ -143,7 +143,7 @@ try {
   assert.equal(output.count, 1);
   assert.equal(output.downloads.length, 1);
 
-  const store = createCanonicalSourceStore(canonicalSqlitePath(directory));
+  const store = createCanonicalSourceStore(directory);
   try {
     const current = queryCanonicalSourceCurrent(store);
     assert.equal(current.records.length, 1);
@@ -154,7 +154,7 @@ try {
           .prepare("SELECT COUNT(*) AS value FROM source_captures")
           .get() as { value?: number }
       ).value,
-      1,
+      2,
     );
     assert.equal(
       (
@@ -171,7 +171,7 @@ try {
           .prepare("SELECT COUNT(*) AS value FROM financial_transactions")
           .get() as { value?: number }
       ).value,
-      0,
+      1,
     );
     const payload = String(
       (
@@ -184,7 +184,7 @@ try {
       payload,
       /PRIVATE DESCRIPTION|PRIVATE DEPOSITOR|PRIVATE NOTE|PRIVATE NUMBER|account-with-data/,
     );
-    assert.match(payload, /observed-structural-only/);
+    assert.match(payload, /"evidenceVersion":"human-attested-v1"/);
   } finally {
     store.close();
   }
@@ -205,7 +205,7 @@ try {
           outputDir: join(failedDirectory, "downloads"),
         },
         {
-          canonicalSourceLedgerDir: failedDirectory,
+          canonicalLedgerDir: failedDirectory,
           readAccountOptions: async () => [
             { label: "HNCB account", value: "account" },
           ],
@@ -216,9 +216,7 @@ try {
       ),
     /synthetic query failure/,
   );
-  const store = createCanonicalSourceStore(
-    canonicalSqlitePath(failedDirectory),
-  );
+  const store = createCanonicalSourceStore(failedDirectory);
   try {
     assert.equal(
       (

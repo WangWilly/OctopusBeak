@@ -1,14 +1,18 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { canonicalSqlitePath, openCanonicalDatabase } from "./canonical-database.ts";
+import { channel } from "node:diagnostics_channel";
+import { canonicalDatabaseWriterKey, openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   createCanonicalProjectionRuntime,
+  type CanonicalKnowledgePointCutoff,
+  validateCanonicalKnowledgePoint,
   type CanonicalProjectionCreditCardBalance,
   type CanonicalProjectionDepositoryBalance,
   type CanonicalProjectionFinancialAccount,
   type CanonicalProjectionInvestmentTransaction,
   type CanonicalProjectionInvestmentHolding,
   type CanonicalProjectionSnapshot,
+  type CanonicalProjectionFamily,
 } from "./canonical-projection-runtime.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import {
@@ -202,6 +206,59 @@ export type CanonicalOverviewCurrentQuery = Readonly<{
   current(): Promise<CanonicalOverviewCurrentQueryResult>;
 }>;
 
+/**
+ * A section query keeps the canonical read boundary explicit while allowing
+ * page sections to avoid loading families they cannot render.  The full
+ * profile remains the compatibility path used by the page DTO loaders.
+ */
+export type CanonicalOverviewQuerySection = "full" | "primary" | "secondary";
+
+export const canonicalOverviewQueryDiagnostics = channel(
+  "octopus-beak.canonical.overview-query",
+);
+
+const PRIMARY_PROJECTION_FAMILIES = [
+  "financial-accounts",
+  "transactions",
+  "overview-loan-balances",
+  "depository-balances",
+  "overview-credit-card-balances",
+  "investment-holdings",
+  "investment-transactions",
+  "investment-margin-balances",
+  "credit-card-statements",
+] as const satisfies readonly CanonicalProjectionFamily[];
+
+const SECONDARY_PROJECTION_FAMILIES = [
+  "financial-accounts",
+  "overview-loan-balances",
+  "depository-balances",
+  "overview-credit-card-balances",
+  "investment-holdings",
+  "investment-margin-balances",
+] as const satisfies readonly CanonicalProjectionFamily[];
+
+const FULL_PROJECTION_FAMILIES = [
+  "financial-accounts",
+  "transactions",
+  "overview-loan-balances",
+  "depository-balances",
+  "overview-credit-card-balances",
+  "investment-accounts",
+  "investment-holdings",
+  "investment-transactions",
+  "investment-margin-balances",
+  "credit-card-statements",
+] as const satisfies readonly CanonicalProjectionFamily[];
+
+export function canonicalOverviewProjectionFamilies(
+  section: CanonicalOverviewQuerySection = "full",
+): readonly CanonicalProjectionFamily[] {
+  if (section === "primary") return PRIMARY_PROJECTION_FAMILIES;
+  if (section === "secondary") return SECONDARY_PROJECTION_FAMILIES;
+  return FULL_PROJECTION_FAMILIES;
+}
+
 const ALL_TIME_SCOPE = {
   startDate: "1900-01-01",
   endDate: "2999-12-31",
@@ -261,36 +318,45 @@ export function selectCanonicalOverviewDepositoryBalances(
  */
 export function createCanonicalOverviewQuery(
   ledgerDir: string,
-  input: { expectedSources?: readonly CanonicalOverviewExpectedSource[] } = {},
+  input: {
+    expectedSources?: readonly CanonicalOverviewExpectedSource[];
+    cutoff?: CanonicalKnowledgePointCutoff;
+    section?: CanonicalOverviewQuerySection;
+  } = {},
 ): CanonicalOverviewCurrentQuery {
   const expectedSources = input.expectedSources ?? [];
+  const section = input.section ?? "full";
+  const families = canonicalOverviewProjectionFamilies(section);
   return Object.freeze({
     async current(): Promise<CanonicalOverviewCurrentQueryResult> {
-      const databasePath = canonicalSqlitePath(ledgerDir);
-      if (!existsSync(databasePath))
+      const knowledgePoint = input.cutoff
+        ? validateCanonicalKnowledgePoint(input.cutoff.knowledgePoint)
+        : undefined;
+      canonicalOverviewQueryDiagnostics.publish({
+        section,
+        families: [...families],
+        cutoff: knowledgePoint,
+      });
+      const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+      if (!existsSync(databasePath)) {
+        if (knowledgePoint !== undefined && knowledgePoint > 0)
+          throw new Error("canonical-cutoff-unavailable");
         return result(withExpectedSourceGaps(EMPTY_PROJECTION, expectedSources));
+      }
 
-      let db: ReturnType<typeof openCanonicalDatabase> | undefined;
+      let db: ReturnType<typeof openCanonicalDatabaseHandle> | undefined;
       try {
-        const opened = openCanonicalDatabase(ledgerDir, { readOnly: true });
+        const opened = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
         db = opened;
         const projection = withCanonicalSnapshot(opened, () => {
           const runtime = createCanonicalProjectionRuntime(opened);
           const snapshot = runtime.read({
             kind: "current",
-            families: [
-              "financial-accounts",
-              "transactions",
-              "overview-loan-balances",
-              "depository-balances",
-              "overview-credit-card-balances",
-              "investment-accounts",
-              "investment-holdings",
-              "investment-transactions",
-              "investment-margin-balances",
-              "credit-card-statements",
-            ],
+            families,
             scope: ALL_TIME_SCOPE,
+            ...(knowledgePoint !== undefined
+              ? { cutoff: { knowledgeAt: knowledgePoint } }
+              : {}),
           });
           return mapProjection(
             snapshot,
@@ -302,7 +368,13 @@ export function createCanonicalOverviewQuery(
           );
         });
         return result(projection);
-      } catch {
+      } catch (error) {
+        if (
+          input.cutoff &&
+          error instanceof Error &&
+          error.message === "canonical-cutoff-unavailable"
+        )
+          throw error;
         return result(unavailableProjection(expectedSources));
       } finally {
         db?.close();

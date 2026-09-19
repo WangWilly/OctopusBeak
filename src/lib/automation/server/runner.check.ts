@@ -170,6 +170,36 @@ test("runner execution preserves base env and applies the current session dialog
   }
 });
 
+test("runner execution preserves the canonical commit receipt callback", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-receipt-callback-"));
+  const db = openLedgerDatabase(ledgerDir);
+  const task = taskById("sinopac-statements");
+  assert.ok(task);
+  const receiptCallback = () => {};
+  let captured: unknown;
+  try {
+    const execute = createAutomationTaskExecutionRunner({
+      task,
+      taskDb: db,
+      ledgerDir,
+      baseLaunchEnv: {},
+      currentTaskRunId: () => null,
+      onRunCreated: () => {},
+      isCancellationRequested: () => false,
+      onCanonicalFinancialCommitReceipt: receiptCallback,
+      runExecution: async (_task, _db, _ledgerDir, options) => {
+        captured = options.onCanonicalFinancialCommitReceipt;
+        return { status: "cancelled" as const };
+      },
+    });
+    await execute({});
+    assert.equal(captured, receiptCallback);
+  } finally {
+    db.close();
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("manual Fubon starts ignore persisted statement selection", async () => {
   const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
   const originalCwd = process.cwd();

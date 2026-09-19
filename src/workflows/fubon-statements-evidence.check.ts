@@ -677,6 +677,7 @@ const output = await module.runFubonStatements(
   {
     ...evidenceSourceConnectionIdentity,
     canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
+    readCurrentDepositBalances: async () => [],
     openTransactionDetailForAccountIndex: async () => {
       calls.push("open");
       return "********9012";
@@ -729,6 +730,7 @@ try {
     {
       ...evidenceSourceConnectionIdentity,
       canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
+      readCurrentDepositBalances: async () => [],
       openTransactionDetailForAccountIndex: async () => "********9012",
       readDepositAccountOptions: async () => [
         { value: accountValue, label: accountLabel },
@@ -785,6 +787,7 @@ await assert.rejects(
     {
       ...evidenceSourceConnectionIdentity,
       canonicalLedgerDir: isolatedCanonicalLedgerDirectory,
+      readCurrentDepositBalances: async () => [],
       openTransactionDetailForAccountIndex: async () => "********9012",
       readDepositAccountOptions: async () => [
         { value: accountValue, label: accountLabel },

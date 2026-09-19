@@ -123,6 +123,16 @@ const loanSource = await readFile(
 );
 assert.match(loanSource, /await openStatementPage\(page\)/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
+assert.match(
+  loanSource,
+  /commitCanonicalFinancialAdmissionInTransaction\(/u,
+  "loan persistence must use the closed canonical financial admission seam",
+);
+assert.doesNotMatch(
+  loanSource,
+  /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
+  "the workflow must not coordinate internal loan spines or low-level deposit batches",
+);
 
 function loanOptionsPage(
   options: Array<{ value: string; label: string }>,
@@ -322,12 +332,8 @@ test("Yuanta resolves only after a complete committed capture and preserves it w
         ],
         queryLoanAccount: async () => undefined,
         traverseLoanStatementPages: async () => parsed,
-        persistLoanCapture: async (store, input) => {
-          const result = await persistYuantaLoanCapture(store, input);
-          eventOrder.push("capture-committed");
-          return result;
-        },
         resolveRelations: async (store, request) => {
+          eventOrder.push("capture-committed");
           relationRequests.push(request);
           eventOrder.push(
             `resolver-after-${
@@ -370,7 +376,7 @@ test("Yuanta resolves only after a complete committed capture and preserves it w
     assert.deepEqual(relationRequests[0]?.requiredCoverage, { complete: true });
     assert.equal("explicitLinks" in relationRequests[0]!, false);
 
-    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    const store = createCanonicalSourceStore(directory);
     try {
       assert.equal(
         (

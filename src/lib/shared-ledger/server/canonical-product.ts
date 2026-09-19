@@ -79,6 +79,7 @@ export function mapCanonicalProduct(
     .map((gap) => ({ ...gap }));
   const availability = productAvailability(visibleAccounts, sourceGaps, projection.availability);
   return {
+    knowledgePoint: projection.knowledgePoint,
     availability,
     coverage: coverageFor(availability, sourceGaps),
     sourceGaps,

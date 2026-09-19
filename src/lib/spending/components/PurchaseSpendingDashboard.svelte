@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { locale } from "$lib/i18n/i18n.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
+  import { tick } from "svelte";
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { financialPerformanceTelemetry } from "$lib/performance/financial-performance-telemetry.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
@@ -8,20 +9,41 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
   } from "../purchase-matching.ts";
-  import type { SpendingPageDto } from "../model.ts";
-  import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
+  import type { SpendingPageDto, SpendingPurchaseActionResult } from "../model.ts";
+  import {
+    applyValidatedSpendingActionResult,
+    beginSpendingPendingCommand,
+    completeSpendingPendingCommand,
+    isSpendingActionUncertain,
+    spendingActionErrorCode,
+    type SpendingActionReconciliationOptions,
+    type SpendingPendingCommand,
+    type SpendingPendingCommandIdentity,
+  } from "../spending-action-lifecycle.ts";
+  import { stableFinancialErrorCode } from "$lib/shared-ledger/financial-error.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
+  import {
+    spendingAmountText,
+    spendingBasisLabel,
+    spendingRecordLabel,
+  } from "../spending-display.ts";
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
+  export let onActionReconciliation: ((
+    identity?: SpendingPendingCommandIdentity,
+    options?: SpendingActionReconciliationOptions,
+  ) => Promise<void>) | undefined = undefined;
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
   let selectedMonth: string | null = null;
   let busyAction: string | null = null;
   let actionError = "";
+  let actionNotice = "";
+  let actionReconciliationPending = false;
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
   let paymentVisibleCount = 10;
@@ -89,17 +111,8 @@
     return index;
   })();
 
-  function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
-    return {
-      currency: amount.currency,
-      value: exactToNumber(amount),
-      exact: { coefficient: amount.coefficient, scale: amount.scale },
-    };
-  }
-
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    if (!amount) return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
-    return formatMoney(moneyValue(amount), { locale: $locale, signed });
+    return spendingAmountText(amount, $locale, $t.spending, signed);
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
@@ -127,17 +140,11 @@
   }
 
   function recordLabel(record: PurchaseRecord) {
-    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+    return spendingRecordLabel(record, $t.spending);
   }
 
   function basisLabel(record: PurchaseRecord) {
-    if (record.basis === "linked") return $locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-    if (record.basis === "invoice") return $locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-    if (record.basis === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
-    const isCreditCard = record.transaction?.stream === "credit-card";
-    return isCreditCard
-      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+    return spendingBasisLabel(record, $t.spending);
   }
 
   function occurrenceBasisLabel(record: PurchaseRecord) {
@@ -273,7 +280,32 @@
   }
 
   async function confirmCandidate(candidateId: string) {
-    await decideCandidate(candidateId, "confirmCandidate");
+    const invoice = candidateRecord(candidateId, "invoice")?.invoice;
+    const transaction = candidateRecord(candidateId, "transaction")?.transaction;
+    if (!invoice || !transaction) {
+      busyAction = `confirmCandidate:${candidateId}`;
+      actionError = "";
+      await reconcileSpendingAction();
+      busyAction = null;
+      return;
+    }
+    await runSpendingAction(
+      `confirmCandidate:${candidateId}`,
+      (idempotencyKey) => {
+        if (!idempotencyKey) throw new Error("Spending command idempotency key is required.");
+        return window.octopusBeak.spending.confirmCandidate({
+          kind: "candidate",
+          invoiceIdentityId: invoice.invoiceId,
+          transactionIdentityId: transaction.transactionId,
+          idempotencyKey,
+        });
+      },
+      {
+        action: "candidate-confirmation",
+        firstId: invoice.invoiceId,
+        secondId: transaction.transactionId,
+      },
+    );
   }
 
   async function denyCandidate(candidateId: string) {
@@ -281,19 +313,14 @@
   }
 
   async function decideCandidate(candidateId: string, action: "confirmCandidate" | "denyCandidate") {
-    busyAction = `${action}:${candidateId}`;
-    actionError = "";
-    try {
-      const next = action === "confirmCandidate"
-        ? await window.octopusBeak.spending.confirmCandidate({ kind: "candidate", candidateId })
-        : await window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
+    if (action === "confirmCandidate") {
+      await confirmCandidate(candidateId);
+      return;
     }
+    await runSpendingAction(
+      `${action}:${candidateId}`,
+      () => window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId }),
+    );
   }
 
   function openPairing(record: PurchaseRecord) {
@@ -311,38 +338,148 @@
   async function confirmDirectPair() {
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
     if (!invoiceIdentityId || !selectedPaymentId) return;
-    busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-    actionError = "";
-    try {
-      const next = await window.octopusBeak.spending.confirmCandidate({
+    await runSpendingAction(
+      `direct:${invoiceIdentityId}/${selectedPaymentId}`,
+      (idempotencyKey) => window.octopusBeak.spending.confirmCandidate({
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      closePairing();
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      busyAction = null;
-    }
+        idempotencyKey,
+      }),
+      {
+        action: "direct-pair",
+        firstId: invoiceIdentityId,
+        secondId: selectedPaymentId,
+      },
+      closePairing,
+    );
   }
 
   async function revokeLink(record: PurchaseRecord) {
-    if (!record.link) return;
-    const action = `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`;
-    busyAction = action;
+    const link = record.link;
+    if (!link) return;
+    const action = `revokeLink:${link.invoiceId}/${link.transactionId}`;
+    await runSpendingAction(
+      action,
+      (idempotencyKey) => window.octopusBeak.spending.revokeLink({
+        invoiceId: link.invoiceId,
+        transactionId: link.transactionId,
+        idempotencyKey,
+      }),
+      {
+        action: "unlink",
+        firstId: link.invoiceId,
+        secondId: link.transactionId,
+      },
+    );
+  }
+
+  function actionErrorText(error: unknown): string {
+    const code = stableFinancialErrorCode(error);
+    if (code === "spending-pair-stale") {
+      return $t.financialErrors.spendingPairStale;
+    }
+    if (code === "idempotency-key-conflict") {
+      return $t.financialErrors.idempotencyConflict;
+    }
+    if (code === "idempotency-storage-unavailable") {
+      return $t.financialErrors.idempotencyStorageUnavailable;
+    }
+    if (code === "canonical-cutoff-unavailable") return $t.financialErrors.cutoffUnavailable;
+    if (code === "contention") return $t.financialErrors.contention;
+    if (code === "cancelled") return $t.financialErrors.cancelled;
+    if (code === "worker-closed") return $t.financialErrors.workerClosed;
+    if (code === "worker-exit") return $t.financialErrors.workerExit;
+    if (code === "worker-error") return $t.financialErrors.workerError;
+    return $t.financialErrors.generic;
+  }
+
+  async function reconcileSpendingAction(
+    command?: SpendingPendingCommand,
+    identity?: SpendingPendingCommandIdentity,
+    options: SpendingActionReconciliationOptions & { dataChanged?: boolean } = {},
+  ): Promise<boolean> {
+    actionReconciliationPending = true;
     actionError = "";
     try {
-      const next = await window.octopusBeak.spending.revokeLink({
-        invoiceId: record.link.invoiceId,
-        transactionId: record.link.transactionId,
-      });
-      report = applySpendingPurchaseReportPatch(report, next.patch);
-      selectedMonth = activeMonth;
+      if (!onActionReconciliation) throw new Error("spending-action-reconciliation-unavailable");
+      await onActionReconciliation(identity, { knownStale: options.knownStale });
+      if (command) completeSpendingPendingCommand(command);
+      if (options.dataChanged) {
+        actionNotice = $t.spending.actionReconciliationNotice;
+      }
+      return true;
     } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = $t.spending.actionReconciliationFailed;
+      console.warn("spending-action-reconciliation-failed", stableFinancialErrorCode(error));
+      return false;
     } finally {
+      actionReconciliationPending = false;
+    }
+  }
+
+  async function applySpendingActionResult(
+    result: SpendingPurchaseActionResult,
+    command?: SpendingPendingCommand,
+    identity?: SpendingPendingCommandIdentity,
+    telemetry?: ReturnType<typeof financialPerformanceTelemetry.startOperation>,
+  ): Promise<boolean> {
+    try {
+      report = applyValidatedSpendingActionResult(report, result);
+      telemetry?.startSpan("patch-applied", {
+        knowledgePointDistance: 0,
+      }).finish();
+      selectedMonth = activeMonth;
+      actionNotice = "";
+      if (command) completeSpendingPendingCommand(command);
+      return true;
+    } catch (error) {
+      telemetry?.startSpan("patch-applied").finish("error", { error });
+      await reconcileSpendingAction(command, identity, {
+        dataChanged: error instanceof Error && error.message === "spending-action-stale",
+      });
+      return false;
+    }
+  }
+
+  async function runSpendingAction(
+    action: string,
+    request: (idempotencyKey: string | undefined) => Promise<SpendingPurchaseActionResult>,
+    identity?: SpendingPendingCommandIdentity,
+    onSuccess?: () => void,
+  ): Promise<void> {
+    busyAction = action;
+    actionError = "";
+    const telemetry = financialPerformanceTelemetry.startOperation("spending-action");
+    telemetry.startSpan("action-start").finish();
+    let telemetryFinished = false;
+    let command: SpendingPendingCommand | undefined;
+    try {
+      command = identity ? beginSpendingPendingCommand(identity) : undefined;
+      const result = await request(command?.idempotencyKey);
+      if (await applySpendingActionResult(result, command, identity, telemetry)) {
+        await tick();
+        telemetry.finish("paint-ready");
+        telemetryFinished = true;
+        onSuccess?.();
+      }
+    } catch (error) {
+      const code = spendingActionErrorCode(error);
+      if (code === "idempotency-key-conflict") {
+        if (command) completeSpendingPendingCommand(command);
+        actionError = actionErrorText(error);
+      } else if (code === "spending-pair-stale" || isSpendingActionUncertain(error)) {
+        await reconcileSpendingAction(command, identity, {
+          dataChanged: code === "spending-pair-stale",
+          knownStale: code === "spending-pair-stale",
+        });
+      } else {
+        actionError = actionErrorText(error);
+      }
+    } finally {
+      if (!telemetryFinished) {
+        telemetry.finish("action-result", "error", { error: actionError || undefined });
+      }
       busyAction = null;
     }
   }
@@ -381,6 +518,17 @@
           : ($locale === "zh-TW" ? "所有來源已確認" : "All sources confirmed")}
       </span>
     </section>
+
+    {#if actionReconciliationPending}
+      <section class="card purchase-action-pending" role="status" aria-live="polite">{$t.spending.actionReconciliationPending}</section>
+    {/if}
+
+    {#if actionNotice}
+      <section class="card purchase-action-status" data-action-notice role="status" aria-live="polite">
+        <span>{actionNotice}</span>
+        <button type="button" class="button secondary" onclick={() => actionNotice = ""}>{$t.spending.dismissActionNotice}</button>
+      </section>
+    {/if}
 
     {#if actionError}
       <section class="card purchase-action-error" role="alert">{actionError}</section>

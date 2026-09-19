@@ -1,9 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
-import {
-  withCanonicalSnapshot,
-  withCanonicalWriterQueue,
-} from "./canonical-runtime.ts";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
+import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import {
   createCanonicalProjectionRuntime,
 } from "./canonical-projection-runtime.ts";
@@ -240,8 +237,8 @@ export type LoanRepaymentSettlementGroupView = Readonly<{
  * while its database capability is checked at runtime before any SQL runs. */
 type RelationStore = Readonly<{
   db: DatabaseSync;
-  databasePath?: string;
   commitClock?: () => number;
+  withWriter: <T>(operation: () => T) => Promise<T>;
 }>;
 
 function requireValidatedRelationStore(store: RelationStore): void {
@@ -614,10 +611,6 @@ export function admitCounterpartyAccountEvidence(
     effectiveStartDate,
     effectiveEndDate,
   });
-}
-
-function asPath(store: RelationStore): string {
-  return store.databasePath ?? ":memory:";
 }
 
 function blob(value: unknown, label: string): BlobId {
@@ -1073,7 +1066,7 @@ export async function persistCounterpartyAccountEvidence(
   input: TransactionCounterpartyAccountEvidenceInput,
 ): Promise<PersistedCounterpartyAccountEvidence> {
   requireValidatedRelationStore(store);
-  return withCanonicalWriterQueue(asPath(store), () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const value = persistEvidenceOnce(store, input);
@@ -1300,7 +1293,7 @@ export async function persistInstitutionGeneratedRepaymentNoteEvidence(
   input: InstitutionGeneratedRepaymentNoteEvidenceInput,
 ): Promise<PersistedInstitutionGeneratedRepaymentNoteEvidence> {
   requireValidatedRelationStore(store);
-  return withCanonicalWriterQueue(asPath(store), () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const value = persistInstitutionGeneratedRepaymentNoteEvidenceOnce(store, input);
@@ -2772,7 +2765,7 @@ export async function resolveLoanRepaymentRelations(
   request: LoanRepaymentRelationResolutionRequest,
 ): Promise<LoanRepaymentRelationResolutionResult> {
   requireValidatedRelationStore(store);
-  return withCanonicalWriterQueue(asPath(store), () => {
+  return store.withWriter(() => {
     store.db.exec("BEGIN IMMEDIATE");
     try {
       const value = resolveOnce(store, request);

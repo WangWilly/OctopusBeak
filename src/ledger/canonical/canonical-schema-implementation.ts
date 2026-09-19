@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
 import type { CanonicalRuntimeOptions } from "./canonical-runtime.ts";
@@ -47,6 +46,14 @@ import {
   type TaxonomyDefinition,
   type TransactionTaxonomyPackage,
 } from "./transaction-taxonomy.ts";
+import {
+  blob,
+  canonicalIdsEqual,
+  idFromString,
+  idToString,
+  uuidV7,
+  type CanonicalId,
+} from "./canonical-local-identifier.ts";
 
 const CANONICAL_TAXONOMY_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS taxonomy_versions (
@@ -1881,51 +1888,7 @@ const YUANTA_CREDIT_CARD_QUERY_ROUTES = new Set<string>([
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2,
 ]);
 
-export const CANONICAL_SQLITE_FILE = "canonical.sqlite";
-
 export const CANONICAL_SCHEMA_VERSION = 28;
-
-type CanonicalId = Buffer;
-
-function uuidV7(): CanonicalId {
-  const bytes = randomBytes(16);
-  const timestamp = BigInt(Date.now());
-  for (let index = 0; index < 6; index += 1)
-    bytes[index] = Number((timestamp >> BigInt(40 - index * 8)) & 0xffn);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  return bytes;
-}
-
-function idToString(value: unknown): string {
-  const bytes = value instanceof Uint8Array ? Buffer.from(value) : undefined;
-  if (!bytes || bytes.length !== 16)
-    throw new Error("Canonical ID must be a 16-byte UUID blob.");
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function idFromString(value: string): CanonicalId {
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      value,
-    )
-  )
-    throw new Error("Canonical ID must be a UUID string.");
-  return Buffer.from(value.replaceAll("-", ""), "hex");
-}
-
-function blob(value: unknown): CanonicalId {
-  return value instanceof Uint8Array && value.byteLength === 16
-    ? Buffer.from(value)
-    : (() => {
-        throw new Error("Expected a 16-byte canonical ID blob.");
-      })();
-}
-
-export function canonicalSqlitePath(ledgerDir: string): string {
-  return join(ledgerDir, CANONICAL_SQLITE_FILE);
-}
 
 const SCHEMA_SHARED_ASSERTION_SPINE = `
 CREATE TABLE IF NOT EXISTS assertions (
@@ -3899,12 +3862,6 @@ WHERE projected.generation_id = ? AND NOT EXISTS (
     throw new Error(
       "Canonical v7 projection contains an unregistered or invalid financial authority route.",
     );
-}
-
-function canonicalIdsEqual(left: unknown, right: unknown): boolean {
-  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array))
-    return false;
-  return Buffer.compare(Buffer.from(left), Buffer.from(right)) === 0;
 }
 
 type ProjectionGenerationEventKind =
@@ -12720,10 +12677,6 @@ export {
   FUBON_CREDIT_CARD_QUERY_ROUTES,
   ESUN_CREDIT_CARD_QUERY_ROUTES,
   YUANTA_CREDIT_CARD_QUERY_ROUTES,
-  uuidV7,
-  idToString,
-  idFromString,
-  blob,
   tableExists,
   relationType,
   columnExists,
@@ -12777,5 +12730,3 @@ export {
   YUANTA_TRADE_INVESTMENT_V3_PURGE_NAMESPACES,
   YUANTA_TRADE_INVESTMENT_V3_PURGE_STREAMS,
 };
-
-export type { CanonicalId };

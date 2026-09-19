@@ -276,7 +276,7 @@ function ctbcCapture(
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "current-deposit-balance-writer-"));
   await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   return { directory, store };
 }
 

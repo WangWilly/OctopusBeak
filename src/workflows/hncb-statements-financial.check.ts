@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Frame, Page } from "playwright";
 import {
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
@@ -107,8 +106,7 @@ try {
       outputDir: join(root, "downloads"),
     },
     {
-      canonicalSourceLedgerDir: join(root, "financial"),
-      canonicalFinancialLedgerDir: join(root, "financial"),
+      canonicalLedgerDir: join(root, "financial"),
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],
@@ -132,9 +130,7 @@ try {
     },
   );
   assert.equal(output.status, "financial-admitted");
-  const financial = createCanonicalSourceStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const financial = createCanonicalSourceStore(join(root, "financial"));
   try {
     validateCanonicalSourceStore(financial);
     assert.equal(
@@ -189,9 +185,7 @@ try {
       ).value,
     );
     financial.close();
-    const financialQuery = createDomesticDepositStore(
-      canonicalSqlitePath(join(root, "financial")),
-    );
+    const financialQuery = createDomesticDepositStore(join(root, "financial"));
     try {
       const current = queryCurrent(financialQuery, {
         integrationNamespace: "hncb",
@@ -240,8 +234,7 @@ try {
       outputDir: join(root, "overview-replay-downloads"),
     },
     {
-      canonicalSourceLedgerDir: join(root, "financial"),
-      canonicalFinancialLedgerDir: join(root, "financial"),
+      canonicalLedgerDir: join(root, "financial"),
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],
@@ -265,9 +258,7 @@ try {
     },
   );
   assert.equal(overviewReplay.status, "financial-admitted");
-  const overviewStore = createCanonicalSourceStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const overviewStore = createCanonicalSourceStore(join(root, "financial"));
   try {
     assert.equal(
       (
@@ -321,8 +312,7 @@ try {
         outputDir: join(noDataRoot, "downloads"),
       },
       {
-        canonicalSourceLedgerDir: join(noDataRoot, "financial"),
-        canonicalFinancialLedgerDir: join(noDataRoot, "financial"),
+        canonicalLedgerDir: join(noDataRoot, "financial"),
         readAccountOptions: async () => [
           { label: noDataAccountNumber, value: noDataAccountNumber },
         ],
@@ -335,9 +325,7 @@ try {
       "source-only",
       "a no-transaction account still admits its current overview capture",
     );
-    const noDataStore = createCanonicalSourceStore(
-      canonicalSqlitePath(join(noDataRoot, "financial")),
-    );
+    const noDataStore = createCanonicalSourceStore(join(noDataRoot, "financial"));
     try {
       assert.equal(
         (
@@ -396,9 +384,7 @@ try {
     await rm(noDataRoot, { recursive: true, force: true });
   }
 
-  const reopenedFinancialQuery = createDomesticDepositStore(
-    canonicalSqlitePath(join(root, "financial")),
-  );
+  const reopenedFinancialQuery = createDomesticDepositStore(join(root, "financial"));
   try {
     const reopenedCommitSequence = Number(
       (
@@ -445,36 +431,6 @@ try {
     reopenedFinancialQuery.close();
   }
 
-  const sameDatabaseDirectory = join(root, "same-database");
-
-  let splitStoreCollected = false;
-  await assert.rejects(
-    () =>
-      runHncbStatements(
-        page,
-        {
-          startDate: "2026/08/01",
-          endDate: "2026/08/20",
-          accountFilters: [],
-          outputDir: join(root, "split-store-downloads"),
-        },
-        {
-          canonicalSourceLedgerDir: join(root, "split-source"),
-          canonicalFinancialLedgerDir: join(root, "split-financial"),
-          readAccountOptions: async () => {
-            splitStoreCollected = true;
-            return [];
-          },
-        },
-      ),
-    /same canonical SQLite database/i,
-  );
-  assert.equal(
-    splitStoreCollected,
-    false,
-    "split source/financial stores fail closed before collection",
-  );
-
   const multiAccountDirectory = join(root, "multi-account");
   const secondAccount = {
     label: "HNCB SECOND ACCOUNT",
@@ -497,8 +453,7 @@ try {
         outputDir: join(root, "multi-account-downloads"),
       },
       {
-        canonicalSourceLedgerDir: multiAccountDirectory,
-        canonicalFinancialLedgerDir: multiAccountDirectory,
+        canonicalLedgerDir: multiAccountDirectory,
         readAccountOptions: async () => [
           { label: "HNCB ACCOUNT", value: primaryAccountNumber },
           secondAccount,
@@ -525,9 +480,7 @@ try {
     );
   assert.equal((await runMultiAccount()).status, "financial-admitted");
   assert.equal((await runMultiAccount()).status, "financial-admitted");
-  const multiAccountStore = createCanonicalSourceStore(
-    canonicalSqlitePath(multiAccountDirectory),
-  );
+  const multiAccountStore = createCanonicalSourceStore(multiAccountDirectory);
   try {
     assert.equal(
       (
@@ -554,8 +507,7 @@ try {
           outputDir: join(root, "later-account-failure-downloads"),
         },
         {
-          canonicalSourceLedgerDir: laterAccountFailureDirectory,
-          canonicalFinancialLedgerDir: laterAccountFailureDirectory,
+          canonicalLedgerDir: laterAccountFailureDirectory,
           readAccountOptions: async () => [
             { label: "HNCB ACCOUNT", value: primaryAccountNumber },
             secondAccount,
@@ -584,9 +536,7 @@ try {
       ),
     /HNCB later-account failure/i,
   );
-  const laterFailureStore = createCanonicalSourceStore(
-    canonicalSqlitePath(laterAccountFailureDirectory),
-  );
+  const laterFailureStore = createCanonicalSourceStore(laterAccountFailureDirectory);
   try {
     assert.equal(
       (
@@ -609,6 +559,7 @@ try {
     laterFailureStore.close();
   }
 
+  const sameDatabaseDirectory = join(root, "same-database");
   const sameDatabaseOutput = await runHncbStatements(
     page,
     {
@@ -618,8 +569,7 @@ try {
       outputDir: join(root, "same-database-downloads"),
     },
     {
-      canonicalSourceLedgerDir: sameDatabaseDirectory,
-      canonicalFinancialLedgerDir: sameDatabaseDirectory,
+      canonicalLedgerDir: sameDatabaseDirectory,
       readAccountOptions: async () => [
         { label: "HNCB ACCOUNT", value: primaryAccountNumber },
       ],
@@ -643,9 +593,7 @@ try {
     },
   );
   assert.equal(sameDatabaseOutput.status, "financial-admitted");
-  const sameDatabaseStore = createCanonicalSourceStore(
-    canonicalSqlitePath(sameDatabaseDirectory),
-  );
+  const sameDatabaseStore = createCanonicalSourceStore(sameDatabaseDirectory);
   try {
     assert.equal(
       (

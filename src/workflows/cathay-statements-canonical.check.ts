@@ -4,8 +4,8 @@ import { join } from "node:path";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   createCathayCanonicalFinancialQuery,
-  openCanonicalDatabase,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
 import {
   downloadCathayStatements,
   deriveCathayDomesticDepositAccountNumberEvidence,
@@ -16,6 +16,9 @@ import {
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,
 } from "./cathay-current-deposit-balances.ts";
+
+const syntheticCathayAccountNumber = ["0012", "3456", "7890"].join("");
+const syntheticCathayCurrentAccountNumber = ["1234", "5678", "9012"].join("");
 
 const ledgerDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-"),
@@ -93,9 +96,9 @@ const session = {
 };
 
 assert.deepEqual(
-  deriveCathayDomesticDepositAccountNumberEvidence("001234567890"),
+  deriveCathayDomesticDepositAccountNumberEvidence(syntheticCathayAccountNumber),
   {
-    value: "001234567890",
+    value: syntheticCathayAccountNumber,
     kind: "depository-account",
     evidenceVersion: "cathay/domestic-deposit/account-number-v1",
     sourceField: "content.datas[0].accountNumber",
@@ -152,7 +155,7 @@ try {
     join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-current-balance-"),
   );
   try {
-    const currentAccount = "123456789012";
+    const currentAccount = syntheticCathayCurrentAccountNumber;
     const currentClient: CathayDomesticStatementsClient = {
       fetchDomesticAccounts: async () => [
         { accountNo: currentAccount, currency: "TWD" },
@@ -172,12 +175,11 @@ try {
         headers: { date: "Tue, 08 Sep 2026 13:20:04 GMT" },
       },
       rawBody:
-        '{"success":true,"systemTime":"2026-09-08T21:20:04.1234567+08:00","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000123456789012","accountBalance":1000.00,"avaliableBalance":900.25}]}}}',
+        `{"success":true,"systemTime":"2026-09-08T21:20:04.1234567+08:00","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000${currentAccount}","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
       observedAt: "2026-09-08T21:20:10.000+08:00",
       uiAccountNumbers: [currentAccount],
     });
     let currentReaderCalls = 0;
-    let currentCommitCalls = 0;
     const currentOptions: CathayDomesticWorkflowOptions = {
       ...options,
       canonicalLedgerDir: currentCaptureDir,
@@ -190,14 +192,6 @@ try {
         assert.equal(input.observedAt, undefined);
         return currentRows;
       },
-      commitCurrentDepositBalances: async (ledgerPath, captures) => {
-        currentCommitCalls += 1;
-        assert.equal(ledgerPath, currentCaptureDir);
-        assert.equal(captures.length, 1);
-        assert.equal(captures[0]?.identity.sourceAccountKey, currentAccount);
-        assert.equal(captures[0]?.observations.length, 2);
-        return [];
-      },
     };
     await downloadCathayStatements(
       page,
@@ -208,7 +202,27 @@ try {
       currentClient,
     );
     assert.equal(currentReaderCalls, 1);
-    assert.equal(currentCommitCalls, 1);
+    const currentDb = openCanonicalDatabaseHandle(currentCaptureDir, {
+      readOnly: true,
+    });
+    try {
+      assert.equal(
+        currentDb
+          .prepare(
+            "SELECT COUNT(*) AS count FROM source_captures WHERE record_kind = 'current-deposit-balance'",
+          )
+          .get()?.count,
+        1,
+      );
+      assert.equal(
+        currentDb
+          .prepare("SELECT COUNT(*) AS count FROM balance_observation_revisions")
+          .get()?.count,
+        2,
+      );
+    } finally {
+      currentDb.close();
+    }
   } finally {
     await rm(currentCaptureDir, { recursive: true, force: true });
   }
@@ -217,7 +231,7 @@ try {
     join(process.env.TMPDIR ?? "/tmp", "cathay-workflow-canonical-number-"),
   );
   try {
-    const numericAccount = "001234567890";
+    const numericAccount = syntheticCathayAccountNumber;
     const numericClient: CathayDomesticStatementsClient = {
       fetchDomesticAccounts: async () => [
         { accountNo: numericAccount, currency: "TWD" },
@@ -239,7 +253,7 @@ try {
       },
       numericClient,
     );
-    const numericDb = openCanonicalDatabase(numericAccountDir, { readOnly: true });
+    const numericDb = openCanonicalDatabaseHandle(numericAccountDir, { readOnly: true });
     try {
       assert.equal(
         (numericDb
@@ -257,7 +271,7 @@ try {
   const query = createCathayCanonicalFinancialQuery(ledgerDir);
   const current = await query.current({ kind: "current" });
   assert.equal(current.transactions.length, 3);
-  const attestedDb = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const attestedDb = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   try {
     assert.equal(
       attestedDb
@@ -336,7 +350,7 @@ try {
       multiClient,
     );
     assert.equal(multiOutput.length, 2);
-    const multiDb = openCanonicalDatabase(multiDir, { readOnly: true });
+    const multiDb = openCanonicalDatabaseHandle(multiDir, { readOnly: true });
     try {
       assert.equal(
         multiDb.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
@@ -400,7 +414,7 @@ try {
       /returnCode was not 0000/,
     );
     assert.equal(legacyWriterCalls, 0);
-    const db = openCanonicalDatabase(failingDir);
+    const db = openCanonicalDatabaseHandle(failingDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -482,7 +496,7 @@ try {
       JSON.stringify(scopeTelemetry),
       /2025-08-17|2026-08-16|2026-08-17|SYNTHETIC|description/,
     );
-    const db = openCanonicalDatabase(scopeMismatchDir);
+    const db = openCanonicalDatabaseHandle(scopeMismatchDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -570,7 +584,7 @@ try {
         JSON.stringify(malformedTelemetry),
         /2025-08-17|2026-08-17|SYNTHETIC|description/,
       );
-      const db = openCanonicalDatabase(malformedDateDir);
+      const db = openCanonicalDatabaseHandle(malformedDateDir);
       try {
         assert.equal(
           db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -695,7 +709,7 @@ try {
       JSON.stringify(rowDateShapeTelemetry),
       /2026-07-01|20260701|SYNTHETIC|description|incomeAmt/,
     );
-    const db = openCanonicalDatabase(invalidRowDateDir);
+    const db = openCanonicalDatabaseHandle(invalidRowDateDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM source_captures").get()
@@ -750,7 +764,7 @@ try {
       /account scope does not match the response/,
     );
     assert.equal(accountMismatchWriterCalls, 0);
-    const db = openCanonicalDatabase(accountMismatchDir);
+    const db = openCanonicalDatabaseHandle(accountMismatchDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()
@@ -816,7 +830,7 @@ try {
       /returnCode was not 0000/,
     );
     assert.equal(multiWriterCalls, 0);
-    const db = openCanonicalDatabase(failingMultiDir);
+    const db = openCanonicalDatabaseHandle(failingMultiDir);
     try {
       assert.equal(
         db.prepare("SELECT COUNT(*) AS count FROM canonical_commits").get()

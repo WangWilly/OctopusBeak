@@ -80,7 +80,7 @@ function request(captureId: string): CanonicalSourceCaptureAdmissionRequest {
 
 test("Canonical Source Capture Admission admits one request through its public seam", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-tracer-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     const receipt = await admission.admit(request("capture-1"));
@@ -97,7 +97,7 @@ test("Canonical Source Capture Admission admits one request through its public s
 
 test("Canonical Source Capture Admission preserves empty HTTP 204 evidence and rejects 204 rows", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-204-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     const empty204 = {
@@ -149,7 +149,7 @@ test("Canonical Source Capture Admission preserves empty HTTP 204 evidence and r
 
 test("Canonical Source Capture Admission exposes stable typed route failures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-errors-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     await assert.rejects(
@@ -169,7 +169,7 @@ test("Canonical Source Capture Admission exposes stable typed route failures", a
 
 test("Canonical Source Capture Admission rejects capture overwrite and occurrence conflicts with stable reasons", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-conflicts-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     await admission.admit(request("capture-1"));
@@ -200,7 +200,7 @@ test("Canonical Source Capture Admission rejects capture overwrite and occurrenc
 
 test("Canonical Source Capture Admission compares the same compact financial content independent of property order", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-order-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     const first = request("capture-order-1");
@@ -261,7 +261,7 @@ test("Canonical Source Capture Admission compares the same compact financial con
 
 test("Canonical Source Capture Admission retains one assertion observation and adds provenance on exact recurrence", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-recurrence-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     await admission.admit(request("capture-1"));
@@ -278,7 +278,7 @@ test("Canonical Source Capture Admission retains one assertion observation and a
 
 test("Canonical Source Capture Admission batches atomically and preserves one knowledge point per capture", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-batch-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     const receipts = await admission.admitBatch([
@@ -319,7 +319,7 @@ test("Canonical Source Capture Admission batches atomically and preserves one kn
 
 test("Canonical Source Capture Admission rejects a registered route with drifting identity or contract", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-admission-route-drift-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admission = createCanonicalSourceCaptureAdmission(store);
     await assert.rejects(

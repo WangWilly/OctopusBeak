@@ -21,19 +21,27 @@ import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  commitCathayDomesticDepositSync,
-  openCanonicalDatabase,
+  commitCathayDomesticDepositSyncInTransaction,
+  ensureCathayHumanAttestationEvents,
   recordInitialCathayHumanAttestationIfMissing,
+  validateCathayDomesticDepositSyncInput,
   type CathayStagedCapturePage,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
+import {
+  executeCanonicalFinancialCommitRun,
+  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  commitCurrentDepositBalanceCaptureInTransaction,
+} from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   readCathayCurrentDepositBalances,
 } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
   cathayCurrentSubjectDigest,
-  commitCathayCurrentDepositBalanceCaptures,
 } from "./cathay-current-deposit-canonical.ts";
 
 const DOMESTIC_STATEMENTS_URL =
@@ -250,8 +258,6 @@ export type CathayDomesticWorkflowOptions = {
   captureCurrentBalances?: boolean;
   /** Focused-check seam for the authenticated current-state reader. */
   readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
-  /** Focused-check seam for current-state canonical admission. */
-  commitCurrentDepositBalances?: typeof commitCathayCurrentDepositBalanceCaptures;
   /** Opt-in privacy-safe row date-shape diagnostics; never emits row values. */
   telemetry?: boolean;
   /** UI preparation seam; production selects every returned account and period. */
@@ -1989,16 +1995,20 @@ export async function downloadCathayStatements(
       ),
     );
   }
+  const syncInput = {
+    sourceConnectionId,
+    identityEpoch,
+    authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+    stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+    syncState: options.syncState ?? { cursor: null },
+    observedAt,
+    pages: stagedPages,
+  };
   try {
-    await commitCathayDomesticDepositSync(canonicalLedgerDir, {
-      sourceConnectionId,
-      identityEpoch,
-      authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-      stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
-      syncState: options.syncState ?? { cursor: null },
-      observedAt,
-      pages: stagedPages,
-    });
+    // Validate before opening the execution run so provider scope errors keep
+    // their established diagnostics; the transaction adapter validates again
+    // at the canonical persistence seam.
+    validateCathayDomesticDepositSyncInput(syncInput);
   } catch (error) {
     if (isCathayDateScopeValidationError(error)) {
       console.warn(
@@ -2011,7 +2021,35 @@ export async function downloadCathayStatements(
     }
     throw error;
   }
-  if (options.captureCurrentBalances) {
+  const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
+    {
+      provider: "cathay",
+      product: "domestic-deposit",
+      itemKey: `domestic-deposit:${sourceConnectionId}:${identityEpoch}`,
+      commit: (transaction) => {
+        const result = commitCathayDomesticDepositSyncInTransaction(
+          transaction.writer,
+          syncInput,
+          transaction.admission,
+        );
+        // The attestation is a post-capture readiness fact. When no current
+        // balance is requested, it can be recorded in this same transaction;
+        // otherwise the final balance item records it after balances commit.
+        if (!options.captureCurrentBalances) {
+          ensureCathayHumanAttestationEvents(transaction.database);
+          recordInitialCathayHumanAttestationIfMissing(
+            transaction.database,
+            observedAt,
+          );
+        }
+        return result;
+      },
+    },
+  ];
+  const currentBalanceItems = async function* (): AsyncIterable<
+    CanonicalFinancialCommitItem<unknown>
+  > {
+    if (!options.captureCurrentBalances) return;
     const currentRows = await (
       options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
     )(page, "domestic", {});
@@ -2049,20 +2087,43 @@ export async function downloadCathayStatements(
         scopeDate: observedAtForBalances.slice(0, 10),
       },
     );
-    await (
-      options.commitCurrentDepositBalances ??
-      commitCathayCurrentDepositBalanceCaptures
-    )(canonicalLedgerDir, balanceCaptures);
-  }
-  // The existing Cathay canonical writer commits the provider response first.
-  // Only after that durable financial capture succeeds do we append the
-  // observed-human attestation event used by the readiness gate.
-  const canonicalDb = openCanonicalDatabase(canonicalLedgerDir);
-  try {
-    recordInitialCathayHumanAttestationIfMissing(canonicalDb, observedAt);
-  } finally {
-    canonicalDb.close();
-  }
+    for (const [index, balanceCapture] of balanceCaptures.entries())
+      yield {
+        provider: "cathay",
+        product: "current-balance",
+        itemKey: `current-balance:${balanceCapture.identity.sourceAccountKey}:${index}`,
+        commit: (transaction) => {
+          const result = commitCurrentDepositBalanceCaptureInTransaction(
+            transaction.writer,
+            admitCurrentDepositBalanceCapture(balanceCapture),
+            transaction.admission,
+          );
+          if (index === balanceCaptures.length - 1) {
+            ensureCathayHumanAttestationEvents(transaction.database);
+            recordInitialCathayHumanAttestationIfMissing(
+              transaction.database,
+              observedAt,
+            );
+          }
+          return result;
+        },
+      };
+  };
+  const executionResult = await executeCanonicalFinancialCommitRun({
+    canonicalLedgerDir,
+    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+      yield* executionItems;
+      yield* currentBalanceItems();
+    })(),
+    provider: "cathay",
+    product: "financial",
+  });
+  if (executionResult.status !== "completed")
+    throw new Error(
+      `Cathay canonical financial commit ${executionResult.status}: ${executionResult.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ")}`,
+    );
   const downloads: CathayStatementDownload[] = [];
   for (const { account, statement } of stagedStatements)
     downloads.push(await writeFiles(account, dateRange, statement));

@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
@@ -8,8 +8,8 @@ import {
   blob,
   idFromString,
   idToString,
-} from "./canonical-schema-implementation.ts";
-import { openCanonicalDatabase } from "./canonical-database.ts";
+} from "./canonical-local-identifier.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   commitCanonicalAutomaticEnrichmentRun,
@@ -210,10 +210,10 @@ export async function commitCathayAutomaticEnrichmentFromDescriptions(
   ledgerDir: string,
   options: CathayAutomaticEnrichmentOptions = {},
 ): Promise<CanonicalEnrichmentCommitResult> {
-  const db = openCanonicalDatabase(ledgerDir, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(ledgerDir, { readOnly: true });
   let transactions: CurrentCathayTransaction[];
   try {
-    transactions = readCurrentCathayTransactions(db, options);
+    transactions = readCurrentCathayTransactions(db.db, options);
   } finally {
     db.close();
   }

@@ -140,6 +140,8 @@ export type ProductSourceGapDto = {
 };
 
 export type CurrentProjectionStateDto = {
+  /** Canonical knowledge point used to build this page payload. */
+  knowledgePoint?: number;
   availability: "empty" | "awaiting" | "available" | "unavailable";
   coverage: "complete" | "partial" | "awaiting" | "unavailable";
   sourceGaps: ProductSourceGapDto[];

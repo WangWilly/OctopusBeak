@@ -62,12 +62,16 @@ async function main() {
     assert.equal(env.NODE_ENV, "production");
     assert.equal(env.LEDGER_DIR, path.join(root, "data", "ledger"));
     assert.equal(
-      env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR,
+      env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR,
       path.join(root, "data", "ledger"),
     );
     assert.equal(
-      env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR,
-      path.join(root, "data", "ledger"),
+      Object.hasOwn(env, "OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR"),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(env, "OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR"),
+      false,
     );
     assert.equal(env.OCTOPUSBEAK_DESKTOP, "1");
     assert.equal(env.OCTOPUSBEAK_APP_ROOT, missingBrowsersAppRoot);

@@ -6,8 +6,8 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   commitCathayDomesticDepositSync,
-  openCanonicalDatabase,
 } from "./cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 import {
   CATHAY_HUMAN_ATTESTED_V1_MANIFEST,
   ensureCathayHumanAttestationEvents,
@@ -64,17 +64,17 @@ try {
     syncInput("cathay-human-attested-source"),
   );
 
-  let db = openCanonicalDatabase(ledgerDir);
+  let db = openCanonicalDatabaseHandle(ledgerDir);
   try {
-    const before = buildCathayDomesticDepositReadinessFromLedger(db);
+    const before = buildCathayDomesticDepositReadinessFromLedger(db.db);
     assert.equal(before.capability, "canonical-synthetic");
     assert.deepEqual(before.blockers, ["live-validation-pending"]);
-    assert.equal(isCathayHumanAttestationDurablyActive(db), false);
+    assert.equal(isCathayHumanAttestationDurablyActive(db.db), false);
 
-    ensureCathayHumanAttestationEvents(db);
+    ensureCathayHumanAttestationEvents(db.db);
     assert.throws(
       () =>
-        recordCathayHumanAttestationEvent(db!, {
+        recordCathayHumanAttestationEvent(db.db, {
           attestationId: CATHAY_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
           evidenceVersion: CATHAY_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
           eventKind: "attested",
@@ -94,11 +94,11 @@ try {
     );
 
     recordInitialCathayHumanAttestationIfMissing(
-      db,
+      db.db,
       "2026-08-22T08:00:00+08:00",
     );
     recordInitialCathayHumanAttestationIfMissing(
-      db,
+      db.db,
       "2026-08-22T08:00:00+08:00",
     );
     assert.equal(
@@ -107,7 +107,7 @@ try {
         .get()?.count,
       1,
     );
-    const event = latestCathayHumanAttestationEvent(db);
+    const event = latestCathayHumanAttestationEvent(db.db);
     assert.equal(event?.eventKind, "attested");
     assert.equal(event?.manifestStatus, "active");
     assert.equal(event?.sequence, 1);
@@ -122,7 +122,7 @@ try {
       false,
     );
 
-    const ready = buildCathayDomesticDepositReadinessFromLedger(db);
+    const ready = buildCathayDomesticDepositReadinessFromLedger(db.db);
     assert.equal(ready.capability, "canonical-human-attested");
     assert.equal(ready.liveValidation, "complete");
     assert.equal(ready.providerGuaranteed, false);
@@ -132,11 +132,11 @@ try {
     db.close();
   }
 
-  db = openCanonicalDatabase(ledgerDir);
+  db = openCanonicalDatabaseHandle(ledgerDir);
   try {
-    assert.equal(isCathayHumanAttestationDurablyActive(db), true);
+    assert.equal(isCathayHumanAttestationDurablyActive(db.db), true);
     assert.equal(
-      buildCathayDomesticDepositReadinessFromLedger(db).capability,
+      buildCathayDomesticDepositReadinessFromLedger(db.db).capability,
       "canonical-human-attested",
     );
     assert.equal(
@@ -149,24 +149,24 @@ try {
       1,
     );
 
-    revokeCathayHumanAttestedV1("2026-08-23T00:00:00.000Z", "test revoke", db);
-    assert.equal(isCathayHumanAttestationDurablyActive(db), false);
+    revokeCathayHumanAttestedV1("2026-08-23T00:00:00.000Z", "test revoke", db.db);
+    assert.equal(isCathayHumanAttestationDurablyActive(db.db), false);
     assert.equal(
-      buildCathayDomesticDepositReadinessFromLedger(db).capability,
+      buildCathayDomesticDepositReadinessFromLedger(db.db).capability,
       "canonical-synthetic",
     );
     assert.deepEqual(
-      buildCathayDomesticDepositReadinessFromLedger(db).blockers,
+      buildCathayDomesticDepositReadinessFromLedger(db.db).blockers,
       ["live-validation-pending"],
     );
 
     restoreCathayHumanAttestedV1(
       "2026-08-24T00:00:00.000Z",
       "test restore",
-      db,
+      db.db,
     );
-    assert.equal(isCathayHumanAttestationDurablyActive(db), true);
-    assert.equal(latestCathayHumanAttestationEvent(db)?.sequence, 3);
+    assert.equal(isCathayHumanAttestationDurablyActive(db.db), true);
+    assert.equal(latestCathayHumanAttestationEvent(db.db)?.sequence, 3);
   } finally {
     db.close();
   }
@@ -178,13 +178,13 @@ const sourceOnlyDir = await mkdtemp(
   join(process.env.TMPDIR ?? "/tmp", "cathay-human-attested-source-only-"),
 );
 try {
-  const db = openCanonicalDatabase(sourceOnlyDir);
+  const db = openCanonicalDatabaseHandle(sourceOnlyDir);
   try {
     recordInitialCathayHumanAttestationIfMissing(
-      db,
+      db.db,
       "2026-08-22T08:00:00+08:00",
     );
-    const readiness = buildCathayDomesticDepositReadinessFromLedger(db);
+    const readiness = buildCathayDomesticDepositReadinessFromLedger(db.db);
     assert.equal(readiness.capability, "canonical-synthetic");
     assert.equal(
       db.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get()

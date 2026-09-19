@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { createCanonicalSourceCaptureAdmission } from "./canonical-source-capture-admission.ts";
 import {
   createCanonicalSourceStore,
@@ -238,9 +239,7 @@ assert.equal(foreignEvidence.pages.at(-1)?.terminal, true);
 
 const sourceDirectory = await mkdtemp(join(tmpdir(), "sinopac-source-v1-"));
 try {
-  const store = createCanonicalSourceStore(
-    join(sourceDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(sourceDirectory);
   try {
     validateCanonicalSourceStore(store);
     const first = await commitSinopacStatementSourceEvidence(
@@ -331,9 +330,7 @@ try {
   } finally {
     store.close();
   }
-  const reopened = createCanonicalSourceStore(
-    join(sourceDirectory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(sourceDirectory);
   try {
     validateCanonicalSourceStore(reopened);
     assert.equal(queryCanonicalSourceCurrent(reopened).records.length, 2);
@@ -348,11 +345,11 @@ const atomicBatchDirectory = await mkdtemp(
   join(tmpdir(), "sinopac-source-batch-"),
 );
 try {
-  const store = createCanonicalSourceStore(
-    join(atomicBatchDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(atomicBatchDirectory);
   try {
-    const triggerDb = new DatabaseSync(store.databasePath);
+    const triggerDb = new DatabaseSync(
+      canonicalDatabaseWriterKey(atomicBatchDirectory),
+    );
     triggerDb.exec(`
       CREATE TRIGGER reject_second_sinopac_capture
       BEFORE INSERT ON source_captures
@@ -385,9 +382,7 @@ try {
   } finally {
     store.close();
   }
-  const reopened = createCanonicalSourceStore(
-    join(atomicBatchDirectory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(atomicBatchDirectory);
   try {
     assert.equal(queryCanonicalSourceCurrent(reopened).records.length, 0);
   } finally {
@@ -401,9 +396,7 @@ const financialDirectory = await mkdtemp(
   join(tmpdir(), "sinopac-financial-v1-"),
 );
 try {
-  const store = createCanonicalSourceStore(
-    join(financialDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(financialDirectory);
   try {
     assert.equal(
       buildSinopacDomesticDepositReadinessFromLedger(store.db).capability,
@@ -527,7 +520,7 @@ try {
     const financialCommit = await commitCanonicalSinopacDomesticDepositCapture(
       {
         db: store.db,
-        databasePath: store.databasePath,
+        withWriter: store.withWriter,
         commitClock: () => store.commitClock(),
       },
       input,
@@ -602,7 +595,7 @@ try {
     await commitCanonicalSinopacDomesticDepositCapture(
       {
         db: store.db,
-        databasePath: store.databasePath,
+        withWriter: store.withWriter,
         commitClock: () => store.commitClock(),
       },
       {
@@ -625,9 +618,7 @@ try {
   } finally {
     store.close();
   }
-  const reopened = createCanonicalSourceStore(
-    join(financialDirectory, "canonical.sqlite"),
-  );
+  const reopened = createCanonicalSourceStore(financialDirectory);
   try {
     assert.equal(
       buildSinopacDomesticDepositReadinessFromLedger(reopened.db).capability,
@@ -644,9 +635,7 @@ const financialBatchDirectory = await mkdtemp(
   join(tmpdir(), "sinopac-financial-batch-v1-"),
 );
 try {
-  const store = createCanonicalSourceStore(
-    join(financialBatchDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(financialBatchDirectory);
   try {
     const second = admitSinopacStatementCaptureEvidence({
       ...baseCapture,
@@ -673,7 +662,7 @@ try {
     assert.equal(second.status, "admissible");
     const writer = {
       db: store.db,
-      databasePath: store.databasePath,
+      withWriter: store.withWriter,
       commitClock: () => store.commitClock(),
     };
     recordInitialSinopacHumanAttestationIfMissing(

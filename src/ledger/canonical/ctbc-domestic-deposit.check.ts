@@ -381,10 +381,10 @@ for (const responseShape of [
 
 const directory = await mkdtemp(join(tmpdir(), "ctbc-canonical-check-"));
 try {
-  let store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  let store = createCanonicalSourceStore(directory);
   let writer = {
     db: store.db,
-    databasePath: store.databasePath,
+    withWriter: store.withWriter,
     commitClock: () => store.commitClock(),
   };
   try {
@@ -454,10 +454,10 @@ try {
       },
     });
     assert.equal(financialLineage.entries.length, 1);
-    store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+    store = createCanonicalSourceStore(directory);
     writer = {
       db: store.db,
-      databasePath: store.databasePath,
+      withWriter: store.withWriter,
       commitClock: () => store.commitClock(),
     };
     const current = queryCanonicalSourceCurrent(store);
@@ -497,9 +497,7 @@ try {
       "canonical-human-attested",
     );
     store.close();
-    const reopened = createCanonicalSourceStore(
-      join(directory, "canonical.sqlite"),
-    );
+    const reopened = createCanonicalSourceStore(directory);
     assert.equal(
       buildCtbcDomesticDepositReadinessFromLedger(reopened.db).capability,
       "canonical-human-attested",
@@ -514,9 +512,7 @@ try {
 
 const atomicDirectory = await mkdtemp(join(tmpdir(), "ctbc-atomic-check-"));
 try {
-  const store = createCanonicalSourceStore(
-    join(atomicDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(atomicDirectory);
   try {
     await assert.rejects(
       commitCtbcDomesticDepositSourceEvidenceBatch(store, [

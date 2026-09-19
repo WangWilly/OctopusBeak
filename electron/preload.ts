@@ -1,9 +1,124 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
-import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import type {
+  FinancialFreshnessEvent,
+  FinancialPageLoadInput,
+  FinancialPageRequestOptions,
+  OctopusBeakApi,
+} from "../src/lib/desktop/api.ts";
+import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import type { FinancialSection } from "../src/lib/shared-ledger/financial-section.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
+}
+
+function knowledgePointFrom(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function financialFreshnessEventFrom(
+  value: unknown,
+): FinancialFreshnessEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = knowledgePointFrom(record.knowledgePoint);
+  return knowledgePoint === null || Object.keys(record).length !== 1
+    ? null
+    : Object.freeze({ knowledgePoint });
+}
+
+function cutoffFrom(value: unknown): { knowledgePoint: number } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial query cutoff must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const knowledgePoint = knowledgePointFrom(record.knowledgePoint);
+  if (knowledgePoint === null || Object.keys(record).length !== 1) {
+    throw new TypeError(
+      "Financial query cutoff must contain a non-negative safe integer knowledge point.",
+    );
+  }
+  return Object.freeze({ knowledgePoint });
+}
+
+function financialSectionFrom(value: unknown): FinancialSection {
+  if (value !== "primary" && value !== "secondary") {
+    throw new TypeError("Financial section must be primary or secondary.");
+  }
+  return value;
+}
+
+function financialPageLoadInputFrom(
+  value: unknown,
+): FinancialPageLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "cutoff")) {
+    throw new TypeError("Financial page load input contains an unknown field.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return cutoff === undefined ? {} : Object.freeze({ cutoff });
+}
+
+function financialPageRequestOptionsFrom(
+  value: unknown,
+): FinancialPageRequestOptions | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Financial page request options must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "requestToken")) {
+    throw new TypeError("Financial page request options contains an unknown field.");
+  }
+  if (record.requestToken === undefined) return {};
+  if (typeof record.requestToken !== "string" || record.requestToken.trim() === "") {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  if (record.requestToken.length > 256) {
+    throw new TypeError("Financial page request token is too long.");
+  }
+  return Object.freeze({ requestToken: record.requestToken });
+}
+
+function financialPageRequestTokenFrom(value: unknown): string {
+  const options = financialPageRequestOptionsFrom(value);
+  if (!options?.requestToken) {
+    throw new TypeError("Financial page request token must be a non-empty string.");
+  }
+  return options.requestToken;
+}
+
+function spendingLoadInputFrom(value: unknown): SpendingLoadInput | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Spending load input must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) =>
+    key !== "selectedMonth" && key !== "selectedCategory" && key !== "cutoff"
+  )) {
+    throw new TypeError("Spending load input contains an unknown field.");
+  }
+  if (record.selectedMonth !== undefined && typeof record.selectedMonth !== "string") {
+    throw new TypeError("Spending selected month must be a string.");
+  }
+  if (record.selectedCategory !== undefined && typeof record.selectedCategory !== "string") {
+    throw new TypeError("Spending selected category must be a string.");
+  }
+  const cutoff = cutoffFrom(record.cutoff);
+  return {
+    ...(record.selectedMonth === undefined ? {} : { selectedMonth: record.selectedMonth }),
+    ...(record.selectedCategory === undefined ? {} : { selectedCategory: record.selectedCategory }),
+    ...(cutoff === undefined ? {} : { cutoff }),
+  } as SpendingLoadInput;
 }
 
 const api: OctopusBeakApi = {
@@ -18,16 +133,81 @@ const api: OctopusBeakApi = {
     save: (input) => ipcRenderer.invoke("settings:save", input),
   },
   overview: {
-    load: () => ipcRenderer.invoke("overview:load"),
+    load: (input, options) => ipcRenderer.invoke("overview:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
+      "overview:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
+    ),
   },
   assets: {
-    load: () => ipcRenderer.invoke("assets:load"),
+    load: (input, options) => ipcRenderer.invoke("assets:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
+      "assets:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
+    ),
   },
   liabilities: {
-    load: () => ipcRenderer.invoke("liabilities:load"),
+    load: (input, options) => ipcRenderer.invoke("liabilities:load", financialPageLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
+      "liabilities:section:load",
+      financialSectionFrom(section),
+      financialPageLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
+    ),
+  },
+  financial: {
+    cancel: (requestToken) => ipcRenderer.invoke(
+      "financial:cancel",
+      financialPageRequestTokenFrom({ requestToken }),
+    ),
+  },
+  financialFreshness: {
+    subscribe(listener) {
+      if (typeof listener !== "function") {
+        throw new TypeError("Financial freshness listener must be a function.");
+      }
+      const onEvent = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        const event = financialFreshnessEventFrom(payload);
+        if (event) listener(event);
+      };
+      ipcRenderer.on("financialFreshness:changed", onEvent);
+      return () => {
+        ipcRenderer.removeListener("financialFreshness:changed", onEvent);
+      };
+    },
+    subscribeRecovery(listener) {
+      if (typeof listener !== "function") {
+        throw new TypeError("Financial freshness recovery listener must be a function.");
+      }
+      const onEvent = () => listener();
+      ipcRenderer.on("financialFreshness:reconnected", onEvent);
+      return () => {
+        ipcRenderer.removeListener("financialFreshness:reconnected", onEvent);
+      };
+    },
+    async latestKnowledgePoint() {
+      const value = await ipcRenderer.invoke(
+        "financialFreshness:latestKnowledgePoint",
+      );
+      const knowledgePoint = knowledgePointFrom(value);
+      if (knowledgePoint === null) {
+        throw new Error("Financial freshness response is invalid.");
+      }
+      return knowledgePoint;
+    },
   },
   spending: {
-    load: (input) => ipcRenderer.invoke("spending:load", input),
+    load: (input, options) => ipcRenderer.invoke("spending:load", spendingLoadInputFrom(input), financialPageRequestOptionsFrom(options)),
+    loadSection: (section, input, options) => ipcRenderer.invoke(
+      "spending:section:load",
+      financialSectionFrom(section),
+      spendingLoadInputFrom(input),
+      financialPageRequestOptionsFrom(options),
+    ),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
     revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),

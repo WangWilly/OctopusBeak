@@ -48,6 +48,7 @@
   export let onboardingStep: OnboardingStep = "hidden";
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
+  export let onAutomationRunSettled: () => void = () => {};
 
   let credentialsOpen = false;
   let syncOpen = false;
@@ -98,6 +99,7 @@
     needsAuthorization: false,
   };
   let cathayGmailOtpStatus: CathayGmailOtpStatus = defaultCathayGmailOtpStatus;
+  let observedActiveTaskIds = new Set<string>();
 
   $: sideValue = automation.active
     ? $t.common.runningCount(automation.activeTaskCount)
@@ -218,6 +220,25 @@
     { running: 0, completed: 0, failed: 0 },
   );
 
+  // Polling reloads the automation model after a workflow reaches a terminal
+  // state. Reconcile once the model proves that an active task has settled so
+  // a missed commit event cannot leave financial routes stale indefinitely.
+  $: {
+    const nextActiveTaskIds = new Set(
+      automation.tasks.filter((task) => task.isActive).map((task) => task.id),
+    );
+    const activeTaskSetChanged =
+      nextActiveTaskIds.size !== observedActiveTaskIds.size
+      || [...nextActiveTaskIds].some((taskId) => !observedActiveTaskIds.has(taskId));
+    if (activeTaskSetChanged) {
+      const taskSettled = [...observedActiveTaskIds].some(
+        (taskId) => !nextActiveTaskIds.has(taskId),
+      );
+      observedActiveTaskIds = nextActiveTaskIds;
+      if (taskSettled) onAutomationRunSettled();
+    }
+  }
+
   $: if (automation.active && !pollTimer) {
     pollTimer = setInterval(() => {
       void reload();
@@ -276,6 +297,31 @@
 
   function formatTime(value: string | null) {
     return formatUtcDateTime(value, $systemTimezone, $locale) || "--";
+  }
+
+  async function reloadAfterAutomationRun() {
+    try {
+      await reload();
+    } finally {
+      onAutomationRunSettled();
+    }
+  }
+
+  async function settleAutomationRun(operation: () => Promise<unknown>) {
+    let operationError: unknown;
+    try {
+      await operation();
+    } catch (error) {
+      operationError = error;
+    }
+    try {
+      await reload();
+    } catch (error) {
+      operationError ??= error;
+    } finally {
+      onAutomationRunSettled();
+    }
+    if (operationError) throw operationError;
   }
 
   function latestTaskTime(task: AutomationTaskRow) {
@@ -593,9 +639,9 @@
   async function runTask(task: AutomationTaskRow) {
     try {
       actionError = "";
-      if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
-      else await window.octopusBeak.automation.run(task.id);
-      await reload();
+      await settleAutomationRun(() => task.primaryAction === "Resume"
+        ? window.octopusBeak.automation.resume(task.id)
+        : window.octopusBeak.automation.run(task.id));
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -625,8 +671,8 @@
     syncOpen = false;
     try {
       actionError = "";
-      await window.octopusBeak.automation.runMany(tasks.map((task) => task.id));
-      await reload();
+      await settleAutomationRun(() =>
+        window.octopusBeak.automation.runMany(tasks.map((task) => task.id)));
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -809,8 +855,7 @@
           (task) => task.credentialGroupId === savedGroupId,
         );
         if (selectedTask?.canRun) {
-          await window.octopusBeak.automation.run(selectedTask.id);
-          await reload();
+          await settleAutomationRun(() => window.octopusBeak.automation.run(selectedTask.id));
         }
       } else {
         credentialsOpen = false;
@@ -920,7 +965,7 @@
       viewerError = "";
       if (result.resumed) {
         closeHumanViewer();
-        await reload();
+        await reloadAfterAutomationRun();
         return true;
       }
       await refreshViewerImage();
@@ -982,8 +1027,7 @@
     closeHumanViewer();
     try {
       actionError = "";
-      await window.octopusBeak.automation.resume(task.id);
-      await reload();
+      await settleAutomationRun(() => window.octopusBeak.automation.resume(task.id));
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }

@@ -55,6 +55,15 @@ assert.equal(
   null,
 );
 assert.equal(
+  parseStatementRunSummary(
+    summaryLine({
+      status: "partially-completed",
+      results: [{ typeId: "deposit", status: "failed" }],
+    }),
+  ),
+  null,
+);
+assert.equal(
   parseStatementRunSummary(summaryLine({
     status: "completed",
     results: [{ typeId: "loan", status: "failed", error: "no account" }],

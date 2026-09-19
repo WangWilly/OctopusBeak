@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import {
   BANK_TRANSACTION_KIND_ENRICHMENT_CONTRACT_VERSION,
   BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS,
@@ -8,7 +8,7 @@ import {
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
 } from "./transaction-taxonomy.ts";
-import { blob, idToString } from "./canonical-schema-implementation.ts";
+import { blob, idToString } from "./canonical-local-identifier.ts";
 import {
   commitCanonicalAutomaticEnrichmentRunInTransaction,
   type CanonicalEnrichmentCommitResult,

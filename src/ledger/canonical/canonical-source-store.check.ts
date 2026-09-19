@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -13,23 +13,25 @@ import {
   createCanonicalSourceCaptureAdmission,
 } from "./canonical-source-capture-admission.ts";
 import {
-  CANONICAL_SOURCE_SCHEMA_VERSION,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
   createCanonicalFinancialQuery,
   createCanonicalSourceStore,
   createCathayCanonicalFinancialQuery,
-  createCanonicalSchemaLifecyclePlan,
-  isKnownRetiredFubonV18Fingerprint,
-  isRetiredFubonV18RecoveryEligible,
   queryCanonicalSourceCurrent,
   queryCanonicalSourceHistorical,
   queryCanonicalSourceLineage,
-  openCanonicalDatabase,
   validateCanonicalSourceStore,
   type CanonicalSourceCommitResult,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
+import {
+  CANONICAL_SCHEMA_VERSION,
+  createCanonicalSchemaLifecyclePlan,
+  isKnownRetiredFubonV18Fingerprint,
+  isRetiredFubonV18RecoveryEligible,
+} from "./canonical-database.ts";
 import {
   admitCanonicalFinancialDepositCapture,
   commitCanonicalFinancialDepositCapture,
@@ -120,7 +122,7 @@ async function seedRetiredFubonV18BridgeFixture(
 ): Promise<{ directory: string; path: string }> {
   const directory = await mkdtemp(join(tmpdir(), "canonical-retired-fubon-v18-"));
   const path = join(directory, "canonical.sqlite");
-  const current = createCanonicalSourceStore(path);
+  const current = createCanonicalSourceStore(dirname(path));
   current.close();
   const db = new DatabaseSync(path);
   rewindCurrentDatabaseToV23PhysicalSchema(db);
@@ -326,7 +328,7 @@ test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", 
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-purge-migration-"));
   const path = join(directory, "canonical.sqlite");
   try {
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
     const legacy = new DatabaseSync(path);
     rewindCurrentDatabaseToV23PhysicalSchema(legacy);
@@ -355,11 +357,11 @@ test("v23 to v24 publishes the purge delete guard and upgrades runtime fences", 
     `);
     legacy.close();
 
-    const migrated = createCanonicalSourceStore(path);
+    const migrated = createCanonicalSourceStore(dirname(path));
     try {
       assert.equal(
         Number((migrated.db.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       const marker = migrated.db
         .prepare("SELECT reason, disabled_scopes_json FROM canonical_runtime_contract_purges")
@@ -392,7 +394,7 @@ test("v23 to v24 rejects a broad runtime marker instead of creating a wildcard f
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-v24-broad-marker-"));
   const path = join(directory, "canonical.sqlite");
   try {
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
     const legacy = new DatabaseSync(path);
     rewindCurrentDatabaseToV23PhysicalSchema(legacy);
@@ -416,7 +418,7 @@ test("v23 to v24 rejects a broad runtime marker instead of creating a wildcard f
     legacy.close();
 
     assert.throws(
-      () => createCanonicalSourceStore(path),
+      () => createCanonicalSourceStore(dirname(path)),
       /lacks an exact recollection fence/iu,
     );
   } finally {
@@ -526,14 +528,14 @@ test("the exact retired Fubon v18 store restores only its omitted purge bridges"
     );
     pending.close();
     assert.throws(
-      () => openCanonicalDatabase(directory, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(directory, { readOnly: true }),
       /durable source provenance evidence/i,
       "the exact pending v20 store remains fail-closed for read-only access",
     );
 
     // The next ordinary writable open must re-recognize the exact pending
     // state at v20 and finish the bridge instead of becoming unrecoverable.
-    const repaired = openCanonicalDatabase(directory);
+    const repaired = openCanonicalDatabaseHandle(directory);
     assert.equal(
       Number(repaired.prepare("PRAGMA user_version").get()?.user_version),
       20,
@@ -597,7 +599,7 @@ test("the exact retired Fubon v18 store restores only its omitted purge bridges"
       );
     repaired.close();
 
-    const second = openCanonicalDatabase(directory);
+    const second = openCanonicalDatabaseHandle(directory);
     assert.equal(
       Number(
         second
@@ -659,7 +661,7 @@ test("the retired Fubon v18 bridge rejects every near-match and read-only open",
       const { directory } = await seedRetiredFubonV18BridgeFixture(mutate);
       try {
         assert.throws(
-          () => openCanonicalDatabase(directory),
+          () => openCanonicalDatabaseHandle(directory),
           /fingerprint is not recognized|durable source provenance evidence/i,
         );
       } finally {
@@ -672,7 +674,7 @@ test("the retired Fubon v18 bridge rejects every near-match and read-only open",
     try {
       markSyntheticFixtureAsSchemaV20(join(directory, "canonical.sqlite"));
       assert.throws(
-        () => openCanonicalDatabase(directory, { readOnly: true }),
+        () => openCanonicalDatabaseHandle(directory, { readOnly: true }),
         /durable source provenance evidence|missing or unsupported for read-only access/i,
       );
     } finally {
@@ -685,7 +687,7 @@ test("the retired Fubon v18 bridge rejects every near-match and read-only open",
     try {
       markSyntheticFixtureAsSchemaV20(join(directory, "canonical.sqlite"));
       assert.throws(
-        () => openCanonicalDatabase(directory),
+        () => openCanonicalDatabaseHandle(directory),
         /durable source provenance evidence/i,
       );
     } finally {
@@ -700,7 +702,7 @@ test("a current schema retries a contract data transition whose durable audit is
   );
   const path = join(directory, "canonical.sqlite");
   try {
-    const initial = createCanonicalSourceStore(path);
+    const initial = createCanonicalSourceStore(dirname(path));
     initial.close();
 
     // Model a crash after the schema transaction committed but before the
@@ -717,11 +719,11 @@ test("a current schema retries a contract data transition whose durable audit is
     `);
     assert.equal(
       Number(interrupted.prepare("PRAGMA user_version").get()?.user_version),
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+      CANONICAL_SCHEMA_VERSION,
     );
     interrupted.close();
 
-    const recovered = createCanonicalSourceStore(path);
+    const recovered = createCanonicalSourceStore(dirname(path));
     try {
       assert.equal(
         Number(
@@ -746,7 +748,7 @@ test("read-only open fails closed when the v19 source occurrence purge audit is 
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-read-only-v19-audit-"));
   const path = join(directory, "canonical.sqlite");
   try {
-    const initial = createCanonicalSourceStore(path);
+    const initial = createCanonicalSourceStore(dirname(path));
     initial.close();
     const interrupted = new DatabaseSync(path);
     interrupted.exec(`
@@ -759,7 +761,7 @@ test("read-only open fails closed when the v19 source occurrence purge audit is 
     `);
     interrupted.close();
     assert.throws(
-      () => openCanonicalDatabase(directory, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(directory, { readOnly: true }),
       /yuanta-trade-investment\/source-occurrence-content-v3:v19|contract purge audit is missing/i,
     );
   } finally {
@@ -770,7 +772,7 @@ test("read-only open fails closed when the v19 source occurrence purge audit is 
 test("public source-store validation requires the shared v19 V3 purge audit", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-source-validator-v19-audit-"));
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(dirname(path));
   try {
     const interrupted = new DatabaseSync(path);
     interrupted.exec(`
@@ -796,7 +798,7 @@ test("canonical source entry points reject structural stores without lifecycle b
   const legitimate = createCanonicalSourceStore(":memory:");
   const forged = {
     db: legitimate.db,
-    databasePath: legitimate.databasePath,
+    withWriter: legitimate.withWriter,
     commitClock: legitimate.commitClock,
     close() {},
   } as CanonicalSourceStore;
@@ -1248,7 +1250,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
   );
   try {
     const path = join(directory, "canonical.sqlite");
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
 
     // Reconstruct the exact shape of a real v10 database that predates the
@@ -1265,7 +1267,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
     `);
     legacy.close();
 
-    const migrated = openCanonicalDatabase(directory);
+    const migrated = openCanonicalDatabaseHandle(directory);
     try {
       assert.equal(
         Number(
@@ -1275,7 +1277,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
             }
           ).user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       assert.ok(
         migrated
@@ -1297,14 +1299,14 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
         5,
       );
       assert.deepEqual(migrated.prepare("PRAGMA foreign_key_check").all(), []);
-      // `openCanonicalDatabase` has already passed lifecycle validation. The
+      // `openCanonicalDatabaseHandle` has already passed lifecycle validation. The
       // source-store validator intentionally accepts only a real source-store
       // wrapper, not a structural object assembled around this database.
     } finally {
       migrated.close();
     }
 
-    const reopened = openCanonicalDatabase(directory);
+    const reopened = openCanonicalDatabaseHandle(directory);
     try {
       assert.equal(
         Number(
@@ -1314,7 +1316,7 @@ test("v10 to v12 adds a missing repayment-note date contract payload before vali
             }
           ).user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       assert.deepEqual(reopened.prepare("PRAGMA foreign_key_check").all(), []);
     } finally {
@@ -1329,7 +1331,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
   const cases = [
     ["missing-interior", "DELETE FROM schema_migrations WHERE version = 19", /migration metadata/i],
     ["missing-first-published", "DELETE FROM schema_migrations WHERE version = 7", /migration metadata/i],
-    ["extra", `INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (${CANONICAL_SOURCE_SCHEMA_VERSION + 1}, 0)`, /migration metadata/i],
+    ["extra", `INSERT INTO schema_migrations(version, applied_at_utc_us) VALUES (${CANONICAL_SCHEMA_VERSION + 1}, 0)`, /migration metadata/i],
   ] as const;
   for (const [label, mutation, expected] of cases) {
     const directory = await mkdtemp(
@@ -1337,12 +1339,12 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
     );
     try {
       const path = join(directory, "canonical.sqlite");
-      const initial = createCanonicalSourceStore(path);
+      const initial = createCanonicalSourceStore(dirname(path));
       initial.close();
       const raw = new DatabaseSync(path);
       raw.exec(mutation);
       raw.close();
-      assert.throws(() => openCanonicalDatabase(directory), expected, label);
+      assert.throws(() => openCanonicalDatabaseHandle(directory), expected, label);
       const unchanged = new DatabaseSync(path);
       try {
         assert.equal(
@@ -1350,7 +1352,7 @@ test("current schema rejects a non-contiguous, missing, or extra migration ledge
             (unchanged.prepare("PRAGMA user_version").get() as { user_version?: number })
               .user_version,
           ),
-          CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
           label,
         );
       } finally {
@@ -1368,7 +1370,7 @@ test("v10 to v11 rolls back the additive payload when a later schema check fails
   );
   try {
     const path = join(directory, "canonical.sqlite");
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
 
     const legacy = new DatabaseSync(path);
@@ -1386,7 +1388,7 @@ test("v10 to v11 rolls back the additive payload when a later schema check fails
     legacy.close();
 
     assert.throws(
-      () => openCanonicalDatabase(directory),
+      () => openCanonicalDatabaseHandle(directory),
       /Canonical schema v10 relation column from_identity_epoch_id is missing/,
     );
 
@@ -1455,7 +1457,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
       CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
     );
 
-    const legacy = createCanonicalLoanStore(path);
+    const legacy = createCanonicalLoanStore(dirname(path));
     await commitCanonicalLoanCapture(
       legacy,
       admitCanonicalLoanCapture(structuredClone(LOAN_CONTRACT_FIXTURES.fubon)),
@@ -1711,7 +1713,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
     `);
     downgrade.close();
 
-    const migrated = createCanonicalSourceStore(path);
+    const migrated = createCanonicalSourceStore(dirname(path));
     assert.equal(
       queryCanonicalInvestmentCurrent(migrated, investmentConnectionKey)
         .holdings.length,
@@ -1948,7 +1950,7 @@ test("v10 to v11 precisely purges legacy Fubon/Yuanta product identity scopes", 
     );
     migrated.close();
 
-    const reopened = createCanonicalSourceStore(path);
+    const reopened = createCanonicalSourceStore(dirname(path));
     assert.equal(
       queryCanonicalSourceCurrent(reopened).records.filter(
         (record) => record.identity.integrationNamespace === "fubon",
@@ -1990,7 +1992,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
       directory,
       CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
     );
-    const legacy = createCanonicalSourceStore(path);
+    const legacy = createCanonicalSourceStore(dirname(path));
     await commitCanonicalFinancialDepositCapture(
       legacy,
       admitCanonicalFinancialDepositCapture(
@@ -2126,7 +2128,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
     `);
     historical.close();
 
-    const migrated = openCanonicalDatabase(directory);
+    const migrated = openCanonicalDatabaseHandle(directory);
     let migratedClosed = false;
     try {
       assert.equal(
@@ -2137,7 +2139,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
             }
           ).user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       assert.equal(
         Number(
@@ -2268,7 +2270,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
       // remains durable across the v12 reopen boundary.
       migrated.close();
       migratedClosed = true;
-      const recollected = createCanonicalSourceStore(path);
+      const recollected = createCanonicalSourceStore(dirname(path));
       await commitCanonicalFinancialDepositCapture(
         recollected,
         admitCanonicalFinancialDepositCapture(
@@ -2292,7 +2294,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
       if (!migratedClosed) migrated.close();
     }
 
-    const reopened = openCanonicalDatabase(directory);
+    const reopened = openCanonicalDatabaseHandle(directory);
     try {
       assert.equal(
         Number(
@@ -2302,7 +2304,7 @@ test("migration purges legacy card scopes and only the v1 Fubon deposit occurren
             }
           ).user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       assert.equal(
         Number(
@@ -2334,7 +2336,7 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
   );
   const path = join(directory, "canonical.sqlite");
   try {
-    const legacy = createCanonicalSourceStore(path);
+    const legacy = createCanonicalSourceStore(dirname(path));
     await commitCanonicalFinancialDepositCapture(
       legacy,
       admitCanonicalFinancialDepositCapture(
@@ -2360,7 +2362,7 @@ test("v11 to v12 rolls back the credit-card purge when canonical schema validati
     historical.close();
 
     assert.throws(
-      () => openCanonicalDatabase(directory),
+      () => openCanonicalDatabaseHandle(directory),
       /Canonical schema v10 relation column from_identity_epoch_id is missing/,
     );
 
@@ -2498,7 +2500,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
   });
   try {
     await commitCathayDomesticDeposit(directory, CATHAY_DOMESTIC_DEPOSIT_FIXTURE);
-    const legacy = createCanonicalSourceStore(path);
+    const legacy = createCanonicalSourceStore(dirname(path));
     await commitCanonicalInvestmentCapture(
       legacy,
       admitCanonicalInvestmentCapture(tradeCapture),
@@ -2655,13 +2657,13 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
     `);
     historical.close();
 
-    const migrated = createCanonicalSourceStore(path);
+    const migrated = createCanonicalSourceStore(dirname(path));
     assert.equal(
       Number(
         (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
           .user_version,
       ),
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
     );
     assert.equal(countCaptures(migrated.db, "yuanta-trade", "investment"), 0);
     assert.equal(
@@ -2788,7 +2790,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
     );
     migrated.close();
 
-    const reopened = createCanonicalSourceStore(path);
+    const reopened = createCanonicalSourceStore(dirname(path));
     assert.equal(
       Number(
         (
@@ -2839,7 +2841,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
       PRAGMA foreign_keys = ON;
     `);
     v18.close();
-    const v19 = createCanonicalSourceStore(path);
+    const v19 = createCanonicalSourceStore(dirname(path));
     assert.equal(countCaptures(v19.db, "yuanta-trade", "investment"), 0);
     assert.equal(countCaptures(v19.db, "yuanta-fund", "investment"), 1);
     const v19Audit = v19.db
@@ -2872,7 +2874,7 @@ test("v16 to v17 purges only legacy Yuanta trade investment scope and allows liv
 const directory = await mkdtemp(join(tmpdir(), "canonical-source-v8-"));
 try {
   const path = join(directory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path);
+  const store = createCanonicalSourceStore(dirname(path));
   validateCanonicalSourceStore(store);
   assert.equal(
     Number(
@@ -2882,7 +2884,7 @@ try {
         }
       ).user_version,
     ),
-    CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
   );
   await assert.rejects(
     () =>
@@ -2989,7 +2991,7 @@ try {
   assert.equal(queryCanonicalSourceCurrent(store).observations.length, 2);
   store.close();
 
-  const reopened = createCanonicalSourceStore(path);
+  const reopened = createCanonicalSourceStore(dirname(path));
   assert.equal(queryCanonicalSourceCurrent(reopened).observations.length, 2);
   reopened.close();
 } finally {
@@ -3053,7 +3055,7 @@ try {
     reopened.transactions.map((transaction) => transaction.effectiveOn).sort(),
     ["2026-07-01", "2026-07-02", "2026-07-03"],
   );
-  const db = openCanonicalDatabase(localSecondDirectory, { readOnly: true });
+  const db = openCanonicalDatabaseHandle(localSecondDirectory, { readOnly: true });
   try {
     assert.equal(
       db.prepare("SELECT response_digest FROM capture_scope_pages").get()
@@ -3121,9 +3123,7 @@ for (const [label, startDateValue] of [
     join(tmpdir(), `canonical-source-cathay-datetime-${label}-`),
   );
   try {
-    const rejectedStore = createCanonicalSourceStore(
-      join(rejectedDirectory, "canonical.sqlite"),
-    );
+    const rejectedStore = createCanonicalSourceStore(rejectedDirectory);
     rejectedStore.close();
     const rejectedRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace(
       '"startDate":"2025-08-17"',
@@ -3137,7 +3137,7 @@ for (const [label, startDateValue] of [
         }),
       /response date scope|YYYY-MM-DD|valid calendar date/i,
     );
-    const rejectedDb = openCanonicalDatabase(rejectedDirectory, {
+    const rejectedDb = openCanonicalDatabaseHandle(rejectedDirectory, {
       readOnly: true,
     });
     try {
@@ -3180,9 +3180,7 @@ for (const [label, accountDateValue] of [
     join(tmpdir(), `canonical-source-cathay-account-date-${label}-`),
   );
   try {
-    const rejectedStore = createCanonicalSourceStore(
-      join(rejectedDirectory, "canonical.sqlite"),
-    );
+    const rejectedStore = createCanonicalSourceStore(rejectedDirectory);
     rejectedStore.close();
     const rejectedRaw = CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace(
       '"accountDate":"2026-07-01"',
@@ -3196,7 +3194,7 @@ for (const [label, accountDateValue] of [
         }),
       /accountDate|YYYY-MM-DD|valid calendar date/i,
     );
-    const rejectedDb = openCanonicalDatabase(rejectedDirectory, {
+    const rejectedDb = openCanonicalDatabaseHandle(rejectedDirectory, {
       readOnly: true,
     });
     try {
@@ -3225,7 +3223,7 @@ const fenceDirectory = await mkdtemp(join(tmpdir(), "canonical-source-fence-"));
 try {
   let clock = 2_000_000;
   const path = join(fenceDirectory, "canonical.sqlite");
-  const store = createCanonicalSourceStore(path, {
+  const store = createCanonicalSourceStore(dirname(path), {
     commitClock: () => clock--,
   });
   await commitSourceCapture(
@@ -3340,7 +3338,7 @@ try {
   snapshotReader.close();
   store.close();
 
-  const readOnly = openCanonicalDatabase(fenceDirectory, { readOnly: true });
+  const readOnly = openCanonicalDatabaseHandle(fenceDirectory, { readOnly: true });
   readOnly.close();
   const financial = createCathayCanonicalFinancialQuery(fenceDirectory);
   const current = await financial.current({ kind: "current" });
@@ -3369,7 +3367,7 @@ try {
     .run(sourceOnlyCommit.commit_id as Uint8Array);
   corruptProjection.close();
   assert.throws(
-    () => openCanonicalDatabase(fenceDirectory, { readOnly: true }),
+    () => openCanonicalDatabaseHandle(fenceDirectory, { readOnly: true }),
     /source-only|financial projection/i,
   );
 } finally {
@@ -3381,7 +3379,7 @@ try {
   const path = join(v7Directory, "canonical.sqlite");
   assert.throws(
     () =>
-      openCanonicalDatabase(v7Directory, {
+      openCanonicalDatabaseHandle(v7Directory, {
         injectMigrationFailure: "v7-v8-after-source-copy",
       }),
     /Injected v7-v8 migration failure/,
@@ -3411,7 +3409,7 @@ try {
     undefined,
   );
   legacy.close();
-  const migrated = createCanonicalSourceStore(path);
+  const migrated = createCanonicalSourceStore(dirname(path));
   assert.equal(
     Number(
       (
@@ -3420,7 +3418,7 @@ try {
         }
       ).user_version,
     ),
-    CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
   );
   const migratedRevisionSchema = String(
     (
@@ -3585,7 +3583,7 @@ try {
   legacy.exec(sourceAssertionsView);
   legacy.close();
 
-  const migratedClosed = createCanonicalSourceStore(path);
+  const migratedClosed = createCanonicalSourceStore(dirname(path));
   const widenedRevisionSchema = String(
     (
       migratedClosed.db
@@ -3668,13 +3666,13 @@ const partialDirectory = await mkdtemp(
 );
 try {
   const path = join(partialDirectory, "canonical.sqlite");
-  const complete = createCanonicalSourceStore(path);
+  const complete = createCanonicalSourceStore(dirname(path));
   const partialDb = new DatabaseSync(path);
   partialDb.exec("DROP TABLE source_record_provenance");
   partialDb.close();
   complete.close();
   assert.throws(
-    () => createCanonicalSourceStore(path),
+    () => createCanonicalSourceStore(dirname(path)),
     /v8.*source_record_provenance|source_record_provenance.*missing/i,
   );
 } finally {
@@ -3720,7 +3718,7 @@ test("v8 to v9 rebuilds the source assertion compatibility view", async () => {
       `);
       legacy.close();
 
-      const migrated = createCanonicalSourceStore(path);
+      const migrated = createCanonicalSourceStore(dirname(path));
       const sourceAssertionsView = String(
         (
           migrated.db
@@ -3796,7 +3794,7 @@ test("v9 reopen recovers an interrupted financial revision widening", async () =
           }
         ).user_version,
       ),
-      CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
     );
     legacy.exec("PRAGMA foreign_keys = OFF");
     legacy.exec(
@@ -3827,10 +3825,10 @@ test("v9 reopen recovers an interrupted financial revision widening", async () =
     legacy.close();
 
     assert.throws(
-      () => openCanonicalDatabase(directory, { readOnly: true }),
+      () => openCanonicalDatabaseHandle(directory, { readOnly: true }),
       /staging.*writable recovery|widening staging/i,
     );
-    const recovered = createCanonicalSourceStore(path);
+    const recovered = createCanonicalSourceStore(dirname(path));
     const recoveredRevisionSchema = String(
       (
         recovered.db
@@ -3887,7 +3885,7 @@ test("v9 reopen recovers an interrupted financial revision widening", async () =
     );
     staleStaging.close();
 
-    const reopened = createCanonicalSourceStore(path);
+    const reopened = createCanonicalSourceStore(dirname(path));
     assert.equal(
       reopened.db
         .prepare(
@@ -3966,7 +3964,7 @@ test("v9 reopen rejects divergent financial revision widening staging", async ()
     legacy.close();
 
     assert.throws(
-      () => createCanonicalSourceStore(path),
+      () => createCanonicalSourceStore(dirname(path)),
       /ambiguous|divergent|discard or merge/i,
     );
     const rejected = new DatabaseSync(path);
@@ -4142,7 +4140,7 @@ test("source assertion compatibility views enforce origin and provenance semanti
       `);
       legacy.close();
 
-      const migrated = createCanonicalSourceStore(path);
+      const migrated = createCanonicalSourceStore(dirname(path));
       const sourceAssertionsView = String(
         (
           migrated.db
@@ -4196,7 +4194,7 @@ test("source assertion compatibility views enforce origin and provenance semanti
       validateCanonicalSourceStore(migrated);
       migrated.close();
 
-      const reopened = createCanonicalSourceStore(path);
+      const reopened = createCanonicalSourceStore(dirname(path));
       validateCanonicalSourceStore(reopened);
       reopened.close();
     } finally {
@@ -4249,7 +4247,7 @@ try {
   for (const index of scopeIndexes) legacy.exec(index);
   legacy.close();
 
-  const migratedScope = createCanonicalSourceStore(path);
+  const migratedScope = createCanonicalSourceStore(dirname(path));
   const migratedScopeSchema = String(
     (
       migratedScope.db
@@ -4282,7 +4280,7 @@ test("fresh source migration failure leaves the original unversioned database in
     const path = join(orphanDirectory, "canonical.sqlite");
     assert.throws(
       () =>
-        openCanonicalDatabase(orphanDirectory, {
+        openCanonicalDatabaseHandle(orphanDirectory, {
           injectMigrationFailure: "v7-v8-after-source-copy",
         }),
       /Injected v7-v8 migration failure/,
@@ -4329,13 +4327,13 @@ try {
     kind: "current",
   });
   const path = join(mixedDirectory, "canonical.sqlite");
-  const mixed = createCanonicalSourceStore(path);
+  const mixed = createCanonicalSourceStore(dirname(path));
   await commitSourceCapture(
     mixed,
     sourceEvidenceForCommit(evidence("capture-mixed-source-only")),
   );
   mixed.close();
-  const reopened = createCanonicalSourceStore(path);
+  const reopened = createCanonicalSourceStore(dirname(path));
   assert.equal(queryCanonicalSourceCurrent(reopened).observations.length, 1);
   reopened.close();
   const after = await createCathayCanonicalFinancialQuery(
@@ -4418,7 +4416,7 @@ try {
     admitHncbDomesticDepositFinancialCapture(financialInput).status,
     "admitted",
   );
-  const mixed = createCanonicalSourceStore(path);
+  const mixed = createCanonicalSourceStore(dirname(path));
   const cathayRevisionCount = Number(
     (
       mixed.db
@@ -4432,7 +4430,7 @@ try {
   await commitCanonicalHncbDomesticDepositCapture(
     {
       db: mixed.db,
-      databasePath: mixed.databasePath,
+      withWriter: mixed.withWriter,
       commitClock: () => mixed.commitClock(),
     },
     financialInput,
@@ -4507,7 +4505,7 @@ try {
   legacy.exec(sourceAssertionsView);
   legacy.close();
 
-  const migrated = createCanonicalSourceStore(path);
+  const migrated = createCanonicalSourceStore(dirname(path));
   try {
     const widenedRevisionSchema = String(
       (
@@ -4570,9 +4568,7 @@ const fubonQueryDirectory = await mkdtemp(
   join(tmpdir(), "canonical-source-fubon-query-v2-"),
 );
 try {
-  const store = createCanonicalSourceStore(
-    join(fubonQueryDirectory, "canonical.sqlite"),
-  );
+  const store = createCanonicalSourceStore(fubonQueryDirectory);
   const v1Commit = await commitCanonicalFinancialDepositCapture(
     store,
     admitCanonicalFinancialDepositCapture(
@@ -4662,9 +4658,7 @@ test("Yuanta v2 wins the current view without deleting v1 history", async () => 
     join(tmpdir(), "canonical-source-yuanta-query-v2-precedence-"),
   );
   try {
-    const store = createCanonicalSourceStore(
-      join(directory, "canonical.sqlite"),
-    );
+    const store = createCanonicalSourceStore(directory);
     const v1Commit = await commitCanonicalFinancialDepositCapture(
       store,
       admitCanonicalFinancialDepositCapture(
@@ -4752,9 +4746,7 @@ test("Yuanta v1 current rows remain visible when a v2 scope is incomplete", asyn
     join(tmpdir(), "canonical-source-yuanta-query-v2-invalid-"),
   );
   try {
-    const store = createCanonicalSourceStore(
-      join(directory, "canonical.sqlite"),
-    );
+    const store = createCanonicalSourceStore(directory);
     await commitCanonicalFinancialDepositCapture(
       store,
       admitCanonicalFinancialDepositCapture(
@@ -4806,7 +4798,7 @@ test("a v19 investment schema gains crypto account, security, and cost fields", 
   const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v21-"));
   const path = join(dir, "canonical.sqlite");
   try {
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
       const legacy = new DatabaseSync(path);
       rewindCurrentDatabaseToV23PhysicalSchema(legacy);
@@ -4823,14 +4815,14 @@ test("a v19 investment schema gains crypto account, security, and cost fields", 
     `);
     legacy.close();
 
-    const migrated = createCanonicalSourceStore(path);
+    const migrated = createCanonicalSourceStore(dirname(path));
     try {
       assert.equal(
         Number(
           (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
             .user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       const columns = (table: string) =>
         migrated.db
@@ -4855,7 +4847,7 @@ test("a genuine v15 investment schema migrates through v21 before crypto validat
   const dir = await mkdtemp(join(tmpdir(), "canonical-investment-v15-to-v21-"));
   const path = join(dir, "canonical.sqlite");
   try {
-    const current = createCanonicalSourceStore(path);
+    const current = createCanonicalSourceStore(dirname(path));
     current.close();
       const legacy = new DatabaseSync(path);
       rewindCurrentDatabaseToV23PhysicalSchema(legacy);
@@ -4876,14 +4868,14 @@ test("a genuine v15 investment schema migrates through v21 before crypto validat
     `);
     legacy.close();
 
-    const migrated = createCanonicalSourceStore(path);
+    const migrated = createCanonicalSourceStore(dirname(path));
     try {
       assert.equal(
         Number(
           (migrated.db.prepare("PRAGMA user_version").get() as { user_version?: number })
             .user_version,
         ),
-        CANONICAL_SOURCE_SCHEMA_VERSION,
+        CANONICAL_SCHEMA_VERSION,
       );
       assert.deepEqual(migrated.db.prepare("PRAGMA foreign_key_check").all(), []);
       for (const [table, columns] of [

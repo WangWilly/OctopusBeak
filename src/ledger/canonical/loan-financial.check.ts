@@ -23,18 +23,19 @@ import {
   commitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCapture,
 } from "./canonical-financial-deposit-writer.ts";
+import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical-financial-admission.ts";
+import { withCanonicalSourceCaptureAdmissionTransaction } from "./canonical-source-capture-admission.ts";
 import {
-  CANONICAL_SQLITE_FILE,
-  canonicalSqlitePath,
   createCanonicalSourceStore,
   validateCanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import { CANONICAL_SQLITE_FILE, canonicalDatabaseWriterKey } from "./canonical-database.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 
 const rebuildCanonicalProjection = (
   ledgerDir: string,
   options = {},
-) => createCanonicalProjectionRuntime(canonicalSqlitePath(ledgerDir)).rebuild(options);
+) => createCanonicalProjectionRuntime(ledgerDir).rebuild(options);
 
 /** Rewind a freshly bootstrapped database to the physical v23 source shape.
  * Lowering user_version alone leaves the v26 split identifier columns in
@@ -496,6 +497,368 @@ test("Fubon adapter commits source-scoped exact rows through all query seams", a
       }).lineage.length,
       1,
     );
+  } finally {
+    store.close();
+  }
+});
+
+function fubonOccurrenceInput(
+  rows: readonly {
+    transactionDate: string;
+    transactionContent: string;
+    transactionAmount: string;
+    balanceAfterTransaction: string;
+  }[],
+  observedAt = "2026-02-01T00:00:00.000Z",
+  startDate = "2026-01-01",
+  endDate = "2026-01-31",
+) {
+  return {
+    accountValue: "fubon-semantic-occurrence-test",
+    sourceConnectionScope: "fubon-semantic-occurrence-connection",
+    observedAt,
+    startDate,
+    endDate,
+    scope: {
+      startDate,
+      endDate,
+      completeness: "complete-range" as const,
+      completenessBasis: "source-declared-terminal-range" as const,
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      pageCount: 1,
+      terminal: true as const,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200" as const,
+        terminal: true as const,
+        rowCount: rows.length,
+        proofKind: "source-declared-terminal-range" as const,
+      },
+    ],
+    counterpartTransactions: [],
+    relations: [],
+    rows,
+  };
+}
+
+test("Fubon semantic occurrence identity survives rolling windows and reorder", async () => {
+  const older = {
+    transactionDate: "2026/01/05",
+    transactionContent: "LOAN-DISBURSEMENT",
+    transactionAmount: "100000.00",
+    balanceAfterTransaction: "100000.00",
+  };
+  const newer = {
+    transactionDate: "2026/01/31",
+    transactionContent: "LOAN-PAYMENT",
+    transactionAmount: "12,500.00",
+    balanceAfterTransaction: "87,500.00",
+  };
+  const first = buildFubonLoanCapture(
+    fubonOccurrenceInput([newer, older]),
+  );
+  const sliding = buildFubonLoanCapture(
+    fubonOccurrenceInput(
+      [newer],
+      "2026-02-02T00:00:00.000Z",
+      "2026-01-10",
+    ),
+  );
+  assert.deepEqual(
+    first.records.map((record) => record.effectiveOn),
+    ["2026-01-05", "2026-01-31"],
+  );
+  assert.equal(
+    first.records[1]?.sourceRecordKey,
+    sliding.records[0]?.sourceRecordKey,
+  );
+  assert.equal(first.records[1]?.description, "LOAN-PAYMENT");
+  assert.equal(first.records[1]?.sourceDescription, "LOAN-PAYMENT");
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await persistFubonLoanCapture(store, fubonOccurrenceInput([newer, older]));
+    await assert.doesNotReject(() =>
+      persistFubonLoanCapture(
+        store,
+        fubonOccurrenceInput(
+          [newer],
+          "2026-02-02T00:00:00.000Z",
+          "2026-01-10",
+        ),
+      ),
+    );
+    assert.equal(queryFubonLoanCurrent(store).transactions.length, 2);
+    assert.equal(
+      Number(
+        (store.db.prepare("SELECT COUNT(*) AS count FROM source_records").get() as {
+          count: number;
+        }).count,
+      ),
+      3,
+    );
+  } finally {
+    store.close();
+  }
+
+  const sameDayA = {
+    ...older,
+    transactionDate: "2026/01/15",
+    transactionContent: "LOAN-DISBURSEMENT",
+  };
+  const sameDayB = {
+    ...newer,
+    transactionDate: "2026/01/15",
+    transactionContent: "LOAN-PAYMENT",
+  };
+  const ordered = buildFubonLoanCapture(
+    fubonOccurrenceInput([sameDayA, sameDayB]),
+  );
+  const reordered = buildFubonLoanCapture(
+    fubonOccurrenceInput(
+      [sameDayB, sameDayA],
+      "2026-02-03T00:00:00.000Z",
+    ),
+  );
+  for (const sourceCode of ["LOAN-DISBURSEMENT", "LOAN-PAYMENT"]) {
+    const left = ordered.records.find(
+      (record) => record.eventEvidence.sourceCode === sourceCode,
+    );
+    const right = reordered.records.find(
+      (record) => record.eventEvidence.sourceCode === sourceCode,
+    );
+    assert.equal(left?.sourceRecordKey, right?.sourceRecordKey);
+  }
+  const reorderStore = createCanonicalLoanStore(":memory:");
+  try {
+    await persistFubonLoanCapture(reorderStore, fubonOccurrenceInput([sameDayA, sameDayB]));
+    await assert.doesNotReject(() =>
+      persistFubonLoanCapture(
+        reorderStore,
+        fubonOccurrenceInput([sameDayB, sameDayA], "2026-02-03T00:00:00.000Z"),
+      ),
+    );
+    assert.equal(queryFubonLoanCurrent(reorderStore).transactions.length, 2);
+  } finally {
+    reorderStore.close();
+  }
+});
+
+test("Fubon duplicate semantic fingerprints use date/order-local ordinals", async () => {
+  const capture = buildFubonLoanCapture(
+    fubonOccurrenceInput([
+      {
+        transactionDate: "2026/01/31",
+        transactionContent: "LOAN-PAYMENT",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "90.00",
+      },
+      {
+        transactionDate: "2026/01/15",
+        transactionContent: "還款",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "80.00",
+      },
+      {
+        transactionDate: "2026/01/15",
+        transactionContent: "繳款",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "70.00",
+      },
+    ]),
+  );
+  assert.deepEqual(
+    capture.records.map((record) => record.effectiveOn),
+    ["2026-01-15", "2026-01-15", "2026-01-31"],
+  );
+  assert.deepEqual(
+    capture.records.slice(0, 2).map((record) => record.description),
+    ["LOAN-PAYMENT", "LOAN-PAYMENT"],
+  );
+  assert.notEqual(
+    capture.records[0]?.sourceRecordKey,
+    capture.records[1]?.sourceRecordKey,
+  );
+  assert.notEqual(
+    capture.records[0]?.sourceRecordKey,
+    capture.records[2]?.sourceRecordKey,
+  );
+  assert.equal(capture.records[0]?.occurrenceIndex, 1);
+  assert.equal(capture.records[1]?.occurrenceIndex, 2);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(capture));
+    assert.equal(queryFubonLoanCurrent(store).transactions.length, 3);
+  } finally {
+    store.close();
+  }
+});
+
+test("Fubon financial identity changes create distinct occurrences", () => {
+  const baseRow = {
+    transactionDate: "2026/01/15",
+    transactionContent: "LOAN-PAYMENT",
+    transactionAmount: "10.00",
+    balanceAfterTransaction: "90.00",
+  };
+  const base = buildFubonLoanCapture(fubonOccurrenceInput([baseRow]));
+  const amountChanged = buildFubonLoanCapture(
+    fubonOccurrenceInput([
+      { ...baseRow, transactionAmount: "11.00" },
+    ]),
+  );
+  const dateChanged = buildFubonLoanCapture(
+    fubonOccurrenceInput([
+      { ...baseRow, transactionDate: "2026/01/16" },
+    ]),
+  );
+  const directionAndEventChanged = buildFubonLoanCapture(
+    fubonOccurrenceInput([
+      { ...baseRow, transactionContent: "LOAN-DISBURSEMENT" },
+    ]),
+  );
+
+  assert.notEqual(
+    base.records[0]?.sourceRecordKey,
+    amountChanged.records[0]?.sourceRecordKey,
+  );
+  assert.notEqual(
+    base.records[0]?.sourceRecordKey,
+    dateChanged.records[0]?.sourceRecordKey,
+  );
+  assert.notEqual(
+    base.records[0]?.sourceRecordKey,
+    directionAndEventChanged.records[0]?.sourceRecordKey,
+  );
+  assert.notEqual(
+    base.records[0]?.eventEvidence.sourceCode,
+    directionAndEventChanged.records[0]?.eventEvidence.sourceCode,
+  );
+  assert.notEqual(
+    base.records[0]?.direction,
+    directionAndEventChanged.records[0]?.direction,
+  );
+});
+
+test("Fubon balance and source wording evolve without transaction revisions", async () => {
+  const firstInput = fubonOccurrenceInput([
+    {
+      transactionDate: "2026/01/15",
+      transactionContent: "LOAN-PAYMENT",
+      transactionAmount: "10.00",
+      balanceAfterTransaction: "90.00",
+    },
+  ]);
+  const secondInput = fubonOccurrenceInput(
+    [
+      {
+        transactionDate: "2026/01/15",
+        transactionContent: "還款",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "89.00",
+      },
+    ],
+    "2026-02-02T00:00:00.000Z",
+  );
+  const repeatedInput = fubonOccurrenceInput(
+    [
+      {
+        transactionDate: "2026/01/15",
+        transactionContent: "繳款",
+        transactionAmount: "10.00",
+        balanceAfterTransaction: "89.0",
+      },
+    ],
+    "2026-02-03T00:00:00.000Z",
+  );
+  const first = buildFubonLoanCapture(firstInput);
+  const second = buildFubonLoanCapture(secondInput);
+  const repeated = buildFubonLoanCapture(repeatedInput);
+  assert.equal(first.records[0]?.sourceRecordKey, second.records[0]?.sourceRecordKey);
+  assert.equal(second.records[0]?.sourceRecordKey, repeated.records[0]?.sourceRecordKey);
+  assert.equal(first.records[0]?.description, second.records[0]?.description);
+  assert.notEqual(first.records[0]?.sourceDescription, second.records[0]?.sourceDescription);
+
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    const firstCommit = await persistFubonLoanCapture(store, firstInput);
+    await persistFubonLoanCapture(store, secondInput);
+    await persistFubonLoanCapture(store, repeatedInput);
+    assert.equal(queryFubonLoanCurrent(store).transactions.length, 1);
+    assert.deepEqual(
+      queryFubonLoanCurrent(store).balanceObservations[0]?.balance,
+      { coefficient: "89", scale: 0 },
+    );
+    assert.deepEqual(
+      queryFubonLoanHistorical(store, {
+        knowledgeAt: firstCommit.commitSequence,
+        financialAt: "2026-01-31",
+      }).balanceObservations[0]?.balance,
+      { coefficient: "90", scale: 0 },
+    );
+    for (const [table, expected] of [
+      ["financial_transactions", 1],
+      ["transaction_revisions", 1],
+      ["balance_observations", 1],
+      ["balance_observation_revisions", 2],
+      ["source_records", 3],
+    ] as const)
+      assert.equal(
+        Number((store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count),
+        expected,
+        table,
+      );
+    const lineage = queryFubonLoanLineage(store, {
+      sourceRecordKey: first.records[0]!.sourceRecordKey,
+    }).lineage;
+    assert.equal(lineage.length, 3);
+    assert.deepEqual(
+      lineage.map((entry) => entry.payload.sourceDescription),
+      ["LOAN-PAYMENT", "還款", "繳款"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("Fubon non-allowlisted source drift rolls back the commit", async () => {
+  const input = fubonOccurrenceInput([
+    {
+      transactionDate: "2026/01/15",
+      transactionContent: "LOAN-PAYMENT",
+      transactionAmount: "10.00",
+      balanceAfterTransaction: "90.00",
+    },
+  ]);
+  const original = buildFubonLoanCapture(input);
+  const drifted = structuredClone(original);
+  drifted.captureId = "sha256:fubon-non-allowlisted-drift";
+  drifted.observedAt = "2026-02-02T00:00:00.000Z";
+  drifted.records[0]!.amount = { coefficient: "11", scale: 0 };
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(original));
+    await assert.rejects(
+      () => commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(drifted)),
+      /Source occurrence content overwrite is forbidden/u,
+    );
+    for (const table of [
+      "canonical_commits",
+      "source_captures",
+      "source_records",
+      "financial_transactions",
+      "transaction_revisions",
+      "balance_observations",
+      "balance_observation_revisions",
+    ])
+      assert.equal(
+        Number((store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count),
+        1,
+        table,
+      );
   } finally {
     store.close();
   }
@@ -1262,6 +1625,63 @@ test("loan canonical writer preserves source-scoped accounts and exact facts", a
   }
 });
 
+test("loan in-transaction admission rolls back every prepared spine before extension failure", async () => {
+  const input = structuredClone(LOAN_CONTRACT_FIXTURES.fubon);
+  const observation = input.balanceObservations[0]!;
+  const sourceRecord = input.records.find(
+    (record) => record.sourceRecordKey === observation.sourceRecordKey,
+  )!;
+  sourceRecord.balanceSourceEvidence = sourceRecord.balanceSourceEvidence!.map(
+    (evidence) => ({
+      ...evidence,
+      correctionOfObservationKey: observation.observationKey,
+    }),
+  );
+  observation.correctionEvidence = {
+    kind: "source-correction",
+    sourceRecordKey: observation.sourceRecordKey,
+    observationKey: observation.observationKey,
+    contractVersion: input.contractVersion,
+  };
+  const capture = admitCanonicalLoanCapture(input);
+  const store = createCanonicalLoanStore(":memory:");
+  try {
+    await assert.rejects(
+      () =>
+        withCanonicalSourceCaptureAdmissionTransaction(
+          store.sourceStore,
+          (capability) =>
+            commitCanonicalFinancialAdmissionInTransaction(
+              store,
+              { kind: "loan", capture },
+              capability,
+            ),
+        ),
+      /correction evidence must target an existing observation/i,
+    );
+    for (const table of [
+      "canonical_commits",
+      "source_captures",
+      "financial_transactions",
+      "loan_account_identities",
+      "balance_observations",
+    ])
+      assert.equal(
+        Number(
+          (
+            store.db
+              .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+              .get() as { count?: number }
+          ).count ?? 0,
+        ),
+        0,
+        `${table} must roll back with the failed loan extension`,
+      );
+  } finally {
+    store.close();
+  }
+});
+
 test("loan relation queries preserve unknown provenance for legacy rows without events", async () => {
   const store = createCanonicalLoanStore(":memory:");
   try {
@@ -1394,18 +1814,18 @@ test("current loan balance selection is deterministic across input order and reb
   const firstDir = await mkdtemp(join(tmpdir(), "loan-balance-order-first-"));
   const secondDir = await mkdtemp(join(tmpdir(), "loan-balance-order-second-"));
   try {
-    const first = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    const first = createCanonicalLoanStore(firstDir);
     await persistFubonLoanCapture(first, makeInput([older, newer]));
     const firstCurrent = queryFubonLoanCurrent(first).balanceObservations;
     assert.deepEqual(firstCurrent.map((balance) => balance.effectiveAt), ["2026-02-28"]);
     first.close();
     await rebuildCanonicalProjection(firstDir);
-    const firstReopened = createCanonicalLoanStore(join(firstDir, CANONICAL_SQLITE_FILE));
+    const firstReopened = createCanonicalLoanStore(firstDir);
     const firstAfterRebuild = queryFubonLoanCurrent(firstReopened).balanceObservations;
     assert.deepEqual(firstAfterRebuild.map((balance) => balance.effectiveAt), ["2026-02-28"]);
     firstReopened.close();
 
-    const second = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
+    const second = createCanonicalLoanStore(secondDir);
     await persistFubonLoanCapture(second, makeInput([newer, older]));
     assert.deepEqual(
       queryFubonLoanCurrent(second).balanceObservations.map((balance) => balance.effectiveAt),
@@ -1413,7 +1833,7 @@ test("current loan balance selection is deterministic across input order and reb
     );
     second.close();
     await rebuildCanonicalProjection(secondDir);
-    const secondReopened = createCanonicalLoanStore(join(secondDir, CANONICAL_SQLITE_FILE));
+    const secondReopened = createCanonicalLoanStore(secondDir);
     assert.deepEqual(
       queryFubonLoanCurrent(secondReopened).balanceObservations.map((balance) => balance.effectiveAt),
       ["2026-02-28"],
@@ -1469,7 +1889,7 @@ test("Runtime preserves per-kind loan balances while Overview selects one latest
     },
   ];
   try {
-    const store = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    const store = createCanonicalLoanStore(directory);
     await commitCanonicalLoanCapture(store, admitCanonicalLoanCapture(capture));
     const scope = { sourceConnectionKey: capture.identity.sourceConnectionKey } as const;
     const before = createCanonicalProjectionRuntime(store.db).read({
@@ -1486,7 +1906,7 @@ test("Runtime preserves per-kind loan balances while Overview selects one latest
     store.close();
 
     await rebuildCanonicalProjection(directory);
-    const reopened = createCanonicalLoanStore(join(directory, CANONICAL_SQLITE_FILE));
+    const reopened = createCanonicalLoanStore(directory);
     const after = createCanonicalProjectionRuntime(reopened.db).read({
       kind: "current",
       families: ["loan-balances", "overview-loan-balances"],
@@ -2104,7 +2524,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
   const directory = await mkdtemp(join(tmpdir(), "canonical-loan-v9-"));
   const databasePath = join(directory, CANONICAL_SQLITE_FILE);
   try {
-    const v9Seed = createCanonicalSourceStore(databasePath);
+    const v9Seed = createCanonicalSourceStore(directory);
     v9Seed.close();
     const v8 = new DatabaseSync(databasePath);
     v8.exec(`PRAGMA foreign_keys = OFF;
@@ -2129,7 +2549,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     `);
     v8.close();
 
-    const initial = createCanonicalLoanStore(databasePath);
+    const initial = createCanonicalLoanStore(directory);
     await commitCanonicalLoanCapture(
       initial,
       admitCanonicalLoanCapture(LOAN_CONTRACT_FIXTURES.fubon),
@@ -2142,7 +2562,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     initial.close();
 
     await rebuildCanonicalProjection(directory);
-    const reopened = createCanonicalLoanStore(databasePath);
+    const reopened = createCanonicalLoanStore(directory);
     validateCanonicalSourceStore(reopened.sourceStore);
     const after = queryCanonicalLoanCurrent(reopened, { sourceId: "fubon" });
     assert.deepEqual(
@@ -2161,7 +2581,7 @@ test("file-backed loan current projections survive rebuild and schema migration 
     );
     reopened.close();
 
-    const reopenedAgain = createCanonicalLoanStore(databasePath);
+    const reopenedAgain = createCanonicalLoanStore(directory);
     validateCanonicalSourceStore(reopenedAgain.sourceStore);
     assert.equal(
       Number(

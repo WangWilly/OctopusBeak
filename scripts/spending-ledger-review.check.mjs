@@ -91,10 +91,32 @@ try {
   });
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(({ model }) => {
+    window.__spendingSectionCalls = [];
     window.octopusBeak = {
       settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
+      financialFreshness: {
+        subscribe: () => () => {},
+        latestKnowledgePoint: async () => model.knowledgePoint,
+      },
       spending: {
         load: async () => ({ canonical: model }),
+        loadSection: async (section, input = {}) => {
+          window.__spendingSectionCalls.push({
+            section,
+            knowledgePoint: input.cutoff?.knowledgePoint ?? null,
+          });
+          const knowledgePoint = model.knowledgePoint;
+          return {
+            section,
+            knowledgePoint,
+            value: {
+              knowledgePoint,
+              canonical: model,
+              purchaseReport: null,
+              invoices: [],
+            },
+          };
+        },
         updateTransactionOverride: async () => {
           throw new Error("legacy Spending mutation invoked");
         },
@@ -109,6 +131,8 @@ try {
 
   const dashboard = page.locator("[data-spending-canonical]");
   await dashboard.waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__spendingSectionCalls.map(({ section }) => section).sort()), ["primary", "secondary"]);
+  assert.deepEqual(await page.evaluate(() => [...new Set(window.__spendingSectionCalls.map(({ knowledgePoint }) => knowledgePoint))]), [42]);
   assert.equal(await page.locator("[data-policy-id='gross-posted-outflow']").count(), 1);
   assert.equal(await dashboard.locator(".canonical-record-list .canonical-record").count(), 2);
   assert.match((await dashboard.locator(".canonical-summary-card").textContent()) ?? "", /TWD\s*1,300/u);

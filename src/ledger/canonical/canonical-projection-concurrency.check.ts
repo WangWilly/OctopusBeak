@@ -8,8 +8,8 @@ import test from "node:test";
 import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   commitCathayDomesticDeposit,
-  openCanonicalDatabase,
 } from "./cathay-domestic-deposit.ts";
+import { openCanonicalDatabaseHandle } from "./canonical-database.ts";
 
 const CONCURRENT_WRITER_CODE = `
 const directory = process.argv[1];
@@ -97,7 +97,7 @@ test("concurrent canonical writers keep retained lifecycle validation on one sna
       results.map((result) => result.stderr).join("\n"),
     );
 
-    const db = openCanonicalDatabase(directory, { readOnly: true });
+    const db = openCanonicalDatabaseHandle(directory, { readOnly: true });
     try {
       const state = db
         .prepare(

@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { ValidatedCanonicalDatabase as DatabaseSync } from "./canonical-database.ts";
 import { withCanonicalSnapshot } from "./canonical-runtime.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
 import {
   assertValidatedCanonicalSourceStore,
   type CanonicalSourceStore,
 } from "./canonical-source-store.ts";
+import {
+  financialPerformanceTelemetry,
+  type FinancialPerformanceOperation,
+} from "../../lib/performance/financial-performance-telemetry.ts";
+import { isCanonicalSpendingTransactionKindIncluded } from "./spending-inclusion-policy.ts";
 
 export type ExactMoney = Readonly<{ coefficient: string; scale: number; currency: string }>;
 export type SpendingPair = Readonly<{ invoiceId: string; transactionId: string }>;
@@ -101,6 +106,46 @@ export type SpendingRecognitionSnapshot = Readonly<{
   refunds: readonly SpendingRefundView[];
 }>;
 
+/**
+ * The application-facing command seam for user-managed Spending links.
+ *
+ * The command deliberately accepts only canonical identities and an opaque
+ * renderer idempotency key.  Reports, candidate scores, and eligibility
+ * claims stay on the query side; they are never trusted as write evidence.
+ */
+export type SpendingRecognitionCommandKind = "establish-link" | "remove-link";
+export type SpendingRecognitionCommandInput = Readonly<{
+  kind: SpendingRecognitionCommandKind;
+  invoiceId: string;
+  transactionId: string;
+  idempotencyKey: string;
+}>;
+export type SpendingRecognitionCommandResult = Readonly<{
+  kind: SpendingRecognitionCommandKind;
+  outcome: "committed" | "replayed";
+  invoiceId: string;
+  transactionId: string;
+  eventId: string;
+  /** The canonical knowledge point created by, or containing, this outcome. */
+  knowledgePoint: number;
+  /** Alias retained for callers that describe the result as a commit receipt. */
+  commitSequence: number;
+}>;
+export type SpendingRecognitionCommandErrorCode =
+  | "spending-pair-stale"
+  | "idempotency-key-conflict";
+
+/** Stable, non-sensitive command failures suitable for the application seam. */
+export class SpendingRecognitionCommandError extends Error {
+  readonly code: SpendingRecognitionCommandErrorCode;
+
+  constructor(code: SpendingRecognitionCommandErrorCode) {
+    super(code);
+    this.name = "SpendingRecognitionCommandError";
+    this.code = code;
+  }
+}
+
 function id(value: string): Buffer {
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(value))
     throw new Error("Canonical identity must be a UUID string.");
@@ -183,11 +228,244 @@ function requireActivePair(db: DatabaseSync, pair: SpendingPair): void {
   if (!transactionState || transactionState.administrativeState !== "active")
     throw new Error("Direct Spending confirmation transaction identity is stale, replaced, or inactive.");
 }
-function write<T>(store: CanonicalSourceStore, operation: (db: DatabaseSync) => T): T {
+
+/**
+ * Apply the current Spending inclusion predicate to one command pair without
+ * rebuilding the full Spending report.  This mirrors the bounded
+ * gross-posted-outflow query policy: an active transaction is linkable only
+ * when its typed kind is known and it is a normal, posted outflow whose kind
+ * is not reserved for transfers, cash, investments, or debt payments.
+ */
+function requireCurrentSpendingEligibility(db: DatabaseSync, pair: SpendingPair): void {
+  const projection = createCanonicalProjectionRuntime(db).read({
+    kind: "current",
+    families: ["transactions", "transaction-enrichment"],
+    scope: { transactionIds: [pair.transactionId] },
+  });
+  const transaction = projection.families.transactions[0];
+  const kind = projection.families["transaction-enrichment"].find(
+    (row) => row.fieldName === "kind",
+  )?.taxonomyCode ?? null;
+  if (
+    !transaction ||
+    transaction.administrativeState !== "active" ||
+    transaction.postingStatus !== "posted" ||
+    transaction.economicStatus !== "normal" ||
+    transaction.direction !== "outflow" ||
+    kind === null ||
+    !isCanonicalSpendingTransactionKindIncluded(kind)
+  ) throw new Error("Direct Spending confirmation pair is not currently eligible.");
+}
+function write<T>(
+  store: CanonicalSourceStore,
+  operation: (db: DatabaseSync) => T,
+  onComplete?: (error?: unknown) => void,
+): T {
   assertValidatedCanonicalSourceStore(store);
   store.db.exec("BEGIN IMMEDIATE");
-  try { const result = operation(store.db); store.db.exec("COMMIT"); return result; }
-  catch (error) { try { store.db.exec("ROLLBACK"); } catch {} throw error; }
+  try {
+    const result = operation(store.db);
+    store.db.exec("COMMIT");
+    onComplete?.();
+    return result;
+  }
+  catch (error) {
+    try { store.db.exec("ROLLBACK"); } catch {}
+    onComplete?.(error);
+    throw error;
+  }
+}
+
+const SPENDING_COMMAND_DECISION_PREFIX = "spending/command/v1";
+const SPENDING_COMMAND_USER = "local-user";
+
+function commandDecisionKey(
+  kind: SpendingRecognitionCommandKind,
+  idempotencyKey: string,
+): string {
+  const key = required(idempotencyKey, "Spending command idempotency key");
+  if (key.length > 256)
+    throw new Error("Spending command idempotency key is too long.");
+  return `${SPENDING_COMMAND_DECISION_PREFIX}/${kind}/${key}`;
+}
+
+function commandError(
+  code: SpendingRecognitionCommandErrorCode,
+): SpendingRecognitionCommandError {
+  return new SpendingRecognitionCommandError(code);
+}
+
+function commandResult(
+  input: SpendingRecognitionCommandInput,
+  event: Record<string, unknown>,
+  outcome: "committed" | "replayed",
+): SpendingRecognitionCommandResult {
+  const sequence = Number(event.commit_sequence);
+  if (!Number.isSafeInteger(sequence) || sequence < 0)
+    throw new Error("Spending command commit sequence is invalid.");
+  const eventId = idString(event.event_id);
+  return Object.freeze({
+    kind: input.kind,
+    outcome,
+    invoiceId: input.invoiceId,
+    transactionId: input.transactionId,
+    eventId,
+    knowledgePoint: sequence,
+    commitSequence: sequence,
+  });
+}
+
+function commandEvent(
+  db: DatabaseSync,
+  key: string,
+): Record<string, unknown> | undefined {
+  return db.prepare(`
+    SELECT event.*, commit_row.commit_sequence
+      FROM spending_dedup_decision_events event
+      JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
+     WHERE event.decision_key = ?
+  `).get(key) as Record<string, unknown> | undefined;
+}
+
+function assertCommandPairCurrent(
+  db: DatabaseSync,
+  pair: SpendingPair,
+  requireSpendingEligibility: boolean,
+): { invoice: Buffer; transaction: Buffer } {
+  try {
+    const identities = requirePair(db, pair);
+    requireActivePair(db, pair);
+    if (requireSpendingEligibility) requireCurrentSpendingEligibility(db, pair);
+    return identities;
+  } catch (error) {
+    if (error instanceof SpendingRecognitionCommandError) throw error;
+    throw commandError("spending-pair-stale");
+  }
+}
+
+function commandPairHasConflict(
+  db: DatabaseSync,
+  pair: { invoice: Buffer; transaction: Buffer },
+): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ?").get(pair.invoice) ||
+    db.prepare("SELECT 1 FROM current_spending_dedup_links WHERE transaction_id = ?").get(pair.transaction),
+  );
+}
+
+/**
+ * Establish or remove one Spending Deduplication Link at the canonical seam.
+ *
+ * Replay lookup intentionally happens before current-state validation: a
+ * response-loss retry must return the already durable outcome even though the
+ * pair is no longer unlinked.  New commands validate both identities and the
+ * one-to-one current projection inside the same BEGIN IMMEDIATE transaction.
+ */
+export function executeSpendingRecognitionCommand(
+  store: CanonicalSourceStore,
+  input: SpendingRecognitionCommandInput,
+  telemetryOperation?: FinancialPerformanceOperation,
+): SpendingRecognitionCommandResult {
+  const telemetry = telemetryOperation ?? financialPerformanceTelemetry.startOperation("spending-action");
+  const transactionSpan = telemetry.startSpan("canonical-transaction");
+  let commitSpan: ReturnType<FinancialPerformanceOperation["startSpan"]> | undefined;
+  try {
+    const result = write(store, (db) => {
+      const validationSpan = telemetry.startSpan("narrow-validation");
+      try {
+        if (input.kind !== "establish-link" && input.kind !== "remove-link")
+          throw new Error("Spending command kind is invalid.");
+        const key = commandDecisionKey(input.kind, input.idempotencyKey);
+        const invoiceId = required(input.invoiceId, "Spending command invoice identity");
+        const transactionId = required(input.transactionId, "Spending command transaction identity");
+        const commandInput = { ...input, invoiceId, transactionId };
+        const pair = { invoiceId, transactionId };
+        let invoice: Buffer;
+        let transaction: Buffer;
+        try {
+          invoice = id(invoiceId);
+          transaction = id(transactionId);
+        } catch {
+          throw commandError("spending-pair-stale");
+        }
+        const prior = commandEvent(db, key);
+        if (prior) {
+          if (
+            String(prior.event_kind) !== (input.kind === "establish-link" ? "confirmed" : "revoked") ||
+            !sqlBlob(prior.invoice_id).equals(invoice) ||
+            !sqlBlob(prior.transaction_id).equals(transaction)
+          ) throw commandError("idempotency-key-conflict");
+          validationSpan.finish();
+          return commandResult(commandInput, prior, "replayed");
+        }
+
+        const identities = assertCommandPairCurrent(db, pair, input.kind === "establish-link");
+        if (input.kind === "establish-link") {
+          if (commandPairHasConflict(db, identities))
+            throw commandError("spending-pair-stale");
+        } else if (!db.prepare(`
+          SELECT 1
+            FROM current_spending_dedup_links
+           WHERE invoice_id = ? AND transaction_id = ?
+        `).get(identities.invoice, identities.transaction)) {
+          throw commandError("spending-pair-stale");
+        }
+        validationSpan.finish();
+
+        commitSpan = telemetry.startSpan("canonical-commit");
+        const created = commit(db, store, `user/spending-command/${input.kind}`);
+        const eventId = uuid();
+        const eventKind = input.kind === "establish-link" ? "confirmed" : "revoked";
+        const evidence = stableJson({
+          command: `${SPENDING_COMMAND_DECISION_PREFIX}/${input.kind}`,
+        }, "Spending command evidence");
+        db.prepare(`
+            INSERT INTO spending_dedup_decision_events(
+              event_id, decision_key, invoice_id, transaction_id, event_kind,
+              decision_origin, user_id, authority_route,
+              stable_cross_source_reference, evidence_json,
+              evidence_knowledge_sequence, commit_id
+            ) VALUES (?, ?, ?, ?, ?, 'user', ?, NULL, NULL, ?, ?, ?)
+        `).run(
+            eventId,
+            key,
+            identities.invoice,
+            identities.transaction,
+            eventKind,
+            SPENDING_COMMAND_USER,
+            evidence,
+            created.sequence,
+            created.id,
+          );
+        if (input.kind === "establish-link") {
+          db.prepare(`
+              INSERT INTO current_spending_dedup_links(
+                invoice_id, transaction_id, confirmed_event_id, projection_commit_id
+              ) VALUES (?, ?, ?, ?)
+          `).run(identities.invoice, identities.transaction, eventId, created.id);
+        } else {
+          db.prepare(`
+              DELETE FROM current_spending_dedup_links
+               WHERE invoice_id = ? AND transaction_id = ?
+          `).run(identities.invoice, identities.transaction);
+        }
+        return commandResult(commandInput, {
+          event_id: eventId,
+          commit_sequence: created.sequence,
+        }, "committed");
+      } catch (error) {
+        validationSpan.finish("error", { error });
+        throw error;
+      }
+    }, (error) => {
+        commitSpan?.finish(error === undefined ? "success" : "error", { error });
+      });
+    transactionSpan.finish();
+    return result;
+  } catch (error) {
+    transactionSpan.finish("error", { error });
+    throw error;
+  }
 }
 
 export function recordSpendingMatchCandidate(store: CanonicalSourceStore, input: SpendingCandidateInput): { candidateId: string; commitSequence: number } {

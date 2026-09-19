@@ -3,7 +3,12 @@ import {
   type SpendingCategory,
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
-export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
+import type { FinancialSectionResult } from "$lib/shared-ledger/financial-section.ts";
+export type {
+  SpendingPurchaseActionPatch,
+  SpendingPurchaseActionResult,
+  SpendingRecognitionReportPatch,
+} from "./purchase-report-patch.ts";
 
 /**
  * The purchase-basis report is the active Spending contract.  It stays as a
@@ -14,18 +19,29 @@ export type SpendingPurchaseReportDto = PurchaseReport;
 
 export type SpendingCandidateActionInput = Readonly<{
   kind: "candidate";
+  /** Candidate ids are only valid for denying an existing candidate. */
   candidateId: string;
+  idempotencyKey?: string;
 }>;
 
-export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly<{
+export type SpendingCandidateConfirmationInput = Readonly<{
+  kind: "candidate";
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  idempotencyKey: string;
+}>;
+
+export type SpendingConfirmActionInput = SpendingCandidateConfirmationInput | Readonly<{
   kind: "direct";
   invoiceIdentityId: string;
   transactionIdentityId: string;
+  idempotencyKey?: string;
 }>;
 
 export type SpendingLinkActionInput = Readonly<{
   invoiceId: string;
   transactionId: string;
+  idempotencyKey?: string;
 }>;
 
 export type SpendingItemDto = {
@@ -187,12 +203,30 @@ export type SpendingModel = {
 /** Active desktop Spending payload. Legacy model fields stay available only to
  * the compatibility model builder and are not emitted by the product loader. */
 export type SpendingPageDto = {
+  /** Canonical knowledge point used to build this page payload. */
+  knowledgePoint?: number;
   canonical: CanonicalSpendingView;
   /** Purchase-basis canonical report used by the active Spending page. */
   purchaseReport: SpendingPurchaseReportDto;
   /** Compatibility projection kept for existing non-product fixtures. */
   invoices: readonly SpendingInvoiceDto[];
 };
+
+/**
+ * The primary Spending section contains the canonical transaction facts.
+ * Compatibility fields remain on the DTO, but invoice matching and purchase
+ * report analysis are supplied by the secondary section.
+ */
+export type SpendingPrimaryDto = Omit<SpendingPageDto, "knowledgePoint"> & {
+  knowledgePoint: number;
+};
+
+export type SpendingSecondaryDto = Pick<SpendingPageDto, "purchaseReport" | "invoices"> & {
+  knowledgePoint: number;
+};
+
+export type SpendingPrimarySection = FinancialSectionResult<"primary", SpendingPrimaryDto>;
+export type SpendingSecondarySection = FinancialSectionResult<"secondary", SpendingSecondaryDto>;
 
 export type CanonicalSpendingAmountDto = {
   currency: string;

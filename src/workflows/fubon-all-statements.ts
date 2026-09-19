@@ -200,11 +200,7 @@ const fubonAllStatementsDependencies = {
   signOutFubon,
 };
 
-const FUBON_SOURCE_LEDGER_DIR_ENV = "OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR";
-const FUBON_FINANCIAL_LEDGER_DIR_ENV =
-  "OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR";
-const FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV =
-  "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
+const FUBON_CANONICAL_LEDGER_DIR_ENV = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
 
 function readFubonLedgerDirectory(envName: string): string | undefined {
   const raw = process.env[envName];
@@ -215,53 +211,12 @@ function readFubonLedgerDirectory(envName: string): string | undefined {
   return raw;
 }
 
-/**
- * Resolve the combined workflow's two ledger destinations.
- *
- * Source evidence is always enabled. The old generic canonical-ledger
- * variable is retained only as a financial opt-in alias; it must never be
- * silently reused as the source destination by this caller. If both financial
- * aliases are configured with different paths, fail before login so the run
- * cannot write to an unintended ledger.
- */
-function resolveFubonLedgerOverrides(): {
-  canonicalLedgerDir: string;
-  canonicalFinancialLedgerDir?: string;
-} {
-  const sourceLedgerDir =
-    readFubonLedgerDirectory(FUBON_SOURCE_LEDGER_DIR_ENV) ??
+function resolveFubonCanonicalLedgerDir(): string {
+  return (
+    readFubonLedgerDirectory(FUBON_CANONICAL_LEDGER_DIR_ENV) ??
     readFubonLedgerDirectory("LEDGER_DIR") ??
-    DEFAULT_LEDGER_DIR;
-  const financialLedgerDirs: Array<readonly [string, string]> = [];
-  for (const [envName, directory] of [
-    [
-      FUBON_FINANCIAL_LEDGER_DIR_ENV,
-      readFubonLedgerDirectory(FUBON_FINANCIAL_LEDGER_DIR_ENV),
-    ] as const,
-    [
-      FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV,
-      readFubonLedgerDirectory(FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV),
-    ] as const,
-  ]) {
-    if (directory !== undefined) financialLedgerDirs.push([envName, directory]);
-  }
-  const uniqueFinancialLedgerDirs = [
-    ...new Set(financialLedgerDirs.map(([, directory]) => directory)),
-  ];
-  if (uniqueFinancialLedgerDirs.length > 1) {
-    throw new Error(
-      `Ambiguous Fubon financial ledger directories configured in ${financialLedgerDirs
-        .map(([envName]) => envName)
-        .join(", ")}.`,
-    );
-  }
-
-  return {
-    canonicalLedgerDir: sourceLedgerDir,
-    ...(uniqueFinancialLedgerDirs[0]
-      ? { canonicalFinancialLedgerDir: uniqueFinancialLedgerDirs[0] }
-      : {}),
-  };
+    DEFAULT_LEDGER_DIR
+  );
 }
 
 export async function runFubonAllStatements(
@@ -288,7 +243,7 @@ export async function runFubonAllStatements(
   const selectedIds = allSupportedStatementTypeIds(
     BANK_STATEMENT_CAPABILITIES.fubon,
   );
-  const ledgerOverrides = resolveFubonLedgerOverrides();
+  const canonicalLedgerDir = resolveFubonCanonicalLedgerDir();
   const sourceConnectionScope = fubonStableLoginScope(input.credentials);
   const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)
@@ -315,7 +270,7 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "statements", () =>
             runFubonStatements(page, input.statements, {
-              ...ledgerOverrides,
+              canonicalLedgerDir,
               sourceConnectionScope,
               sourceConnectionKey,
             }),
@@ -326,12 +281,7 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "creditCards", () =>
             runFubonCreditCardStatements(page, creditCardInput, {
-              ...(ledgerOverrides.canonicalFinancialLedgerDir
-                ? {
-                    canonicalFinancialLedgerDir:
-                      ledgerOverrides.canonicalFinancialLedgerDir,
-                  }
-                : {}),
+              canonicalLedgerDir,
               ...(managedSecret
                 ? { panFingerprintKey: { secret: managedSecret } }
                 : {}),
@@ -343,7 +293,7 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "loans", () =>
             runFubonLoanStatements(page, input.loans, {
-              ...ledgerOverrides,
+              canonicalLedgerDir,
               sourceConnectionScope,
               sourceConnectionKey,
             }),

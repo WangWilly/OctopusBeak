@@ -8,6 +8,9 @@ const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.ur
 
 assert.match(entry, /spending\.purchaseReport/);
 assert.match(entry, /<PurchaseSpendingDashboard/);
+assert.match(entry, /export let purchaseReportReady = true/);
+assert.match(entry, /purchaseReportReady && spending\.purchaseReport/);
+assert.match(entry, /purchaseReportReady \? spending\.invoices : \[\]/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
 
 for (const marker of [
@@ -22,27 +25,48 @@ for (const marker of [
   "來源與配對證據",
   "來源金額不同，未推算費用",
   "未分類",
-  "金額未提供",
   "配對付款",
   "選擇付款交易",
   "可配對的付款交易",
   "你可以選擇不同月份、金額或幣別的付款",
   "金額與幣別採銀行付款",
   "日期採發票購買日",
-  "信用卡消費",
-  "銀行交易",
 ]) assert.match(source, new RegExp(marker));
 
 assert.match(source, /window\.octopusBeak\.spending\.confirmCandidate/);
 assert.match(source, /window\.octopusBeak\.spending\.denyCandidate/);
 assert.match(source, /window\.octopusBeak\.spending\.revokeLink/);
-assert.match(source, /applySpendingPurchaseReportPatch\(report, next\.patch\)/);
+assert.match(source, /applyValidatedSpendingActionResult\(report, result\)/);
 assert.doesNotMatch(source, /next\.purchaseReport/);
 assert.match(source, /data-pending-total/);
 assert.match(source, /data-link-difference/);
 assert.match(source, /data-item-details/);
 assert.match(source, /role="dialog"/);
 assert.match(source, /kind: "direct"/);
+assert.match(source, /idempotencyKey/);
+assert.match(source, /beginSpendingPendingCommand/);
+assert.match(source, /completeSpendingPendingCommand/);
+assert.match(source, /spending-pair-stale/);
+assert.match(source, /dataChanged/);
+assert.match(source, /data-action-notice/);
+assert.match(source, /\$t\.spending\.actionReconciliationNotice/);
+assert.match(source, /\$t\.spending\.actionReconciliationPending/);
+assert.match(source, /\$t\.spending\.actionReconciliationFailed/);
+assert.match(source, /\$t\.spending\.dismissActionNotice/);
+assert.match(source, /spending-display\.ts/);
+assert.match(source, /spendingAmountText\(/);
+assert.match(source, /spendingBasisLabel\(/);
+assert.match(source, /spendingRecordLabel\(/);
+assert.match(source, /idempotency-key-conflict/);
+assert.match(source, /idempotency-storage-unavailable/);
+assert.match(source, /financialErrors\.idempotencyStorageUnavailable/);
+assert.match(source, /stableFinancialErrorCode\(error\)/);
+assert.doesNotMatch(source, /return error instanceof Error \? error\.message/);
+assert.doesNotMatch(source, /return .*String\(error\)/);
+assert.doesNotMatch(source, /console\.warn\([^\n]*,\s*error\)/);
+assert.match(source, /onActionReconciliation/);
+assert.match(source, /onActionReconciliation\(identity, \{ knownStale: options\.knownStale \}\)/);
+assert.match(source, /knownStale: code === "spending-pair-stale"/);
 assert.match(source, /invoiceIdentityId/);
 assert.match(source, /transactionIdentityId/);
 assert.match(source, /slice\(0, paymentVisibleCount\)/);

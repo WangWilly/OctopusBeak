@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ import {
 } from "./esun-credit-card-human-attestation.ts";
 import { createCanonicalSourceStore } from "./canonical-source-store.ts";
 import { createCanonicalSpendingQuery } from "./canonical-categorization.ts";
-import { createCanonicalSchemaLifecyclePlan } from "./canonical-schema-implementation.ts";
+import { createCanonicalSchemaLifecyclePlan } from "./canonical-database.ts";
 import { openCanonicalSchemaLifecycle } from "./canonical-schema-lifecycle.ts";
 
 const identity = {
@@ -86,6 +87,42 @@ function options(
     grid,
     ...overrides,
   };
+}
+
+function legacyEsunV1SourceKey(
+  transaction: {
+    instrumentKey: string;
+    consumeDate?: string | null;
+    postingDate?: string | null;
+    direction: string;
+    bookedAmount: { coefficient: string; scale: number };
+    bookedCurrency: string;
+    foreignCurrency?: string | null;
+    foreignAmount?: { coefficient: string; scale: number } | null;
+    description: string;
+    billingStatus: "billed" | "unbilled";
+    occurrenceIndex: number;
+  },
+): `sha256:${string}` {
+  const tuple = [
+    "esun-credit-card-transaction-v1",
+    buildEsunCreditCardAccountIdentityKey(identity),
+    transaction.instrumentKey,
+    transaction.consumeDate ?? null,
+    transaction.postingDate ?? null,
+    transaction.direction,
+    transaction.bookedAmount.coefficient,
+    transaction.bookedAmount.scale,
+    transaction.bookedCurrency,
+    transaction.foreignCurrency ?? null,
+    transaction.foreignAmount?.coefficient ?? null,
+    transaction.foreignAmount?.scale ?? null,
+    transaction.description.normalize("NFKC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("en-US"),
+    transaction.billingStatus,
+    null,
+    transaction.occurrenceIndex,
+  ];
+  return `sha256:${createHash("sha256").update(JSON.stringify(tuple)).digest("base64url")}`;
 }
 
 test("E.SUN v2 is a human-attested portfolio route", () => {
@@ -177,6 +214,130 @@ test("complete E.SUN capture produces stable source keys and separate duplicate 
     new Set(duplicate.transactions.map((transaction) => transaction.sourceKey)).size,
     2,
   );
+});
+
+test("E.SUN rejects a same-capture billed and unbilled overlap", () => {
+  const overlap = {
+    ...billedRow,
+    issuerStatementPeriod: "unbilled",
+    paymentStatus: "未入帳",
+  } satisfies EsunCreditCardSourceRow;
+  assert.throws(
+    () =>
+      buildEsunCanonicalCreditCardCapture(
+        options({
+          statementRows: [billedRow],
+          unbilledRows: [overlap],
+          grid: { ...grid, capturedRowCount: 2 },
+        }),
+      ),
+    /same economic transaction.*billed.*unbilled|billed.*unbilled.*same economic transaction/i,
+  );
+});
+
+test("E.SUN rejects a direct billed and unbilled overlap even when statement keys differ", () => {
+  const capture = buildEsunCanonicalCreditCardCapture(
+    options({
+      statementRows: [billedRow],
+      unbilledRows: [],
+      grid: { ...grid, capturedRowCount: 1 },
+    }),
+  );
+  const [billed] = capture.transactions;
+  assert.ok(billed);
+  const { sourceKey: _billedSourceKey, ...billedWithoutSourceKey } = billed;
+  const { sourceKey: _unbilledSourceKey, ...unbilledWithoutSourceKey } = billed;
+  assert.throws(
+    () =>
+      admitEsunCreditCardCapture({
+        ...capture,
+        captureId: "capture-esun-direct-statement-overlap",
+        transactions: [
+          {
+            ...billedWithoutSourceKey,
+            sourceRecordKey: "direct-overlap-billed",
+            billingStatus: "billed",
+            statementKey: "statement-billed",
+          },
+          {
+            ...unbilledWithoutSourceKey,
+            sourceRecordKey: "direct-overlap-unbilled",
+            billingStatus: "unbilled",
+            statementKey: undefined,
+            occurrenceIndex: 0,
+          },
+        ],
+        instruments: capture.instruments.map((instrument) => ({
+          ...instrument,
+          evidence: {
+            ...instrument.evidence,
+            sourceRecordKey: "direct-overlap-billed",
+          },
+        })),
+      } as unknown as EsunCreditCardCaptureInput),
+    /same economic transaction.*billed.*unbilled|billed.*unbilled.*same economic transaction/i,
+  );
+});
+
+test("E.SUN preserves legitimate same-day duplicates with immutable provenance", async () => {
+  const directory = mkdtempSync(join("/tmp", "esun-credit-card-same-day-duplicates-"));
+  const store = createCanonicalSourceStore(directory);
+  try {
+    const duplicate = {
+      ...billedRow,
+      description: "Synthetic Same-Day Purchase",
+    } satisfies EsunCreditCardSourceRow;
+    const capture = buildEsunCanonicalCreditCardCapture(
+      options({
+        captureId: "capture-esun-same-day-duplicates",
+        statementRows: [duplicate, { ...duplicate }],
+        unbilledRows: [],
+        grid: { ...grid, capturedRowCount: 2 },
+      }),
+    );
+    const committed = await commitEsunCreditCardCapture(store, capture);
+    assert.equal(committed.transactionCount, 2);
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
+      2,
+    );
+    const records = store.db.prepare(`
+      SELECT record.occurrence_key, record.source_record_id,
+             COUNT(DISTINCT provenance.source_record_id) AS provenance_count
+      FROM source_records record
+      JOIN source_record_provenance provenance
+        ON provenance.source_record_id = record.source_record_id
+      JOIN source_captures capture
+        ON capture.capture_id = record.capture_id
+      WHERE capture.capture_key = ?
+        AND record.record_kind = 'esun-credit-card-transaction'
+      GROUP BY record.source_record_id, record.occurrence_key
+      ORDER BY record.occurrence_key
+    `).all("capture-esun-same-day-duplicates") as Array<{
+      occurrence_key?: string;
+      source_record_id?: Uint8Array;
+      provenance_count?: number;
+    }>;
+    assert.equal(records.length, 2);
+    assert.equal(new Set(records.map((record) => record.occurrence_key)).size, 2);
+    assert.equal(new Set(records.map((record) => Buffer.from(record.source_record_id!).toString("hex"))).size, 2);
+    assert.ok(records.every((record) => record.provenance_count === 1));
+    assert.equal(
+      Number((store.db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM assertion_provenance provenance
+        JOIN source_records record
+          ON record.source_record_id = provenance.source_record_id
+        JOIN source_captures capture
+          ON capture.capture_id = record.capture_id
+        WHERE capture.capture_key = ?
+          AND record.record_kind = 'esun-credit-card-transaction'
+      `).get("capture-esun-same-day-duplicates") as { n: number }).n),
+      4,
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test("E.SUN billed statement evidence pins only billed source records", () => {
@@ -271,7 +432,7 @@ test("E.SUN neutral projection preserves opaque identities and billed-only membe
 
 test("E.SUN commit materializes the shared spine and neutral billed statement extensions", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-canonical-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const admitted = buildEsunCanonicalCreditCardCapture(
       options({
@@ -356,13 +517,13 @@ test("E.SUN commit materializes the shared spine and neutral billed statement ex
 
 test("E.SUN initial attestation repair reuses the writer transaction snapshot", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repair-snapshot-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   let attestationVisibleBeforeExtensionCommit = false;
   try {
     const committed = await commitEsunCreditCardCapture(
       {
         db: base.db,
-        databasePath: base.databasePath,
+        withWriter: base.withWriter,
         commitClock: base.commitClock,
         beforeEsunCreditExtensionCommit: (db) => {
           attestationVisibleBeforeExtensionCommit =
@@ -400,7 +561,7 @@ for (const existingDatabase of [false, true]) {
       });
       previous.close();
     }
-    const store = createCanonicalSourceStore(databasePath);
+    const store = createCanonicalSourceStore(directory);
     const reader = spawn(process.execPath, [
       "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e",
       `import { createCanonicalSourceStore } from ${JSON.stringify(new URL("./canonical-source-store.ts", import.meta.url).href)};
@@ -408,7 +569,7 @@ for (const existingDatabase of [false, true]) {
        console.log("ready");
        process.stdin.resume();
        process.stdin.on("end", () => { store.close(); });`,
-      databasePath,
+      directory,
     ], { stdio: ["pipe", "pipe", "pipe"] });
     const exited = once(reader, "exit");
     let diagnostics = "";
@@ -439,7 +600,7 @@ for (const existingDatabase of [false, true]) {
 
 test("E.SUN repeated captures retain one account/instrument authority and add provenance", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-repeat-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const settledPeriods = [{
       period: "2026-07",
@@ -478,15 +639,168 @@ test("E.SUN repeated captures retain one account/instrument authority and add pr
   }
 });
 
+test("E.SUN unbilled transaction becoming billed creates a revision instead of a duplicate transaction", async () => {
+  const directory = mkdtempSync(join("/tmp", "esun-credit-card-billing-transition-"));
+  const store = createCanonicalSourceStore(directory);
+  try {
+    await commitEsunCreditCardCapture(
+      store,
+      buildEsunCanonicalCreditCardCapture(options({
+        captureId: "capture-esun-unbilled",
+        statementRows: [],
+        unbilledRows: [unbilledRow],
+        grid: { ...grid, capturedRowCount: 1 },
+      })),
+    );
+    await commitEsunCreditCardCapture(
+      store,
+      buildEsunCanonicalCreditCardCapture(options({
+        captureId: "capture-esun-billed",
+        observedAt: "2026-09-01T00:00:00.000Z",
+        statementRows: [{
+          ...unbilledRow,
+          issuerStatementPeriod: "2026-08",
+          paymentStatus: "已入帳",
+        }],
+        unbilledRows: [],
+        grid: { ...grid, capturedRowCount: 1 },
+      })),
+    );
+
+    const count = (table: string): number =>
+      Number((store.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
+        value?: number;
+      }).value ?? 0);
+    assert.equal(count("financial_transactions"), 1);
+    assert.equal(count("transaction_revisions"), 2);
+    assert.equal(count("source_records"), 2);
+    const current = store.db.prepare(`
+      SELECT detail.billing_status, revision.revision_number
+      FROM current_transactions current_row
+      JOIN transaction_revisions revision
+        ON revision.revision_id = current_row.revision_id
+      JOIN canonical_credit_card_transaction_details detail
+        ON detail.revision_id = revision.revision_id
+      LIMIT 1
+    `).get() as {
+      billing_status?: string;
+      revision_number?: number;
+    } | undefined;
+    assert.equal(current?.billing_status, "billed");
+    assert.equal(current?.revision_number, 2);
+
+    await assert.rejects(
+      commitEsunCreditCardCapture(
+        store,
+        buildEsunCanonicalCreditCardCapture(options({
+          captureId: "capture-esun-status-regression",
+          observedAt: "2026-09-02T00:00:00.000Z",
+          statementRows: [],
+          unbilledRows: [unbilledRow],
+          grid: { ...grid, capturedRowCount: 1 },
+        })),
+      ),
+      /Source occurrence content overwrite is forbidden/i,
+    );
+    assert.equal(count("financial_transactions"), 1);
+    assert.equal(count("transaction_revisions"), 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("E.SUN reconciles an existing v1 source sequence without rewriting source evidence", async () => {
+  const directory = mkdtempSync(join("/tmp", "esun-credit-card-v1-reconciliation-"));
+  const store = createCanonicalSourceStore(directory);
+  try {
+    const first = buildEsunCanonicalCreditCardCapture(options({
+      captureId: "capture-esun-v1-baseline",
+      statementRows: [billedRow],
+      unbilledRows: [],
+      grid: { ...grid, capturedRowCount: 1 },
+    }));
+    await commitEsunCreditCardCapture(store, first);
+    const transaction = first.transactions[0]!;
+    const legacySourceKey = legacyEsunV1SourceKey(transaction);
+    const beforeEvidence = store.db.prepare(`
+      SELECT record.payload_json, record.content_hash, record.occurrence_key
+      FROM source_records record
+      JOIN source_captures capture ON capture.capture_id = record.capture_id
+      WHERE capture.capture_key = ?
+        AND record.record_kind = 'esun-credit-card-transaction'
+    `).get(first.captureId) as {
+      payload_json?: string;
+      content_hash?: string;
+      occurrence_key?: string;
+    } | undefined;
+    assert.ok(beforeEvidence);
+    const transactionId = store.db.prepare(
+      "SELECT transaction_id FROM financial_transactions WHERE source_sequence = ?",
+    ).get(transaction.sourceKey) as { transaction_id?: Uint8Array } | undefined;
+    assert.ok(transactionId?.transaction_id);
+    store.db.prepare(
+      "UPDATE financial_transactions SET source_sequence = ? WHERE transaction_id = ?",
+    ).run(legacySourceKey, transactionId!.transaction_id);
+
+    const second = buildEsunCanonicalCreditCardCapture(options({
+      captureId: "capture-esun-v1-recollection",
+      statementRows: [billedRow],
+      unbilledRows: [],
+      grid: { ...grid, capturedRowCount: 1 },
+    }));
+    await commitEsunCreditCardCapture(store, second);
+
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM financial_transactions").get() as { n: number }).n),
+      1,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM transaction_revisions").get() as { n: number }).n),
+      1,
+    );
+    assert.equal(
+      Number((store.db.prepare("SELECT COUNT(*) AS n FROM source_records").get() as { n: number }).n),
+      2,
+    );
+    const afterTransaction = store.db.prepare(
+      "SELECT transaction_id, source_sequence FROM financial_transactions",
+    ).get() as { transaction_id?: Uint8Array; source_sequence?: string } | undefined;
+    assert.deepEqual(
+      afterTransaction && {
+        transaction_id: Buffer.from(afterTransaction.transaction_id!).toString("hex"),
+        source_sequence: afterTransaction.source_sequence,
+      },
+      {
+        transaction_id: Buffer.from(transactionId!.transaction_id).toString("hex"),
+        source_sequence: transaction.sourceKey,
+      },
+    );
+    const afterEvidence = store.db.prepare(`
+      SELECT record.payload_json, record.content_hash, record.occurrence_key
+      FROM source_records record
+      JOIN source_captures capture ON capture.capture_id = record.capture_id
+      WHERE capture.capture_key = ?
+        AND record.record_kind = 'esun-credit-card-transaction'
+    `).get(first.captureId) as {
+      payload_json?: string;
+      content_hash?: string;
+      occurrence_key?: string;
+    } | undefined;
+    assert.deepEqual(afterEvidence, beforeEvidence);
+  } finally {
+    store.close();
+  }
+});
+
 test("E.SUN rolling query dates do not change canonical occurrence content", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-rolling-query-"));
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const store = createCanonicalSourceStore(directory);
   try {
     const rowsWithoutQueryPeriod = {
       statementRows: [{ ...billedRow, issuerStatementPeriod: undefined }],
       unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
     };
-    const first = buildEsunCanonicalCreditCardCapture(
+    const firstCapture = buildEsunCanonicalCreditCardCapture(
       options({
         ...rowsWithoutQueryPeriod,
         captureId: "capture-esun-query-day-one",
@@ -495,36 +809,86 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
         endDate: "2026-08-26",
       }),
     );
-    const second = buildEsunCanonicalCreditCardCapture(
+    const periodAppearsCapture = buildEsunCanonicalCreditCardCapture(
       options({
-        ...rowsWithoutQueryPeriod,
-        captureId: "capture-esun-query-day-two",
+        statementRows: [{ ...billedRow, issuerStatementPeriod: "2026-07" }],
+        unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined }],
+        captureId: "capture-esun-query-period-appears",
         observedAt: "2026-08-27T00:00:00.000Z",
         startDate: "2025-08-27",
         endDate: "2026-08-27",
       }),
     );
-    await commitEsunCreditCardCapture(store, first);
-    await commitEsunCreditCardCapture(store, second);
-
-    const records = store.db.prepare(`
-      SELECT occurrence_key, content_hash, payload_json
-      FROM source_records
-      WHERE record_kind = 'esun-credit-card-transaction'
-      ORDER BY occurrence_key, rowid
-    `).all() as Array<{
+    const periodDisappearsCapture = buildEsunCanonicalCreditCardCapture(
+      options({
+        ...rowsWithoutQueryPeriod,
+        captureId: "capture-esun-query-period-disappears",
+        observedAt: "2026-08-28T00:00:00.000Z",
+        startDate: "2025-08-28",
+        endDate: "2026-08-28",
+      }),
+    );
+    const first = await commitEsunCreditCardCapture(store, firstCapture);
+    const originalRecords = store.db.prepare(`
+      SELECT record.occurrence_key, record.content_hash, record.payload_json
+      FROM source_records AS record
+      JOIN source_record_provenance AS provenance
+        ON provenance.source_record_id = record.source_record_id
+      JOIN source_captures AS capture
+        ON capture.capture_id = provenance.capture_id
+      WHERE capture.capture_key = ?
+        AND record.record_kind = 'esun-credit-card-transaction'
+      ORDER BY record.rowid
+    `).all("capture-esun-query-day-one") as Array<{
       occurrence_key?: string;
       content_hash?: string;
       payload_json?: string;
     }>;
-    assert.equal(records.length, 4);
-    for (let index = 0; index < records.length; index += 2) {
-      const firstRecord = records[index]!;
-      const repeatedRecord = records[index + 1]!;
-      assert.equal(firstRecord.occurrence_key, repeatedRecord.occurrence_key);
-      assert.equal(firstRecord.content_hash, repeatedRecord.content_hash);
-      assert.equal(firstRecord.payload_json, repeatedRecord.payload_json);
+    assert.equal(originalRecords.length, 2);
+    const appeared = await commitEsunCreditCardCapture(store, periodAppearsCapture);
+    const disappeared = await commitEsunCreditCardCapture(store, periodDisappearsCapture);
+    assert.equal(appeared.accountId, first.accountId);
+    assert.equal(disappeared.accountId, first.accountId);
+
+    const records = store.db.prepare(`
+      SELECT capture.capture_key, record.occurrence_key, record.content_hash, record.payload_json
+      FROM source_records AS record
+      JOIN source_record_provenance AS provenance
+        ON provenance.source_record_id = record.source_record_id
+      JOIN source_captures AS capture
+        ON capture.capture_id = provenance.capture_id
+      WHERE record.record_kind = 'esun-credit-card-transaction'
+      ORDER BY capture.capture_key, record.rowid
+    `).all() as Array<{
+      capture_key?: string;
+      occurrence_key?: string;
+      content_hash?: string;
+      payload_json?: string;
+    }>;
+    assert.equal(records.length, 6);
+    assert.equal(new Set(records.map((record) => record.occurrence_key)).size, 2);
+    for (const original of originalRecords) {
+      const persisted = records.find(
+        (record) =>
+          record.capture_key === "capture-esun-query-day-one" &&
+          record.occurrence_key === original.occurrence_key,
+      );
+      assert.equal(persisted?.content_hash, original.content_hash);
+      assert.equal(persisted?.payload_json, original.payload_json);
     }
+    const captureOccurrenceKeys = records.map(
+      (record) => `${record.capture_key}\u0000${record.occurrence_key}`,
+    );
+    assert.equal(new Set(captureOccurrenceKeys).size, 6);
+    const capturesByOccurrence = new Map<string, Set<string>>();
+    for (const record of records) {
+      const occurrenceKey = String(record.occurrence_key);
+      const captures = capturesByOccurrence.get(occurrenceKey) ?? new Set<string>();
+      captures.add(String(record.capture_key));
+      capturesByOccurrence.set(occurrenceKey, captures);
+    }
+    assert.equal(capturesByOccurrence.size, 2);
+    assert.ok([...capturesByOccurrence.values()].every((captures) => captures.size === 3));
     assert.equal(
       Number((store.db.prepare("SELECT COUNT(*) AS count FROM financial_transactions").get() as {
         count?: number;
@@ -542,6 +906,7 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
     assert.deepEqual(scopes, [
       { scope_start: "2025-08-26", scope_end: "2026-08-26" },
       { scope_start: "2025-08-27", scope_end: "2026-08-27" },
+      { scope_start: "2025-08-28", scope_end: "2026-08-28" },
     ]);
 
     const changedIssuerPeriod = buildEsunCanonicalCreditCardCapture(
@@ -555,6 +920,17 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
       commitEsunCreditCardCapture(store, changedIssuerPeriod),
       /Source occurrence content overwrite is forbidden/i,
     );
+    const changedCardMask = buildEsunCanonicalCreditCardCapture(
+      options({
+        captureId: "capture-esun-card-mask-change",
+        statementRows: [{ ...billedRow, issuerStatementPeriod: undefined, cardNumber: "****5678" }],
+        unbilledRows: [{ ...unbilledRow, issuerStatementPeriod: undefined, cardNumber: "****5678" }],
+      }),
+    );
+    await assert.rejects(
+      commitEsunCreditCardCapture(store, changedCardMask),
+      /Source occurrence content overwrite is forbidden/i,
+    );
   } finally {
     store.close();
   }
@@ -562,13 +938,13 @@ test("E.SUN rolling query dates do not change canonical occurrence content", asy
 
 test("E.SUN extension failure rolls back the shared capture and initial attestation", async () => {
   const directory = mkdtempSync(join("/tmp", "esun-credit-card-atomic-"));
-  const base = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
+  const base = createCanonicalSourceStore(directory);
   try {
     await assert.rejects(
       commitEsunCreditCardCapture(
         {
           db: base.db,
-          databasePath: base.databasePath,
+          withWriter: base.withWriter,
           commitClock: base.commitClock,
           beforeEsunCreditExtensionCommit: () => {
             throw new Error("injected E.SUN extension failure");
@@ -717,7 +1093,6 @@ test("account and transaction identity never include capture IDs or raw card num
     foreignCurrency: null,
     foreignAmount: null,
     description: "Synthetic",
-    billingStatus: "unbilled",
     statementKey: undefined,
     occurrenceIndex: 0,
   });
