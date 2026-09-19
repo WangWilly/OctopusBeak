@@ -206,16 +206,17 @@
 
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
     {@const summaryBlock = spendingBlockData("summary", data)}
+    {@const summaryPeriod = scopeCanonicalSpendingView(summaryBlock?.canonical ?? spending, activeMonth)}
     <section class="card canonical-summary-card">
       <div class="panel-title">
         <div>
           <p class="eyebrow">{$locale === "zh-TW" ? "Totals" : "Totals"}</p>
           <h2>{policyLabel}</h2>
         </div>
-        <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {period.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
+        <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {summaryPeriod.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
       </div>
       <div class="canonical-amount-list">
-        {#each (summaryBlock?.canonical ?? spending).totalsByCurrency as amount (amount.currency)}
+        {#each summaryPeriod.totalsByCurrency as amount (amount.currency)}
           <div class="canonical-amount-row">
             <span>{amount.currency}</span>
             <strong class="money" data-sensitive>{amountText(amount)}</strong>
@@ -225,9 +226,9 @@
         {/each}
       </div>
       <div class="canonical-coverage-grid">
-        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{period.classificationCoverage.classifiedCount}</strong></div>
-        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{period.classificationCoverage.unclassifiedCount}</strong></div>
-        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{period.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{summaryPeriod.classificationCoverage.classifiedCount}</strong></div>
+        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{summaryPeriod.classificationCoverage.unclassifiedCount}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{summaryPeriod.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
       </div>
     </section>
     </ProgressiveBlock>

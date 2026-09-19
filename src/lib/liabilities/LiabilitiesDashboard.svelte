@@ -24,6 +24,12 @@
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
+  import {
+    resolveLiabilitiesChart,
+    resolveLiabilitiesDetails,
+    resolveLiabilitiesList,
+    resolveLiabilitiesSummary,
+  } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let liabilities: LiabilitiesPageDto;
   export let focusAccountId: string | null = null;
@@ -164,8 +170,9 @@
     <ProjectionStateBanner projection={liabilities} />
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
       {@const summaryBlock = liabilitiesBlockData("summary", data)}
+      {@const summaryDataBlock = resolveLiabilitiesSummary(liabilities, summaryBlock)}
       <section aria-label={$t.liabilities.metricsAria}>
-        <SummaryStrip metrics={buildMetrics(summaryBlock?.accounts ?? liabilityAccounts, $t)} />
+        <SummaryStrip metrics={buildMetrics(summaryDataBlock.accounts, $t)} />
         {#if usesEstimatedCredit}
           <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
             {$t.overview.creditCardEstimateBasis}
@@ -176,6 +183,7 @@
 
     <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
       {@const chartBlock = liabilitiesBlockData("chart", data)}
+      {@const chartDataBlock = resolveLiabilitiesChart(liabilities, chartBlock)}
       <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.liabilities.debtBalance}</h2>
@@ -199,8 +207,8 @@
       <div class="pad balance-chart">
         <StackedBalanceChart
           chart={chartBlock ? buildStackedBalanceChartData({
-            accounts: chartBlock.accounts,
-            dailyHistoryByAccount: chartBlock.dailyHistoryByAccount,
+            accounts: chartDataBlock.accounts,
+            dailyHistoryByAccount: chartDataBlock.dailyHistoryByAccount,
             filter: accountFilter,
             currency: chartCurrency,
             mode: "liability",
@@ -214,30 +222,32 @@
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
       {@const listBlock = liabilitiesBlockData("list", data)}
+      {@const listDataBlock = resolveLiabilitiesList(liabilities, listBlock)}
       <AccountTable
-        accounts={listBlock?.accounts ?? liabilityAccounts}
+        accounts={listDataBlock.accounts}
         mode="liability"
         bind:search
         bind:filter={accountFilter}
-        transactionsByAccount={listBlock?.transactionsByAccount ?? liabilities.transactionsByAccount}
-        dailyHistoryByAccount={listBlock?.dailyHistoryByAccount ?? liabilities.dailyHistoryByAccount}
+        transactionsByAccount={listDataBlock.transactionsByAccount}
+        dailyHistoryByAccount={listDataBlock.dailyHistoryByAccount}
         focusAccountId={focusAccountId}
       />
     </ProgressiveBlock>
 
     <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
       {@const detailsBlock = liabilitiesBlockData("details", data)}
-      {#if (detailsBlock?.marginAccounts ?? liabilities.marginAccounts).length > 0}
+      {@const detailsDataBlock = resolveLiabilitiesDetails(liabilities, detailsBlock)}
+      {#if detailsDataBlock.marginAccounts.length > 0}
         <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
         <div class="panel-title">
           <h2>{$t.liabilities.marginExposure}</h2>
         </div>
         <AccountTable
-          accounts={detailsBlock?.marginAccounts ?? liabilities.marginAccounts}
+          accounts={detailsDataBlock.marginAccounts}
           mode="liability"
           bind:search
           bind:filter={marginFilter}
-          transactionsByAccount={detailsBlock?.transactionsByAccount ?? liabilities.transactionsByAccount}
+          transactionsByAccount={detailsDataBlock.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
         />
         </section>
