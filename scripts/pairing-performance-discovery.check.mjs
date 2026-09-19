@@ -8,7 +8,7 @@ const testCommand = String(packageJson.scripts.test);
 assert.equal(typeof packageJson.scripts["check:pairing-ui-performance"], "string");
 assert.match(packageJson.scripts["check:pairing-ui-performance"], /check-pairing-ui-performance\.mjs/u);
 assert.doesNotMatch(testCommand, /spending-ui-pairing\.check\.mjs/u);
-assert.match(testCommand, /scripts\/\*\*\/\*\.check\.mjs/u);
+assert.match(testCommand, /run-test-lane\.mjs all/u);
 assert.equal(
   fileURLToPath(new URL("./check-pairing-ui-performance.mjs", import.meta.url)).endsWith(
     "check-pairing-ui-performance.mjs",
