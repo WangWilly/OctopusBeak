@@ -14,6 +14,10 @@ const en = {
   common: {
     loading: "Loading...",
     close: "Close",
+    refresh: "Refresh data",
+    refreshing: "Refreshing data",
+    newData: "New data available",
+    refreshFailed: "Refresh failed",
     cancel: "Cancel",
     save: "Save",
     saved: "saved",
@@ -783,6 +787,10 @@ const zh: typeof en = {
   common: {
     loading: "載入中...",
     close: "關閉",
+    refresh: "更新資料",
+    refreshing: "更新資料中",
+    newData: "有新資料",
+    refreshFailed: "更新失敗",
     cancel: "取消",
     save: "儲存",
     saved: "已儲存",
