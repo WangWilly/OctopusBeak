@@ -713,7 +713,7 @@
               <div class="day-totals">{#each group.totals as total (total.currency)}<span class="money" data-sensitive>{amountText(total)}</span>{/each}</div>
             </header>
             {#each group.records as record (record.purchaseId)}
-          <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-possible-duplicate={record.possibleDuplicate}>
+          <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-transaction-id={record.transaction?.transactionId ?? ""} data-possible-duplicate={record.possibleDuplicate}>
             <div class="purchase-record-main">
               <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$locale === "zh-TW" ? "可能重複" : "Possible duplicate"}</span>{/if}</div>
               {#if occurrenceBasisLabel(record)}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}
@@ -750,8 +750,8 @@
     </ProgressiveBlock>
 
     {#if pairingInvoice?.invoice}
-      <section class="pairing-dialog-backdrop" data-pairing-dialog>
-        <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      <section class="pairing-dialog-backdrop" data-pairing-dialog data-pairing-feedback="open-dialog">
+        <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title" aria-busy={busyAction !== null}>
           <div class="panel-title">
             <div><p class="eyebrow">{$locale === "zh-TW" ? "人工配對" : "Manual match"}</p><h2 id="pairing-title">{$locale === "zh-TW" ? "選擇付款交易" : "Choose a payment transaction"}</h2></div>
             <button type="button" class="button secondary" onclick={closePairing}>{$locale === "zh-TW" ? "關閉" : "Close"}</button>
@@ -788,6 +788,9 @@
                 <span>{$locale === "zh-TW" ? "來源金額或幣別不同；不推算差額用途。" : "Source amount or currency differs; no use for the difference is inferred."}</span>
               {/if}
             </div>
+          {/if}
+          {#if busyAction !== null}
+            <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$locale === "zh-TW" ? "正在儲存配對…" : "Saving pairing…"}</span>
           {/if}
           <button type="button" class="button primary" disabled={!selectedPaymentId || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$locale === "zh-TW" ? "確認配對" : "Confirm match"}</button>
         </div>
