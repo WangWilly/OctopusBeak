@@ -50,7 +50,7 @@ test("indexed manual ranking preserves the complete deterministic ordering", () 
   ]);
 });
 
-test("pairing index cache reuses only the same data version and relevant facts", () => {
+test("pairing index cache treats the immutable data version as its invalidation boundary", () => {
   const cache = new SpendingPairingIndexCache();
   const firstTransactions = [transaction("tx", "1000")];
   const first = cache.get(9, firstTransactions);
@@ -58,11 +58,7 @@ test("pairing index cache reuses only the same data version and relevant facts",
   assert.equal(cache.get(9, firstTransactions).reused, true);
   assert.equal(cache.get(10, firstTransactions).reused, false);
   assert.equal(cache.currentVersion, 10);
-  assert.equal(cache.get(10, [transaction("tx", "1010")]).reused, false);
-  cache.invalidate(9);
-  assert.equal(cache.currentVersion, 10, "invalidating an old version must not drop the current index");
-  cache.invalidate(10);
-  assert.equal(cache.currentVersion, null);
+  assert.equal(cache.get(10, [transaction("tx", "1010")]).reused, true);
 });
 
 test("indexed rank results are cached per invoice within a data version", () => {

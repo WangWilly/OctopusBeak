@@ -21,7 +21,6 @@ export type SpendingPairingIndexEntry = Readonly<{
 
 export type SpendingPairingIndex = Readonly<{
   dataVersion: number;
-  transactionFingerprint: string;
   entries: readonly SpendingPairingIndexEntry[];
 }>;
 
@@ -56,25 +55,6 @@ function purchaseDay(value: string): number {
   return Number.isFinite(parsed) ? parsed / 86_400_000 : Number.NaN;
 }
 
-function transactionFingerprint(transaction: SpendingMatchingTransaction): string {
-  return JSON.stringify([
-    transaction.transactionId,
-    transaction.effectiveOn,
-    transaction.consumeDate ?? null,
-    transaction.postingDate ?? null,
-    transaction.description ?? null,
-    transaction.amount.coefficient,
-    transaction.amount.scale,
-    transaction.amount.currency,
-  ]);
-}
-
-export function spendingPairingTransactionFingerprint(
-  transactions: readonly SpendingMatchingTransaction[],
-): string {
-  return transactions.map(transactionFingerprint).join("\u0001");
-}
-
 export function createSpendingPairingIndex(
   dataVersion: number,
   transactions: readonly SpendingMatchingTransaction[],
@@ -91,7 +71,6 @@ export function createSpendingPairingIndex(
   });
   const index = Object.freeze({
     dataVersion,
-    transactionFingerprint: spendingPairingTransactionFingerprint(transactions),
     entries: Object.freeze(entries),
   });
   rankCaches.set(index, new Map());
@@ -119,24 +98,18 @@ export function cacheSpendingPairingRank(
 export class SpendingPairingIndexCache {
   private current: SpendingPairingIndex | null = null;
 
+  forVersion(dataVersion: number): SpendingPairingIndex | null {
+    return this.current?.dataVersion === dataVersion ? this.current : null;
+  }
+
   get(
     dataVersion: number,
     transactions: readonly SpendingMatchingTransaction[],
   ): Readonly<{ index: SpendingPairingIndex; reused: boolean }> {
-    const fingerprint = spendingPairingTransactionFingerprint(transactions);
-    if (
-      this.current &&
-      this.current.dataVersion === dataVersion &&
-      this.current.transactionFingerprint === fingerprint
-    ) return { index: this.current, reused: true };
+    if (this.current?.dataVersion === dataVersion) return { index: this.current, reused: true };
     const index = createSpendingPairingIndex(dataVersion, transactions);
     this.current = index;
     return { index, reused: false };
-  }
-
-  invalidate(dataVersion?: number): void {
-    if (dataVersion === undefined || this.current?.dataVersion === dataVersion)
-      this.current = null;
   }
 
   get currentVersion(): number | null {
