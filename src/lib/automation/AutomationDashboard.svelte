@@ -33,7 +33,10 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
   import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
-  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
+  import type {
+    DashboardBlockPayload,
+    DashboardBlockValueMap,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
   import { resolveAutomationBlock } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
@@ -43,6 +46,10 @@
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
   } from "./types.ts";
+  import {
+    automationStageTasks,
+    dispatchAutomationStageSync,
+  } from "./progressive-automation-actions.ts";
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
@@ -59,11 +66,13 @@
     return blocks[key] ?? { status: "loading" };
   }
 
-  function automationBlockData(
-    key: "summary" | "list" | "details",
+  function automationBlockData<Key extends "summary" | "list" | "details">(
+    key: Key,
     payload: DashboardBlockPayload | undefined,
-  ) {
-    return payload?.route === "automation" && payload.block === key ? payload.data : undefined;
+  ): DashboardBlockValueMap["automation"][Key] | undefined {
+    return payload?.route === "automation" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["automation"][Key]
+      : undefined;
   }
 
   let credentialsOpen = false;
@@ -264,11 +273,14 @@
     }
   }
 
-  function taskStagesFor(sourceAutomation: AutomationPageModel) {
+  function taskStagesFor(
+    sourceAutomation: AutomationPageModel,
+    block?: Parameters<typeof automationStageTasks>[1],
+  ) {
     return [{
       id: "sync",
       title: $t.automation.syncStage,
-      tasks: sourceAutomation.tasks,
+      tasks: automationStageTasks(sourceAutomation, block),
     }];
   }
 
@@ -1349,7 +1361,7 @@
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
     {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data))}
-    {@const listTaskStages = taskStagesFor(listAutomation)}
+    {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data))}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
       {#each listTaskStages as stage, stageIndex}
@@ -1367,7 +1379,10 @@
                   class="button primary stage-sync-action"
                   type="button"
                   disabled={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length}
-                  onclick={() => openSyncSheet(stage.tasks, listParallelTaskIds)}
+                  onclick={() => dispatchAutomationStageSync(
+                    stage.tasks,
+                    (tasks) => openSyncSheet(tasks, listParallelTaskIds),
+                  )}
                 >
                   {$t.automation.syncAll}
                 </button>

@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+import type { DashboardBlockValueMap } from "$lib/shared-shell/dashboard-blocks.ts";
+import {
+  automationStageTasks,
+  dispatchAutomationStageSync,
+} from "./progressive-automation-actions.ts";
 
 const source = readFileSync(
   new URL("./AutomationDashboard.svelte", import.meta.url),
@@ -152,16 +158,10 @@ assert.doesNotMatch(source, /<details class="stage-section"/);
 assert.doesNotMatch(source, /\$t\.automation\.independentTasks/);
 assert.doesNotMatch(source, /\$: parallelTasks =/);
 assert.match(source, /class="button primary stage-sync-action"/);
-assert.match(source, /onclick=\{\(\) => openSyncSheet\(stage\.tasks\)\}/);
-assert.match(
-  source,
-  /\$: taskStages = \[\s*\{\s*id: "sync",\s*title: \$t\.automation\.syncStage,\s*tasks: automation\.tasks,\s*\},\s*\];/,
-);
 assert.match(source, /\{#each stage\.tasks as task \(task\.id\)\}/);
-assert.match(
-  source,
-  /class:muted=\{!stageRunnableTasks\(stage\.tasks\)\.length\}/,
-);
+assert.match(source, /stageRunnableTasks\(stage\.tasks, listParallelTaskIds\)/);
+assert.match(source, /dispatchAutomationStageSync\(/);
+assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)\)/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
 assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
@@ -251,6 +251,28 @@ assert.match(source, /\$: historyCounts = catalogHistoryRows\.reduce/);
 assert.match(source, /historyCounts\.completed/);
 assert.doesNotMatch(source, /historyFinishedTime/);
 assert.doesNotMatch(source, /class="modal-footer"/);
+
+const fallbackTask = { id: "fallback-task" } as unknown as AutomationTaskRow;
+const blockTask = { id: "block-task" } as unknown as AutomationTaskRow;
+const fallbackAutomation = {
+  tasks: [fallbackTask],
+} as unknown as AutomationPageModel;
+const blockAutomation = {
+  ...fallbackAutomation,
+  tasks: [blockTask],
+} as unknown as AutomationPageModel;
+const listBlock = {
+  automation: blockAutomation,
+  credentialGroups: [],
+} as unknown as DashboardBlockValueMap["automation"]["list"];
+let syncedTasks: AutomationTaskRow[] | undefined;
+const displayedBlockTasks = automationStageTasks(fallbackAutomation, listBlock);
+dispatchAutomationStageSync(displayedBlockTasks, (tasks) => { syncedTasks = tasks; });
+assert.strictEqual(syncedTasks, blockAutomation.tasks);
+syncedTasks = undefined;
+const displayedFallbackTasks = automationStageTasks(fallbackAutomation);
+dispatchAutomationStageSync(displayedFallbackTasks, (tasks) => { syncedTasks = tasks; });
+assert.strictEqual(syncedTasks, fallbackAutomation.tasks);
 
 const currentTaskIds = new Set(["source-task"]);
 const historyRowsForCheck = [
