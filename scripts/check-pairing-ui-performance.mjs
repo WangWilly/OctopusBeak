@@ -4,6 +4,7 @@ import { cpus, platform, release, totalmem, version as osVersion } from "node:os
 import { readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { chromium } from "playwright";
 import { createFinancialPageWorkerClient } from "../electron/financial-page-worker-client.ts";
@@ -20,6 +21,13 @@ const EXPECTED_FIXTURE_SHAPE = {
   invoices: 10_000,
   links: 10_000,
 };
+const RENDERER_FIXTURE_SHAPE = {
+  records: 100_000,
+  invoiceIdentities: 10_000,
+  linkedRecords: 9_999,
+  bankTransactionRecords: 90_000,
+};
+const FEEDBACK_MS = 200;
 const electronPackage = JSON.parse(
   readFileSync(new URL("../node_modules/electron/package.json", import.meta.url), "utf8"),
 );
@@ -60,10 +68,32 @@ function transactionRecord(candidate) {
   };
 }
 
-function invoiceRecord(invoiceId) {
+function benchmarkDate(index) {
+  const monthOffset = index % 60;
+  const year = 2020 + Math.floor(monthOffset / 12);
+  const month = monthOffset % 12 + 1;
+  const day = index % 28 + 1;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function syntheticCandidate(index) {
+  const transactionId = `00000000-0000-4000-9000-${String(index + 1).padStart(12, "0")}`;
+  const occurrence = benchmarkDate(index);
+  return {
+    purchaseId: `transaction:${transactionId}`,
+    transactionId,
+    amount: money(1000 + (index % 17)),
+    occurrence: { value: occurrence, precision: "date", timeZone: "Asia/Taipei", basis: "purchase-date" },
+    description: `Benchmark payment ${index + 1}`,
+    stream: "checking",
+    effectiveDateBasis: null,
+  };
+}
+
+function invoiceRecord(invoiceId, occurrenceValue = "2025-01-01") {
   const amount = money("1000");
   const occurrence = {
-    value: "2025-01-01",
+    value: occurrenceValue,
     precision: "date",
     timeZone: "Asia/Taipei",
     basis: "purchase-date",
@@ -93,9 +123,56 @@ function invoiceRecord(invoiceId) {
   };
 }
 
-function makeRendererModel(invoiceId, candidate) {
+function linkedRecord(index) {
+  const invoice = invoiceRecord(`benchmark-invoice-${index}`, "2024-01-01");
+  const payment = transactionRecord(syntheticCandidate(100_000 + index));
+  const invoiceView = invoice.invoice;
+  const transactionView = payment.transaction;
+  assert.ok(invoiceView && transactionView);
+  const eventId = `benchmark-link-${index}`;
+  return {
+    purchaseId: `link:${eventId}`,
+    basis: "linked",
+    amount: payment.amount,
+    occurrence: invoice.occurrence,
+    description: invoice.description,
+    invoice: invoiceView,
+    transaction: transactionView,
+    items: [],
+    possibleDuplicate: false,
+    candidateIds: [],
+    link: {
+      invoiceId: invoiceView.invoiceId,
+      transactionId: transactionView.transactionId,
+      eventId,
+      origin: "user",
+      evidenceKnowledgeSequence: 1,
+      evidence: { fixture: "pairing-ui-renderer-scale" },
+    },
+    difference: {
+      invoiceAmount: invoice.amount,
+      bankAmount: payment.amount,
+      sameCurrency: true,
+      exactAmountEqual: true,
+    },
+    refund: null,
+  };
+}
+
+export function makeRendererModel(invoiceId, candidate) {
   const invoice = invoiceRecord(invoiceId);
   const payment = transactionRecord(candidate);
+  const records = [
+    ...Array.from({ length: 9_999 }, (_, index) => linkedRecord(index)),
+    invoice,
+    payment,
+    ...Array.from({ length: 89_999 }, (_, index) => transactionRecord(syntheticCandidate(index))),
+  ];
+  assert.equal(records.length, 100_000);
+  const totalCoefficient = records.reduce(
+    (total, record) => total + BigInt(record.amount?.coefficient ?? "0"),
+    0n,
+  ).toString();
   return {
     canonical: view([
       record({
@@ -111,8 +188,8 @@ function makeRendererModel(invoiceId, candidate) {
       kind: "current",
       knowledgeAt: null,
       financialAt: null,
-      records: [invoice, payment],
-      totalsByCurrency: [sumMoney(invoice.amount, payment.amount)].map((amount) => ({ ...amount, count: 2 })),
+      records,
+      totalsByCurrency: [{ ...money(totalCoefficient), count: records.length }],
       totalStatus: "complete",
       candidates: [],
     },
@@ -152,6 +229,12 @@ async function runSingle(runNumber) {
     preflight = null;
 
     const model = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
+    const rendererInvoiceIds = new Set(model.purchaseReport.records.flatMap((record) =>
+      record.invoice ? [record.invoice.invoiceId] : []));
+    assert.equal(model.purchaseReport.records.length, RENDERER_FIXTURE_SHAPE.records);
+    assert.equal(model.purchaseReport.records.filter((record) => record.basis === "linked").length, RENDERER_FIXTURE_SHAPE.linkedRecords);
+    assert.equal(model.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length, RENDERER_FIXTURE_SHAPE.bankTransactionRecords);
+    assert.equal(rendererInvoiceIds.size, RENDERER_FIXTURE_SHAPE.invoiceIdentities);
     model.purchaseReport.knowledgeAt = fixture.dataVersion;
     server = await createSpendingViteServer();
     const address = server.httpServer?.address();
@@ -273,21 +356,32 @@ async function runSingle(runNumber) {
     });
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
+    const initialRenderedRecordCount = await page.locator("[data-purchase-record]").count();
     const prewarmStartedAt = performance.now();
     await page.waitForFunction(() => window.__pairingPrewarmDone === true, undefined, { timeout: 30_000 });
     const prewarmElapsedMs = performance.now() - prewarmStartedAt;
 
-    await page.evaluate(() => window.__pairingStartInteraction("open"));
+    await page.evaluate(() => {
+      window.__pairingStartInteraction("open-feedback");
+      window.__pairingStartInteraction("open-complete");
+    });
     await page.locator("[data-open-pairing]").first().click();
+    await page.locator('[data-pairing-dialog][data-pairing-feedback="open-dialog"]').waitFor({ state: "visible", timeout: 30_000 });
+    const openFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open-feedback"));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open"));
+    const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open-complete"));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).check();
 
-    await page.evaluate(() => window.__pairingStartInteraction("confirm"));
+    await page.evaluate(() => {
+      window.__pairingStartInteraction("confirm-feedback");
+      window.__pairingStartInteraction("confirm-complete");
+    });
     await page.locator("[data-confirm-direct-pair]").click();
+    await page.locator('[data-pairing-dialog] [data-pairing-feedback="confirm-busy"]').waitFor({ state: "visible", timeout: 30_000 });
+    const confirmFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm-feedback"));
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
-    await page.locator('[data-purchase-record][data-basis="linked"]').waitFor({ timeout: 30_000 });
-    const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm"));
+    await page.locator(`[data-purchase-record][data-basis="linked"][data-transaction-id="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
+    const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm-complete"));
     await page.waitForFunction(
       (version) => window.__pairingPrewarmVersions.includes(version),
       fixture.dataVersion + 1,
@@ -319,6 +413,7 @@ async function runSingle(runNumber) {
     verificationDb.close();
     assert.equal(persistedLink.count, 1, "the canonical store must persist the selected Pairing link");
     assert.equal(activeLinkCount.count, 10_000);
+    const postConfirmRenderedRecordCount = await page.locator("[data-purchase-record]").count();
     assert.deepEqual(errors, []);
     assert.equal(rankBridgeCallCount, 1);
     assert.equal(confirmBridgeCallCount, 1);
@@ -331,7 +426,7 @@ async function runSingle(runNumber) {
       const windows = Object.values(window.__pairingPerformance.windows);
       const overlaps = (entry, windowValue) =>
         entry.start < windowValue.end && entry.start + entry.duration > windowValue.start;
-      const measures = Object.fromEntries(["open", "confirm"].map((kind) => {
+      const measures = Object.fromEntries(["open-feedback", "open-complete", "confirm-feedback", "confirm-complete"].map((kind) => {
         const entry = performance.getEntriesByName(`pairing-${kind}`).at(-1);
         return [kind, entry ? { start: entry.startTime, duration: entry.duration } : null];
       }));
@@ -362,9 +457,17 @@ async function runSingle(runNumber) {
       invoiceCount: EXPECTED_FIXTURE_SHAPE.invoices,
       existingLinkCountBefore: EXPECTED_FIXTURE_SHAPE.links - 1,
       existingLinkCountAfter: EXPECTED_FIXTURE_SHAPE.links,
+      rendererModelRecordCount: model.purchaseReport.records.length,
+      rendererModelInvoiceIdentityCount: rendererInvoiceIds.size,
+      rendererModelLinkedRecordCount: model.purchaseReport.records.filter((record) => record.basis === "linked").length,
+      rendererModelBankTransactionRecordCount: model.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length,
+      initialRenderedRecordCount,
+      postConfirmRenderedRecordCount,
       setupMs: fixture.setupMs,
       prewarmElapsedMs,
+      openFeedbackElapsedMs,
       openElapsedMs,
+      confirmFeedbackElapsedMs,
       confirmElapsedMs,
       publicReadMs,
       totalMs,
@@ -381,6 +484,8 @@ async function runSingle(runNumber) {
     };
     console.log(JSON.stringify(evidence, null, 2));
     const timingFailures = [
+      openFeedbackElapsedMs > FEEDBACK_MS ? `open feedback ${openFeedbackElapsedMs.toFixed(1)}ms > ${FEEDBACK_MS}ms` : null,
+      confirmFeedbackElapsedMs > FEEDBACK_MS ? `confirm feedback ${confirmFeedbackElapsedMs.toFixed(1)}ms > ${FEEDBACK_MS}ms` : null,
       openElapsedMs > SLA_MS ? `open ${openElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
       confirmElapsedMs > SLA_MS ? `confirm ${confirmElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
       browserEvidence.longTasks.some((entry) => entry.duration > 200)
@@ -420,11 +525,14 @@ async function main() {
   console.log(JSON.stringify({
     suiteRuns: evidence.length,
     suiteElapsedMs,
+    openFeedbackElapsedMs: evidence.map((run) => run.openFeedbackElapsedMs),
     openElapsedMs: evidence.map((run) => run.openElapsedMs),
+    confirmFeedbackElapsedMs: evidence.map((run) => run.confirmFeedbackElapsedMs),
     confirmElapsedMs: evidence.map((run) => run.confirmElapsedMs),
     maxRendererRafGapMs: evidence.map((run) => run.maxRendererRafGapMs),
     longTaskCounts: evidence.map((run) => run.rendererLongTasks.length),
   }, null, 2));
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  await main();
