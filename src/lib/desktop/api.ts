@@ -27,9 +27,11 @@ import type {
   VerificationInteractionMode,
 } from "$lib/automation/human-assistance.ts";
 import type {
+  DataReadOptions,
   DataInvalidationEvent,
   DataVersionSnapshot,
 } from "$lib/shared-shell/data-version.ts";
+import type { DashboardBlockKey } from "$lib/shared-shell/block-load-state.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -97,16 +99,20 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
   };
   overview: {
-    load(): Promise<OverviewPageDto>;
+    load(options?: DataReadOptions): Promise<OverviewPageDto>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
   };
   assets: {
-    load(): Promise<AssetsPageDto>;
+    load(options?: DataReadOptions): Promise<AssetsPageDto>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
   };
   liabilities: {
-    load(): Promise<LiabilitiesPageDto>;
+    load(options?: DataReadOptions): Promise<LiabilitiesPageDto>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
   };
   spending: {
-    load(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+    load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -115,7 +121,8 @@ export type OctopusBeakApi = {
     updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
   automation: {
-    load(): Promise<AutomationDesktopModel>;
+    load(options?: DataReadOptions): Promise<AutomationDesktopModel>;
+    loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<unknown>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
     cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
     enableCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
@@ -146,9 +153,13 @@ export const octopusBeakApiChannels = [
   "settings:load",
   "settings:save",
   "overview:load",
+  "overview:block",
   "assets:load",
+  "assets:block",
   "liabilities:load",
+  "liabilities:block",
   "spending:load",
+  "spending:block",
   "spending:pairing-candidates",
   "spending:confirmCandidate",
   "spending:denyCandidate",
@@ -156,6 +167,7 @@ export const octopusBeakApiChannels = [
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
   "automation:load",
+  "automation:block",
   "automation:saveCredentials",
   "automation:cathayGmailOtpStatus",
   "automation:enableCathayGmailOtp",

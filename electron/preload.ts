@@ -19,16 +19,20 @@ const api: OctopusBeakApi = {
     save: (input) => ipcRenderer.invoke("settings:save", input),
   },
   overview: {
-    load: () => ipcRenderer.invoke("overview:load"),
+    load: (options) => ipcRenderer.invoke("overview:load", options),
+    loadBlock: (block, options) => ipcRenderer.invoke("overview:block", block, options),
   },
   assets: {
-    load: () => ipcRenderer.invoke("assets:load"),
+    load: (options) => ipcRenderer.invoke("assets:load", options),
+    loadBlock: (block, options) => ipcRenderer.invoke("assets:block", block, options),
   },
   liabilities: {
-    load: () => ipcRenderer.invoke("liabilities:load"),
+    load: (options) => ipcRenderer.invoke("liabilities:load", options),
+    loadBlock: (block, options) => ipcRenderer.invoke("liabilities:block", block, options),
   },
   spending: {
-    load: (input) => ipcRenderer.invoke("spending:load", input),
+    load: (input, options) => ipcRenderer.invoke("spending:load", input, options),
+    loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
     rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
@@ -37,7 +41,8 @@ const api: OctopusBeakApi = {
     updateTransactionOverride: (input) => ipcRenderer.invoke("spending:updateTransactionOverride", input),
   },
   automation: {
-    load: () => ipcRenderer.invoke("automation:load"),
+    load: (options) => ipcRenderer.invoke("automation:load", options),
+    loadBlock: (block, options) => ipcRenderer.invoke("automation:block", block, options),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
     cathayGmailOtpStatus: () => ipcRenderer.invoke("automation:cathayGmailOtpStatus"),
     enableCathayGmailOtp: () => ipcRenderer.invoke("automation:enableCathayGmailOtp"),

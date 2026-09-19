@@ -3,6 +3,12 @@ import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
+import { loadAutomationDesktopModel } from "../src/lib/automation/server/desktop-api.ts";
+import { createFinancialQuery } from "../src/lib/shared-ledger/server/financial-query.ts";
+import {
+  createFinancialPageBlockLoader,
+  type FinancialBlockTarget,
+} from "./financial-page-block-loader.ts";
 import {
   confirmSpendingCandidate,
   denySpendingCandidate,
@@ -18,10 +24,39 @@ import type {
 if (!parentPort) throw new Error("Financial page worker requires a parent port.");
 const port = parentPort;
 
+const blockLoader = createFinancialPageBlockLoader(async (target: FinancialBlockTarget) => {
+  if (target === "automation") return loadAutomationDesktopModel();
+  const query = createFinancialQuery();
+  if (target === "spending") {
+    return query.current({ kind: "current", product: "spending" });
+  }
+  if (target === "overview") {
+    return (await query.current({
+      kind: "current",
+      product: "overview",
+      expectedSources: configuredOverviewSources(),
+    })).projection;
+  }
+  if (target === "assets") {
+    return (await query.current({
+      kind: "current",
+      product: "assets",
+      expectedSources: configuredOverviewSources(),
+    })).projection;
+  }
+  return (await query.current({
+    kind: "current",
+    product: "liabilities",
+    expectedSources: configuredOverviewSources(),
+  })).projection;
+});
+
 port.on("message", async (request: FinancialPageRequest) => {
   let response: FinancialPageResponse;
   try {
-    const value = request.page === "overview"
+    const value = request.page === "block"
+      ? await blockLoader.load(request.target, request.block, request.options)
+      : request.page === "overview"
       ? await loadOverview(undefined, { expectedSources: configuredOverviewSources() })
       : request.page === "assets"
         ? await loadAssets()

@@ -18,14 +18,22 @@
   } from "$lib/shared-accounts/components/stacked-balance-chart-data.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
 
   export let liabilities: LiabilitiesPageDto;
   export let focusAccountId: string | null = null;
+  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
 
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
   let marginFilter: AccountKind | "all" = "all";
+
+  function blockState(key: string): BlockState<unknown> {
+    return blocks[key] ?? { status: "ready", data: null };
+  }
 
   $: liabilityAccounts = liabilities.accounts;
   $: usesEstimatedCredit = liabilityAccounts.some((account) =>
@@ -141,16 +149,19 @@
 >
   <div class="content">
     <ProjectionStateBanner projection={liabilities} />
-    <section aria-label={$t.liabilities.metricsAria}>
-      <SummaryStrip {metrics} />
-      {#if usesEstimatedCredit}
-        <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
-          {$t.overview.creditCardEstimateBasis}
-        </p>
-      {/if}
-    </section>
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
+      <section aria-label={$t.liabilities.metricsAria}>
+        <SummaryStrip {metrics} />
+        {#if usesEstimatedCredit}
+          <p class="balance-basis" data-balance-basis="credit-card-estimate" role="note">
+            {$t.overview.creditCardEstimateBasis}
+          </p>
+        {/if}
+      </section>
+    </ProgressiveBlock>
 
-    <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+      <section class="card balance-history" aria-label={$t.liabilities.balanceHistoryAria}>
       <div class="panel-title">
         <h2>{$t.liabilities.debtBalance}</h2>
         {#if chartCurrencies.length > 0}
@@ -173,20 +184,24 @@
       <div class="pad balance-chart">
         <StackedBalanceChart chart={chartData} currency={chartCurrency} label={$t.liabilities.debtExposure} />
       </div>
-    </section>
+      </section>
+    </ProgressiveBlock>
 
-    <AccountTable
-      accounts={liabilityAccounts}
-      mode="liability"
-      bind:search
-      bind:filter={accountFilter}
-      transactionsByAccount={liabilities.transactionsByAccount}
-      dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
-      focusAccountId={focusAccountId}
-    />
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+      <AccountTable
+        accounts={liabilityAccounts}
+        mode="liability"
+        bind:search
+        bind:filter={accountFilter}
+        transactionsByAccount={liabilities.transactionsByAccount}
+        dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
+        focusAccountId={focusAccountId}
+      />
+    </ProgressiveBlock>
 
-    {#if liabilities.marginAccounts.length > 0}
-      <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
+      {#if liabilities.marginAccounts.length > 0}
+        <section class="card margin-exposure" aria-label={$t.liabilities.marginExposure}>
         <div class="panel-title">
           <h2>{$t.liabilities.marginExposure}</h2>
         </div>
@@ -198,7 +213,8 @@
           transactionsByAccount={liabilities.transactionsByAccount}
           dailyHistoryByAccount={liabilities.dailyHistoryByAccount}
         />
-      </section>
-    {/if}
+        </section>
+      {/if}
+    </ProgressiveBlock>
   </div>
 </DashboardShell>

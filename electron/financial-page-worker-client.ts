@@ -3,6 +3,8 @@ import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
+import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -14,10 +16,17 @@ import type {
 } from "../src/lib/spending/model.ts";
 
 export type FinancialPageRequest =
-  | { id: number; page: "overview" }
-  | { id: number; page: "assets" }
-  | { id: number; page: "liabilities" }
-  | { id: number; page: "spending"; input?: SpendingLoadInput }
+  | { id: number; page: "overview"; options?: DataReadOptions }
+  | { id: number; page: "assets"; options?: DataReadOptions }
+  | { id: number; page: "liabilities"; options?: DataReadOptions }
+  | { id: number; page: "spending"; input?: SpendingLoadInput; options?: DataReadOptions }
+  | {
+    id: number;
+    page: "block";
+    target: "overview" | "assets" | "liabilities" | "spending" | "automation";
+    block: DashboardBlockKey;
+    options?: DataReadOptions;
+  }
   | { id: number; page: "spending-pairing"; input: SpendingPairingCandidatesInput }
   | { id: number; page: "spending-action"; action: "confirmCandidate" | "denyCandidate" | "revokeLink"; input: SpendingConfirmActionInput | SpendingCandidateActionInput | SpendingLinkActionInput };
 
@@ -30,10 +39,15 @@ type WorkerPort = Pick<Worker, "on" | "postMessage" | "terminate">;
 const WORKER_CLOSED_MESSAGE = "Financial page worker is closed.";
 
 export type FinancialPageWorkerClient = {
-  load(page: "overview"): Promise<OverviewPageDto>;
-  load(page: "assets"): Promise<AssetsPageDto>;
-  load(page: "liabilities"): Promise<LiabilitiesPageDto>;
-  load(page: "spending", input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  load(page: "overview", options?: DataReadOptions): Promise<OverviewPageDto>;
+  load(page: "assets", options?: DataReadOptions): Promise<AssetsPageDto>;
+  load(page: "liabilities", options?: DataReadOptions): Promise<LiabilitiesPageDto>;
+  load(page: "spending", input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
+  loadBlock(
+    page: "overview" | "assets" | "liabilities" | "spending" | "automation",
+    block: DashboardBlockKey,
+    options?: DataReadOptions,
+  ): Promise<unknown>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -74,13 +88,30 @@ export function createFinancialPageWorkerClient(
 
   function load(
     page: "overview" | "assets" | "liabilities" | "spending",
-    input?: SpendingLoadInput,
+    inputOrOptions?: SpendingLoadInput | DataReadOptions,
+    spendingOptions?: DataReadOptions,
   ): Promise<unknown> {
     if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
     const id = nextId++;
+    const input = page === "spending" ? inputOrOptions as SpendingLoadInput | undefined : undefined;
+    const options = page === "spending" ? spendingOptions : inputOrOptions as DataReadOptions | undefined;
     const request: FinancialPageRequest = page === "spending"
-      ? { id, page, ...(input ? { input } : {}) }
-      : { id, page };
+      ? { id, page, ...(input ? { input } : {}), ...(options ? { options } : {}) }
+      : { id, page, ...(options ? { options } : {}) };
+    return new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage(request);
+    });
+  }
+
+  function loadBlock(
+    page: "overview" | "assets" | "liabilities" | "spending" | "automation",
+    block: DashboardBlockKey,
+    options?: DataReadOptions,
+  ): Promise<unknown> {
+    if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
+    const id = nextId++;
+    const request: FinancialPageRequest = { id, page: "block", target: page, block, options };
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       worker.postMessage(request);
@@ -119,6 +150,7 @@ export function createFinancialPageWorkerClient(
 
   return {
     load: load as FinancialPageWorkerClient["load"],
+    loadBlock,
     rankPairingCandidates,
     confirmCandidate: (input) => action("confirmCandidate", input),
     denyCandidate: (input) => action("denyCandidate", input),

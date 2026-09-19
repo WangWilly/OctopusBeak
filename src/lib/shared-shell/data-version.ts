@@ -6,6 +6,30 @@ export type DataVersionSnapshot = Readonly<{
   changedAt: string | null;
 }>;
 
+/** An optional generation contract attached to a renderer-initiated read. */
+export type DataReadOptions = Readonly<{
+  expectedVersion?: number;
+}>;
+
+/**
+ * A read crossed a data-version boundary while it was in flight.  Callers
+ * must discard the result rather than presenting a block assembled from two
+ * different financial generations.
+ */
+export class DataVersionMismatchError extends Error {
+  readonly expectedVersion: number;
+  readonly actualVersion: number;
+
+  constructor(expectedVersion: number, actualVersion: number) {
+    super(
+      `Data version advanced while reading (expected ${expectedVersion}, actual ${actualVersion}).`,
+    );
+    this.name = "DataVersionMismatchError";
+    this.expectedVersion = expectedVersion;
+    this.actualVersion = actualVersion;
+  }
+}
+
 export type DataInvalidationEvent = Readonly<{
   version: number;
   reason: DataVersionReason;
@@ -20,6 +44,33 @@ export type DataVersionStore = Readonly<{
   acknowledge(version: number): boolean;
   subscribe(listener: DataVersionListener): () => void;
 }>;
+
+/**
+ * Guard an asynchronous read against the immutable generation captured by a
+ * refresh round.  The boundary is checked immediately before and after the
+ * operation.  This is deliberately a reject-on-advance contract: if the
+ * backend cannot serve a historical generation, accepting a result is less
+ * safe than asking the caller to retry against a fresh snapshot.
+ */
+export async function withExpectedDataVersion<T>(
+  expectedVersion: number | undefined,
+  readSnapshot: () => DataVersionSnapshot,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  if (expectedVersion === undefined) return await operation();
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)
+    throw new TypeError("Expected data version must be a non-negative safe integer.");
+
+  const before = readSnapshot();
+  if (before.version !== expectedVersion)
+    throw new DataVersionMismatchError(expectedVersion, before.version);
+
+  const value = await operation();
+  const after = readSnapshot();
+  if (after.version !== expectedVersion)
+    throw new DataVersionMismatchError(expectedVersion, after.version);
+  return value;
+}
 
 export function createDataVersionStore(options: {
   initialVersion?: number;

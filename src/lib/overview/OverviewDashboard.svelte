@@ -17,6 +17,8 @@
     sourceGapCounts,
   } from "$lib/shared-ledger/account-display.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import SummaryStrip from "$lib/shared-metrics/components/SummaryStrip.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -26,10 +28,16 @@
   const sankeyCurrencyStorageKey = "overview.portfolioFlow.currency";
 
   export let overview: OverviewPageDto;
+  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
 
   let snapshotCurrency = "TWD";
   let dailyCurrency = "TWD";
   let sankeyCurrency = "TWD";
+
+  function blockState(key: string): BlockState<unknown> {
+    return blocks[key] ?? { status: "ready", data: null };
+  }
 
   $: metrics = overview.summary.slice(0, 3).map((metric) => translateSummaryMetric(metric, $t));
   $: netMetric = metrics[0] ?? null;
@@ -141,11 +149,18 @@
         {/if}
       </div>
     {/if}
-    <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
-      <SummaryStrip {metrics} />
-    </section>
+    <ProgressiveBlock
+      label="summary"
+      state={blockState("summary")}
+      retry={() => retryBlock("summary")}
+    >
+      <section aria-label={$t.overview.summaryAria} data-onboarding="overview-summary">
+        <SummaryStrip {metrics} />
+      </section>
+    </ProgressiveBlock>
 
-    <section class="grid layout-2">
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
+      <section class="grid layout-2">
       <article class="card">
         <div class="panel-title">
           <h2>{$t.overview.snapshotHistory}</h2>
@@ -182,9 +197,11 @@
         <AllocationDonutCard title={$t.overview.assetAllocation} accounts={overview.accounts} mode="asset" />
         <AllocationDonutCard title={$t.overview.liabilityExposure} accounts={overview.accounts} mode="liability" />
       </div>
-    </section>
+      </section>
+    </ProgressiveBlock>
 
-    <section class="card daily-card">
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
+      <section class="card daily-card">
       <div class="panel-title">
         <h2>{$t.overview.dailyAssetChanges}</h2>
         {#if allDailyRatesMissing}
@@ -219,10 +236,12 @@
           <DailyHistoryTable rows={convertedDailyHistory} currency={dailyCurrency} paginate />
         {/key}
       {/if}
-    </section>
+      </section>
+    </ProgressiveBlock>
 
-    {#if overview.sankey}
-      <section class="card sankey-card">
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
+      {#if overview.sankey}
+        <section class="card sankey-card">
         <div class="panel-title">
           <h2>{$t.overview.portfolioFlow}</h2>
           {#if sankeyCurrencies.length > 1}
@@ -253,8 +272,9 @@
             exchangeRates={overview.sankeyExchangeRates}
           />
         </div>
-      </section>
-    {/if}
+        </section>
+      {/if}
+    </ProgressiveBlock>
   </div>
 </DashboardShell>
 

@@ -1,0 +1,93 @@
+import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
+import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+
+export type FinancialBlockTarget =
+  | "overview"
+  | "assets"
+  | "liabilities"
+  | "spending"
+  | "automation";
+
+export type FinancialBlockSnapshotReader = (
+  target: FinancialBlockTarget,
+  options?: DataReadOptions,
+) => unknown | Promise<unknown>;
+
+function snapshotKey(
+  target: FinancialBlockTarget,
+  options: DataReadOptions | undefined,
+): string {
+  return `${target}:${options?.expectedVersion ?? "current"}`;
+}
+
+/**
+ * Keep raw reads and block projections separate.  Concurrent blocks from one
+ * refresh generation share the raw snapshot promise, while each request still
+ * projects and settles independently at the worker boundary.
+ */
+export function createFinancialPageBlockLoader(
+  readSnapshot: FinancialBlockSnapshotReader,
+) {
+  const inFlight = new Map<string, Promise<unknown>>();
+
+  return {
+    async load(
+      target: FinancialBlockTarget,
+      block: DashboardBlockKey,
+      options?: DataReadOptions,
+    ): Promise<unknown> {
+      const key = snapshotKey(target, options);
+      let snapshot = inFlight.get(key);
+      if (!snapshot) {
+        snapshot = Promise.resolve(readSnapshot(target, options));
+        inFlight.set(key, snapshot);
+        const release = () => {
+          // Keep an immediately-resolved read visible through the current
+          // turn so queued block messages can still share that snapshot.
+          setTimeout(() => {
+            if (inFlight.get(key) === snapshot) inFlight.delete(key);
+          }, 0);
+        };
+        void snapshot.then(release, release);
+      }
+      return projectFinancialBlock(await snapshot, block);
+    },
+  };
+}
+
+export function projectFinancialBlock(
+  value: unknown,
+  block: DashboardBlockKey,
+): unknown {
+  const record = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  if (record[block] !== undefined) return record[block];
+  if (block === "summary") {
+    return record.summary
+      ?? record.automation
+      ?? record.canonical
+      ?? record.spending
+      ?? value;
+  }
+  if (block === "chart") {
+    return record.dailyHistory
+      ?? record.sankey
+      ?? record.transactions
+      ?? record.spending
+      ?? value;
+  }
+  if (block === "list") {
+    return record.accounts
+      ?? record.records
+      ?? record.transactions
+      ?? (record.automation as Record<string, unknown> | undefined)?.tasks
+      ?? (record.canonical as Record<string, unknown> | undefined)?.transactions
+      ?? value;
+  }
+  return record.positionsByAccount
+    ?? record.transactionsByAccount
+    ?? record.credentialGroups
+    ?? record.invoices
+    ?? value;
+}

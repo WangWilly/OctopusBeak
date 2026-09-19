@@ -45,6 +45,17 @@
     type RefreshResult,
   } from "$lib/shared-shell/refresh-coordinator.ts";
   import {
+    beginIndependentBlocks,
+    loadIndependentBlocks,
+    type DashboardBlockKey,
+    type BlockState,
+    type BlockStateMap,
+  } from "$lib/shared-shell/block-load-state.ts";
+  import {
+    type DataReadOptions,
+    type DataVersionSnapshot,
+  } from "$lib/shared-shell/data-version.ts";
+  import {
     initialRefreshUiState,
     REFRESH_CONTEXT_KEY,
     type RefreshUiState,
@@ -55,9 +66,16 @@
     finishViewLoad,
     type ViewLoadState,
   } from "$lib/shared-shell/view-load-state.ts";
-  import { createRouteLoadCache } from "./route-loader.ts";
+  import {
+    beginRefresh,
+    failRefresh,
+    markRefreshInvalidated,
+    settleRefresh,
+  } from "$lib/shared-shell/refresh-ui-state.ts";
+  import { createRouteLoadCache, settleIndependentLoads } from "./route-loader.ts";
 
   type RouteId = OnboardingRoute;
+  type DashboardRoute = Exclude<RouteId, "settings">;
   type RouteData = {
     overview: OverviewPageDto;
     assets: AssetsPageDto;
@@ -81,6 +99,15 @@
   let overviewReloading = false;
   const routeDataCache = createRouteLoadCache<RouteData>();
   const refreshUi = writable<RefreshUiState>(initialRefreshUiState);
+  const blockKeys: Readonly<Record<DashboardRoute, readonly DashboardBlockKey[]>> = {
+    overview: ["summary", "chart", "list", "details"],
+    assets: ["summary", "chart", "list"],
+    liabilities: ["summary", "chart", "list", "details"],
+    spending: ["summary", "chart", "list", "details"],
+    automation: ["summary", "list", "details"],
+  };
+  let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<unknown>>> = {};
+  let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
 
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
@@ -120,6 +147,7 @@
   $: liabilitiesValue = viewData(liabilities);
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
+  $: activeBlocks = route === "settings" ? {} : routeBlocks[route] ?? {};
   $: onboardingStep = resolveOnboardingStep(onboardingFacts, onboardingState);
   $: onboardingCompact = automationValue
     && onboardingStep === "collection"
@@ -179,6 +207,64 @@
     return { eyebrow: $t.settings.eyebrow, title: $t.settings.title };
   }
 
+  function setRouteBlocks(
+    nextRoute: DashboardRoute,
+    states: BlockStateMap<unknown>,
+  ) {
+    routeBlocks = { ...routeBlocks, [nextRoute]: states };
+  }
+
+  function loadRouteBlock(
+    nextRoute: DashboardRoute,
+    key: DashboardBlockKey,
+    options: DataReadOptions | undefined,
+  ): Promise<unknown> {
+    if (nextRoute === "overview") return window.octopusBeak.overview.loadBlock(key, options);
+    if (nextRoute === "assets") return window.octopusBeak.assets.loadBlock(key, options);
+    if (nextRoute === "liabilities") return window.octopusBeak.liabilities.loadBlock(key, options);
+    if (nextRoute === "spending") return window.octopusBeak.spending.loadBlock(key, options);
+    return window.octopusBeak.automation.loadBlock(key, options);
+  }
+
+  function startRouteBlockLoads(
+    nextRoute: DashboardRoute,
+    options: DataReadOptions | undefined,
+    onlyKey?: DashboardBlockKey,
+  ) {
+    const loadId = (routeBlockLoadIds[nextRoute] ?? 0) + 1;
+    routeBlockLoadIds = { ...routeBlockLoadIds, [nextRoute]: loadId };
+    const keys = onlyKey ? [onlyKey] : blockKeys[nextRoute];
+    const current = routeBlocks[nextRoute] ?? {};
+    if (!onlyKey) {
+      setRouteBlocks(nextRoute, beginIndependentBlocks(current, keys));
+    } else {
+      setRouteBlocks(nextRoute, {
+        ...current,
+        [onlyKey]: beginViewLoad(current[onlyKey] ?? { status: "loading" }),
+      });
+    }
+    const loaders = Object.fromEntries(keys.map((key) => [
+      key,
+      () => loadRouteBlock(nextRoute, key, options),
+    ])) as Record<string, () => Promise<unknown>>;
+    void loadIndependentBlocks(loaders, (key, state) => {
+      if (routeBlockLoadIds[nextRoute] !== loadId) return;
+      setRouteBlocks(nextRoute, {
+        ...(routeBlocks[nextRoute] ?? {}),
+        [key]: state,
+      });
+    });
+  }
+
+  function retryRouteBlock(nextRoute: DashboardRoute, key: string) {
+    const cached = routeDataCache.read(nextRoute);
+    if (cached) {
+      startRouteBlockLoads(nextRoute, undefined, key as DashboardBlockKey);
+      return;
+    }
+    void loadRoute(nextRoute, { force: true });
+  }
+
   function startRouteLoad(nextRoute: RouteId) {
     if (nextRoute === "overview") overview = beginViewLoad(overview);
     if (nextRoute === "assets") assets = beginViewLoad(assets);
@@ -202,41 +288,27 @@
       return snapshot.version === version && !snapshot.stale;
     },
     loaders: {
-      overview: () => loadRoute("overview", { force: true, rethrow: true }),
-      assets: () => loadRoute("assets", { force: true, rethrow: true }),
-      liabilities: () => loadRoute("liabilities", { force: true, rethrow: true }),
-      spending: () => loadRoute("spending", { force: true, rethrow: true }),
-      automation: () => loadRoute("automation", { force: true, rethrow: true }),
+      overview: (snapshot) => loadRoute("overview", { force: true, rethrow: true, snapshot }),
+      assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, snapshot }),
+      liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, snapshot }),
+      spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, snapshot }),
+      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, snapshot }),
     },
   });
 
   let refreshInFlight: Promise<void> | null = null;
 
   function applyRefreshResult(result: RefreshResult) {
-    refreshUi.set({
-      status: result.status === "partial"
-        ? "error"
-        : result.acknowledged
-          ? "current"
-          : "stale",
-      version: result.snapshot.version,
-      changedAt: result.snapshot.changedAt,
-      failed: result.failed,
-    });
+    refreshUi.update((state) => settleRefresh(state, result));
   }
 
   function refreshApp(): Promise<void> {
     if (refreshInFlight) return refreshInFlight;
-    refreshUi.update((state) => ({ ...state, status: "refreshing", failed: [] }));
+    refreshUi.update(beginRefresh);
     const work = refreshCoordinator.refresh(route)
       .then(applyRefreshResult)
       .catch((error: unknown) => {
-        refreshUi.update((state) => ({
-          ...state,
-          status: "error",
-          failed: ["refresh"],
-          changedAt: state.changedAt,
-        }));
+        refreshUi.update((state) => failRefresh(state, ["refresh"]));
         console.warn("data-refresh-failed", message(error));
       });
     refreshInFlight = work.finally(() => {
@@ -328,14 +400,36 @@
 
     startRouteLoad("automation");
     startRouteLoad("overview");
-    try {
-      const [automationData, overviewData] = await Promise.all([
-        routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
-        routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
-      ]);
+    startRouteBlockLoads("automation", undefined);
+    startRouteBlockLoads("overview", undefined);
+    const settled = await settleIndependentLoads({
+      automation: () => routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
+      overview: () => routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
+    });
+    const automationResult = settled.automation;
+    const overviewResult = settled.overview;
+    const automationData = automationResult?.status === "fulfilled"
+      ? automationResult.value as AutomationDesktopModel
+      : null;
+    const overviewData = overviewResult?.status === "fulfilled"
+      ? overviewResult.value as OverviewPageDto
+      : null;
+
+    if (automationData) {
       automation = finishViewLoad(automationData);
+    } else if (automationResult?.status === "rejected") {
+      failRouteLoad("automation", automationResult.error);
+      console.warn("welcome-automation-load-failed", message(automationResult.error));
+    }
+    if (overviewData) {
       overview = finishViewLoad(overviewData);
       overviewLoadedForTaskFinishedAt = null;
+    } else if (overviewResult?.status === "rejected") {
+      failRouteLoad("overview", overviewResult.error);
+      console.warn("welcome-overview-load-failed", message(overviewResult.error));
+    }
+
+    if (automationData && overviewData) {
       firstRunWelcomeState = resolveFirstRunWelcomeBoot({
         welcomeState: null,
         onboardingState: null,
@@ -343,17 +437,16 @@
         automation: { tasks: automationData.automation.tasks },
       });
       writeFirstRunWelcomeState(localStorage, firstRunWelcomeState);
-    } catch (error) {
-      failRouteLoad("automation", error);
-      failRouteLoad("overview", error);
-      console.warn("welcome-eligibility-load-failed", message(error));
     }
   }
 
   async function loadRoute(
     next: RouteId,
-    options: { force?: boolean; rethrow?: boolean } = {},
+    options: { force?: boolean; rethrow?: boolean; snapshot?: DataVersionSnapshot } = {},
   ) {
+    const readOptions: DataReadOptions | undefined = options.snapshot
+      ? { expectedVersion: options.snapshot.version }
+      : undefined;
     const taskFinishedAt = next === "overview" && automation.status === "ready"
       ? completedSourceTaskFinishedAt(
         automation.data.automation.tasks,
@@ -361,31 +454,36 @@
       )
       : null;
     startRouteLoad(next);
+    if (next !== "settings") {
+      const hasCachedData = routeDataCache.read(next) !== undefined;
+      const hasBlockRead = Object.values(routeBlocks[next] ?? {}).some((state) => state.status === "loading");
+      if (options.force || !hasCachedData && !hasBlockRead) startRouteBlockLoads(next, readOptions);
+    }
     if (next === "overview") overviewReloading = true;
     try {
       if (next === "overview") {
         const data = await routeDataCache.load(
           "overview",
-          () => window.octopusBeak.overview.load(),
+          () => window.octopusBeak.overview.load(readOptions),
           options,
         );
         overview = finishViewLoad(data);
         overviewLoadedForTaskFinishedAt = taskFinishedAt;
       }
       if (next === "assets") {
-        const data = await routeDataCache.load("assets", () => window.octopusBeak.assets.load(), options);
+        const data = await routeDataCache.load("assets", () => window.octopusBeak.assets.load(readOptions), options);
         assets = finishViewLoad(data);
       }
       if (next === "liabilities") {
-        const data = await routeDataCache.load("liabilities", () => window.octopusBeak.liabilities.load(), options);
+        const data = await routeDataCache.load("liabilities", () => window.octopusBeak.liabilities.load(readOptions), options);
         liabilities = finishViewLoad(data);
       }
       if (next === "spending") {
-        const data = await routeDataCache.load("spending", () => window.octopusBeak.spending.load(), options);
+        const data = await routeDataCache.load("spending", () => window.octopusBeak.spending.load(undefined, readOptions), options);
         spending = finishViewLoad(data);
       }
       if (next === "automation") {
-        const data = await routeDataCache.load("automation", () => window.octopusBeak.automation.load(), options);
+        const data = await routeDataCache.load("automation", () => window.octopusBeak.automation.load(readOptions), options);
         automation = finishViewLoad(data);
       }
     } catch (error) {
@@ -409,15 +507,11 @@
         version: snapshot.version,
         changedAt: snapshot.changedAt,
         failed: [],
+        staleDuringRefresh: false,
       }))
       .catch((error) => console.warn("data-version-query-failed", error));
     const unsubscribe = window.octopusBeak.data.onInvalidated((event) => {
-      refreshUi.set({
-        status: "stale",
-        version: event.version,
-        changedAt: event.changedAt,
-        failed: [],
-      });
+      refreshUi.update((state) => markRefreshInvalidated(state, event));
     });
     addEventListener("hashchange", normalizeRoute);
     return () => {
@@ -437,7 +531,11 @@
   {/if}
 {:else if route === "overview"}
   {#if overviewValue}
-    <OverviewDashboard overview={overviewValue} />
+    <OverviewDashboard
+      overview={overviewValue}
+      blocks={activeBlocks}
+      retryBlock={(key) => retryRouteBlock("overview", key)}
+    />
     <RouteLoadNotice state={overview} retry={() => void loadRoute("overview", { force: true })} />
   {:else}
     <DashboardShell active="overview" eyebrow={routeLabel("overview").eyebrow} title={routeLabel("overview").title} sideLabel={$t.overview.sideLabel}>
@@ -446,7 +544,12 @@
   {/if}
 {:else if route === "assets"}
   {#if assetsValue}
-    <AssetsDashboard assets={assetsValue} {focusAccountId} />
+    <AssetsDashboard
+      assets={assetsValue}
+      {focusAccountId}
+      blocks={activeBlocks}
+      retryBlock={(key) => retryRouteBlock("assets", key)}
+    />
     <RouteLoadNotice state={assets} retry={() => void loadRoute("assets", { force: true })} />
   {:else}
     <DashboardShell active="assets" eyebrow={routeLabel("assets").eyebrow} title={routeLabel("assets").title} sideLabel={$t.assets.sideLabel}>
@@ -455,7 +558,12 @@
   {/if}
 {:else if route === "liabilities"}
   {#if liabilitiesValue}
-    <LiabilitiesDashboard liabilities={liabilitiesValue} {focusAccountId} />
+    <LiabilitiesDashboard
+      liabilities={liabilitiesValue}
+      {focusAccountId}
+      blocks={activeBlocks}
+      retryBlock={(key) => retryRouteBlock("liabilities", key)}
+    />
     <RouteLoadNotice state={liabilities} retry={() => void loadRoute("liabilities", { force: true })} />
   {:else}
     <DashboardShell active="liabilities" eyebrow={routeLabel("liabilities").eyebrow} title={routeLabel("liabilities").title} sideLabel={$t.liabilities.sideLabel}>
@@ -464,7 +572,11 @@
   {/if}
 {:else if route === "spending"}
   {#if spendingValue}
-    <SpendingDashboard spending={spendingValue} />
+    <SpendingDashboard
+      spending={spendingValue}
+      blocks={activeBlocks}
+      retryBlock={(key) => retryRouteBlock("spending", key)}
+    />
     <RouteLoadNotice state={spending} retry={() => void loadRoute("spending", { force: true })} />
   {:else}
     <DashboardShell active="spending" eyebrow={routeLabel("spending").eyebrow} title={routeLabel("spending").title} sideLabel={$t.overview.sideLabel}>
@@ -476,6 +588,8 @@
     <AutomationDashboard
       automation={automationValue.automation}
       credentialGroups={automationValue.credentialGroups}
+      blocks={activeBlocks}
+      retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
       onboardingSourceSelection={onboardingStep === "credentials"}
       onboardingSingleSource={shouldNarrowOnboardingSources(

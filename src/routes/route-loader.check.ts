@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRouteLoadCache } from "./route-loader.ts";
+import { createRouteLoadCache, settleIndependentLoads } from "./route-loader.ts";
 
 test("route navigation deduplicates in-flight loads and reuses warm data", async () => {
   const cache = createRouteLoadCache<{
@@ -60,4 +60,19 @@ test("a failed forced refresh keeps the last successful view available for retry
   }, { force: true }), /temporary failure/);
 
   assert.deepEqual(cache.read("overview"), { version: 1 });
+});
+
+test("independent first-run loads preserve a sibling when one route fails", async () => {
+  const settled = await settleIndependentLoads({
+    automation: async () => ({ tasks: ["ready"] }),
+    overview: async () => {
+      throw new Error("overview unavailable");
+    },
+  });
+
+  assert.deepEqual(settled.automation, {
+    status: "fulfilled",
+    value: { tasks: ["ready"] },
+  });
+  assert.equal(settled.overview.status, "rejected");
 });
