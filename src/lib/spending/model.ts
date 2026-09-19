@@ -26,6 +26,12 @@ export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly
   /** Present for the non-blocking targeted-patch path; omitted by legacy callers. */
   dataVersion?: number;
   totalsByCurrency?: SpendingPurchaseReportDto["totalsByCurrency"];
+  /** Optional compact renderer state used when the worker has no report cache. */
+  pairingReportContext?: Readonly<{
+    recordInsertIndex: number;
+    candidateIds: readonly string[];
+    totalStatusAfter: SpendingPurchaseReportDto["totalStatus"];
+  }>;
 }>;
 
 /** A pairing request is bound to the report version shown in the renderer. */

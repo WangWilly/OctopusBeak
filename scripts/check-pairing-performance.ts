@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { cpus, platform, release, totalmem, version as osVersion } from "node:os";
 import { join } from "node:path";
@@ -537,8 +537,10 @@ async function main(): Promise<void> {
           invoice: null,
           transaction: null,
           items: [],
-          possibleDuplicate: false,
-          candidateIds: [],
+          possibleDuplicate: true,
+          candidateIds: [
+            `sha256:${createHash("sha256").update(`${fixture.targetInvoiceId}/${fixture.targetTransactionId}`).digest("base64url")}`,
+          ],
           link: null,
           difference: null,
           refund: null,
@@ -561,16 +563,30 @@ async function main(): Promise<void> {
             effectiveDateBasis: candidate.effectiveDateBasis,
           },
           items: [],
-          possibleDuplicate: false,
-          candidateIds: [],
+          possibleDuplicate: candidate.transactionId === fixture.targetTransactionId,
+          candidateIds: candidate.transactionId === fixture.targetTransactionId
+            ? [`sha256:${createHash("sha256").update(`${fixture.targetInvoiceId}/${fixture.targetTransactionId}`).digest("base64url")}`]
+            : [],
           link: null,
           difference: null,
           refund: null,
         })),
       ]),
       totalsByCurrency: Object.freeze([]),
-      totalStatus: "complete",
-      candidates: Object.freeze([]),
+      totalStatus: "includes-pending-confirmation",
+      candidates: Object.freeze([{
+        invoiceId: fixture.targetInvoiceId,
+        transactionId: fixture.targetTransactionId,
+        candidateId: `sha256:${createHash("sha256").update(`${fixture.targetInvoiceId}/${fixture.targetTransactionId}`).digest("base64url")}`,
+        algorithm: "amount-currency-date-similarity",
+        algorithmVersion: "v2",
+        similarityEvidence: {
+          exactAmountAndCurrency: true,
+          calendarDayDistance: 0,
+          transactionDateBasis: "effective-date",
+        },
+        status: "candidate",
+      }]),
     };
 
     const confirmStartedAt = performance.now();
@@ -580,6 +596,11 @@ async function main(): Promise<void> {
       transactionIdentityId: fixture.targetTransactionId,
       dataVersion: fixture.dataVersion,
       totalsByCurrency: rendererReport.totalsByCurrency,
+      pairingReportContext: {
+        recordInsertIndex: 0,
+        candidateIds: rendererReport.candidates.map((candidate) => candidate.candidateId),
+        totalStatusAfter: "complete",
+      },
     });
     const confirmMs = performance.now() - confirmStartedAt;
     const patchStartedAt = performance.now();

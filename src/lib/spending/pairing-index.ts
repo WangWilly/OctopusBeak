@@ -15,7 +15,6 @@ export type SpendingPairingIndexEntry = Readonly<{
   transaction: SpendingMatchingTransaction;
   currency: string;
   amountKey: string;
-  purchaseDate: string;
   purchaseDay: number;
 }>;
 
@@ -43,10 +42,6 @@ function moneyKey(value: SpendingMatchingMoney): string {
   return `${value.currency.trim().toUpperCase()}:${normalized.coefficient}:${normalized.scale}`;
 }
 
-function purchaseDate(transaction: SpendingMatchingTransaction): string {
-  return transaction.consumeDate || transaction.postingDate || transaction.effectiveOn;
-}
-
 function purchaseDay(value: string): number {
   const date = value.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return Number.NaN;
@@ -60,12 +55,11 @@ export function createSpendingPairingIndex(
   transactions: readonly SpendingMatchingTransaction[],
 ): SpendingPairingIndex {
   const entries = transactions.map((transaction) => {
-    const date = purchaseDate(transaction);
+    const date = transaction.consumeDate || transaction.postingDate || transaction.effectiveOn;
     return Object.freeze({
       transaction,
       currency: transaction.amount.currency.trim().toUpperCase(),
       amountKey: moneyKey(transaction.amount),
-      purchaseDate: date,
       purchaseDay: purchaseDay(date),
     });
   });
