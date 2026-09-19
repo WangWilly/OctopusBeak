@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { DatabaseSync as NodeDatabaseSync } from "node:sqlite";
 import { channel } from "node:diagnostics_channel";
 import { DEFAULT_LEDGER_DIR } from "../../../ledger/db/client.ts";
 import {
@@ -29,6 +31,7 @@ import type {
   SpendingPairingCandidatesResult,
   SpendingLinkActionInput,
   SpendingPageDto,
+  SpendingPurchaseReportDto,
   SpendingPurchaseActionResult,
   SpendingReason,
   SpendingState,
@@ -41,7 +44,10 @@ import { createSpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
 import {
   exactMoneyEqual,
   rankSpendingManualPaymentCandidates,
+  type SpendingMatchingInvoice,
+  type SpendingPurchaseTransactionView,
 } from "../purchase-matching.ts";
+import { createSpendingPairingCandidateViewFromTransaction } from "../pairing-presentation.ts";
 import { SpendingPairingIndexCache } from "../pairing-index.ts";
 import {
   createFinancialQuery,
@@ -53,7 +59,10 @@ import type {
   CanonicalSpendingReport,
   CanonicalSpendingTransaction,
 } from "../../../ledger/canonical/canonical-categorization.ts";
-import type { CanonicalEInvoiceView } from "../../../ledger/canonical/einvoice.ts";
+import {
+  queryCanonicalEInvoiceByIdFromDatabase,
+  type CanonicalEInvoiceView,
+} from "../../../ledger/canonical/einvoice.ts";
 import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
 } from "../../../ledger/canonical/transaction-taxonomy.ts";
@@ -78,8 +87,13 @@ const LOCAL_SPENDING_USER_ID = "local-user";
 const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");
 const storeOpenDiagnostics = channel("octopus-beak.spending.canonical-store-open");
 const fullReportComposeDiagnostics = channel("octopus-beak.spending.full-report-compose");
-const pairingIndexCache = new SpendingPairingIndexCache();
+const pairingIndexCaches = new Map<string, SpendingPairingIndexCache>();
 let latestSpendingQuery: Readonly<{ ledgerDir: string; query: CurrentSpendingQueryResult }> | null = null;
+
+function pairingProgress(stage: string, startedAt: number): void {
+  if (process.env.PAIRING_BENCHMARK_PROGRESS === "1")
+    console.error(`[pairing-worker] ${stage}: ${(performance.now() - startedAt).toFixed(1)}ms`);
+}
 
 export type SpendingCandidateDecisionInput = SpendingCandidateActionInput;
 export type SpendingLinkRevokeInput = SpendingLinkActionInput;
@@ -509,7 +523,265 @@ function pairingCandidatesInput(input: unknown): SpendingPairingCandidatesInput 
   return {
     invoiceIdentityId: value.invoiceIdentityId.trim(),
     dataVersion: value.dataVersion as number,
+    offset: Number.isSafeInteger(value.offset) && (value.offset as number) >= 0 ? value.offset as number : 0,
+    limit: Number.isSafeInteger(value.limit) && (value.limit as number) > 0
+      ? Math.min(value.limit as number, 100)
+      : 50,
   };
+}
+
+function canonicalUuidFromBlob(value: unknown, label: string): string {
+  if (!(value instanceof Uint8Array) || value.byteLength !== 16)
+    throw new Error(`${label} is not a canonical UUID.`);
+  const hex = Buffer.from(value).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function pairingIndexCache(ledgerDir: string): SpendingPairingIndexCache {
+  const cached = pairingIndexCaches.get(ledgerDir);
+  if (cached) return cached;
+  const created = new SpendingPairingIndexCache();
+  pairingIndexCaches.set(ledgerDir, created);
+  return created;
+}
+
+function pairingInvoiceViewFromDatabase(
+  store: Pick<CanonicalSourceStore, "db">,
+  invoiceIdentityId: string,
+  knowledgeAt: number,
+): CanonicalEInvoiceView {
+  const invoice = queryCanonicalEInvoiceByIdFromDatabase(store.db, {
+    invoiceId: invoiceIdentityId,
+    knowledgeAt,
+  });
+  if (!invoice || invoice.revision.state === "revoked")
+    throw new Error("Spending invoice selection is stale, revoked, or missing.");
+  return invoice;
+}
+
+function pairingInvoiceFromDatabase(
+  store: Pick<CanonicalSourceStore, "db">,
+  invoiceIdentityId: string,
+  knowledgeAt: number,
+): SpendingMatchingInvoice {
+  const row = store.db.prepare(`
+    SELECT revision.state, revision.seller_name, revision.amount_coefficient,
+           revision.amount_scale, revision.currency, revision.occurrence_value
+      FROM einvoice_invoice_revisions revision
+      JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+     WHERE revision.invoice_id = ? AND commit_row.commit_sequence <= ?
+     ORDER BY revision.revision_number DESC, commit_row.commit_sequence DESC
+     LIMIT 1
+  `).get(Buffer.from(invoiceIdentityId.replaceAll("-", ""), "hex"), knowledgeAt) as
+    | Readonly<Record<string, unknown>>
+    | undefined;
+  if (!row || row.state === "revoked")
+    throw new Error("Spending invoice selection is stale, revoked, or missing.");
+  return Object.freeze({
+    revision: Object.freeze({
+      seller: Object.freeze({ name: typeof row.seller_name === "string" ? row.seller_name : null }),
+      occurrence: Object.freeze({ value: String(row.occurrence_value) }),
+      total: row.amount_coefficient === null
+        ? null
+        : Object.freeze({
+            coefficient: String(row.amount_coefficient),
+            scale: Number(row.amount_scale),
+            currency: String(row.currency),
+          }),
+    }),
+  });
+}
+
+function pairingTransactionsFromDatabase(
+  store: Pick<CanonicalSourceStore, "db">,
+): readonly SpendingPurchaseTransactionView[] {
+  const rows = store.db.prepare(`
+    SELECT current_row.transaction_id, revision.effective_on, revision.description,
+           revision.amount_coefficient, revision.amount_scale, revision.currency,
+           account.stream
+      FROM current_transactions current_row
+      JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      JOIN financial_transactions transaction_row ON transaction_row.transaction_id = current_row.transaction_id
+      JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+      JOIN current_transaction_enrichment kind
+        ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
+      LEFT JOIN current_spending_dedup_links active_link
+        ON active_link.transaction_id = current_row.transaction_id
+     WHERE active_link.transaction_id IS NULL
+       AND revision.administrative_state = 'active'
+       AND revision.economic_status = 'normal'
+       AND revision.posting_status = 'posted'
+       AND revision.direction = 'outflow'
+       AND kind.taxonomy_code IS NOT NULL
+       AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
+       AND kind.taxonomy_code NOT LIKE 'transfer.%'
+       AND kind.taxonomy_code NOT LIKE 'cash.%'
+       AND kind.taxonomy_code NOT LIKE 'investment.%'
+       AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
+       AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+  `).all() as readonly Readonly<Record<string, unknown>>[];
+  return Object.freeze(rows.map((row) => {
+    const stream = String(row.stream);
+    return Object.freeze({
+      transactionId: canonicalUuidFromBlob(row.transaction_id, "Pairing transaction identity"),
+      effectiveOn: String(row.effective_on),
+      consumeDate: null,
+      postingDate: stream === "credit-card" ? String(row.effective_on) : null,
+      description: typeof row.description === "string" ? row.description : null,
+      amount: Object.freeze({
+        coefficient: String(row.amount_coefficient),
+        scale: Number(row.amount_scale),
+        currency: String(row.currency),
+      }),
+      stream,
+      effectiveDateBasis: stream === "credit-card" ? "posting-date-fallback" as const : null,
+    });
+  }));
+}
+
+function pairingTransactionViewFromDatabase(
+  store: Pick<CanonicalSourceStore, "db">,
+  transactionIdentityId: string,
+): CanonicalSpendingTransaction {
+  const row = store.db.prepare(`
+    SELECT current_row.transaction_id, current_row.revision_id, transaction_row.account_id,
+           revision.effective_on, revision.description, revision.amount_coefficient,
+           revision.amount_scale, revision.currency, revision.direction,
+           revision.posting_status, revision.economic_status, revision.administrative_state,
+           account.stream, account.account_no, source.source_connection_key,
+           source.integration_namespace, kind.taxonomy_code
+      FROM current_transactions current_row
+      JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      JOIN financial_transactions transaction_row ON transaction_row.transaction_id = current_row.transaction_id
+      JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+      JOIN source_connections source ON source.source_connection_id = account.source_connection_id
+      JOIN current_transaction_enrichment kind
+        ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
+      LEFT JOIN current_spending_dedup_links active_link
+        ON active_link.transaction_id = current_row.transaction_id
+     WHERE current_row.transaction_id = ? AND active_link.transaction_id IS NULL
+       AND revision.administrative_state = 'active' AND revision.economic_status = 'normal'
+       AND revision.posting_status = 'posted' AND revision.direction = 'outflow'
+     LIMIT 1
+  `).get(Buffer.from(transactionIdentityId.replaceAll("-", ""), "hex")) as
+    | Readonly<Record<string, unknown>>
+    | undefined;
+  if (!row) throw new Error("Spending payment selection is stale, linked, or ineligible.");
+  const stream = String(row.stream);
+  const transactionId = canonicalUuidFromBlob(row.transaction_id, "Pairing transaction identity");
+  const descriptionAssertion = store.db.prepare(`
+    SELECT assertion_id FROM assertions
+     WHERE transaction_id = ? AND revision_id = ? AND field_name = 'transaction_revision'
+     ORDER BY rowid DESC LIMIT 1
+  `).get(row.transaction_id as Uint8Array, row.revision_id as Uint8Array) as
+    | { assertion_id?: unknown }
+    | undefined;
+  const tags = (store.db.prepare(`
+    SELECT tag_id, assertion_id, user_id, display_label, normalized_label, lifecycle
+      FROM current_transaction_tags WHERE transaction_id = ? ORDER BY normalized_label, tag_id
+  `).all(row.transaction_id as Uint8Array) as readonly Readonly<Record<string, unknown>>[]).map((tag) => ({
+    tagId: canonicalUuidFromBlob(tag.tag_id, "Pairing transaction tag identity"),
+    assertionId: canonicalUuidFromBlob(tag.assertion_id, "Pairing transaction tag assertion"),
+    userId: String(tag.user_id),
+    label: String(tag.display_label),
+    normalizedLabel: String(tag.normalized_label),
+    lifecycle: String(tag.lifecycle) as "active" | "archived",
+    origin: "user" as const,
+  }));
+  return Object.freeze({
+    transactionId,
+    revisionId: Buffer.from(row.revision_id as Uint8Array).toString("hex"),
+    accountId: Buffer.from(row.account_id as Uint8Array).toString("hex"),
+    accountNumber: typeof row.account_no === "string" ? row.account_no : null,
+    sourceConnectionKey: String(row.source_connection_key),
+    integrationNamespace: String(row.integration_namespace),
+    stream,
+    effectiveOn: String(row.effective_on),
+    consumeDate: null,
+    postingDate: stream === "credit-card" ? String(row.effective_on) : null,
+    effectiveDateBasis: stream === "credit-card" ? "posting-date-fallback" : null,
+    description: typeof row.description === "string" ? row.description : null,
+    amount: { coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency) },
+    direction: String(row.direction),
+    postingStatus: String(row.posting_status),
+    economicStatus: String(row.economic_status),
+    administrativeState: String(row.administrative_state),
+    kind: String(row.taxonomy_code),
+    categorization: { mode: "absent" as const },
+    display: row.description === null
+      ? { status: "absent" as const, value: null, origin: null, displayKind: null, assertionId: null, referenceId: null }
+      : {
+          status: "fallback" as const,
+          value: String(row.description),
+          origin: "source",
+          displayKind: "source_description" as const,
+          assertionId: descriptionAssertion?.assertion_id
+            ? canonicalUuidFromBlob(descriptionAssertion.assertion_id, "Pairing description assertion")
+            : null,
+          referenceId: null,
+        },
+    tags: Object.freeze(tags),
+    inclusion: "included" as const,
+  });
+}
+
+function confirmPairingLinkInDatabase(
+  db: NodeDatabaseSync,
+  input: Readonly<{
+    invoiceId: string;
+    transactionId: string;
+    dataVersion: number;
+    evidence: Readonly<Record<string, unknown>>;
+  }>,
+): Readonly<{ eventId: string; knowledgeAt: number; evidence: Readonly<Record<string, unknown>> }> {
+  const invoiceId = Buffer.from(input.invoiceId.replaceAll("-", ""), "hex");
+  const transactionId = Buffer.from(input.transactionId.replaceAll("-", ""), "hex");
+  const eventId = Buffer.from(randomUUID().replaceAll("-", ""), "hex");
+  const commitId = Buffer.from(randomUUID().replaceAll("-", ""), "hex");
+  const knowledgeAt = input.dataVersion + 1;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const latest = Number((db.prepare(
+      "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+    ).get() as { value: number }).value);
+    if (latest !== input.dataVersion)
+      throw new Error("Spending confirmation data version is stale; reload Spending before pairing.");
+    if (db.prepare(
+      "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ? OR transaction_id = ? LIMIT 1",
+    ).get(invoiceId, transactionId))
+      throw new Error("Spending deduplication is one invoice to one transaction.");
+    db.prepare(`
+      INSERT INTO canonical_commits(
+        commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind
+      ) VALUES (?, ?, ?, 'user/local', 'relation_resolution')
+    `).run(commitId, knowledgeAt, Date.now() * 1000);
+    db.prepare(`
+      INSERT INTO spending_dedup_decision_events(
+        event_id, decision_key, invoice_id, transaction_id, event_kind,
+        decision_origin, user_id, authority_route, stable_cross_source_reference,
+        evidence_json, evidence_knowledge_sequence, commit_id
+      ) VALUES (?, ?, ?, ?, 'confirmed', 'user', ?, NULL, NULL, ?, ?, ?)
+    `).run(
+      eventId,
+      `spending/user/direct/${input.invoiceId}/${input.transactionId}/${input.dataVersion}`,
+      invoiceId,
+      transactionId,
+      LOCAL_SPENDING_USER_ID,
+      JSON.stringify(input.evidence),
+      input.dataVersion,
+      commitId,
+    );
+    db.prepare(`
+      INSERT INTO current_spending_dedup_links(
+        invoice_id, transaction_id, confirmed_event_id, projection_commit_id
+      ) VALUES (?, ?, ?, ?)
+    `).run(invoiceId, transactionId, eventId, commitId);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return { eventId: canonicalUuidFromBlob(eventId, "Pairing event identity"), knowledgeAt, evidence: input.evidence };
 }
 
 /**
@@ -521,28 +793,45 @@ export function rankSpendingPaymentCandidates(
   input: SpendingPairingCandidatesInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
 ): SpendingPairingCandidatesResult {
+  const startedAt = performance.now();
   const action = pairingCandidatesInput(input);
-  const query = latestSpendingQuery?.ledgerDir === ledgerDir &&
-    latestSpendingQuery.query.purchaseReport.knowledgeAt === action.dataVersion
-    ? latestSpendingQuery.query
-    : currentSpendingQuery(ledgerDir);
-  const currentVersion = query.purchaseReport.knowledgeAt;
-  if (currentVersion !== action.dataVersion)
-    throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
-  const invoice = query.purchaseReport.records.find((record) =>
-    record.basis === "invoice" && record.invoice?.invoiceId === action.invoiceIdentityId,
-  )?.invoice;
-  if (!invoice || invoice.revision.state === "revoked")
-    throw new Error("Spending invoice selection is stale, revoked, or missing.");
-  const eligibleTransactions = query.purchaseReport.records
-    .filter((record) => record.basis === "bank-transaction" && record.transaction)
-    .map((record) => record.transaction!);
-  const { index } = pairingIndexCache.get(currentVersion, eligibleTransactions);
-  const ranked = rankSpendingManualPaymentCandidates(invoice, index);
-  return Object.freeze({
-    dataVersion: currentVersion,
-    transactionIds: Object.freeze(ranked.map((candidate) => candidate.transactionId)),
-  });
+  const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+  if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+  const db = new NodeDatabaseSync(databasePath, { readOnly: true });
+  const store = { db: db as CanonicalSourceStore["db"] };
+  pairingProgress("read database opened", startedAt);
+  try {
+    const currentVersion = Number((store.db.prepare(
+      "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+    ).get() as { value: number }).value);
+    if (currentVersion !== action.dataVersion)
+      throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
+    const invoice = pairingInvoiceFromDatabase(store, action.invoiceIdentityId, currentVersion);
+    pairingProgress("invoice loaded", startedAt);
+    const cache = pairingIndexCache(ledgerDir);
+    const index = cache.forVersion(currentVersion) ??
+      cache.get(currentVersion, pairingTransactionsFromDatabase(store)).index;
+    pairingProgress("pairing index ready", startedAt);
+    const transactionsById = new Map(index.entries.map((entry) => [entry.transaction.transactionId, entry.transaction]));
+    const ranked = rankSpendingManualPaymentCandidates(invoice, index);
+    pairingProgress("candidates ranked", startedAt);
+    const offset = action.offset ?? 0;
+    const limit = action.limit ?? 50;
+    const candidates = ranked.slice(offset, offset + limit).map((candidate) => {
+      const transaction = transactionsById.get(candidate.transactionId);
+      if (!transaction) throw new Error("Spending pairing candidate is missing from the current index.");
+      return createSpendingPairingCandidateViewFromTransaction(transaction as SpendingPurchaseTransactionView);
+    });
+    pairingProgress("candidate DTOs ready", startedAt);
+    return Object.freeze({
+      dataVersion: currentVersion,
+      candidates: Object.freeze(candidates),
+      totalCandidateCount: ranked.length,
+      nextOffset: offset + candidates.length < ranked.length ? offset + candidates.length : null,
+    });
+  } finally {
+    db.close();
+  }
 }
 
 function recordStore(ledgerDir: string) {
@@ -616,6 +905,12 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
     kind: "direct",
     invoiceIdentityId: requiredActionText(value.invoiceIdentityId, "Invoice identity id"),
     transactionIdentityId: requiredActionText(value.transactionIdentityId, "Transaction identity id"),
+    ...(Number.isSafeInteger(value.dataVersion) && (value.dataVersion as number) >= 0
+      ? { dataVersion: value.dataVersion as number }
+      : {}),
+    ...(Array.isArray(value.totalsByCurrency)
+      ? { totalsByCurrency: value.totalsByCurrency as SpendingPurchaseReportDto["totalsByCurrency"] }
+      : {}),
   };
 }
 
@@ -699,6 +994,126 @@ export function confirmSpendingCandidate(
 ): SpendingPurchaseActionResult {
   const action = confirmActionValue(input);
   if (action.kind === "candidate") return decideCandidate(action, ledgerDir, "confirmed");
+  if (action.dataVersion !== undefined && action.totalsByCurrency !== undefined) {
+    const startedAt = performance.now();
+    const databasePath = canonicalDatabaseWriterKey(ledgerDir);
+    if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
+    const db = new NodeDatabaseSync(databasePath);
+    pairingProgress("confirm database opened", startedAt);
+    const store = { db: db as CanonicalSourceStore["db"] };
+    try {
+      const currentVersion = Number((store.db.prepare(
+        "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+      ).get() as { value: number }).value);
+      if (currentVersion !== action.dataVersion)
+        throw new Error("Spending confirmation data version is stale; reload Spending before pairing.");
+      const invoice = pairingInvoiceViewFromDatabase(store, action.invoiceIdentityId, currentVersion);
+      pairingProgress("confirm invoice loaded", startedAt);
+      const cache = pairingIndexCache(ledgerDir);
+      const index = cache.forVersion(currentVersion) ??
+        cache.get(currentVersion, pairingTransactionsFromDatabase(store)).index;
+      const selected = index.entries.find((entry) =>
+        entry.transaction.transactionId === action.transactionIdentityId,
+      );
+      if (!selected) throw new Error("Spending payment selection is stale, linked, or ineligible.");
+      const payment = pairingTransactionViewFromDatabase(store, action.transactionIdentityId);
+      pairingProgress("confirm transaction loaded", startedAt);
+      const evidence = {
+          decisionOrigin: "explicit-user-selection",
+          invoice: {
+            identityId: action.invoiceIdentityId,
+            sourceRecordId: invoice.revision.sourceRecordId,
+            date: invoice.revision.occurrence.value,
+            amount: invoice.revision.total,
+            label: invoice.revision.seller.name,
+          },
+          payment: {
+            identityId: action.transactionIdentityId,
+            sourceConnectionKey: payment.sourceConnectionKey,
+            date: payment.effectiveOn,
+            consumeDate: payment.consumeDate ?? null,
+            postingDate: payment.postingDate ?? null,
+            dateBasis: payment.effectiveDateBasis ?? "effective-date",
+            amount: payment.amount,
+            label: payment.description,
+          },
+        } as const;
+      const committed = confirmPairingLinkInDatabase(db, {
+        invoiceId: action.invoiceIdentityId,
+        transactionId: action.transactionIdentityId,
+        dataVersion: currentVersion,
+        evidence,
+      });
+      pairingProgress("confirm committed", startedAt);
+      const link = {
+        invoiceId: action.invoiceIdentityId,
+        transactionId: action.transactionIdentityId,
+        eventId: committed.eventId,
+        origin: "user" as const,
+        evidenceKnowledgeSequence: currentVersion,
+        decisionCommitSequence: committed.knowledgeAt,
+        evidence,
+        userId: LOCAL_SPENDING_USER_ID,
+        authorityRoute: null,
+        stableCrossSourceReference: null,
+      };
+      const invoiceAmount = invoice.revision.total
+        ? {
+            coefficient: invoice.revision.total.coefficient,
+            scale: invoice.revision.total.scale,
+            currency: invoice.revision.total.currency,
+          }
+        : null;
+      const occurrence = {
+        value: invoice.revision.occurrence.value,
+        precision: invoice.revision.occurrence.precision,
+        timeZone: invoice.revision.occurrence.timeZone,
+        basis: invoice.revision.occurrence.origin === "source-reported"
+          ? "purchase-date" as const
+          : "posting-date-fallback" as const,
+      };
+      const linked: PurchaseReport["records"][number] = {
+        purchaseId: `link:${link.eventId}`,
+        basis: "linked",
+        amount: payment.amount,
+        occurrence,
+        description: invoice.revision.seller.name ?? payment.description,
+        invoice,
+        transaction: payment,
+        items: invoice.revision.items,
+        possibleDuplicate: false,
+        candidateIds: [],
+        link: { ...link, invoiceId: action.invoiceIdentityId, transactionId: action.transactionIdentityId },
+        difference: {
+          invoiceAmount,
+          bankAmount: payment.amount,
+          sameCurrency: invoiceAmount?.currency === payment.amount.currency,
+          exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, payment.amount) : false,
+        },
+        refund: null,
+      };
+      return {
+        patch: Object.freeze({
+          kind: "spending-purchase-report-patch",
+          baseKnowledgeAt: currentVersion,
+          status: "ok",
+          reportKind: "current",
+          knowledgeAt: committed.knowledgeAt,
+          financialAt: null,
+          totalsByCurrency: adjustPurchaseTotals(action.totalsByCurrency, invoiceAmount),
+          totalStatus: "complete",
+          recordOperations: Object.freeze([
+            { kind: "remove" as const, id: `invoice:${action.invoiceIdentityId}` },
+            { kind: "remove" as const, id: `transaction:${action.transactionIdentityId}` },
+            { kind: "upsert" as const, index: 0, value: linked },
+          ]),
+          candidateOperations: Object.freeze([]),
+        }),
+      };
+    } finally {
+      db.close();
+    }
+  }
   const store = recordStore(ledgerDir);
   try {
     const query = currentSpendingQueryFromStore(store, ledgerDir);

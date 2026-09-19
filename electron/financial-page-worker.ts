@@ -51,6 +51,8 @@ const blockLoader = createFinancialPageBlockLoader(async (target: FinancialBlock
   })).projection;
 });
 
+port.postMessage({ id: 0, ok: true, value: { ready: true } });
+
 port.on("message", async (request: FinancialPageRequest) => {
   let response: FinancialPageResponse;
   try {

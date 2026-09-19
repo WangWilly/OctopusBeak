@@ -3,6 +3,8 @@ import {
   type SpendingCategory,
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
+export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
 
 /**
@@ -21,17 +23,24 @@ export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly
   kind: "direct";
   invoiceIdentityId: string;
   transactionIdentityId: string;
+  /** Present for the non-blocking targeted-patch path; omitted by legacy callers. */
+  dataVersion?: number;
+  totalsByCurrency?: SpendingPurchaseReportDto["totalsByCurrency"];
 }>;
 
 /** A pairing request is bound to the report version shown in the renderer. */
 export type SpendingPairingCandidatesInput = Readonly<{
   invoiceIdentityId: string;
   dataVersion: number;
+  offset?: number;
+  limit?: number;
 }>;
 
 export type SpendingPairingCandidatesResult = Readonly<{
   dataVersion: number;
-  transactionIds: readonly string[];
+  candidates: readonly SpendingPairingCandidateView[];
+  totalCandidateCount: number;
+  nextOffset: number | null;
 }>;
 
 export type SpendingLinkActionInput = Readonly<{

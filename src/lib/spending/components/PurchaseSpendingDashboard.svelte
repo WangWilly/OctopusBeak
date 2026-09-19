@@ -9,7 +9,7 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
   } from "../purchase-matching.ts";
-  import type { SpendingPageDto } from "../model.ts";
+  import type { SpendingPageDto, SpendingPairingCandidateView } from "../model.ts";
   import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
@@ -38,7 +38,9 @@
   let selectedCurrency = "";
   let selectedDay: string | null = null;
   let showAllCandidates = false;
-  let pairingCandidates: readonly string[] | null = null;
+  let pairingCandidates: readonly SpendingPairingCandidateView[] | null = null;
+  let pairingCandidateTotal = 0;
+  let pairingNextOffset: number | null = null;
   let pairingCandidatesLoading = false;
   let pairingRequestToken = 0;
 
@@ -70,17 +72,8 @@
     candidateVisibleCount = Math.min(10, visibleCandidates.length);
   }
   $: visibleCandidateRows = visibleCandidates.slice(0, candidateVisibleCount);
-  $: allEligiblePayments = report.records.filter((record) => record.basis === "bank-transaction" && record.transaction !== null);
-  $: eligiblePayments = (() => {
-    if (!pairingInvoice?.invoice) return allEligiblePayments;
-    const paymentById = new Map(allEligiblePayments.map((record) => [record.transaction!.transactionId, record]));
-    if (!pairingCandidates) return [];
-    return pairingCandidates
-      .map((transactionId) => paymentById.get(transactionId))
-      .filter((record): record is PurchaseRecord => record !== undefined);
-  })();
-  $: visibleEligiblePayments = eligiblePayments.slice(0, paymentVisibleCount);
-  $: selectedPayment = eligiblePayments.find((record) => record.transaction?.transactionId === selectedPaymentId) ?? null;
+  $: visibleEligiblePayments = (pairingCandidates ?? []).slice(0, paymentVisibleCount);
+  $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId) ?? null;
   $: monthTotals = totalsByMonth(report.records);
   $: visibleTotals = totalsByCurrency(monthRecords);
   $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
@@ -147,6 +140,16 @@
     if (record.basis === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
     const isCreditCard = record.transaction?.stream === "credit-card";
     return isCreditCard
+      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
+      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+  }
+
+  function pairingRecordLabel(candidate: SpendingPairingCandidateView) {
+    return candidate.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+  }
+
+  function pairingBasisLabel(candidate: SpendingPairingCandidateView) {
+    return candidate.stream === "credit-card"
       ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
       : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
   }
@@ -312,6 +315,8 @@
     selectedPaymentId = "";
     paymentVisibleCount = 10;
     pairingCandidates = null;
+    pairingCandidateTotal = 0;
+    pairingNextOffset = null;
     pairingCandidatesLoading = true;
     const requestToken = ++pairingRequestToken;
     actionError = "";
@@ -323,6 +328,8 @@
     pairingInvoice = null;
     selectedPaymentId = "";
     pairingCandidates = null;
+    pairingCandidateTotal = 0;
+    pairingNextOffset = null;
     pairingCandidatesLoading = false;
   }
 
@@ -337,7 +344,9 @@
       if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
       if (result.dataVersion !== report.knowledgeAt)
         throw new Error("Spending pairing data changed; close and reopen the pairing dialog.");
-      pairingCandidates = result.transactionIds;
+      pairingCandidates = result.candidates;
+      pairingCandidateTotal = result.totalCandidateCount;
+      pairingNextOffset = result.nextOffset;
     } catch (error) {
       if (requestToken !== pairingRequestToken) return;
       pairingCandidates = [];
@@ -345,6 +354,33 @@
     } finally {
       if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
     }
+  }
+
+  async function showMorePayments() {
+    const nextVisibleCount = paymentVisibleCount + 10;
+    if (
+      pairingInvoice?.invoice &&
+      pairingNextOffset !== null &&
+      nextVisibleCount > (pairingCandidates?.length ?? 0)
+    ) {
+      pairingCandidatesLoading = true;
+      try {
+        const result = await window.octopusBeak.spending.rankPairingCandidates({
+          invoiceIdentityId: pairingInvoice.invoice.invoiceId,
+          dataVersion: report.knowledgeAt,
+          offset: pairingNextOffset,
+          limit: 50,
+        });
+        pairingCandidates = Object.freeze([...(pairingCandidates ?? []), ...result.candidates]);
+        pairingCandidateTotal = result.totalCandidateCount;
+        pairingNextOffset = result.nextOffset;
+      } catch (error) {
+        actionError = error instanceof Error ? error.message : String(error);
+      } finally {
+        pairingCandidatesLoading = false;
+      }
+    }
+    paymentVisibleCount = Math.min(nextVisibleCount, pairingCandidateTotal);
   }
 
   async function confirmDirectPair() {
@@ -357,6 +393,8 @@
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
+        dataVersion: report.knowledgeAt,
+        totalsByCurrency: report.totalsByCurrency,
       });
       report = applySpendingPurchaseReportPatch(report, next.patch);
       closePairing();
@@ -617,18 +655,18 @@
             {:else}
               {#each visibleEligiblePayments as payment (payment.purchaseId)}
                 <label class="payment-option">
-                  <input type="radio" name="spending-payment" value={payment.transaction!.transactionId} bind:group={selectedPaymentId} />
-                  <span><strong>{basisLabel(payment)}</strong><span>{recordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount?.currency}</small></span>
+                  <input type="radio" name="spending-payment" value={payment.transactionId} bind:group={selectedPaymentId} />
+                  <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
                 </label>
               {:else}
                 <span class="panel-meta">{$locale === "zh-TW" ? "沒有可配對的付款交易" : "No eligible payment transactions"}</span>
               {/each}
             {/if}
-            {#if eligiblePayments.length > paymentVisibleCount}
-              <button type="button" class="button secondary show-more-payments" data-show-more-payments onclick={() => paymentVisibleCount += 10}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+            {#if pairingCandidateTotal > paymentVisibleCount}
+              <button type="button" class="button secondary show-more-payments" data-show-more-payments onclick={() => void showMorePayments()}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
             {/if}
           </fieldset>
-          {#if selectedPayment?.transaction}
+          {#if selectedPayment}
             <div class="pairing-effect" data-direct-pair-effect>
               <strong>{$locale === "zh-TW" ? "配對後的認列方式" : "Recognition after matching"}</strong>
               <span>{$locale === "zh-TW" ? "金額與幣別採銀行付款" : "Amount and currency use the bank payment"}: {amountText(selectedPayment.amount)}</span>

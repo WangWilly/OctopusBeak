@@ -579,10 +579,12 @@ test("Spending directly pairs a user-selected cross-month, different-money payme
       kind: "direct",
       invoiceIdentityId,
       transactionIdentityId,
+      dataVersion: before.purchaseReport.knowledgeAt,
+      totalsByCurrency: before.purchaseReport.totalsByCurrency,
     }, directory));
-    assert.equal(directConfirmation.fullProjectionCount, 1, "direct confirmation performs one full Spending projection");
+    assert.equal(directConfirmation.fullProjectionCount, 0, "direct confirmation avoids a full Spending projection");
     assert.equal(directConfirmation.fullReportComposeCount, 0, "direct confirmation returns a targeted report patch without recomposing the full report");
-    assert.equal(directConfirmation.storeOpenCount, 1, "direct confirmation uses one canonical store lifecycle");
+    assert.equal(directConfirmation.storeOpenCount, 0, "direct confirmation uses the pairing-only canonical transaction");
     const linked = applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch).records;
     assert.deepEqual(
       applySpendingPurchaseReportPatch(before.purchaseReport, directConfirmation.result.patch),
@@ -619,7 +621,7 @@ test("Spending pairing rank is bound to the displayed data version and excludes 
       dataVersion: before.purchaseReport.knowledgeAt,
     }, directory));
     assert.equal(ranked.fullProjectionCount, 0, "pairing rank reuses the worker's loaded report snapshot");
-    assert.deepEqual(ranked.result.transactionIds, before.purchaseReport.records
+    assert.deepEqual(ranked.result.candidates.map((candidate) => candidate.transactionId), before.purchaseReport.records
       .filter((record) => record.basis === "bank-transaction")
       .map((record) => record.transaction!.transactionId));
     assert.throws(() => rankSpendingPaymentCandidates({

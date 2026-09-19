@@ -125,7 +125,25 @@ test("pairing candidate ranking uses the worker boundary without blocking the ca
     parentPort.on("message", ({ id, page }) => {
       const startedAt = Date.now();
       while (Date.now() - startedAt < 180) {}
-      parentPort.postMessage({ id, ok: true, value: { page, dataVersion: 7, transactionIds: ["tx"] } });
+      parentPort.postMessage({
+        id,
+        ok: true,
+        value: {
+          page,
+          dataVersion: 7,
+          candidates: [{
+            purchaseId: "transaction:tx",
+            transactionId: "tx",
+            description: "Coffee shop",
+            amount: { coefficient: "1000", scale: 0, currency: "TWD" },
+            occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+            stream: "bank",
+            effectiveDateBasis: "consume-date",
+          }],
+          totalCandidateCount: 1,
+          nextOffset: null,
+        },
+      });
     });
   `, { eval: true });
   const client = createFinancialPageWorkerClient(worker);
@@ -134,7 +152,21 @@ test("pairing candidate ranking uses the worker boundary without blocking the ca
     const pairing = client.rankPairingCandidates({ invoiceIdentityId: "invoice", dataVersion: 7 });
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     assert.ok(performance.now() - startedAt < 100);
-    assert.deepEqual(await pairing, { page: "spending-pairing", dataVersion: 7, transactionIds: ["tx"] });
+    assert.deepEqual(await pairing, {
+      page: "spending-pairing",
+      dataVersion: 7,
+      candidates: [{
+        purchaseId: "transaction:tx",
+        transactionId: "tx",
+        description: "Coffee shop",
+        amount: { coefficient: "1000", scale: 0, currency: "TWD" },
+        occurrence: { value: "2026-09-01", precision: "date", timeZone: "Asia/Taipei", origin: "source-reported" },
+        stream: "bank",
+        effectiveDateBasis: "consume-date",
+      }],
+      totalCandidateCount: 1,
+      nextOffset: null,
+    });
   } finally {
     await client.close();
   }

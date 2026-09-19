@@ -1262,6 +1262,32 @@ export function queryCanonicalEInvoiceHistoricalFromDatabase(
   });
 }
 
+/** Read one historical invoice without materializing every invoice revision. */
+export function queryCanonicalEInvoiceByIdFromDatabase(
+  db: DatabaseSync,
+  request: Readonly<{ invoiceId: string; knowledgeAt: number }>,
+): CanonicalEInvoiceView | null {
+  if (!/^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu.test(request.invoiceId) ||
+      !Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt < 0)
+    throw new CanonicalEInvoiceAdmissionError("invalid-contract", "E-Invoice identity or knowledge cutoff is invalid.");
+  const invoiceId = Buffer.from(request.invoiceId.replaceAll("-", ""), "hex");
+  const row = db.prepare(`
+    WITH ranked AS (
+      SELECT source_row.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY source_row.invoice_id
+               ORDER BY source_row.revision_number DESC,
+                        source_row.commit_sequence DESC,
+                        source_row.revision_id DESC
+             ) AS rank
+        FROM (${E_INVOICE_REVISION_SELECT}) source_row
+       WHERE source_row.invoice_id = ? AND source_row.commit_sequence <= ?
+    )
+    SELECT * FROM ranked WHERE rank = 1
+  `).get(invoiceId, request.knowledgeAt) as Record<string, unknown> | undefined;
+  return row ? revisionView(db, row) : null;
+}
+
 export function queryCanonicalEInvoiceLineage(
   store: CanonicalSourceStore,
   request: CanonicalEInvoiceLineageRequest,
