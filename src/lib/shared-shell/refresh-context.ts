@@ -7,6 +7,8 @@ export type RefreshUiState = Readonly<{
   version: number;
   changedAt: string | null;
   failed: readonly string[];
+  /** True when a newer invalidation arrived while the current round was busy. */
+  staleDuringRefresh: boolean;
 }>;
 
 export type RefreshUiContext = Readonly<{
@@ -22,4 +24,5 @@ export const initialRefreshUiState: RefreshUiState = {
   version: 0,
   changedAt: null,
   failed: [],
+  staleDuringRefresh: false,
 };

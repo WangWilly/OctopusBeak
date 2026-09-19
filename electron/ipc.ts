@@ -64,7 +64,12 @@ import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
 } from "./window-options.ts";
-import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
+import {
+  dataVersionStore,
+  withExpectedDataVersion,
+  type DataReadOptions,
+} from "../src/lib/shared-shell/data-version.ts";
+import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -101,13 +106,81 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => financialPages.load("overview"));
-  ipcMain.handle("assets:load", () => financialPages.load("assets"));
-  ipcMain.handle("liabilities:load", () => financialPages.load("liabilities"));
+  ipcMain.handle(
+    "overview:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("overview", options),
+      ),
+  );
+  ipcMain.handle(
+    "overview:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("overview", block, options),
+      ),
+  );
+  ipcMain.handle(
+    "assets:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("assets", options),
+      ),
+  );
+  ipcMain.handle(
+    "assets:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("assets", block, options),
+      ),
+  );
+  ipcMain.handle(
+    "liabilities:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("liabilities", options),
+      ),
+  );
+  ipcMain.handle(
+    "liabilities:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("liabilities", block, options),
+      ),
+  );
   ipcMain.handle(
     "spending:load",
-    (_event, input: SpendingLoadInput | undefined) =>
-      financialPages.load("spending", input),
+    (
+      _event,
+      input: SpendingLoadInput | undefined,
+      options: DataReadOptions | undefined,
+    ) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("spending", input, options),
+      ),
+  );
+  ipcMain.handle(
+    "spending:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("spending", block, options),
+      ),
   );
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
     financialPages.rankPairingCandidates(input),
@@ -132,7 +205,24 @@ export function registerOctopusBeakIpc({
       return { ok: true as const };
     },
   );
-  ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
+  ipcMain.handle(
+    "automation:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => loadAutomationDesktopModel(),
+      ),
+  );
+  ipcMain.handle(
+    "automation:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("automation", block, options),
+      ),
+  );
   ipcMain.handle(
     "automation:saveCredentials",
     (_event, updates: Record<string, string>) =>

@@ -1,6 +1,33 @@
+import type { DataVersionSnapshot } from "$lib/shared-shell/data-version.ts";
+
 export type RouteLoadOptions = {
   force?: boolean;
+  /** Generation captured by the refresh coordinator for this route read. */
+  snapshot?: DataVersionSnapshot;
 };
+
+export type IndependentLoadResult<T> =
+  | { status: "fulfilled"; value: T }
+  | { status: "rejected"; error: unknown };
+
+/**
+ * Settle route/block reads independently.  A failed read is data for its own
+ * retry affordance and never rejects the sibling results.
+ */
+export async function settleIndependentLoads(
+  loaders: Readonly<Record<string, () => Promise<unknown>>>,
+): Promise<Readonly<Record<string, IndependentLoadResult<unknown>>>> {
+  const settled = await Promise.all(
+    Object.entries(loaders).map(async ([key, loader]) => {
+      try {
+        return [key, { status: "fulfilled", value: await loader() }] as const;
+      } catch (error) {
+        return [key, { status: "rejected", error }] as const;
+      }
+    }),
+  );
+  return Object.fromEntries(settled);
+}
 
 type RouteKey<Routes extends object> = keyof Routes;
 

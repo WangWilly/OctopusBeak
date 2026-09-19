@@ -31,6 +31,8 @@
   import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
@@ -42,12 +44,18 @@
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
+  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
   export let onboardingSingleSource = false;
   export let onboardingStep: OnboardingStep = "hidden";
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
+
+  function blockState(key: string): BlockState<unknown> {
+    return blocks[key] ?? { status: "ready", data: null };
+  }
 
   let credentialsOpen = false;
   let syncOpen = false;
@@ -1208,6 +1216,7 @@
   </svelte:fragment>
 
   <div class:sync-sheet-open={syncOpen} class="content automation-content">
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
     <section class:active={automation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
         {#if automation.active}
@@ -1265,7 +1274,9 @@
         </div>
       {/if}
     </section>
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
     {#if prerequisiteNoticeGroups.length}
       <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
         <div class="prerequisite-notices-head">
@@ -1316,7 +1327,9 @@
         </div>
       </section>
     {/if}
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
     <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
       {#each taskStages as stage, stageIndex}
         <section class="stage-section">
@@ -1486,6 +1499,7 @@
         </section>
       {/each}
     </section>
+    </ProgressiveBlock>
 
     {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
   </div>

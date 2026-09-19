@@ -42,6 +42,43 @@ test("worker failures reject the matching page request", async () => {
   }
 });
 
+test("financial reads carry the refresh generation to the worker boundary", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, options }) => {
+      parentPort.postMessage({ id, ok: true, value: options });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    assert.deepEqual(await client.load("overview", { expectedVersion: 7 }), {
+      expectedVersion: 7,
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+test("block reads are independently addressable at the worker boundary", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, page, target, block, options }) => {
+      parentPort.postMessage({ id, ok: true, value: { page, target, block, options } });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    assert.deepEqual(await client.loadBlock("overview", "chart", { expectedVersion: 7 }), {
+      page: "block",
+      target: "overview",
+      block: "chart",
+      options: { expectedVersion: 7 },
+    });
+  } finally {
+    await client.close();
+  }
+});
+
 test("closing the worker rejects pending and future page requests deterministically", async () => {
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");

@@ -27,6 +27,10 @@ assert.match(
   /createFinancialPageWorkerClient/,
   "financial page loads must cross a worker boundary so projection reads cannot block Electron main",
 );
+assert.match(source, /withExpectedDataVersion/);
+assert.match(source, /options\?\.expectedVersion/);
+for (const channel of ["overview:block", "assets:block", "liabilities:block", "spending:block", "automation:block"])
+  assert.match(source, new RegExp(`ipcMain\\.handle\\(\\s*"${channel}"`));
 assert.doesNotMatch(
   source,
   /ipcMain\.handle\("overview:load", \(\) =>\s*loadOverview/,

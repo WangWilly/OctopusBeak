@@ -3,6 +3,8 @@
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
@@ -15,6 +17,12 @@
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
+  export let blocks: Readonly<Record<string, BlockState<unknown>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
+
+  function blockState(key: string): BlockState<unknown> {
+    return blocks[key] ?? { status: "ready", data: null };
+  }
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
@@ -418,6 +426,7 @@
     {/if}
 
     <div class="purchase-analysis-grid">
+      <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")}>
       <section class="card purchase-summary-card">
         <div class="section-heading">
           <div>
@@ -454,7 +463,9 @@
           <p class="pending-total-note" data-pending-total>{$locale === "zh-TW" ? "待確認的發票與付款目前分開計入。完成配對後，總額會自動去重。" : "Pending invoices and payments currently count separately. The total is deduplicated after confirmation."}</p>
         {/if}
       </section>
+      </ProgressiveBlock>
 
+      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
       <section class="card purchase-chart-card" aria-label={$locale === "zh-TW" ? "消費圖表" : "Spending chart"} data-chart>
         <div class="section-heading chart-heading">
           <div>
@@ -489,8 +500,10 @@
           ? ($locale === "zh-TW" ? "點選日期可只看當天明細；再次點選即可取消。" : "Select a day to filter the list below; select it again to clear.")
           : ($locale === "zh-TW" ? "點選月份可切換到該月的每日消費。" : "Select a month to open its daily view.")}</p>
       </section>
+      </ProgressiveBlock>
     </div>
 
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
     {#if pendingCandidates.length > 0}
       <section class="card purchase-candidates-card" data-candidates>
         <div class="section-heading">
@@ -533,7 +546,9 @@
         </div>
       </section>
     {/if}
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
         <div><h2>{$locale === "zh-TW" ? "購買明細" : "Purchases"}</h2><p>{selectedDay ? dateText(selectedDay) : activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "全部紀錄" : "All records")} · {visibleRecords.length} {$locale === "zh-TW" ? "筆" : "records"}</p></div>
@@ -581,6 +596,7 @@
         {:else}<div class="purchase-empty"><strong>{$locale === "zh-TW" ? "這個期間沒有消費" : "No purchases in this period"}</strong><span>{$locale === "zh-TW" ? "選擇其他日期或月份查看明細。" : "Choose another day or month to view purchases."}</span></div>{/each}
       </div>
     </section>
+    </ProgressiveBlock>
 
     {#if pairingInvoice?.invoice}
       <section class="pairing-dialog-backdrop" data-pairing-dialog>

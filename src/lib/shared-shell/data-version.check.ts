@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDataVersionStore } from "./data-version.ts";
+import {
+  createDataVersionStore,
+  DataVersionMismatchError,
+  withExpectedDataVersion,
+} from "./data-version.ts";
 
 test("data version advances monotonically and notifies subscribers", () => {
   const store = createDataVersionStore({
@@ -51,4 +55,29 @@ test("a renderer can query a missed invalidation after it reconnects", () => {
   const afterReconnect = store.snapshot();
   assert.equal(afterReconnect.version > initial.version, true);
   assert.equal(afterReconnect.stale, true);
+});
+
+test("a read is rejected when its expected generation advances during the read", async () => {
+  let version = 4;
+
+  await assert.rejects(
+    withExpectedDataVersion(
+      4,
+      () => ({
+        version,
+        stale: version !== 4,
+        changedAt: version === 4 ? null : "2026-09-19T00:00:01.000Z",
+      }),
+      async () => {
+        version = 5;
+        return { version: 4 };
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof DataVersionMismatchError);
+      assert.equal(error.expectedVersion, 4);
+      assert.equal(error.actualVersion, 5);
+      return true;
+    },
+  );
 });
