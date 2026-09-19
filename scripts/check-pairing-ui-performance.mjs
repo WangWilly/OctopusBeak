@@ -216,25 +216,49 @@ async function runSingle(runNumber) {
     // below before navigation, so Pairing never uses no-op action defaults.
     await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
     await page.addInitScript(() => {
-      window.__pairingLongTasks = [];
-      window.__pairingInteractionStarts = [];
-      window.__pairingTimerDelay = 0;
+      window.__pairingPerformance = {
+        longTasks: [],
+        rafGaps: [],
+        windows: {},
+        longTaskObserverAvailable: "PerformanceObserver" in window,
+      };
       window.__pairingPrewarmVersions = [];
-      let expectedTick = performance.now() + 10;
-      setInterval(() => {
-        const now = performance.now();
-        window.__pairingTimerDelay = Math.max(window.__pairingTimerDelay, now - expectedTick);
-        expectedTick = now + 10;
-      }, 10);
+      let previousRafAt = performance.now();
+      const observeRaf = (now) => {
+        window.__pairingPerformance.rafGaps.push({
+          end: now,
+          gap: now - previousRafAt,
+          start: previousRafAt,
+        });
+        previousRafAt = now;
+        requestAnimationFrame(observeRaf);
+      };
+      requestAnimationFrame(observeRaf);
       if ("PerformanceObserver" in window) {
         new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
-            const activeStart = window.__pairingInteractionStarts.at(-1);
-            if (activeStart !== undefined && entry.startTime >= activeStart)
-              window.__pairingLongTasks.push({ start: activeStart, duration: entry.duration });
+            window.__pairingPerformance.longTasks.push({ start: entry.startTime, duration: entry.duration });
           }
         }).observe({ type: "longtask", buffered: true });
       }
+      window.__pairingStartInteraction = (kind) => {
+        const start = performance.now();
+        window.__pairingPerformance.windows[kind] = { start, end: null };
+        performance.mark(`pairing-${kind}-start`);
+        return start;
+      };
+      window.__pairingFinishInteraction = (kind) => {
+        const end = performance.now();
+        const windowValue = window.__pairingPerformance.windows[kind];
+        if (!windowValue) throw new Error(`Pairing interaction ${kind} was not started.`);
+        windowValue.end = end;
+        performance.mark(`pairing-${kind}-end`);
+        performance.measure(`pairing-${kind}`, {
+          start: `pairing-${kind}-start`,
+          end: `pairing-${kind}-end`,
+        });
+        return performance.getEntriesByName(`pairing-${kind}`).at(-1).duration;
+      };
       window.octopusBeak.spending.rankPairingCandidates = (input) => window.__pairingRankThroughWorker(input);
       window.octopusBeak.spending.confirmCandidate = (input) => window.__pairingConfirmThroughWorker(input);
       window.octopusBeak.spending.prewarmPairingCandidates = async (input) => {
@@ -253,25 +277,17 @@ async function runSingle(runNumber) {
     await page.waitForFunction(() => window.__pairingPrewarmDone === true, undefined, { timeout: 30_000 });
     const prewarmElapsedMs = performance.now() - prewarmStartedAt;
 
-    const openStartedAt = await page.evaluate(() => {
-      const now = performance.now();
-      window.__pairingInteractionStarts.push(now);
-      return now;
-    });
+    await page.evaluate(() => window.__pairingStartInteraction("open"));
     await page.locator("[data-open-pairing]").first().click();
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const openElapsedMs = await page.evaluate((startedAt) => performance.now() - startedAt, openStartedAt);
+    const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open"));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).check();
 
-    const confirmStartedAt = await page.evaluate(() => {
-      const now = performance.now();
-      window.__pairingInteractionStarts.push(now);
-      return now;
-    });
+    await page.evaluate(() => window.__pairingStartInteraction("confirm"));
     await page.locator("[data-confirm-direct-pair]").click();
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
     await page.locator('[data-purchase-record][data-basis="linked"]').waitFor({ timeout: 30_000 });
-    const confirmElapsedMs = await page.evaluate((startedAt) => performance.now() - startedAt, confirmStartedAt);
+    const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm"));
     await page.waitForFunction(
       (version) => window.__pairingPrewarmVersions.includes(version),
       fixture.dataVersion + 1,
@@ -310,10 +326,27 @@ async function runSingle(runNumber) {
       fixture.dataVersion,
       fixture.dataVersion + 1,
     ]);
-    const browserEvidence = await page.evaluate(() => ({
-      longTasks: window.__pairingLongTasks,
-      maxTimerDelayMs: window.__pairingTimerDelay,
-    }));
+    const browserEvidence = await page.evaluate(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const windows = Object.values(window.__pairingPerformance.windows);
+      const overlaps = (entry, windowValue) =>
+        entry.start < windowValue.end && entry.start + entry.duration > windowValue.start;
+      const measures = Object.fromEntries(["open", "confirm"].map((kind) => {
+        const entry = performance.getEntriesByName(`pairing-${kind}`).at(-1);
+        return [kind, entry ? { start: entry.startTime, duration: entry.duration } : null];
+      }));
+      const longTasks = window.__pairingPerformance.longTasks.filter((entry) =>
+        windows.some((windowValue) => windowValue.end !== null && overlaps(entry, windowValue)));
+      const rafGaps = window.__pairingPerformance.rafGaps.filter((entry) =>
+        windows.some((windowValue) => windowValue.end !== null &&
+          entry.end > windowValue.start && entry.start < windowValue.end));
+      return {
+        measures,
+        longTasks,
+        longTaskObserverAvailable: window.__pairingPerformance.longTaskObserverAvailable,
+        maxRafGapMs: Math.max(0, ...rafGaps.map((entry) => entry.gap)),
+      };
+    });
 
     const totalMs = performance.now() - overallStartedAt;
     const evidence = {
@@ -335,8 +368,10 @@ async function runSingle(runNumber) {
       confirmElapsedMs,
       publicReadMs,
       totalMs,
-      maxTimerDelayMs: browserEvidence.maxTimerDelayMs,
-      longTasks: browserEvidence.longTasks,
+      rendererMeasures: browserEvidence.measures,
+      rendererLongTaskObserverAvailable: browserEvidence.longTaskObserverAvailable,
+      rendererLongTasks: browserEvidence.longTasks,
+      maxRendererRafGapMs: browserEvidence.maxRafGapMs,
       bridgeTimings,
       rankBridgeCallCount,
       confirmBridgeCallCount,
@@ -349,10 +384,10 @@ async function runSingle(runNumber) {
       openElapsedMs > SLA_MS ? `open ${openElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
       confirmElapsedMs > SLA_MS ? `confirm ${confirmElapsedMs.toFixed(1)}ms > ${SLA_MS}ms` : null,
       browserEvidence.longTasks.some((entry) => entry.duration > 200)
-        ? `long task ${JSON.stringify(browserEvidence.longTasks)}`
+        ? `renderer long task ${JSON.stringify(browserEvidence.longTasks)}`
         : null,
-      browserEvidence.maxTimerDelayMs >= 200
-        ? `timer delay ${browserEvidence.maxTimerDelayMs.toFixed(1)}ms >= 200ms`
+      browserEvidence.maxRafGapMs > 200
+        ? `renderer rAF gap ${browserEvidence.maxRafGapMs.toFixed(1)}ms > 200ms`
         : null,
     ].filter(Boolean);
     assert.deepEqual(timingFailures, [], `Pairing UI timing contract failed: ${timingFailures.join("; ")}`);
@@ -378,17 +413,17 @@ async function main() {
   }
   const suiteStartedAt = performance.now();
   const evidence = [];
-  for (let runNumber = 1; runNumber <= 3; runNumber += 1)
+  for (let runNumber = 1; runNumber <= 5; runNumber += 1)
     evidence.push(await runSingle(runNumber));
   const suiteElapsedMs = performance.now() - suiteStartedAt;
-  assert.ok(suiteElapsedMs < 5 * 60_000, "three fresh real UI Pairing runs exceeded five minutes");
+  assert.ok(suiteElapsedMs < 5 * 60_000, "five fresh real UI Pairing runs exceeded five minutes");
   console.log(JSON.stringify({
     suiteRuns: evidence.length,
     suiteElapsedMs,
     openElapsedMs: evidence.map((run) => run.openElapsedMs),
     confirmElapsedMs: evidence.map((run) => run.confirmElapsedMs),
-    maxTimerDelayMs: evidence.map((run) => run.maxTimerDelayMs),
-    longTaskCounts: evidence.map((run) => run.longTasks.length),
+    maxRendererRafGapMs: evidence.map((run) => run.maxRendererRafGapMs),
+    longTaskCounts: evidence.map((run) => run.rendererLongTasks.length),
   }, null, 2));
 }
 

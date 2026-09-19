@@ -117,15 +117,6 @@ try {
   await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
   await page.addInitScript(({ candidates }) => {
     window.__pairingRankCalls = [];
-    window.__pairingLongTasks = [];
-    if ("PerformanceObserver" in window) {
-      new PerformanceObserver((list) => {
-        const startedAt = window.__pairingClickStartedAt ?? Number.POSITIVE_INFINITY;
-        for (const entry of list.getEntries()) {
-          if (entry.startTime >= startedAt) window.__pairingLongTasks.push(entry.duration);
-        }
-      }).observe({ type: "longtask", buffered: true });
-    }
     window.octopusBeak.spending.rankPairingCandidates = async (input) => {
       window.__pairingRankCalls.push(input);
       if (input.offset === 10) {
@@ -140,14 +131,8 @@ try {
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
   await page.locator("[data-purchase-report]").waitFor();
-  const openStartedAt = await page.evaluate(() => {
-    window.__pairingClickStartedAt = performance.now();
-    return window.__pairingClickStartedAt;
-  });
   await page.locator("[data-open-pairing]").first().click();
   await page.locator("[data-pairing-dialog]").waitFor();
-  const openElapsed = await page.evaluate((startedAt) => performance.now() - startedAt, openStartedAt);
-  assert.ok(openElapsed < 200, `Pairing click response took ${openElapsed.toFixed(1)}ms`);
   await page.locator("[data-pairing-dialog] .payment-option").first().waitFor();
   assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 10);
 
@@ -159,10 +144,8 @@ try {
     10,
     "a stale second page must not append mixed-generation candidates",
   );
-  const longTasks = await page.evaluate(() => window.__pairingLongTasks);
-  console.log(JSON.stringify({ openElapsedMs: openElapsed, rankCallCount, longTasks }));
   assert.equal(rankCallCount, 3, "stale pagination restarts at the current page");
-  assert.equal(longTasks.some((duration) => duration > 200), false, `Pairing dialog had a >200ms long task: ${longTasks}`);
+  console.log(JSON.stringify({ rankCallCount, candidateCount: 10 }));
   assert.deepEqual(errors, []);
 } finally {
   await browser.close();
