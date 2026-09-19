@@ -14,6 +14,7 @@ import {
   updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import { createDataVersionStore } from "../../shared-shell/data-version.ts";
 import { liveTaskRunUpdate } from "./task-run-execution.ts";
 import {
   finalizeAutomationTaskRun,
@@ -44,6 +45,7 @@ function createExecution(ledgerDir: string, taskId = "exchange-rates") {
     taskRunId: run.taskRunId,
     logPath,
     ledgerDir,
+    dataVersionStore: createDataVersionStore(),
   } satisfies AutomationTaskRunFinalizationContext;
   return { db, run, finalization };
 }
@@ -82,6 +84,31 @@ test("live finalization persists a partial statement outcome through one transit
     assert.equal(persisted.status, "partial");
     assert.equal(persisted.errorMessage, null);
     assert.ok(readFileSync(persisted.logPath, "utf8").includes(statementRunSummaryLine(summary.results)));
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("successful automation finalization emits one data invalidation event", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-invalidation-"));
+  try {
+    const { db, finalization } = createExecution(ledgerDir);
+    const store = finalization.dataVersionStore!;
+    const events: unknown[] = [];
+    const unsubscribe = store.subscribe((event) => events.push(event));
+
+    assert.deepEqual(await finalizeAutomationTaskRun(finalization, result()), { status: "completed" });
+    assert.equal(events.length, 1);
+    const event = events[0] as {
+      version: number;
+      reason: string;
+      changedAt: string;
+    };
+    assert.equal(event.version, 1);
+    assert.equal(event.reason, "automation-completed");
+    assert.match(event.changedAt, /^\d{4}-\d\d-\d\dT/);
+    unsubscribe();
     db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });

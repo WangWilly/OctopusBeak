@@ -24,6 +24,10 @@ import type {
   HumanAssistanceContract,
   VerificationInteractionMode,
 } from "$lib/automation/human-assistance.ts";
+import type {
+  DataInvalidationEvent,
+  DataVersionSnapshot,
+} from "$lib/shared-shell/data-version.ts";
 
 export type CredentialGroupDto = AutomationCredentialGroup & {
   enabled: boolean;
@@ -128,6 +132,11 @@ export type OctopusBeakApi = {
     viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
   };
+  data: {
+    getVersion(): Promise<DataVersionSnapshot>;
+    acknowledgeVersion(version: number): Promise<DataVersionSnapshot>;
+    onInvalidated(listener: (event: DataInvalidationEvent) => void): () => void;
+  };
 };
 
 export const octopusBeakApiChannels = [
@@ -161,6 +170,9 @@ export const octopusBeakApiChannels = [
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
   "automation:forceQuit",
+  "data:getVersion",
+  "data:acknowledgeVersion",
+  "data:invalidated",
 ] as const;
 
 export type OctopusBeakApiChannel = typeof octopusBeakApiChannels[number];

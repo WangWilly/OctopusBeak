@@ -36,6 +36,9 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
   "automation:forceQuit",
+  "data:getVersion",
+  "data:acknowledgeVersion",
+  "data:invalidated",
 ]);
 
 import type { OctopusBeakApi } from "./api.ts";

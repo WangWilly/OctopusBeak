@@ -64,6 +64,7 @@ import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
 } from "./window-options.ts";
+import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
@@ -72,6 +73,11 @@ export function registerOctopusBeakIpc({
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
 } = {}) {
+  const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send("data:invalidated", event);
+    }
+  });
   const financialPages = createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
@@ -333,7 +339,18 @@ export function registerOctopusBeakIpc({
     await forceQuitHumanSessionForTask(taskId);
     return { ok: true as const, closed: true };
   });
+  ipcMain.handle("data:getVersion", () => dataVersionStore.snapshot());
+  ipcMain.handle("data:acknowledgeVersion", (_event, version: unknown) => {
+    if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+      throw new TypeError("Data version must be a non-negative safe integer.");
+    }
+    dataVersionStore.acknowledge(version);
+    return dataVersionStore.snapshot();
+  });
   return {
-    close: () => financialPages.close(),
+    close: async () => {
+      unsubscribeFromDataInvalidation();
+      await financialPages.close();
+    },
   };
 }

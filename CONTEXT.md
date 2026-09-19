@@ -403,7 +403,7 @@ A view of consumption organized by the purchase rather than bank posting, in whi
 _Avoid_: Booked outflow total, bank posting month as purchase month
 
 **Spending deduplication link**:
-A revocable, traceable report-level association identifying one invoice and one payment transaction as evidence of the same purchase in the first version, established automatically only by reliable source evidence or otherwise by explicit user confirmation; similarity alone cannot establish it. The association follows legitimate revisions of the same source identity without renewed confirmation, preventing duplicate recognition under the spending policy without merging canonical identities or rewriting source financial facts.
+A revocable, traceable report-level association identifying one invoice and one payment transaction as evidence of the same purchase in the first version, established automatically only by reliable source evidence or otherwise by explicit user confirmation; similarity alone cannot establish it. The user-facing action that explicitly confirms this association is called **Pairing** (「配對」). The association follows legitimate revisions of the same source identity without renewed confirmation, preventing duplicate recognition under the spending policy without merging canonical identities or rewriting source financial facts.
 _Avoid_: Canonical identity merge, source-confirmed Transaction Relation, automatic fuzzy deduplication
 
 **Possible duplicate spending**:
