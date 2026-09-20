@@ -710,7 +710,7 @@
   }
 
   async function runTask(task: AutomationTaskRow) {
-    if (pendingTaskIds.has(task.id) || task.isActive) return;
+    if (pendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
     pendingTaskIds = new Set([...pendingTaskIds, task.id]);
     applyLocalPreparing(task.id);
     schedulePreparingTimeout(task.id);

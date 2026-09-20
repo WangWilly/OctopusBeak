@@ -211,6 +211,19 @@ export function activeAutomationTaskIds() {
   return Array.from(activeTaskRunIds.keys());
 }
 
+export function currentAutomationTaskRun(taskId: string) {
+  const current = activeTaskRunIds.get(taskId);
+  if (!current) return null;
+  if (current === "pending" || current === "queued") {
+    throw new Error(`Automation task is still preparing: ${taskId}`);
+  }
+  const runtime = automationRuntimeState.snapshot();
+  return {
+    runId: runtime.tasks.find((task) => task.taskId === taskId)?.runId ?? current,
+    runtime,
+  };
+}
+
 /** True after a user cancellation request until the current task exits. */
 export function automationTaskCancellationRequested(taskId: string) {
   return cancellationRequestedTaskIds.has(taskId);

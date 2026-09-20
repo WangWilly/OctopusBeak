@@ -43,6 +43,10 @@ import {
   dataVersionStore,
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
+import {
+  automationRuntimeState,
+  runtimeTaskSnapshotFromRun,
+} from "./runtime-state.ts";
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -214,7 +218,10 @@ async function finalizeTaskRunTransition(
     errorMessage: taskError,
     ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
   });
-  return { status, skipped: false };
+  const persisted = taskRunById(db, run.taskRunId);
+  if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
+  automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
+  return { status: persisted.status, skipped: false };
 }
 
 export async function finalizePersistedRun(

@@ -76,6 +76,9 @@ export function buildAutomationPageModel(input: {
       : activeTaskIds.has(task.id);
     const status = runtime?.status ?? rowStatus(task, run, isActive, setupRequiredGroupIds);
     const action = primaryAction(status, isActive);
+    const credentialsReady = task.credentialKeys.every((key) =>
+      (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
+    );
     const progressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
     const attempt = runtime?.attempt ?? run?.attempt ?? 0;
     const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
@@ -108,7 +111,7 @@ export function buildAutomationPageModel(input: {
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       primaryAction: action,
-      canRun: action === "Cancel" || (!isActive && action !== "Locked"),
+      canRun: action === "Cancel" || (!isActive && action !== "Locked" && credentialsReady),
     } satisfies AutomationTaskRow;
   });
   return {

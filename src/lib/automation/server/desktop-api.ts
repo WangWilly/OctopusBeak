@@ -26,6 +26,7 @@ import {
 import {
   activeAutomationTaskIds,
   cancelAutomationTask,
+  currentAutomationTaskRun,
   forceTerminateAutomationTask,
   hasActiveAutomationTask,
   resumeSessionFromLog,
@@ -489,6 +490,10 @@ export function automationRun(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
+  const current = currentAutomationTaskRun(taskId);
+  if (current) {
+    return { started: taskId, runId: current.runId, runtime: current.runtime };
+  }
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
   const started = startAutomationTask(task.id, ledgerDir);
   return { started: task.id, runId: started.runId, runtime: started.runtime };
@@ -510,12 +515,16 @@ export function automationRunMany(
   const results: Record<string, AutomationRunManyTaskResult> = {};
   for (const taskId of [...new Set(taskIds)]) {
     try {
+      const existing = currentAutomationTaskRun(taskId);
+      if (existing) {
+        results[taskId] = { status: "already_running", runId: existing.runId };
+        continue;
+      }
       const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-      const existing = activeAutomationTaskIds().includes(task.id);
       const run = startAutomationTask(task.id, ledgerDir);
-      if (!existing) started.push(task.id);
+      started.push(task.id);
       results[task.id] = {
-        status: existing ? "already_running" : "started",
+        status: "started",
         runId: run.runId,
       };
     } catch (error) {

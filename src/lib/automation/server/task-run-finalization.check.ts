@@ -23,6 +23,7 @@ import {
   type AutomationTaskProcessResult,
   type AutomationTaskRunFinalizationContext,
 } from "./task-run-finalization.ts";
+import { automationRuntimeState } from "./runtime-state.ts";
 
 function createExecution(ledgerDir: string, taskId = "exchange-rates") {
   const db = openLedgerDatabase(ledgerDir);
@@ -227,6 +228,44 @@ test("a failed waiting run finalizes with the solver exhaustion message", async 
       persisted.errorMessage ?? "",
       /^Verification solver exhausted its attempts\./,
     );
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("waiting finalization publishes the terminal runtime after persistence", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-runtime-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "waiting-runtime.log"),
+      logTail: "Workflow paused. resume --session ses-waiting-runtime",
+    });
+    const observed: string[] = [];
+    const unsubscribe = automationRuntimeState.subscribe((snapshot) => {
+      const task = snapshot.tasks.find((candidate) => candidate.runId === run.taskRunId);
+      if (!task || task.status === "waiting_for_human") return;
+      const persisted = taskRunById(db, run.taskRunId);
+      if (persisted) observed.push(`${task.status}:${persisted.status}`);
+    });
+    try {
+      await finalizeFailedWaitingRun(
+        db,
+        taskRunById(db, run.taskRunId)!,
+        "Verification solver exhausted its attempts.",
+      );
+    } finally {
+      unsubscribe();
+    }
+    assert.deepEqual(observed, ["failed:failed"]);
     db.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });

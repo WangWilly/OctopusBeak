@@ -50,6 +50,47 @@ assert.equal(Object.hasOwn(model, "runHistory"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
 assert.equal(model.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
 
+for (const credentialState of ["loading", "missing", "read_failed"] as const) {
+  const blockedModel = buildAutomationPageModel({
+    tasks: AUTOMATION_TASKS,
+    latestRuns: {},
+    credentials: Object.fromEntries(
+      AUTOMATION_TASKS.find((task) => task.id === "fubon-all-statements")!.credentialKeys
+        .map((key) => [key, true]),
+    ),
+    credentialStates: Object.fromEntries(
+      AUTOMATION_TASKS.find((task) => task.id === "fubon-all-statements")!.credentialKeys
+        .map((key) => [key, credentialState]),
+    ),
+    active: false,
+    businessDate: "2026-06-30",
+  });
+  assert.equal(
+    blockedModel.tasks.find((task) => task.id === "fubon-all-statements")?.canRun,
+    false,
+    `${credentialState} credentials must disable Run`,
+  );
+}
+
+const readyModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {},
+  credentials: Object.fromEntries(
+    AUTOMATION_TASKS.find((task) => task.id === "fubon-all-statements")!.credentialKeys
+      .map((key) => [key, true]),
+  ),
+  credentialStates: Object.fromEntries(
+    AUTOMATION_TASKS.find((task) => task.id === "fubon-all-statements")!.credentialKeys
+      .map((key) => [key, "ready"]),
+  ),
+  active: false,
+  businessDate: "2026-06-30",
+});
+assert.equal(
+  readyModel.tasks.find((task) => task.id === "fubon-all-statements")?.canRun,
+  true,
+);
+
 const setupRequiredModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {},
@@ -133,7 +174,7 @@ const failedModel = buildAutomationPageModel({
 const failedRow = failedModel.tasks.find((task) => task.id === "hncb-statements");
 assert.equal(failedRow?.status, "failed");
 assert.equal(failedRow?.primaryAction, "Run again");
-assert.equal(failedRow?.canRun, true);
+assert.equal(failedRow?.canRun, false);
 
 const partialModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
