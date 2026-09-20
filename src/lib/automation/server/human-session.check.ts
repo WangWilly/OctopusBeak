@@ -16,6 +16,7 @@ import {
 } from "./session-lifecycle.ts";
 import { claimAutomationTaskRunSession } from "./automation-session-disposition.ts";
 import { createTaskRun, taskRunById } from "./store.ts";
+import { automationRuntimeState } from "./runtime-state.ts";
 
 assert.equal(
   humanSessionFromRun(
@@ -212,8 +213,14 @@ test("force quit finalizes the exact waiting run without appending a log", async
     });
     db.close();
 
-    assert.deepEqual(
-      await forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir, {
+    const runtimeStatuses: string[] = [];
+    const unsubscribe = automationRuntimeState.subscribe((snapshot) => {
+      const task = snapshot.tasks.find((candidate) => candidate.runId === run.taskRunId);
+      if (task) runtimeStatuses.push(task.status);
+    });
+    let forceQuitResult!: { session: string | null };
+    try {
+      forceQuitResult = await forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir, {
         readSessionState() {
           return null;
         },
@@ -223,9 +230,12 @@ test("force quit finalizes the exact waiting run without appending a log", async
         async finalizeSession() {
           return true;
         },
-      }),
-      { session: "ses-force-quit" },
-    );
+      });
+    } finally {
+      unsubscribe();
+    }
+    assert.deepEqual(forceQuitResult, { session: "ses-force-quit" });
+    assert.deepEqual(runtimeStatuses, ["cancelled"]);
 
     const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
     assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "cancelled");

@@ -153,6 +153,21 @@ try {
       },
     },
   });
+  configFiles.setAutomationCredentialCodec({
+    encrypt(text: string) {
+      return Buffer.from(text, "utf8").toString("base64");
+    },
+    decrypt() {
+      throw new Error("credential preflight must not run for an active duplicate");
+    },
+  });
+  try {
+    const duplicateSinopac = api.automationRun("sinopac-statements", dir);
+    assert.equal(duplicateSinopac.runId, startedSinopac.results["sinopac-statements"]?.runId);
+    assert.equal(duplicateSinopac.started, "sinopac-statements");
+  } finally {
+    resetCredentialCodec();
+  }
   const runner = await import("./runner.ts");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (!runner.hasActiveAutomationTask()) break;
