@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { cpus, platform, release, totalmem, version as osVersion } from "node:os";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -29,6 +29,7 @@ const EXPECTED_FIXTURE_SHAPE = {
 const electronPackage = JSON.parse(
   readFileSync(new URL("../node_modules/electron/package.json", import.meta.url), "utf8"),
 );
+const activeWorkerHandles = new Set();
 
 function rendererInstrumentation() {
   window.__runtimeRenderer = {
@@ -62,14 +63,15 @@ function rendererInstrumentation() {
     return start;
   };
   window.__runtimeFinish = (kind) => {
-    const end = performance.now();
+    return window.__runtimeFinishAt(kind, performance.now());
+  };
+  window.__runtimeFinishAt = (kind, end) => {
     const windowValue = window.__runtimeRenderer.windows[kind];
     if (!windowValue) throw new Error(`Runtime interaction ${kind} was not started.`);
     windowValue.end = end;
-    performance.mark(`runtime-${kind}-end`);
     performance.measure(`runtime-${kind}`, {
       start: `runtime-${kind}-start`,
-      end: `runtime-${kind}-end`,
+      end,
     });
     return performance.getEntriesByName(`runtime-${kind}`).at(-1).duration;
   };
@@ -137,7 +139,34 @@ function installPairingBridge() {
   window.__pairingPrewarmVersions = [];
   window.__pairingPrewarmStarted = false;
   window.__pairingPrewarmDone = false;
-  window.octopusBeak.spending.rankPairingCandidates = (input) => window.__pairingRankThroughWorker(input);
+  window.__pairingRankResponseAt = null;
+  window.__pairingCandidateRenderedAt = null;
+  window.__pairingConfirmRenderedAt = null;
+  window.__pairingConfirmArmed = false;
+  window.__pairingSelectedTransactionId = null;
+  const observeCandidates = () => {
+    const observer = new MutationObserver(() => {
+      if (window.__pairingCandidateRenderedAt === null && document.querySelector("[data-pairing-dialog] input[name='spending-payment']"))
+        window.__pairingCandidateRenderedAt = performance.now();
+      if (document.querySelector('[data-pairing-feedback="confirm-busy"]'))
+        window.__pairingConfirmArmed = true;
+      if (
+        window.__pairingConfirmArmed &&
+        window.__pairingConfirmRenderedAt === null &&
+        !document.querySelector("[data-pairing-dialog]") &&
+        [...document.querySelectorAll('[data-purchase-record][data-basis="linked"]')]
+          .some((element) => element.getAttribute("data-transaction-id") === window.__pairingSelectedTransactionId)
+      ) window.__pairingConfirmRenderedAt = performance.now();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  };
+  if (document.documentElement) observeCandidates();
+  else addEventListener("DOMContentLoaded", observeCandidates, { once: true });
+  window.octopusBeak.spending.rankPairingCandidates = async (input) => {
+    const result = await window.__pairingRankThroughWorker(input);
+    window.__pairingRankResponseAt = performance.now();
+    return result;
+  };
   window.octopusBeak.spending.confirmCandidate = (input) => window.__pairingConfirmThroughWorker(input);
   window.octopusBeak.spending.prewarmPairingCandidates = async (input) => {
     window.__pairingPrewarmStarted = true;
@@ -156,20 +185,44 @@ function assertRendererResponsiveness(evidence, label) {
 
 async function startWorker() {
   const worker = new Worker(new URL("../electron/financial-page-worker.ts", import.meta.url), { type: "module" });
-  await new Promise((resolve, reject) => {
-    worker.once("message", (message) => message.id === 0 ? resolve() : reject(new Error("Financial worker readiness handshake failed.")));
-    worker.once("error", reject);
-  });
-  return { worker, client: createFinancialPageWorkerClient(worker) };
+  let exited = false;
+  worker.once("exit", () => { exited = true; });
+  try {
+    await new Promise((resolve, reject) => {
+      worker.once("message", (message) => message.id === 0 ? resolve() : reject(new Error("Financial worker readiness handshake failed.")));
+      worker.once("error", reject);
+    });
+    const client = createFinancialPageWorkerClient(worker);
+    const handle = {
+      worker,
+      client,
+      closed: false,
+      async close() {
+        if (this.closed) return;
+        this.closed = true;
+        await client.close();
+        assert.equal(exited, true, "financial worker must exit before the scenario is disposed");
+        activeWorkerHandles.delete(handle);
+      },
+    };
+    activeWorkerHandles.add(handle);
+    return handle;
+  } catch (error) {
+    await worker.terminate();
+    throw error;
+  }
 }
 
 async function runShellRuntimeAcceptance() {
-  const server = await createSpendingViteServer();
-  const browser = await chromium.launch({ headless: true });
+  let server;
+  let browser;
+  let page;
   try {
+    server = await createSpendingViteServer();
+    browser = await chromium.launch({ headless: true });
     const address = server.httpServer?.address();
     assert.ok(address && typeof address === "object");
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
@@ -233,8 +286,12 @@ async function runShellRuntimeAcceptance() {
       })),
     };
   } finally {
-    await browser.close();
-    await server.close();
+    await page?.close();
+    await browser?.close();
+    await server?.close();
+    assert.equal(page?.isClosed() ?? true, true, "shell page must be closed after the scenario");
+    assert.equal(browser?.isConnected() ?? false, false, "shell browser must be disconnected after the scenario");
+    assert.equal(server?.httpServer?.listening ?? false, false, "shell Vite server must stop after the scenario");
   }
 }
 
@@ -245,6 +302,7 @@ async function runColdPairing(runNumber) {
   let actual;
   let server;
   let browser;
+  let page;
   try {
     process.env.LEDGER_DIR = fixture.directory;
     preflight = await startWorker();
@@ -256,21 +314,23 @@ async function runColdPairing(runNumber) {
     const selectedCandidate = ranked.candidates[0];
     assert.ok(selectedCandidate, "100k fixture must expose a Pairing candidate");
     assert.equal(ranked.totalCandidateCount, EXPECTED_FIXTURE_SHAPE.transactions - EXPECTED_FIXTURE_SHAPE.linksBefore);
-    await preflight.client.close();
+    await preflight.close();
     preflight = null;
 
-    const model = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
+    let model = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
     model.purchaseReport.knowledgeAt = fixture.dataVersion;
     const invoiceIds = new Set(model.purchaseReport.records.flatMap((record) =>
       record.invoice ? [record.invoice.invoiceId] : []));
-    assert.equal(model.purchaseReport.records.length, EXPECTED_FIXTURE_SHAPE.rendererRecords);
-    assert.equal(invoiceIds.size, EXPECTED_FIXTURE_SHAPE.rendererInvoiceIdentities);
+    const rendererModelRecordCount = model.purchaseReport.records.length;
+    const rendererModelInvoiceIdentityCount = invoiceIds.size;
+    assert.equal(rendererModelRecordCount, EXPECTED_FIXTURE_SHAPE.rendererRecords);
+    assert.equal(rendererModelInvoiceIdentityCount, EXPECTED_FIXTURE_SHAPE.rendererInvoiceIdentities);
     server = await createSpendingViteServer();
     const address = server.httpServer?.address();
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     actual = await startWorker();
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
     const bridgeTimings = [];
     page.on("console", (message) => {
@@ -314,11 +374,21 @@ async function runColdPairing(runNumber) {
     await page.addInitScript(() => {
       localStorage.setItem("octopusbeak-locale", "en");
     });
+    model = null;
+    if (typeof globalThis.gc === "function") globalThis.gc();
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
     await page.waitForFunction(() => window.__pairingPrewarmStarted === true, undefined, { timeout: 30_000 });
     const prewarmDoneAtClick = await page.evaluate(() => window.__pairingPrewarmDone);
     assert.equal(prewarmDoneAtClick, false, "cold Pairing click must happen before prewarm resolves");
+    if (process.env.PAIRING_RUNTIME_PROGRESS === "1") {
+      console.error(JSON.stringify(await page.evaluate(() => ({
+        now: performance.now(),
+        windows: window.__runtimeRenderer.windows,
+        longTasks: window.__runtimeRenderer.longTasks,
+        rankResponseAt: window.__pairingRankResponseAt,
+      }))));
+    }
 
     await page.evaluate(() => {
       window.__runtimeStart("pairing-open-feedback");
@@ -328,8 +398,21 @@ async function runColdPairing(runNumber) {
     await page.locator('[data-pairing-dialog][data-pairing-feedback="open-dialog"]').waitFor({ state: "visible", timeout: 30_000 });
     const openFeedbackMs = await page.evaluate(() => window.__runtimeFinish("pairing-open-feedback"));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const openMs = await page.evaluate(() => window.__runtimeFinish("pairing-open"));
+    if (process.env.PAIRING_RUNTIME_PROGRESS === "1") {
+      console.error(JSON.stringify(await page.evaluate(() => ({
+        now: performance.now(),
+        windows: window.__runtimeRenderer.windows,
+        rankResponseAt: window.__pairingRankResponseAt,
+      }))));
+    }
+    const openMs = await page.evaluate(() => window.__runtimeFinishAt(
+      "pairing-open",
+      window.__pairingCandidateRenderedAt,
+    ));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).check();
+    await page.evaluate((transactionId) => {
+      window.__pairingSelectedTransactionId = transactionId;
+    }, selectedCandidate.transactionId);
 
     await page.evaluate(() => {
       window.__runtimeStart("pairing-confirm-feedback");
@@ -340,8 +423,26 @@ async function runColdPairing(runNumber) {
     const confirmFeedbackMs = await page.evaluate(() => window.__runtimeFinish("pairing-confirm-feedback"));
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
     await page.locator(`[data-purchase-record][data-basis="linked"][data-transaction-id="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const confirmMs = await page.evaluate(() => window.__runtimeFinish("pairing-confirm"));
+    const confirmMs = await page.evaluate(() => window.__runtimeFinishAt(
+      "pairing-confirm",
+      window.__pairingConfirmRenderedAt,
+    ));
     const rendererEvidence = await page.evaluate(() => window.__runtimeRendererEvidence());
+    if (openMs > PAIRING_SLA_MS || confirmMs > PAIRING_SLA_MS)
+      console.log(JSON.stringify({
+        defect: "pairing-sla",
+        runNumber,
+        openFeedbackMs,
+        openMs,
+        confirmFeedbackMs,
+        confirmMs,
+        rendererEvidence,
+        bridgeTimings,
+        rendererPairingTimeline: await page.evaluate(() => ({
+          rankResponseAt: window.__pairingRankResponseAt,
+          candidateRenderedAt: window.__pairingCandidateRenderedAt,
+        })),
+      }, null, 2));
     assert.ok(openFeedbackMs <= FEEDBACK_MS, `Pairing open feedback exceeded ${FEEDBACK_MS}ms: ${openFeedbackMs}`);
     assert.ok(confirmFeedbackMs <= FEEDBACK_MS, `Pairing confirm feedback exceeded ${FEEDBACK_MS}ms: ${confirmFeedbackMs}`);
     assert.ok(openMs <= PAIRING_SLA_MS, `Pairing open exceeded ${PAIRING_SLA_MS}ms: ${openMs}`);
@@ -363,8 +464,8 @@ async function runColdPairing(runNumber) {
       runNumber,
       setupMs: fixture.setupMs,
       totalMs: performance.now() - startedAt,
-      rendererModelRecordCount: model.purchaseReport.records.length,
-      rendererModelInvoiceIdentityCount: invoiceIds.size,
+      rendererModelRecordCount,
+      rendererModelInvoiceIdentityCount,
       initialRenderedRecordCount: await page.locator("[data-purchase-record]").count(),
       prewarmDoneAtClick,
       openFeedbackMs,
@@ -385,11 +486,17 @@ async function runColdPairing(runNumber) {
     console.log(JSON.stringify(evidence, null, 2));
     return evidence;
   } finally {
-    await actual?.client.close();
-    await preflight?.client.close();
+    await page?.close();
+    await actual?.close();
+    await preflight?.close();
     await browser?.close();
     await server?.close();
     await rm(fixture.directory, { recursive: true, force: true });
+    assert.equal(page?.isClosed() ?? true, true, `Pairing run ${runNumber} page must be closed after the scenario`);
+    assert.equal(browser?.isConnected() ?? false, false, `Pairing run ${runNumber} browser must be disconnected after the scenario`);
+    assert.equal(server?.httpServer?.listening ?? false, false, `Pairing run ${runNumber} Vite server must stop after the scenario`);
+    assert.equal(existsSync(fixture.directory), false, `Pairing run ${runNumber} fixture must be removed after the scenario`);
+    assert.equal(activeWorkerHandles.size, 0, `Pairing run ${runNumber} must not leak financial workers`);
   }
 }
 

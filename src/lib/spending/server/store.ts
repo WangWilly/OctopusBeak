@@ -51,7 +51,11 @@ import {
   type SpendingPurchaseTransactionView,
 } from "../purchase-matching.ts";
 import { createSpendingPairingCandidateViewFromTransaction } from "../pairing-presentation.ts";
-import { SpendingPairingIndexCache } from "../pairing-index.ts";
+import {
+  SpendingPairingIndexCache,
+  spendingPairingIndexEntryForTransaction,
+  type SpendingPairingIndexEntry,
+} from "../pairing-index.ts";
 import {
   createFinancialQuery,
   queryCurrentSpendingFromDatabase,
@@ -690,9 +694,15 @@ function pairingInvoiceFromDatabase(
   });
 }
 
-function pairingTransactionsFromDatabase(
+type PairingTransactionQueryOptions = Readonly<{
+  limit?: number;
+  afterTransactionIdentityId?: string;
+}>;
+
+function pairingIndexEntriesFromDatabase(
   store: Pick<CanonicalSourceStore, "db">,
-): readonly SpendingPurchaseTransactionView[] {
+  options: PairingTransactionQueryOptions = {},
+): readonly SpendingPairingIndexEntry[] {
   const rows = store.db.prepare(`
     SELECT current_row.transaction_id, revision.effective_on, revision.description,
            revision.amount_coefficient, revision.amount_scale, revision.currency,
@@ -706,6 +716,7 @@ function pairingTransactionsFromDatabase(
       LEFT JOIN current_spending_dedup_links active_link
         ON active_link.transaction_id = current_row.transaction_id
      WHERE active_link.transaction_id IS NULL
+       ${options.afterTransactionIdentityId === undefined ? "" : "AND current_row.transaction_id > ?"}
        AND revision.administrative_state = 'active'
        AND revision.economic_status = 'normal'
        AND revision.posting_status = 'posted'
@@ -717,10 +728,17 @@ function pairingTransactionsFromDatabase(
        AND kind.taxonomy_code NOT LIKE 'investment.%'
        AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
        AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
-  `).all() as readonly Readonly<Record<string, unknown>>[];
+     ORDER BY current_row.transaction_id
+     ${options.limit === undefined ? "" : "LIMIT ?"}
+  `).all(
+    ...(options.afterTransactionIdentityId === undefined
+      ? []
+      : [Buffer.from(options.afterTransactionIdentityId.replaceAll("-", ""), "hex")]),
+    ...(options.limit === undefined ? [] : [options.limit]),
+  ) as readonly Readonly<Record<string, unknown>>[];
   return Object.freeze(rows.map((row) => {
     const stream = String(row.stream);
-    return Object.freeze({
+    const transaction = Object.freeze({
       transactionId: canonicalUuidFromBlob(row.transaction_id, "Pairing transaction identity"),
       effectiveOn: String(row.effective_on),
       consumeDate: null,
@@ -734,6 +752,7 @@ function pairingTransactionsFromDatabase(
       stream,
       effectiveDateBasis: stream === "credit-card" ? "posting-date-fallback" as const : null,
     });
+    return spendingPairingIndexEntryForTransaction(transaction);
   }));
 }
 
@@ -908,15 +927,24 @@ export function rankSpendingPaymentCandidates(
     pairingProgress("invoice loaded", startedAt);
     const cache = pairingIndexCache(ledgerDir);
     const index = cache.forVersion(currentVersion) ??
-      cache.get(currentVersion, pairingTransactionsFromDatabase(store)).index;
+      cache.prewarmEntries(currentVersion, pairingIndexEntriesFromDatabase(store)).index;
     pairingProgress("pairing index ready", startedAt);
-    const transactionsById = new Map(index.entries.map((entry) => [entry.transaction.transactionId, entry.transaction]));
     const ranked = rankSpendingManualPaymentCandidates(invoice, index);
     pairingProgress("candidates ranked", startedAt);
     const offset = action.offset ?? 0;
     const limit = action.limit ?? 50;
-    const candidates = ranked.slice(offset, offset + limit).map((candidate) => {
-      const transaction = transactionsById.get(candidate.transactionId);
+    const page = ranked.slice(offset, offset + limit);
+    const pageIds = new Set(page.map((candidate) => candidate.transactionId));
+    const pageTransactions = new Map<string, SpendingPairingIndexEntry["transaction"]>();
+    if (pageIds.size > 0) {
+      for (const entry of index.entries) {
+        if (!pageIds.has(entry.transaction.transactionId)) continue;
+        pageTransactions.set(entry.transaction.transactionId, entry.transaction);
+        if (pageTransactions.size === pageIds.size) break;
+      }
+    }
+    const candidates = page.map((candidate) => {
+      const transaction = pageTransactions.get(candidate.transactionId);
       if (!transaction) throw new Error("Spending pairing candidate is missing from the current index.");
       return createSpendingPairingCandidateViewFromTransaction(transaction as SpendingPurchaseTransactionView);
     });
@@ -937,10 +965,11 @@ export function rankSpendingPaymentCandidates(
  * The immutable data version is the cache boundary; a new version replaces
  * the old index before any subsequent rank request can reuse it.
  */
-export function prewarmSpendingPairingCandidates(
+export async function prewarmSpendingPairingCandidates(
   input: SpendingPairingPrewarmInput,
   ledgerDir = DEFAULT_LEDGER_DIR,
-): SpendingPairingPrewarmResult {
+  shouldCancel: () => boolean = () => false,
+): Promise<SpendingPairingPrewarmResult> {
   const action = pairingPrewarmInput(input);
   const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) throw new Error("Canonical Spending database is not initialized.");
@@ -952,10 +981,31 @@ export function prewarmSpendingPairingCandidates(
     ).get() as { value: number }).value);
     if (currentVersion !== action.dataVersion)
       throw new Error("Spending pairing prewarm data version is stale; reload Spending before pairing.");
-    const prepared = pairingIndexCache(ledgerDir).prewarm(
-      currentVersion,
-      pairingTransactionsFromDatabase(store),
-    );
+    const cache = pairingIndexCache(ledgerDir);
+    if (cache.forVersion(currentVersion))
+      return Object.freeze({ dataVersion: currentVersion, reused: true });
+
+    // Use keyset batches so an interactive rank waits for at most one small
+    // SQLite read. Unlike OFFSET batching, later batches do not rescan and
+    // discard all preceding rows.
+    const entries: SpendingPairingIndexEntry[] = [];
+    const batchSize = 2_048;
+    let afterTransactionIdentityId: string | undefined;
+    while (true) {
+      if (shouldCancel())
+        return Object.freeze({ dataVersion: currentVersion, reused: false });
+      const batch = pairingIndexEntriesFromDatabase(store, {
+        limit: batchSize,
+        ...(afterTransactionIdentityId ? { afterTransactionIdentityId } : {}),
+      });
+      entries.push(...batch);
+      if (batch.length < batchSize) break;
+      afterTransactionIdentityId = batch.at(-1)!.transaction.transactionId;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (shouldCancel())
+      return Object.freeze({ dataVersion: currentVersion, reused: false });
+    const prepared = cache.prewarmEntries(currentVersion, entries);
     return Object.freeze({ dataVersion: currentVersion, reused: prepared.reused });
   } finally {
     db.close();
@@ -1171,7 +1221,7 @@ export function confirmSpendingCandidate(
       pairingProgress("confirm invoice loaded", startedAt);
       const cache = pairingIndexCache(ledgerDir);
       const index = cache.forVersion(currentVersion) ??
-        cache.get(currentVersion, pairingTransactionsFromDatabase(store)).index;
+        cache.prewarmEntries(currentVersion, pairingIndexEntriesFromDatabase(store)).index;
       const selected = index.entries.find((entry) =>
         entry.transaction.transactionId === action.transactionIdentityId,
       );

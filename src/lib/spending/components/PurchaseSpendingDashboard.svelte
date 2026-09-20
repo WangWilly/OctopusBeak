@@ -53,6 +53,58 @@
   let pairingCandidatesLoading = false;
   let pairingRequestToken = 0;
   let pairingPrewarmVersion: number | null = null;
+  const initialPairingCandidateCount = 1;
+  const reportDerivedCache = new WeakMap<object, {
+    months: string[];
+    availableCurrencies: string[];
+    monthTotals: ReturnType<typeof totalsByMonth>;
+    pendingCandidates: PurchaseReport["candidates"];
+    candidateRecordsByKey: Map<string, PurchaseRecord>;
+  }>();
+  const reportRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
+  const reportVisibleRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
+
+  function recordsForMonth(sourceReport: PurchaseReport, month: string | null) {
+    const key = month ?? "*";
+    const cachedByMonth = reportRecordsCache.get(sourceReport);
+    const cached = cachedByMonth?.get(key);
+    if (cached) return cached;
+    const records = sourceReport.records.filter((record) =>
+      month === null || record.occurrence.value.startsWith(`${month}-`));
+    const nextByMonth = cachedByMonth ?? new Map<string, PurchaseRecord[]>();
+    nextByMonth.set(key, records);
+    reportRecordsCache.set(sourceReport, nextByMonth);
+    return records;
+  }
+
+  function visibleRecordsFor(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+    const key = `${month ?? "*"}\u0000${day ?? "*"}`;
+    const cachedByFilter = reportVisibleRecordsCache.get(sourceReport);
+    const cached = cachedByFilter?.get(key);
+    if (cached) return cached;
+    const records = recordsForMonth(sourceReport, month)
+      .filter((record) => day === null || record.occurrence.value.startsWith(day))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+    const nextByFilter = cachedByFilter ?? new Map<string, PurchaseRecord[]>();
+    nextByFilter.set(key, records);
+    reportVisibleRecordsCache.set(sourceReport, nextByFilter);
+    return records;
+  }
+
+  function reportDerivedFor(sourceReport: PurchaseReport) {
+    const cached = reportDerivedCache.get(sourceReport);
+    if (cached) return cached;
+    const derived = {
+      months: monthsForReport(sourceReport),
+      availableCurrencies: currenciesForReport(sourceReport),
+      monthTotals: totalsByMonth(sourceReport.records),
+      pendingCandidates: sourceReport.candidates.filter((candidate) => candidate.status === "candidate"),
+      candidateRecordsByKey: candidateRecordsByKeyFor(sourceReport),
+    };
+    reportDerivedCache.set(sourceReport, derived);
+    return derived;
+  }
 
   $: if (previousReport !== purchaseReport) {
     previousReport = purchaseReport;
@@ -67,16 +119,14 @@
     pairingPrewarmVersion = dataVersion;
     void window.octopusBeak.spending.prewarmPairingCandidates({ dataVersion }).catch(() => {});
   }
-  $: months = [...new Set(report.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+  $: reportDerived = reportDerivedFor(report);
+  $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
-  $: monthRecords = report.records.filter((record) => activeMonth === null || record.occurrence.value.startsWith(`${activeMonth}-`));
-  $: visibleRecords = monthRecords
-    .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
-    .slice()
-    .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
-  $: availableCurrencies = [...new Set(report.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+  $: monthRecords = recordsForMonth(report, activeMonth);
+  $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
+  $: availableCurrencies = reportDerived.availableCurrencies;
   $: if (!selectedCurrency || !availableCurrencies.includes(selectedCurrency)) selectedCurrency = availableCurrencies[0] ?? "TWD";
-  $: pendingCandidates = report.candidates.filter((candidate) => candidate.status === "candidate");
+  $: pendingCandidates = reportDerived.pendingCandidates;
   $: monthCandidates = pendingCandidates.filter((candidate) => {
     const invoice = candidateRecordsByKey.get(`${candidate.candidateId}:invoice`);
     const transaction = candidateRecordsByKey.get(`${candidate.candidateId}:transaction`);
@@ -91,7 +141,7 @@
   $: visibleCandidateRows = visibleCandidates.slice(0, candidateVisibleCount);
   $: visibleEligiblePayments = (pairingCandidates ?? []).slice(0, paymentVisibleCount);
   $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId) ?? null;
-  $: monthTotals = totalsByMonth(report.records);
+  $: monthTotals = reportDerived.monthTotals;
   $: visibleTotals = totalsByCurrency(monthRecords);
   $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
   $: spendingDayCount = new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
@@ -99,16 +149,7 @@
   $: chartData = chartMode === "day"
     ? dailyChartData(monthRecords, activeMonth, selectedCurrency)
     : monthlyChartData(monthTotals, selectedCurrency);
-  $: candidateRecordsByKey = (() => {
-    const index = new Map<string, PurchaseRecord>();
-    for (const record of report.records) {
-      for (const candidateId of record.candidateIds) {
-        if (record.invoice) index.set(`${candidateId}:invoice`, record);
-        if (record.transaction) index.set(`${candidateId}:transaction`, record);
-      }
-    }
-    return index;
-  })();
+  $: candidateRecordsByKey = reportDerived.candidateRecordsByKey;
 
   function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
     return {
@@ -392,7 +433,7 @@
   function openPairing(record: PurchaseRecord) {
     pairingInvoice = record;
     selectedPaymentId = "";
-    paymentVisibleCount = 10;
+    paymentVisibleCount = initialPairingCandidateCount;
     pairingCandidates = null;
     pairingCandidateTotal = 0;
     pairingNextOffset = null;
@@ -419,6 +460,7 @@
       const result = await window.octopusBeak.spending.rankPairingCandidates({
         invoiceIdentityId,
         dataVersion: report.knowledgeAt,
+        limit: initialPairingCandidateCount,
       });
       if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
       if (result.dataVersion !== report.knowledgeAt)
