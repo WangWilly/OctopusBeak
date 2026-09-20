@@ -54,18 +54,28 @@ export function createSpendingPairingIndex(
   dataVersion: number,
   transactions: readonly SpendingMatchingTransaction[],
 ): SpendingPairingIndex {
-  const entries = transactions.map((transaction) => {
-    const date = transaction.consumeDate || transaction.postingDate || transaction.effectiveOn;
-    return Object.freeze({
-      transaction,
-      currency: transaction.amount.currency.trim().toUpperCase(),
-      amountKey: moneyKey(transaction.amount),
-      purchaseDay: purchaseDay(date),
-    });
+  return createSpendingPairingIndexFromEntries(dataVersion, transactions.map(spendingPairingIndexEntryForTransaction));
+}
+
+export function spendingPairingIndexEntryForTransaction(
+  transaction: SpendingMatchingTransaction,
+): SpendingPairingIndexEntry {
+  const date = transaction.consumeDate || transaction.postingDate || transaction.effectiveOn;
+  return Object.freeze({
+    transaction,
+    currency: transaction.amount.currency.trim().toUpperCase(),
+    amountKey: moneyKey(transaction.amount),
+    purchaseDay: purchaseDay(date),
   });
+}
+
+export function createSpendingPairingIndexFromEntries(
+  dataVersion: number,
+  entries: readonly SpendingPairingIndexEntry[],
+): SpendingPairingIndex {
   const index = Object.freeze({
     dataVersion,
-    entries: Object.freeze(entries),
+    entries: Object.freeze([...entries]),
   });
   rankCaches.set(index, new Map());
   return index;
@@ -103,6 +113,16 @@ export class SpendingPairingIndexCache {
   ): Readonly<{ index: SpendingPairingIndex; reused: boolean }> {
     if (this.current?.dataVersion === dataVersion) return { index: this.current, reused: true };
     const index = createSpendingPairingIndex(dataVersion, transactions);
+    this.current = index;
+    return { index, reused: false };
+  }
+
+  prewarmEntries(
+    dataVersion: number,
+    entries: readonly SpendingPairingIndexEntry[],
+  ): Readonly<{ index: SpendingPairingIndex; reused: boolean }> {
+    if (this.current?.dataVersion === dataVersion) return { index: this.current, reused: true };
+    const index = createSpendingPairingIndexFromEntries(dataVersion, entries);
     this.current = index;
     return { index, reused: false };
   }
