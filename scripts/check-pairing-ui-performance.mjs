@@ -305,6 +305,10 @@ async function runSingle(runNumber) {
         windows: {},
         longTaskObserverAvailable: "PerformanceObserver" in window,
       };
+      window.__pairingCandidateRenderedAt = null;
+      window.__pairingConfirmRenderedAt = null;
+      window.__pairingConfirmArmed = false;
+      window.__pairingSelectedTransactionId = null;
       window.__pairingPrewarmVersions = [];
       window.__pairingPrewarmStarted = false;
       let previousRafAt = performance.now();
@@ -325,6 +329,26 @@ async function runSingle(runNumber) {
           }
         }).observe({ type: "longtask", buffered: true });
       }
+      const observePairingDom = () => {
+        const observer = new MutationObserver(() => {
+          if (
+            window.__pairingCandidateRenderedAt === null &&
+            document.querySelector("[data-pairing-dialog] input[name='spending-payment']")
+          ) window.__pairingCandidateRenderedAt = performance.now();
+          if (document.querySelector('[data-pairing-feedback="confirm-busy"]'))
+            window.__pairingConfirmArmed = true;
+          if (
+            window.__pairingConfirmArmed &&
+            window.__pairingConfirmRenderedAt === null &&
+            !document.querySelector("[data-pairing-dialog]") &&
+            [...document.querySelectorAll('[data-purchase-record][data-basis="linked"]')]
+              .some((element) => element.getAttribute("data-transaction-id") === window.__pairingSelectedTransactionId)
+          ) window.__pairingConfirmRenderedAt = performance.now();
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      };
+      if (document.documentElement) observePairingDom();
+      else addEventListener("DOMContentLoaded", observePairingDom, { once: true });
       window.__pairingStartInteraction = (kind) => {
         const start = performance.now();
         window.__pairingPerformance.windows[kind] = { start, end: null };
@@ -340,6 +364,18 @@ async function runSingle(runNumber) {
         performance.measure(`pairing-${kind}`, {
           start: `pairing-${kind}-start`,
           end: `pairing-${kind}-end`,
+        });
+        return performance.getEntriesByName(`pairing-${kind}`).at(-1).duration;
+      };
+      window.__pairingFinishInteractionAt = (kind, end) => {
+        if (typeof end !== "number") throw new Error(`Pairing interaction ${kind} has no in-page completion timestamp.`);
+        const windowValue = window.__pairingPerformance.windows[kind];
+        if (!windowValue) throw new Error(`Pairing interaction ${kind} was not started.`);
+        windowValue.end = end;
+        performance.mark(`pairing-${kind}-end`);
+        performance.measure(`pairing-${kind}`, {
+          start: `pairing-${kind}-start`,
+          end,
         });
         return performance.getEntriesByName(`pairing-${kind}`).at(-1).duration;
       };
@@ -372,8 +408,14 @@ async function runSingle(runNumber) {
     await page.locator('[data-pairing-dialog][data-pairing-feedback="open-dialog"]').waitFor({ state: "visible", timeout: 30_000 });
     const openFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open-feedback"));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("open-complete"));
+    const openElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(
+      "open-complete",
+      window.__pairingCandidateRenderedAt,
+    ));
     await page.locator(`[data-pairing-dialog] input[value="${selectedCandidate.transactionId}"]`).check();
+    await page.evaluate((transactionId) => {
+      window.__pairingSelectedTransactionId = transactionId;
+    }, selectedCandidate.transactionId);
 
     await page.evaluate(() => {
       window.__pairingStartInteraction("confirm-feedback");
@@ -384,7 +426,10 @@ async function runSingle(runNumber) {
     const confirmFeedbackElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm-feedback"));
     await page.locator("[data-pairing-dialog]").waitFor({ state: "detached", timeout: 30_000 });
     await page.locator(`[data-purchase-record][data-basis="linked"][data-transaction-id="${selectedCandidate.transactionId}"]`).waitFor({ timeout: 30_000 });
-    const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteraction("confirm-complete"));
+    const confirmElapsedMs = await page.evaluate(() => window.__pairingFinishInteractionAt(
+      "confirm-complete",
+      window.__pairingConfirmRenderedAt,
+    ));
     await page.waitForFunction(
       (version) => window.__pairingPrewarmVersions.includes(version),
       fixture.dataVersion + 1,
@@ -444,6 +489,8 @@ async function runSingle(runNumber) {
         longTasks,
         longTaskObserverAvailable: window.__pairingPerformance.longTaskObserverAvailable,
         maxRafGapMs: Math.max(0, ...rafGaps.map((entry) => entry.gap)),
+        candidateRenderedAt: window.__pairingCandidateRenderedAt,
+        confirmRenderedAt: window.__pairingConfirmRenderedAt,
       };
     });
 
@@ -480,6 +527,8 @@ async function runSingle(runNumber) {
       rendererLongTaskObserverAvailable: browserEvidence.longTaskObserverAvailable,
       rendererLongTasks: browserEvidence.longTasks,
       maxRendererRafGapMs: browserEvidence.maxRafGapMs,
+      rendererCandidateRenderedAt: browserEvidence.candidateRenderedAt,
+      rendererConfirmRenderedAt: browserEvidence.confirmRenderedAt,
       bridgeTimings,
       rankBridgeCallCount,
       confirmBridgeCallCount,

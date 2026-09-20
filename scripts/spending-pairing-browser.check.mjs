@@ -119,10 +119,14 @@ try {
     window.__pairingRankCalls = [];
     window.octopusBeak.spending.rankPairingCandidates = async (input) => {
       window.__pairingRankCalls.push(input);
-      if (input.offset === 10) {
-        return { dataVersion: 2, candidates: candidates.slice(10), totalCandidateCount: candidates.length, nextOffset: null };
+      if (input.offset === 1 && window.__pairingRankCalls.length === 2) {
+        return { dataVersion: 2, candidates: candidates.slice(1), totalCandidateCount: candidates.length, nextOffset: null };
       }
-      return { dataVersion: 1, candidates: candidates.slice(0, 10), totalCandidateCount: candidates.length, nextOffset: 10 };
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 10;
+      const page = candidates.slice(offset, offset + limit);
+      const nextOffset = offset + page.length < candidates.length ? offset + page.length : null;
+      return { dataVersion: 1, candidates: page, totalCandidateCount: candidates.length, nextOffset };
     };
   }, { candidates: candidateValues });
   await page.addInitScript(() => {
@@ -134,18 +138,29 @@ try {
   await page.locator("[data-open-pairing]").first().click();
   await page.locator("[data-pairing-dialog]").waitFor();
   await page.locator("[data-pairing-dialog] .payment-option").first().waitFor();
-  assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 10);
+  assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 1);
 
+  await page.locator("[data-show-more-payments]").click();
+  await page.waitForTimeout(25);
+  assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 1);
   await page.locator("[data-show-more-payments]").click();
   await page.waitForTimeout(25);
   const rankCallCount = await page.evaluate(() => window.__pairingRankCalls.length);
   assert.equal(
     await page.locator("[data-pairing-dialog] .payment-option").count(),
-    10,
-    "a stale second page must not append mixed-generation candidates",
+    candidateValues.length,
+    "a stale page must restart before appending the remaining candidates",
   );
-  assert.equal(rankCallCount, 3, "stale pagination restarts at the current page");
-  console.log(JSON.stringify({ rankCallCount, candidateCount: 10 }));
+  const renderedTransactionIds = await page.locator("[data-pairing-dialog] .payment-option input").evaluateAll(
+    (inputs) => inputs.map((input) => input.value),
+  );
+  assert.deepEqual(
+    renderedTransactionIds,
+    candidateValues.map((candidate) => candidate.transactionId),
+    "pagination must preserve canonical candidate order without losing a candidate",
+  );
+  assert.equal(rankCallCount, 4, "stale pagination restarts, then the current page can be fetched");
+  console.log(JSON.stringify({ rankCallCount, candidateCount: renderedTransactionIds.length }));
   assert.deepEqual(errors, []);
 } finally {
   await browser.close();
