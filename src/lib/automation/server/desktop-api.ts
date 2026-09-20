@@ -26,11 +26,11 @@ import {
 import {
   activeAutomationTaskIds,
   cancelAutomationTask,
+  forceTerminateAutomationTask,
   hasActiveAutomationTask,
   resumeSessionFromLog,
   startAutomationResume,
   startAutomationTask,
-  startAutomationTasks,
 } from "./runner.ts";
 import {
   activeTaskPrerequisiteNotices,
@@ -49,6 +49,9 @@ import type {
   AutomationCredentialGroupCoreDto,
   AutomationCredentialStateDto,
   AutomationDesktopModel,
+  AutomationRunManyResult,
+  AutomationRunManyTaskResult,
+  AutomationRuntimeSnapshot,
 } from "$lib/desktop/api.ts";
 import type {
   CathayGmailOtpConnectionError,
@@ -61,6 +64,7 @@ import {
   enableCathayGmailOtp as enableCathayGmailOtpCore,
   setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
 } from "./gmail-otp-service.ts";
+import { automationRuntimeState } from "./runtime-state.ts";
 
 const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
   "authorization-cancelled",
@@ -171,6 +175,12 @@ function currentCredentialState() {
   return { status, fileNames, invalidFileKeys, invalidFileReasons };
 }
 
+function credentialStatesFromStatus(status: Readonly<Record<string, boolean>>) {
+  return Object.fromEntries(
+    Object.entries(status).map(([key, value]) => [key, value ? "ready" : "missing"]),
+  ) as Record<string, "ready" | "missing">;
+}
+
 /** Main-process-only credential reader; never call this from a worker. */
 export function readAutomationCredentialState() {
   const state = currentCredentialState();
@@ -212,6 +222,8 @@ function coreCredentialGroup(
 export function loadAutomationCoreSnapshot(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
   credentialStatus: Readonly<Record<string, boolean>> = {},
+  runtime: AutomationRuntimeSnapshot = automationRuntimeState.snapshot(),
+  credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
 ): AutomationCoreSnapshot {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
@@ -261,6 +273,8 @@ export function loadAutomationCoreSnapshot(
           externalPrerequisiteNotices: pagePrerequisiteNotices(db),
           active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
           businessDate: range.businessDate,
+          runtime,
+          credentialStates: { ...credentialStates },
         }),
       },
       credentialGroups,
@@ -285,6 +299,9 @@ export function applyAutomationCredentialState(
     automation: {
       ...core.automation,
       credentials: { ...credentialState.status },
+      credentialStates: credentialState.states
+        ? { ...credentialState.states }
+        : credentialStatesFromStatus(credentialState.status),
       ...(credentialState.cathayGmailOtp
         ? { cathayGmailOtp: credentialState.cathayGmailOtp }
         : {}),
@@ -473,34 +490,53 @@ export function automationRun(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
 ) {
   const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-  startAutomationTask(task.id, ledgerDir);
-  return { started: task.id };
+  const started = startAutomationTask(task.id, ledgerDir);
+  return { started: task.id, runId: started.runId, runtime: started.runtime };
 }
 
 export function automationRunMany(
   taskIds: string[],
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
+): AutomationRunManyResult {
   if (
     !Array.isArray(taskIds) ||
     taskIds.some((taskId) => typeof taskId !== "string")
   ) {
     throw new TypeError("Task IDs must be an array of strings.");
   }
-  if (taskIds.length === 0) return { started: [] as string[] };
-  const tasks = assertAutomationTasksCanStart(
-    taskIds,
-    loadAutomationDesktopModel(ledgerDir),
-  );
-  startAutomationTasks(
-    tasks.map((task) => task.id),
-    ledgerDir,
-  );
-  return { started: tasks.map((task) => task.id) };
+  if (taskIds.length === 0) return { started: [] as string[], results: {} };
+  const started: string[] = [];
+  const errors: Record<string, string> = {};
+  const results: Record<string, AutomationRunManyTaskResult> = {};
+  for (const taskId of [...new Set(taskIds)]) {
+    try {
+      const task = assertAutomationTaskCanStart(taskId, ledgerDir);
+      const existing = activeAutomationTaskIds().includes(task.id);
+      const run = startAutomationTask(task.id, ledgerDir);
+      if (!existing) started.push(task.id);
+      results[task.id] = {
+        status: existing ? "already_running" : "started",
+        runId: run.runId,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors[taskId] = message;
+      results[taskId] = { status: "error", error: message };
+    }
+  }
+  return {
+    started,
+    results,
+    ...(Object.keys(errors).length ? { errors } : {}),
+  };
 }
 
 export function automationCancel(taskId: string) {
   return cancelAutomationTask(taskId);
+}
+
+export function automationForceTerminate(taskId: string) {
+  return forceTerminateAutomationTask(taskId);
 }
 
 export function automationRunHistory(
@@ -551,6 +587,6 @@ export function automationResume(
   const session = resumeSessionFromLog(row.logTail);
   if (!session)
     throw new Error("Missing Libretto resume session in latest log.");
-  startAutomationResume(task.id, session, ledgerDir);
-  return { resumed: task.id };
+  const resumed = startAutomationResume(task.id, session, ledgerDir);
+  return { resumed: task.id, runId: resumed.runId, runtime: resumed.runtime };
 }

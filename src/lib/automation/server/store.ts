@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { LedgerDatabase } from "../../../ledger/db/client.ts";
-import type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
+import type {
+  AutomationTaskKind,
+  AutomationTaskProgress,
+  AutomationTaskStatus,
+} from "../types.ts";
 import {
   createHumanAssistanceContract,
   parseHumanAssistanceContract,
@@ -26,6 +30,8 @@ export type AutomationTaskRun = {
   errorMessage: string | null;
   logPath: string;
   logTail: string;
+  progress?: AutomationTaskProgress;
+  terminationMode?: "forced";
   recordJson: string;
   humanAssistanceContract: HumanAssistanceContract | null;
 };
@@ -72,6 +78,7 @@ type CreateTaskRunInput = {
   errorMessage?: string | null;
   logPath: string;
   logTail?: string;
+  progress?: AutomationTaskProgress;
   humanAssistanceContract?: HumanAssistanceContract | null;
 };
 
@@ -94,6 +101,47 @@ function nullableNumber(value: unknown) {
   return value === null || value === undefined ? null : Number(value);
 }
 
+function recordProgress(recordJson: string): AutomationTaskProgress | undefined {
+  try {
+    const value = JSON.parse(recordJson) as { progress?: unknown };
+    const progress = value.progress;
+    if (!progress || typeof progress !== "object") return undefined;
+    const candidate = progress as Record<string, unknown>;
+    const phaseCode = candidate.phaseCode;
+    const completed = candidate.completed;
+    const total = candidate.total;
+    const percent = candidate.percent;
+    const attempt = candidate.attempt;
+    if (
+      (phaseCode !== null && typeof phaseCode !== "string")
+      || (completed !== null && typeof completed !== "number")
+      || (total !== null && typeof total !== "number")
+      || (percent !== null && typeof percent !== "number")
+      || typeof attempt !== "number"
+    ) return undefined;
+    return {
+      phaseCode: phaseCode as string | null,
+      completed: completed as number | null,
+      total: total as number | null,
+      percent: percent as number | null,
+      attempt,
+      ...(candidate.params && typeof candidate.params === "object"
+        ? { params: candidate.params as Readonly<Record<string, string | number | boolean>> }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function recordTerminationMode(recordJson: string): "forced" | undefined {
+  try {
+    return JSON.parse(recordJson).terminationMode === "forced" ? "forced" : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
   return {
     taskRunId: String(row.task_run_id),
@@ -111,6 +159,8 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
     logPath: String(row.log_path),
     logTail: String(row.log_tail),
     recordJson: String(row.record_json),
+    progress: recordProgress(String(row.record_json)),
+    terminationMode: recordTerminationMode(String(row.record_json)),
     humanAssistanceContract: parseHumanAssistanceContract(
       String(row.record_json),
     ),
@@ -339,6 +389,8 @@ export function updateTaskRun(
       | "signal"
       | "errorMessage"
       | "logTail"
+      | "progress"
+      | "terminationMode"
       | "humanAssistanceContract"
     >
   >,
@@ -347,8 +399,14 @@ export function updateTaskRun(
     .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
     .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
+  const current = rowToTaskRun(row);
+  const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(current.status);
+  const updateKeys = Object.keys(update);
+  if (terminal && updateKeys.some((key) => key !== "attempt" && key !== "maxAttempts")) {
+    throw new Error(`Terminal automation task run is immutable: ${taskRunId}`);
+  }
   const next = {
-    ...rowToTaskRun(row),
+    ...current,
     ...update,
   };
   db.prepare(
@@ -418,7 +476,7 @@ export function activeTaskRuns(db: LedgerDatabase): AutomationTaskRun[] {
       `
     SELECT *
     FROM automation_task_runs
-    WHERE status IN ('running', 'waiting_for_human')
+    WHERE status IN ('queued', 'preparing', 'running', 'retrying', 'cancelling', 'waiting_for_human')
     ORDER BY started_at ASC
   `,
     )

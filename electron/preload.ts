@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
 import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
+import type { AutomationRuntimeSnapshot } from "../src/lib/desktop/api.ts";
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
@@ -54,6 +55,7 @@ const api: OctopusBeakApi = {
     runMany: (taskIds) => ipcRenderer.invoke("automation:runMany", taskIds),
     resume: (taskId) => ipcRenderer.invoke("automation:resume", taskId),
     cancel: (taskId) => ipcRenderer.invoke("automation:cancel", taskId),
+    forceTerminate: (taskId) => ipcRenderer.invoke("automation:forceTerminate", taskId),
     runHistory: () => ipcRenderer.invoke("automation:runHistory"),
     openExternalPrerequisite: (prerequisiteId) => ipcRenderer.invoke("automation:openExternalPrerequisite", prerequisiteId),
     viewerScreenshot: (taskId) => ipcRenderer.invoke("automation:viewerScreenshot", taskId),
@@ -61,6 +63,15 @@ const api: OctopusBeakApi = {
     viewerInput: (taskId, input) => ipcRenderer.invoke("automation:viewerInput", taskId, input),
     viewerCompletionCheck: (taskId) => ipcRenderer.invoke("automation:viewerCompletionCheck", taskId),
     forceQuit: (taskId) => ipcRenderer.invoke("automation:forceQuit", taskId),
+    runtimeSnapshot: () => ipcRenderer.invoke("automation:runtimeSnapshot"),
+    fatalRuntimeSnapshot: () => ipcRenderer.invoke("automation:fatalRuntimeSnapshot"),
+    onRuntimeChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: AutomationRuntimeSnapshot) => {
+        listener(snapshot);
+      };
+      ipcRenderer.on("automation:runtime-changed", handler);
+      return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
+    },
   },
   data: {
     getVersion: () => ipcRenderer.invoke("data:getVersion"),

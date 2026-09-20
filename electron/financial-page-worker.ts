@@ -32,6 +32,8 @@ const blockLoader = createFinancialPageBlockLoader(async (target, _options, cont
     const core = loadAutomationCoreSnapshot(
       undefined,
       context?.automationCredentialState?.status,
+      context?.automationRuntimeState,
+      context?.automationCredentialState?.states,
     );
     return context?.automationCredentialState
       ? applyAutomationCredentialState(core, context.automationCredentialState)
@@ -75,7 +77,10 @@ port.on("message", async (request: FinancialPageRequest) => {
           request.block,
           request.options,
           request.target === "automation"
-            ? { automationCredentialState: request.automationCredentialState }
+            ? {
+              automationCredentialState: request.automationCredentialState,
+              automationRuntimeState: request.automationRuntimeState,
+            }
             : undefined,
         )
         : request.page === "overview"

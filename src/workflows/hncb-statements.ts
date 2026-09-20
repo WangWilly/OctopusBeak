@@ -10,6 +10,7 @@ import {
 } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import {
   deriveHncbDomesticDepositAccountNumberEvidence,
@@ -1424,7 +1425,7 @@ export default workflow("hncbStatements", {
     const credentials = (
       input as typeof input & { credentials: HncbCredentials }
     ).credentials;
-    console.log("automation-progress: 0");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
@@ -1438,7 +1439,7 @@ export default workflow("hncbStatements", {
         await signInHncb(authCtx, signInCredentials as HncbCredentials);
       },
     });
-    console.log("automation-progress: 30");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 30, total: 100, percent: 30 });
 
     try {
       const firstResultFrame = await openFirstStatementDetail(page);
@@ -1452,7 +1453,7 @@ export default workflow("hncbStatements", {
           readAccountOptions(firstResultFrame, input.accountFilters),
         readCurrentDepositOverviewBalances: readHncbCurrentDepositOverviewBalances,
       });
-      console.log("automation-progress: 100");
+      emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
       return output;
     } finally {
       await logoutFromHncb(page).catch((error: unknown) => {

@@ -3,6 +3,7 @@
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Landmark, Search, X } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
+  import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import type {
     CathayGmailOtpConnectionError,
     CathayGmailOtpStatus,
@@ -54,6 +55,7 @@
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
+  export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
@@ -90,6 +92,9 @@
   let humanTask: AutomationTaskRow | null = null;
   let assistInteracted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
+  let pendingTaskIds = new Set<string>();
+  let preparingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let viewerRequestId = 0;
   let viewerImageUrl = "";
@@ -226,7 +231,7 @@
     { running: 0, completed: 0, failed: 0 },
   );
 
-  $: if (automation.active && !pollTimer) {
+  $: if ((automation.active || pendingTaskIds.size > 0) && !pollTimer) {
     pollTimer = setInterval(() => {
       void reload();
     }, 2_000);
@@ -234,8 +239,15 @@
     stopPolling();
   }
 
+  $: if (runtimeSnapshot && runtimeSnapshot !== appliedRuntimeSnapshot) {
+    appliedRuntimeSnapshot = runtimeSnapshot;
+    applyRuntimeSnapshot(runtimeSnapshot);
+  }
+
   onDestroy(() => {
     stopPolling();
+    for (const timeout of preparingTimeouts.values()) clearTimeout(timeout);
+    preparingTimeouts.clear();
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
     if (viewerTimer) clearInterval(viewerTimer);
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
@@ -318,7 +330,78 @@
   }
 
   function taskCredentialsReady(task: AutomationTaskRow, sourceAutomation = automation) {
-    return task.status !== "needs_setup" && task.credentialKeys.every((key) => sourceAutomation.credentials[key]);
+    return task.status !== "needs_setup" && task.credentialKeys.every((key) =>
+      (sourceAutomation.credentialStates?.[key] ?? (sourceAutomation.credentials[key] ? "ready" : "missing")) === "ready",
+    );
+  }
+
+  function credentialState(key: string, sourceAutomation = automation): AutomationCredentialStatus {
+    return sourceAutomation.credentialStates?.[key]
+      ?? (sourceAutomation.credentials[key] ? "ready" : "missing");
+  }
+
+  function allCredentialsLoading(task: AutomationTaskRow, sourceAutomation = automation) {
+    const states = task.credentialKeys.map((key) => credentialState(key, sourceAutomation));
+    return states.length > 0 && states.every((state) => state === "loading");
+  }
+
+  function anyCredentialReadFailed(task: AutomationTaskRow, sourceAutomation = automation) {
+    return task.credentialKeys.some((key) => credentialState(key, sourceAutomation) === "read_failed");
+  }
+
+  function schedulePreparingTimeout(taskId: string) {
+    const timeout = setTimeout(() => {
+      void window.octopusBeak.automation.runtimeSnapshot()
+        .then((snapshot) => {
+          runtimeSnapshot = snapshot;
+          appliedRuntimeSnapshot = snapshot;
+          applyRuntimeSnapshot(snapshot);
+        })
+        .catch((error) => {
+          console.error("automation-runtime-preparing-timeout", error);
+          void window.octopusBeak.automation.fatalRuntimeSnapshot();
+        });
+    }, 5_000);
+    preparingTimeouts.set(taskId, timeout);
+  }
+
+  function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
+    const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
+    const activeCount = snapshot.tasks.filter((task) =>
+      ["queued", "preparing", "running", "retrying", "waiting_for_human", "cancelling"].includes(task.status),
+    ).length;
+    automation = {
+      ...automation,
+      active: activeCount > 0,
+      activeTaskCount: activeCount,
+      tasks: automation.tasks.map((task) => {
+        const runtime = byTaskId.get(task.id);
+        if (!runtime) return task;
+        const isActive = ["queued", "preparing", "running", "retrying", "waiting_for_human", "cancelling"].includes(runtime.status);
+        return {
+          ...task,
+          status: runtime.status,
+          isActive,
+          attempt: runtime.attempt,
+          maxAttempts: runtime.maxAttempts,
+          logTail: runtime.logTail,
+          errorMessage: runtime.errorMessage,
+          forceTerminateAvailable: runtime.forceTerminateAvailable === true,
+          progressPercent: runtime.progress.percent,
+          progressText: runtime.progress.percent === null ? task.progressText : `${runtime.progress.percent}%`,
+          primaryAction: isActive ? "Cancel" : task.primaryAction,
+          canRun: isActive || task.canRun,
+        };
+      }),
+    };
+    for (const taskId of [...pendingTaskIds]) {
+      if (byTaskId.has(taskId)) {
+        pendingTaskIds.delete(taskId);
+        const timeout = preparingTimeouts.get(taskId);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(taskId);
+      }
+    }
   }
 
   function localizedText(value: { en: string; "zh-TW": string }) {
@@ -626,14 +709,40 @@
   }
 
   async function runTask(task: AutomationTaskRow) {
+    if (pendingTaskIds.has(task.id) || task.isActive) return;
+    pendingTaskIds = new Set([...pendingTaskIds, task.id]);
+    applyLocalPreparing(task.id);
+    schedulePreparingTimeout(task.id);
     try {
       actionError = "";
       if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
       else await window.octopusBeak.automation.run(task.id);
       await reload();
     } catch (error) {
+      pendingTaskIds.delete(task.id);
+      const pending = preparingTimeouts.get(task.id);
+      if (pending) clearTimeout(pending);
+      preparingTimeouts.delete(task.id);
       actionError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function applyLocalPreparing(taskId: string) {
+    automation = {
+      ...automation,
+      active: true,
+      activeTaskCount: Math.max(automation.activeTaskCount, 1),
+      tasks: automation.tasks.map((task) => task.id === taskId
+        ? {
+          ...task,
+          status: "preparing",
+          isActive: true,
+          primaryAction: "Cancel",
+          canRun: true,
+          progressText: "0%",
+        }
+        : task),
+    };
   }
 
   async function openExternalPrerequisite(prerequisiteId: string) {
@@ -658,11 +767,34 @@
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
+    for (const task of tasks) {
+      pendingTaskIds = new Set([...pendingTaskIds, task.id]);
+      applyLocalPreparing(task.id);
+      schedulePreparingTimeout(task.id);
+    }
     try {
       actionError = "";
-      await window.octopusBeak.automation.runMany(tasks.map((task) => task.id));
+      const result = await window.octopusBeak.automation.runMany(tasks.map((task) => task.id));
+      if (result.errors && Object.keys(result.errors).length) {
+        actionError = Object.entries(result.errors)
+          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $t)}: ${message}`)
+          .join("\n");
+      }
+      for (const task of tasks) {
+        if (result.results[task.id]?.status !== "error") continue;
+        pendingTaskIds.delete(task.id);
+        const timeout = preparingTimeouts.get(task.id);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(task.id);
+      }
       await reload();
     } catch (error) {
+      for (const task of tasks) {
+        pendingTaskIds.delete(task.id);
+        const timeout = preparingTimeouts.get(task.id);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(task.id);
+      }
       actionError = error instanceof Error ? error.message : String(error);
     }
   }
@@ -676,6 +808,17 @@
         : [])
       .join("\n");
     await reload();
+  }
+
+  async function forceTerminateTask(task: AutomationTaskRow) {
+    if (!confirm($t.automation.confirmForceQuit)) return;
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.forceTerminate(task.id);
+      await reload();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   async function revealTaskLog(task: AutomationTaskRow) {
@@ -1430,8 +1573,16 @@
                   </div>
                 </td>
                 <td>
-                  <span class={`credential-state ${taskCredentialsReady(task, listAutomation) ? "good" : "bad"}`}>
-                    {taskCredentialsReady(task, listAutomation) ? $t.common.ready : $t.common.missing}
+                  <span class={`credential-state ${taskCredentialsReady(task, listAutomation) ? "good" : anyCredentialReadFailed(task, listAutomation) ? "bad" : ""}`}>
+                    {#if allCredentialsLoading(task, listAutomation)}
+                      <span class="spinner" aria-label={$t.common.loading}></span>
+                    {:else if anyCredentialReadFailed(task, listAutomation)}
+                      {$locale === "zh-TW" ? "讀取失敗" : "Read failed"}
+                    {:else if taskCredentialsReady(task, listAutomation)}
+                      {$t.common.ready}
+                    {:else}
+                      {$t.common.missing}
+                    {/if}
                   </span>
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
@@ -1464,6 +1615,15 @@
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
+                    {#if task.status === "cancelling" && task.forceTerminateAvailable}
+                      <button
+                        class="button danger task-control"
+                        type="button"
+                        onclick={() => void forceTerminateTask(task)}
+                      >
+                        {$t.automation.forceQuit}
+                      </button>
+                    {/if}
                     {#if task.status === "waiting_for_human" && task.humanSession}
                       <button
                         class="button secondary task-control"
@@ -1482,6 +1642,8 @@
                       class="button secondary task-control"
                       class:active-log={expandedLogTaskId === task.id}
                       type="button"
+                      aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
+                      title={$t.automation.logs}
                       aria-expanded={expandedLogTaskId === task.id}
                       aria-controls={`${task.id}-inline-log`}
                       data-onboarding-task={task.id}
@@ -1489,7 +1651,8 @@
                       data-onboarding-action="logs"
                       onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
                     >
-                      {$t.automation.logs}
+                      <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
+                      <span class="visually-hidden">{$t.automation.logs}</span>
                     </button>
                   </div>
                 </td>

@@ -285,7 +285,9 @@ export function claimAutomationTaskRunSession(
   const currentRunIsTerminal =
     currentRun?.status === "completed" ||
     currentRun?.status === "partial" ||
-    currentRun?.status === "failed";
+    currentRun?.status === "failed" ||
+    currentRun?.status === "cancelled" ||
+    currentRun?.status === "interrupted";
   const currentHasExpectedDaemon = Boolean(
     current?.pid !== null &&
     current?.pid !== undefined &&

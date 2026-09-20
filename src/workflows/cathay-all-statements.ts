@@ -1,4 +1,5 @@
 import { workflow, type LibrettoWorkflowContext } from "libretto";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { z } from "zod";
 import {
   BANK_STATEMENT_CAPABILITIES,
@@ -141,7 +142,7 @@ export async function runCathayAllStatements(
   if (!selectedIds.length)
     throw new Error("Select at least one Cathay statement type.");
   const canonicalLedgerDir = resolveCathayCanonicalLedgerDir();
-  console.log("automation-progress: 0");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
   page.on("dialog", async (dialog) => {
     console.warn("bank-dialog", { type: dialog.type() });
@@ -154,7 +155,7 @@ export async function runCathayAllStatements(
     input.trustDevice,
   );
   let cathaySession = await createCathaySession(page);
-  console.log("automation-progress: 25");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
 
   const run = await runSelectedStatements(selectedIds, [
     {
@@ -249,7 +250,7 @@ export async function runCathayAllStatements(
     selectedIds.map((typeId) =>
       typeId === "foreign_currency" ? "foreign" : "domestic",
     );
-  console.log("automation-progress: 100");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
   return {
     dateRange: input.dateRange,

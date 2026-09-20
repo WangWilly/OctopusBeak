@@ -9,6 +9,7 @@ import {
 } from "libretto";
 import type { Dialog, Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   emitHumanAssistanceStage,
@@ -1735,7 +1736,7 @@ export default workflow("sinopacStatements", {
     });
     await dismissPasswordExpiryNotice(page);
 
-    console.log("automation-progress: 25");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
     const accounts = await openTransactionPage(page);
     if (input.identityValidation) {
       const evidence = await runSinopacIdentityValidation(
@@ -1750,7 +1751,7 @@ export default workflow("sinopacStatements", {
         rawValuesReturned: evidence.sideEffects.rawValuesReturned,
       });
       console.log("sinopac-identity-validation-summary", evidence);
-      console.log("automation-progress: 100");
+      emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
       return evidence;
     }
     const result = await runSinopacStatements(page, input, accounts, {
@@ -1759,7 +1760,7 @@ export default workflow("sinopacStatements", {
         process.env.LEDGER_DIR ??
         DEFAULT_LEDGER_DIR,
     });
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
 });

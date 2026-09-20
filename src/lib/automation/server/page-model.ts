@@ -6,8 +6,9 @@ import type {
   AutomationTaskPrerequisiteNotice,
   AutomationTaskRow,
 } from "../types.ts";
+import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
-import { parseAutomationProgress, resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
+import { resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 
 function rowStatus(
   task: AutomationTask,
@@ -60,18 +61,25 @@ export function buildAutomationPageModel(input: {
   externalPrerequisiteNotices?: readonly AutomationTaskPrerequisiteNotice[];
   active: boolean;
   businessDate: string;
+  runtime?: AutomationRuntimeSnapshot;
+  credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
 }): AutomationPageModel {
   const activeTaskIds = new Set(input.activeTaskIds ?? []);
   const todayRunTaskIds = new Set(input.todayRunTaskIds ?? []);
   const setupRequiredGroupIds = input.setupRequiredGroupIds ?? new Set<string>();
   const tasks = input.tasks.map((task) => {
     const run = input.latestRuns[task.id];
-    const isActive = activeTaskIds.has(task.id);
-    const status = rowStatus(task, run, isActive, setupRequiredGroupIds);
+    const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
+    const isActive = runtime
+      ? runtime.status === "queued" || runtime.status === "preparing"
+        || runtime.status === "running" || runtime.status === "retrying"
+        || runtime.status === "waiting_for_human" || runtime.status === "cancelling"
+      : activeTaskIds.has(task.id);
+    const status = runtime?.status ?? rowStatus(task, run, isActive, setupRequiredGroupIds);
     const action = primaryAction(status, isActive);
-    const progressPercent = parseAutomationProgress(run?.logTail ?? "");
-    const attempt = run?.attempt ?? 0;
-    const maxAttempts = run?.maxAttempts ?? task.maxAttempts;
+    const progressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
+    const attempt = runtime?.attempt ?? run?.attempt ?? 0;
+    const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
     const statementFailures = parseStatementRunSummary(run?.logTail ?? "")?.results
       .filter((result) => result.status === "failed")
       .map(({ typeId, error }) => ({ typeId, ...(error ? { error } : {}) })) ?? [];
@@ -89,14 +97,15 @@ export function buildAutomationPageModel(input: {
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
       latestFinishedAt: run?.finishedAt ?? null,
-      logTail: run?.logTail ?? "",
-      errorMessage: run?.errorMessage ?? null,
+      logTail: runtime?.logTail ?? run?.logTail ?? "",
+      errorMessage: runtime?.errorMessage ?? run?.errorMessage ?? null,
       logPath: run?.logPath ?? null,
       progressPercent,
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       statementFailures,
-      humanSession: status === "waiting_for_human" ? resumeSessionFromLog(run?.logTail ?? "") : null,
+      humanSession: status === "waiting_for_human" ? resumeSessionFromLog(runtime?.logTail ?? run?.logTail ?? "") : null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,
+      forceTerminateAvailable: runtime?.forceTerminateAvailable === true,
       isActive,
       ranToday: todayRunTaskIds.has(task.id),
       primaryAction: action,
@@ -105,8 +114,13 @@ export function buildAutomationPageModel(input: {
   });
   return {
     businessDate: input.businessDate,
-    active: input.active || activeTaskIds.size > 0,
-    activeTaskCount: activeTaskIds.size,
+    active: input.active || activeTaskIds.size > 0 || Boolean(input.runtime?.tasks.some((task) =>
+      task.status === "queued" || task.status === "preparing" || task.status === "running"
+      || task.status === "retrying" || task.status === "waiting_for_human" || task.status === "cancelling")),
+    activeTaskCount: input.runtime?.tasks.filter((task) =>
+      task.status === "queued" || task.status === "preparing" || task.status === "running"
+      || task.status === "retrying" || task.status === "waiting_for_human" || task.status === "cancelling",
+    ).length ?? activeTaskIds.size,
     parallelRunnableTaskIds: tasks
       .filter((task) =>
         task.canRun
@@ -117,6 +131,7 @@ export function buildAutomationPageModel(input: {
       )
       .map((task) => task.id),
     credentials: input.credentials,
+    credentialStates: input.credentialStates,
     externalPrerequisiteNotices: [...(input.externalPrerequisiteNotices ?? [])],
     tasks,
   };

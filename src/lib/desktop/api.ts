@@ -3,6 +3,7 @@ import type {
   AutomationCredentialGroup,
   AutomationPageModel,
   AutomationTaskHistoryRow,
+  AutomationTaskProgress,
   CathayGmailOtpStatus,
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -47,6 +48,41 @@ export type CredentialGroupDto = AutomationCredentialGroup & {
 
 export type CertificateFileValidationReason = "invalid-extension" | "missing-or-unreadable";
 
+export type AutomationCredentialStatus = "loading" | "ready" | "missing" | "read_failed";
+
+export type AutomationRuntimeTaskStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "retrying"
+  | "waiting_for_human"
+  | "cancelling"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export type AutomationRuntimeTaskSnapshot = {
+  taskId: string;
+  runId: string | null;
+  status: AutomationRuntimeTaskStatus;
+  attempt: number;
+  maxAttempts: number;
+  progress: AutomationTaskProgress;
+  cancellationRequestedAt?: string | null;
+  forceTerminateAvailable?: boolean;
+  logTail: string;
+  errorMessage: string | null;
+  updatedAt: string;
+};
+
+export type AutomationRuntimeSnapshot = {
+  sessionId: string;
+  revision: number;
+  tasks: readonly AutomationRuntimeTaskSnapshot[];
+};
+
 /**
  * Main-process-owned credential state safe to cross the worker boundary.
  * It contains no credential values, encrypted payloads, or certificate paths.
@@ -54,6 +90,7 @@ export type CertificateFileValidationReason = "invalid-extension" | "missing-or-
 export type AutomationCredentialStateDto = {
   revision: number;
   status: Readonly<Record<string, boolean>>;
+  states?: Readonly<Record<string, AutomationCredentialStatus>>;
   fileNames: Readonly<Record<string, string>>;
   invalidFileKeys: readonly string[];
   invalidFileReasons: Readonly<Record<string, CertificateFileValidationReason>>;
@@ -92,12 +129,25 @@ export type AutomationDesktopModel = {
 };
 
 export type AutomationActionResult =
-  | { started: string }
-  | { resumed: string }
+  | { started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }
+  | { resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }
   | { cancelled: string }
   | { saved: true }
   | { ok: true }
   | { ok: true; closed: boolean };
+
+export type AutomationRunManyTaskResult = {
+  status: "started" | "already_running" | "error";
+  runId?: string;
+  error?: string;
+};
+
+export type AutomationRunManyResult = {
+  started: string[];
+  errors?: Readonly<Record<string, string>>;
+  results: Readonly<Record<string, AutomationRunManyTaskResult>>;
+  runtime?: AutomationRuntimeSnapshot;
+};
 
 export type ViewerInspectResult = {
   editable: boolean;
@@ -158,10 +208,11 @@ export type OctopusBeakApi = {
     disconnectCathayGmailOtp(): Promise<CathayGmailOtpStatus>;
     selectCertificateFile(locale: "en" | "zh-TW"): Promise<CertificateFileSelectionResult>;
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
-    run(taskId: string): Promise<{ started: string }>;
-    runMany(taskIds: string[]): Promise<{ started: string[] }>;
-    resume(taskId: string): Promise<{ resumed: string }>;
+    run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
+    runMany(taskIds: string[]): Promise<AutomationRunManyResult>;
+    resume(taskId: string): Promise<{ resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
+    forceTerminate(taskId: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
     openExternalPrerequisite(prerequisiteId: string): Promise<{ ok: true }>;
     viewerScreenshot(taskId: string): Promise<Uint8Array | null>;
@@ -169,6 +220,9 @@ export type OctopusBeakApi = {
     viewerInput(taskId: string, input: unknown): Promise<ViewerInputResult>;
     viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
     forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
+    runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
+    fatalRuntimeSnapshot(): Promise<void>;
+    onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
   };
   data: {
     getVersion(): Promise<DataVersionSnapshot>;
@@ -207,6 +261,7 @@ export const octopusBeakApiChannels = [
   "automation:runMany",
   "automation:resume",
   "automation:cancel",
+  "automation:forceTerminate",
   "automation:runHistory",
   "automation:openExternalPrerequisite",
   "automation:viewerScreenshot",
@@ -214,6 +269,9 @@ export const octopusBeakApiChannels = [
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
   "automation:forceQuit",
+  "automation:runtimeSnapshot",
+  "automation:fatalRuntimeSnapshot",
+  "automation:runtime-changed",
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",

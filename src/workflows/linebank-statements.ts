@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import type {
   DomesticDepositSourceTime,
   LineBankHumanAttestedV13ValidatedCapture,
@@ -1666,10 +1667,10 @@ export default workflow("linebankStatements", {
     });
 
     await linebankAutoDismissApprovedAlert(page);
-    console.log("automation-progress: 25");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
     await linebankEnsureTransactionPage(page);
     const result = await downloadLineBankStatements(page, input);
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
 });

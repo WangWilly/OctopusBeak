@@ -60,7 +60,7 @@ assert.match(
 );
 assert.match(
   source,
-  /automation-progress: \$\{[\s\S]*75 \+[\s\S]*Math\.min\(\s*24,/,
+  /const percent = 75 \+[\s\S]*Math\.min\(\s*24,[\s\S]*emitAutomationProgress\(/,
 );
 
 assert.equal(isYuantaFundPositionAbsentText("目前無持有基金"), true);

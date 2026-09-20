@@ -82,11 +82,10 @@ try {
   assert.equal(JSON.parse(completedRun?.recordJson ?? "{}").recordJson, undefined);
   assert.equal(taskRunById(db, "missing"), null);
 
-  const recordJsonBytes = completedRun?.recordJson.length ?? 0;
-  updateTaskRun(db, run.taskRunId, { logTail: "ok\nagain" });
-  const updatedRun = taskRunById(db, run.taskRunId);
-  assert.equal(JSON.parse(updatedRun?.recordJson ?? "{}").recordJson, undefined);
-  assert.ok((updatedRun?.recordJson.length ?? 0) < recordJsonBytes + 100);
+  assert.throws(
+    () => updateTaskRun(db, run.taskRunId, { logTail: "ok\nagain" }),
+    /terminal automation task run is immutable/i,
+  );
 
   const todayRunIds = todayTaskRunIds(db, {
     startUtc: new Date("2026-06-30T00:00:00.000Z"),

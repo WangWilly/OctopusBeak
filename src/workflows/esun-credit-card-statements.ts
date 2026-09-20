@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
   commitEsunCreditCardCaptureInTransaction,
@@ -1219,14 +1220,14 @@ export default workflow("esunCreditCardStatements", {
     const { page } = ctx;
     const credentials = (input as typeof input & { credentials: EsunCredentials })
       .credentials;
-    console.log("automation-progress: 0");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
     page.on("dialog", async (dialog) => {
       console.warn("bank-dialog", { type: dialog.type() });
       await dialog.accept();
     });
 
-    console.log("automation-progress: 20");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
     const authResult = await librettoAuthenticate(ctx, {
       credentials,
       isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
@@ -1234,7 +1235,7 @@ export default workflow("esunCreditCardStatements", {
         await fillLoginForm(authPage, signInCredentials as EsunCredentials);
       },
     });
-    console.log("automation-progress: 40");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 40, total: 100, percent: 40 });
 
     let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
     try {
@@ -1245,9 +1246,9 @@ export default workflow("esunCreditCardStatements", {
       });
     }
     const { frame, startDate, endDate } = await queryStatements(page, input);
-    console.log("automation-progress: 60");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 60, total: 100, percent: 60 });
     const rows = await readStatementRows(frame);
-    console.log("automation-progress: 80");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 80, total: 100, percent: 80 });
     const nextTimestamp = createTimestampGenerator();
     let unbilledRows = rows.filter(
       (row) => statementKind(row) === "unbilled",
@@ -1388,7 +1389,7 @@ export default workflow("esunCreditCardStatements", {
       canonicalAdmission = "admitted";
       canonicalCaptureCount = 1;
     }
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
     return {
       usedExistingSession: authResult.usedProfile,

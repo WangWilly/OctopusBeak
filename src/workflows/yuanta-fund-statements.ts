@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   admitCanonicalInvestmentCapture,
   CanonicalInvestmentAdmissionError,
@@ -2207,12 +2208,16 @@ export default workflow("yuantaFundStatements", {
       let fundStepCount = 0;
       const fundProgress = () => {
         if (fundStepCount === 0) return;
-        console.log(
-          `automation-progress: ${
-            75 +
-            Math.min(24, Math.round((completedFundSteps / fundStepCount) * 24))
-          }`,
+        const percent = 75 + Math.min(
+          24,
+          Math.round((completedFundSteps / fundStepCount) * 24),
         );
+        emitAutomationProgress({
+          phaseCode: "workflow",
+          completed: percent,
+          total: 100,
+          percent,
+        });
       };
 
       if (input.includePortfolioSummary) {

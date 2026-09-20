@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { resolvePatchCommand } from "./desktop-command.ts";
 import {
@@ -13,10 +14,11 @@ import {
   claimRunAutomationSession,
   createAutomationOutputBuffer,
   createAutomationSessionId,
+  createAutomationProgressFrameParser,
   liveTaskRunUpdate,
-  parseAutomationProgress,
   resumeFailureMessage,
   runAutomationTaskExecution,
+  terminateAutomationTaskProcessTree,
   terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
 export {
@@ -37,9 +39,10 @@ export {
   claimRunAutomationSession,
   createAutomationOutputBuffer,
   createAutomationSessionId,
+  createAutomationProgressFrameParser,
   liveTaskRunUpdate,
-  parseAutomationProgress,
   resumeFailureMessage,
+  terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
 import {
   automationSessionOwnerForRun,
@@ -55,6 +58,10 @@ import {
 } from "./session-lifecycle.ts";
 import {
   activeTaskRuns,
+  createTaskRun,
+  latestTaskRuns,
+  taskRunById,
+  updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -68,15 +75,24 @@ import {
   runCaptchaRetryCampaign,
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 
 export { closeLibrettoSession };
 
 const activeTaskRunIds = new Map<string, string>();
 const cancellationRequestedTaskIds = new Set<string>();
+const forceTerminationRequestedTaskIds = new Set<string>();
+const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let librettoRunCdpPatched = false;
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
+};
+
+export type StartedAutomationTask = {
+  taskId: string;
+  runId: string;
+  runtime: ReturnType<typeof automationRuntimeState.snapshot>;
 };
 
 type AutomationTaskExecutionRunnerInput = {
@@ -86,7 +102,9 @@ type AutomationTaskExecutionRunnerInput = {
   baseLaunchEnv: NodeJS.ProcessEnv;
   currentTaskRunId: () => string | null;
   onRunCreated: (taskRunId: string) => void;
+  onRuntimeUpdate?: (taskRunId: string) => void;
   isCancellationRequested: () => boolean;
+  isForceTerminationRequested?: () => boolean;
   runExecution?: typeof runAutomationTaskExecution;
 };
 
@@ -113,6 +131,8 @@ export function createAutomationTaskExecutionRunner(
         taskRunId:
           executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
         isCancellationRequested: input.isCancellationRequested,
+        isForceTerminationRequested: input.isForceTerminationRequested,
+        onRuntimeUpdate: input.onRuntimeUpdate,
       },
       input.onRunCreated,
     );
@@ -175,11 +195,91 @@ export function automationTaskCancellationRequested(taskId: string) {
   return cancellationRequestedTaskIds.has(taskId);
 }
 
+export function automationTaskForceTerminationRequested(taskId: string) {
+  return forceTerminationRequestedTaskIds.has(taskId);
+}
+
 function claimTask(taskId: string) {
   if (activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is already running: ${taskId}`);
   }
   activeTaskRunIds.set(taskId, "pending");
+}
+
+function runtimeForTask(taskId: string) {
+  return automationRuntimeState.snapshot().tasks.find((task) => task.taskId === taskId);
+}
+
+function preparedRunForTask(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  ledgerDir: string,
+  options: StartAutomationTaskOptions = {},
+  existingRun?: AutomationTaskRun,
+) {
+  if (existingRun) return existingRun;
+  const db = openLedgerDatabase(ledgerDir);
+  try {
+    const created = createTaskRun(db, {
+      taskId: task.id,
+      script: options.scheduledAtUtc
+        ? `${task.script} --scheduled-at-utc ${options.scheduledAtUtc}`
+        : task.script,
+      kind: task.kind,
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: task.maxAttempts,
+      startedAt: new Date().toISOString(),
+      logPath: join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
+    });
+    const run = taskRunById(db, created.taskRunId);
+    if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
+    return run;
+  } finally {
+    db.close();
+  }
+}
+
+function startPreparedTask(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  ledgerDir: string,
+  options: StartAutomationTaskOptions = {},
+): StartedAutomationTask {
+  const run = preparedRunForTask(task, ledgerDir, options);
+  activeTaskRunIds.set(task.id, run.taskRunId);
+  const runtime = automationRuntimeState.upsert(
+    runtimeTaskSnapshotFromRun(run, "preparing"),
+  );
+  void runAutomationTask(task.id, ledgerDir, {
+    claimed: true,
+    taskRunId: run.taskRunId,
+    scheduledAtUtc: options.scheduledAtUtc,
+  }).then(() => {
+    const db = openLedgerDatabase(ledgerDir);
+    try {
+      const finalRun = taskRunById(db, run.taskRunId);
+      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    } finally {
+      db.close();
+    }
+  }).catch((error) => {
+    console.error("automation-task-run-failed", error);
+    const db = openLedgerDatabase(ledgerDir);
+    try {
+      const failed = taskRunById(db, run.taskRunId);
+      if (failed) {
+        updateTaskRun(db, run.taskRunId, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          errorMessage: "Automation task failed to start.",
+        });
+        const finalized = taskRunById(db, run.taskRunId);
+        if (finalized) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalized));
+      }
+    } finally {
+      db.close();
+    }
+  });
+  return { taskId: task.id, runId: run.taskRunId, runtime };
 }
 
 export async function runWithConcurrency<T>(
@@ -226,7 +326,7 @@ export function startAutomationTask(
   taskId: string,
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
   options: StartAutomationTaskOptions = {},
-) {
+): StartedAutomationTask {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   validateScheduledAtUtc(options.scheduledAtUtc);
@@ -243,19 +343,27 @@ export function startAutomationTask(
   ) {
     selectStatementTypes(group, readAutomationSettings(), "strict");
   }
+  const current = activeTaskRunIds.get(taskId);
+  if (current && current !== "pending") {
+    const snapshot = runtimeForTask(taskId);
+    if (snapshot) return { taskId, runId: snapshot.runId ?? current, runtime: automationRuntimeState.snapshot() };
+  }
+  if (current === "pending") throw new Error(`Automation task is still preparing: ${taskId}`);
   claimTask(taskId);
-  void runAutomationTask(taskId, ledgerDir, {
-    claimed: true,
-    scheduledAtUtc: options.scheduledAtUtc,
-  }).catch((error) => {
-    console.error("automation-task-run-failed", error);
-  });
+  try {
+    return startPreparedTask(task, ledgerDir, options);
+  } catch (error) {
+    // The claim is a lease, not a durable run.  If the preparing row cannot be
+    // committed, release it so the next click can retry safely.
+    activeTaskRunIds.delete(taskId);
+    throw error;
+  }
 }
 
 export function startAutomationTasks(
   taskIds: readonly string[],
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
+) : StartedAutomationTask[] {
   const uniqueTaskIds = [...new Set(taskIds)];
   let settings: ReturnType<typeof readAutomationSettings> | undefined;
   for (const taskId of uniqueTaskIds) {
@@ -275,27 +383,8 @@ export function startAutomationTasks(
       settings ??= readAutomationSettings();
       selectStatementTypes(group, settings, "strict");
     }
-    if (activeTaskRunIds.has(taskId))
-      throw new Error(`Automation task is already running: ${taskId}`);
   }
-  for (const taskId of uniqueTaskIds) {
-    claimTask(taskId);
-    activeTaskRunIds.set(taskId, "queued");
-  }
-  setImmediate(() => {
-    void runAutomationBatch(uniqueTaskIds, async (taskId) => {
-      const claimed = uniqueTaskIds.includes(taskId);
-      if (claimed) {
-        if (activeTaskRunIds.get(taskId) !== "queued") return;
-        activeTaskRunIds.set(taskId, "pending");
-      }
-      await runAutomationTask(taskId, ledgerDir, { claimed }).catch((error) => {
-        console.error("automation-task-run-failed", error);
-      });
-    }).catch((error) => {
-      console.error("automation-batch-run-failed", error);
-    });
-  });
+  return uniqueTaskIds.map((taskId) => startAutomationTask(taskId, ledgerDir));
 }
 
 export function startAutomationResume(
@@ -307,12 +396,32 @@ export function startAutomationResume(
   if (!session.match(/^[\w-]+$/))
     throw new Error(`Invalid Libretto session: ${session}`);
   claimTask(taskId);
+  const db = openLedgerDatabase(ledgerDir);
+  let currentRun: AutomationTaskRun | null = null;
+  try {
+    currentRun = latestTaskRuns(db)[taskId] ?? null;
+  } finally {
+    db.close();
+  }
+  if (!currentRun) {
+    void runAutomationTask(taskId, ledgerDir, {
+      claimed: true,
+      resumeSession: session,
+    }).catch((error) => {
+      console.error("automation-task-resume-failed", error);
+    });
+    return { taskId, runId: "", runtime: automationRuntimeState.snapshot() };
+  }
+  activeTaskRunIds.set(taskId, currentRun.taskRunId);
+  const runtime = automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(currentRun, "preparing"));
   void runAutomationTask(taskId, ledgerDir, {
     claimed: true,
     resumeSession: session,
+    taskRunId: currentRun.taskRunId,
   }).catch((error) => {
     console.error("automation-task-resume-failed", error);
   });
+  return { taskId, runId: currentRun.taskRunId, runtime };
 }
 
 export async function cancelAutomationTask(taskId: string) {
@@ -320,9 +429,40 @@ export async function cancelAutomationTask(taskId: string) {
     throw new Error(`Automation task is not running: ${taskId}`);
   if (activeTaskRunIds.get(taskId) === "queued") {
     activeTaskRunIds.delete(taskId);
+    cancellationRequestedTaskIds.delete(taskId);
+    forceTerminationRequestedTaskIds.delete(taskId);
+    const queuedTimer = cancellationForceTimers.get(taskId);
+    if (queuedTimer) clearTimeout(queuedTimer);
+    cancellationForceTimers.delete(taskId);
+    const runtime = runtimeForTask(taskId);
+    if (runtime) automationRuntimeState.upsert({ ...runtime, status: "cancelled", updatedAt: new Date().toISOString() });
     return { cancelled: taskId };
   }
   cancellationRequestedTaskIds.add(taskId);
+  const cancellationRequestedAt = new Date().toISOString();
+  const runtime = runtimeForTask(taskId);
+  if (runtime) {
+    automationRuntimeState.upsert({
+      ...runtime,
+      status: "cancelling",
+      cancellationRequestedAt,
+      forceTerminateAvailable: false,
+      updatedAt: cancellationRequestedAt,
+    });
+  }
+  const previousTimer = cancellationForceTimers.get(taskId);
+  if (previousTimer) clearTimeout(previousTimer);
+  cancellationForceTimers.set(taskId, setTimeout(() => {
+    cancellationForceTimers.delete(taskId);
+    if (!activeTaskRunIds.has(taskId)) return;
+    const current = runtimeForTask(taskId);
+    if (!current || current.status !== "cancelling") return;
+    automationRuntimeState.upsert({
+      ...current,
+      forceTerminateAvailable: true,
+      updatedAt: new Date().toISOString(),
+    });
+  }, 10_000));
   const child = automationTaskChild(taskId);
   // A CAPTCHA retry round can be between child processes while its previous
   // session is being cleaned up. Keep the cancellation request latched so the
@@ -334,6 +474,30 @@ export async function cancelAutomationTask(taskId: string) {
     return { cancelled: taskId };
   }
   child.kill("SIGTERM");
+  await relinquishAutomationSessionForTask(taskId);
+  return { cancelled: taskId };
+}
+
+/** Force termination is available only after the normal cancellation grace period. */
+export async function forceTerminateAutomationTask(taskId: string) {
+  if (!activeTaskRunIds.has(taskId))
+    throw new Error(`Automation task is not running: ${taskId}`);
+  forceTerminationRequestedTaskIds.add(taskId);
+  cancellationRequestedTaskIds.add(taskId);
+  const timer = cancellationForceTimers.get(taskId);
+  if (timer) clearTimeout(timer);
+  cancellationForceTimers.delete(taskId);
+  const runtime = runtimeForTask(taskId);
+  if (runtime) {
+    automationRuntimeState.upsert({
+      ...runtime,
+      status: "cancelling",
+      forceTerminateAvailable: true,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  const child = automationTaskChild(taskId);
+  await terminateAutomationTaskProcessTree(taskId);
   await relinquishAutomationSessionForTask(taskId);
   return { cancelled: taskId };
 }
@@ -457,6 +621,7 @@ export async function runAutomationTask(
   options: StartAutomationTaskOptions & {
     claimed?: boolean;
     resumeSession?: string;
+    taskRunId?: string;
   } = {},
 ) {
   const task = taskById(taskId);
@@ -476,6 +641,8 @@ export async function runAutomationTask(
     const onRunCreated = (createdTaskRunId: string) => {
       taskRunId = createdTaskRunId;
       activeTaskRunIds.set(taskId, createdTaskRunId);
+      const created = taskRunById(db!, createdTaskRunId);
+      if (created) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(created));
     };
     const execution = createAutomationTaskExecutionRunner({
       task,
@@ -484,10 +651,16 @@ export async function runAutomationTask(
       baseLaunchEnv: launchEnv,
       currentTaskRunId: () => taskRunId,
       onRunCreated,
+      onRuntimeUpdate: (updatedTaskRunId) => {
+        const updated = taskRunById(db!, updatedTaskRunId);
+        if (updated) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(updated));
+      },
       isCancellationRequested: () =>
         automationTaskCancellationRequested(taskId),
+      isForceTerminationRequested: () =>
+        automationTaskForceTerminationRequested(taskId),
     });
-    return await runCaptchaRetryCampaign({
+    const result = await runCaptchaRetryCampaign({
       taskId,
       taskDb: db,
       ledgerDir,
@@ -495,14 +668,24 @@ export async function runAutomationTask(
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
         resumeSession: options.resumeSession,
+        taskRunId: options.taskRunId,
       },
       execute: execution,
       isCancellationRequested: () =>
         automationTaskCancellationRequested(taskId),
     });
+    if (taskRunId) {
+      const finalRun = taskRunById(db, taskRunId);
+      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    }
+    return result;
   } finally {
     activeTaskRunIds.delete(taskId);
     cancellationRequestedTaskIds.delete(taskId);
+    forceTerminationRequestedTaskIds.delete(taskId);
+    const forceTimer = cancellationForceTimers.get(taskId);
+    if (forceTimer) clearTimeout(forceTimer);
+    cancellationForceTimers.delete(taskId);
     db?.close();
   }
 }

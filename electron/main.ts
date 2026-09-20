@@ -6,6 +6,7 @@ import {
   prepareLibrettoRunCdpPatch,
   shutdownAutomationSessions,
   startAutomationTask,
+  terminateAutomationTaskProcesses,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
@@ -197,6 +198,11 @@ async function start() {
   }
   ipcRegistration = registerOctopusBeakIpc({
     onSystemSettingsChanged: () => scheduler?.reschedule(),
+    onAutomationRuntimeFatal: (details) => {
+      console.error("automation-runtime-fatal", details);
+      terminateAutomationTaskProcesses();
+      app.exit(1);
+    },
   });
   scheduler?.start();
   currentRendererUrl = rendererEntry(appRoot);

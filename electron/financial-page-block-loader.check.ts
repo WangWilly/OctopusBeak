@@ -65,7 +65,7 @@ test("different generations never share a raw snapshot", async () => {
   assert.deepEqual(generations, [3, 4]);
 });
 
-test("automation core blocks do not receive credential state; details receives only the DTO", async () => {
+test("automation blocks receive only sanitized credential state and never encrypted data", async () => {
   const contexts: unknown[] = [];
   const loader = createFinancialPageBlockLoader((_target, _options, context) => {
     contexts.push(context);
@@ -83,8 +83,8 @@ test("automation core blocks do not receive credential state; details receives o
   } as const;
 
   await Promise.all([
-    loader.load("automation", "summary", { expectedVersion: 3 }),
-    loader.load("automation", "list", { expectedVersion: 3 }),
+    loader.load("automation", "summary", { expectedVersion: 3 }, { automationCredentialState: credentialState }),
+    loader.load("automation", "list", { expectedVersion: 3 }, { automationCredentialState: credentialState }),
     loader.load(
       "automation",
       "details",
@@ -93,9 +93,10 @@ test("automation core blocks do not receive credential state; details receives o
     ),
   ]);
 
-  assert.equal(contexts.length, 2);
-  assert.equal(contexts[0], undefined);
-  assert.deepEqual(contexts[1], { automationCredentialState: credentialState });
+  // Concurrent blocks share one generation-bound raw read, so the worker
+  // context is captured once for the shared snapshot.
+  assert.equal(contexts.length, 1);
+  assert.deepEqual(contexts[0], { automationCredentialState: credentialState });
 });
 
 test("block projection selects a section without waiting on route DTO mapping", () => {

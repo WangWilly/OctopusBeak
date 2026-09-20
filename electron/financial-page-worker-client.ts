@@ -6,7 +6,10 @@ import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
 import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
 import type { DashboardBlockPayload } from "../src/lib/shared-shell/dashboard-blocks.ts";
-import type { AutomationCredentialStateDto } from "../src/lib/desktop/api.ts";
+import type {
+  AutomationCredentialStateDto,
+  AutomationRuntimeSnapshot,
+} from "../src/lib/desktop/api.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -31,6 +34,7 @@ export type FinancialPageRequest =
     block: DashboardBlockKey;
     options?: DataReadOptions;
     automationCredentialState?: AutomationCredentialStateDto;
+    automationRuntimeState?: AutomationRuntimeSnapshot;
   }
   | { id: number; page: "spending-pairing"; input: SpendingPairingCandidatesInput }
   | { id: number; page: "spending-pairing-prewarm"; input: SpendingPairingPrewarmInput }
@@ -54,6 +58,7 @@ export type FinancialPageWorkerClient = {
     block: DashboardBlockKey,
     options?: DataReadOptions,
     automationCredentialState?: AutomationCredentialStateDto,
+    automationRuntimeState?: AutomationRuntimeSnapshot,
   ): Promise<DashboardBlockPayload>;
   rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
@@ -117,6 +122,7 @@ export function createFinancialPageWorkerClient(
     block: DashboardBlockKey,
     options?: DataReadOptions,
     automationCredentialState?: AutomationCredentialStateDto,
+    automationRuntimeState?: AutomationRuntimeSnapshot,
   ): Promise<DashboardBlockPayload> {
     if (closed) return Promise.reject(new Error(WORKER_CLOSED_MESSAGE));
     const id = nextId++;
@@ -127,6 +133,7 @@ export function createFinancialPageWorkerClient(
       block,
       options,
       ...(automationCredentialState ? { automationCredentialState } : {}),
+      ...(automationRuntimeState ? { automationRuntimeState } : {}),
     };
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
