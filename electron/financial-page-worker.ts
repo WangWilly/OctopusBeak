@@ -3,7 +3,10 @@ import { loadAssets } from "../src/lib/assets/server/load-assets.ts";
 import { loadLiabilities } from "../src/lib/liabilities/server/load-liabilities.ts";
 import { loadOverview } from "../src/lib/overview/server/load-overview.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
-import { loadAutomationDesktopModel } from "../src/lib/automation/server/desktop-api.ts";
+import {
+  applyAutomationCredentialState,
+  loadAutomationCoreSnapshot,
+} from "../src/lib/automation/server/desktop-api.ts";
 import {
   createFinancialPageBlockLoader,
   type FinancialBlockTarget,
@@ -24,8 +27,16 @@ import type {
 if (!parentPort) throw new Error("Financial page worker requires a parent port.");
 const port = parentPort;
 
-const blockLoader = createFinancialPageBlockLoader(async (target: FinancialBlockTarget) => {
-  if (target === "automation") return loadAutomationDesktopModel();
+const blockLoader = createFinancialPageBlockLoader(async (target, _options, context) => {
+  if (target === "automation") {
+    const core = loadAutomationCoreSnapshot(
+      undefined,
+      context?.automationCredentialState?.status,
+    );
+    return context?.automationCredentialState
+      ? applyAutomationCredentialState(core, context.automationCredentialState)
+      : core;
+  }
   if (target === "overview") {
     return loadOverview(undefined, { expectedSources: configuredOverviewSources() });
   }
@@ -59,7 +70,14 @@ port.on("message", async (request: FinancialPageRequest) => {
       }
     } else {
       value = request.page === "block"
-        ? await blockLoader.load(request.target, request.block, request.options)
+        ? await blockLoader.load(
+          request.target,
+          request.block,
+          request.options,
+          request.target === "automation"
+            ? { automationCredentialState: request.automationCredentialState }
+            : undefined,
+        )
         : request.page === "overview"
         ? await loadOverview(undefined, { expectedSources: configuredOverviewSources() })
         : request.page === "assets"

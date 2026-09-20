@@ -79,6 +79,31 @@ test("block reads are independently addressable at the worker boundary", async (
   }
 });
 
+test("automation details carry only sanitized credential state across the worker boundary", async () => {
+  const worker = new Worker(`
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", ({ id, automationCredentialState }) => {
+      parentPort.postMessage({ id, ok: true, value: automationCredentialState });
+    });
+  `, { eval: true });
+  const client = createFinancialPageWorkerClient(worker);
+  try {
+    const state = {
+      revision: 4,
+      status: { USER: true },
+      fileNames: { CERT: "client.p12" },
+      invalidFileKeys: [],
+      invalidFileReasons: {},
+    } as const;
+    assert.deepEqual(
+      await client.loadBlock("automation", "details", undefined, state),
+      state,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("closing the worker rejects pending and future page requests deterministically", async () => {
   const worker = new Worker(`
     const { parentPort } = require("node:worker_threads");

@@ -65,6 +65,39 @@ test("different generations never share a raw snapshot", async () => {
   assert.deepEqual(generations, [3, 4]);
 });
 
+test("automation core blocks do not receive credential state; details receives only the DTO", async () => {
+  const contexts: unknown[] = [];
+  const loader = createFinancialPageBlockLoader((_target, _options, context) => {
+    contexts.push(context);
+    return {
+      automation: { credentials: {} },
+      credentialGroups: [],
+    };
+  });
+  const credentialState = {
+    revision: 3,
+    status: { USER: true },
+    fileNames: { CERT: "client.p12" },
+    invalidFileKeys: [],
+    invalidFileReasons: {},
+  } as const;
+
+  await Promise.all([
+    loader.load("automation", "summary", { expectedVersion: 3 }),
+    loader.load("automation", "list", { expectedVersion: 3 }),
+    loader.load(
+      "automation",
+      "details",
+      { expectedVersion: 3 },
+      { automationCredentialState: credentialState },
+    ),
+  ]);
+
+  assert.equal(contexts.length, 2);
+  assert.equal(contexts[0], undefined);
+  assert.deepEqual(contexts[1], { automationCredentialState: credentialState });
+});
+
 test("block projection selects a section without waiting on route DTO mapping", () => {
   const raw = {
     accounts: [{ id: "account" }],

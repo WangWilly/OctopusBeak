@@ -47,6 +47,31 @@ export type CredentialGroupDto = AutomationCredentialGroup & {
 
 export type CertificateFileValidationReason = "invalid-extension" | "missing-or-unreadable";
 
+/**
+ * Main-process-owned credential state safe to cross the worker boundary.
+ * It contains no credential values, encrypted payloads, or certificate paths.
+ */
+export type AutomationCredentialStateDto = {
+  revision: number;
+  status: Readonly<Record<string, boolean>>;
+  fileNames: Readonly<Record<string, string>>;
+  invalidFileKeys: readonly string[];
+  invalidFileReasons: Readonly<Record<string, CertificateFileValidationReason>>;
+  /** Main-process-derived, renderer-safe Gmail connection state only. */
+  cathayGmailOtp?: CathayGmailOtpStatus;
+};
+
+export type AutomationCredentialGroupCoreDto = Omit<
+  CredentialGroupDto,
+  "storedCredentialFileNames" | "invalidCredentialFileKeys" | "invalidCredentialFileReasons"
+>;
+
+export type AutomationCoreSnapshot = {
+  automation: AutomationPageModel;
+  /** Group metadata only; credential-derived fields are empty until details. */
+  credentialGroups: CredentialGroupDto[];
+};
+
 export type CertificateFileSelectionResult =
   | { cancelled: true }
   | { cancelled: false; path: string; filename: string }
@@ -125,7 +150,6 @@ export type OctopusBeakApi = {
     updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
   automation: {
-    load(options?: DataReadOptions): Promise<AutomationDesktopModel>;
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     saveCredentials(updates: Record<string, string>): Promise<AutomationCredentialSaveResult>;
     cathayGmailOtpStatus(): Promise<CathayGmailOtpStatus>;
@@ -171,7 +195,6 @@ export const octopusBeakApiChannels = [
   "spending:revokeLink",
   "spending:updateItemCategory",
   "spending:updateTransactionOverride",
-  "automation:load",
   "automation:block",
   "automation:saveCredentials",
   "automation:cathayGmailOtpStatus",

@@ -1,4 +1,7 @@
-import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+import type {
+  AutomationCoreSnapshot,
+  AutomationDesktopModel,
+} from "$lib/desktop/api.ts";
 import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
@@ -44,7 +47,7 @@ export type DashboardBlockValueMap = {
   };
   automation: {
     summary: Pick<AutomationDesktopModel, "automation">;
-    list: Pick<AutomationDesktopModel, "automation" | "credentialGroups">;
+    list: Pick<AutomationCoreSnapshot, "automation" | "credentialGroups">;
     details: Pick<AutomationDesktopModel, "automation" | "credentialGroups">;
   };
 };

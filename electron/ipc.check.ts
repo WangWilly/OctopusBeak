@@ -33,6 +33,13 @@ assert.match(source, /withExpectedDataVersion/);
 assert.match(source, /options\?\.expectedVersion/);
 for (const channel of ["overview:block", "assets:block", "liabilities:block", "spending:block", "automation:block"])
   assert.match(source, new RegExp(`ipcMain\\.handle\\(\\s*"${channel}"`));
+assert.doesNotMatch(source, /ipcMain\.handle\(\s*"automation:load"/);
+assert.match(source, /void automationCredentials\.prewarm\(\)\.catch/);
+assert.doesNotMatch(
+  source,
+  /ipcMain\.on\([\s\S]{0,240}automationCredentials\.prewarm\(\)/,
+  "credential prewarm must not be launched from a click/input handler",
+);
 assert.doesNotMatch(
   source,
   /ipcMain\.handle\("overview:load", \(\) =>\s*loadOverview/,
