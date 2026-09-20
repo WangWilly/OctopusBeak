@@ -75,6 +75,8 @@
     "run:seed-mock-ledger-db": "node --no-warnings --experimental-strip-types src/ledger/seed-mock-ledger-db.ts",
     "run:seed-desktop-cdp-fixture": "node --no-warnings --experimental-strip-types scripts/seed-desktop-cdp-fixture.ts",
     "desktop:dev:cdp-fixture": "OCTOPUSBEAK_CDP_FIXTURE_USER_DATA=\"${OCTOPUSBEAK_CDP_FIXTURE_USER_DATA:-/tmp/octopusbeak-171-cdp}\" npm run run:seed-desktop-cdp-fixture -- \"${OCTOPUSBEAK_CDP_FIXTURE_USER_DATA:-/tmp/octopusbeak-171-cdp}\" && OCTOPUSBEAK_CDP_FIXTURE=171 OCTOPUSBEAK_USER_DATA=\"${OCTOPUSBEAK_CDP_FIXTURE_USER_DATA:-/tmp/octopusbeak-171-cdp}\" npm run desktop:dev -- --no-sandbox --disable-gpu",
+    "pretest": "npm run build:electron",
+    "pretest:ci": "npm run build:electron",
     "privacy-check": ".githooks/pre-commit",
     "secrets-check": "gitleaks dir . --config .gitleaks.toml --redact --verbose",
     "hooks:install": "git config core.hooksPath .githooks"

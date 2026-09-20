@@ -19,7 +19,7 @@ import {
   automationSaveCredentials,
   automationSetupGuideLink,
   externalPrerequisiteById,
-  loadAutomationDesktopModel,
+  readAutomationCredentialState,
   setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
 import {
@@ -53,6 +53,7 @@ import {
   type SpendingOverrideUpdate,
 } from "../src/lib/spending/server/store.ts";
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
+import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
@@ -86,6 +87,12 @@ export function registerOctopusBeakIpc({
   const financialPages = createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
+  const automationCredentials = createAutomationCredentialStateCache(
+    readAutomationCredentialState,
+  );
+  void automationCredentials.prewarm().catch(() => {
+    // The details block reports a retryable, user-facing error if this fails.
+  });
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -209,27 +216,39 @@ export function registerOctopusBeakIpc({
     },
   );
   ipcMain.handle(
-    "automation:load",
-    (_event, options: DataReadOptions | undefined) =>
-      withExpectedDataVersion(
-        options?.expectedVersion,
-        () => dataVersionStore.snapshot(),
-        () => loadAutomationDesktopModel(),
-      ),
-  );
-  ipcMain.handle(
     "automation:block",
-    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+    async (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
       withExpectedDataVersion(
         options?.expectedVersion,
         () => dataVersionStore.snapshot(),
-        () => financialPages.loadBlock("automation", block, options),
+        async () => {
+          if (block !== "details") {
+            return financialPages.loadBlock("automation", block, options);
+          }
+          let credentialState;
+          try {
+            credentialState = options?.refreshCredentials
+              ? await automationCredentials.refresh()
+              : await automationCredentials.read();
+          } catch {
+            throw new Error("無法讀取登入資料");
+          }
+          return financialPages.loadBlock(
+            "automation",
+            block,
+            options,
+            credentialState,
+          );
+        },
       ),
   );
   ipcMain.handle(
     "automation:saveCredentials",
-    (_event, updates: Record<string, string>) =>
-      automationSaveCredentials(updates),
+    async (_event, updates: Record<string, string>) => {
+      const result = automationSaveCredentials(updates);
+      if (result.saved) await automationCredentials.refresh();
+      return result;
+    },
   );
   ipcMain.handle("automation:cathayGmailOtpStatus", () =>
     cathayGmailOtpStatus(),

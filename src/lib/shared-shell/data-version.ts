@@ -9,6 +9,8 @@ export type DataVersionSnapshot = Readonly<{
 /** An optional generation contract attached to a renderer-initiated read. */
 export type DataReadOptions = Readonly<{
   expectedVersion?: number;
+  /** Force a fresh main-process credential snapshot for automation details. */
+  refreshCredentials?: boolean;
 }>;
 
 /**

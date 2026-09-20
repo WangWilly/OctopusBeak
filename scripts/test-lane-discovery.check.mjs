@@ -19,6 +19,8 @@ test("test lanes include each browser check exactly once and exclude hard perfor
 
   assert.match(packageJson.scripts.test, /run-test-lane\.mjs all/u);
   assert.match(packageJson.scripts["test:ci"], /run-test-lane\.mjs ci/u);
+  assert.match(packageJson.scripts.pretest, /build:electron/u);
+  assert.match(packageJson.scripts["pretest:ci"], /build:electron/u);
   assert.deepEqual(browser, [...BROWSER_CHECK_FILES].sort());
   for (const file of BROWSER_CHECK_FILES) {
     assert.equal(all.filter((candidate) => candidate === file).length, 1, `${file} must be scheduled once`);

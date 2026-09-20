@@ -1,5 +1,6 @@
 import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+import type { AutomationCredentialStateDto } from "../src/lib/desktop/api.ts";
 import {
   wrapDashboardBlock,
   type DashboardBlockPayload,
@@ -17,13 +18,19 @@ export type FinancialBlockTarget =
 export type FinancialBlockSnapshotReader = (
   target: FinancialBlockTarget,
   options?: DataReadOptions,
+  context?: FinancialBlockReadContext,
 ) => unknown | Promise<unknown>;
+
+export type FinancialBlockReadContext = Readonly<{
+  automationCredentialState?: AutomationCredentialStateDto;
+}>;
 
 function snapshotKey(
   target: FinancialBlockTarget,
   options: DataReadOptions | undefined,
+  context: FinancialBlockReadContext | undefined,
 ): string {
-  return `${target}:${options?.expectedVersion ?? "current"}`;
+  return `${target}:${options?.expectedVersion ?? "current"}:credential:${context?.automationCredentialState?.revision ?? "none"}`;
 }
 
 /**
@@ -41,11 +48,12 @@ export function createFinancialPageBlockLoader(
       target: FinancialBlockTarget,
       block: DashboardBlockKey,
       options?: DataReadOptions,
+      context?: FinancialBlockReadContext,
     ): Promise<DashboardBlockPayload> {
-      const key = snapshotKey(target, options);
+      const key = snapshotKey(target, options, context);
       let snapshot = inFlight.get(key);
       if (!snapshot) {
-        snapshot = Promise.resolve(readSnapshot(target, options));
+        snapshot = Promise.resolve(readSnapshot(target, options, context));
         inFlight.set(key, snapshot);
         const release = () => {
           // Keep an immediately-resolved read visible through the current

@@ -55,6 +55,7 @@
   import {
     type DashboardBlockPayload,
     type DashboardBlockRoute,
+    type DashboardBlockValueMap,
     type DashboardBlockValue,
     type DashboardBlockKeyForRoute,
   } from "$lib/shared-shell/dashboard-blocks.ts";
@@ -116,6 +117,7 @@
   };
   let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<DashboardBlockPayload>>> = {};
   let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
+  let routeBlockPromises: Partial<Record<DashboardRoute, Promise<Record<string, BlockState<DashboardBlockPayload>>>>> = {};
 
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
@@ -310,14 +312,28 @@
   }
 
   function progressiveAutomation(): AutomationDesktopModel | undefined {
-    const summary = blockData("automation", "summary");
-    const list = blockData("automation", "list");
-    const details = blockData("automation", "details");
-    const source = summary ?? list ?? details;
+    return automationFromBlockStates(routeBlocks.automation ?? {});
+  }
+
+  function automationFromBlockStates(
+    states: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
+  ): AutomationDesktopModel | undefined {
+    const read = <Key extends "summary" | "list" | "details">(key: Key) => {
+      const state = states[key];
+      if (!state || !("data" in state) || state.data === undefined) return undefined;
+      const payload = state.data;
+      return payload.route === "automation" && payload.block === key
+        ? payload.data as DashboardBlockValueMap["automation"][Key]
+        : undefined;
+    };
+    const summary = read("summary");
+    const list = read("list");
+    const details = read("details");
+    const source = details ?? list ?? summary;
     if (!source) return undefined;
     return {
-      automation: source.automation,
-      credentialGroups: list?.credentialGroups ?? details?.credentialGroups ?? [],
+      automation: details?.automation ?? source.automation,
+      credentialGroups: details?.credentialGroups ?? list?.credentialGroups ?? [],
     };
   }
 
@@ -367,13 +383,27 @@
         [key]: state,
       });
     });
+    routeBlockPromises = { ...routeBlockPromises, [nextRoute]: settled };
+    void settled.finally(() => {
+      if (routeBlockPromises[nextRoute] === settled) {
+        const remaining = { ...routeBlockPromises };
+        delete remaining[nextRoute];
+        routeBlockPromises = remaining;
+      }
+    });
     return settled;
   }
 
   function retryRouteBlock(nextRoute: DashboardRoute, key: string) {
     const cached = routeDataCache.read(nextRoute);
     if (cached) {
-      startRouteBlockLoads(nextRoute, undefined, key as DashboardBlockKey);
+      startRouteBlockLoads(
+        nextRoute,
+        nextRoute === "automation" && key === "details"
+          ? { refreshCredentials: true }
+          : undefined,
+        key as DashboardBlockKey,
+      );
       return;
     }
     void loadRoute(nextRoute, { force: true });
@@ -406,7 +436,7 @@
       assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
-      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, awaitBlocks: true, refreshCredentials: true, snapshot }),
     },
   });
 
@@ -514,10 +544,15 @@
 
     startRouteLoad("automation");
     startRouteLoad("overview");
-    startRouteBlockLoads("automation", undefined);
+    const automationBlocks = startRouteBlockLoads("automation", undefined);
     startRouteBlockLoads("overview", undefined);
     const settled = await settleIndependentLoads({
-      automation: () => routeDataCache.load("automation", () => window.octopusBeak.automation.load()),
+      automation: async () => {
+        const states = await automationBlocks;
+        const data = automationFromBlockStates(states);
+        if (!data) throw new Error("Automation data unavailable.");
+        return data;
+      },
       overview: () => routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
     });
     const automationResult = settled.automation;
@@ -556,10 +591,15 @@
 
   async function loadRoute(
     next: RouteId,
-    options: { force?: boolean; rethrow?: boolean; awaitBlocks?: boolean; snapshot?: DataVersionSnapshot } = {},
+    options: { force?: boolean; rethrow?: boolean; awaitBlocks?: boolean; refreshCredentials?: boolean; snapshot?: DataVersionSnapshot } = {},
   ) {
     const readOptions: DataReadOptions | undefined = options.snapshot
-      ? { expectedVersion: options.snapshot.version }
+      ? {
+        expectedVersion: options.snapshot.version,
+        ...(options.refreshCredentials ? { refreshCredentials: true } : {}),
+      }
+      : options.refreshCredentials
+        ? { refreshCredentials: true }
       : undefined;
     const taskFinishedAt = next === "overview" && automation.status === "ready"
       ? completedSourceTaskFinishedAt(
@@ -572,7 +612,11 @@
     if (next !== "settings") {
       const hasCachedData = routeDataCache.read(next) !== undefined;
       const hasBlockRead = Object.values(routeBlocks[next] ?? {}).some((state) => state.status === "loading");
-      if (options.force || !hasCachedData && !hasBlockRead) blockLoads = startRouteBlockLoads(next, readOptions);
+      if (options.force || !hasCachedData && !hasBlockRead) {
+        blockLoads = startRouteBlockLoads(next, readOptions);
+      } else if (!hasCachedData) {
+        blockLoads = routeBlockPromises[next] ?? null;
+      }
     }
     if (next === "overview") overviewReloading = true;
     try {
@@ -598,7 +642,14 @@
         spending = finishViewLoad(data);
       }
       if (next === "automation") {
-        const data = await routeDataCache.load("automation", () => window.octopusBeak.automation.load(readOptions), options);
+        const data = await routeDataCache.load("automation", async () => {
+          const states = blockLoads
+            ? await blockLoads
+            : await startRouteBlockLoads("automation", readOptions);
+          const value = automationFromBlockStates(states);
+          if (!value) throw new Error("Automation data unavailable.");
+          return value;
+        }, options);
         automation = finishViewLoad(data);
       }
       if (options.awaitBlocks && blockLoads) {

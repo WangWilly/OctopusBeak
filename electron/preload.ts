@@ -42,7 +42,6 @@ const api: OctopusBeakApi = {
     updateTransactionOverride: (input) => ipcRenderer.invoke("spending:updateTransactionOverride", input),
   },
   automation: {
-    load: (options) => ipcRenderer.invoke("automation:load", options),
     loadBlock: (block, options) => ipcRenderer.invoke("automation:block", block, options),
     saveCredentials: (updates) => ipcRenderer.invoke("automation:saveCredentials", updates),
     cathayGmailOtpStatus: () => ipcRenderer.invoke("automation:cathayGmailOtpStatus"),

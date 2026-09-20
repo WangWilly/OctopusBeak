@@ -44,7 +44,12 @@ import {
   validateCertificateFilePath,
 } from "./credential-file.ts";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+import type {
+  AutomationCoreSnapshot,
+  AutomationCredentialGroupCoreDto,
+  AutomationCredentialStateDto,
+  AutomationDesktopModel,
+} from "$lib/desktop/api.ts";
 import type {
   CathayGmailOtpConnectionError,
   CathayGmailOtpStatus,
@@ -166,12 +171,50 @@ function currentCredentialState() {
   return { status, fileNames, invalidFileKeys, invalidFileReasons };
 }
 
-export function loadAutomationDesktopModel(
+/** Main-process-only credential reader; never call this from a worker. */
+export function readAutomationCredentialState() {
+  const state = currentCredentialState();
+  return {
+    status: state.status,
+    fileNames: state.fileNames,
+    invalidFileKeys: state.invalidFileKeys,
+    invalidFileReasons: state.invalidFileReasons,
+    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
+  };
+}
+
+function coreCredentialGroup(
+  group: (typeof AUTOMATION_CREDENTIAL_GROUPS)[number],
+  enabled: boolean,
+  selectedStatementTypeIds: readonly string[],
+  statementSetupRequired: boolean,
+): AutomationCredentialGroupCoreDto & {
+  storedCredentialFileNames: Readonly<Record<string, string>>;
+  invalidCredentialFileKeys: readonly string[];
+  invalidCredentialFileReasons: Readonly<Record<string, "invalid-extension" | "missing-or-unreadable">>;
+} {
+  return {
+    ...group,
+    enabled,
+    selectedStatementTypeIds,
+    statementSetupRequired,
+    storedCredentialFileNames: {},
+    invalidCredentialFileKeys: [],
+    invalidCredentialFileReasons: {},
+  };
+}
+
+/**
+ * Build the automation data that does not require access to encrypted
+ * credentials.  Workers use this function directly; the credential state is
+ * supplied separately by Electron main only for the details block.
+ */
+export function loadAutomationCoreSnapshot(
   ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-): AutomationDesktopModel {
+  credentialStatus: Readonly<Record<string, boolean>> = {},
+): AutomationCoreSnapshot {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
-  const credentialState = currentCredentialState();
   const db = openLedgerDatabase(ledgerDir);
   try {
     const activeTaskIds = activeAutomationTaskIds();
@@ -192,15 +235,12 @@ export function loadAutomationDesktopModel(
             }
           : selectStatementTypes(group, selectionSettings, "display")
         : { selectedIds: [], needsSetup: false };
-      return {
-        ...group,
+      return coreCredentialGroup(
+        group,
         enabled,
-        selectedStatementTypeIds: selection.selectedIds,
-        statementSetupRequired: selection.needsSetup,
-        storedCredentialFileNames: credentialState.fileNames,
-        invalidCredentialFileKeys: credentialState.invalidFileKeys,
-        invalidCredentialFileReasons: credentialState.invalidFileReasons,
-      };
+        selection.selectedIds,
+        selection.needsSetup,
+      );
     });
     return {
       automation: {
@@ -212,7 +252,7 @@ export function loadAutomationDesktopModel(
             endUtc: range.endUtc,
           }),
           activeTaskIds,
-          credentials: credentialState.status,
+          credentials: { ...credentialStatus },
           setupRequiredGroupIds: new Set(
             credentialGroups
               .filter((group) => group.statementSetupRequired)
@@ -222,13 +262,54 @@ export function loadAutomationDesktopModel(
           active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
           businessDate: range.businessDate,
         }),
-        cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
       },
       credentialGroups,
     };
   } finally {
     db.close();
   }
+}
+
+/** Apply the sanitized main-process state without reading credentials. */
+export function applyAutomationCredentialState(
+  core: AutomationCoreSnapshot,
+  credentialState: AutomationCredentialStateDto,
+): AutomationDesktopModel {
+  const credentialGroups = core.credentialGroups.map((group) => ({
+    ...group,
+    storedCredentialFileNames: credentialState.fileNames,
+    invalidCredentialFileKeys: credentialState.invalidFileKeys,
+    invalidCredentialFileReasons: credentialState.invalidFileReasons,
+  }));
+  return {
+    automation: {
+      ...core.automation,
+      credentials: { ...credentialState.status },
+      ...(credentialState.cathayGmailOtp
+        ? { cathayGmailOtp: credentialState.cathayGmailOtp }
+        : {}),
+    },
+    credentialGroups,
+  };
+}
+
+/** Main-process compatibility helper used by run/resume validation only. */
+export function loadAutomationDesktopModel(
+  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+): AutomationDesktopModel {
+  const raw = currentCredentialState();
+  const credentialState: AutomationCredentialStateDto = {
+    revision: 0,
+    status: raw.status,
+    fileNames: raw.fileNames,
+    invalidFileKeys: raw.invalidFileKeys,
+    invalidFileReasons: raw.invalidFileReasons,
+    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
+  };
+  return applyAutomationCredentialState(
+    loadAutomationCoreSnapshot(ledgerDir, raw.status),
+    credentialState,
+  );
 }
 
 export function externalPrerequisiteById(prerequisiteId: string) {
