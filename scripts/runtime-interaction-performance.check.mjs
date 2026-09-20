@@ -46,3 +46,12 @@ test("Pairing SLA uses in-page actionable DOM timestamps while retaining browser
   assert.match(runtimeSource, /input\[value=/u);
   assert.match(runtimeSource, /data-basis="linked"/u);
 });
+
+test("standalone Pairing SLA uses in-page actionable DOM timestamps", () => {
+  assert.match(source, /__pairingCandidateRenderedAt/u);
+  assert.match(source, /__pairingConfirmRenderedAt/u);
+  assert.match(source, /__pairingFinishInteractionAt\(\s*"open-complete"/u);
+  assert.match(source, /__pairingFinishInteractionAt\(\s*"confirm-complete"/u);
+  assert.match(source, /input\[value=/u);
+  assert.match(source, /data-basis="linked"/u);
+});
