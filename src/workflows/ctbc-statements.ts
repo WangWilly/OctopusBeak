@@ -8,6 +8,7 @@ import {
 } from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
@@ -1419,7 +1420,7 @@ export default workflow("ctbcStatements", {
       },
     });
 
-    console.log("automation-progress: 25");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
     const result = await runCtbcStatements(page, input, {
       canonicalLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
         ? process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
@@ -1427,7 +1428,7 @@ export default workflow("ctbcStatements", {
           DEFAULT_LEDGER_DIR
         : DEFAULT_LEDGER_DIR,
     });
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
 });

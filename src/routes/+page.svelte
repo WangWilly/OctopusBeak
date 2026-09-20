@@ -4,7 +4,10 @@
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
-  import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+  import type {
+    AutomationDesktopModel,
+    AutomationRuntimeSnapshot,
+  } from "$lib/desktop/api.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -101,6 +104,9 @@
   let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
   let spending: LoadState<SpendingPageDto> = { status: "loading" };
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
+  // Runtime ownership lives at the app shell so route changes never drop
+  // events or lose the latest state while Automation is off-screen.
+  let automationRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
   let onboardingState: OnboardingState | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
@@ -720,9 +726,56 @@
       },
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
+    const applyAutomationRuntimeSnapshot = (snapshot: AutomationRuntimeSnapshot) => {
+      const previous = automationRuntimeSnapshot;
+      if (
+        previous && previous.sessionId === snapshot.sessionId
+        && snapshot.revision <= previous.revision
+      ) return;
+      const hadGap = Boolean(
+        previous
+        && previous.sessionId === snapshot.sessionId
+        && snapshot.revision > previous.revision + 1,
+      );
+      automationRuntimeSnapshot = snapshot;
+      if (hadGap && route === "automation") void loadRoute("automation", { force: true });
+    };
+    const automationApi = window.octopusBeak.automation;
+    const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
+      ? automationApi.onRuntimeChanged(applyAutomationRuntimeSnapshot)
+      : () => {};
+    if (typeof automationApi.runtimeSnapshot === "function") {
+      void automationApi.runtimeSnapshot()
+        .then(applyAutomationRuntimeSnapshot)
+        .catch((error) => {
+          console.error("automation-runtime-snapshot-failed", error);
+          if (typeof automationApi.fatalRuntimeSnapshot === "function") {
+            void automationApi.fatalRuntimeSnapshot();
+          }
+        });
+    }
+    const onAutomationRuntimeResync = () => {
+      if (typeof automationApi.runtimeSnapshot !== "function") return;
+      void automationApi.runtimeSnapshot()
+        .then(applyAutomationRuntimeSnapshot)
+        .catch((error) => {
+          console.error("automation-runtime-resync-failed", error);
+          if (typeof automationApi.fatalRuntimeSnapshot === "function") {
+            void automationApi.fatalRuntimeSnapshot();
+          }
+        });
+    };
+    addEventListener("focus", onAutomationRuntimeResync);
+    const onAutomationRuntimeVisibilityChange = () => {
+      if (document.visibilityState === "visible") onAutomationRuntimeResync();
+    };
+    document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
     return () => {
       dataVersionLifecycle.dispose();
+      unsubscribeAutomationRuntime();
+      removeEventListener("focus", onAutomationRuntimeResync);
+      document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
       removeEventListener("hashchange", normalizeRoute);
     };
   });
@@ -796,6 +849,7 @@
       automation={automationRenderValue.automation}
       credentialGroups={automationRenderValue.credentialGroups}
       blocks={activeBlocks}
+      runtimeSnapshot={automationRuntimeSnapshot}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
       onboardingSourceSelection={onboardingStep === "credentials"}

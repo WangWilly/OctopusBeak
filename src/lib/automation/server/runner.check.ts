@@ -40,6 +40,7 @@ import {
   automationSessionFromLog,
   automationProcessEnv,
   createAutomationSessionId,
+  createAutomationProgressFrameParser,
   createAutomationTaskExecutionRunner,
   createAutomationOutputBuffer,
   finalFailureMessage,
@@ -49,7 +50,6 @@ import {
   librettoRunCdpPatchCommand,
   liveTaskRunUpdate,
   nextAttemptStatus,
-  parseAutomationProgress,
   prepareLibrettoRunCdpPatch,
   claimRunAutomationSession,
   cancelAutomationTask,
@@ -1032,13 +1032,18 @@ assert.equal(
   "ses-post",
 );
 assert.equal(resumeSessionFromLog("download completed"), null);
-assert.equal(parseAutomationProgress("automation-progress: 35"), 35);
-assert.equal(
-  parseAutomationProgress("automation-progress: 20\nautomation-progress: 67"),
-  67,
-);
-assert.equal(parseAutomationProgress("automation-progress: 105"), 100);
-assert.equal(parseAutomationProgress("download completed"), null);
+let progressEvent: unknown = null;
+const progressParser = createAutomationProgressFrameParser((event) => {
+  progressEvent = event;
+});
+progressParser.push('{"type":"progress","phaseCode":"download","completed":35,"total":100,"percent":35}\n');
+assert.deepEqual(progressEvent, {
+  type: "progress",
+  phaseCode: "download",
+  completed: 35,
+  total: 100,
+  percent: 35,
+});
 assert.deepEqual(liveTaskRunUpdate("download in progress"), {
   logTail: "download in progress",
 });

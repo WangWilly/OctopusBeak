@@ -9,6 +9,7 @@ import {
 } from "libretto";
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
@@ -1040,14 +1041,14 @@ export default workflow("postStatements", {
       },
     });
 
-    console.log("automation-progress: 25");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
     const result = await runPostStatements(page, input.telemetry, {
       canonicalLedgerDir:
         process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
         process.env.LEDGER_DIR ??
         DEFAULT_LEDGER_DIR,
     });
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
 });

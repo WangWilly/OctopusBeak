@@ -88,8 +88,8 @@ assert.equal(activeModel.activeTaskCount, 1);
 assert.equal(activeFubonRow?.isActive, true);
 assert.equal(activeFubonRow?.canRun, true);
 assert.equal(activeFubonRow?.primaryAction, "Cancel");
-assert.equal(activeFubonRow?.progressPercent, 42);
-assert.equal(activeFubonRow?.progressText, "42%");
+assert.equal(activeFubonRow?.progressPercent, null);
+assert.equal(activeFubonRow?.progressText, "Running attempt 1/2");
 assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
 const waitingModel = buildAutomationPageModel({

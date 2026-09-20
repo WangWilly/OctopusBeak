@@ -100,7 +100,8 @@ test("force quit persists failure before surfacing cleanup failure", async () =>
     const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
     const stored = taskRunById(verifiedDb, run.taskRunId);
     verifiedDb.close();
-    assert.equal(stored?.status, "failed");
+    assert.equal(stored?.status, "cancelled");
+    assert.equal(stored?.terminationMode, "forced");
     assert.match(stored?.errorMessage ?? "", /^Browser session force quit\./);
     assert.match(
       stored?.errorMessage ?? "",
@@ -149,7 +150,7 @@ test("force quit state-read failure cannot leave a terminal owner fencing later 
     );
 
     const restartDb = openLedgerDatabase(ledgerDir);
-    assert.equal(taskRunById(restartDb, previous.taskRunId)?.status, "failed");
+    assert.equal(taskRunById(restartDb, previous.taskRunId)?.status, "cancelled");
     const next = createTaskRun(restartDb, {
       taskId,
       script: "run:fubon-all-statements",
@@ -227,7 +228,8 @@ test("force quit finalizes the exact waiting run without appending a log", async
     );
 
     const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "failed");
+    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "cancelled");
+    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.terminationMode, "forced");
     verifiedDb.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });

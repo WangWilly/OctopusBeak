@@ -46,12 +46,13 @@ import {
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
   taskDb: ReturnType<typeof openLedgerDatabase>;
-  run: Pick<AutomationTaskRun, "taskRunId">;
+  run: Pick<AutomationTaskRun, "taskRunId" | "attempt">;
   logPath: string;
   command: ReturnType<typeof resolveTaskCommand>;
   session: string | null;
   owner: OwnedAutomationSession | null;
   executionId: string;
+  onRuntimeUpdate?: (taskRunId: string) => void;
 };
 
 export type AutomationTaskRunFinalizationContext = {
@@ -61,6 +62,7 @@ export type AutomationTaskRunFinalizationContext = {
   taskRunId: string;
   logPath: string;
   ledgerDir: string;
+  forceTerminated?: boolean;
   dataVersionStore?: DataVersionStore;
 };
 
@@ -100,9 +102,10 @@ export function finalFailureMessage(logTail: string, exitCode: number | null) {
 }
 
 export function isForceQuitRun(
-  run: Pick<AutomationTaskRun, "status" | "errorMessage"> | null | undefined,
+  run: Pick<AutomationTaskRun, "status" | "errorMessage" | "terminationMode"> | null | undefined,
 ) {
-  return run?.status === "failed" && run.errorMessage?.startsWith("Browser session force quit") === true;
+  return run?.terminationMode === "forced"
+    || (run?.status === "failed" && run.errorMessage?.startsWith("Browser session force quit") === true);
 }
 
 export function nextAttemptStatus(input: {
@@ -124,6 +127,7 @@ type TaskRunFinalizationIntent = {
   signal: NodeJS.Signals | null;
   errorMessage: string | null;
   logTail: string;
+  terminationMode?: "forced";
   statementSummary?: StatementRunSummary | null;
 };
 
@@ -133,7 +137,8 @@ type TaskRunFinalizationImplementation = {
 };
 
 function isTerminalTaskRunStatus(status: AutomationTaskStatus) {
-  return status === "completed" || status === "partial" || status === "failed";
+  return status === "completed" || status === "partial" || status === "failed"
+    || status === "cancelled" || status === "interrupted";
 }
 
 async function finalizeTaskRunTransition(
@@ -145,10 +150,15 @@ async function finalizeTaskRunTransition(
   const current = taskRunById(db, run.taskRunId);
   if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
   if (isTerminalTaskRunStatus(current.status)) return { status: current.status, skipped: true };
-  if (current.status !== "running" && current.status !== "waiting_for_human") {
+  if (!["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
     return { status: current.status, skipped: true };
   }
-  if (current.status === "waiting_for_human" && intent.status !== "failed") {
+  if (
+    current.status === "waiting_for_human"
+    && intent.status !== "failed"
+    && intent.status !== "cancelled"
+    && intent.status !== "interrupted"
+  ) {
     return { status: current.status, skipped: true };
   }
 
@@ -199,6 +209,7 @@ async function finalizeTaskRunTransition(
     signal: intent.signal,
     logTail,
     errorMessage: taskError,
+    ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
   });
   return { status, skipped: false };
 }
@@ -242,12 +253,13 @@ export async function finalizeForceQuitTaskRun(
     dependencies,
   );
   await finalizeTaskRunTransition(db, run, {
-    status: "failed",
+    status: "cancelled",
     sessionDisposition: "relinquish",
     exitCode: null,
     signal: null,
     errorMessage: null,
     logTail: run.logTail,
+    terminationMode: "forced",
   }, {
     sessionCleanup,
   });
@@ -338,7 +350,12 @@ export async function finalizeAutomationTaskRun(
   result: AutomationTaskProcessResult,
 ) {
   const resumeFailure = result.resumeFailure;
-  let status: AutomationTaskStatus = result.error || resumeFailure
+  const cancelled = context.forceTerminated === true
+    || result.signal === "SIGTERM"
+    || result.error?.message === "Automation task cancelled.";
+  let status: AutomationTaskStatus = cancelled
+    ? "cancelled"
+    : result.error || resumeFailure
     ? "failed"
     : nextAttemptStatus({
       kind: context.taskKind,

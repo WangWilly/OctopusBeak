@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import {
@@ -236,7 +237,7 @@ export async function runFubonAllStatements(
   } = { ...fubonAllStatementsDependencies, ...overrides };
   const input = rawInput as Input;
   const { page, session } = ctx;
-  console.log("automation-progress: 0");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
   // Fubon exposes product availability at runtime. Persisted Settings selections
   // are intentionally ignored; always probe every currently supported component
   // in registry order and let explicit provider absence become skipped_absent.
@@ -260,7 +261,7 @@ export async function runFubonAllStatements(
 
   await signInFubon(page, session, input.credentials);
   await keepBrowserWindowOutOfForeground(page);
-  console.log("automation-progress: 20");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
 
   const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
   try {
@@ -300,7 +301,7 @@ export async function runFubonAllStatements(
           ),
       },
     ]);
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
     return {
       statements: run.outputs.deposit as

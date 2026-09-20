@@ -7,6 +7,7 @@ import {
 } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -960,15 +961,15 @@ export default workflow("einvoicePersonalInvoices", {
       },
     });
 
-    console.log("automation-progress: 20");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
     const result = await readAllInvoices(ctx.page);
     const capture = buildCanonicalEInvoiceCapture(result, input.credentials);
-    console.log("automation-progress: 90");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 90, total: 100, percent: 90 });
     const commit = await commitCanonicalCapture(
       capture,
       configuredCanonicalLedgerDir(input.canonicalLedgerDir),
     );
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
     return {
       usedExistingSession: authResult.usedProfile,

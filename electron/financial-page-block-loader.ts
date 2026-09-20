@@ -1,6 +1,9 @@
 import type { DataReadOptions } from "../src/lib/shared-shell/data-version.ts";
 import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
-import type { AutomationCredentialStateDto } from "../src/lib/desktop/api.ts";
+import type {
+  AutomationCredentialStateDto,
+  AutomationRuntimeSnapshot,
+} from "../src/lib/desktop/api.ts";
 import {
   wrapDashboardBlock,
   type DashboardBlockPayload,
@@ -23,6 +26,7 @@ export type FinancialBlockSnapshotReader = (
 
 export type FinancialBlockReadContext = Readonly<{
   automationCredentialState?: AutomationCredentialStateDto;
+  automationRuntimeState?: AutomationRuntimeSnapshot;
 }>;
 
 function snapshotKey(
@@ -30,7 +34,7 @@ function snapshotKey(
   options: DataReadOptions | undefined,
   context: FinancialBlockReadContext | undefined,
 ): string {
-  return `${target}:${options?.expectedVersion ?? "current"}:credential:${context?.automationCredentialState?.revision ?? "none"}`;
+  return `${target}:${options?.expectedVersion ?? "current"}:credential:${context?.automationCredentialState?.revision ?? "none"}:runtime:${context?.automationRuntimeState?.sessionId ?? "none"}:${context?.automationRuntimeState?.revision ?? "none"}`;
 }
 
 /**

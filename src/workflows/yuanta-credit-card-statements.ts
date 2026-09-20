@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
   commitYuantaCreditCardCaptureInTransaction,
@@ -5380,18 +5381,20 @@ export default workflow("yuantaCreditCardStatements", {
     let completedCreditCardSteps = 0;
     const creditCardProgress = (
       currentCreditCardSteps = completedCreditCardSteps,
-    ) =>
-      console.log(
-        `automation-progress: ${
-          60 +
-          Math.min(
-            14,
-            Math.round(
-              (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) * 14,
-            ),
-          )
-        }`,
+    ) => {
+      const percent = 60 + Math.min(
+        14,
+        Math.round(
+          (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) * 14,
+        ),
       );
+      emitAutomationProgress({
+        phaseCode: "workflow",
+        completed: percent,
+        total: 100,
+        percent,
+      });
+    };
 
     let monthStartedAt = 0;
     await submitCreditCardMonthOptions(

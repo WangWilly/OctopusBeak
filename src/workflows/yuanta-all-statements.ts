@@ -7,6 +7,7 @@ import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 
 import type { StatementComponentResult } from "../lib/automation/statement-run-summary.js";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   BANK_STATEMENT_CAPABILITIES,
   allSupportedStatementTypeIds,
@@ -491,7 +492,7 @@ export async function runYuantaAllStatements(
   const creditCardInput = canonicalHumanAttestation
     ? { ...asRecord(input.creditCard), canonicalHumanAttestation }
     : { ...asRecord(input.creditCard), canonicalHumanAttestation: undefined };
-  console.log("automation-progress: 0");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
   // Yuanta exposes the complete product registry for every run. The `include`
   // object is retained in the input schema for compatibility with persisted
@@ -591,7 +592,7 @@ export async function runYuantaAllStatements(
         : {}),
     };
   }
-  console.log("automation-progress: 100");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
   const [
     statementsResult,

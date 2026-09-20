@@ -53,14 +53,31 @@ export type AutomationExternalPrerequisite = {
 
 export type AutomationTaskStatus =
   | "queued"
+  | "preparing"
   | "running"
   | "waiting_for_human"
   | "retrying"
+  | "cancelling"
   | "completed"
   | "partial"
+  | "cancelled"
+  | "interrupted"
   | "failed"
   | "locked"
   | "needs_setup";
+
+/**
+ * Renderer-neutral progress emitted by an automation lifecycle.  Display
+ * strings stay in the renderer so a run record never becomes locale-specific.
+ */
+export type AutomationTaskProgress = {
+  phaseCode: string | null;
+  completed: number | null;
+  total: number | null;
+  percent: number | null;
+  attempt: number;
+  params?: Readonly<Record<string, string | number | boolean>>;
+};
 
 /**
  * Renderer-safe state for Cathay's optional Gmail Email OTP integration.
@@ -149,6 +166,7 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   statementFailures: readonly { typeId: string; error?: string }[];
   humanSession: string | null;
   humanAssistanceContract: HumanAssistanceContract | null;
+  forceTerminateAvailable?: boolean;
   isActive: boolean;
   ranToday: boolean;
   primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel" | "Configure";
@@ -161,6 +179,7 @@ export type AutomationPageModel = {
   activeTaskCount: number;
   parallelRunnableTaskIds: string[];
   credentials: Record<string, boolean>;
+  credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
   /** Optional for compatibility with non-desktop model consumers. */

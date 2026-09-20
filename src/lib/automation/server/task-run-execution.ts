@@ -55,6 +55,11 @@ import {
   updateTaskRun,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import type { AutomationTaskProgress } from "../types.ts";
+import {
+  AUTOMATION_PROGRESS_FD_ENV,
+  type AutomationProgressEvent,
+} from "../progress.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
@@ -71,6 +76,8 @@ export type AutomationTaskExecutionOptions = {
   maxAttempts?: number;
   /** Stop before launching a child when the host task was cancelled. */
   isCancellationRequested?: () => boolean;
+  isForceTerminationRequested?: () => boolean;
+  onRuntimeUpdate?: (taskRunId: string) => void;
 };
 
 export function createAutomationSessionId(
@@ -84,17 +91,6 @@ export function resumeFailureMessage(output: string) {
     output.match(/Workflow failed after resume:\s*([^\r\n]+)/i)?.[1]?.trim() ??
     null
   );
-}
-
-export function parseAutomationProgress(output: string) {
-  let progress: number | null = null;
-  for (const match of output.matchAll(
-    /automation-progress:\s*(\d+(?:\.\d+)?)/gi,
-  )) {
-    const value = Math.round(Number(match[1]));
-    progress = Math.max(0, Math.min(100, value));
-  }
-  return progress;
 }
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
@@ -197,20 +193,24 @@ function createAutomationTaskRunExecution(
     `${task.id}-${Date.now()}-${attempt}.log`,
   );
   const run = existingRun
-    ? { taskRunId: existingRun.taskRunId }
-    : createTaskRun(taskDb, {
-        taskId: task.id,
-        script: command.display,
-        kind: task.kind,
-        status: "running",
+    ? { taskRunId: existingRun.taskRunId, attempt }
+    : {
+        ...createTaskRun(taskDb, {
+          taskId: task.id,
+          script: command.display,
+          kind: task.kind,
+          status: "running",
+          attempt,
+          maxAttempts,
+          startedAt,
+          logPath,
+          progress: indeterminateProgress(attempt),
+          humanAssistanceContract: resumeHumanAssistanceContract(
+            resumeFrom?.humanAssistanceContract,
+          ),
+        }),
         attempt,
-        maxAttempts,
-        startedAt,
-        logPath,
-        humanAssistanceContract: resumeHumanAssistanceContract(
-          resumeFrom?.humanAssistanceContract,
-        ),
-      });
+      };
   if (existingRun) {
     updateTaskRun(taskDb, existingRun.taskRunId, {
       status: "running",
@@ -220,6 +220,7 @@ function createAutomationTaskRunExecution(
       exitCode: null,
       signal: null,
       errorMessage: null,
+      progress: indeterminateProgress(attempt),
     });
   }
   const owner = session
@@ -254,6 +255,7 @@ function createAutomationTaskRunExecution(
     session,
     owner,
     executionId: options.executionId ?? createAutomationSessionId(),
+    onRuntimeUpdate: options.onRuntimeUpdate,
   };
 }
 
@@ -275,6 +277,8 @@ async function executeAutomationTaskProcess(
   );
   let humanAssistanceReadOffset = 0;
   let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
+  let latestProgress: AutomationTaskProgress | null = null;
+  let progressTimer: ReturnType<typeof setTimeout> | null = null;
   let gmailOtpServer: ReturnType<typeof createGmailOtpIpcServer>;
   try {
     gmailOtpServer = createGmailOtpIpcServer({
@@ -322,21 +326,49 @@ async function executeAutomationTaskProcess(
       logTail = tail(`${logTail}\n${line}\n`);
       outputPersistenceWarnings.push(line);
     };
-    const outputBuffer = createAutomationOutputBuffer(
-      () => {
-        if (
-          !isForceQuitRun(
-            taskRunById(execution.taskDb, execution.run.taskRunId),
-          )
-        ) {
-          updateTaskRun(execution.taskDb, execution.run.taskRunId, {
-            ...liveTaskRunUpdate(logTail),
-          });
+    const persistRuntimeUpdate = () => {
+      if (
+        !isForceQuitRun(
+          taskRunById(execution.taskDb, execution.run.taskRunId),
+        )
+      ) {
+        updateTaskRun(execution.taskDb, execution.run.taskRunId, {
+          ...liveTaskRunUpdate(
+            logTail,
+            execution.run.attempt,
+            latestProgress ?? undefined,
+          ),
+        });
+        execution.onRuntimeUpdate?.(execution.run.taskRunId);
+      }
+    };
+    const recordProgress = () => {
+      if (progressTimer) return;
+      progressTimer = setTimeout(() => {
+        progressTimer = null;
+        try {
+          persistRuntimeUpdate();
+        } catch (error) {
+          recordOutputPersistenceError(error);
         }
-      },
+      }, 1_000);
+    };
+    const outputBuffer = createAutomationOutputBuffer(
+      persistRuntimeUpdate,
       500,
       recordOutputPersistenceError,
     );
+    const progressParser = createAutomationProgressFrameParser((event) => {
+      latestProgress = {
+        phaseCode: event.phaseCode,
+        completed: event.completed,
+        total: event.total,
+        percent: event.percent,
+        attempt: event.attempt ?? execution.run.attempt,
+        ...(event.params ? { params: event.params } : {}),
+      };
+      recordProgress();
+    });
     const onHumanAssistanceContract = (
       latestHumanAssistanceContract: Parameters<
         typeof updateHumanAssistanceContract
@@ -406,19 +438,22 @@ async function executeAutomationTaskProcess(
       // fd 3 is the existing human-assistance contract stream. Gmail OTP uses
       // an authenticated local socket because child-process fd numbers are not
       // stable across the Libretto CLI -> daemon spawn boundary.
-      stdio: ["ignore", "pipe", "pipe", "pipe"] as const,
+      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"] as const,
+      detached: process.platform !== "win32",
       env: {
         ...execution.command.env,
         [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
         [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
         [GMAIL_OTP_IPC_ENDPOINT_ENV]: gmailOtpServer.endpoint,
         [GMAIL_OTP_IPC_TOKEN_ENV]: gmailOtpServer.token,
+        [AUTOMATION_PROGRESS_FD_ENV]: "4",
       },
     });
     activeTaskChildren.set(execution.task.id, child);
     child.stdout?.on("data", onOutput);
     child.stderr?.on("data", onOutput);
     child.stdio[3]?.on("data", hostContractParser.push);
+    child.stdio[4]?.on("data", progressParser.push);
     let childSettled = false;
     const finishChild = (processResult: {
       exitCode: number | null;
@@ -431,7 +466,15 @@ async function executeAutomationTaskProcess(
       if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
       readHumanAssistanceFile();
       hostContractParser.flush();
+      progressParser.flush();
       outputBuffer.flush();
+      if (progressTimer) clearTimeout(progressTimer);
+      progressTimer = null;
+      try {
+        persistRuntimeUpdate();
+      } catch (error) {
+        recordOutputPersistenceError(error);
+      }
       rmSync(humanAssistancePath, { force: true });
       void gmailOtpServer.close().then(
         async () => {
@@ -459,12 +502,77 @@ async function executeAutomationTaskProcess(
   };
 }
 
-export function liveTaskRunUpdate(logTail: string) {
+export function liveTaskRunUpdate(
+  logTail: string,
+  attempt = 1,
+  progress?: AutomationTaskProgress,
+) {
   const resumeFailure = resumeFailureMessage(logTail);
-  if (resumeFailure) return { errorMessage: resumeFailure, logTail };
+  const progressUpdate = progress ? { progress } : {};
+  if (resumeFailure) return { errorMessage: resumeFailure, logTail, ...progressUpdate };
   if (shouldMarkWaitingForHuman(logTail))
-    return { status: "waiting_for_human" as const, logTail };
-  return { logTail };
+    return { status: "waiting_for_human" as const, logTail, ...progressUpdate };
+  return { logTail, ...progressUpdate };
+}
+
+function indeterminateProgress(attempt: number): AutomationTaskProgress {
+  return {
+    phaseCode: null,
+    completed: null,
+    total: null,
+    percent: null,
+    attempt,
+  };
+}
+
+export function createAutomationProgressFrameParser(
+  onProgress: (event: AutomationProgressEvent) => void,
+) {
+  let pending = "";
+  return {
+    push(chunk: Buffer | string) {
+      pending = (pending + chunk.toString("utf8")).slice(-64 * 1024);
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = pending.slice(0, newline).trim();
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+        if (!line) continue;
+        try {
+          const value = JSON.parse(line) as Record<string, unknown>;
+          if (value.type !== "progress") continue;
+          const phaseCode = value.phaseCode;
+          const completed = value.completed;
+          const total = value.total;
+          const percent = value.percent;
+          const attempt = value.attempt;
+          if (
+            (phaseCode !== null && typeof phaseCode !== "string")
+            || (completed !== null && typeof completed !== "number")
+            || (total !== null && typeof total !== "number")
+            || (percent !== null && typeof percent !== "number")
+            || (attempt !== undefined && typeof attempt !== "number")
+          ) continue;
+          onProgress({
+            type: "progress",
+            phaseCode: phaseCode as string | null,
+            completed: completed as number | null,
+            total: total as number | null,
+            percent: percent as number | null,
+            ...(attempt === undefined ? {} : { attempt }),
+            ...(value.params && typeof value.params === "object"
+              ? { params: value.params as Readonly<Record<string, string | number | boolean>> }
+              : {}),
+          });
+        } catch {
+          // Malformed producer frames are ignored; diagnostics stay in logs.
+        }
+      }
+    },
+    flush() {
+      pending = "";
+    },
+  };
 }
 
 export async function runAutomationTaskExecution(
@@ -478,11 +586,38 @@ export async function runAutomationTaskExecution(
     return { status: "cancelled" as const };
   }
   const execution = createAutomationTaskRunExecution(task, taskDb, options);
-  if (!execution) return { status: "failed" as const };
+  if (!execution) {
+    if (options.taskRunId && taskRunById(taskDb, options.taskRunId)) {
+      updateTaskRun(taskDb, options.taskRunId, {
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: "Automation task run could not be resumed.",
+      });
+    }
+    return { status: "failed" as const };
+  }
   onRunCreated(execution.run.taskRunId);
   if (options.isCancellationRequested?.()) {
+    const cancelledResult: AutomationTaskProcessResult = {
+      exitCode: null,
+      signal: "SIGTERM",
+      error: new Error("Automation task cancelled."),
+      logTail: "",
+      resumeFailure: null,
+      statementSummary: null,
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+    const finalized = await finalizeAutomationTaskRun({
+      taskDb,
+      taskId: task.id,
+      taskKind: task.kind,
+      taskRunId: execution.run.taskRunId,
+      logPath: execution.logPath,
+      ledgerDir,
+    }, cancelledResult);
     return {
-      status: "cancelled" as const,
+      status: finalized.status,
       taskRunId: execution.run.taskRunId,
       executionId: execution.executionId,
       session: execution.session,
@@ -501,6 +636,7 @@ export async function runAutomationTaskExecution(
       taskRunId: execution.run.taskRunId,
       logPath: execution.logPath,
       ledgerDir,
+      forceTerminated: options.isForceTerminationRequested?.() === true,
     };
     const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
     return {
@@ -520,6 +656,48 @@ export function automationTaskChild(taskId: string) {
   return activeTaskChildren.get(taskId);
 }
 
+function signalAutomationChildTree(child: ChildProcess, signal: NodeJS.Signals) {
+  if (child.pid && process.platform !== "win32") {
+    try {
+      // Child processes are detached into their own group so descendants are
+      // terminated together. Fall back to the direct child when the group has
+      // already disappeared.
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The process group may have exited between the lookup and the signal.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Shutdown and force termination are best-effort by contract.
+  }
+}
+
+export async function terminateAutomationTaskProcessTree(
+  taskId: string,
+  signal: NodeJS.Signals = "SIGKILL",
+  timeoutMs = 2_000,
+) {
+  const child = activeTaskChildren.get(taskId);
+  if (!child) return;
+  signalAutomationChildTree(child, signal);
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = setTimeout(resolve, timeoutMs);
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      resolve();
+    };
+    child.once("close", done);
+    child.once("error", done);
+  });
+}
+
 export function terminateAutomationTaskProcesses() {
-  for (const child of activeTaskChildren.values()) child.kill("SIGTERM");
+  for (const child of activeTaskChildren.values()) {
+    signalAutomationChildTree(child, "SIGTERM");
+  }
 }

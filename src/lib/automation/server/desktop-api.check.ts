@@ -144,7 +144,15 @@ try {
     ["sinopac-statements", "sinopac-statements"],
     dir,
   );
-  assert.deepEqual(startedSinopac, { started: ["sinopac-statements"] });
+  assert.deepEqual(startedSinopac, {
+    started: ["sinopac-statements"],
+    results: {
+      "sinopac-statements": {
+        status: "started",
+        runId: startedSinopac.results["sinopac-statements"]?.runId,
+      },
+    },
+  });
   const runner = await import("./runner.ts");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (!runner.hasActiveAutomationTask()) break;
@@ -224,7 +232,7 @@ try {
   );
   assert.equal(
     api.automationRunHistory(dir)[0]?.taskId,
-    "fubon-all-statements",
+    "sinopac-statements",
   );
   assert.throws(
     () => api.assertHumanAssistanceCompletionCanResume(null),

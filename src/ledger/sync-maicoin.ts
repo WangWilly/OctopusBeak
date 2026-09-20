@@ -9,6 +9,7 @@ import {
   openLedgerDatabase,
   type LedgerDatabase,
 } from "./db/client.ts";
+import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   admitCanonicalInvestmentCapture,
   type InvestmentValidatedCapture,
@@ -1001,7 +1002,7 @@ export async function commitMaicoinCanonicalInvestmentCaptures(
 }
 
 export async function syncMaicoin(params: CliParams) {
-  console.log("automation-progress: 0");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
   const credentials = credentialsFromEnv(params.subAccount);
   const client = new MaxClient(credentials);
   const syncRunId = randomUUID();
@@ -1018,7 +1019,7 @@ export async function syncMaicoin(params: CliParams) {
     const walletTypes = walletSelection.walletTypes;
     const accountBatches = await fetchAccounts(client, walletTypes);
     const accounts = accountBatches.flatMap((batch) => batch.accounts);
-    console.log("automation-progress: 25");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
     const marketRows = await client.publicGet<Market[]>("/api/v3/markets");
     const markets = new Set(marketRows.map((market) => market.id));
     const tickerSnapshot = await fetchTickers(
@@ -1032,13 +1033,13 @@ export async function syncMaicoin(params: CliParams) {
       tickerSnapshot,
     );
     const capturedAt = new Date().toISOString();
-    console.log("automation-progress: 50");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 50, total: 100, percent: 50 });
     const statement = await fetchStatement(client, walletTypes, params.statementLimit);
     const statementValues = await statementValueMap(client, statement, markets);
     const statementJsonPath = params.statementJson
       ? await writeStatementJson(params.statementJson, statement)
       : null;
-    console.log("automation-progress: 80");
+  emitAutomationProgress({ phaseCode: "workflow", completed: 80, total: 100, percent: 80 });
 
     const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
       params.ledgerDir,
@@ -1079,7 +1080,7 @@ export async function syncMaicoin(params: CliParams) {
       totalValueTwd: snapshots.reduce((sum, snapshot) => sum + (snapshot.valueTwd ?? 0), 0),
     };
     finishSyncRun(db, syncRunId, result);
-    console.log("automation-progress: 100");
+    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   } catch (error) {
     finishSyncRun(db, syncRunId, {
