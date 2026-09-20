@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAutomationRuntimeState, sanitizeAutomationLogTail } from "./runtime-state.ts";
+import {
+  assertAutomationRuntimeSnapshot,
+  createAutomationRuntimeState,
+  sanitizeAutomationLogTail,
+} from "./runtime-state.ts";
 
 test("runtime state broadcasts monotonic full snapshots and bounds logs", () => {
   const state = createAutomationRuntimeState("session-test");
@@ -9,7 +13,7 @@ test("runtime state broadcasts monotonic full snapshots and bounds logs", () => 
   const snapshot = state.upsert({
     taskId: "esun-credit-card-statements",
     runId: "run-1",
-    status: "running",
+    status: "running" as const,
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: "download", completed: 1, total: 2, percent: 50, attempt: 1 },
@@ -27,4 +31,36 @@ test("runtime state broadcasts monotonic full snapshots and bounds logs", () => 
 test("log sanitizer redacts secret-like fields", () => {
   assert.match(sanitizeAutomationLogTail("password=top-secret token:abc"), /password=\[REDACTED\]/);
   assert.doesNotMatch(sanitizeAutomationLogTail("password=top-secret"), /top-secret/);
+});
+
+test("runtime snapshot rejects malformed persisted progress and duplicate tasks", () => {
+  const task = {
+    taskId: "exchange-rates",
+    runId: "run-1",
+    status: "running" as const,
+    attempt: 1,
+    maxAttempts: 1,
+    progress: { phaseCode: "sync", completed: 1, total: 2, percent: 50, attempt: 1 },
+    logTail: "safe",
+    errorMessage: null,
+    updatedAt: new Date().toISOString(),
+  };
+  assert.doesNotThrow(() => assertAutomationRuntimeSnapshot({
+    sessionId: "session-test",
+    revision: 1,
+    tasks: [task],
+  }));
+  assert.throws(() => assertAutomationRuntimeSnapshot({
+    sessionId: "session-test",
+    revision: 1,
+    tasks: [{
+      ...task,
+      progress: { phaseCode: "sync", completed: Number.NaN, total: 2, percent: 50, attempt: 1 },
+    }],
+  } as never), /Invalid automation runtime task snapshot/);
+  assert.throws(() => assertAutomationRuntimeSnapshot({
+    sessionId: "session-test",
+    revision: 1,
+    tasks: [task, { ...task, taskId: "exchange-rates" }],
+  }), /Invalid automation runtime task snapshot/);
 });

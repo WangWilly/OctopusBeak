@@ -36,10 +36,17 @@ function harness(overrides: Record<string, unknown> = {}) {
 
 test("success and no-op return normally and append one success record", async () => {
   for (const written of [3, 0]) {
+    const progress: unknown[] = [];
     const { options, records } = harness({
       sync: async () => ({ ...result, written }),
+      emitProgress: (event: unknown) => progress.push(event),
     });
     assert.equal((await runExchangeRateSyncCommand(options)).written, written);
+    assert.deepEqual(progress.map((event) => (event as { phaseCode: string }).phaseCode), [
+      "load-request",
+      "sync",
+      "complete",
+    ]);
     assert.deepEqual(records, [{
       scheduledAtUtc: null,
       startedAtUtc: "2026-07-14T22:00:01.000Z",

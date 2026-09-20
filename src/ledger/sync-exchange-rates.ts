@@ -12,6 +12,10 @@ import {
   type ExchangeRateSyncResult,
 } from "./exchange-rates.ts";
 import { DEFAULT_LEDGER_DIR } from "./db/client.ts";
+import {
+  emitAutomationProgress,
+  type AutomationProgressEvent,
+} from "../lib/automation/progress.ts";
 
 const AUDIT_LOG_PATH = "data/automation/logs/exchange-rates.log";
 
@@ -26,6 +30,7 @@ type CommandOptions = {
   appendAudit?: (path: string, record: ExchangeRateAuditRecord) => void;
   now?: () => Date;
   stderr?: { write(chunk: string): unknown };
+  emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 };
 
 function scheduledAtUtc(argv: string[]) {
@@ -52,6 +57,7 @@ export async function runExchangeRateSyncCommand(
   const now = options.now ?? (() => new Date());
   const appendAudit = options.appendAudit ?? appendExchangeRateAuditRecord;
   const stderr = options.stderr ?? process.stderr;
+  const emitProgress = options.emitProgress ?? emitAutomationProgress;
   const startedAtUtc = now().toISOString();
   let scheduled: string | null = null;
   let request: ExchangeRateRequest = { requiredFrom: null, currencies: [] };
@@ -65,14 +71,17 @@ export async function runExchangeRateSyncCommand(
   };
 
   try {
+    emitProgress({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
     scheduled = scheduledAtUtc(options.argv ?? []);
     request = await (options.loadRequest ?? loadExchangeRateRequest)(
       options.ledgerDir ?? DEFAULT_LEDGER_DIR,
     );
+    emitProgress({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
     const result = await (options.sync ?? syncExchangeRates)(
       options.ledgerDir ?? DEFAULT_LEDGER_DIR,
       request,
     );
+    emitProgress({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
     audit({
       scheduledAtUtc: scheduled,
       startedAtUtc,

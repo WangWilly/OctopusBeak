@@ -10,7 +10,6 @@ test("before quit starts cleanup without blocking the close", async () => {
   const handler = createBeforeQuitHandler({
     cleanup: () => cleanup,
     quit: () => { quitCalls += 1; },
-    timeoutMs: 5_000,
   });
 
   handler({ preventDefault() { prevented += 1; } });
@@ -30,7 +29,6 @@ test("before quit does not install a cleanup deadline", async () => {
   const handler = createBeforeQuitHandler({
     cleanup: () => new Promise<void>(() => {}),
     quit: () => { quitCalls += 1; },
-    timeoutMs: 5_000,
   });
 
   handler({ preventDefault() {} });
@@ -47,7 +45,6 @@ test("before quit consumes cleanup rejection and retries quit once", async () =>
       throw new Error("cleanup failed");
     },
     quit: () => { quitCalls += 1; },
-    timeoutMs: 5_000,
   });
 
   handler({ preventDefault() { prevented += 1; } });

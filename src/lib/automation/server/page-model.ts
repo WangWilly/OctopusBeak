@@ -6,6 +6,7 @@ import type {
   AutomationTaskPrerequisiteNotice,
   AutomationTaskRow,
 } from "../types.ts";
+import { isActiveAutomationRuntimeStatus } from "../runtime-status.ts";
 import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import { resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
@@ -71,9 +72,7 @@ export function buildAutomationPageModel(input: {
     const run = input.latestRuns[task.id];
     const runtime = input.runtime?.tasks.find((candidate) => candidate.taskId === task.id);
     const isActive = runtime
-      ? runtime.status === "queued" || runtime.status === "preparing"
-        || runtime.status === "running" || runtime.status === "retrying"
-        || runtime.status === "waiting_for_human" || runtime.status === "cancelling"
+      ? isActiveAutomationRuntimeStatus(runtime.status)
       : activeTaskIds.has(task.id);
     const status = runtime?.status ?? rowStatus(task, run, isActive, setupRequiredGroupIds);
     const action = primaryAction(status, isActive);
@@ -115,11 +114,9 @@ export function buildAutomationPageModel(input: {
   return {
     businessDate: input.businessDate,
     active: input.active || activeTaskIds.size > 0 || Boolean(input.runtime?.tasks.some((task) =>
-      task.status === "queued" || task.status === "preparing" || task.status === "running"
-      || task.status === "retrying" || task.status === "waiting_for_human" || task.status === "cancelling")),
+      isActiveAutomationRuntimeStatus(task.status))),
     activeTaskCount: input.runtime?.tasks.filter((task) =>
-      task.status === "queued" || task.status === "preparing" || task.status === "running"
-      || task.status === "retrying" || task.status === "waiting_for_human" || task.status === "cancelling",
+      isActiveAutomationRuntimeStatus(task.status),
     ).length ?? activeTaskIds.size,
     parallelRunnableTaskIds: tasks
       .filter((task) =>

@@ -1,8 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   parseStatementRunSummary,
@@ -60,6 +59,7 @@ import {
   AUTOMATION_PROGRESS_FD_ENV,
   type AutomationProgressEvent,
 } from "../progress.ts";
+import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
@@ -139,11 +139,11 @@ export function accumulateAutomationOutput(
   state: { logTail: string; resumeFailure: string | null },
   chunk: string,
 ) {
-  const logChunk = stripVTControlCharacters(chunk);
+  const logChunk = sanitizeAutomationLogChunk(chunk);
   const combined = state.logTail + logChunk;
   return {
     logChunk,
-    logTail: tail(combined),
+    logTail: sanitizeAutomationLogTail(combined),
     resumeFailure: state.resumeFailure ?? resumeFailureMessage(combined),
   };
 }
@@ -321,7 +321,9 @@ async function executeAutomationTaskProcess(
     Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">
   >((resolve) => {
     const recordOutputPersistenceError = (error: unknown) => {
-      const line = `automation-output-write-failed: ${errorMessage(error)}`;
+      const line = sanitizeAutomationLogChunk(
+        `automation-output-write-failed: ${errorMessage(error)}`,
+      );
       console.error(line);
       logTail = tail(`${logTail}\n${line}\n`);
       outputPersistenceWarnings.push(line);
@@ -528,6 +530,13 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
 export function createAutomationProgressFrameParser(
   onProgress: (event: AutomationProgressEvent) => void,
 ) {
+  const isSafeParams = (value: unknown): value is Readonly<Record<string, string | number | boolean>> =>
+    Boolean(value)
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.values(value as Record<string, unknown>).every((param) =>
+      typeof param === "string" || typeof param === "number" || typeof param === "boolean",
+    );
   let pending = "";
   return {
     push(chunk: Buffer | string) {
@@ -552,7 +561,12 @@ export function createAutomationProgressFrameParser(
             || (total !== null && typeof total !== "number")
             || (percent !== null && typeof percent !== "number")
             || (attempt !== undefined && typeof attempt !== "number")
+            || (typeof completed === "number" && !Number.isFinite(completed))
+            || (typeof total === "number" && !Number.isFinite(total))
+            || (typeof percent === "number" && (!Number.isFinite(percent) || percent < 0 || percent > 100))
+            || (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 0))
           ) continue;
+          if (value.params !== undefined && !isSafeParams(value.params)) continue;
           onProgress({
             type: "progress",
             phaseCode: phaseCode as string | null,
@@ -560,9 +574,7 @@ export function createAutomationProgressFrameParser(
             total: total as number | null,
             percent: percent as number | null,
             ...(attempt === undefined ? {} : { attempt }),
-            ...(value.params && typeof value.params === "object"
-              ? { params: value.params as Readonly<Record<string, string | number | boolean>> }
-              : {}),
+            ...(value.params !== undefined ? { params: value.params } : {}),
           });
         } catch {
           // Malformed producer frames are ignored; diagnostics stay in logs.
@@ -657,6 +669,18 @@ export function automationTaskChild(taskId: string) {
 }
 
 function signalAutomationChildTree(child: ChildProcess, signal: NodeJS.Signals) {
+  if (child.pid && process.platform === "win32") {
+    try {
+      // Windows has no POSIX process groups; taskkill's /T flag is the
+      // equivalent tree boundary and /F is required for force termination.
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+      return;
+    } catch {
+      // Fall back to the direct child below when taskkill is unavailable.
+    }
+  }
   if (child.pid && process.platform !== "win32") {
     try {
       // Child processes are detached into their own group so descendants are

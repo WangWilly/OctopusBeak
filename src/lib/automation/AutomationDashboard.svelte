@@ -4,6 +4,7 @@
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Landmark, Search, X } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
+  import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
   import type {
     CathayGmailOtpConnectionError,
     CathayGmailOtpStatus,
@@ -368,7 +369,7 @@
   function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
     const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
     const activeCount = snapshot.tasks.filter((task) =>
-      ["queued", "preparing", "running", "retrying", "waiting_for_human", "cancelling"].includes(task.status),
+      isActiveAutomationRuntimeStatus(task.status),
     ).length;
     automation = {
       ...automation,
@@ -377,7 +378,7 @@
       tasks: automation.tasks.map((task) => {
         const runtime = byTaskId.get(task.id);
         if (!runtime) return task;
-        const isActive = ["queued", "preparing", "running", "retrying", "waiting_for_human", "cancelling"].includes(runtime.status);
+        const isActive = isActiveAutomationRuntimeStatus(runtime.status);
         return {
           ...task,
           status: runtime.status,

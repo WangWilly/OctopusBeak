@@ -95,6 +95,19 @@ export function resolveTaskCommand(
     return resolveLibrettoCommand(["resume", "--session", options.resumeSession], env);
   }
 
+  // The disposable Electron/CDP fixture uses a deterministic local runner so
+  // its UI assertions never contact a provider or consume user credentials.
+  // Keep the seam opt-in and fixture-scoped; production runs cannot select it.
+  if (
+    env.OCTOPUSBEAK_AUTOMATION_FAKE_RUNNER === "1"
+    && env.OCTOPUSBEAK_CDP_FIXTURE === "171"
+  ) {
+    return {
+      ...resolveNodeScriptCommand(["scripts/fake-automation-runner.mjs"], env),
+      display: task.script,
+    };
+  }
+
   const sessionArgs = options.session ? ["--session", options.session] : [];
 
   if (!isDesktopRuntime(env)) {
