@@ -80,11 +80,13 @@ import { automationRuntimeState } from "../src/lib/automation/server/runtime-sta
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
   onAutomationRuntimeFatal,
+  onAutomationRuntimeReady,
 }: {
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
   onAutomationRuntimeFatal?: (details: { code: string; stage: string }) => void;
+  onAutomationRuntimeReady?: () => Promise<void> | void;
 } = {}) {
   const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
     const details = { code: "automation-runtime-snapshot-failed", stage };
@@ -96,6 +98,13 @@ export function registerOctopusBeakIpc({
     });
     onAutomationRuntimeFatal?.(details);
     throw new Error("Automation runtime snapshot unavailable.");
+  };
+  const ensureAutomationRuntimeReady = async (stage: string) => {
+    try {
+      await onAutomationRuntimeReady?.();
+    } catch (error) {
+      reportAutomationRuntimeFatal(stage, error);
+    }
   };
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -245,6 +254,7 @@ export function registerOctopusBeakIpc({
         options?.expectedVersion,
         () => dataVersionStore.snapshot(),
         async () => {
+          await ensureAutomationRuntimeReady("automation-block");
           let credentialState;
           try {
             credentialState = options?.refreshCredentials
@@ -500,8 +510,9 @@ export function registerOctopusBeakIpc({
     await forceQuitHumanSessionForTask(taskId);
     return { ok: true as const, closed: true };
   });
-  ipcMain.handle("automation:runtimeSnapshot", () => {
+  ipcMain.handle("automation:runtimeSnapshot", async () => {
     try {
+      await ensureAutomationRuntimeReady("runtime-snapshot");
       return automationRuntimeState.snapshot();
     } catch (error) {
       return reportAutomationRuntimeFatal("runtime-snapshot", error);

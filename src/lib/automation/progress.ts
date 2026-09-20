@@ -43,7 +43,7 @@ export function emitAutomationProgress(input: Omit<AutomationProgressEvent, "typ
       // The runner may be shutting down; progress is best-effort.
     }
   }
-  // Keep direct workflow runs diagnosable without making stdout the runtime
-  // contract. Normal desktop executions always use the dedicated pipe above.
-  console.log(`automation-progress: ${percent ?? "indeterminate"}`);
+  // Direct workflow invocations have no lifecycle sink. Do not put a
+  // progress string on stdout/stderr: the runner intentionally never parses
+  // diagnostic logs as structured UI state.
 }

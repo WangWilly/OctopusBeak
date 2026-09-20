@@ -19,6 +19,7 @@ import {
   type ForceQuitFinalizationDependencies,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
+import { sanitizeAutomationLogChunk } from "./log-sanitizer.ts";
 export {
   appendCleanupError,
   automationCleanupFailureDetails,
@@ -196,7 +197,9 @@ async function finalizeTaskRunTransition(
     try {
       appendLog(run.logPath, logAppend);
     } catch (error) {
-      const warning = `automation-output-write-failed: ${errorMessage(error)}`;
+      const warning = sanitizeAutomationLogChunk(
+        `automation-output-write-failed: ${errorMessage(error)}`,
+      );
       console.error(warning);
       taskError = [taskError, warning].filter(Boolean).join("\n") || null;
       logTail = tail(`${logTail}\n${warning}\n`);
@@ -218,6 +221,7 @@ export async function finalizePersistedRun(
   db: ReturnType<typeof openLedgerDatabase>,
   run: AutomationTaskRun,
   reason: string,
+  status: Extract<AutomationTaskStatus, "failed" | "interrupted"> = "failed",
 ) {
   const current = taskRunById(db, run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
@@ -227,7 +231,7 @@ export async function finalizePersistedRun(
     "recovery",
   );
   await finalizeTaskRunTransition(db, run, {
-    status: "failed",
+    status,
     sessionDisposition: "relinquish",
     exitCode: null,
     signal: null,

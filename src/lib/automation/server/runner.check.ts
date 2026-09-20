@@ -495,7 +495,7 @@ test("automation output caps retained failed chunks", () => {
   buffer.flush();
   buffer.flush();
 
-  assert.equal(flushed, `${"a".repeat(1_000)}${"b".repeat(3_000)}`);
+  assert.equal(flushed, `${"a".repeat(3_000)}${"b".repeat(3_000)}`);
 });
 
 test("automation output contains error handler failures for timer and manual flushes", (context) => {
@@ -1212,6 +1212,32 @@ test("persisted recovery continues after one cleanup failure", async () => {
       AggregateError,
     );
     assert.deepEqual(visited, ["run-1", "run-2"]);
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery marks abandoned active runs interrupted", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-recovery-interrupted-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const run = createTaskRun(db, {
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "run.log"),
+    });
+    db.close();
+
+    await recoverAbandonedAutomationSessions(ledgerDir);
+
+    const readDb = openLedgerDatabase(ledgerDir, { readOnly: true });
+    assert.equal(taskRunById(readDb, run.taskRunId)?.status, "interrupted");
+    readDb.close();
   } finally {
     rmSync(ledgerDir, { recursive: true, force: true });
   }

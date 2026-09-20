@@ -1,13 +1,6 @@
 export function createBeforeQuitHandler(options: {
   cleanup(): Promise<void>;
   quit(): void;
-  timeoutMs: number;
-}, timerDeps: {
-  setTimer(callback: () => void, ms: number): NodeJS.Timeout | number;
-  clearTimer(timer: NodeJS.Timeout | number): void;
-} = {
-  setTimer: (callback: () => void, ms: number) => setTimeout(callback, ms),
-  clearTimer: (timer: NodeJS.Timeout | number) => clearTimeout(timer as NodeJS.Timeout),
 }) {
   let quittingAllowed = false;
   let cleanupStarted = false;

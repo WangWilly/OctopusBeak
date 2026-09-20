@@ -28,6 +28,7 @@ import {
   type TimerDeps,
 } from "./session-lifecycle.ts";
 import { taskRunById, updateTaskRun, type AutomationTaskRun } from "./store.ts";
+import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
 const SESSION_LOG_PREFIX_BYTES = 4_000;
 
@@ -66,11 +67,11 @@ export type ForceQuitAutomationSessionResult =
 
 export function appendLog(logPath: string, chunk: string) {
   mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, chunk);
+  appendFileSync(logPath, sanitizeAutomationLogChunk(chunk));
 }
 
 export function tail(value: string) {
-  return value.slice(-4_000);
+  return sanitizeAutomationLogTail(value);
 }
 
 export function errorMessage(error: unknown) {

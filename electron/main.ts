@@ -3,7 +3,9 @@ import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
 import {
   activeAutomationTaskIds,
+  hydrateAutomationRuntimeState,
   prepareLibrettoRunCdpPatch,
+  recoverAbandonedAutomationSessions,
   shutdownAutomationSessions,
   startAutomationTask,
   terminateAutomationTaskProcesses,
@@ -29,7 +31,12 @@ const { buildDesktopEnv, ensureDataRoot } = runtime as {
   ensureDataRoot: (userData: string) => void;
 };
 
-const devRemoteDebuggingPort = 9222;
+const requestedDevRemoteDebuggingPort = Number(process.env.OCTOPUSBEAK_CDP_PORT ?? "9222");
+const devRemoteDebuggingPort = Number.isInteger(requestedDevRemoteDebuggingPort)
+  && requestedDevRemoteDebuggingPort > 0
+  && requestedDevRemoteDebuggingPort < 65_536
+  ? requestedDevRemoteDebuggingPort
+  : 9222;
 
 if (!app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", String(devRemoteDebuggingPort));
@@ -42,6 +49,15 @@ let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
+let automationRuntimeFatalHandled = false;
+
+function handleAutomationRuntimeFatal(details: { code: string; stage: string }) {
+  if (automationRuntimeFatalHandled) return;
+  automationRuntimeFatalHandled = true;
+  console.error("automation-runtime-fatal", details);
+  terminateAutomationTaskProcesses();
+  app.exit(1);
+}
 
 app.setName("OctopusBeak");
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
@@ -65,7 +81,6 @@ const handleBeforeQuit = createBeforeQuitHandler({
     ]);
   },
   quit: () => app.quit(),
-  timeoutMs: 5_000,
 });
 app.on("before-quit", handleBeforeQuit);
 
@@ -179,6 +194,23 @@ async function start() {
   }
   initializeCanonicalRuntimeBeforeWindow(userData);
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
+  // Reconcile abandoned execution rows off the shell's critical path. The
+  // first authoritative automation snapshot awaits this same promise, so a
+  // schema/recovery failure cannot be hidden by a partially hydrated UI.
+  const automationRuntimeReady = new Promise<void>((resolve, reject) => {
+    setImmediate(() => {
+      recoverAbandonedAutomationSessions(ledgerDir)
+        .then(() => hydrateAutomationRuntimeState(ledgerDir))
+        .then(() => resolve())
+        .catch(reject);
+    });
+  });
+  void automationRuntimeReady.catch(() => {
+    handleAutomationRuntimeFatal({
+      code: "automation-runtime-snapshot-failed",
+      stage: "startup-reconcile",
+    });
+  });
   if (!cdpFixture) {
     scheduler = createExchangeRateScheduler({
       now: () => new Date(),
@@ -198,11 +230,8 @@ async function start() {
   }
   ipcRegistration = registerOctopusBeakIpc({
     onSystemSettingsChanged: () => scheduler?.reschedule(),
-    onAutomationRuntimeFatal: (details) => {
-      console.error("automation-runtime-fatal", details);
-      terminateAutomationTaskProcesses();
-      app.exit(1);
-    },
+    onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
+    onAutomationRuntimeReady: () => automationRuntimeReady,
   });
   scheduler?.start();
   currentRendererUrl = rendererEntry(appRoot);

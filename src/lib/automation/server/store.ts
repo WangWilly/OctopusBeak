@@ -12,8 +12,38 @@ import {
   type HumanAssistanceContractInput,
   type HumanAssistanceCompletionStatus,
 } from "../human-assistance.ts";
+import { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
+
+const REQUIRED_AUTOMATION_RUNTIME_COLUMNS = [
+  "task_run_id",
+  "task_id",
+  "script",
+  "kind",
+  "status",
+  "attempt",
+  "max_attempts",
+  "started_at",
+  "finished_at",
+  "exit_code",
+  "signal",
+  "error_message",
+  "log_path",
+  "log_tail",
+  "record_json",
+] as const;
+
+/** Fail closed when the persisted execution table is from an incompatible schema. */
+export function assertAutomationRuntimeSchema(db: LedgerDatabase) {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(automation_task_runs)").all() as { name?: unknown }[])
+      .map((row) => typeof row.name === "string" ? row.name : ""),
+  );
+  if (REQUIRED_AUTOMATION_RUNTIME_COLUMNS.some((column) => !columns.has(column))) {
+    throw new Error("Incompatible automation runtime schema.");
+  }
+}
 
 export type AutomationTaskRun = {
   taskRunId: string;
@@ -157,7 +187,7 @@ function rowToTaskRun(row: Record<string, unknown>): AutomationTaskRun {
     signal: nullableString(row.signal),
     errorMessage: nullableString(row.error_message),
     logPath: String(row.log_path),
-    logTail: String(row.log_tail),
+    logTail: sanitizeAutomationLogTail(String(row.log_tail)),
     recordJson: String(row.record_json),
     progress: recordProgress(String(row.record_json)),
     terminationMode: recordTerminationMode(String(row.record_json)),
@@ -369,7 +399,7 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
     input.signal ?? null,
     input.errorMessage ?? null,
     input.logPath,
-    input.logTail ?? "",
+    sanitizeAutomationLogTail(input.logTail ?? ""),
     JSON.stringify(record),
   );
   return { taskRunId };
@@ -409,6 +439,10 @@ export function updateTaskRun(
     ...current,
     ...update,
   };
+  next.logTail = sanitizeAutomationLogTail(next.logTail);
+  next.errorMessage = next.errorMessage === null
+    ? null
+    : sanitizeAutomationLogTail(next.errorMessage);
   db.prepare(
     `
     UPDATE automation_task_runs
