@@ -154,6 +154,7 @@ export function createAutomationTaskExecutionRunner(
         isCancellationRequested: input.isCancellationRequested,
         isForceTerminationRequested: input.isForceTerminationRequested,
         onRuntimeUpdate: input.onRuntimeUpdate,
+        deferFinalization: true,
       },
       input.onRunCreated,
     );

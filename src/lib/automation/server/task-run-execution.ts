@@ -40,6 +40,7 @@ import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
   isForceQuitRun,
+  nextAttemptStatus,
   shouldMarkWaitingForHuman,
   type AutomationTaskProcessResult,
   type AutomationTaskRunFinalizationContext,
@@ -74,6 +75,8 @@ export type AutomationTaskExecutionOptions = {
   executionId?: string;
   attempt?: number;
   maxAttempts?: number;
+  /** Let a higher-level campaign own the single terminal transition. */
+  deferFinalization?: boolean;
   /** Stop before launching a child when the host task was cancelled. */
   isCancellationRequested?: () => boolean;
   isForceTerminationRequested?: () => boolean;
@@ -620,6 +623,16 @@ export async function runAutomationTaskExecution(
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
+    if (options.deferFinalization) {
+      return {
+        status: "cancelled" as const,
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result: cancelledResult,
+      };
+    }
     const finalized = await finalizeAutomationTaskRun({
       taskDb,
       taskId: task.id,
@@ -650,6 +663,20 @@ export async function runAutomationTaskExecution(
       ledgerDir,
       forceTerminated: options.isForceTerminationRequested?.() === true,
     };
+    if (options.deferFinalization) {
+      return {
+        status: automationTaskProcessStatus(task.kind, result, {
+          attempt: execution.run.attempt,
+          maxAttempts: options.maxAttempts ?? execution.run.attempt,
+          forceTerminated: finalizationContext.forceTerminated,
+        }),
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
     const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
     return {
       status: finalized.status,
@@ -662,6 +689,35 @@ export async function runAutomationTaskExecution(
   } finally {
     activeTaskChildren.delete(task.id);
   }
+}
+
+export function automationTaskProcessStatus(
+  taskKind: NonNullable<ReturnType<typeof taskById>>["kind"],
+  result: AutomationTaskProcessResult,
+  options: {
+    attempt?: number;
+    maxAttempts?: number;
+    forceTerminated?: boolean;
+  } = {},
+) {
+  const cancelled = options.forceTerminated === true
+    || result.signal === "SIGTERM"
+    || result.error?.message === "Automation task cancelled.";
+  let status = cancelled
+    ? "cancelled" as const
+    : result.error || result.resumeFailure
+      ? "failed" as const
+      : nextAttemptStatus({
+          kind: taskKind,
+          attempt: options.attempt ?? 1,
+          maxAttempts: options.maxAttempts ?? 1,
+          exitCode: result.exitCode,
+          waitingForHuman: shouldMarkWaitingForHuman(result.logTail),
+        });
+  if (status === "completed" && result.statementSummary) {
+    status = result.statementSummary.status;
+  }
+  return status;
 }
 
 export function automationTaskChild(taskId: string) {
