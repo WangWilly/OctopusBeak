@@ -129,7 +129,7 @@ export type AutomationTaskRunUpdate = Partial<
   >
 >;
 
-const ACTIVE_TASK_RUN_STATUSES = [
+export const ACTIVE_TASK_RUN_STATUSES = [
   "queued",
   "preparing",
   "running",
@@ -138,13 +138,28 @@ const ACTIVE_TASK_RUN_STATUSES = [
   "waiting_for_human",
 ] as const;
 
-const TERMINAL_TASK_RUN_STATUSES = [
+export const TERMINAL_TASK_RUN_STATUSES = [
   "completed",
   "partial",
   "failed",
   "cancelled",
   "interrupted",
 ] as const;
+
+export type ActiveTaskRunStatus = (typeof ACTIVE_TASK_RUN_STATUSES)[number];
+export type TerminalTaskRunStatus = (typeof TERMINAL_TASK_RUN_STATUSES)[number];
+
+export function isActiveTaskRunStatus(
+  status: AutomationTaskStatus,
+): status is ActiveTaskRunStatus {
+  return ACTIVE_TASK_RUN_STATUSES.includes(status as ActiveTaskRunStatus);
+}
+
+export function isTerminalTaskRunStatus(
+  status: AutomationTaskStatus,
+): status is TerminalTaskRunStatus {
+  return TERMINAL_TASK_RUN_STATUSES.includes(status as TerminalTaskRunStatus);
+}
 
 /**
  * A resumed workflow must re-publish any assistance stage it still needs.
@@ -449,7 +464,7 @@ export function updateTaskRun(
     .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
   const current = rowToTaskRun(row);
-  const terminal = TERMINAL_TASK_RUN_STATUSES.includes(current.status as typeof TERMINAL_TASK_RUN_STATUSES[number]);
+  const terminal = isTerminalTaskRunStatus(current.status);
   const updateKeys = Object.keys(update);
   if (terminal && updateKeys.some((key) => key !== "attempt" && key !== "maxAttempts")) {
     throw new Error(`Terminal automation task run is immutable: ${taskRunId}`);
@@ -482,8 +497,65 @@ export function updateTaskRun(
   );
 }
 
+export type AutomationTaskRunActiveUpdate = AutomationTaskRunUpdate & {
+  status: ActiveTaskRunStatus;
+};
+
+/**
+ * Atomically update an active run without allowing a terminal finalizer to be
+ * overwritten by a stale cancellation/session callback.
+ */
+export function transitionTaskRunToActive(
+  db: LedgerDatabase,
+  taskRunId: string,
+  update: AutomationTaskRunActiveUpdate,
+) {
+  const row = db
+    .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
+    .get(taskRunId) as Record<string, unknown> | undefined;
+  if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
+  const current = rowToTaskRun(row);
+  if (!isActiveTaskRunStatus(current.status)) {
+    return { status: current.status, applied: false as const };
+  }
+
+  const next = {
+    ...current,
+    ...update,
+  };
+  next.logTail = sanitizeAutomationLogTail(next.logTail);
+  next.errorMessage = next.errorMessage === null
+    ? null
+    : sanitizeAutomationLogTail(next.errorMessage);
+  const changed = db.prepare(
+    `
+    UPDATE automation_task_runs
+    SET status = ?, attempt = ?, max_attempts = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
+    WHERE task_run_id = ? AND status IN (${ACTIVE_TASK_RUN_STATUSES.map(() => "?").join(", ")})
+  `,
+  ).run(
+    next.status,
+    next.attempt,
+    next.maxAttempts,
+    next.finishedAt,
+    next.exitCode,
+    next.signal,
+    next.errorMessage,
+    next.logTail,
+    taskRunRecordJson(next),
+    taskRunId,
+    ...ACTIVE_TASK_RUN_STATUSES,
+  );
+  if (Number(changed.changes) > 0) {
+    return { status: next.status, applied: true as const };
+  }
+  const latest = taskRunById(db, taskRunId);
+  if (!latest) throw new Error(`Missing automation task run: ${taskRunId}`);
+  return { status: latest.status, applied: false as const };
+}
+
 export type AutomationTaskRunTerminalUpdate = AutomationTaskRunUpdate & {
-  status: (typeof TERMINAL_TASK_RUN_STATUSES)[number];
+  status: TerminalTaskRunStatus;
 };
 
 /**
@@ -504,10 +576,10 @@ export function transitionTaskRunToTerminal(
     .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
   const current = rowToTaskRun(row);
-  if (TERMINAL_TASK_RUN_STATUSES.includes(current.status as typeof TERMINAL_TASK_RUN_STATUSES[number])) {
+  if (isTerminalTaskRunStatus(current.status)) {
     return { status: current.status, applied: false as const };
   }
-  if (!ACTIVE_TASK_RUN_STATUSES.includes(current.status as typeof ACTIVE_TASK_RUN_STATUSES[number])) {
+  if (!isActiveTaskRunStatus(current.status)) {
     return { status: current.status, applied: false as const };
   }
 

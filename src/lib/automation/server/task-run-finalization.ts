@@ -31,6 +31,7 @@ export {
 export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
   activeTaskRuns,
+  isTerminalTaskRunStatus,
   resolveTaskPrerequisiteNotices,
   taskRunById,
   transitionTaskRunToTerminal,
@@ -142,11 +143,6 @@ type TaskRunFinalizationImplementation = {
   sessionFinalizationLog?: boolean;
   sessionCleanup?: AutomationSessionCleanupResult | null;
 };
-
-function isTerminalTaskRunStatus(status: AutomationTaskStatus) {
-  return status === "completed" || status === "partial" || status === "failed"
-    || status === "cancelled" || status === "interrupted";
-}
 
 async function finalizeTaskRunTransition(
   db: ReturnType<typeof openLedgerDatabase>,

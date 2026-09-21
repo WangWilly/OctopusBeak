@@ -210,6 +210,40 @@ test("resume handoff finalizes the old run and claims the new session atomically
   }
 });
 
+test("failed session claim is idempotent after the run becomes terminal", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-session-disposition-claim-race-"));
+  let blockingOwner: OwnedAutomationSession | null = null;
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const current = createRun(db, ledgerDir, "running");
+    const next = createRun(db, ledgerDir, "running");
+    blockingOwner = {
+      taskId: current.taskId,
+      taskRunId: current.taskRunId,
+      session: "ses-blocking-claim",
+      pid: null,
+    };
+    refreshAutomationSession(blockingOwner);
+    const candidate = {
+      taskId: next.taskId,
+      taskRunId: next.taskRunId,
+      session: "ses-candidate-claim",
+      pid: null,
+    } satisfies OwnedAutomationSession;
+
+    assert.equal(claimAutomationTaskRunSession(db, next.taskRunId, candidate), false);
+    assert.equal(taskRunById(db, next.taskRunId)?.status, "failed");
+    assert.doesNotThrow(() =>
+      claimAutomationTaskRunSession(db, next.taskRunId, candidate)
+    );
+    assert.equal(taskRunById(db, next.taskRunId)?.status, "failed");
+    db.close();
+  } finally {
+    if (blockingOwner) await relinquishAutomationSessionForTask(blockingOwner.taskId, fakeFinalizeDeps());
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
 test("recovery reports missing identity without guessing a session", async () => {
   const ledgerDir = mkdtempSync(join(tmpdir(), "automation-session-disposition-recovery-"));
   try {

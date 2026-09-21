@@ -60,8 +60,12 @@ import {
   activeTaskRuns,
   assertAutomationRuntimeSchema,
   createTaskRun,
+  isActiveTaskRunStatus,
+  isTerminalTaskRunStatus,
   latestTaskRuns,
+  transitionTaskRunToActive,
   taskRunById,
+  transitionTaskRunToTerminal,
   updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
@@ -245,6 +249,26 @@ function runtimeForTask(taskId: string) {
   return automationRuntimeState.snapshot().tasks.find((task) => task.taskId === taskId);
 }
 
+export function persistCancellationTransitionForRun(
+  db: ReturnType<typeof openLedgerDatabase>,
+  runId: string,
+  status: "cancelling" | "cancelled",
+  finishedAt: string | null = null,
+) {
+  const run = taskRunById(db, runId);
+  if (!run || isTerminalTaskRunStatus(run.status)) return run;
+  if (!isActiveTaskRunStatus(run.status)) return run;
+  if (status === "cancelled") {
+    transitionTaskRunToTerminal(db, runId, {
+      status,
+      finishedAt: finishedAt ?? new Date().toISOString(),
+    });
+  } else {
+    transitionTaskRunToActive(db, runId, { status });
+  }
+  return taskRunById(db, runId);
+}
+
 function persistCancellationTransition(
   taskId: string,
   status: "cancelling" | "cancelled",
@@ -256,15 +280,7 @@ function persistCancellationTransition(
   if (!runId) return null;
   const db = openLedgerDatabase(activeTaskLedgerDirs.get(taskId) ?? process.env.LEDGER_DIR ?? "data/ledger");
   try {
-    const run = taskRunById(db, runId);
-    if (!run || ["completed", "partial", "failed", "cancelled", "interrupted"].includes(run.status)) {
-      return run;
-    }
-    updateTaskRun(db, runId, {
-      status,
-      ...(status === "cancelled" ? { finishedAt } : {}),
-    });
-    return taskRunById(db, runId);
+    return persistCancellationTransitionForRun(db, runId, status, finishedAt);
   } finally {
     db.close();
   }
