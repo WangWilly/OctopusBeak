@@ -46,9 +46,9 @@ export type DashboardBlockValueMap = {
     details: Pick<SpendingPageDto, "canonical" | "purchaseReport" | "invoices">;
   };
   automation: {
-    summary: Pick<AutomationDesktopModel, "automation">;
-    list: Pick<AutomationCoreSnapshot, "automation" | "credentialGroups">;
-    details: Pick<AutomationDesktopModel, "automation" | "credentialGroups">;
+    summary: Pick<AutomationDesktopModel, "automation" | "runtimeSessionId" | "runtimeRevision">;
+    list: Pick<AutomationCoreSnapshot, "automation" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
+    details: Pick<AutomationDesktopModel, "automation" | "credentialGroups" | "runtimeSessionId" | "runtimeRevision">;
   };
 };
 

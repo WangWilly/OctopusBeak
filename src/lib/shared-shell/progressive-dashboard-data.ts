@@ -5,6 +5,8 @@ import type { OverviewPageDto } from "../overview/types.ts";
 import type { SpendingPurchaseReportView } from "../spending/purchase-matching.ts";
 import type { SpendingPageDto } from "../spending/model.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
+import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
+import { selectAutomationBlockModel } from "../automation/runtime-sync.ts";
 
 export function resolveOverviewSummary(
   fallback: OverviewPageDto,
@@ -146,8 +148,9 @@ export function resolveAutomationBlock(
     | DashboardBlockValueMap["automation"]["summary"]
     | DashboardBlockValueMap["automation"]["list"]
     | DashboardBlockValueMap["automation"]["details"],
+  runtime?: AutomationRuntimeSnapshot | null,
 ): AutomationPageModel {
-  return block?.automation ?? fallback;
+  return selectAutomationBlockModel(fallback, block?.automation, runtime);
 }
 
 /**
