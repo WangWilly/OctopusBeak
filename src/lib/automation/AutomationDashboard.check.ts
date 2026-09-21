@@ -143,6 +143,11 @@ assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
 assert.match(source, /class="progress-cell"/);
+assert.match(source, /<ProgressiveBlock label="details"[^>]*showSpinner=\{false\}/);
+assert.match(source, /<ProgressiveBlock label="list"[^>]*showSpinner=\{false\}/);
+assert.doesNotMatch(source, /<ProgressiveBlock label="summary"[^>]*showSpinner=\{false\}/);
+assert.match(source, /role="progressbar"/);
+assert.match(source, /aria-valuenow=\{task\.progressPercent/);
 assert.match(
   source,
   /\$: activeTasks = automation\.tasks\.filter\(\(task\) => task\.isActive\);/,

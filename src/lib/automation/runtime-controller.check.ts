@@ -4,16 +4,22 @@ import { createAutomationBlockRefreshCoordinator, createAutomationRuntimeControl
 import { assertKnownAutomationRuntimeTasks, AutomationRuntimeInvariantError } from "./runtime-invariants.ts";
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
 
-const snapshot = (revision: number, status: "queued" | "running" | "completed" = "queued"): AutomationRuntimeSnapshot => ({
+const snapshot = (
+  revision: number,
+  status: "queued" | "running" | "completed" = "queued",
+  runId = status === "queued" ? null : "run-1",
+  percent: number | null = null,
+): AutomationRuntimeSnapshot => ({
   sessionId: "session-1",
   revision,
   tasks: [{
     taskId: "task-1",
-    runId: status === "queued" ? null : "run-1",
+    runId,
     status,
     attempt: 1,
     maxAttempts: 1,
-    progress: { phaseCode: null, completed: null, total: null, percent: null, attempt: 1 },
+    progress: { phaseCode: null, completed: percent === null ? null : percent, total: percent === null ? null : 100, percent, attempt: 1 },
+    statementFailures: [],
     logTail: "",
     errorMessage: null,
     updatedAt: new Date().toISOString(),
@@ -27,6 +33,16 @@ test("runtime controller rejects stale events and detects revision gaps", () => 
   assert.equal(gap.accepted, true);
   assert.equal(gap.hadGap, true);
   assert.equal(controller.acceptSnapshot(snapshot(2)).accepted, false);
+});
+
+test("revision gate rejects a late old-run snapshot after a newer run is accepted", () => {
+  const controller = createAutomationRuntimeController();
+  assert.equal(controller.acceptSnapshot(snapshot(10, "running", "run-new", 80)).accepted, true);
+  const late = controller.acceptSnapshot(snapshot(9, "running", "run-old", 12));
+
+  assert.equal(late.accepted, false);
+  assert.equal(late.snapshot.tasks[0]?.runId, "run-new");
+  assert.equal(late.snapshot.tasks[0]?.progress.percent, 80);
 });
 
 test("pending action is app-shell state and reconciles when a run appears", () => {

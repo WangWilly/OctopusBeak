@@ -156,6 +156,19 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     const secondRow = page.locator(`#${SECOND_TASK_ID}-task-row`);
     await row.waitFor({ state: "visible", timeout: 10_000 });
     await secondRow.waitFor({ state: "visible", timeout: 10_000 });
+
+    // Block data must settle independently. A route switch is deliberately
+    // not part of this assertion: the dashboard should leave loading once
+    // same-page block requests complete, and only the summary block may own
+    // a visible refresh spinner.
+    await page.waitForFunction(() => {
+      const blocks = [...document.querySelectorAll<HTMLElement>("[data-progressive-block]")]
+        .filter((element) => ["summary", "details", "list"].includes(element.dataset.progressiveBlock ?? ""));
+      return blocks.length === 3 && blocks.every((element) => element.dataset.blockState === "ready");
+    }, undefined, { timeout: 10_000 });
+    assert.equal(await page.locator('[data-progressive-block="details"] .block-spinner').count(), 0);
+    assert.equal(await page.locator('[data-progressive-block="list"] .block-spinner').count(), 0);
+
     const credentialState = await row.locator(".credential-state").innerText();
     assert.doesNotMatch(credentialState, /missing|未設定/i);
 
@@ -185,6 +198,20 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     );
 
     await waitForRuntimeRun(page, TASK_ID);
+    await page.waitForFunction(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
+      const fill = document.querySelector<HTMLElement>(
+        `#${taskId}-task-row .progress-bar > span`,
+      );
+      return task?.runId !== null
+        && task?.status === "running"
+        && task.progress.percent !== null
+        && task.progress.percent >= 33
+        && fill?.style.width === `${task.progress.percent}%`;
+    }, TASK_ID, { timeout: 2_500 });
+    const runningProgress = await row.locator(".progress-bar > span").evaluate((element) => element.style.width);
+    assert.equal(runningProgress, "33%");
     const firstRun = page.evaluate((taskId) => window.octopusBeak.automation.run(taskId), TASK_ID);
     const secondRun = page.evaluate((taskId) => window.octopusBeak.automation.run(taskId), TASK_ID);
     const [first, second] = await Promise.all([firstRun, secondRun]);
@@ -216,14 +243,37 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     assert.ok(secondOptimisticElapsed <= 200);
     await waitForRuntimeRun(page, SECOND_TASK_ID);
     await secondRow.locator('[data-onboarding-action="primary"]').click();
-    await secondRow.locator(".chip").waitFor({ state: "visible", timeout: 5_000 });
+    await page.waitForFunction(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "cancelled");
+    }, SECOND_TASK_ID, { timeout: 5_000 });
     assert.match(await secondRow.innerText(), /cancelled|已取消/i);
 
-    await row.locator(".chip").waitFor({ state: "visible", timeout: 10_000 });
+    await page.waitForFunction(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "completed");
+    }, TASK_ID, { timeout: 10_000 });
+    await row.locator(".progress-bar").waitFor({ state: "visible", timeout: 2_000 });
     await row.locator('[data-onboarding-action="logs"]').click();
     await row.locator(".log-output").waitFor({ state: "visible", timeout: 5_000 });
     assert.match(await row.locator(".log-output").innerText(), /fixture-log-entry/);
     assert.match(await row.innerText(), /completed|完成/i);
+    await page.waitForFunction(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
+      const button = document.querySelector<HTMLButtonElement>(
+        `#${taskId}-task-row [data-onboarding-action="primary"]`,
+      );
+      const fill = document.querySelector<HTMLElement>(
+        `#${taskId}-task-row .progress-bar > span`,
+      );
+      return task?.status === "completed"
+        && task.progress.percent === 100
+        && button?.getAttribute("aria-busy") === "false"
+        && !/cancel|取消/i.test(button.textContent ?? "")
+        && fill?.style.width === "100%";
+    }, TASK_ID, { timeout: 2_000 });
+    assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
     assert.doesNotMatch(await secondRow.innerText(), /fixture-log-entry/);
     assert.match(page.url(), /#\/automation/);
     await page.evaluate(() => { window.location.hash = "#/overview"; });
