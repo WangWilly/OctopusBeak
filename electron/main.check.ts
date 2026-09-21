@@ -10,6 +10,7 @@ assert.match(
 assert.match(source, /initializeCanonicalRuntimeBeforeWindow\(userData\)/);
 assert.match(source, /recoverAbandonedAutomationSessions\(ledgerDir\)/);
 assert.match(source, /hydrateAutomationRuntimeState\(ledgerDir\)/);
+assert.match(source, /automationRuntimeReady\.then\(\(\) => scheduler\?\.start\(\)\)/);
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
 assert.match(source, /if \(!cdpFixture\)/);
 assert.doesNotMatch(

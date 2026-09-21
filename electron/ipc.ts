@@ -380,15 +380,18 @@ export function registerOctopusBeakIpc({
       return { ok: true as const };
     },
   );
-  ipcMain.handle("automation:run", (_event, taskId: string) =>
-    automationRun(taskId),
-  );
-  ipcMain.handle("automation:runMany", (_event, taskIds: string[]) =>
-    automationRunMany(taskIds),
-  );
-  ipcMain.handle("automation:resume", (_event, taskId: string) =>
-    automationResume(taskId),
-  );
+  ipcMain.handle("automation:run", async (_event, taskId: string) => {
+    await ensureAutomationRuntimeReady("automation-run");
+    return automationRun(taskId);
+  });
+  ipcMain.handle("automation:runMany", async (_event, taskIds: string[]) => {
+    await ensureAutomationRuntimeReady("automation-run-many");
+    return automationRunMany(taskIds);
+  });
+  ipcMain.handle("automation:resume", async (_event, taskId: string) => {
+    await ensureAutomationRuntimeReady("automation-resume");
+    return automationResume(taskId);
+  });
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
     automationCancel(taskId),
   );
@@ -498,7 +501,10 @@ export function registerOctopusBeakIpc({
           record.targetId,
           verified,
         );
-      if (resumed) automationResume(taskId);
+      if (resumed) {
+        await ensureAutomationRuntimeReady("automation-resume");
+        automationResume(taskId);
+      }
       return { ok: true as const, contract: updatedContract, resumed };
     },
   );

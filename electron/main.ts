@@ -284,7 +284,12 @@ async function start() {
     onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
-  scheduler?.start();
+  // Recovery owns the persisted active-run boundary.  Do not let the
+  // scheduler claim a new run until that boundary has been reconciled; the
+  // shell and IPC registration still proceed while recovery is in flight.
+  void automationRuntimeReady.then(() => scheduler?.start()).catch(() => {
+    // The shared readiness rejection already reports the fatal runtime error.
+  });
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
   await createWindow(currentRendererUrl, currentPreloadPath);
