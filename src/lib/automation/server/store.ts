@@ -112,6 +112,40 @@ type CreateTaskRunInput = {
   humanAssistanceContract?: HumanAssistanceContract | null;
 };
 
+export type AutomationTaskRunUpdate = Partial<
+  Pick<
+    AutomationTaskRun,
+    | "status"
+    | "attempt"
+    | "maxAttempts"
+    | "finishedAt"
+    | "exitCode"
+    | "signal"
+    | "errorMessage"
+    | "logTail"
+    | "progress"
+    | "terminationMode"
+    | "humanAssistanceContract"
+  >
+>;
+
+const ACTIVE_TASK_RUN_STATUSES = [
+  "queued",
+  "preparing",
+  "running",
+  "retrying",
+  "cancelling",
+  "waiting_for_human",
+] as const;
+
+const TERMINAL_TASK_RUN_STATUSES = [
+  "completed",
+  "partial",
+  "failed",
+  "cancelled",
+  "interrupted",
+] as const;
+
 /**
  * A resumed workflow must re-publish any assistance stage it still needs.
  * An entered/verified contract belongs to the preceding pause and must not
@@ -408,29 +442,14 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
 export function updateTaskRun(
   db: LedgerDatabase,
   taskRunId: string,
-  update: Partial<
-    Pick<
-      AutomationTaskRun,
-      | "status"
-      | "attempt"
-      | "maxAttempts"
-      | "finishedAt"
-      | "exitCode"
-      | "signal"
-      | "errorMessage"
-      | "logTail"
-      | "progress"
-      | "terminationMode"
-      | "humanAssistanceContract"
-    >
-  >,
+  update: AutomationTaskRunUpdate,
 ) {
   const row = db
     .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
     .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
   const current = rowToTaskRun(row);
-  const terminal = ["completed", "partial", "failed", "cancelled", "interrupted"].includes(current.status);
+  const terminal = TERMINAL_TASK_RUN_STATUSES.includes(current.status as typeof TERMINAL_TASK_RUN_STATUSES[number]);
   const updateKeys = Object.keys(update);
   if (terminal && updateKeys.some((key) => key !== "attempt" && key !== "maxAttempts")) {
     throw new Error(`Terminal automation task run is immutable: ${taskRunId}`);
@@ -461,6 +480,70 @@ export function updateTaskRun(
     taskRunRecordJson(next),
     taskRunId,
   );
+}
+
+export type AutomationTaskRunTerminalUpdate = AutomationTaskRunUpdate & {
+  status: (typeof TERMINAL_TASK_RUN_STATUSES)[number];
+};
+
+/**
+ * Atomically transition an active run to a terminal state.
+ *
+ * The status predicate is part of the UPDATE so two finalizers racing after
+ * the same read can never both mutate the run.  A loser observes the winner's
+ * state and returns an idempotent no-op instead of violating terminal
+ * immutability.
+ */
+export function transitionTaskRunToTerminal(
+  db: LedgerDatabase,
+  taskRunId: string,
+  update: AutomationTaskRunTerminalUpdate,
+) {
+  const row = db
+    .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
+    .get(taskRunId) as Record<string, unknown> | undefined;
+  if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
+  const current = rowToTaskRun(row);
+  if (TERMINAL_TASK_RUN_STATUSES.includes(current.status as typeof TERMINAL_TASK_RUN_STATUSES[number])) {
+    return { status: current.status, applied: false as const };
+  }
+  if (!ACTIVE_TASK_RUN_STATUSES.includes(current.status as typeof ACTIVE_TASK_RUN_STATUSES[number])) {
+    return { status: current.status, applied: false as const };
+  }
+
+  const next = {
+    ...current,
+    ...update,
+  };
+  next.logTail = sanitizeAutomationLogTail(next.logTail);
+  next.errorMessage = next.errorMessage === null
+    ? null
+    : sanitizeAutomationLogTail(next.errorMessage);
+  const changed = db.prepare(
+    `
+    UPDATE automation_task_runs
+    SET status = ?, attempt = ?, max_attempts = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
+    WHERE task_run_id = ? AND status IN (${ACTIVE_TASK_RUN_STATUSES.map(() => "?").join(", ")})
+  `,
+  ).run(
+    next.status,
+    next.attempt,
+    next.maxAttempts,
+    next.finishedAt,
+    next.exitCode,
+    next.signal,
+    next.errorMessage,
+    next.logTail,
+    taskRunRecordJson(next),
+    taskRunId,
+    ...ACTIVE_TASK_RUN_STATUSES,
+  );
+  if (Number(changed.changes) > 0) {
+    return { status: next.status, applied: true as const };
+  }
+  const latest = taskRunById(db, taskRunId);
+  if (!latest) throw new Error(`Missing automation task run: ${taskRunId}`);
+  return { status: latest.status, applied: false as const };
 }
 
 export function updateHumanAssistanceContract(

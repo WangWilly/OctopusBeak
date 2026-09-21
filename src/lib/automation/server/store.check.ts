@@ -11,6 +11,7 @@ import {
   recentTaskRuns,
   taskRunById,
   todayTaskRunIds,
+  transitionTaskRunToTerminal,
   updateTaskRun,
 } from "./store.ts";
 
@@ -92,6 +93,36 @@ try {
     endUtc: new Date("2026-07-01T00:00:00.000Z"),
   });
   assert.deepEqual(todayRunIds, ["fubon-all-statements"]);
+
+  const raced = createTaskRun(db, {
+    taskId: "raced-terminal-task",
+    script: "run:raced-terminal-task",
+    kind: "crawler",
+    status: "running",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt,
+    logPath: "data/automation/logs/raced-terminal.log",
+  });
+  const firstTransition = transitionTaskRunToTerminal(db, raced.taskRunId, {
+    status: "completed",
+    finishedAt,
+    exitCode: 0,
+    signal: null,
+    errorMessage: null,
+    logTail: "first finalizer",
+  });
+  const competingTransition = transitionTaskRunToTerminal(db, raced.taskRunId, {
+    status: "failed",
+    finishedAt,
+    exitCode: 1,
+    signal: null,
+    errorMessage: "late finalizer",
+    logTail: "second finalizer",
+  });
+  assert.deepEqual(firstTransition, { status: "completed", applied: true });
+  assert.deepEqual(competingTransition, { status: "completed", applied: false });
+  assert.equal(taskRunById(db, raced.taskRunId)?.errorMessage, null);
 
   for (let index = 0; index < 101; index += 1) {
     const startedAt = new Date(Date.UTC(2026, 5, 30, 4, 0, index)).toISOString();

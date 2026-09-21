@@ -33,8 +33,9 @@ import {
   activeTaskRuns,
   resolveTaskPrerequisiteNotices,
   taskRunById,
+  transitionTaskRunToTerminal,
   upsertTaskPrerequisiteNotice,
-  updateTaskRun,
+  type AutomationTaskRunTerminalUpdate,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -209,8 +210,12 @@ async function finalizeTaskRunTransition(
       logTail = tail(`${logTail}\n${warning}\n`);
     }
   }
-  updateTaskRun(db, run.taskRunId, {
-    status,
+  if (!["completed", "partial", "failed", "cancelled", "interrupted"].includes(status)) {
+    return { status, skipped: true };
+  }
+  const terminalStatus = status as AutomationTaskRunTerminalUpdate["status"];
+  const transition = transitionTaskRunToTerminal(db, run.taskRunId, {
+    status: terminalStatus,
     finishedAt: new Date().toISOString(),
     exitCode: intent.exitCode,
     signal: intent.signal,
@@ -218,6 +223,9 @@ async function finalizeTaskRunTransition(
     errorMessage: taskError,
     ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
   });
+  if (!transition.applied) {
+    return { status: transition.status, skipped: true };
+  }
   const persisted = taskRunById(db, run.taskRunId);
   if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
   automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
