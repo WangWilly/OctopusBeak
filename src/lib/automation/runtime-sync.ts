@@ -5,6 +5,7 @@ import type {
 } from "../desktop/api.ts";
 import { isActiveAutomationRuntimeStatus } from "./runtime-status.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+import type { AutomationActionToken } from "./runtime-controller.ts";
 
 /** A block's captured runtime version, or null for legacy/fallback models. */
 export function automationBlockRuntimeVersion(
@@ -63,6 +64,29 @@ function primaryAction(task: AutomationTaskRow, status: AutomationTaskRow["statu
   return task.primaryAction;
 }
 
+function applyOptimisticAction(
+  task: AutomationTaskRow,
+  action: AutomationActionToken,
+): AutomationTaskRow {
+  if (action.kind === "run" || action.kind === "resume") {
+    return {
+      ...task,
+      status: "preparing",
+      isActive: true,
+      primaryAction: "Cancel",
+      canRun: true,
+      progressText: "Preparing",
+    };
+  }
+  return {
+    ...task,
+    status: "cancelling",
+    isActive: true,
+    primaryAction: "Cancel",
+    canRun: true,
+  };
+}
+
 /** Merge one authoritative runtime record without mutating block data. */
 export function mergeAutomationRuntimeTask(
   task: AutomationTaskRow,
@@ -96,15 +120,21 @@ export function mergeAutomationRuntimeTask(
 export function mergeAutomationRuntime(
   source: AutomationPageModel,
   runtime: AutomationRuntimeSnapshot | null | undefined,
+  pendingActions: readonly AutomationActionToken[] = [],
 ): AutomationPageModel {
-  if (!runtime) return source;
-  const byTaskId = new Map(runtime.tasks.map((task) => [task.taskId, task]));
+  if (!runtime && pendingActions.length === 0) return source;
+  const byTaskId = new Map(runtime?.tasks.map((task) => [task.taskId, task]) ?? []);
+  const optimisticByTaskId = new Map(pendingActions.map((action) => [action.taskId, action]));
   const tasks = source.tasks.map((task) => {
     const live = byTaskId.get(task.id);
-    return live ? mergeAutomationRuntimeTask(task, live) : task;
+    const merged = live ? mergeAutomationRuntimeTask(task, live) : task;
+    const optimistic = optimisticByTaskId.get(task.id);
+    return optimistic ? applyOptimisticAction(merged, optimistic) : merged;
   });
-  const activeTaskCount = runtime.tasks.filter((task) =>
+  const activeTaskCount = (runtime?.tasks ?? []).filter((task) =>
     isActiveAutomationRuntimeStatus(task.status),
+  ).length + tasks.filter((task) =>
+    !byTaskId.has(task.id) && task.isActive,
   ).length;
   return {
     ...source,
@@ -121,6 +151,7 @@ export function selectAutomationBlockModel(
   fallback: AutomationPageModel,
   block: AutomationPageModel | undefined,
   runtime: AutomationRuntimeSnapshot | null | undefined,
+  pendingActions: readonly AutomationActionToken[] = [],
 ): AutomationPageModel {
-  return mergeAutomationRuntime(block ?? fallback, runtime);
+  return mergeAutomationRuntime(block ?? fallback, runtime, pendingActions);
 }
