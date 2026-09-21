@@ -177,6 +177,38 @@ async function finalizeCaptchaRetryCampaign(
   );
 }
 
+async function finalizeCaptchaRetryExecution(
+  taskDb: LedgerDatabase,
+  taskRunId: string,
+  result: CaptchaRetryExecutionResult,
+  ledgerDir: string,
+  message?: string,
+) {
+  const processResult = processResultOf(result);
+  if (!message && processResult) {
+    const run = taskRunById(taskDb, taskRunId);
+    if (!run) return { status: "failed" as const };
+    return finalizeAutomationTaskRun(
+      {
+        taskDb,
+        taskId: run.taskId,
+        taskKind: run.kind,
+        taskRunId,
+        logPath: run.logPath,
+        ledgerDir,
+      },
+      processResult,
+    );
+  }
+  return finalizeCaptchaRetryCampaign(
+    taskDb,
+    taskRunId,
+    result,
+    ledgerDir,
+    message ?? "Automation task failed.",
+  );
+}
+
 async function cleanUpCaptchaRetryRound(
   taskDb: LedgerDatabase,
   taskRunId: string,
@@ -327,9 +359,9 @@ export async function runCaptchaRetryCampaign(
         await resumePromise;
       }
     } catch (error) {
-      await finalizeCaptchaRetryCampaign(
+      await finalizeCaptchaRetryExecution(
         taskDb,
-        execution.taskRunId,
+        execution.taskRunId!,
         execution,
         ledgerDir,
         errorMessage(error),
@@ -351,7 +383,9 @@ export async function runCaptchaRetryCampaign(
       updateTaskRun(taskDb, execution.taskRunId!, {
         attempt: campaign.status === "awaiting-outcome"
           ? campaign.activeRound
-          : campaign.consumedRounds,
+          : campaign.status === "ready" && campaign.nextRound !== undefined
+            ? campaign.nextRound
+            : campaign.consumedRounds,
         maxAttempts: campaign.maxRounds,
       });
     }
@@ -361,7 +395,7 @@ export async function runCaptchaRetryCampaign(
         // A provider-owned dialog may make the resumed child fail before the
         // route returns. Finalize from the coordinator as well so a
         // fail-closed route cannot leave that resumed session running.
-        await finalizeCaptchaRetryCampaign(
+        await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
@@ -373,7 +407,7 @@ export async function runCaptchaRetryCampaign(
     }
     if (execution.status === "cancelled") {
       if ("taskRunId" in execution) {
-        await finalizeCaptchaRetryCampaign(
+        await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
@@ -385,7 +419,7 @@ export async function runCaptchaRetryCampaign(
     }
     if (isCancellationRequested() && "taskRunId" in execution) {
       campaign = markCaptchaCampaignCancelled(campaign);
-      await finalizeCaptchaRetryCampaign(
+      await finalizeCaptchaRetryExecution(
         taskDb,
         execution.taskRunId!,
         execution,
@@ -417,7 +451,7 @@ export async function runCaptchaRetryCampaign(
           outcome: { kind: "retryable", reason: routeRetry },
         });
       } else if (campaign.status !== "ready" && campaign.status !== "exhausted") {
-        await finalizeCaptchaRetryCampaign(
+        await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
@@ -428,7 +462,7 @@ export async function runCaptchaRetryCampaign(
       }
       if (!isCaptchaRetryCampaignReady(campaign)) {
         if (campaign.status === "exhausted") {
-          await finalizeCaptchaRetryCampaign(
+          await finalizeCaptchaRetryExecution(
             taskDb,
             execution.taskRunId!,
             execution,
@@ -447,7 +481,7 @@ export async function runCaptchaRetryCampaign(
         routed.sessionCleaned ?? false,
       );
       if (!cleanup.ok) {
-        await finalizeCaptchaRetryCampaign(
+        await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
@@ -458,7 +492,7 @@ export async function runCaptchaRetryCampaign(
       }
       if (isCancellationRequested()) {
         campaign = markCaptchaCampaignCancelled(campaign);
-        await finalizeCaptchaRetryCampaign(
+        await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
@@ -486,6 +520,15 @@ export async function runCaptchaRetryCampaign(
         executionId: campaign.activeExecutionId,
         outcome: { kind: "succeeded" },
       });
+    }
+    if ("taskRunId" in execution && execution.status !== "waiting_for_human") {
+      const finalized = await finalizeCaptchaRetryExecution(
+        taskDb,
+        execution.taskRunId!,
+        execution,
+        ledgerDir,
+      );
+      return { status: finalized.status };
     }
     return {
       status: "status" in execution ? execution.status : "failed",

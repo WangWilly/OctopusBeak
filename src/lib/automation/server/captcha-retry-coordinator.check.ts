@@ -270,6 +270,88 @@ test("CAPTCHA coordinator restarts after a provider-proven rejection", async () 
   }
 });
 
+test("CAPTCHA retry campaign finalizes the shared run once after the last round", async () => {
+  const root = mkdtempSync(join(tmpdir(), "captcha-retry-coordinator-finalization-"));
+  const ledgerDir = join(root, "ledger");
+  const logPath = join(root, "automation.log");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  const run = createTaskRun(db, {
+    taskId: "coordinator-finalization-test",
+    script: "coordinator-finalization-test",
+    kind: "crawler",
+    status: "running",
+    attempt: 1,
+    maxAttempts: 10,
+    startedAt: new Date().toISOString(),
+    logPath,
+  });
+  let executions = 0;
+  try {
+    const result = await runCaptchaRetryCampaign({
+      taskId: "coordinator-finalization-test",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: {},
+      initialExecutionOptions: {},
+      execute: async () => {
+        executions += 1;
+        if (executions === 1) {
+          return {
+            status: "waiting_for_human" as const,
+            taskRunId: run.taskRunId,
+            executionId: "execution-finalization-1",
+            session: null,
+            owner: null,
+            result: {
+              exitCode: 0,
+              signal: null,
+              error: null,
+              logTail: "Workflow paused for CAPTCHA",
+              resumeFailure: null,
+              statementSummary: null,
+              outputPersistenceWarnings: [],
+              externalPrerequisiteIds: [],
+            },
+          };
+        }
+        return {
+          status: "completed" as const,
+          taskRunId: run.taskRunId,
+          executionId: "execution-finalization-2",
+          session: null,
+          owner: null,
+          result: {
+            exitCode: 0,
+            signal: null,
+            error: null,
+            logTail: "completed",
+            resumeFailure: null,
+            statementSummary: null,
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          },
+        };
+      },
+      isCancellationRequested: () => false,
+      routeWaitingRunVerification: async (input) => {
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable" as const, reason: "provider-rejected" as const };
+      },
+    });
+
+    assert.deepEqual(result, { status: "completed" });
+    assert.equal(executions, 2);
+    const persisted = taskRunById(db, run.taskRunId);
+    assert.equal(persisted?.status, "completed");
+    assert.equal(persisted?.attempt, 2);
+    assert.equal(persisted?.finishedAt !== null, true);
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("CAPTCHA coordinator cleans and joins a blocked resume before a fresh round", async () => {
   const root = mkdtempSync(join(tmpdir(), "captcha-retry-coordinator-join-resume-"));
   const ledgerDir = join(root, "ledger");
