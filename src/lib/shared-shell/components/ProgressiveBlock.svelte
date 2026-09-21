@@ -17,6 +17,8 @@
     <slot data={blockData} />
     {#if showSpinner && state.status === "loading"}
       <span class="block-spinner" role="status" aria-label={$t.common.refreshing}></span>
+    {:else if !showSpinner && state.status === "loading"}
+      <span class="visually-hidden" role="status" aria-live="polite">{$t.common.refreshing}</span>
     {:else if state.status === "error"}
       <div class="block-error" role="alert">
         <span>{state.message}</span>
@@ -35,6 +37,18 @@
 
 <style>
   .block-frame { position: relative; min-width: 0; }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 
   .block-spinner {
     position: absolute;
