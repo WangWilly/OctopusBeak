@@ -206,7 +206,7 @@ test("pairing index prewarm uses the worker boundary without blocking the caller
       parentPort.postMessage({
         id,
         ok: true,
-        value: { page, dataVersion: input.dataVersion, reused: false },
+        value: { page, status: "ready", dataVersion: input.dataVersion, reused: false },
       });
     });
   `, { eval: true });
@@ -218,6 +218,7 @@ test("pairing index prewarm uses the worker boundary without blocking the caller
     assert.ok(performance.now() - startedAt < 100);
     assert.deepEqual(await prewarm, {
       page: "spending-pairing-prewarm",
+      status: "ready",
       dataVersion: 7,
       reused: false,
     });

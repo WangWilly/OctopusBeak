@@ -979,11 +979,16 @@ export async function prewarmSpendingPairingCandidates(
     const currentVersion = Number((store.db.prepare(
       "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
     ).get() as { value: number }).value);
-    if (currentVersion !== action.dataVersion)
-      throw new Error("Spending pairing prewarm data version is stale; reload Spending before pairing.");
+    if (currentVersion !== action.dataVersion) {
+      return Object.freeze({
+        status: "stale" as const,
+        dataVersion: currentVersion,
+        requestedVersion: action.dataVersion,
+      });
+    }
     const cache = pairingIndexCache(ledgerDir);
     if (cache.forVersion(currentVersion))
-      return Object.freeze({ dataVersion: currentVersion, reused: true });
+      return Object.freeze({ status: "ready" as const, dataVersion: currentVersion, reused: true });
 
     // Use keyset batches so an interactive rank waits for at most one small
     // SQLite read. Unlike OFFSET batching, later batches do not rescan and
@@ -993,7 +998,7 @@ export async function prewarmSpendingPairingCandidates(
     let afterTransactionIdentityId: string | undefined;
     while (true) {
       if (shouldCancel())
-        return Object.freeze({ dataVersion: currentVersion, reused: false });
+        return Object.freeze({ status: "ready" as const, dataVersion: currentVersion, reused: false });
       const batch = pairingIndexEntriesFromDatabase(store, {
         limit: batchSize,
         ...(afterTransactionIdentityId ? { afterTransactionIdentityId } : {}),
@@ -1004,9 +1009,19 @@ export async function prewarmSpendingPairingCandidates(
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     if (shouldCancel())
-      return Object.freeze({ dataVersion: currentVersion, reused: false });
+      return Object.freeze({ status: "ready" as const, dataVersion: currentVersion, reused: false });
+    const latestVersion = Number((store.db.prepare(
+      "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+    ).get() as { value: number }).value);
+    if (latestVersion !== currentVersion) {
+      return Object.freeze({
+        status: "stale" as const,
+        dataVersion: latestVersion,
+        requestedVersion: action.dataVersion,
+      });
+    }
     const prepared = cache.prewarmEntries(currentVersion, entries);
-    return Object.freeze({ dataVersion: currentVersion, reused: prepared.reused });
+    return Object.freeze({ status: "ready" as const, dataVersion: currentVersion, reused: prepared.reused });
   } finally {
     db.close();
   }

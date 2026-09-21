@@ -47,10 +47,17 @@ export type SpendingPairingPrewarmInput = Readonly<{
   dataVersion: number;
 }>;
 
-export type SpendingPairingPrewarmResult = Readonly<{
-  dataVersion: number;
-  reused: boolean;
-}>;
+export type SpendingPairingPrewarmResult =
+  | Readonly<{
+      status: "ready";
+      dataVersion: number;
+      reused: boolean;
+    }>
+  | Readonly<{
+      status: "stale";
+      dataVersion: number;
+      requestedVersion: number;
+    }>;
 
 export type SpendingPairingCandidatesResult = Readonly<{
   dataVersion: number;
