@@ -4,7 +4,10 @@
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
-  import { createAutomationRuntimeController } from "$lib/automation/runtime-controller.ts";
+  import {
+    createAutomationRuntimeController,
+    type AutomationActionToken,
+  } from "$lib/automation/runtime-controller.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -110,6 +113,7 @@
   let automationRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
   const automationRuntimeController = createAutomationRuntimeController();
   let automationPendingTaskIds = new Set<string>();
+  let automationPendingActions: readonly AutomationActionToken[] = [];
   let onboardingState: OnboardingState | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
@@ -734,11 +738,16 @@
       if (!result.accepted) return;
       automationRuntimeSnapshot = snapshot;
       automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
+      automationPendingActions = automationRuntimeController.pendingActions();
       if ((result.hadGap || result.sessionChanged) && route === "automation") {
         void loadRoute("automation", { force: true });
       }
     };
     const automationApi = window.octopusBeak.automation;
+    const unsubscribeAutomationController = automationRuntimeController.subscribe(() => {
+      automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
+      automationPendingActions = automationRuntimeController.pendingActions();
+    });
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
       ? automationApi.onRuntimeChanged(applyAutomationRuntimeSnapshot)
       : () => {};
@@ -772,6 +781,7 @@
     return () => {
       dataVersionLifecycle.dispose();
       unsubscribeAutomationRuntime();
+      unsubscribeAutomationController();
       removeEventListener("focus", onAutomationRuntimeResync);
       document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
       removeEventListener("hashchange", normalizeRoute);
@@ -850,6 +860,7 @@
       runtimeSnapshot={automationRuntimeSnapshot}
       runtimeController={automationRuntimeController}
       appPendingTaskIds={automationPendingTaskIds}
+      appPendingActions={automationPendingActions}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
       onboardingSourceSelection={onboardingStep === "credentials"}

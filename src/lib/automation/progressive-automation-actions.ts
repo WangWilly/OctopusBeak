@@ -1,6 +1,7 @@
 import type { DashboardBlockValueMap } from "../shared-shell/dashboard-blocks.ts";
 import { resolveAutomationBlock } from "../shared-shell/progressive-dashboard-data.ts";
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
+import type { AutomationActionToken } from "./runtime-controller.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 
 /**
@@ -12,8 +13,9 @@ export function automationStageTasks(
   fallback: AutomationPageModel,
   block?: DashboardBlockValueMap["automation"]["list"],
   runtime?: AutomationRuntimeSnapshot | null,
+  pendingActions?: readonly AutomationActionToken[],
 ): AutomationTaskRow[] {
-  return resolveAutomationBlock(fallback, block, runtime).tasks;
+  return resolveAutomationBlock(fallback, block, runtime, pendingActions).tasks;
 }
 
 /** Pass exactly the displayed stage tasks to the sync-sheet action. */

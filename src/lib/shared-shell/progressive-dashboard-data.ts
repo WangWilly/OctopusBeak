@@ -7,6 +7,7 @@ import type { SpendingPageDto } from "../spending/model.ts";
 import type { DashboardBlockValueMap } from "./dashboard-blocks.ts";
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
 import { selectAutomationBlockModel } from "../automation/runtime-sync.ts";
+import type { AutomationActionToken } from "../automation/runtime-controller.ts";
 
 export function resolveOverviewSummary(
   fallback: OverviewPageDto,
@@ -149,8 +150,9 @@ export function resolveAutomationBlock(
     | DashboardBlockValueMap["automation"]["list"]
     | DashboardBlockValueMap["automation"]["details"],
   runtime?: AutomationRuntimeSnapshot | null,
+  pendingActions?: readonly AutomationActionToken[],
 ): AutomationPageModel {
-  return selectAutomationBlockModel(fallback, block?.automation, runtime);
+  return selectAutomationBlockModel(fallback, block?.automation, runtime, pendingActions);
 }
 
 /**

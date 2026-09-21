@@ -24,7 +24,7 @@ assert.doesNotMatch(runTaskSource, /expandedLogTaskId\s*=/);
 assert.doesNotMatch(runParallelTasksSource, /expandedLogTaskId\s*=/);
 assert.match(
   runParallelTasksSource,
-  /automation\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/,
+  /automation\.runMany\((?:tasks\.map\(\(task\) => task\.id\)|actionTokens\.map\(\(token\) => token\.taskId\))\)/,
 );
 assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
@@ -161,7 +161,7 @@ assert.match(source, /class="button primary stage-sync-action"/);
 assert.match(source, /\{#each stage\.tasks as task \(task\.id\)\}/);
 assert.match(source, /stageRunnableTasks\(stage\.tasks, listParallelTaskIds\)/);
 assert.match(source, /dispatchAutomationStageSync\(/);
-assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)\)/);
+assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)[\s\S]*?runtimeSnapshot/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
 assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);

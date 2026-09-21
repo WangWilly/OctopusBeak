@@ -29,6 +29,11 @@ function tokenId() {
 export function createAutomationRuntimeController() {
   let current: AutomationRuntimeSnapshot | null = null;
   const pending = new Map<string, AutomationActionToken>();
+  const listeners = new Set<() => void>();
+
+  function emit() {
+    for (const listener of [...listeners]) listener();
+  }
 
   function acceptSnapshot(snapshot: AutomationRuntimeSnapshot): AutomationRuntimeAcceptResult {
     const previous = current;
@@ -47,6 +52,7 @@ export function createAutomationRuntimeController() {
     }
     current = snapshot;
     reconcilePending(snapshot);
+    emit();
     return { accepted: true, sessionChanged, hadGap, snapshot };
   }
 
@@ -60,6 +66,7 @@ export function createAutomationRuntimeController() {
       startedAt: performance.now(),
     };
     pending.set(taskId, token);
+    emit();
     return token;
   }
 
@@ -67,6 +74,7 @@ export function createAutomationRuntimeController() {
     const currentToken = pending.get(token.taskId);
     if (!currentToken || currentToken.token !== token.token) return false;
     currentToken.runId = runId ?? null;
+    emit();
     return true;
   }
 
@@ -74,6 +82,7 @@ export function createAutomationRuntimeController() {
     const currentToken = pending.get(token.taskId);
     if (!currentToken || currentToken.token !== token.token) return false;
     pending.delete(token.taskId);
+    emit();
     return true;
   }
 
@@ -98,6 +107,15 @@ export function createAutomationRuntimeController() {
     return new Set(pending.keys());
   }
 
+  function pendingActions() {
+    return [...pending.values()].map((token) => ({ ...token }));
+  }
+
+  function subscribe(listener: () => void) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
   function snapshot() {
     return current;
   }
@@ -108,6 +126,8 @@ export function createAutomationRuntimeController() {
     bindRun,
     failAction,
     pendingTaskIds,
+    pendingActions,
+    subscribe,
     snapshot,
   };
 }
@@ -147,4 +167,3 @@ export function createAutomationBlockRefreshCoordinator<T>(
     isRefreshing: () => inFlight !== null,
   };
 }
-
