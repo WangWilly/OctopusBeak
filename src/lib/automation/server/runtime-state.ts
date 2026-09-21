@@ -7,6 +7,8 @@ import type {
 import type { AutomationTaskProgress } from "../types.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
+import { assertKnownAutomationRuntimeTasks } from "../runtime-invariants.ts";
+import { AUTOMATION_TASKS } from "./tasks.ts";
 
 export { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
@@ -121,16 +123,23 @@ export function runtimeTaskSnapshotFromRun(
 
 export function createAutomationRuntimeState(
   sessionId = `automation-${randomUUID()}`,
+  options: { knownTaskIds?: ReadonlySet<string> } = {},
 ) {
   let revision = 0;
   const tasks = new Map<string, AutomationRuntimeTaskSnapshot>();
   const listeners = new Set<(snapshot: AutomationRuntimeSnapshot) => void>();
 
-  const snapshot = (): AutomationRuntimeSnapshot => assertAutomationRuntimeSnapshot({
-    sessionId,
-    revision,
-    tasks: [...tasks.values()],
-  });
+  const snapshot = (): AutomationRuntimeSnapshot => {
+    const value = assertAutomationRuntimeSnapshot({
+      sessionId,
+      revision,
+      tasks: [...tasks.values()],
+    });
+    if (options.knownTaskIds) {
+      assertKnownAutomationRuntimeTasks(value, options.knownTaskIds);
+    }
+    return value;
+  };
 
   const publish = () => {
     revision += 1;
@@ -165,4 +174,10 @@ export function createAutomationRuntimeState(
   };
 }
 
-export const automationRuntimeState = createAutomationRuntimeState();
+const automationTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
+
+/** The main-process singleton validates the active-task catalog before every snapshot/publication. */
+export const automationRuntimeState = createAutomationRuntimeState(
+  undefined,
+  { knownTaskIds: automationTaskIds },
+);

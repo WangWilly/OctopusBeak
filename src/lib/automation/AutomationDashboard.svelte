@@ -365,17 +365,26 @@
   function schedulePreparingTimeout(taskId: string) {
     const timeout = setTimeout(() => {
       void window.octopusBeak.automation.runtimeSnapshot()
-        .then((snapshot) => {
-          runtimeSnapshot = snapshot;
-          appliedRuntimeSnapshot = snapshot;
-          applyRuntimeSnapshot(snapshot);
-        })
+        .then((snapshot) => applyAuthoritativeRuntimeSnapshot(snapshot))
         .catch((error) => {
           console.error("automation-runtime-preparing-timeout", error);
           void window.octopusBeak.automation.fatalRuntimeSnapshot();
         });
     }, 5_000);
     preparingTimeouts.set(taskId, timeout);
+  }
+
+  /** Component IPC responses must pass the shell's session/revision gate. */
+  function applyAuthoritativeRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
+    const accepted = runtimeController
+      ? runtimeController.acceptSnapshot(snapshot)
+      : { accepted: true, sessionChanged: false, hadGap: false, snapshot };
+    if (!accepted.accepted) return false;
+    runtimeSnapshot = accepted.snapshot;
+    appliedRuntimeSnapshot = accepted.snapshot;
+    applyRuntimeSnapshot(accepted.snapshot);
+    if (accepted.hadGap || accepted.sessionChanged) void reload();
+    return true;
   }
 
   function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
@@ -766,7 +775,7 @@
         ? await window.octopusBeak.automation.resume(task.id)
         : await window.octopusBeak.automation.run(task.id);
       runtimeController?.bindRun(token, result.runId);
-      if (result.runtime) applyRuntimeSnapshot(result.runtime);
+      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
     } catch (error) {
       failActionToken(token);
@@ -846,7 +855,7 @@
         const resultTask = result.results[token.taskId];
         if (resultTask?.runId) runtimeController?.bindRun(token, resultTask.runId);
       }
-      if (result.runtime) applyRuntimeSnapshot(result.runtime);
+      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
     } catch (error) {
       for (const token of actionTokens) {

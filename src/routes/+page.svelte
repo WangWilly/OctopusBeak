@@ -6,8 +6,11 @@
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import {
     createAutomationRuntimeController,
+    createAutomationBlockRefreshCoordinator,
     type AutomationActionToken,
+    type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
+  import { isAutomationBlockStale } from "$lib/automation/runtime-sync.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -131,6 +134,10 @@
   let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<DashboardBlockPayload>>> = {};
   let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
   let routeBlockPromises: Partial<Record<DashboardRoute, Promise<Record<string, BlockState<DashboardBlockPayload>>>>> = {};
+  type AutomationBlockRefreshPhase = "direct" | "primary" | "trailing";
+  const automationBlockRefreshCoordinator = createAutomationBlockRefreshCoordinator(
+    () => startRouteBlockLoadsUncoordinated("automation", undefined, undefined, "primary"),
+  );
 
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
@@ -193,6 +200,7 @@
   }
 
   function normalizeRoute() {
+    const previousRoute = route;
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
     route = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next) ? next as RouteId : "overview";
     const acceptsId = route === "assets" || route === "liabilities";
@@ -205,7 +213,14 @@
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
     if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
-    void loadRoute(route);
+    const hasAutomationData = routeDataCache.read("automation") !== undefined
+      || Object.values(routeBlocks.automation ?? {}).some((state) => "data" in state);
+    void loadRoute(
+      route,
+      route === "automation" && previousRoute !== "automation" && hasAutomationData
+        ? { automationRefreshReason: "route-entry" }
+        : {},
+    );
   }
 
   function message(error: unknown) {
@@ -368,10 +383,11 @@
     return window.octopusBeak.automation.loadBlock(key, options);
   }
 
-  function startRouteBlockLoads(
+  function startRouteBlockLoadsUncoordinated(
     nextRoute: DashboardRoute,
     options: DataReadOptions | undefined,
     onlyKey?: DashboardBlockKey,
+    refreshPhase: AutomationBlockRefreshPhase = "direct",
   ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
     const loadId = (routeBlockLoadIds[nextRoute] ?? 0) + 1;
     routeBlockLoadIds = { ...routeBlockLoadIds, [nextRoute]: loadId };
@@ -391,6 +407,23 @@
     ])) as Record<string, () => Promise<DashboardBlockPayload>>;
     const settled = loadIndependentBlocks(loaders, (key, state) => {
       if (routeBlockLoadIds[nextRoute] !== loadId) return;
+      const payload = "data" in state ? state.data : undefined;
+      if (
+        nextRoute === "automation"
+        && payload?.route === "automation"
+        && isAutomationBlockStale(payload.data, automationRuntimeSnapshot)
+        && refreshPhase !== "trailing"
+      ) {
+        void automationBlockRefreshCoordinator.refresh(
+          "overtaken",
+          (isTrailing) => startRouteBlockLoadsUncoordinated(
+            "automation",
+            options,
+            onlyKey,
+            isTrailing ? "trailing" : "primary",
+          ),
+        );
+      }
       setRouteBlocks(nextRoute, {
         ...(routeBlocks[nextRoute] ?? {}),
         [key]: state,
@@ -405,6 +438,26 @@
       }
     });
     return settled;
+  }
+
+  function startRouteBlockLoads(
+    nextRoute: DashboardRoute,
+    options: DataReadOptions | undefined,
+    onlyKey?: DashboardBlockKey,
+    refreshReason?: AutomationBlockRefreshReason,
+  ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
+    if (nextRoute !== "automation" || !refreshReason) {
+      return startRouteBlockLoadsUncoordinated(nextRoute, options, onlyKey);
+    }
+    return automationBlockRefreshCoordinator.refresh(
+      refreshReason,
+      (isTrailing) => startRouteBlockLoadsUncoordinated(
+        nextRoute,
+        options,
+        onlyKey,
+        isTrailing ? "trailing" : "primary",
+      ),
+    );
   }
 
   function retryRouteBlock(nextRoute: DashboardRoute, key: string) {
@@ -449,7 +502,14 @@
       assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
-      automation: (snapshot) => loadRoute("automation", { force: true, rethrow: true, awaitBlocks: true, refreshCredentials: true, snapshot }),
+      automation: (snapshot) => loadRoute("automation", {
+        force: true,
+        rethrow: true,
+        awaitBlocks: true,
+        refreshCredentials: true,
+        snapshot,
+        automationRefreshReason: "manual",
+      }),
     },
   });
 
@@ -557,7 +617,7 @@
 
     startRouteLoad("automation");
     startRouteLoad("overview");
-    const automationBlocks = startRouteBlockLoads("automation", undefined);
+    const automationBlocks = startRouteBlockLoads("automation", undefined, undefined, "route-entry");
     startRouteBlockLoads("overview", undefined);
     const settled = await settleIndependentLoads({
       automation: async () => {
@@ -604,7 +664,14 @@
 
   async function loadRoute(
     next: RouteId,
-    options: { force?: boolean; rethrow?: boolean; awaitBlocks?: boolean; refreshCredentials?: boolean; snapshot?: DataVersionSnapshot } = {},
+    options: {
+      force?: boolean;
+      rethrow?: boolean;
+      awaitBlocks?: boolean;
+      refreshCredentials?: boolean;
+      snapshot?: DataVersionSnapshot;
+      automationRefreshReason?: AutomationBlockRefreshReason;
+    } = {},
   ) {
     const readOptions: DataReadOptions | undefined = options.snapshot
       ? {
@@ -613,6 +680,9 @@
       }
       : options.refreshCredentials
         ? { refreshCredentials: true }
+      : undefined;
+    const automationRefreshReason = next === "automation"
+      ? options.automationRefreshReason ?? (options.force ? "manual" : undefined)
       : undefined;
     const taskFinishedAt = next === "overview" && automation.status === "ready"
       ? completedSourceTaskFinishedAt(
@@ -625,8 +695,14 @@
     if (next !== "settings") {
       const hasCachedData = routeDataCache.read(next) !== undefined;
       const hasBlockRead = Object.values(routeBlocks[next] ?? {}).some((state) => state.status === "loading");
-      if (options.force || !hasCachedData && !hasBlockRead) {
-        blockLoads = startRouteBlockLoads(next, readOptions);
+      const automationRefreshRequested = automationRefreshReason !== undefined;
+      if (options.force || automationRefreshRequested || !hasCachedData && !hasBlockRead) {
+        blockLoads = startRouteBlockLoads(
+          next,
+          readOptions,
+          undefined,
+          automationRefreshReason,
+        );
       } else if (!hasCachedData) {
         blockLoads = routeBlockPromises[next] ?? null;
       }
@@ -662,7 +738,10 @@
           const value = automationFromBlockStates(states);
           if (!value) throw new Error("Automation data unavailable.");
           return value;
-        }, options);
+        }, {
+          ...options,
+          force: options.force || automationRefreshReason !== undefined,
+        });
         automation = finishViewLoad(data);
       }
       if (options.awaitBlocks && blockLoads) {
@@ -736,15 +815,20 @@
     const applyAutomationRuntimeSnapshot = (snapshot: AutomationRuntimeSnapshot) => {
       const result = automationRuntimeController.acceptSnapshot(snapshot);
       if (!result.accepted) return;
-      automationRuntimeSnapshot = snapshot;
+      automationRuntimeSnapshot = result.snapshot;
       automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
       automationPendingActions = automationRuntimeController.pendingActions();
-      if ((result.hadGap || result.sessionChanged) && route === "automation") {
-        void loadRoute("automation", { force: true });
+      if (result.hadGap || result.sessionChanged) {
+        void loadRoute("automation", {
+          force: true,
+          automationRefreshReason: "session-resync",
+        });
       }
     };
     const automationApi = window.octopusBeak.automation;
     const unsubscribeAutomationController = automationRuntimeController.subscribe(() => {
+      const current = automationRuntimeController.snapshot();
+      if (current) automationRuntimeSnapshot = current;
       automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
       automationPendingActions = automationRuntimeController.pendingActions();
     });

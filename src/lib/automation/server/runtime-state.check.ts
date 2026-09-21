@@ -64,3 +64,38 @@ test("runtime snapshot rejects malformed persisted progress and duplicate tasks"
     tasks: [task, { ...task, taskId: "exchange-rates" }],
   }), /Invalid automation runtime task snapshot/);
 });
+
+test("production runtime state rejects unknown active tasks before publishing", () => {
+  const state = createAutomationRuntimeState("session-test", {
+    knownTaskIds: new Set(["known-task"]),
+  });
+  let broadcasts = 0;
+  state.subscribe(() => { broadcasts += 1; });
+  assert.throws(
+    () => state.upsert({
+      taskId: "unknown-task",
+      runId: "run-unknown",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      progress: { phaseCode: null, completed: null, total: null, percent: null, attempt: 1 },
+      logTail: "",
+      errorMessage: null,
+      updatedAt: new Date().toISOString(),
+    }),
+    /automation-unknown-active-task/,
+  );
+  assert.equal(broadcasts, 0);
+  assert.doesNotThrow(() => state.upsert({
+    taskId: "unknown-task",
+    runId: "run-old",
+    status: "completed",
+    attempt: 1,
+    maxAttempts: 1,
+    progress: { phaseCode: null, completed: 1, total: 1, percent: 100, attempt: 1 },
+    logTail: "",
+    errorMessage: null,
+    updatedAt: new Date().toISOString(),
+  }));
+  assert.equal(broadcasts, 1);
+});

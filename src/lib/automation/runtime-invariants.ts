@@ -36,4 +36,3 @@ export function assertKnownAutomationRuntimeTasks(
     runId: unknown.runId,
   });
 }
-

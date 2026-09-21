@@ -138,26 +138,41 @@ export type AutomationBlockRefreshReason =
   | "manual"
   | "session-resync";
 
+export type AutomationBlockRefreshLoader<T> =
+  (isTrailing: boolean) => Promise<T>;
+
 /** Single-flight refresh with one trailing request for a newer trigger. */
 export function createAutomationBlockRefreshCoordinator<T>(
-  load: () => Promise<T>,
+  load: AutomationBlockRefreshLoader<T>,
 ) {
   let inFlight: Promise<T> | null = null;
-  let trailing = false;
+  let trailingLoad: AutomationBlockRefreshLoader<T> | null = null;
+  let phase: "idle" | "primary" | "trailing" = "idle";
 
-  function refresh(_reason: AutomationBlockRefreshReason): Promise<T> {
+  function refresh(
+    _reason: AutomationBlockRefreshReason,
+    requestedLoad: AutomationBlockRefreshLoader<T> = load,
+  ): Promise<T> {
     if (inFlight) {
-      trailing = true;
+      // A primary request may be followed by exactly one trailing request.
+      // If the trailing request is itself overtaken, keep its result as the
+      // authoritative overlay and wait for the next explicit trigger rather
+      // than chasing a moving runtime revision forever.
+      if (phase === "primary" && !trailingLoad) trailingLoad = requestedLoad;
       return inFlight;
     }
-    const work = load();
+    phase = "primary";
+    const work = requestedLoad(false);
     inFlight = work.then(async (value) => {
-      if (!trailing) return value;
-      trailing = false;
-      return load();
+      const next = trailingLoad;
+      trailingLoad = null;
+      if (!next) return value;
+      phase = "trailing";
+      return next(true);
     }).finally(() => {
       inFlight = null;
-      trailing = false;
+      trailingLoad = null;
+      phase = "idle";
     });
     return inFlight;
   }

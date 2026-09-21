@@ -19,7 +19,7 @@ test("refresh route loaders carry one generation and isolate first-run failures"
 });
 
 test("route blocks start before the full route DTO and remain retryable", () => {
-  const blockStart = source.indexOf("startRouteBlockLoads(next, readOptions)");
+  const blockStart = source.search(/startRouteBlockLoads\(\s*next,\s*readOptions/);
   const dtoLoad = source.indexOf("routeDataCache.load(\n          \"overview\"");
   assert.ok(blockStart >= 0, "route load must start independent block reads");
   assert.ok(dtoLoad > blockStart, "block reads must begin before the route DTO");
@@ -32,4 +32,14 @@ test("a settled block can render before the full route DTO and refresh waits for
   assert.match(source, /<OverviewDashboard\s+overview=\{overviewRenderValue\}/);
   assert.match(source, /if \(options\.awaitBlocks && blockLoads\)/);
   assert.match(source, /const failedBlocks = Object\.entries\(states\)/);
+});
+
+test("automation block refreshes are coordinated and stale responses are detected", () => {
+  assert.match(source, /createAutomationBlockRefreshCoordinator/);
+  assert.match(source, /automationBlockRefreshCoordinator\.refresh\(/);
+  assert.match(source, /isAutomationBlockStale\(/);
+  assert.match(source, /automationRefreshReason: "route-entry"/);
+  assert.match(source, /automationRefreshReason: "manual"/);
+  assert.match(source, /automationRefreshReason: "session-resync"/);
+  assert.match(source, /refreshPhase !== "trailing"/);
 });
