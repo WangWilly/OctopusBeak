@@ -174,6 +174,10 @@ assert.doesNotMatch(runTaskSource, /applyRuntimeSnapshot\(result\.runtime\)/);
 assert.doesNotMatch(runParallelTasksSource, /applyRuntimeSnapshot\(result\.runtime\)/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
+assert.match(
+  source,
+  /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*renderedPendingActions\)/,
+);
 assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);

@@ -1443,7 +1443,7 @@
 
   <div class:sync-sheet-open={syncOpen} class="content automation-content">
     <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
-    {@const summaryAutomation = automationBlockData("summary", data)?.automation ?? automation}
+    {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, renderedPendingActions)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
         {#if summaryAutomation.active}
