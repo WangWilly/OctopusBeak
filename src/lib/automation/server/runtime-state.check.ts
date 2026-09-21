@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assertAutomationRuntimeSnapshot,
   createAutomationRuntimeState,
+  runtimeTaskSnapshotFromRun,
   sanitizeAutomationLogTail,
 } from "./runtime-state.ts";
 
@@ -17,6 +18,7 @@ test("runtime state broadcasts monotonic full snapshots and bounds logs", () => 
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: "download", completed: 1, total: 2, percent: 50, attempt: 1 },
+    statementFailures: [],
     logTail: `${"x".repeat(70_000)}\n${"y".repeat(70_000)}`,
     errorMessage: null,
     updatedAt: new Date().toISOString(),
@@ -41,6 +43,7 @@ test("runtime snapshot rejects malformed persisted progress and duplicate tasks"
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: "sync", completed: 1, total: 2, percent: 50, attempt: 1 },
+    statementFailures: [],
     logTail: "safe",
     errorMessage: null,
     updatedAt: new Date().toISOString(),
@@ -65,6 +68,35 @@ test("runtime snapshot rejects malformed persisted progress and duplicate tasks"
   }), /Invalid automation runtime task snapshot/);
 });
 
+test("every run has a determinate terminal progress state", () => {
+  const run = {
+    taskId: "exchange-rates",
+    taskRunId: "run-1",
+    status: "partial" as const,
+    attempt: 1,
+    maxAttempts: 1,
+    progress: {
+      phaseCode: "sync",
+      completed: 3,
+      total: 4,
+      percent: 75,
+      attempt: 1,
+    },
+    logTail: "safe",
+    errorMessage: null,
+  };
+  const partial = runtimeTaskSnapshotFromRun(run);
+  assert.equal(partial.status, "partial");
+  assert.equal(partial.progress.percent, 75);
+  assert.equal(partial.runId, "run-1");
+
+  const completed = runtimeTaskSnapshotFromRun(run, "completed");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.progress.percent, 100);
+  assert.equal(completed.progress.completed, 100);
+  assert.equal(completed.progress.total, 100);
+});
+
 test("production runtime state rejects unknown active tasks before publishing", () => {
   const state = createAutomationRuntimeState("session-test", {
     knownTaskIds: new Set(["known-task"]),
@@ -79,6 +111,7 @@ test("production runtime state rejects unknown active tasks before publishing", 
       attempt: 1,
       maxAttempts: 1,
       progress: { phaseCode: null, completed: null, total: null, percent: null, attempt: 1 },
+      statementFailures: [],
       logTail: "",
       errorMessage: null,
       updatedAt: new Date().toISOString(),
@@ -93,6 +126,7 @@ test("production runtime state rejects unknown active tasks before publishing", 
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: null, completed: 1, total: 1, percent: 100, attempt: 1 },
+    statementFailures: [],
     logTail: "",
     errorMessage: null,
     updatedAt: new Date().toISOString(),

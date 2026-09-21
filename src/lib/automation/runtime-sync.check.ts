@@ -68,6 +68,7 @@ function runtime(overrides: Partial<AutomationRuntimeSnapshot> = {}): Automation
         percent: 50,
         attempt: 1,
       },
+      statementFailures: [],
       forceTerminateAvailable: false,
       logTail: "new log",
       errorMessage: null,
@@ -117,4 +118,130 @@ test("terminal runtime fields do not mutate the source block", () => {
   assert.equal(source.status, "queued");
   assert.equal(merged.status, "completed");
   assert.equal(merged.progressPercent, 100);
+});
+
+test("terminal runtime status derives the current action instead of stale block action", () => {
+  const source = task({
+    status: "running",
+    isActive: true,
+    primaryAction: "Cancel",
+    canRun: true,
+  });
+  const completed = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    status: "completed",
+    progress: { ...runtime().tasks[0]!.progress, percent: 100 },
+  });
+  const partial = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    status: "partial",
+    progress: { ...runtime().tasks[0]!.progress, percent: 67 },
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.isActive, false);
+  assert.equal(completed.primaryAction, "Run");
+  assert.equal(completed.progressPercent, 100);
+  assert.equal(partial.status, "partial");
+  assert.equal(partial.isActive, false);
+  assert.equal(partial.primaryAction, "Run");
+  assert.equal(partial.progressPercent, 67);
+});
+
+test("partial runtime updates carry the live statement failures into the row", () => {
+  const source = task({ statementFailures: [] });
+  const partialRuntime = {
+    ...runtime().tasks[0]!,
+    status: "partial" as const,
+    progress: { ...runtime().tasks[0]!.progress, percent: 100 },
+    statementFailures: [{ typeId: "loan", error: "fixture failure" }],
+  };
+  const merged = mergeAutomationRuntimeTask(source, partialRuntime);
+
+  assert.deepEqual(merged.statementFailures, [
+    { typeId: "loan", error: "fixture failure" },
+  ]);
+});
+
+test("a newer terminal run replaces a stale terminal block row", () => {
+  const source = {
+    ...task({
+      status: "completed",
+      isActive: false,
+      runId: "run-old",
+      progressPercent: 100,
+      progressText: "100%",
+      logTail: "old terminal run",
+      primaryAction: "Run",
+    }),
+  };
+  const runtimeTask = {
+    ...runtime().tasks[0]!,
+    runId: "run-new",
+    status: "completed" as const,
+    progress: { ...runtime().tasks[0]!.progress, percent: 100 },
+    logTail: "new terminal run",
+  };
+  const merged = mergeAutomationRuntimeTask(source, runtimeTask);
+
+  assert.equal(merged.runId, "run-new");
+  assert.equal(merged.status, "completed");
+  assert.equal(merged.progressPercent, 100);
+  assert.equal(merged.logTail, "new terminal run");
+});
+
+test("an accepted active snapshot replaces a stale active block row", () => {
+  const source = {
+    ...task({
+      status: "running",
+      isActive: true,
+      runId: "run-old",
+      progressPercent: 18,
+      progressText: "18%",
+      logTail: "old active run",
+      primaryAction: "Cancel",
+    }),
+  };
+  const runtimeTask = {
+    ...runtime().tasks[0]!,
+    runId: "run-new",
+    status: "running" as const,
+    progress: { ...runtime().tasks[0]!.progress, percent: 42 },
+    logTail: "new active run",
+  };
+  const merged = mergeAutomationRuntimeTask(source, runtimeTask);
+
+  assert.equal(merged.runId, "run-new");
+  assert.equal(merged.status, "running");
+  assert.equal(merged.progressPercent, 42);
+  assert.equal(merged.progressText, "42%");
+  assert.equal(merged.logTail, "new active run");
+});
+
+test("each task receives only its own run progress update", () => {
+  const source = model([
+    task({ id: "task-a", progressPercent: 10, progressText: "10%" }),
+    task({ id: "task-b", progressPercent: 80, progressText: "80%" }),
+  ]);
+  const merged = mergeAutomationRuntime(source, {
+    sessionId: "session-1",
+    revision: 10,
+    tasks: [
+      {
+        ...runtime().tasks[0]!,
+        taskId: "task-a",
+        runId: "run-a",
+        progress: { ...runtime().tasks[0]!.progress, percent: 25 },
+      },
+      {
+        ...runtime().tasks[0]!,
+        taskId: "task-b",
+        runId: "run-b",
+        progress: { ...runtime().tasks[0]!.progress, percent: 80 },
+      },
+    ],
+  });
+
+  assert.equal(merged.tasks.find((item) => item.id === "task-a")?.progressPercent, 25);
+  assert.equal(merged.tasks.find((item) => item.id === "task-b")?.progressPercent, 80);
 });
