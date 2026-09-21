@@ -5,6 +5,7 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
+  import type { createAutomationRuntimeController } from "$lib/automation/runtime-controller.ts";
   import type {
     CathayGmailOtpConnectionError,
     CathayGmailOtpStatus,
@@ -57,6 +58,8 @@
   export let credentialGroups: CredentialGroupDto[];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
+  export let runtimeController: ReturnType<typeof createAutomationRuntimeController> | null = null;
+  export let appPendingTaskIds: ReadonlySet<string> = new Set<string>();
   export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
