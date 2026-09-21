@@ -409,8 +409,8 @@ const nextDayAccountingWorkflowDownload = {
       ...workflowDownload.rows[0]!,
       values: [
         "YUANTA-ACCOUNT-001",
-        "20260907",
-        "20260906",
+        "20260622",
+        "20260619",
         "09:10:11",
         "CLEAN DEPOSIT",
         "",
@@ -419,20 +419,20 @@ const nextDayAccountingWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-09-06T09:10:11+08:00"),
+      sortTime: Date.parse("2026-06-19T09:10:11+08:00"),
     },
   ],
   source: {
     ...workflowDownload.source,
-    contentDigest: "sha256:yuanta-next-day-accounting-content" as `sha256:${string}`,
+    contentDigest: "sha256:yuanta-accounting-date-range-content" as `sha256:${string}`,
     rows: [
       {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
           "YUANTA-ACCOUNT-001",
-          "20260907",
-          "20260906",
+          "20260622",
+          "20260619",
           "09:10:11",
           "CLEAN DEPOSIT",
           "",
@@ -452,8 +452,8 @@ const transactionOutsideWorkflowDownload = {
       ...nextDayAccountingWorkflowDownload.rows[0]!,
       values: [
         "YUANTA-ACCOUNT-001",
-        "20260906",
-        "20260907",
+        "20260619",
+        "20260622",
         "09:10:11",
         "CLEAN DEPOSIT",
         "",
@@ -462,20 +462,20 @@ const transactionOutsideWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-09-07T09:10:11+08:00"),
+      sortTime: Date.parse("2026-06-22T09:10:11+08:00"),
     },
   ],
   source: {
     ...nextDayAccountingWorkflowDownload.source,
-    contentDigest: "sha256:yuanta-transaction-outside-content" as `sha256:${string}`,
+    contentDigest: "sha256:yuanta-accounting-date-outside-content" as `sha256:${string}`,
     rows: [
       {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
           "YUANTA-ACCOUNT-001",
-          "20260906",
-          "20260907",
+          "20260619",
+          "20260622",
           "09:10:11",
           "CLEAN DEPOSIT",
           "",
@@ -609,7 +609,7 @@ try {
     },
     {
       ...stableConnectionIdentity,
-      observedAt: () => "2026-09-06T23:40:39+08:00",
+      observedAt: () => "2026-09-21T23:40:39+08:00",
       canonicalLedgerDir: boundaryDir,
       readDepositAccountOptions: async () => [workflowAccount],
       queryAccount: async () => undefined,
@@ -628,7 +628,18 @@ try {
         accountingDate: boundaryCurrent.records[0]?.compact.accountingDate,
         transactionDate: boundaryCurrent.records[0]?.compact.transactionDate,
       },
-      { accountingDate: "2026-09-07", transactionDate: "2026-09-06" },
+      {
+        accountingDate: "2026-06-22",
+        transactionDate: "2026-06-19",
+      },
+    );
+    assert.equal(
+      boundaryStore.db
+        .prepare(
+          "SELECT effective_on AS effectiveOn FROM transaction_revisions LIMIT 1",
+        )
+        .get()?.effectiveOn,
+      "2026-06-19",
     );
     assert.equal(
       boundaryStore.db
@@ -659,7 +670,7 @@ try {
         },
         {
           ...stableConnectionIdentity,
-          observedAt: () => "2026-09-06T23:40:39+08:00",
+          observedAt: () => "2026-09-21T23:40:39+08:00",
           canonicalLedgerDir: outOfRangeDir,
           readDepositAccountOptions: async () => [workflowAccount],
           queryAccount: async () => undefined,
