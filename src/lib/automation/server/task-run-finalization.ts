@@ -36,6 +36,7 @@ import {
   transitionTaskRunToTerminal,
   upsertTaskPrerequisiteNotice,
   type AutomationTaskRunTerminalUpdate,
+  updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -209,6 +210,20 @@ async function finalizeTaskRunTransition(
       taskError = [taskError, warning].filter(Boolean).join("\n") || null;
       logTail = tail(`${logTail}\n${warning}\n`);
     }
+  }
+  if (status === "waiting_for_human") {
+    updateTaskRun(db, run.taskRunId, {
+      status,
+      finishedAt: null,
+      exitCode: intent.exitCode,
+      signal: intent.signal,
+      logTail,
+      errorMessage: taskError,
+    });
+    const persisted = taskRunById(db, run.taskRunId);
+    if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
+    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
+    return { status: persisted.status, skipped: false };
   }
   if (!["completed", "partial", "failed", "cancelled", "interrupted"].includes(status)) {
     return { status, skipped: true };
