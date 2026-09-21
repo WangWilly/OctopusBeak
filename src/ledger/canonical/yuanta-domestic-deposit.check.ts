@@ -565,6 +565,11 @@ assert.deepEqual(reformattedFinancial.capture.records[0]!.balanceAfter, {
 const accountingVsTransactionDate = admitYuantaDomesticDepositFinancialCapture({
   capture: admitYuantaDomesticDepositCaptureEvidence({
     ...sourceCapture,
+    queryRange: {
+      dateRange: "three_months",
+      startDate: "2026/08/02",
+      endDate: "2026/08/21",
+    },
     downloads: [
       {
         ...sourceCapture.downloads[0]!,
@@ -576,7 +581,7 @@ const accountingVsTransactionDate = admitYuantaDomesticDepositFinancialCapture({
               "臺幣活期存款",
               "123456",
               "20260802",
-              "20260803",
+              "20260801",
               "09:10:11",
               "DATE BOUNDARY",
               "",
@@ -596,11 +601,11 @@ const accountingVsTransactionDate = admitYuantaDomesticDepositFinancialCapture({
 assert.equal(accountingVsTransactionDate.status, "admitted");
 assert.equal(
   accountingVsTransactionDate.capture?.records[0]?.effectiveOn,
-  "2026-08-03",
+  "2026-08-01",
 );
 assert.equal(
   accountingVsTransactionDate.capture?.records[0]?.transactionDateTimeLocal,
-  "2026-08-03T09:10:11",
+  "2026-08-01T09:10:11",
 );
 
 const providerBoundaryEvidence = admitYuantaDomesticDepositCaptureEvidence({
@@ -643,22 +648,10 @@ const providerBoundary = admitYuantaDomesticDepositFinancialCapture({
   captureId: "yuanta-financial-provider-boundary",
   humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
 });
-assert.equal(providerBoundary.status, "admitted");
-assert.ok(providerBoundary.capture);
-const providerBoundaryCompact = JSON.parse(
-  providerBoundary.capture.records[0]!.compactJson,
-) as { accountingDate?: string; transactionDate?: string };
-assert.deepEqual(
-  {
-    accountingDate: providerBoundaryCompact.accountingDate,
-    transactionDate: providerBoundaryCompact.transactionDate,
-    effectiveOn: providerBoundary.capture.records[0]!.effectiveOn,
-  },
-  {
-    accountingDate: "2026-09-07",
-    transactionDate: "2026-09-06",
-    effectiveOn: "2026-09-06",
-  },
+assert.equal(providerBoundary.status, "blocked");
+assert.equal(providerBoundary.capture, null);
+assert.ok(
+  providerBoundary.diagnostics.includes("row-outside-query-range"),
 );
 
 let negativeCounter = 0;
@@ -695,8 +688,8 @@ assert.ok(
     [
       "臺幣活期存款",
       "123456",
-      "20260906",
       "20260907",
+      "20260906",
       "18:20:12",
       "DATE OUTSIDE",
       "",

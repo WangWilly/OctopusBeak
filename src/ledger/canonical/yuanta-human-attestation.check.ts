@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE,
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_VERSION,
+  YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_QUERY_COVERAGE_VERSION,
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
@@ -161,9 +162,32 @@ assert.equal(
   YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_VERSION,
 );
 assert.equal(YUANTA_HUMAN_ATTESTED_V2_MANIFEST.providerGuaranteed, false);
+assert.equal(
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST.semantics.queryCoverage,
+  "accounting-date-bounded",
+);
+assert.equal(
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST.semantics.queryCoverageVersion,
+  YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_QUERY_COVERAGE_VERSION,
+);
+assert.equal(
+  YUANTA_HUMAN_ATTESTED_V2_MANIFEST.semantics.accountingDate,
+  "query-range-membership",
+);
 assert.notEqual(
   yuantaHumanAttestedV2IdentityEpochKey(YUANTA_HUMAN_ATTESTED_V2_MANIFEST),
   yuantaHumanAttestedIdentityEpochKey(YUANTA_HUMAN_ATTESTED_V1_MANIFEST),
+);
+assert.equal(
+  yuantaHumanAttestedV2IdentityEpochKey(YUANTA_HUMAN_ATTESTED_V2_MANIFEST),
+  yuantaHumanAttestedV2IdentityEpochKey({
+    ...YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+    evidenceVersion: "future-query-coverage-version",
+    provenance: {
+      ...YUANTA_HUMAN_ATTESTED_V2_MANIFEST.provenance,
+      attestationContractFingerprint: "sha256:future-query-coverage",
+    },
+  } as never),
 );
 assert.equal(
   isYuantaHumanAttestedV2Manifest(

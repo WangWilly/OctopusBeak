@@ -1400,12 +1400,13 @@ function financialDiagnosticsFor(
   for (const [pageOrdinal, download] of downloads.entries()) {
     for (const row of download.rows) {
       const time = sourceTransactionTime(row.values);
-      // Yuanta's selected query range bounds the transaction date. The
-      // provider may book a transaction on a later accounting date; retain
-      // that accounting fact in the canonical record without rejecting it.
+      // Yuanta's selected query range bounds the provider accounting date.
+      // The transaction date remains the canonical financial effective date;
+      // it may precede the requested range when the provider books the row
+      // later.
       if (
         time &&
-        (time.localDate < queryStart || time.localDate > queryEnd)
+        (time.accountingDate < queryStart || time.accountingDate > queryEnd)
       )
         diagnostics.push("row-outside-query-range");
       const result = financialRecord(identity, row, pageOrdinal, semantics);
