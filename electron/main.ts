@@ -20,6 +20,7 @@ import { registerOctopusBeakIpc } from "./ipc.ts";
 import { initializeCanonicalRuntimeBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
+import { AutomationRuntimeInvariantError } from "../src/lib/automation/runtime-invariants.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -243,10 +244,21 @@ async function start() {
         .catch(reject);
     });
   });
-  void automationRuntimeReady.catch(() => {
+  void automationRuntimeReady.catch((error) => {
+    const invariant = error instanceof AutomationRuntimeInvariantError
+      ? error.details
+      : null;
     handleAutomationRuntimeFatal({
-      code: "automation-runtime-snapshot-failed",
+      code: invariant?.code ?? "automation-runtime-snapshot-failed",
       stage: "startup-reconcile",
+      ...(invariant
+        ? {
+          sessionId: invariant.sessionId,
+          revision: invariant.revision,
+          taskId: invariant.taskId,
+          runId: invariant.runId,
+        }
+        : {}),
     });
   });
   if (!cdpFixture) {

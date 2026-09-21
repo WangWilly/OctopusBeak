@@ -79,6 +79,20 @@ function stopChild(child: ChildProcess) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
 }
 
+function assertUnknownActiveFatalOutput(
+  output: string,
+  errorOutput: string,
+  result: { status: number | null; signal: NodeJS.Signals | null },
+) {
+  assert.equal(result.status, 1);
+  const combined = `${output}\n${errorOutput}`;
+  assert.match(combined, /automation-runtime-fatal/);
+  assert.match(combined, /automation-unknown-active-task/);
+  assert.match(combined, new RegExp(UNKNOWN_ACTIVE_TASK_ID));
+  assert.match(combined, /unknown-cdp-run/);
+  assert.doesNotMatch(combined, /fixture-cdp-/);
+}
+
 test("isolated Electron/CDP automation runtime stays synchronized", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "octopusbeak-runtime-cdp-"));
   const userData = join(directory, "user-data");
@@ -280,6 +294,10 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
         t.skip("Electron fixture hit the known macOS NSApplication SIGABRT initialization limitation.");
         return;
       }
+      if (result.status === 1 && /automation-unknown-active-task/.test(`${output}\n${errorOutput}`)) {
+        assertUnknownActiveFatalOutput(output, errorOutput, result);
+        return;
+      }
       assert.fail(`Fatal fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
     }
     browser = await chromium.connectOverCDP(cdpUrl);
@@ -290,13 +308,7 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
     ]);
     assert.ok(result, "Fatal invariant process did not exit.");
-    assert.equal(result?.status, 1);
-    const combined = `${output}\n${errorOutput}`;
-    assert.match(combined, /automation-runtime-fatal/);
-    assert.match(combined, /automation-unknown-active-task/);
-    assert.match(combined, new RegExp(UNKNOWN_ACTIVE_TASK_ID));
-    assert.match(combined, /unknown-cdp-run/);
-    assert.doesNotMatch(combined, /fixture-cdp-/);
+    assertUnknownActiveFatalOutput(output, errorOutput, result!);
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (child) stopChild(child);

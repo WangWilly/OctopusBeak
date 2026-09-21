@@ -55,6 +55,31 @@ test("block refresh is single-flight with one trailing refresh", async () => {
   assert.equal(reads, 2);
 });
 
+test("a trailing refresh does not recursively chase newer revisions", async () => {
+  let calls = 0;
+  let release!: () => void;
+  const first = new Promise<void>((resolve) => { release = resolve; });
+  let coordinator: ReturnType<typeof createAutomationBlockRefreshCoordinator<number>>;
+  coordinator = createAutomationBlockRefreshCoordinator(async (isTrailing) => {
+    calls += 1;
+    if (!isTrailing) {
+      await first;
+      return calls;
+    }
+    // A stale trailing response must not create a second trailing request.
+    coordinator.refresh("overtaken", async () => {
+      calls += 1;
+      return calls;
+    });
+    return calls;
+  });
+  const result = coordinator.refresh("route-entry");
+  coordinator.refresh("overtaken");
+  release();
+  assert.equal(await result, 2);
+  assert.equal(calls, 2);
+});
+
 test("unknown active task raises a safe fatal invariant while terminal rows are allowed", () => {
   const known = new Set(["known"]);
   assert.throws(
