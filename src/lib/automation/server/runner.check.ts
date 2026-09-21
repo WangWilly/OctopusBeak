@@ -51,6 +51,7 @@ import {
   liveTaskRunUpdate,
   nextAttemptStatus,
   prepareLibrettoRunCdpPatch,
+  persistCancellationTransitionForRun,
   claimRunAutomationSession,
   cancelAutomationTask,
   resumeFailureMessage,
@@ -978,6 +979,42 @@ test("a queued batch task can be cancelled before its process starts", async () 
   });
   await waitForTaskToSettle("exchange-rates");
   assert.deepEqual(activeAutomationTaskIds(), []);
+});
+
+test("queued cancellation is idempotent after a terminal transition wins", () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-queued-cancel-race-"));
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const created = createTaskRun(db, {
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: join(ledgerDir, "queued-cancel.log"),
+    });
+    const cancelled = persistCancellationTransitionForRun(
+      db,
+      created.taskRunId,
+      "cancelled",
+      "2026-07-14T22:01:00.000Z",
+    );
+    assert.equal(cancelled?.status, "cancelled");
+    assert.doesNotThrow(() =>
+      persistCancellationTransitionForRun(
+        db,
+        created.taskRunId,
+        "cancelled",
+        "2026-07-14T22:02:00.000Z",
+      )
+    );
+    assert.equal(taskRunById(db, created.taskRunId)?.finishedAt, "2026-07-14T22:01:00.000Z");
+    db.close();
+  } finally {
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
 });
 
 assert.equal(

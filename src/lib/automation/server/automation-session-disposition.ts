@@ -27,7 +27,11 @@ import {
   type OwnedAutomationSession,
   type TimerDeps,
 } from "./session-lifecycle.ts";
-import { taskRunById, updateTaskRun, type AutomationTaskRun } from "./store.ts";
+import {
+  taskRunById,
+  transitionTaskRunToTerminal,
+  type AutomationTaskRun,
+} from "./store.ts";
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
 const SESSION_LOG_PREFIX_BYTES = 4_000;
@@ -324,7 +328,7 @@ export function claimAutomationTaskRunSession(
       let registryClaimed = false;
       db.exec("BEGIN");
       try {
-        updateTaskRun(db, resumeFrom.taskRunId, {
+        transitionTaskRunToTerminal(db, resumeFrom.taskRunId, {
           status: "failed",
           finishedAt: new Date().toISOString(),
           errorMessage: `Superseded by resume handoff: ${taskRunId}`,
@@ -351,7 +355,7 @@ export function claimAutomationTaskRunSession(
       return true;
     }
   }
-  updateTaskRun(db, taskRunId, {
+  transitionTaskRunToTerminal(db, taskRunId, {
     status: "failed",
     finishedAt: new Date().toISOString(),
     exitCode: null,
