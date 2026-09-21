@@ -10,6 +10,7 @@ import {
   latestTaskRuns,
   recentTaskRuns,
   taskRunById,
+  transitionTaskRunToActive,
   todayTaskRunIds,
   transitionTaskRunToTerminal,
   updateTaskRun,
@@ -123,6 +124,40 @@ try {
   assert.deepEqual(firstTransition, { status: "completed", applied: true });
   assert.deepEqual(competingTransition, { status: "completed", applied: false });
   assert.equal(taskRunById(db, raced.taskRunId)?.errorMessage, null);
+
+  const queuedCancellation = createTaskRun(db, {
+    taskId: "queued-cancellation-task",
+    script: "run:queued-cancellation-task",
+    kind: "sync",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt,
+    logPath: "data/automation/logs/queued-cancellation.log",
+  });
+  assert.deepEqual(
+    transitionTaskRunToActive(db, queuedCancellation.taskRunId, {
+      status: "cancelling",
+    }),
+    { status: "cancelling", applied: true },
+  );
+  assert.deepEqual(
+    transitionTaskRunToTerminal(db, queuedCancellation.taskRunId, {
+      status: "cancelled",
+      finishedAt,
+      exitCode: null,
+      signal: "SIGTERM",
+      errorMessage: null,
+      logTail: "cancelled",
+    }),
+    { status: "cancelled", applied: true },
+  );
+  assert.deepEqual(
+    transitionTaskRunToActive(db, queuedCancellation.taskRunId, {
+      status: "cancelling",
+    }),
+    { status: "cancelled", applied: false },
+  );
 
   for (let index = 0; index < 101; index += 1) {
     const startedAt = new Date(Date.UTC(2026, 5, 30, 4, 0, index)).toISOString();

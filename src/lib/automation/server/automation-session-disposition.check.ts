@@ -17,7 +17,11 @@ import {
   sessionFromRun,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
-import { createTaskRun, taskRunById } from "./store.ts";
+import {
+  createTaskRun,
+  taskRunById,
+  transitionTaskRunToTerminal,
+} from "./store.ts";
 
 function createRun(
   db: ReturnType<typeof openLedgerDatabase>,
@@ -240,6 +244,58 @@ test("failed session claim is idempotent after the run becomes terminal", async 
     db.close();
   } finally {
     if (blockingOwner) await relinquishAutomationSessionForTask(blockingOwner.taskId, fakeFinalizeDeps());
+    rmSync(ledgerDir, { recursive: true, force: true });
+  }
+});
+
+test("resume handoff rejects a source run that became terminal before the claim", async () => {
+  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-session-disposition-handoff-race-"));
+  let sourceOwner: OwnedAutomationSession | null = null;
+  try {
+    const db = openLedgerDatabase(ledgerDir);
+    const waiting = createRun(
+      db,
+      ledgerDir,
+      "waiting_for_human",
+      "automation-session: ses-handoff-race\nWorkflow paused.",
+    );
+    const next = createRun(db, ledgerDir, "running");
+    sourceOwner = {
+      taskId: waiting.taskId,
+      taskRunId: waiting.taskRunId,
+      session: "ses-handoff-race",
+      pid: null,
+    };
+    refreshAutomationSession(sourceOwner);
+
+    const sourceTransition = transitionTaskRunToTerminal(db, waiting.taskRunId, {
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      exitCode: 1,
+      signal: null,
+      errorMessage: "source completed before resume claim",
+      logTail: waiting.logTail,
+    });
+    assert.equal(sourceTransition.applied, true);
+
+    const candidate = {
+      taskId: next.taskId,
+      taskRunId: next.taskRunId,
+      session: sourceOwner.session,
+      pid: null,
+    } satisfies OwnedAutomationSession;
+    assert.equal(
+      claimAutomationTaskRunSession(db, next.taskRunId, candidate, {
+        resumeSession: sourceOwner.session,
+        resumeFrom: waiting,
+      }),
+      false,
+    );
+    assert.equal(ownedAutomationSessionForTask(next.taskId)?.taskRunId, waiting.taskRunId);
+    assert.equal(taskRunById(db, next.taskRunId)?.status, "failed");
+    db.close();
+  } finally {
+    if (sourceOwner) await relinquishAutomationSessionForTask(sourceOwner.taskId, fakeFinalizeDeps());
     rmSync(ledgerDir, { recursive: true, force: true });
   }
 });

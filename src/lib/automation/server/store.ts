@@ -501,21 +501,22 @@ export type AutomationTaskRunActiveUpdate = AutomationTaskRunUpdate & {
   status: ActiveTaskRunStatus;
 };
 
-/**
- * Atomically update an active run without allowing a terminal finalizer to be
- * overwritten by a stale cancellation/session callback.
- */
-export function transitionTaskRunToActive(
+type ConditionalTaskRunUpdate = AutomationTaskRunUpdate & {
+  status: AutomationTaskStatus;
+};
+
+function transitionTaskRunConditionally(
   db: LedgerDatabase,
   taskRunId: string,
-  update: AutomationTaskRunActiveUpdate,
+  update: ConditionalTaskRunUpdate,
+  allowedStatuses: readonly AutomationTaskStatus[],
 ) {
   const row = db
     .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
     .get(taskRunId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
   const current = rowToTaskRun(row);
-  if (!isActiveTaskRunStatus(current.status)) {
+  if (!allowedStatuses.includes(current.status)) {
     return { status: current.status, applied: false as const };
   }
 
@@ -531,7 +532,7 @@ export function transitionTaskRunToActive(
     `
     UPDATE automation_task_runs
     SET status = ?, attempt = ?, max_attempts = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
-    WHERE task_run_id = ? AND status IN (${ACTIVE_TASK_RUN_STATUSES.map(() => "?").join(", ")})
+    WHERE task_run_id = ? AND status IN (${allowedStatuses.map(() => "?").join(", ")})
   `,
   ).run(
     next.status,
@@ -544,7 +545,7 @@ export function transitionTaskRunToActive(
     next.logTail,
     taskRunRecordJson(next),
     taskRunId,
-    ...ACTIVE_TASK_RUN_STATUSES,
+    ...allowedStatuses,
   );
   if (Number(changed.changes) > 0) {
     return { status: next.status, applied: true as const };
@@ -552,6 +553,23 @@ export function transitionTaskRunToActive(
   const latest = taskRunById(db, taskRunId);
   if (!latest) throw new Error(`Missing automation task run: ${taskRunId}`);
   return { status: latest.status, applied: false as const };
+}
+
+/**
+ * Atomically update an active run without allowing a terminal finalizer to be
+ * overwritten by a stale cancellation/session callback.
+ */
+export function transitionTaskRunToActive(
+  db: LedgerDatabase,
+  taskRunId: string,
+  update: AutomationTaskRunActiveUpdate,
+) {
+  return transitionTaskRunConditionally(
+    db,
+    taskRunId,
+    update,
+    ACTIVE_TASK_RUN_STATUSES,
+  );
 }
 
 export type AutomationTaskRunTerminalUpdate = AutomationTaskRunUpdate & {
@@ -571,51 +589,12 @@ export function transitionTaskRunToTerminal(
   taskRunId: string,
   update: AutomationTaskRunTerminalUpdate,
 ) {
-  const row = db
-    .prepare("SELECT * FROM automation_task_runs WHERE task_run_id = ?")
-    .get(taskRunId) as Record<string, unknown> | undefined;
-  if (!row) throw new Error(`Missing automation task run: ${taskRunId}`);
-  const current = rowToTaskRun(row);
-  if (isTerminalTaskRunStatus(current.status)) {
-    return { status: current.status, applied: false as const };
-  }
-  if (!isActiveTaskRunStatus(current.status)) {
-    return { status: current.status, applied: false as const };
-  }
-
-  const next = {
-    ...current,
-    ...update,
-  };
-  next.logTail = sanitizeAutomationLogTail(next.logTail);
-  next.errorMessage = next.errorMessage === null
-    ? null
-    : sanitizeAutomationLogTail(next.errorMessage);
-  const changed = db.prepare(
-    `
-    UPDATE automation_task_runs
-    SET status = ?, attempt = ?, max_attempts = ?, finished_at = ?, exit_code = ?, signal = ?, error_message = ?, log_tail = ?, record_json = ?
-    WHERE task_run_id = ? AND status IN (${ACTIVE_TASK_RUN_STATUSES.map(() => "?").join(", ")})
-  `,
-  ).run(
-    next.status,
-    next.attempt,
-    next.maxAttempts,
-    next.finishedAt,
-    next.exitCode,
-    next.signal,
-    next.errorMessage,
-    next.logTail,
-    taskRunRecordJson(next),
+  return transitionTaskRunConditionally(
+    db,
     taskRunId,
-    ...ACTIVE_TASK_RUN_STATUSES,
+    update,
+    ACTIVE_TASK_RUN_STATUSES,
   );
-  if (Number(changed.changes) > 0) {
-    return { status: next.status, applied: true as const };
-  }
-  const latest = taskRunById(db, taskRunId);
-  if (!latest) throw new Error(`Missing automation task run: ${taskRunId}`);
-  return { status: latest.status, applied: false as const };
 }
 
 export function updateHumanAssistanceContract(
