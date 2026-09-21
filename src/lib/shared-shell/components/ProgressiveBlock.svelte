@@ -5,6 +5,7 @@
 
   export let state: BlockState<DashboardBlockPayload> = { status: "loading" };
   export let label = "data block";
+  export let showSpinner = true;
   export let retry: () => void = () => {};
 
   $: hasData = "data" in state && state.data !== undefined;
@@ -14,7 +15,7 @@
 {#if hasData}
   <div class="block-frame" data-progressive-block={label} data-block-state={state.status} aria-busy={state.status === "loading"}>
     <slot data={blockData} />
-    {#if state.status === "loading"}
+    {#if showSpinner && state.status === "loading"}
       <span class="block-spinner" role="status" aria-label={$t.common.refreshing}></span>
     {:else if state.status === "error"}
       <div class="block-error" role="alert">

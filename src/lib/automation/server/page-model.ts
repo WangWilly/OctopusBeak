@@ -87,6 +87,7 @@ export function buildAutomationPageModel(input: {
       .map(({ typeId, error }) => ({ typeId, ...(error ? { error } : {}) })) ?? [];
     return {
       id: task.id,
+      runId: runtime?.runId ?? run?.taskRunId ?? null,
       label: task.label,
       script: task.script,
       kind: task.kind,

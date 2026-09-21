@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   AutomationRuntimeSnapshot,
+  AutomationRuntimeStatementFailure,
   AutomationRuntimeTaskSnapshot,
   AutomationRuntimeTaskStatus,
 } from "$lib/desktop/api.ts";
@@ -9,6 +10,7 @@ import type { AutomationTaskRun } from "./store.ts";
 import { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 import { assertKnownAutomationRuntimeTasks } from "../runtime-invariants.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
+import { parseStatementRunSummary } from "../statement-run-summary.ts";
 
 export { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 
@@ -46,6 +48,15 @@ function isSafeProgress(value: unknown): value is AutomationTaskProgress {
   );
 }
 
+function statementFailuresFromLogTail(logTail: string) {
+  return parseStatementRunSummary(logTail)?.results
+    .filter((result) => result.status === "failed")
+    .map(({ typeId, error }) => ({
+      typeId,
+      ...(error ? { error: sanitizeAutomationLogTail(error) } : {}),
+    })) ?? [];
+}
+
 export function assertAutomationRuntimeSnapshot(
   value: AutomationRuntimeSnapshot,
 ) {
@@ -69,6 +80,14 @@ export function assertAutomationRuntimeSnapshot(
       || task.attempt < 0
       || !Number.isSafeInteger(task.maxAttempts)
       || task.maxAttempts < 1
+      || (task.statementFailures !== undefined && !Array.isArray(task.statementFailures))
+      || (task.statementFailures !== undefined && task.statementFailures.some((failure: AutomationRuntimeStatementFailure) =>
+        !failure
+        || typeof failure.typeId !== "string"
+        || !failure.typeId
+        || (failure.error !== undefined && typeof failure.error !== "string")
+        || (failure.error !== undefined && failure.error !== sanitizeAutomationLogTail(failure.error))
+      ))
       || typeof task.logTail !== "string"
       || Buffer.byteLength(task.logTail, "utf8") > 64 * 1024
       || task.logTail !== sanitizeAutomationLogTail(task.logTail)
@@ -113,6 +132,7 @@ export function runtimeTaskSnapshotFromRun(
     attempt: run.attempt,
     maxAttempts: run.maxAttempts,
     progress,
+    statementFailures: statementFailuresFromLogTail(logTail),
     logTail,
     errorMessage: run.errorMessage === null
       ? null
@@ -127,6 +147,10 @@ export function createAutomationRuntimeState(
 ) {
   let revision = 0;
   const tasks = new Map<string, AutomationRuntimeTaskSnapshot>();
+  // A task's current run is a monotonic identity even though run IDs are
+  // UUIDs. Once a run is replaced, late callbacks from that retired run must
+  // never be allowed to replace the current progress/status record.
+  const retiredRunIds = new Map<string, Set<string>>();
   const listeners = new Set<(snapshot: AutomationRuntimeSnapshot) => void>();
 
   const snapshot = (): AutomationRuntimeSnapshot => {
@@ -153,6 +177,16 @@ export function createAutomationRuntimeState(
   return {
     snapshot,
     upsert(task: AutomationRuntimeTaskSnapshot) {
+      const current = tasks.get(task.taskId);
+      const retired = retiredRunIds.get(task.taskId) ?? new Set<string>();
+      if (current && task.runId !== current.runId) {
+        if (
+          (task.runId === null && current.runId !== null)
+          || (task.runId !== null && retired.has(task.runId))
+        ) return snapshot();
+        if (current.runId !== null) retired.add(current.runId);
+        retiredRunIds.set(task.taskId, retired);
+      }
       tasks.set(task.taskId, {
         ...task,
         logTail: sanitizeAutomationLogTail(task.logTail),
@@ -169,6 +203,7 @@ export function createAutomationRuntimeState(
     },
     reset() {
       tasks.clear();
+      retiredRunIds.clear();
       return publish();
     },
   };

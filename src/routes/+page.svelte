@@ -405,6 +405,7 @@
       key,
       () => loadRouteBlock(nextRoute, key, options),
     ])) as Record<string, () => Promise<DashboardBlockPayload>>;
+    let staleBlockDetected = false;
     const settled = loadIndependentBlocks(loaders, (key, state) => {
       if (routeBlockLoadIds[nextRoute] !== loadId) return;
       const payload = "data" in state ? state.data : undefined;
@@ -412,6 +413,30 @@
         nextRoute === "automation"
         && payload?.route === "automation"
         && isAutomationBlockStale(payload.data, automationRuntimeSnapshot)
+        && refreshPhase !== "trailing"
+      ) {
+        // Commit the block first. Starting a refresh from inside this
+        // callback increments the route load id and can otherwise invalidate
+        // the current callback before its ready state reaches the renderer.
+        staleBlockDetected = true;
+      }
+      setRouteBlocks(nextRoute, {
+        ...(routeBlocks[nextRoute] ?? {}),
+        [key]: state,
+      });
+    });
+    void settled.then((states) => {
+      if (routeBlockLoadIds[nextRoute] !== loadId) return;
+      // The per-block callbacks provide progressive rendering. The final
+      // commit is a safety net for fast/parallel resolutions and guarantees
+      // that a completed request cannot leave a block in loading state.
+      setRouteBlocks(nextRoute, {
+        ...(routeBlocks[nextRoute] ?? {}),
+        ...states,
+      });
+      if (
+        nextRoute === "automation"
+        && staleBlockDetected
         && refreshPhase !== "trailing"
       ) {
         void automationBlockRefreshCoordinator.refresh(
@@ -424,10 +449,6 @@
           ),
         );
       }
-      setRouteBlocks(nextRoute, {
-        ...(routeBlocks[nextRoute] ?? {}),
-        [key]: state,
-      });
     });
     routeBlockPromises = { ...routeBlockPromises, [nextRoute]: settled };
     void settled.finally(() => {

@@ -53,15 +53,16 @@ function progressText(task: AutomationTaskRow, runtime: AutomationRuntimeTaskSna
   return task.progressText;
 }
 
-function primaryAction(task: AutomationTaskRow, status: AutomationTaskRow["status"], active: boolean) {
+function primaryAction(status: AutomationTaskRow["status"], active: boolean) {
   if (active) return "Cancel" as const;
   if (status === "failed") return "Run again" as const;
   if (status === "needs_setup") return "Configure" as const;
   if (status === "locked") return "Locked" as const;
   if (status === "waiting_for_human") return "Cancel" as const;
-  // Keep the block's static action for terminal/queued states.  It carries
-  // product-specific distinctions such as configuration and today's run.
-  return task.primaryAction;
+  // Runtime status is authoritative for terminal actions. In particular, a
+  // completed/partial snapshot must not retain a stale Cancel/Run again
+  // action from the block captured before the run finished.
+  return "Run" as const;
 }
 
 function applyOptimisticAction(
@@ -96,16 +97,18 @@ export function mergeAutomationRuntimeTask(
   const status = runtime.status as AutomationTaskRow["status"];
   return {
     ...task,
+    runId: runtime.runId,
     status,
     isActive,
     attempt: runtime.attempt,
     maxAttempts: runtime.maxAttempts,
+    statementFailures: runtime.statementFailures ?? task.statementFailures,
     logTail: runtime.logTail,
     errorMessage: runtime.errorMessage,
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
     progressPercent: runtime.progress.percent,
     progressText: progressText(task, runtime),
-    primaryAction: primaryAction(task, status, isActive),
+    primaryAction: primaryAction(status, isActive),
     // Active lifecycle always wins over credential readiness so a run can be
     // cancelled/terminated even if credentials are being refreshed.
     canRun: isActive || task.canRun,

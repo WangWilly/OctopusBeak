@@ -53,6 +53,7 @@
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
   } from "./types.ts";
+  import { mergeAutomationRuntime } from "./runtime-sync.ts";
   import {
     automationStageTasks,
     dispatchAutomationStageSync,
@@ -389,33 +390,11 @@
 
   function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
     const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
-    const activeCount = snapshot.tasks.filter((task) =>
-      isActiveAutomationRuntimeStatus(task.status),
-    ).length;
-    automation = {
-      ...automation,
-      active: activeCount > 0,
-      activeTaskCount: activeCount,
-      tasks: automation.tasks.map((task) => {
-        const runtime = byTaskId.get(task.id);
-        if (!runtime) return task;
-        const isActive = isActiveAutomationRuntimeStatus(runtime.status);
-        return {
-          ...task,
-          status: runtime.status,
-          isActive,
-          attempt: runtime.attempt,
-          maxAttempts: runtime.maxAttempts,
-          logTail: runtime.logTail,
-          errorMessage: runtime.errorMessage,
-          forceTerminateAvailable: runtime.forceTerminateAvailable === true,
-          progressPercent: runtime.progress.percent,
-          progressText: runtime.progress.percent === null ? task.progressText : `${runtime.progress.percent}%`,
-          primaryAction: isActive ? "Cancel" : task.primaryAction,
-          canRun: isActive || task.canRun,
-        };
-      }),
-    };
+    // Keep the component on the same pure merge contract as list/details and
+    // let the authoritative runtime status derive terminal actions and
+    // partial summaries. This also means every task row receives the exact
+    // progress belonging to the current runId in the snapshot.
+    automation = mergeAutomationRuntime(automation, snapshot);
     for (const taskId of [...pendingTaskIds]) {
       if (byTaskId.has(taskId)) {
         pendingTaskIds.delete(taskId);
@@ -1524,7 +1503,7 @@
     </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+    <ProgressiveBlock label="details" state={blockState("details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
     {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, renderedPendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
     {#if detailsNoticeGroups.length}
@@ -1579,7 +1558,7 @@
     {/if}
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+    <ProgressiveBlock label="list" state={blockState("list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
     {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
@@ -1664,9 +1643,17 @@
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
-                  {#if task.isActive}
+                  {#if task.isActive || task.progressPercent !== null}
                   <div class="progress-cell">
-                    <div class="progress-bar" aria-hidden="true">
+                    <div
+                      class="progress-bar"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={task.progressPercent ?? undefined}
+                      aria-valuetext={progressLabel(task, $t)}
+                      aria-label={taskLabel(task, $t)}
+                    >
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
                     <span class="mono">{progressLabel(task, $t)}</span>

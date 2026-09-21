@@ -153,6 +153,8 @@ export type AutomationTaskPrerequisiteNotice = {
 };
 
 export type AutomationTaskRow = AutomationTaskSummary & {
+  /** The run whose live status/progress this row currently represents. */
+  runId?: string | null;
   status: AutomationTaskStatus;
   attempt: number;
   maxAttempts: number;
