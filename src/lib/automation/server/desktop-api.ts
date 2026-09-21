@@ -256,6 +256,8 @@ export function loadAutomationCoreSnapshot(
       );
     });
     return {
+      runtimeSessionId: runtime.sessionId,
+      runtimeRevision: runtime.revision,
       automation: {
         ...buildAutomationPageModel({
           tasks: enabledAutomationTasks(enabledGroups),
@@ -297,6 +299,8 @@ export function applyAutomationCredentialState(
     invalidCredentialFileReasons: credentialState.invalidFileReasons,
   }));
   return {
+    runtimeSessionId: core.runtimeSessionId,
+    runtimeRevision: core.runtimeRevision,
     automation: {
       ...core.automation,
       credentials: { ...credentialState.status },

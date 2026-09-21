@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
+import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+import {
+  isAutomationBlockStale,
+  mergeAutomationRuntime,
+  mergeAutomationRuntimeTask,
+  selectAutomationBlockModel,
+} from "./runtime-sync.ts";
+
+function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
+  return {
+    id: "exchange-rates",
+    label: "Exchange rates",
+    script: "run:exchange-rates",
+    kind: "sync",
+    credentialKeys: [],
+    dependencies: [],
+    status: "queued",
+    attempt: 0,
+    maxAttempts: 1,
+    latestStartedAt: null,
+    latestFinishedAt: null,
+    logTail: "old log",
+    errorMessage: null,
+    logPath: null,
+    progressPercent: null,
+    progressText: "Queued",
+    statementFailures: [],
+    humanSession: null,
+    humanAssistanceContract: null,
+    forceTerminateAvailable: false,
+    isActive: false,
+    ranToday: false,
+    primaryAction: "Run",
+    canRun: true,
+    ...overrides,
+  };
+}
+
+function model(tasks: AutomationTaskRow[]): AutomationPageModel {
+  return {
+    businessDate: "2026-09-21",
+    active: false,
+    activeTaskCount: 0,
+    parallelRunnableTaskIds: tasks.map((item) => item.id),
+    credentials: {},
+    externalPrerequisiteNotices: [],
+    tasks,
+  };
+}
+
+function runtime(overrides: Partial<AutomationRuntimeSnapshot> = {}): AutomationRuntimeSnapshot {
+  return {
+    sessionId: "session-1",
+    revision: 4,
+    tasks: [{
+      taskId: "exchange-rates",
+      runId: "run-1",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 2,
+      progress: {
+        phaseCode: "fetch",
+        completed: 2,
+        total: 4,
+        percent: 50,
+        attempt: 1,
+      },
+      forceTerminateAvailable: false,
+      logTail: "new log",
+      errorMessage: null,
+      updatedAt: "2026-09-21T00:00:00.000Z",
+    }],
+    ...overrides,
+  };
+}
+
+test("runtime merge gives live status, progress, logs, and action precedence", () => {
+  const merged = mergeAutomationRuntime(model([task()]), runtime());
+  const item = merged.tasks[0]!;
+  assert.equal(item.status, "running");
+  assert.equal(item.isActive, true);
+  assert.equal(item.progressPercent, 50);
+  assert.equal(item.progressText, "50%");
+  assert.equal(item.logTail, "new log");
+  assert.equal(item.primaryAction, "Cancel");
+  assert.equal(item.canRun, true);
+  assert.equal(merged.activeTaskCount, 1);
+  assert.deepEqual(merged.parallelRunnableTaskIds, []);
+});
+
+test("block metadata remains the static source while runtime overlay is authoritative", () => {
+  const fallback = model([task({ label: "fallback" })]);
+  const block = model([task({ label: "block" })]);
+  const merged = selectAutomationBlockModel(fallback, block, runtime());
+  assert.equal(merged.tasks[0]?.label, "block");
+  assert.equal(merged.tasks[0]?.status, "running");
+  assert.equal(merged.tasks[0]?.logTail, "new log");
+});
+
+test("stale detection compares the captured session and revision", () => {
+  const current = runtime({ revision: 9 });
+  assert.equal(isAutomationBlockStale({ runtimeSessionId: "session-1", runtimeRevision: 8 }, current), true);
+  assert.equal(isAutomationBlockStale({ runtimeSessionId: "session-1", runtimeRevision: 9 }, current), false);
+  assert.equal(isAutomationBlockStale({ runtimeSessionId: "old-session", runtimeRevision: 1 }, current), false);
+});
+
+test("terminal runtime fields do not mutate the source block", () => {
+  const source = task();
+  const merged = mergeAutomationRuntimeTask(source, {
+    ...runtime().tasks[0]!,
+    status: "completed",
+    progress: { ...runtime().tasks[0]!.progress, percent: 100 },
+  });
+  assert.equal(source.status, "queued");
+  assert.equal(merged.status, "completed");
+  assert.equal(merged.progressPercent, 100);
+});

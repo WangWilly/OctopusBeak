@@ -1,0 +1,126 @@
+import type {
+  AutomationRuntimeBlockVersion,
+  AutomationRuntimeSnapshot,
+  AutomationRuntimeTaskSnapshot,
+} from "../desktop/api.ts";
+import { isActiveAutomationRuntimeStatus } from "./runtime-status.ts";
+import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+
+/** A block's captured runtime version, or null for legacy/fallback models. */
+export function automationBlockRuntimeVersion(
+  value: Partial<AutomationRuntimeBlockVersion> | null | undefined,
+): AutomationRuntimeBlockVersion | null {
+  const revision = value?.runtimeRevision;
+  if (
+    !value
+    || typeof value.runtimeSessionId !== "string"
+    || !value.runtimeSessionId
+    || typeof revision !== "number"
+    || !Number.isSafeInteger(revision)
+    || revision < 0
+  ) return null;
+  return {
+    runtimeSessionId: value.runtimeSessionId,
+    runtimeRevision: revision,
+  };
+}
+
+/**
+ * A block is stale only when its captured snapshot belongs to this session
+ * and is older than the runtime snapshot currently held by the shell.  A
+ * session mismatch is handled by the shell's authoritative resync path.
+ */
+export function isAutomationBlockStale(
+  blockVersion: Partial<AutomationRuntimeBlockVersion> | null | undefined,
+  current: AutomationRuntimeSnapshot | null | undefined,
+): boolean {
+  const version = automationBlockRuntimeVersion(blockVersion);
+  if (!version || !current || version.runtimeSessionId !== current.sessionId) return false;
+  return version.runtimeRevision < current.revision;
+}
+
+function progressText(task: AutomationTaskRow, runtime: AutomationRuntimeTaskSnapshot) {
+  if (runtime.progress.percent !== null) return `${runtime.progress.percent}%`;
+  if (runtime.status === "running") return `Running attempt ${runtime.attempt}/${runtime.maxAttempts}`;
+  if (runtime.status === "retrying") return `Retrying attempt ${runtime.attempt}/${runtime.maxAttempts}`;
+  if (runtime.status === "waiting_for_human") return "Waiting for human";
+  if (runtime.status === "completed") return "Completed";
+  if (runtime.status === "partial") return "Partial";
+  if (runtime.status === "failed") return "Failed";
+  if (runtime.status === "cancelled") return "Cancelled";
+  if (runtime.status === "interrupted") return "Interrupted";
+  return task.progressText;
+}
+
+function primaryAction(task: AutomationTaskRow, status: AutomationTaskRow["status"], active: boolean) {
+  if (active) return "Cancel" as const;
+  if (status === "failed") return "Run again" as const;
+  if (status === "needs_setup") return "Configure" as const;
+  if (status === "locked") return "Locked" as const;
+  if (status === "waiting_for_human") return "Cancel" as const;
+  // Keep the block's static action for terminal/queued states.  It carries
+  // product-specific distinctions such as configuration and today's run.
+  return task.primaryAction;
+}
+
+/** Merge one authoritative runtime record without mutating block data. */
+export function mergeAutomationRuntimeTask(
+  task: AutomationTaskRow,
+  runtime: AutomationRuntimeTaskSnapshot,
+): AutomationTaskRow {
+  const isActive = isActiveAutomationRuntimeStatus(runtime.status);
+  const status = runtime.status as AutomationTaskRow["status"];
+  return {
+    ...task,
+    status,
+    isActive,
+    attempt: runtime.attempt,
+    maxAttempts: runtime.maxAttempts,
+    logTail: runtime.logTail,
+    errorMessage: runtime.errorMessage,
+    forceTerminateAvailable: runtime.forceTerminateAvailable === true,
+    progressPercent: runtime.progress.percent,
+    progressText: progressText(task, runtime),
+    primaryAction: primaryAction(task, status, isActive),
+    // Active lifecycle always wins over credential readiness so a run can be
+    // cancelled/terminated even if credentials are being refreshed.
+    canRun: isActive || task.canRun,
+  };
+}
+
+/**
+ * Pure selector used by every automation block consumer.  The block remains
+ * the source of static/credential metadata while the shell runtime snapshot
+ * owns every live task field.
+ */
+export function mergeAutomationRuntime(
+  source: AutomationPageModel,
+  runtime: AutomationRuntimeSnapshot | null | undefined,
+): AutomationPageModel {
+  if (!runtime) return source;
+  const byTaskId = new Map(runtime.tasks.map((task) => [task.taskId, task]));
+  const tasks = source.tasks.map((task) => {
+    const live = byTaskId.get(task.id);
+    return live ? mergeAutomationRuntimeTask(task, live) : task;
+  });
+  const activeTaskCount = runtime.tasks.filter((task) =>
+    isActiveAutomationRuntimeStatus(task.status),
+  ).length;
+  return {
+    ...source,
+    active: activeTaskCount > 0,
+    activeTaskCount,
+    tasks,
+    parallelRunnableTaskIds: tasks
+      .filter((task) => task.canRun && !task.isActive && task.primaryAction !== "Configure" && task.primaryAction !== "Locked")
+      .map((task) => task.id),
+  };
+}
+
+export function selectAutomationBlockModel(
+  fallback: AutomationPageModel,
+  block: AutomationPageModel | undefined,
+  runtime: AutomationRuntimeSnapshot | null | undefined,
+): AutomationPageModel {
+  return mergeAutomationRuntime(block ?? fallback, runtime);
+}

@@ -84,6 +84,17 @@ export type AutomationRuntimeSnapshot = {
 };
 
 /**
+ * Version of the runtime snapshot captured while an automation block was
+ * projected.  The block may be stale by the time it reaches the renderer;
+ * keeping the exact capture here lets the renderer distinguish that case
+ * without treating ordinary progress events as a reason to reload the block.
+ */
+export type AutomationRuntimeBlockVersion = {
+  runtimeSessionId: string;
+  runtimeRevision: number;
+};
+
+/**
  * Main-process-owned credential state safe to cross the worker boundary.
  * It contains no credential values, encrypted payloads, or certificate paths.
  */
@@ -103,7 +114,7 @@ export type AutomationCredentialGroupCoreDto = Omit<
   "storedCredentialFileNames" | "invalidCredentialFileKeys" | "invalidCredentialFileReasons"
 >;
 
-export type AutomationCoreSnapshot = {
+export type AutomationCoreSnapshot = AutomationRuntimeBlockVersion & {
   automation: AutomationPageModel;
   /** Group metadata only; credential-derived fields are empty until details. */
   credentialGroups: CredentialGroupDto[];
@@ -126,6 +137,8 @@ export type AutomationCredentialSaveResult =
 export type AutomationDesktopModel = {
   automation: AutomationPageModel;
   credentialGroups: CredentialGroupDto[];
+  runtimeSessionId?: string;
+  runtimeRevision?: number;
 };
 
 export type AutomationActionResult =
