@@ -6,6 +6,7 @@ import type {
 import { isActiveAutomationRuntimeStatus } from "./runtime-status.ts";
 import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
 import type { AutomationActionToken } from "./runtime-controller.ts";
+import { primaryActionForAutomationTask } from "./primary-action.ts";
 
 /** A block's captured runtime version, or null for legacy/fallback models. */
 export function automationBlockRuntimeVersion(
@@ -53,18 +54,6 @@ function progressText(task: AutomationTaskRow, runtime: AutomationRuntimeTaskSna
   return task.progressText;
 }
 
-function primaryAction(status: AutomationTaskRow["status"], active: boolean) {
-  if (active) return "Cancel" as const;
-  if (status === "failed") return "Run again" as const;
-  if (status === "needs_setup") return "Configure" as const;
-  if (status === "locked") return "Locked" as const;
-  if (status === "waiting_for_human") return "Cancel" as const;
-  // Runtime status is authoritative for terminal actions. In particular, a
-  // completed/partial snapshot must not retain a stale Cancel/Run again
-  // action from the block captured before the run finished.
-  return "Run" as const;
-}
-
 function applyOptimisticAction(
   task: AutomationTaskRow,
   action: AutomationActionToken,
@@ -108,7 +97,7 @@ export function mergeAutomationRuntimeTask(
     forceTerminateAvailable: runtime.forceTerminateAvailable === true,
     progressPercent: runtime.progress.percent,
     progressText: progressText(task, runtime),
-    primaryAction: primaryAction(status, isActive),
+    primaryAction: primaryActionForAutomationTask(status, isActive),
     // Active lifecycle always wins over credential readiness so a run can be
     // cancelled/terminated even if credentials are being refreshed.
     canRun: isActive || task.canRun,

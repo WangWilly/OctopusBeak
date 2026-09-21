@@ -10,6 +10,7 @@ import { isActiveAutomationRuntimeStatus } from "../runtime-status.ts";
 import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import { resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
+import { primaryActionForAutomationTask } from "../primary-action.ts";
 
 function rowStatus(
   task: AutomationTask,
@@ -28,15 +29,6 @@ function rowStatus(
     return "failed";
   }
   return run?.status ?? "queued";
-}
-
-function primaryAction(status: AutomationTaskStatus, isActive: boolean) {
-  if (isActive) return "Cancel";
-  if (status === "needs_setup") return "Configure";
-  if (status === "locked") return "Locked";
-  if (status === "failed") return "Run again";
-  if (status === "waiting_for_human") return "Cancel";
-  return "Run";
 }
 
 function progressText(status: AutomationTaskStatus, attempt: number, maxAttempts: number, progress: number | null) {
@@ -75,7 +67,7 @@ export function buildAutomationPageModel(input: {
       ? isActiveAutomationRuntimeStatus(runtime.status)
       : activeTaskIds.has(task.id);
     const status = runtime?.status ?? rowStatus(task, run, isActive, setupRequiredGroupIds);
-    const action = primaryAction(status, isActive);
+    const action = primaryActionForAutomationTask(status, isActive);
     const credentialsReady = task.credentialKeys.every((key) =>
       (input.credentialStates?.[key] ?? (input.credentials[key] ? "ready" : "missing")) === "ready",
     );
