@@ -19,6 +19,7 @@ import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { initializeCanonicalRuntimeBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
+import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -37,6 +38,9 @@ const devRemoteDebuggingPort = Number.isInteger(requestedDevRemoteDebuggingPort)
   && requestedDevRemoteDebuggingPort < 65_536
   ? requestedDevRemoteDebuggingPort
   : 9222;
+
+const unknownActiveRuntimeFixture =
+  process.env.OCTOPUSBEAK_CDP_FATAL_FIXTURE === "unknown-active";
 
 if (!app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", String(devRemoteDebuggingPort));
@@ -208,6 +212,33 @@ async function start() {
     setImmediate(() => {
       recoverAbandonedAutomationSessions(ledgerDir)
         .then(() => hydrateAutomationRuntimeState(ledgerDir))
+        .then(() => {
+          // This is an isolated Electron regression seam. It is only active
+          // for the disposable CDP fixture and lets the fatal invariant be
+          // exercised without seeding or touching a user's ledger.
+          if (
+            cdpFixture
+            && unknownActiveRuntimeFixture
+          ) {
+            automationRuntimeState.upsert({
+              taskId: "unknown-cdp-active-task",
+              runId: "unknown-cdp-run",
+              status: "running",
+              attempt: 1,
+              maxAttempts: 1,
+              progress: {
+                phaseCode: "fixture",
+                completed: 0,
+                total: 1,
+                percent: 0,
+                attempt: 1,
+              },
+              logTail: "",
+              errorMessage: null,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        })
         .then(() => resolve())
         .catch(reject);
     });
