@@ -63,6 +63,11 @@ export type AutomationRuntimeTaskStatus =
   | "cancelled"
   | "interrupted";
 
+export type AutomationRuntimeStatementFailure = {
+  typeId: string;
+  error?: string;
+};
+
 export type AutomationRuntimeTaskSnapshot = {
   taskId: string;
   runId: string | null;
@@ -70,6 +75,8 @@ export type AutomationRuntimeTaskSnapshot = {
   attempt: number;
   maxAttempts: number;
   progress: AutomationTaskProgress;
+  /** Present on current authoritative terminal snapshots; optional for old IPC fixtures. */
+  statementFailures?: readonly AutomationRuntimeStatementFailure[];
   cancellationRequestedAt?: string | null;
   forceTerminateAvailable?: boolean;
   logTail: string;

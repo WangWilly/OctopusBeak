@@ -234,6 +234,7 @@ async function start() {
                 percent: 0,
                 attempt: 1,
               },
+              statementFailures: [],
               logTail: "",
               errorMessage: null,
               updatedAt: new Date().toISOString(),
