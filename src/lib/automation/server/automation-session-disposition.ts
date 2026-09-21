@@ -328,7 +328,7 @@ export function claimAutomationTaskRunSession(
       let registryClaimed = false;
       db.exec("BEGIN");
       try {
-        transitionTaskRunToTerminal(db, resumeFrom.taskRunId, {
+        const sourceTransition = transitionTaskRunToTerminal(db, resumeFrom.taskRunId, {
           status: "failed",
           finishedAt: new Date().toISOString(),
           errorMessage: `Superseded by resume handoff: ${taskRunId}`,
@@ -336,6 +336,7 @@ export function claimAutomationTaskRunSession(
             `${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`,
           ),
         });
+        if (!sourceTransition.applied) throw claimRejected;
         if (!ownAutomationSession(owner)) throw claimRejected;
         registryClaimed = true;
         db.exec("COMMIT");

@@ -31,6 +31,7 @@ export {
 export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
   activeTaskRuns,
+  isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
   resolveTaskPrerequisiteNotices,
   taskRunById,
@@ -153,7 +154,7 @@ async function finalizeTaskRunTransition(
   const current = taskRunById(db, run.taskRunId);
   if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
   if (isTerminalTaskRunStatus(current.status)) return { status: current.status, skipped: true };
-  if (!["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
+  if (!isActiveTaskRunStatus(current.status) || current.status === "queued") {
     return { status: current.status, skipped: true };
   }
   if (
@@ -221,7 +222,7 @@ async function finalizeTaskRunTransition(
     automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
     return { status: persisted.status, skipped: false };
   }
-  if (!["completed", "partial", "failed", "cancelled", "interrupted"].includes(status)) {
+  if (!isTerminalTaskRunStatus(status)) {
     return { status, skipped: true };
   }
   const terminalStatus = status as AutomationTaskRunTerminalUpdate["status"];
