@@ -242,12 +242,32 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     );
     assert.ok(secondOptimisticElapsed <= 200);
     await waitForRuntimeRun(page, SECOND_TASK_ID);
+    await page.waitForFunction(async () => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const activeCount = snapshot.tasks.filter((task) =>
+        ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
+      ).length;
+      const heading = document.querySelector<HTMLElement>(
+        '[data-progressive-block="summary"] .sync-hero h2',
+      );
+      return activeCount === 2 && heading?.textContent?.includes(String(activeCount));
+    }, { timeout: 1_000 });
     await secondRow.locator('[data-onboarding-action="primary"]').click();
     await page.waitForFunction(async (taskId) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "cancelled");
     }, SECOND_TASK_ID, { timeout: 5_000 });
     assert.match(await secondRow.innerText(), /cancelled|已取消/i);
+    await page.waitForFunction(async () => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const activeCount = snapshot.tasks.filter((task) =>
+        ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
+      ).length;
+      const heading = document.querySelector<HTMLElement>(
+        '[data-progressive-block="summary"] .sync-hero h2',
+      );
+      return activeCount === 1 && heading?.textContent?.includes(String(activeCount));
+    }, { timeout: 1_000 });
 
     await page.waitForFunction(async (taskId) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
