@@ -23,6 +23,10 @@ import {
   readAutomationCredentialState,
   setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
+import {
+  assertKnownAutomationRuntimeTasks,
+  AutomationRuntimeInvariantError,
+} from "../src/lib/automation/runtime-invariants.ts";
 import { terminateAutomationTaskProcesses } from "../src/lib/automation/server/task-run-execution.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
@@ -57,7 +61,7 @@ import {
 import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
-import { AUTOMATION_CREDENTIAL_KEYS } from "../src/lib/automation/server/tasks.ts";
+import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
   systemSettings,
@@ -89,7 +93,19 @@ export function registerOctopusBeakIpc({
   onAutomationRuntimeReady?: () => Promise<void> | void;
 } = {}) {
   const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
-    const details = { code: "automation-runtime-snapshot-failed", stage };
+    const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
+    const details = {
+      code: invariant?.code ?? "automation-runtime-snapshot-failed",
+      stage,
+      ...(invariant
+        ? {
+          sessionId: invariant.sessionId,
+          revision: invariant.revision,
+          taskId: invariant.taskId,
+          runId: invariant.runId,
+        }
+        : {}),
+    };
     console.error("automation-runtime-fatal", {
       ...details,
       ...(process.env.NODE_ENV === "development" && error instanceof Error
@@ -282,6 +298,10 @@ export function registerOctopusBeakIpc({
           let runtimeSnapshot;
           try {
             runtimeSnapshot = automationRuntimeState.snapshot();
+            assertKnownAutomationRuntimeTasks(
+              runtimeSnapshot,
+              new Set(AUTOMATION_TASKS.map((task) => task.id)),
+            );
           } catch (error) {
             reportAutomationRuntimeFatal("automation-block", error);
           }

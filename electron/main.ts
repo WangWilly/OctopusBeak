@@ -51,7 +51,14 @@ let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 let automationRuntimeFatalHandled = false;
 
-function handleAutomationRuntimeFatal(details: { code: string; stage: string }) {
+function handleAutomationRuntimeFatal(details: {
+  code: string;
+  stage: string;
+  sessionId?: string;
+  revision?: number;
+  taskId?: string;
+  runId?: string | null;
+}) {
   if (automationRuntimeFatalHandled) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);

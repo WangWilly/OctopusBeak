@@ -4,6 +4,7 @@
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
+  import { createAutomationRuntimeController } from "$lib/automation/runtime-controller.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -107,6 +108,8 @@
   // Runtime ownership lives at the app shell so route changes never drop
   // events or lose the latest state while Automation is off-screen.
   let automationRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
+  const automationRuntimeController = createAutomationRuntimeController();
+  let automationPendingTaskIds = new Set<string>();
   let onboardingState: OnboardingState | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
@@ -727,18 +730,13 @@
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
     const applyAutomationRuntimeSnapshot = (snapshot: AutomationRuntimeSnapshot) => {
-      const previous = automationRuntimeSnapshot;
-      if (
-        previous && previous.sessionId === snapshot.sessionId
-        && snapshot.revision <= previous.revision
-      ) return;
-      const hadGap = Boolean(
-        previous
-        && previous.sessionId === snapshot.sessionId
-        && snapshot.revision > previous.revision + 1,
-      );
+      const result = automationRuntimeController.acceptSnapshot(snapshot);
+      if (!result.accepted) return;
       automationRuntimeSnapshot = snapshot;
-      if (hadGap && route === "automation") void loadRoute("automation", { force: true });
+      automationPendingTaskIds = automationRuntimeController.pendingTaskIds();
+      if ((result.hadGap || result.sessionChanged) && route === "automation") {
+        void loadRoute("automation", { force: true });
+      }
     };
     const automationApi = window.octopusBeak.automation;
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
@@ -850,6 +848,8 @@
       credentialGroups={automationRenderValue.credentialGroups}
       blocks={activeBlocks}
       runtimeSnapshot={automationRuntimeSnapshot}
+      runtimeController={automationRuntimeController}
+      appPendingTaskIds={automationPendingTaskIds}
       retryBlock={(key) => retryRouteBlock("automation", key)}
       reload={() => loadRoute("automation", { force: true })}
       onboardingSourceSelection={onboardingStep === "credentials"}
