@@ -34,6 +34,7 @@ import {
   confirmSpendingCandidate,
   denySpendingCandidate,
   loadSpending,
+  prewarmSpendingPairingCandidates,
   rankSpendingPaymentCandidates,
   revokeSpendingLink,
 } from "./store.ts";
@@ -811,6 +812,24 @@ test("Spending pairing rank is bound to the displayed data version and excludes 
       invoiceIdentityId: invoiceView.invoiceId,
       dataVersion: before.purchaseReport.knowledgeAt - 1,
     }, directory), /data version is stale/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Spending pairing prewarm reports a stale version without rejecting", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spending-pairing-prewarm-stale-"));
+  try {
+    await seedPurchaseCandidate(directory);
+    const current = loadSpending(directory).purchaseReport.knowledgeAt;
+    const stale = await prewarmSpendingPairingCandidates({
+      dataVersion: current - 1,
+    }, directory);
+    assert.deepEqual(stale, {
+      status: "stale",
+      dataVersion: current,
+      requestedVersion: current - 1,
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
