@@ -13,7 +13,7 @@ type Response =
   | { kind: "ready"; id: number }
   | { kind: "stopped"; id: number }
   | { kind: "rows"; id: number; rows: unknown[] }
-  | { kind: "error"; id: number; code: "subscription-failed" };
+  | { kind: "error"; id: number; code: "subscription-failed" | "duplicate-subscription" };
 
 function isRequest(value: unknown): value is Request {
   if (typeof value !== "object" || value === null) return false;
@@ -33,7 +33,10 @@ export function createViewPortServer<View extends string>(port: Port, source: Vi
     if (closed || !isRequest(value)) return;
     const request = value;
     if (request.kind === "subscribe") {
-      if (subscriptions.has(request.id)) return;
+      if (subscriptions.has(request.id)) {
+        port.postMessage({ kind: "error", id: request.id, code: "duplicate-subscription" } satisfies Response);
+        return;
+      }
       const subscription: { cancelled: boolean; stop?: Stop } = { cancelled: false };
       subscriptions.set(request.id, subscription);
       void source.subscribe(request.view as View, request.params, (rows) => {
@@ -45,7 +48,7 @@ export function createViewPortServer<View extends string>(port: Port, source: Vi
           port.postMessage({ kind: "ready", id: request.id } satisfies Response);
         }
       }).catch(() => {
-        subscriptions.delete(request.id);
+        if (subscriptions.get(request.id) === subscription) subscriptions.delete(request.id);
         if (!closed && !subscription.cancelled) port.postMessage({ kind: "error", id: request.id, code: "subscription-failed" } satisfies Response);
       });
     } else {
@@ -90,7 +93,10 @@ export function createViewPortClient(port: Port) {
       const request = pending.get(key);
       if (!request) return;
       pending.delete(key);
-      if (response.kind === "error") request.reject(new Error(response.code === "subscription-failed" ? response.code : "Invalid view response"));
+      if (response.kind === "error") request.reject(new Error(
+        response.code === "subscription-failed" || response.code === "duplicate-subscription"
+          ? response.code : "Invalid view response",
+      ));
       else request.resolve();
     }
   };
