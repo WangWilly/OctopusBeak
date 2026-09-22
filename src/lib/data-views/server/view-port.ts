@@ -15,28 +15,44 @@ type Response =
   | { kind: "rows"; id: number; rows: unknown[] }
   | { kind: "error"; id: number; code: "subscription-failed" };
 
+function isRequest(value: unknown): value is Request {
+  if (typeof value !== "object" || value === null) return false;
+  const request = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(request.id) || (request.id as number) < 1) return false;
+  if (request.kind === "unsubscribe") return true;
+  return request.kind === "subscribe" && typeof request.view === "string"
+    && request.view.length > 0 && typeof request.params === "object"
+    && request.params !== null && !Array.isArray(request.params);
+}
+
 /** Wire a named-view source to a worker MessagePort without exposing SQL. */
 export function createViewPortServer<View extends string>(port: Port, source: ViewSource<View>) {
-  const stops = new Map<number, Stop>();
+  const subscriptions = new Map<number, { cancelled: boolean; stop?: Stop }>();
   let closed = false;
-  const onMessage = (request: Request) => {
-    if (closed) return;
+  const onMessage = (value: unknown) => {
+    if (closed || !isRequest(value)) return;
+    const request = value;
     if (request.kind === "subscribe") {
+      if (subscriptions.has(request.id)) return;
+      const subscription: { cancelled: boolean; stop?: Stop } = { cancelled: false };
+      subscriptions.set(request.id, subscription);
       void source.subscribe(request.view as View, request.params, (rows) => {
-        if (!closed) port.postMessage({ kind: "rows", id: request.id, rows } satisfies Response);
+        if (!closed && !subscription.cancelled) port.postMessage({ kind: "rows", id: request.id, rows } satisfies Response);
       }).then((stop) => {
-        if (closed) void stop();
+        if (closed || subscription.cancelled) void stop();
         else {
-          stops.set(request.id, stop);
+          subscription.stop = stop;
           port.postMessage({ kind: "ready", id: request.id } satisfies Response);
         }
       }).catch(() => {
-        if (!closed) port.postMessage({ kind: "error", id: request.id, code: "subscription-failed" } satisfies Response);
+        subscriptions.delete(request.id);
+        if (!closed && !subscription.cancelled) port.postMessage({ kind: "error", id: request.id, code: "subscription-failed" } satisfies Response);
       });
     } else {
-      const stop = stops.get(request.id);
-      stops.delete(request.id);
-      void (stop?.() ?? Promise.resolve()).then(() => {
+      const subscription = subscriptions.get(request.id);
+      subscriptions.delete(request.id);
+      if (subscription) subscription.cancelled = true;
+      void (subscription?.stop?.() ?? Promise.resolve()).then(() => {
         if (!closed) port.postMessage({ kind: "stopped", id: request.id } satisfies Response);
       });
     }
@@ -46,8 +62,11 @@ export function createViewPortServer<View extends string>(port: Port, source: Vi
     async close() {
       closed = true;
       port.off("message", onMessage);
-      await Promise.all([...stops.values()].map((stop) => stop()));
-      stops.clear();
+      await Promise.all([...subscriptions.values()].map((subscription) => {
+        subscription.cancelled = true;
+        return subscription.stop?.();
+      }));
+      subscriptions.clear();
     },
   };
 }
@@ -57,14 +76,21 @@ export function createViewPortClient(port: Port) {
   let nextId = 1;
   let closed = false;
   const listeners = new Map<number, (rows: unknown[]) => void>();
-  const pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
-  const onMessage = (response: Response) => {
-    if (response.kind === "rows") listeners.get(response.id)?.(response.rows);
+  const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+  const onMessage = (value: unknown) => {
+    if (typeof value !== "object" || value === null) return;
+    const response = value as Response;
+    if (!Number.isSafeInteger(response.id) || response.id < 1) return;
+    if (response.kind === "rows") {
+      if (Array.isArray(response.rows)) listeners.get(response.id)?.(response.rows);
+    }
     else {
-      const request = pending.get(response.id);
+      if (!["ready", "stopped", "error"].includes(response.kind)) return;
+      const key = `${response.kind === "stopped" ? "unsubscribe" : "subscribe"}:${response.id}`;
+      const request = pending.get(key);
       if (!request) return;
-      pending.delete(response.id);
-      if (response.kind === "error") request.reject(new Error(response.code));
+      pending.delete(key);
+      if (response.kind === "error") request.reject(new Error(response.code === "subscription-failed" ? response.code : "Invalid view response"));
       else request.resolve();
     }
   };
@@ -72,7 +98,7 @@ export function createViewPortClient(port: Port) {
 
   function roundTrip(request: Request): Promise<void> {
     return new Promise((resolve, reject) => {
-      pending.set(request.id, { resolve, reject });
+      pending.set(`${request.kind}:${request.id}`, { resolve, reject });
       port.postMessage(request);
     });
   }

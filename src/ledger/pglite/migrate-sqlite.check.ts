@@ -14,6 +14,8 @@ try {
   source.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload BLOB NOT NULL)");
   source.prepare("INSERT INTO notes (id, label, payload) VALUES (?, ?, ?)")
     .run(1, "example", new Uint8Array([1, 2, 3]));
+  const insert = source.prepare("INSERT INTO notes (id, label, payload) VALUES (?, ?, ?)");
+  for (let id = 2; id <= 130; id++) insert.run(id, `note-${id}`, new Uint8Array([id % 256]));
   source.close();
 
   const targetDir = join(directory, "ledger.pglite");
@@ -29,7 +31,7 @@ try {
     const { rows } = await migrated.query<{ id: string; label: string; payload: Uint8Array }>(
       "SELECT id, label, payload FROM notes ORDER BY id",
     );
-    assert.equal(rows.length, 1);
+    assert.equal(rows.length, 130);
     assert.equal(Number(rows[0]?.id), 1);
     assert.equal(rows[0]?.label, "example");
     assert.deepEqual([...rows[0]!.payload], [1, 2, 3]);

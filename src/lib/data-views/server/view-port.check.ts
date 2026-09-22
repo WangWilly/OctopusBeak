@@ -44,3 +44,48 @@ try {
   channel.port2.close();
   await db.close();
 }
+
+const raceChannel = new MessageChannel();
+try {
+  let resolveSubscribe!: (stop: () => Promise<void>) => void;
+  let stopCount = 0;
+  const events: unknown[] = [];
+  const server = createViewPortServer(raceChannel.port1, {
+    subscribe: () => new Promise<() => Promise<void>>((resolve) => { resolveSubscribe = resolve; }),
+  });
+  raceChannel.port2.on("message", (message) => events.push(message));
+  raceChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
+  await waitFor(() => resolveSubscribe !== undefined);
+  raceChannel.port2.postMessage({ kind: "unsubscribe", id: 1 });
+  await waitFor(() => events.some((event) => (event as { kind?: string }).kind === "stopped"));
+  resolveSubscribe(async () => { stopCount++; });
+  await waitFor(() => stopCount === 1);
+  assert.equal(events.some((event) => (event as { kind?: string }).kind === "ready"), false);
+  raceChannel.port2.postMessage(null);
+  raceChannel.port2.postMessage({ kind: "subscribe", id: "bad", view: "slow", params: {} });
+  await server.close();
+} finally {
+  raceChannel.port1.close();
+  raceChannel.port2.close();
+}
+
+const closeChannel = new MessageChannel();
+try {
+  let resolveSubscribe!: (stop: () => Promise<void>) => void;
+  let stopCount = 0;
+  const server = createViewPortServer(closeChannel.port1, {
+    subscribe: () => new Promise<() => Promise<void>>((resolve) => { resolveSubscribe = resolve; }),
+  });
+  const client = createViewPortClient(closeChannel.port2);
+  const subscribing = client.subscribe("slow", {}, () => {});
+  const rejected = assert.rejects(subscribing, /closed/u);
+  await waitFor(() => resolveSubscribe !== undefined);
+  await client.close();
+  await rejected;
+  resolveSubscribe(async () => { stopCount++; });
+  await waitFor(() => stopCount === 1);
+  await server.close();
+} finally {
+  closeChannel.port1.close();
+  closeChannel.port2.close();
+}
