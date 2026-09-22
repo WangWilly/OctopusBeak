@@ -19,12 +19,18 @@ try {
   source.close();
 
   const targetDir = join(directory, "ledger.pglite");
-  await migrateSqliteToPglite({
+  const report = await migrateSqliteToPglite({
     sourcePath,
     targetDir,
     baselineSql: "CREATE TABLE notes (id BIGINT PRIMARY KEY, label TEXT NOT NULL, payload BYTEA NOT NULL)",
     tables: ["notes"],
   });
+  assert.equal(report.tables.length, 1);
+  assert.equal(report.tables[0]?.name, "notes");
+  assert.equal(report.tables[0]?.rowCount, 130);
+  assert.match(report.tables[0]?.sourceDigest ?? "", /^[a-f0-9]{64}$/u);
+  assert.equal(report.tables[0]?.sourceDigest, report.tables[0]?.targetDigest,
+    "migration must verify ordered content, not only row counts");
   assert.equal(existsSync(sourcePath), true, "migration preserves its SQLite source");
   const migrated = await PGlite.create(targetDir);
   try {
