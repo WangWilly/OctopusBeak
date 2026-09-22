@@ -48,6 +48,19 @@ try {
   }));
   assert.equal(existsSync(sourcePath), true);
   assert.equal(existsSync(failedTarget), false, "failed migration must not activate a target");
+
+  const unclassifiedSource = new DatabaseSync(sourcePath);
+  unclassifiedSource.exec("CREATE TABLE unclassified_fact (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+  unclassifiedSource.prepare("INSERT INTO unclassified_fact (id, value) VALUES (?, ?)").run(1, "retain me");
+  unclassifiedSource.close();
+  const unclassifiedTarget = join(directory, "unclassified.pglite");
+  await assert.rejects(migrateSqliteToPglite({
+    sourcePath,
+    targetDir: unclassifiedTarget,
+    baselineSql: "CREATE TABLE notes (id BIGINT PRIMARY KEY, label TEXT NOT NULL, payload BYTEA NOT NULL)",
+    tables: ["notes"],
+  }), /Unclassified source tables: unclassified_fact/u);
+  assert.equal(existsSync(unclassifiedTarget), false);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
