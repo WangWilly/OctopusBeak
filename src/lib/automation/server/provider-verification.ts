@@ -12,6 +12,7 @@ import {
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
+  isSinopacCaptchaRejectionDialog,
 } from "../sinopac-captcha.ts";
 import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
 import {
@@ -264,10 +265,13 @@ function classifyProviderPostSubmitDialog(
 function classifySinopacPostSubmitDialog(
   dialog: ViewerDialogAccess,
 ): ProviderVerificationPostSubmitOutcome {
-  return classifyProviderPostSubmitDialog(
-    dialog,
-    "驗證碼失效或輸入錯誤，請重新輸入。",
-  );
+  try {
+    return isSinopacCaptchaRejectionDialog(dialog.type(), dialog.message())
+      ? "provider-rejected"
+      : "unrecognized-dialog";
+  } catch {
+    return "unrecognized-dialog";
+  }
 }
 
 function classifyYuantaPostSubmitDialog(
