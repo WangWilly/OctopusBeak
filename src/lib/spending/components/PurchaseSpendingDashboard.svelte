@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { locale } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -160,12 +160,12 @@
   }
 
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    if (!amount) return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
+    if (!amount) return $t.purchaseSpending.amountUnavailable;
     return formatMoney(moneyValue(amount), { locale: $locale, signed });
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
-    if (!value) return $locale === "zh-TW" ? "無資料" : "Unavailable";
+    if (!value) return $t.purchaseSpending.unavailable;
     if (value.scale === 0) return value.coefficient;
     const negative = value.coefficient.startsWith("-");
     const digits = negative ? value.coefficient.slice(1) : value.coefficient;
@@ -189,39 +189,31 @@
   }
 
   function recordLabel(record: PurchaseRecord) {
-    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? $t.purchaseSpending.merchantUnavailable;
   }
 
   function basisLabel(record: PurchaseRecord) {
-    if (record.basis === "linked") return $locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-    if (record.basis === "invoice") return $locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-    if (record.basis === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
+    if (record.basis === "linked") return $t.purchaseSpending.linkedPurchase;
+    if (record.basis === "invoice") return $t.purchaseSpending.invoicePurchase;
+    if (record.basis === "refund") return $t.purchaseSpending.refund;
     const isCreditCard = record.transaction?.stream === "credit-card";
-    return isCreditCard
-      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+    return isCreditCard ? $t.purchaseSpending.creditCardPurchase : $t.purchaseSpending.bankTransaction;
   }
 
   function pairingRecordLabel(candidate: SpendingPairingCandidateView) {
-    return candidate.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+    return candidate.description ?? $t.purchaseSpending.merchantUnavailable;
   }
 
   function pairingBasisLabel(candidate: SpendingPairingCandidateView) {
-    return candidate.stream === "credit-card"
-      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+    return candidate.stream === "credit-card" ? $t.purchaseSpending.creditCardPurchase : $t.purchaseSpending.bankTransaction;
   }
 
   function occurrenceBasisLabel(record: PurchaseRecord) {
-    return record.occurrence.basis === "posting-date-fallback"
-      ? ($locale === "zh-TW" ? "以入帳日期代替" : "Posting date used as fallback")
-      : null;
+    return record.occurrence.basis === "posting-date-fallback" ? $t.purchaseSpending.postingDateFallback : null;
   }
 
   function transactionDateBasisLabel(transaction: NonNullable<PurchaseRecord["transaction"]>) {
-    return transaction.effectiveDateBasis === "posting-date-fallback"
-      ? ($locale === "zh-TW" ? "消費日期未提供，以入帳日期代替" : "Consume date unavailable; posting date used")
-      : null;
+    return transaction.effectiveDateBasis === "posting-date-fallback" ? $t.purchaseSpending.consumeDateFallback : null;
   }
 
   function candidateRecord(candidateId: string, kind: "invoice" | "transaction") {
@@ -464,7 +456,7 @@
       });
       if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
       if (result.dataVersion !== report.knowledgeAt)
-        throw new Error("Spending pairing data changed; close and reopen the pairing dialog.");
+        throw new Error($t.purchaseSpending.pairingDataChanged);
       pairingCandidates = result.candidates;
       pairingCandidateTotal = result.totalCandidateCount;
       pairingNextOffset = result.nextOffset;
@@ -566,34 +558,30 @@
     const category = item.sourceFacts.category;
     return typeof category === "string" && category.trim()
       ? category
-      : ($locale === "zh-TW" ? "未分類" : "Unclassified");
+      : $t.purchaseSpending.unclassified;
   }
 </script>
 
 <DashboardShell
   active="spending"
-  eyebrow={$locale === "zh-TW" ? "消費" : "Spending"}
-  title={$locale === "zh-TW" ? "個人消費" : "Personal spending"}
-  sideLabel={$locale === "zh-TW" ? "購買行為合計" : "Purchases total"}
-  sideValue={report.totalsByCurrency.length > 0 ? report.totalsByCurrency.map((amount) => amountText(amount)).join(" / ") : "--"}
+  eyebrow={$t.spending.eyebrow}
+  title={$t.spending.title}
+  sideLabel={$t.purchaseSpending.monthlyTotal}
+  sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "--"}
   sideSub={report.totalStatus === "includes-pending-confirmation"
-    ? ($locale === "zh-TW" ? "含待確認項目" : "Includes pending confirmation")
-    : ($locale === "zh-TW" ? "依購買日期認列" : "Purchase-basis total")}
+    ? $t.purchaseSpending.includesPending
+    : $t.purchaseSpending.purchaseBasisTotal}
 >
   <div class="content spending-dashboard purchase-spending" data-spending-canonical data-purchase-report>
     <section class="card purchase-policy-card" data-policy-id="gross-posted-outflow">
       <div class="policy-copy">
-        <h2>{$locale === "zh-TW" ? "消費基準" : "Spending basis"}</h2>
-        <p>
-          {$locale === "zh-TW"
-            ? "依購買發生日歸類。未配對的發票與付款會先各自列入；確認為同一筆後，只保留付款金額。"
-            : "Purchases are grouped by purchase date. Unmatched invoices and payments count separately until a match is confirmed, then only the payment amount remains."}
-        </p>
+        <h2>{$t.purchaseSpending.basisTitle}</h2>
+        <p>{$t.purchaseSpending.basisDescription}</p>
       </div>
       <span class="purchase-total-status" data-total-status={report.totalStatus}>
         {report.totalStatus === "includes-pending-confirmation"
-          ? ($locale === "zh-TW" ? `${pendingCandidates.length} 筆待確認，總額可能重複` : `${pendingCandidates.length} pending; total may include duplicates`)
-          : ($locale === "zh-TW" ? "所有來源已確認" : "All sources confirmed")}
+          ? $t.purchaseSpending.pendingCountWarning(pendingCandidates.length)
+          : $t.purchaseSpending.allSourcesConfirmed}
       </span>
     </section>
 
@@ -607,12 +595,12 @@
       <section class="card purchase-summary-card">
         <div class="section-heading">
           <div>
-            <h2>{$locale === "zh-TW" ? "購買總額" : "Purchase total"}</h2>
-            <p>{activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")}</p>
+            <h2>{$t.purchaseSpending.purchaseTotal}</h2>
+            <p>{activeMonth ? monthText(activeMonth) : $t.purchaseSpending.allMonths}</p>
           </div>
           {#if months.length > 0}
             <label class="month-picker">
-              <span>{$locale === "zh-TW" ? "月份" : "Month"}</span>
+              <span>{$t.purchaseSpending.month}</span>
               <select value={activeMonth ?? ""} onchange={(event) => chooseMonth(event.currentTarget.value)}>
                 {#each [...months].reverse() as month}
                   <option value={month}>{monthText(month)}</option>
@@ -622,24 +610,22 @@
           {/if}
         </div>
         <div class="summary-amount">
-          <strong class="money" data-sensitive>{summaryBlock
-            ? amountText(summaryBlock.purchaseReport.totalsByCurrency[0] ?? selectedMonthTotal)
-            : amountText(selectedMonthTotal)}</strong>
+          <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
         </div>
         <dl class="summary-facts">
-          <div><dt>{$locale === "zh-TW" ? "消費筆數" : "Purchases"}</dt><dd>{monthRecords.length}</dd></div>
-          <div><dt>{$locale === "zh-TW" ? "有消費的日子" : "Active days"}</dt><dd>{spendingDayCount}</dd></div>
-          <div><dt>{$locale === "zh-TW" ? "本月待確認" : "Pending this month"}</dt><dd>{monthCandidates.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd>{monthRecords.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.activeDays}</dt><dd>{spendingDayCount}</dd></div>
+          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd>{monthCandidates.length}</dd></div>
         </dl>
         {#if availableCurrencies.length > 1}
-          <div class="currency-switch" role="group" aria-label={$locale === "zh-TW" ? "圖表幣別" : "Chart currency"}>
+          <div class="currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
             {#each availableCurrencies as currency}
               <button type="button" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
             {/each}
           </div>
         {/if}
         {#if (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
-          <p class="pending-total-note" data-pending-total>{$locale === "zh-TW" ? "待確認的發票與付款目前分開計入。完成配對後，總額會自動去重。" : "Pending invoices and payments currently count separately. The total is deduplicated after confirmation."}</p>
+          <p class="pending-total-note" data-pending-total>{$t.purchaseSpending.pendingTotalNote}</p>
         {/if}
       </section>
       </ProgressiveBlock>
@@ -649,39 +635,39 @@
       {@const chartCurrencies = currenciesForReport(chartReport)}
       {@const chartCurrency = chartCurrencies.includes(selectedCurrency) ? selectedCurrency : chartCurrencies[0] ?? "TWD"}
       {@const blockChartData = chartDataFor(chartReport, chartMode, activeMonth, chartCurrency)}
-      <section class="card purchase-chart-card" aria-label={$locale === "zh-TW" ? "消費圖表" : "Spending chart"} data-chart>
+      <section class="card purchase-chart-card" aria-label={$t.purchaseSpending.chartAria} data-chart>
         <div class="section-heading chart-heading">
           <div>
-            <h2>{chartMode === "day" ? ($locale === "zh-TW" ? "每日消費" : "Daily spending") : ($locale === "zh-TW" ? "每月消費" : "Monthly spending")}</h2>
-            <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "最近月份" : "Recent months")}</p>
+            <h2>{chartMode === "day" ? $t.purchaseSpending.dailySpending : $t.purchaseSpending.monthlySpending}</h2>
+            <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : $t.purchaseSpending.recentMonths}</p>
           </div>
-          <div class="chart-mode-switch" role="group" aria-label={$locale === "zh-TW" ? "圖表範圍" : "Chart range"}>
-            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$locale === "zh-TW" ? "每日" : "Daily"}</button>
-            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$locale === "zh-TW" ? "每月" : "Monthly"}</button>
+          <div class="chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
+            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$t.purchaseSpending.daily}</button>
+            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$t.purchaseSpending.monthly}</button>
           </div>
         </div>
         <PurchaseActivityBarChart
           data={blockChartData}
           selectedKey={chartMode === "day" ? selectedDay : activeMonth}
-          label={chartMode === "day" ? ($locale === "zh-TW" ? "每日消費金額" : "Daily spending amount") : ($locale === "zh-TW" ? "每月消費金額" : "Monthly spending amount")}
+          label={chartMode === "day" ? $t.purchaseSpending.dailyAmount : $t.purchaseSpending.monthlyAmount}
           onSelect={selectChartPeriod}
         />
         <label class="chart-period-picker">
-          <span>{chartMode === "day" ? ($locale === "zh-TW" ? "選擇日期" : "Choose a day") : ($locale === "zh-TW" ? "選擇月份" : "Choose a month")}</span>
+          <span>{chartMode === "day" ? $t.purchaseSpending.chooseDay : $t.purchaseSpending.chooseMonth}</span>
           <select
-            aria-label={chartMode === "day" ? ($locale === "zh-TW" ? "選擇日期以篩選購買明細" : "Choose a day to filter purchases") : ($locale === "zh-TW" ? "選擇月份以查看每日消費" : "Choose a month to view daily spending")}
+            aria-label={chartMode === "day" ? $t.purchaseSpending.chooseDayAria : $t.purchaseSpending.chooseMonthAria}
             value={chartMode === "day" ? selectedDay ?? "" : activeMonth ?? ""}
             onchange={(event) => selectChartPeriodFromControl(event.currentTarget.value)}
           >
-            {#if chartMode === "day"}<option value="">{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</option>{/if}
+            {#if chartMode === "day"}<option value="">{$t.purchaseSpending.showFullMonth}</option>{/if}
             {#each blockChartData as datum (datum.key)}
               <option value={datum.key}>{datum.label} · {chartCurrency} {datum.value.toLocaleString($locale)}</option>
             {/each}
           </select>
         </label>
         <p class="chart-hint">{chartMode === "day"
-          ? ($locale === "zh-TW" ? "點選日期可只看當天明細；再次點選即可取消。" : "Select a day to filter the list below; select it again to clear.")
-          : ($locale === "zh-TW" ? "點選月份可切換到該月的每日消費。" : "Select a month to open its daily view.")}</p>
+          ? $t.purchaseSpending.dayHint
+          : $t.purchaseSpending.monthHint}</p>
       </section>
       </ProgressiveBlock>
     </div>
@@ -692,41 +678,41 @@
     {#if listView.pending.length > 0}
       <section class="card purchase-candidates-card" data-candidates>
         <div class="section-heading">
-          <div><h2>{$locale === "zh-TW" ? "待確認配對" : "Pending matches"}</h2><p>{$locale === "zh-TW" ? "確認同一筆消費，避免發票與付款重複計入。" : "Confirm matching purchases to avoid counting an invoice and payment twice."}</p></div>
+          <div><h2>{$t.purchaseSpending.pendingMatches}</h2><p>{$t.purchaseSpending.pendingMatchesDescription}</p></div>
           <div class="candidate-scope">
-            <span>{listView.visible.length} {$locale === "zh-TW" ? "筆" : "items"}</span>
+            <span>{$t.purchaseSpending.itemsCount(listView.visible.length)}</span>
             {#if listView.pending.length !== listView.month.length}
-              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? ($locale === "zh-TW" ? "只看本月" : "This month") : ($locale === "zh-TW" ? `查看全部 ${listView.pending.length} 筆` : `View all ${listView.pending.length}`)}</button>
+              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? $t.purchaseSpending.thisMonth : $t.purchaseSpending.viewAllCount(listView.pending.length)}</button>
             {/if}
           </div>
         </div>
         <div class="candidate-list">
           {#if listView.visible.length === 0}
-            <p class="candidate-empty">{$locale === "zh-TW" ? "這個月沒有待確認配對。你可以查看其他月份的候選。" : "There are no pending matches this month. You can review candidates from other months."}</p>
+            <p class="candidate-empty">{$t.purchaseSpending.noPendingMatches}</p>
           {/if}
           {#each listView.rows as candidate (candidate.candidateId)}
             {@const invoiceRecord = listView.recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null}
             {@const transactionRecord = listView.recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null}
             <article class="candidate-row" data-candidate-id={candidate.candidateId}>
               <div class="candidate-side">
-                <strong>{$locale === "zh-TW" ? "發票來源" : "Invoice source"}</strong>
-                <span>{invoiceRecord?.invoice?.revision.seller.name ?? ($locale === "zh-TW" ? "未知商家" : "Merchant unavailable")}</span>
+                <strong>{$t.purchaseSpending.invoiceSource}</strong>
+                <span>{invoiceRecord?.invoice?.revision.seller.name ?? $t.purchaseSpending.merchantUnavailable}</span>
                 <span>{invoiceRecord ? dateText(invoiceRecord.occurrence.value) : "--"} · {invoiceRecord ? amountText(invoiceRecord.amount) : "--"}</span>
               </div>
-              <div class="candidate-compare"><span class="possible-duplicate">{$locale === "zh-TW" ? "可能是同一筆" : "Possible match"}</span><span>{$locale === "zh-TW" ? "待確認" : "Review"}</span></div>
+              <div class="candidate-compare"><span class="possible-duplicate">{$t.purchaseSpending.possibleMatch}</span><span>{$t.purchaseSpending.review}</span></div>
               <div class="candidate-side">
-                <strong>{transactionRecord ? basisLabel(transactionRecord) : ($locale === "zh-TW" ? "銀行來源" : "Bank source")}</strong>
-                <span>{transactionRecord?.transaction?.description ?? ($locale === "zh-TW" ? "未提供交易描述" : "Description unavailable")}</span>
+                <strong>{transactionRecord ? basisLabel(transactionRecord) : $t.purchaseSpending.bankSource}</strong>
+                <span>{transactionRecord?.transaction?.description ?? $t.purchaseSpending.descriptionUnavailable}</span>
                 <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · {transactionRecord ? amountText(transactionRecord.amount) : "--"}</span>
               </div>
               <div class="candidate-actions">
-                <button type="button" class="button primary" disabled={busyAction !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$locale === "zh-TW" ? "確認配對" : "Confirm match"}</button>
-                <button type="button" class="button secondary" disabled={busyAction !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$locale === "zh-TW" ? "否認候選" : "Deny candidate"}</button>
+                <button type="button" class="button primary" disabled={busyAction !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
+                <button type="button" class="button secondary" disabled={busyAction !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
               </div>
             </article>
           {/each}
           {#if listView.visible.length > candidateVisibleCount}
-            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$t.purchaseSpending.showMore}</button>
           {/if}
         </div>
       </section>
@@ -744,49 +730,49 @@
     {@const detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords)}
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
-        <div><h2>{$locale === "zh-TW" ? "購買明細" : "Purchases"}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : ($locale === "zh-TW" ? "全部紀錄" : "All records")} · {detailsVisibleRecords.length} {$locale === "zh-TW" ? "筆" : "records"}</p></div>
-        {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</button>{/if}
+        <div><h2>{$t.purchaseSpending.purchases}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : $t.purchaseSpending.allRecords} · {$t.purchaseSpending.recordsCount(detailsVisibleRecords.length)}</p></div>
+        {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$t.purchaseSpending.showFullMonth}</button>{/if}
       </div>
       <div class="purchase-record-list">
         {#each detailsRecordGroups as group (group.date)}
           <section class="purchase-day-group" data-purchase-day={group.date}>
             <header class="purchase-day-heading">
-              <div><strong>{dateText(group.date)}</strong><span>{group.records.length} {$locale === "zh-TW" ? "筆消費" : "purchases"}</span></div>
+              <div><strong>{dateText(group.date)}</strong><span>{$t.purchaseSpending.dayPurchasesCount(group.records.length)}</span></div>
               <div class="day-totals">{#each group.totals as total (total.currency)}<span class="money" data-sensitive>{amountText(total)}</span>{/each}</div>
             </header>
             {#each group.records as record (record.purchaseId)}
           <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-transaction-id={record.transaction?.transactionId ?? ""} data-possible-duplicate={record.possibleDuplicate}>
             <div class="purchase-record-main">
-              <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$locale === "zh-TW" ? "可能重複" : "Possible duplicate"}</span>{/if}</div>
+              <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$t.purchaseSpending.possibleDuplicate}</span>{/if}</div>
               {#if occurrenceBasisLabel(record)}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}
               {#if record.basis === "linked" && record.transaction}
-                <span>{$locale === "zh-TW" ? "付款金額" : "Payment amount"}: {amountText(record.transaction.amount)} · {record.transaction.amount.currency}</span>
-                <span>{$locale === "zh-TW" ? "發票購買日" : "Invoice purchase date"}: {dateText(record.occurrence.value)} · {$locale === "zh-TW" ? "消費日期" : "Consume date"}: {record.transaction.consumeDate ? dateText(record.transaction.consumeDate) : ($locale === "zh-TW" ? "未提供" : "Unavailable")} · {$locale === "zh-TW" ? "入帳日" : "Posting date"}: {record.transaction.postingDate ? dateText(record.transaction.postingDate) : dateText(record.transaction.effectiveOn)}</span>
+                <span>{$t.purchaseSpending.paymentAmount}: {amountText(record.transaction.amount)} · {record.transaction.amount.currency}</span>
+                <span>{$t.purchaseSpending.invoicePurchaseDate}: {dateText(record.occurrence.value)} · {$t.purchaseSpending.consumeDate}: {record.transaction.consumeDate ? dateText(record.transaction.consumeDate) : $t.purchaseSpending.notProvided} · {$t.purchaseSpending.postingDate}: {record.transaction.postingDate ? dateText(record.transaction.postingDate) : dateText(record.transaction.effectiveOn)}</span>
                 {#if transactionDateBasisLabel(record.transaction)}<span class="fallback-date" data-transaction-date-basis="posting-date-fallback">{transactionDateBasisLabel(record.transaction)}</span>{/if}
-                {#if record.difference}<span data-link-difference>{$locale === "zh-TW" ? "發票金額" : "Invoice amount"}: {amountText(record.difference.invoiceAmount)} · {$locale === "zh-TW" ? "銀行金額" : "Bank amount"}: {amountText(record.difference.bankAmount)} · {$locale === "zh-TW" ? "差額" : "Difference"}: {record.difference.exactAmountEqual ? "0" : $locale === "zh-TW" ? "來源金額不同，未推算費用" : "Source amounts differ; no fee inferred"}</span>{/if}
+                {#if record.difference}<span data-link-difference>{$t.purchaseSpending.invoiceAmount}: {amountText(record.difference.invoiceAmount)} · {$t.purchaseSpending.bankAmount}: {amountText(record.difference.bankAmount)} · {$t.purchaseSpending.difference}: {record.difference.exactAmountEqual ? "0" : $t.purchaseSpending.amountDifferenceNotInferred}</span>{/if}
               {/if}
               {#if record.items.length > 0}
                 <details class="item-list" data-item-details>
-                  <summary>{record.items.length} {$locale === "zh-TW" ? "個發票品項" : "invoice items"}</summary>
+                  <summary>{$t.purchaseSpending.invoiceItemsCount(record.items.length)}</summary>
                   {#each record.items as item (item.itemId)}
-                    <span>{item.name ?? ($locale === "zh-TW" ? "未提供品項名稱" : "Item name unavailable")} · {$locale === "zh-TW" ? "數量" : "Qty"}: {exactText(item.quantity)} · {$locale === "zh-TW" ? "分類" : "Category"}: {itemCategory(item)} · {$locale === "zh-TW" ? "品項金額" : "Item amount"}: {amountText(item.amount)}</span>
+                    <span>{item.name ?? $t.purchaseSpending.itemNameUnavailable} · {$t.purchaseSpending.quantity}: {exactText(item.quantity)} · {$t.purchaseSpending.category}: {itemCategory(item)} · {$t.purchaseSpending.itemAmount}: {amountText(item.amount)}</span>
                   {/each}
                 </details>
               {/if}
               {#if record.basis === "invoice" && record.invoice}
-                <button type="button" class="button secondary pair-button" disabled={busyAction !== null} data-open-pairing onclick={() => openPairing(record)}>{$locale === "zh-TW" ? "配對付款" : "Match payment"}</button>
+                <button type="button" class="button secondary pair-button" disabled={busyAction !== null} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
               {/if}
               {#if record.link}
-                <details class="source-details" data-source-details><summary>{$locale === "zh-TW" ? "來源與配對證據" : "Source and match evidence"}</summary><div>{$locale === "zh-TW" ? "配對事件" : "Match event"}: {record.link.eventId} · {$locale === "zh-TW" ? "知識點" : "Knowledge"}: {record.link.evidenceKnowledgeSequence} · {$locale === "zh-TW" ? "來源" : "Origin"}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
-                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$locale === "zh-TW" ? "撤銷配對" : "Revoke match"}</button>
+                <details class="source-details" data-source-details><summary>{$t.purchaseSpending.sourceAndMatchEvidence}</summary><div>{$t.purchaseSpending.matchEvent}: {record.link.eventId} · {$t.purchaseSpending.knowledge}: {record.link.evidenceKnowledgeSequence} · {$t.purchaseSpending.origin}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
+                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
               {/if}
-              {#if record.refund}<span class="refund-note">{$locale === "zh-TW" ? "退款依退款發生月份認列" : "Refund recognized in its occurrence month"} · {record.refund.provenanceReference}</span>{/if}
+              {#if record.refund}<span class="refund-note">{$t.purchaseSpending.refundPeriod} · {record.refund.provenanceReference}</span>{/if}
             </div>
             <div class="purchase-record-side"><strong class="money" data-sensitive>{amountText(record.amount, record.basis === "refund")}</strong></div>
           </article>
             {/each}
           </section>
-        {:else}<div class="purchase-empty"><strong>{$locale === "zh-TW" ? "這個期間沒有消費" : "No purchases in this period"}</strong><span>{$locale === "zh-TW" ? "選擇其他日期或月份查看明細。" : "Choose another day or month to view purchases."}</span></div>{/each}
+        {:else}<div class="purchase-empty"><strong>{$t.purchaseSpending.noPurchases}</strong><span>{$t.purchaseSpending.chooseOtherPeriod}</span></div>{/each}
       </div>
     </section>
     </ProgressiveBlock>
@@ -795,18 +781,18 @@
       <section class="pairing-dialog-backdrop" data-pairing-dialog data-pairing-feedback="open-dialog">
         <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title" aria-busy={busyAction !== null}>
           <div class="panel-title">
-            <div><p class="eyebrow">{$locale === "zh-TW" ? "人工配對" : "Manual match"}</p><h2 id="pairing-title">{$locale === "zh-TW" ? "選擇付款交易" : "Choose a payment transaction"}</h2></div>
-            <button type="button" class="button secondary" onclick={closePairing}>{$locale === "zh-TW" ? "關閉" : "Close"}</button>
+            <div><p class="eyebrow">{$t.purchaseSpending.manualMatch}</p><h2 id="pairing-title">{$t.purchaseSpending.choosePayment}</h2></div>
+            <button type="button" class="button secondary" onclick={closePairing}>{$t.common.close}</button>
           </div>
-          <p class="panel-meta">{$locale === "zh-TW" ? "你可以選擇不同月份、金額或幣別的付款。系統不會自動配對，也不會把相似度當成證據。" : "You may choose a payment with a different month, amount, or currency. The app never auto-matches or treats similarity as evidence."}</p>
+          <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
           <div class="pairing-invoice-summary">
             <strong>{recordLabel(pairingInvoice)}</strong>
             <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
           </div>
           <fieldset class="payment-options">
-            <legend>{$locale === "zh-TW" ? "可配對的付款交易" : "Eligible payment transactions"}</legend>
+            <legend>{$t.purchaseSpending.eligiblePayments}</legend>
             {#if pairingCandidatesLoading}
-              <span class="panel-meta pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$locale === "zh-TW" ? "準備配對候選…" : "Preparing pairing candidates…"}</span>
+              <span class="panel-meta pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.preparingCandidates}</span>
             {:else}
               {#each visibleEligiblePayments as payment (payment.purchaseId)}
                 <label class="payment-option">
@@ -814,33 +800,33 @@
                   <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
                 </label>
               {:else}
-                <span class="panel-meta">{$locale === "zh-TW" ? "沒有可配對的付款交易" : "No eligible payment transactions"}</span>
+                <span class="panel-meta">{$t.purchaseSpending.noEligiblePayments}</span>
               {/each}
             {/if}
             {#if pairingCandidateTotal > paymentVisibleCount}
-              <button type="button" class="button secondary show-more-payments" disabled={pairingCandidatesLoading} data-show-more-payments onclick={() => void showMorePayments()}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+              <button type="button" class="button secondary show-more-payments" disabled={pairingCandidatesLoading} data-show-more-payments onclick={() => void showMorePayments()}>{$t.purchaseSpending.showMore}</button>
             {/if}
           </fieldset>
           {#if selectedPayment}
             <div class="pairing-effect" data-direct-pair-effect>
-              <strong>{$locale === "zh-TW" ? "配對後的認列方式" : "Recognition after matching"}</strong>
-              <span>{$locale === "zh-TW" ? "金額與幣別採銀行付款" : "Amount and currency use the bank payment"}: {amountText(selectedPayment.amount)}</span>
-              <span>{$locale === "zh-TW" ? "日期採發票購買日" : "Date uses the invoice purchase date"}: {dateText(pairingInvoice.occurrence.value)}</span>
+              <strong>{$t.purchaseSpending.recognitionAfterMatch}</strong>
+              <span>{$t.purchaseSpending.amountCurrencyFromBank}: {amountText(selectedPayment.amount)}</span>
+              <span>{$t.purchaseSpending.dateFromInvoice}: {dateText(pairingInvoice.occurrence.value)}</span>
               {#if pairingInvoice.amount?.currency !== selectedPayment.amount?.currency || exactText(pairingInvoice.amount) !== exactText(selectedPayment.amount)}
-                <span>{$locale === "zh-TW" ? "來源金額或幣別不同；不推算差額用途。" : "Source amount or currency differs; no use for the difference is inferred."}</span>
+                <span>{$t.purchaseSpending.sourceDifferenceNotInferred}</span>
               {/if}
             </div>
           {/if}
           {#if busyAction !== null}
-            <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$locale === "zh-TW" ? "正在儲存配對…" : "Saving pairing…"}</span>
+            <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.savingPair}</span>
           {/if}
-          <button type="button" class="button primary" disabled={!selectedPaymentId || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$locale === "zh-TW" ? "確認配對" : "Confirm match"}</button>
+          <button type="button" class="button primary" disabled={!selectedPaymentId || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
     {/if}
 
     {#if fallbackCanonical.availability === "unavailable"}
-      <p class="panel-meta purchase-canonical-note">{$locale === "zh-TW" ? "部分銀行交易仍缺少消費認列必要資料。" : "Some bank transactions still lack the facts required for spending recognition."}</p>
+      <p class="panel-meta purchase-canonical-note">{$t.purchaseSpending.missingCanonical}</p>
     {/if}
   </div>
 </DashboardShell>

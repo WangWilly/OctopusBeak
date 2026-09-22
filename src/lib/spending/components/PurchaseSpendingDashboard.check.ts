@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./PurchaseSpendingDashboard.svelte", import.meta.url), "utf8");
 const chartSource = readFileSync(new URL("./PurchaseActivityBarChart.svelte", import.meta.url), "utf8");
+const dictionarySource = readFileSync(new URL("../../i18n/i18n.ts", import.meta.url), "utf8");
 const matchingSource = readFileSync(new URL("../purchase-matching.ts", import.meta.url), "utf8");
 const entry = readFileSync(new URL("../SpendingDashboard.svelte", import.meta.url), "utf8");
 
@@ -10,8 +11,17 @@ assert.match(entry, /spending\.purchaseReport/);
 assert.match(entry, /<PurchaseSpendingDashboard/);
 assert.doesNotMatch(entry, /similarity.*exclu/iu);
 
+// Both headline amounts must use the selected month's report slice, not the
+// all-period purchaseReport totals supplied by the progressive block.
+assert.match(source, /sideValue=\{visibleTotals\.length > 0/);
+assert.match(source, /<strong class="money" data-sensitive>\{amountText\(selectedMonthTotal\)\}<\/strong>/);
+assert.doesNotMatch(source, /summaryBlock\.purchaseReport\.totalsByCurrency\[0\]/);
+assert.match(source, /sideLabel=\{\$t\.purchaseSpending\.monthlyTotal\}/);
+assert.doesNotMatch(source, /\$locale === "zh-TW"/);
+assert.doesNotMatch(chartSource, /\$locale === "zh-TW"/);
+
 for (const marker of [
-  "購買行為",
+  "當月消費合計",
   "含待確認項目",
   "可能重複",
   "確認配對",
@@ -31,7 +41,7 @@ for (const marker of [
   "日期採發票購買日",
   "信用卡消費",
   "銀行交易",
-]) assert.match(source, new RegExp(marker));
+]) assert.match(dictionarySource, new RegExp(marker));
 
 assert.match(source, /window\.octopusBeak\.spending\.confirmCandidate/);
 assert.match(source, /window\.octopusBeak\.spending\.denyCandidate/);
@@ -61,12 +71,12 @@ assert.match(source, /monthlyChartData\(/);
 assert.match(source, /data-purchase-day/);
 assert.match(source, /selectedDay === key/);
 assert.match(source, /selectChartPeriodFromControl/);
-assert.match(source, /選擇日期以篩選購買明細/);
-assert.match(source, /<option value="">.*顯示整月/);
+assert.match(dictionarySource, /選擇日期以篩選購買明細/);
+assert.match(source, /<option value="">\{\$t\.purchaseSpending\.showFullMonth\}/);
 assert.match(source, /showAllCandidates/);
-assert.match(source, /只看本月/);
-assert.match(source, /查看全部/);
-assert.match(source, /這個期間沒有消費/);
+assert.match(dictionarySource, /只看本月/);
+assert.match(dictionarySource, /查看全部/);
+assert.match(dictionarySource, /這個期間沒有消費/);
 assert.match(chartSource, /import \{ BarChart, defaultChartPadding \} from "layerchart"/);
 assert.match(chartSource, /onBarClick=\{selectBar\}/);
 assert.match(chartSource, /cRange=\{\["var\(--accent\)", "var\(--danger\)"\]\}/);

@@ -9,7 +9,7 @@
 
 <script lang="ts">
   import { BarChart, defaultChartPadding } from "layerchart";
-  import { locale } from "$lib/i18n/i18n.ts";
+  import { locale, t } from "$lib/i18n/i18n.ts";
 
   export let data: readonly PurchaseActivityDatum[] = [];
   export let selectedKey: string | null = null;
@@ -49,8 +49,8 @@
     />
   {:else}
     <div class="chart-empty">
-      <strong>{$locale === "zh-TW" ? "這個期間沒有消費" : "No spending in this period"}</strong>
-      <span>{$locale === "zh-TW" ? "選擇其他月份或幣別查看趨勢。" : "Choose another month or currency to view its trend."}</span>
+      <strong>{$t.purchaseSpending.chartNoSpending}</strong>
+      <span>{$t.purchaseSpending.chartEmptyTrend}</span>
     </div>
   {/if}
 
