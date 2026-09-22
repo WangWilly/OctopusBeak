@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { PGlite } from "@electric-sql/pglite";
+import { migrateSqliteToPglite } from "./migrate-sqlite.ts";
+
+const directory = await mkdtemp(join(tmpdir(), "pglite-migration-check-"));
+try {
+  const sourcePath = join(directory, "source.sqlite");
+  const source = new DatabaseSync(sourcePath);
+  source.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload BLOB NOT NULL)");
+  source.prepare("INSERT INTO notes (id, label, payload) VALUES (?, ?, ?)")
+    .run(1, "example", new Uint8Array([1, 2, 3]));
+  source.close();
+
+  const targetDir = join(directory, "ledger.pglite");
+  await migrateSqliteToPglite({
+    sourcePath,
+    targetDir,
+    baselineSql: "CREATE TABLE notes (id BIGINT PRIMARY KEY, label TEXT NOT NULL, payload BYTEA NOT NULL)",
+    tables: ["notes"],
+  });
+  assert.equal(existsSync(sourcePath), true, "migration preserves its SQLite source");
+  const migrated = await PGlite.create(targetDir);
+  try {
+    const { rows } = await migrated.query<{ id: string; label: string; payload: Uint8Array }>(
+      "SELECT id, label, payload FROM notes ORDER BY id",
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(Number(rows[0]?.id), 1);
+    assert.equal(rows[0]?.label, "example");
+    assert.deepEqual([...rows[0]!.payload], [1, 2, 3]);
+  } finally {
+    await migrated.close();
+  }
+
+  const failedTarget = join(directory, "failed.pglite");
+  await assert.rejects(migrateSqliteToPglite({
+    sourcePath,
+    targetDir: failedTarget,
+    baselineSql: "THIS IS NOT SQL",
+    tables: ["notes"],
+  }));
+  assert.equal(existsSync(sourcePath), true);
+  assert.equal(existsSync(failedTarget), false, "failed migration must not activate a target");
+} finally {
+  await rm(directory, { recursive: true, force: true });
+}
