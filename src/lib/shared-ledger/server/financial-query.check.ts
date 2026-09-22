@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import {
   type FinancialQueryBoundary,
 } from "./financial-query.ts";
 import { seedMockLedger } from "../../../ledger/seed-mock-ledger-db.ts";
+import { canonicalDatabaseWriterKey, openCanonicalDatabaseHandle } from "../../../ledger/canonical/canonical-database.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const loaders = [
@@ -97,6 +99,7 @@ assert.deepEqual(historicalExchangeRates.exchangeRates, []);
 const ledgerDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "financial-query-boundary-"));
 try {
   seedMockLedger(ledgerDir, new Date("2026-07-11T04:00:00.000Z"));
+  openCanonicalDatabaseHandle(ledgerDir).close();
   const productQuery = createFinancialQuery(ledgerDir);
   const assets = await productQuery.current({ kind: "current", product: "assets" });
   assert.equal(assets.product, "assets");
@@ -104,7 +107,7 @@ try {
   assert.deepEqual(assets.projection.accounts, []);
   assert.deepEqual(assets.projection.transactions, []);
   const overview = await productQuery.current({ kind: "current", product: "overview" });
-  assert.equal(overview.projection.availability, "awaiting");
+  assert.equal(overview.projection.availability, "empty");
   assert.deepEqual(overview.projection.accounts, []);
   const liabilities = await productQuery.current({ kind: "current", product: "liabilities" });
   assert.equal(liabilities.product, "liabilities");
@@ -115,6 +118,15 @@ try {
   assert.deepEqual(spending.invoices, []);
   assert.deepEqual(spending.purchaseReport.records, []);
   assert.equal(spending.purchaseReport.totalStatus, "complete");
+  const competingWriter = new DatabaseSync(canonicalDatabaseWriterKey(ledgerDir));
+  competingWriter.exec("BEGIN IMMEDIATE");
+  try {
+    // Dashboard reads must not request a second writer transaction on open.
+    assert.equal(productQuery.current({ kind: "current", product: "spending" }).product, "spending");
+  } finally {
+    competingWriter.exec("ROLLBACK");
+    competingWriter.close();
+  }
 } finally {
   await rm(ledgerDir, { recursive: true, force: true });
 }

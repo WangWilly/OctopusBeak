@@ -13,6 +13,11 @@ import {
   type CanonicalRuntimeOptions,
 } from "./canonical-runtime.ts";
 import {
+  CanonicalWriterLeaseCancelledError,
+  CanonicalWriterLeaseTimeoutError,
+  withCanonicalWriterLease,
+} from "./canonical-writer-lease.ts";
+import {
   CanonicalSourceCaptureAdmissionError,
   type CanonicalSourceCaptureAdmissionTransactionCapability,
   type CanonicalSourceCaptureAdmissionTransactionResult,
@@ -256,6 +261,10 @@ function errorCode(
     return error.code;
   if (error instanceof CanonicalBusyRetryExhaustedError)
     return "writer-serialization";
+  if (error instanceof CanonicalWriterLeaseTimeoutError)
+    return "writer-serialization";
+  if (error instanceof CanonicalWriterLeaseCancelledError)
+    return "cancelled";
   if (error instanceof CanonicalSourceCaptureAdmissionError)
     return `admission-${error.code}`;
   if (error instanceof CanonicalFinancialCommitFatalError) return "run-fatal";
@@ -322,6 +331,7 @@ function failureKind(
   if (error instanceof CanonicalFinancialCommitCapabilityError) return "fatal";
   if (error instanceof CanonicalFinancialCommitFatalError) return "fatal";
   if (error instanceof CanonicalBusyRetryExhaustedError) return "fatal";
+  if (error instanceof CanonicalWriterLeaseTimeoutError) return "fatal";
   if (error instanceof CanonicalSourceCaptureAdmissionError)
     if (error.reason === "infrastructure") return "fatal";
   const text = errorText(error);
@@ -495,7 +505,11 @@ async function openStore(
       runtime !== undefined &&
       Object.values(runtime).some((value) => value !== undefined);
     if (!hasExplicitRuntime)
-      return createCanonicalSourceStore(ledgerDir, options);
+      return withCanonicalWriterLease(
+        canonicalDatabaseWriterKey(ledgerDir),
+        () => createCanonicalSourceStore(ledgerDir, options),
+        { signal: options?.writerRuntime?.signal, waitTimeoutMs: options?.writerRuntime?.writerWaitTimeoutMs },
+      );
 
     // `createCanonicalSourceStore` intentionally owns construction, but its
     // historical open path does not accept runtime options. Probe the
@@ -510,7 +524,7 @@ async function openStore(
         probe.close();
         return createCanonicalSourceStore(ledgerDir, options);
       },
-      runtime,
+      { ...runtime, signal: options?.writerRuntime?.signal },
     );
   });
 }
@@ -648,6 +662,7 @@ export async function executeCanonicalFinancialCommitRun<T>(
         commitClock: request.commitClock,
         writerRuntime: {
           ...request.runtime,
+          signal: request.signal,
           // See writerView: this execution seam never retries a commit.
           maxAttempts: 1,
         },
@@ -655,6 +670,16 @@ export async function executeCanonicalFinancialCommitRun<T>(
       request.runtime,
     );
   } catch (error) {
+    if (error instanceof CanonicalWriterLeaseCancelledError || cancelled(request.signal)) {
+      diagnostics.push(runDiagnostic(request, "cancellation", error));
+      return Object.freeze({
+        status: "cancelled" as const,
+        items: Object.freeze(results),
+        diagnostics: Object.freeze(diagnostics),
+        committedCount: 0,
+        failedCount: 0,
+      });
+    }
     // Open failure happens before a run handle exists, so the explicit
     // pre-handle retry policy is safe to apply while still returning the same
     // structured run result used by all other fatal failures.
@@ -726,7 +751,7 @@ export async function executeCanonicalFinancialCommitRun<T>(
             break;
           }
         } catch (error) {
-          if (error instanceof CanonicalFinancialCommitCancelledError || cancelled(request.signal)) {
+          if (error instanceof CanonicalFinancialCommitCancelledError || error instanceof CanonicalWriterLeaseCancelledError || cancelled(request.signal)) {
             wasCancelled = true;
             const diagnostic = diagnosticFor(item, "cancellation", error);
             diagnostics.push(diagnostic);

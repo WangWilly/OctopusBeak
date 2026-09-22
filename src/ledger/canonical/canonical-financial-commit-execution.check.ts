@@ -582,6 +582,33 @@ test("explicit runtime reports canonical busy exhaustion from lifecycle open", a
   }
 });
 
+test("a pre-transaction cross-process writer wait has a safe structured failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canonical-commit-lease-exhausted-"));
+  const initialized = openCanonicalDatabaseHandle(directory);
+  initialized.close();
+  const lease = new DatabaseSync(`${canonicalDatabaseWriterKey(directory)}.writer-lease.sqlite`);
+  try {
+    lease.exec("PRAGMA journal_mode = DELETE; BEGIN EXCLUSIVE");
+    const result = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir: directory,
+      runtime: { writerWaitTimeoutMs: 10 },
+      items: [item("lease-exhausted", (transaction) => {
+        admit(transaction, "lease-exhausted");
+        return "never";
+      })],
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.committedCount, 0);
+    assert.equal(result.diagnostics[0]?.stage, "run");
+    assert.equal(result.diagnostics[0]?.errorCode, "writer-serialization");
+  } finally {
+    lease.exec("ROLLBACK");
+    lease.close();
+    assert.deepEqual(await rowsFor(directory), { captures: 0, commits: 0 });
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("invalid evidence is an item failure and diagnostics are sanitized", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-commit-diagnostics-"));
   try {

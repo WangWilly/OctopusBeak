@@ -1,10 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
+import { withCanonicalWriterLease } from "./canonical-writer-lease.ts";
 
 export type CanonicalRuntimeOptions = {
   busyTimeoutMs?: number;
   maxAttempts?: number;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
+  writerWaitTimeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type CanonicalRetryObservation = {
@@ -69,9 +72,9 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Serialize writer operations per canonical database and retry the whole operation.
- * The operation is deliberately retried as one unit so BEGIN IMMEDIATE and its
- * rollback boundary are never split across attempts. */
+/** Serialize queue-mediated writers per canonical database and across processes.
+ * Retry only synchronous pre-operation busy failures; a rejected Promise may
+ * follow transaction work and must never be replayed. */
 export async function withCanonicalWriterQueue<T>(
   databasePath: string,
   operation: () => T,
@@ -88,17 +91,24 @@ export async function withCanonicalWriterQueue<T>(
   const maxBackoffMs = Math.max(initialBackoffMs, Math.floor(options.maxBackoffMs ?? 250));
   const observations: CanonicalRetryObservation[] = [];
   try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try { return operation(); }
-      catch (error) {
-        if (!isBusyError(error)) throw error;
-        if (attempt === maxAttempts) throw new CanonicalBusyRetryExhaustedError(attempt, observations, error);
-        const delayMs = Math.min(maxBackoffMs, initialBackoffMs * (2 ** (attempt - 1)));
-        observations.push({ attempt, delayMs, error });
-        await wait(delayMs);
+    return await withCanonicalWriterLease(databasePath, async () => {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let result: T;
+        try { result = operation(); }
+        catch (error) {
+          if (!isBusyError(error)) throw error;
+          if (attempt === maxAttempts) throw new CanonicalBusyRetryExhaustedError(attempt, observations, error);
+          const delayMs = Math.min(maxBackoffMs, initialBackoffMs * (2 ** (attempt - 1)));
+          observations.push({ attempt, delayMs, error });
+          await wait(delayMs);
+          continue;
+        }
+        // An asynchronous rejection may follow transaction execution. Never
+        // replay it, even when its message resembles SQLITE_BUSY.
+        return await result;
       }
-    }
-    throw new Error("Canonical writer retry loop terminated unexpectedly.");
+      throw new Error("Canonical writer retry loop terminated unexpectedly.");
+    }, { signal: options.signal, waitTimeoutMs: options.writerWaitTimeoutMs });
   } finally {
     release();
     if (writerQueues.get(databasePath) === queued) writerQueues.delete(databasePath);
