@@ -38,7 +38,7 @@ export function settleRefresh(
   state: RefreshUiState,
   result: RefreshResult,
 ): RefreshUiState {
-  const superseded = state.staleDuringRefresh;
+  const superseded = state.staleDuringRefresh && result.snapshot.version < state.version;
   return {
     status: superseded
       ? "stale"

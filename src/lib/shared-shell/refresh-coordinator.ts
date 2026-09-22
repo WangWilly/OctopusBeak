@@ -47,6 +47,8 @@ type ItemResult =
   | { status: "fulfilled"; value: unknown }
   | { status: "rejected"; error: unknown };
 
+const MAX_REFRESH_ROUNDS = 3;
+
 /**
  * Coordinates one app-wide refresh without doing synchronous projection work.
  * The visible page is awaited first; every other loader then starts together
@@ -57,8 +59,10 @@ export function createRefreshCoordinator(
 ): RefreshCoordinator {
   let inFlight: Promise<RefreshResult> | null = null;
 
-  const run = async (currentPage?: string): Promise<RefreshResult> => {
-    const snapshot = await options.readSnapshot();
+  const runRound = async (
+    snapshot: DataVersionSnapshot,
+    currentPage?: string,
+  ): Promise<RefreshResult> => {
     const keys = Object.keys(options.loaders);
     const first = currentPage && keys.includes(currentPage) ? currentPage : null;
     const background = first ? keys.filter((key) => key !== first) : keys;
@@ -115,6 +119,21 @@ export function createRefreshCoordinator(
       errors,
       acknowledged,
     };
+  };
+
+  const run = async (currentPage?: string): Promise<RefreshResult> => {
+    let snapshot = await options.readSnapshot();
+    for (let round = 0; round < MAX_REFRESH_ROUNDS; round += 1) {
+      const result = await runRound(snapshot, currentPage);
+      if (result.acknowledged || round === MAX_REFRESH_ROUNDS - 1) {
+        return result;
+      }
+
+      const latest = await options.readSnapshot();
+      if (latest.version <= snapshot.version) return result;
+      snapshot = latest;
+    }
+    throw new Error("Refresh round limit was not reached");
   };
 
   return {
