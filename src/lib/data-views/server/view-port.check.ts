@@ -56,6 +56,8 @@ try {
   raceChannel.port2.on("message", (message) => events.push(message));
   raceChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
   await waitFor(() => resolveSubscribe !== undefined);
+  raceChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
+  await waitFor(() => events.some((event) => (event as { code?: string }).code === "duplicate-subscription"));
   raceChannel.port2.postMessage({ kind: "unsubscribe", id: 1 });
   await waitFor(() => events.some((event) => (event as { kind?: string }).kind === "stopped"));
   resolveSubscribe(async () => { stopCount++; });
@@ -88,4 +90,33 @@ try {
 } finally {
   closeChannel.port1.close();
   closeChannel.port2.close();
+}
+
+const reuseChannel = new MessageChannel();
+try {
+  const subscriptions: Array<{ resolve: (stop: () => Promise<void>) => void; reject: (error: Error) => void }> = [];
+  let secondStopCount = 0;
+  const events: Array<{ kind: string; id: number }> = [];
+  const server = createViewPortServer(reuseChannel.port1, {
+    subscribe: () => new Promise<() => Promise<void>>((resolve, reject) => {
+      subscriptions.push({ resolve, reject });
+    }),
+  });
+  reuseChannel.port2.on("message", (message) => events.push(message));
+  reuseChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
+  await waitFor(() => subscriptions.length === 1);
+  reuseChannel.port2.postMessage({ kind: "unsubscribe", id: 1 });
+  await waitFor(() => events.some((event) => event.kind === "stopped"));
+  reuseChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
+  await waitFor(() => subscriptions.length === 2);
+  subscriptions[0]!.reject(new Error("old subscription failed"));
+  subscriptions[1]!.resolve(async () => { secondStopCount++; });
+  await waitFor(() => events.some((event) => event.kind === "ready"));
+  reuseChannel.port2.postMessage({ kind: "unsubscribe", id: 1 });
+  await waitFor(() => events.filter((event) => event.kind === "stopped").length === 2);
+  assert.equal(secondStopCount, 1, "old rejection must not remove a reused ID");
+  await server.close();
+} finally {
+  reuseChannel.port1.close();
+  reuseChannel.port2.close();
 }
