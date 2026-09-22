@@ -36,3 +36,24 @@ test("invalidation during a refresh latches stale until the round settles", () =
     staleDuringRefresh: false,
   });
 });
+
+test("a refreshed latest version clears an invalidation received during the click", () => {
+  const invalidated = markRefreshInvalidated(beginRefresh(initialRefreshUiState), {
+    version: 8,
+    reason: "automation-completed",
+    changedAt: "2026-09-19T00:00:08.000Z",
+  });
+
+  const settled = settleRefresh(invalidated, {
+    status: "complete",
+    snapshot: { version: 8, stale: true, changedAt: "2026-09-19T00:00:08.000Z" },
+    successful: ["overview"],
+    failed: [],
+    values: { overview: {} },
+    errors: [],
+    acknowledged: true,
+  });
+
+  assert.equal(settled.status, "current");
+  assert.equal(settled.version, 8);
+});

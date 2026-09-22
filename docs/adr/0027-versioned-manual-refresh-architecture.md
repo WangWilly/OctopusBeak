@@ -49,8 +49,12 @@ The desktop API exposes three operations:
 
 Acknowledgement is conditional on the version still being current. If another
 automation run invalidates data while a refresh is in flight, an acknowledgement
-of the older version is rejected and the renderer remains stale. IPC event
-delivery is best effort because the query is the recovery path.
+of the older version is rejected. The same user-initiated refresh then queries
+the latest version and reloads against it, up to three rounds. A failed loader
+also triggers a version check: only a newer version justifies retrying the
+whole round. Continuous invalidation or a failure without a newer version
+leaves the renderer stale or partial instead of claiming current data. IPC
+event delivery is best effort because the query is the recovery path.
 
 ### 3. Refresh rounds capture one snapshot and prioritize the visible page
 
@@ -61,9 +65,12 @@ Each loader owns its component-level state and may resolve or fail
 independently. A failed loader does not discard successful results, and a
 partial round is not acknowledged.
 
-Only one round may be in flight. Repeated refresh requests share its Promise,
-so a double click cannot duplicate projection work or produce competing
-snapshots.
+Only one user-initiated refresh may be in flight. It may contain bounded
+successive rounds when a newer version supersedes one in progress. Repeated
+refresh requests share its Promise, so a double click cannot duplicate
+projection work or produce competing snapshots. An invalidation observed
+during refresh clears once the successfully acknowledged round covers that
+version; a later invalidation remains stale.
 
 ### 4. Refresh is explicit, stale-while-revalidate is the presentation policy
 
@@ -95,7 +102,7 @@ shell, navigation, and unrelated interactions remain available throughout.
   a missed event and would duplicate version comparison and retry semantics.
 - Waiting for all page loaders before applying the current page: the slowest
   background block would unnecessarily delay the visible result.
-- Accepting concurrent refresh rounds: duplicate requests could overwrite a
+- Accepting concurrent refresh requests: duplicate requests could overwrite a
   newer component result with an older round.
 
 ## Verification
