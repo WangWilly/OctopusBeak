@@ -61,6 +61,23 @@ function yuantaBankCaptchaContract(): HumanAssistanceContract {
   };
 }
 
+function fubonCaptchaContract(): HumanAssistanceContract {
+  const contract = yuantaBankCaptchaContract();
+  return {
+    ...contract,
+    stageId: "fubon-login-captcha",
+    title: "Enter the Fubon CAPTCHA",
+    targets: contract.targets.map((target) => ({
+      ...target,
+      semanticId: "fubon.login.captcha-input",
+    })),
+    challengeImageRegion: {
+      ...contract.challengeImageRegion!,
+      semanticId: "fubon.login.captcha-image",
+    },
+  };
+}
+
 test("fail-closed route finalizes a resumed run after session cleanup", async () => {
   const root = mkdtempSync(join(tmpdir(), "captcha-retry-finalize-cleaned-"));
   const ledgerDir = join(root, "ledger");
@@ -767,6 +784,130 @@ test("Yuanta observed CAPTCHA alert travels through provider probe, routing, and
       "resume-settled",
       "fresh-round",
       "fresh-round-routed",
+    ]);
+    assert.equal(taskRunById(db, run.taskRunId)?.attempt, 2);
+    assert.equal(taskRunById(db, run.taskRunId)?.maxAttempts, 10);
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Fubon 0290 response restarts one fresh CAPTCHA round after exact-session cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "captcha-retry-coordinator-fubon-0290-"));
+  const ledgerDir = join(root, "ledger");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  const run = createTaskRun(db, {
+    taskId: "fubon-all-statements",
+    script: "run:fubon-all-statements",
+    kind: "crawler",
+    status: "waiting_for_human",
+    attempt: 1,
+    maxAttempts: 10,
+    startedAt: new Date().toISOString(),
+    logPath: join(root, "automation.log"),
+  });
+  updateHumanAssistanceContract(db, run.taskRunId, fubonCaptchaContract());
+
+  let shown = false;
+  const events: string[] = [];
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: (name: string) => {
+        assert.equal(name, "txnFrame");
+        return {
+          getByText: (pattern: RegExp) => {
+            assert.equal(pattern.test("0290 驗證碼輸入錯誤"), true);
+            const rejection = {
+              first: () => rejection,
+              isVisible: async () => shown,
+            };
+            return rejection;
+          },
+        } as never;
+      },
+    } as never),
+    sleep: async () => {},
+  });
+  const providerVerification = {
+    handlesChallengeImage: () => true,
+    captureChallengeImage: async () => Buffer.from("fubon-captcha"),
+    isChallengeImageCurrent: async () => true,
+  };
+  let executions = 0;
+  let routeCalls = 0;
+  let releaseResume!: () => void;
+  try {
+    const result = await runCaptchaRetryCampaign({
+      taskId: "fubon-all-statements",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "solver" },
+      initialExecutionOptions: {},
+      execute: async (options) => {
+        executions += 1;
+        if (options.resumeSession) {
+          events.push("resume-started");
+          const resumeBlocked = new Promise<void>((resolve) => { releaseResume = resolve; });
+          shown = true;
+          await resumeBlocked;
+          events.push("resume-settled");
+          return { status: "failed" as const };
+        }
+        events.push(executions === 1 ? "initial-round" : "fresh-round");
+        return {
+          status: "waiting_for_human" as const,
+          taskRunId: run.taskRunId,
+          executionId: `execution-fubon-${executions}`,
+          session: `ses-fubon-${executions}`,
+          owner: null,
+          result: {
+            exitCode: 0,
+            signal: null,
+            error: null,
+            logTail: "",
+            resumeFailure: null,
+            statementSummary: null,
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          },
+        };
+      },
+      isCancellationRequested: () => false,
+      finalizeSessionForRun: async () => {
+        events.push("cleanup");
+        releaseResume();
+        return {
+          session: "ses-fubon-1",
+          pid: null,
+          errorMessage: null,
+          cleanupFailed: false,
+        };
+      },
+      routeWaitingRunVerification: async (input) => {
+        routeCalls += 1;
+        if (routeCalls > 1) {
+          await input.onChallengeCaptured?.();
+          events.push("fresh-round-routed");
+          return { kind: "resumed" as const };
+        }
+        return routeWaitingRunVerification({
+          ...input,
+          solver: { async solve() { return { answer: "123456", confidence: 0.99 }; } },
+          providerVerification,
+          providerInjectAnswer: async () => { events.push("answer-injected"); },
+          providerProbePostSubmit: host.probePostSubmit,
+          settings: { LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR: "solver" },
+        });
+      },
+    });
+    assert.deepEqual(result, { status: "waiting_for_human" });
+    assert.equal(executions, 3);
+    assert.equal(routeCalls, 2);
+    assert.deepEqual(events, [
+      "initial-round", "answer-injected", "resume-started", "cleanup",
+      "resume-settled", "fresh-round", "fresh-round-routed",
     ]);
     assert.equal(taskRunById(db, run.taskRunId)?.attempt, 2);
     assert.equal(taskRunById(db, run.taskRunId)?.maxAttempts, 10);

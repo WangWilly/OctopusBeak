@@ -818,6 +818,47 @@ test("rejects a sanitized 0240 alert", async () => {
   assert.doesNotMatch(String(result.error), /private-secret/);
 });
 
+test("waits for a post-submit bank dialog before treating the still-visible login form as rejection", async () => {
+  const messages: string[] = [];
+  let probes = 0;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(
+      { frame: () => undefined } as unknown as Page,
+      {
+        timeoutMs: 50,
+        pollIntervalMs: 1,
+        dialogChannel: channelWithMessages(messages),
+        probe: async () => {
+          probes += 1;
+          if (probes === 2) messages.push("dialog-alert");
+          return snapshot({ loggedIn: false, loginFormVisible: true });
+        },
+      },
+    ),
+  );
+  assert.equal(probes, 2);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "dialog-alert" }]);
+});
+
+test("still rejects an unchanged login form when no bank outcome appears", async () => {
+  let probes = 0;
+  const result = await withTelemetry(() =>
+    waitForFubonPostLoginOutcome(
+      { frame: () => undefined } as unknown as Page,
+      {
+        timeoutMs: 8,
+        pollIntervalMs: 1,
+        probe: async () => {
+          probes += 1;
+          return snapshot({ loggedIn: false, loginFormVisible: true });
+        },
+      },
+    ),
+  );
+  assert.ok(probes > 1);
+  assert.deepEqual(result.events, [{ status: "rejected", reason: "login-form-visible" }]);
+});
+
 test("post-click 0240 is terminal after the single submit", async () => {
   const dom = fakeDom();
   const page = fakePage(dom);

@@ -12,6 +12,7 @@ const FUBON_AUTH_FRAME_NAME = "frame1";
 const FUBON_LOGIN_FRAME_NAME = "txnFrame";
 const DEFAULT_OUTCOME_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
+const LOGIN_FORM_REJECTION_GRACE_MS = 10_000;
 const MARKER_PROBE_TIMEOUT_MS = 100;
 const DEFAULT_LOGIN_FILL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS = 50;
@@ -1740,6 +1741,12 @@ export async function waitForFubonPostLoginOutcome(
     options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
   );
   const deadline = Date.now() + timeoutMs;
+  const loginFormRejectionAfter = Math.min(
+    deadline,
+    Date.now() + LOGIN_FORM_REJECTION_GRACE_MS,
+  );
+  let lastRejectionReason: string | undefined;
+  let lastErrorCode: string | undefined;
   const probe =
     options.probe ??
     ((actualPage: Page, context: FubonLoginProbeContext) =>
@@ -1785,9 +1792,19 @@ export async function waitForFubonPostLoginOutcome(
     }
 
     const rejectionReason = rejectionForSnapshot(snapshot);
+    lastRejectionReason = rejectionReason;
+    lastErrorCode = snapshot?.errorCode;
     if (rejectionReason) {
-      emitOutcome("rejected", rejectionReason);
-      throw new FubonLoginRejectedError(rejectionReason, snapshot?.errorCode);
+      // The login form is also visible immediately after the click. Give the
+      // bank time to emit its actual post-submit result or dialog before
+      // interpreting that unchanged form as a rejection.
+      if (
+        rejectionReason !== "login-form-visible" ||
+        Date.now() >= loginFormRejectionAfter
+      ) {
+        emitOutcome("rejected", rejectionReason);
+        throw new FubonLoginRejectedError(rejectionReason, snapshot?.errorCode);
+      }
     }
 
     if (authenticatedMarkerForSnapshot(snapshot)) {
@@ -1807,6 +1824,11 @@ export async function waitForFubonPostLoginOutcome(
   const dialogMessage = latestDialogMessage(options.dialogChannel);
   if (dialogMessage !== undefined) {
     throwDialogRejection(dialogMessage, undefined);
+  }
+
+  if (lastRejectionReason === "login-form-visible") {
+    emitOutcome("rejected", lastRejectionReason);
+    throw new FubonLoginRejectedError(lastRejectionReason, lastErrorCode);
   }
 
   emitOutcome("timeout", "no-authenticated-outcome");

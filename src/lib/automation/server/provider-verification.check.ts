@@ -515,6 +515,135 @@ test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", a
   assert.equal(dialogs.listenerCount("dialog"), 0);
 });
 
+test("Fubon host probe treats the exact in-page 0290 CAPTCHA response as provider rejection", async () => {
+  let shown = false;
+  let cleanupCount = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: (name: string) => {
+        assert.equal(name, "txnFrame");
+        return {
+          getByText: (pattern: RegExp) => {
+            assert.equal(pattern.test("0290 驗證碼輸入錯誤"), true);
+            const rejection = {
+              isVisible: async () => shown,
+              first: () => rejection,
+            };
+            return rejection;
+          },
+        } as never;
+      },
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-0290",
+    fubonCaptchaContract(),
+    async () => {
+      shown = true;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      throw new Error("workflow stopped after the 0290 response");
+    },
+    async () => { cleanupCount += 1; },
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(cleanupCount, 1);
+});
+
+test("Fubon host probe follows a replaced login frame to the 0290 response", async () => {
+  let replacementVisible = false;
+  let frameReads = 0;
+  const frame = (visible: boolean) => ({
+    getByText: () => {
+      const rejection = {
+        first: () => rejection,
+        isVisible: async () => visible,
+      };
+      return rejection;
+    },
+  });
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: () => {
+        frameReads += 1;
+        return frame(replacementVisible) as never;
+      },
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-replaced-frame",
+    fubonCaptchaContract(),
+    async () => {
+      replacementVisible = true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.ok(frameReads >= 2);
+});
+
+test("Fubon host probe does not retry other login responses", async () => {
+  for (const message of [
+    "0240 頁面閒置過久",
+    "0212 重複登入",
+    "帳號或密碼錯誤",
+    "0290 帳號或密碼錯誤",
+  ]) {
+    let cleanupCount = 0;
+    const host = createProviderVerificationHost({
+      withPage: async (_session, action) => action({
+        frame: () => ({
+          getByText: (pattern: RegExp) => {
+            assert.equal(pattern.test(message), false);
+            const rejection = {
+              first: () => rejection,
+              isVisible: async () => false,
+              waitFor: async () => { throw new Error("0290 CAPTCHA response absent"); },
+            };
+            return rejection;
+          },
+        } as never),
+      } as never),
+      sleep: async () => {},
+    });
+    await assert.rejects(host.probePostSubmit(
+      "session-fubon-other-error",
+      fubonCaptchaContract(),
+      async () => { throw new Error("ordinary login failure"); },
+      async () => { cleanupCount += 1; },
+    ), /ordinary login failure/);
+    assert.equal(cleanupCount, 0);
+  }
+});
+
+test("Fubon host probe refuses a 0290 response already visible before submission", async () => {
+  let resumed = false;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: () => ({
+        getByText: () => {
+          const rejection = {
+            first: () => rejection,
+            isVisible: async () => true,
+          };
+          return rejection;
+        },
+      } as never),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-stale-0290",
+    fubonCaptchaContract(),
+    async () => { resumed = true; },
+    async () => {},
+  );
+  assert.equal(outcome, "unrecognized-dialog");
+  assert.equal(resumed, false);
+});
+
 test("SinoPac host probe keeps a proven rejection when resume fails after the dialog", async () => {
   const dialogs = new EventEmitter();
   const host = createProviderVerificationHost({
