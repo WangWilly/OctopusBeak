@@ -23,6 +23,12 @@ results; for keyed, larger ordered result sets it may send `live.changes()`
 diffs. These are changes to a query result, not raw table-update events.
 Within each renderer, one Svelte store per key shares the IPC subscription
 among mounted consumers and tears it down when the last consumer leaves.
+Existing synchronous SQLite calls are replaced by asynchronous domain queries
+and commands at the worker boundary, not by a synchronous compatibility bridge
+or a renderer-accessible general SQL proxy. Automation submits validated
+captures to worker-owned transactional commands. Database interactions inside
+one command may be reorganized to avoid a one-for-one port of the old SQL call
+sites.
 
 The open page updates from committed data automatically, replacing the
 manual-only freshness behavior of [ADR 0027](./0027-versioned-manual-refresh-architecture.md)
@@ -38,8 +44,15 @@ semantics nor write-side correctness checks.
 
 The cutover uses a **manual, one-time command**, never an automatic app-start
 migration. Existing schema migrations are consolidated into a PGlite baseline;
-the command then transfers the data held in the SQLite databases, verifies
-schema and data parity, and only then switches the app's database location.
+the command then transfers every irreducible financial fact and user-authored
+record held in the SQLite databases, verifies their content and the behavior of
+the new schema, and only then switches the app's database location. Disposable
+projections and caches may instead be rebuilt and checked from those retained
+records. SQLite tables and triggers may be consolidated or omitted when their
+invariants and observable results are preserved; physical object-count parity
+is not required. The command must report every intentionally rebuilt or
+omitted object and reject an unclassified source object rather than silently
+dropping it.
 It preserves the source SQLite files whether the command succeeds or fails,
 and does not silently discard records. New schema changes after the baseline
 use new migrations. The

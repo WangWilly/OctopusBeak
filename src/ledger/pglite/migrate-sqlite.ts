@@ -23,6 +23,13 @@ export async function migrateSqliteToPglite(input: SqliteToPgliteMigration): Pro
   let stagingDir: string | undefined;
   let target: PGlite | undefined;
   try {
+    const sourceTables = source.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    ).all() as { name: string }[];
+    const copied = new Set(input.tables.map(quotedIdentifier));
+    const unclassified = sourceTables.map(({ name }) => name).filter((name) =>
+      !copied.has(quotedIdentifier(name)));
+    if (unclassified.length > 0) throw new Error(`Unclassified source tables: ${unclassified.join(", ")}`);
     stagingDir = await mkdtemp(join(dirname(input.targetDir), ".pglite-migration-"));
     target = await PGlite.create(stagingDir);
     await target.exec(input.baselineSql);
