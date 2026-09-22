@@ -1,4 +1,5 @@
 import { readable, type Readable } from "svelte/store";
+import { viewSubscriptionKey } from "../view-key.ts";
 
 type Stop = () => void | Promise<void>;
 type ViewTransport = {
@@ -16,7 +17,7 @@ export function createViewStores(transport: ViewTransport) {
 
   return {
     get<Value>(view: string, params: object): Readable<ViewState<Value>> {
-      const key = JSON.stringify([view, params]);
+      const key = viewSubscriptionKey(view, params);
       const existing = cache.get(key);
       if (existing) return existing as Readable<ViewState<Value>>;
 

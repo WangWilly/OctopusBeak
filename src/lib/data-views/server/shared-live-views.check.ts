@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import { live } from "@electric-sql/pglite/live";
-import { createSharedLiveViews } from "./shared-live-views.ts";
+import { createSharedLiveViews, defineLiveView } from "./shared-live-views.ts";
 
 type Total = { month: string; amount: number };
 
@@ -19,17 +19,25 @@ try {
   await db.query("INSERT INTO monthly_totals (month, amount) VALUES ($1, $2)", ["2026-09", 10]);
 
   const views = createSharedLiveViews(db, {
-    "spending.summary": (params: { month: string }) => ({
+    "spending.summary": defineLiveView<{ month: string }, Total>((params) => ({
       sql: "SELECT month, amount FROM monthly_totals WHERE month = $1",
       args: [params.month],
-    }),
+    })),
   });
+  if (false) {
+    // @ts-expect-error The view requires a month parameter.
+    await views.subscribe("spending.summary", { date: "2026-09" }, () => {});
+    // @ts-expect-error The view rows have an amount, not an accountId.
+    await views.subscribe("spending.summary", { month: "2026-09" }, (rows: { accountId: string }[]) => rows);
+  }
   const first: Total[][] = [];
   const second: Total[][] = [];
   const stopFirst = await views.subscribe("spending.summary", { month: "2026-09" }, (rows: Total[]) => first.push(rows));
   const stopSecond = await views.subscribe("spending.summary", { month: "2026-09" }, (rows: Total[]) => second.push(rows));
 
   await waitFor(() => first.at(-1)?.[0]?.amount === 10 && second.at(-1)?.[0]?.amount === 10);
+  assert.equal(first.length, 1, "one initial result per subscriber");
+  assert.equal(second.length, 1, "one initial result per subscriber");
   await db.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [20, "2026-09"]);
   await waitFor(() => first.at(-1)?.[0]?.amount === 20 && second.at(-1)?.[0]?.amount === 20);
 
