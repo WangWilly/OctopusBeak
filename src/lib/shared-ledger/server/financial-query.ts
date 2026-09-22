@@ -312,7 +312,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
         };
       }
       channel("octopus-beak.spending.canonical-store-open").publish({ ledgerDir: this.ledgerDir });
-      const store = createCanonicalSourceStore(this.ledgerDir);
+      const store = createCanonicalSourceStore(this.ledgerDir, { readOnly: true });
       try {
         return queryCurrentSpendingFromDatabase(store.db);
       } finally {
@@ -374,7 +374,7 @@ class CanonicalFinancialQueryAdapter implements FinancialQueryBoundary {
 function currentCanonicalEInvoices(ledgerDir: string): readonly CanonicalEInvoiceView[] {
   const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return [];
-  const store = createCanonicalSourceStore(ledgerDir);
+  const store = createCanonicalSourceStore(ledgerDir, { readOnly: true });
   try { return queryCanonicalEInvoiceCurrent(store).invoices; }
   finally { store.close(); }
 }
@@ -385,7 +385,7 @@ function purchaseReport(
 ): PurchaseReport {
   const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return emptyPurchaseReport(request.kind, request.knowledgeAt ?? 0, request.financialAt ?? null);
-  const store = createCanonicalSourceStore(ledgerDir);
+  const store = createCanonicalSourceStore(ledgerDir, { readOnly: true });
   try {
     return queryPurchaseReport(store, request);
   } finally {
@@ -404,7 +404,7 @@ function spendingLineageSubject(subject: LineageSubject): SpendingPair | Readonl
 function purchaseLineage(ledgerDir: string, subject: ReturnType<typeof spendingLineageSubject>): PurchaseLineage {
   const databasePath = canonicalDatabaseWriterKey(ledgerDir);
   if (!existsSync(databasePath)) return { kind: "lineage", subject, invoice: null, recognition: [], refunds: [] };
-  const store = createCanonicalSourceStore(ledgerDir);
+  const store = createCanonicalSourceStore(ledgerDir, { readOnly: true });
   try { return queryPurchaseLineage(store, subject); }
   finally { store.close(); }
 }

@@ -1489,23 +1489,38 @@ export async function withCanonicalSourceCaptureAdmissionTransaction<T>(
   ) => T | Promise<T>,
 ): Promise<T> {
   assertValidatedCanonicalDatabase(store.db);
-  return store.withWriter(async () => {
+  return store.withWriter(() => {
+    // A busy BEGIN has no financial effect. Keep it synchronous so the writer
+    // queue can classify that pre-transaction failure separately from an
+    // asynchronous rejection after admission has started.
     store.db.exec("BEGIN IMMEDIATE");
-    const capability = mintTransactionCapability(store);
+    let capability: ReturnType<typeof mintTransactionCapability>;
     try {
-      const result = await operation(capability);
-      store.db.exec("COMMIT");
-      return result;
+      capability = mintTransactionCapability(store);
     } catch (error) {
       try {
         store.db.exec("ROLLBACK");
       } catch {
-        /* preserve the original admission failure */
+        /* preserve the capability failure */
       }
       throw error;
-    } finally {
-      revokeTransactionCapability(capability);
     }
+    return (async () => {
+      try {
+        const result = await operation(capability);
+        store.db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          store.db.exec("ROLLBACK");
+        } catch {
+          /* preserve the original admission failure */
+        }
+        throw error;
+      } finally {
+        revokeTransactionCapability(capability);
+      }
+    })();
   });
 }
 

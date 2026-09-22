@@ -3657,6 +3657,8 @@ export type CanonicalSourceCommitResult = {
 };
 export type CanonicalSourceStoreOptions = {
   commitClock?: () => number;
+  /** Query-only callers must not run schema/data write transitions on open. */
+  readOnly?: boolean;
   /**
    * Runtime policy for the store's private writer queue.  The execution
    * module uses this to disable retries after a transaction may have become
@@ -3676,7 +3678,7 @@ export function createCanonicalSourceStore(
   const directory = normalizeCanonicalLedgerDirectory(
     requireCanonicalSourceText(ledgerDir, "Canonical ledger directory"),
   );
-  const handle = openCanonicalDatabaseHandle(directory);
+  const handle = openCanonicalDatabaseHandle(directory, { readOnly: options.readOnly });
   const db = handle.db;
   const commitClock = options.commitClock ?? currentUtcMicros;
   const writerRuntime = options.writerRuntime;

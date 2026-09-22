@@ -480,6 +480,53 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
+/** Libretto's locator telemetry can observe a redirect between locating and
+ * marking an action. Retrying these pre-submit form actions is safe: no login
+ * request or CAPTCHA answer has been submitted yet. */
+export async function retryEinvoiceLoginNavigation<T>(action: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      if (attempt >= 4 || !/Execution context was destroyed|Cannot find context with specified id/i.test(String(error))) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+export type EinvoiceLoginOutcome =
+  | "authenticated"
+  | "captcha-rejected"
+  | "credentials-rejected"
+  | "form-rejected"
+  | "unconfirmed";
+
+/** Observe the response to one submission without submitting credentials or
+ * CAPTCHA again. Site messages are used only for classification, never logged. */
+export async function waitForEinvoiceLoginOutcome(
+  page: Page,
+  timeoutMs = 120_000,
+): Promise<EinvoiceLoginOutcome> {
+  const deadline = performance.now() + timeoutMs;
+  const rejection = /錯誤|不正確|有誤|失敗|重新|無效|incorrect|invalid|failed/i;
+  while (true) {
+    if (await isSignedIn(page)) return "authenticated";
+    for (const alert of await page.locator('[role="alert"], [role="dialog"], .alert, .invalid-feedback, .error-message, .el-message, .swal2-popup').all()) {
+      if (!(await alert.isVisible())) continue;
+      const message = (await alert.innerText()).trim();
+      if (!rejection.test(message)) continue;
+      if (/圖形驗證碼|captcha/i.test(message)) return "captcha-rejected";
+      if (/手機號碼|密碼|password/i.test(message)) return "credentials-rejected";
+      if (/登入|驗證碼|驗證/i.test(message)) return "form-rejected";
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return "unconfirmed";
+    await page.waitForTimeout(Math.min(250, remaining));
+  }
+}
+
 export function einvoiceCaptchaAssistanceStage(
   page: Page,
 ): WorkflowHumanAssistanceStage {
@@ -538,14 +585,14 @@ async function signInEinvoice(
   if (!page.url().startsWith(LOGIN_URL)) {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
   }
-  await page.locator("#mobile_phone").waitFor({ state: "visible" });
-  await page
+  await retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone").waitFor({ state: "visible" }));
+  await retryEinvoiceLoginNavigation(() => page
     .locator("#mobile_phone")
-    .fill(requireCredential(credentials, "einvoice_phone_number"));
-  await page
+    .fill(requireCredential(credentials, "einvoice_phone_number")));
+  await retryEinvoiceLoginNavigation(() => page
     .locator("#password")
-    .fill(requireCredential(credentials, "einvoice_password"));
-  await page.locator("#captcha").focus();
+    .fill(requireCredential(credentials, "einvoice_password")));
+  await retryEinvoiceLoginNavigation(() => page.locator("#captcha").focus());
   await emitHumanAssistanceStage(einvoiceCaptchaAssistanceStage(page));
 
   console.log(
@@ -562,7 +609,19 @@ async function signInEinvoice(
     );
   }
   await page.locator("#submitBtn").click();
-  await page.waitForURL(/\/portal\/btc\/mobile/, { timeout: 120_000 });
+  const outcome = await waitForEinvoiceLoginOutcome(page);
+  if (outcome === "authenticated") return;
+  if (outcome === "captcha-rejected")
+    throw new Error("E-invoice CAPTCHA was rejected; a new human-assisted attempt is required.");
+  if (outcome === "credentials-rejected")
+    throw new Error("E-invoice sign-in credentials were rejected; no automatic resubmission was made.");
+  if (outcome === "form-rejected")
+    throw new Error("E-invoice sign-in form was rejected; no automatic resubmission was made.");
+  throw new Error(
+    page.url().startsWith(LOGIN_URL)
+      ? "E-invoice sign-in remained on the login page without a confirmed result."
+      : "E-invoice sign-in reached an unexpected page without a confirmed session.",
+  );
 }
 
 async function currentPickerMonth(page: Page): Promise<YearMonth> {

@@ -14,8 +14,10 @@ import {
   commitCanonicalCapture,
   einvoiceCaptchaAssistanceStage,
   mapCanonicalEInvoiceRecord,
+  retryEinvoiceLoginNavigation,
   type InvoiceCaptureRecord,
   validatePaginationEnvelope,
+  waitForEinvoiceLoginOutcome,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
 import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
@@ -36,6 +38,20 @@ assert.doesNotMatch(
   workflowSource,
   /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
 );
+
+let redirectAttempts = 0;
+assert.equal(await retryEinvoiceLoginNavigation(async () => {
+  redirectAttempts += 1;
+  if (redirectAttempts === 1) throw new Error("Execution context was destroyed");
+  return "login-form-ready";
+}), "login-form-ready");
+assert.equal(redirectAttempts, 2);
+let unrelatedAttempts = 0;
+await assert.rejects(retryEinvoiceLoginNavigation(async () => {
+  unrelatedAttempts += 1;
+  throw new Error("Invalid form field");
+}), /Invalid form field/);
+assert.equal(unrelatedAttempts, 1);
 
 const browser = await chromium.launch();
 try {
@@ -78,6 +94,17 @@ try {
   assert.equal(captchaContract.challengeImageRegion?.rect?.width, 150);
   assert.equal(captchaContract.challengeImageRegion?.rect?.height, 40);
   await captchaPage.close();
+
+  const outcomePage = await browser.newPage();
+  await outcomePage.setContent('<div role="alert">圖形驗證碼錯誤，請重新輸入</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "captcha-rejected");
+  await outcomePage.setContent('<div role="alert">密碼不正確</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "credentials-rejected");
+  await outcomePage.setContent('<div>會員專區</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "authenticated");
+  await outcomePage.setContent('<div>登入中</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 25), "unconfirmed");
+  await outcomePage.close();
 } finally {
   await browser.close();
 }
