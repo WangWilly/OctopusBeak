@@ -68,6 +68,7 @@ import {
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
   SINOPAC_DIALOG_OWNER_ENV,
+  isSinopacCaptchaRejectionDialog,
   sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
@@ -768,13 +769,16 @@ export async function runSinopacLoginAttempt(
     if (dialogHandled) return;
     dialogHandled = true;
     let type = "unknown";
+    let captchaRejected = false;
     try {
       type = dialog.type();
+      // Diagnostic only: the host probe, not workflow logs, owns retry routing.
+      captchaRejected = isSinopacCaptchaRejectionDialog(type, dialog.message());
     } catch {
       // Keep the fail-fast path usable if the browser closes the dialog while
       // it is being inspected.
     }
-    console.warn("sinopac-login-dialog", { type });
+    console.warn("sinopac-login-dialog", { type, captchaRejected });
     const dismissal = Promise.resolve().then(() => dialog.dismiss());
     void dismissal.catch(() => undefined);
     let dismissalTimer: ReturnType<typeof setTimeout> | undefined;

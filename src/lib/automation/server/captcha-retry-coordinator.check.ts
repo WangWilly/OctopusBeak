@@ -9,6 +9,7 @@ import {
   createTaskRun,
   taskRunById,
   updateHumanAssistanceContract,
+  updateTaskRun,
 } from "./store.ts";
 import {
   runCaptchaRetryCampaign,
@@ -59,6 +60,192 @@ function yuantaBankCaptchaContract(): HumanAssistanceContract {
     focus: { targetId: "captcha-input", contextRegionIds: [] },
   };
 }
+
+test("fail-closed route finalizes a resumed run after session cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "captcha-retry-finalize-cleaned-"));
+  const ledgerDir = join(root, "ledger");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  const run = createTaskRun(db, {
+    taskId: "coordinator-cleaned-failure-test",
+    script: "coordinator-cleaned-failure-test",
+    kind: "crawler",
+    status: "waiting_for_human",
+    attempt: 1,
+    maxAttempts: 10,
+    startedAt: new Date().toISOString(),
+    logPath: join(root, "automation.log"),
+  });
+  try {
+    const result = await runCaptchaRetryCampaign({
+      taskId: "coordinator-cleaned-failure-test",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: {},
+      initialExecutionOptions: {},
+      execute: async () => ({
+        status: "waiting_for_human" as const,
+        taskRunId: run.taskRunId,
+        executionId: "initial",
+        session: "ses-cleaned-failure",
+        owner: null,
+        result: {
+          exitCode: 0,
+          signal: null,
+          error: null,
+          logTail: "Workflow paused.",
+          resumeFailure: null,
+          statementSummary: null,
+          outputPersistenceWarnings: [],
+          externalPrerequisiteIds: [],
+        },
+      }),
+      isCancellationRequested: () => false,
+      routeWaitingRunVerification: async (input) => {
+        updateTaskRun(db, run.taskRunId, {
+          status: "running",
+          errorMessage: "SinoPac login was interrupted by a browser dialog.",
+        });
+        await input.cleanupSession?.();
+        return { kind: "failed" };
+      },
+      finalizeSessionForRun: async () => ({
+        session: "ses-cleaned-failure",
+        pid: null,
+        errorMessage: null,
+        cleanupFailed: false,
+      }),
+    });
+    const persisted = taskRunById(db, run.taskRunId);
+    assert.deepEqual(result, { status: "failed" });
+    assert.equal(persisted?.status, "failed");
+    assert.notEqual(persisted?.finishedAt, null);
+    assert.equal(
+      persisted?.errorMessage,
+      "SinoPac login was interrupted by a browser dialog.",
+    );
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SinoPac solver claims dialog ownership before starting its session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sinopac-dialog-owner-"));
+  const ledgerDir = join(root, "ledger");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  let owner: string | undefined;
+  try {
+    const result = await runCaptchaRetryCampaign({
+      taskId: "sinopac-statements",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: {
+        LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
+      },
+      initialExecutionOptions: {},
+      execute: async (options) => {
+        owner = options.hostOwnedDialogProvider;
+        return { status: "failed" as const };
+      },
+      isCancellationRequested: () => false,
+    });
+    assert.deepEqual(result, { status: "failed" });
+    assert.equal(owner, "sinopac");
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SinoPac keeps host dialog ownership across a solver retry", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sinopac-dialog-retry-owner-"));
+  const ledgerDir = join(root, "ledger");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  const run = createTaskRun(db, {
+    taskId: "sinopac-statements",
+    script: "sinopac-statements",
+    kind: "crawler",
+    status: "waiting_for_human",
+    attempt: 1,
+    maxAttempts: 10,
+    startedAt: new Date().toISOString(),
+    logPath: join(root, "automation.log"),
+  });
+  const owners: Array<string | undefined> = [];
+  try {
+    await runCaptchaRetryCampaign({
+      taskId: "sinopac-statements",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: {
+        LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
+      },
+      initialExecutionOptions: {},
+      execute: async (options) => {
+        owners.push(options.hostOwnedDialogProvider);
+        return owners.length === 1
+          ? {
+              status: "waiting_for_human" as const,
+              taskRunId: run.taskRunId,
+              executionId: "first",
+              session: "ses-first",
+              owner: null,
+              result: {
+                exitCode: 0,
+                signal: null,
+                error: null,
+                logTail: "Workflow paused.",
+                resumeFailure: null,
+                statementSummary: null,
+                outputPersistenceWarnings: [],
+                externalPrerequisiteIds: [],
+              },
+            }
+          : { status: "failed" as const };
+      },
+      isCancellationRequested: () => false,
+      routeWaitingRunVerification: async (input) => {
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable", reason: "solver-exhausted" };
+      },
+    });
+    assert.deepEqual(owners, ["sinopac", "sinopac"]);
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SinoPac human verification keeps workflow dialog ownership", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sinopac-human-dialog-owner-"));
+  const ledgerDir = join(root, "ledger");
+  mkdirSync(ledgerDir, { recursive: true });
+  const db = openLedgerDatabase(ledgerDir);
+  let owner: string | undefined;
+  try {
+    await runCaptchaRetryCampaign({
+      taskId: "sinopac-statements",
+      taskDb: db,
+      ledgerDir,
+      launchVerificationSettings: {
+        LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human",
+      },
+      initialExecutionOptions: {},
+      execute: async (options) => {
+        owner = options.hostOwnedDialogProvider;
+        return { status: "failed" as const };
+      },
+      isCancellationRequested: () => false,
+    });
+    assert.equal(owner, undefined);
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("CAPTCHA coordinator serially consumes at most ten retry rounds", async () => {
   const root = mkdtempSync(join(tmpdir(), "captcha-retry-coordinator-"));

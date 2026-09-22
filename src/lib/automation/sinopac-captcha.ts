@@ -26,3 +26,12 @@ export function sinopacHostDialogOwner(session: string): string {
   return SINOPAC_HOST_DIALOG_OWNER_PREFIX + session;
 }
 export const SINOPAC_DIALOG_DISMISS_TIMEOUT_MS = 500;
+
+/** Bank SinoPac's MMA CAPTCHA warning (public FAQ 1386 at
+ * https://bank.sinopac.com/gcsdsp/dspfaqlist.aspx?item=mma).
+ * The FAQ omits the terminal full stop; both forms mean the same warning. */
+export function isSinopacCaptchaRejectionDialog(type: string, message: string): boolean {
+  if (type !== "alert") return false;
+  return message.normalize("NFKC").replace(/\s+/g, "").replace(/。$/, "")
+    === "驗證碼失效或輸入錯誤，請重新輸入".normalize("NFKC");
+}

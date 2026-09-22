@@ -68,6 +68,7 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
+import { automationDialogOwnerLaunchEnv } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
@@ -169,6 +170,20 @@ test("runner execution preserves base env and applies the current session dialog
     db.close();
     rmSync(ledgerDir, { recursive: true, force: true });
   }
+});
+
+test("SinoPac solver dialog ownership is bound to the daemon launch session", () => {
+  const env = automationDialogOwnerLaunchEnv(
+    { [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-stale") },
+    "sinopac-statements",
+    "ses-current",
+    "sinopac",
+  );
+  assert.equal(env[SINOPAC_DIALOG_OWNER_ENV], sinopacHostDialogOwner("ses-current"));
+  assert.equal(
+    automationDialogOwnerLaunchEnv({}, "sinopac-statements", "ses-human", undefined)[SINOPAC_DIALOG_OWNER_ENV],
+    undefined,
+  );
 });
 
 test("manual Fubon starts ignore persisted statement selection", async () => {

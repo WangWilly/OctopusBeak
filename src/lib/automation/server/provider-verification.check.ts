@@ -566,10 +566,34 @@ test("SinoPac host probe recognizes only the exact provider CAPTCHA wording", as
   assert.equal(dialogs.listenerCount("dialog"), 0);
 });
 
+test("SinoPac host probe accepts the bank FAQ wording without a terminal full stop", async () => {
+  const dialogs = new EventEmitter();
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac-faq-wording",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼失效或輸入錯誤，請重新輸入",
+        dismiss: async () => {},
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+});
+
 test("SinoPac host probe fails closed for near-match and account-lock wording", async () => {
   for (const message of [
     "驗證碼不正確，請重新輸入",
-    "驗證碼失效或輸入錯誤，請重新輸入",
+    "驗證碼失效或輸入錯誤，請再次輸入",
     "帳號已被鎖定，請聯絡客服",
   ]) {
     const dialogs = new EventEmitter();

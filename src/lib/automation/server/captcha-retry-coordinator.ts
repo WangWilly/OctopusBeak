@@ -39,6 +39,8 @@ import type {
   AutomationTaskExecutionOptions,
   runAutomationTaskExecution,
 } from "./task-run-execution.ts";
+import { verificationActorForSource } from "../verification-config.ts";
+import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 
 type CaptchaRetryExecutionResult = Awaited<
   ReturnType<typeof runAutomationTaskExecution>
@@ -144,6 +146,7 @@ async function finalizeCaptchaRetryCampaign(
   result: CaptchaRetryExecutionResult,
   ledgerDir: string,
   message: string,
+  sessionAlreadyCleaned = false,
 ) {
   const run = taskRunById(taskDb, taskRunId);
   if (!run) return { status: "failed" as const };
@@ -166,13 +169,16 @@ async function finalizeCaptchaRetryCampaign(
       taskRunId,
       logPath: run.logPath,
       ledgerDir,
+      sessionAlreadyCleaned,
     },
     {
       ...(processResult ?? fallback),
       exitCode: null,
       signal: null,
       error: new Error(message),
-      logTail: processResult?.logTail ?? run.logTail,
+      // The routed execution may be the pre-resume pause while the shared row
+      // already contains newer output from the resumed child.
+      logTail: run.logTail || processResult?.logTail || "",
     },
   );
 }
@@ -183,6 +189,7 @@ async function finalizeCaptchaRetryExecution(
   result: CaptchaRetryExecutionResult,
   ledgerDir: string,
   message?: string,
+  sessionAlreadyCleaned = false,
 ) {
   const processResult = processResultOf(result);
   if (!message && processResult) {
@@ -206,6 +213,7 @@ async function finalizeCaptchaRetryExecution(
     result,
     ledgerDir,
     message ?? "Automation task failed.",
+    sessionAlreadyCleaned,
   );
 }
 
@@ -267,6 +275,14 @@ export async function runCaptchaRetryCampaign(
   const finalizeSession = dependencies.finalizeSessionForRun
     ?? finalizeAutomationSessionForRun;
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
+  const task = taskById(taskId);
+  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
+    (candidate) => candidate.id === task?.credentialGroupId,
+  );
+  const hostOwnedDialogProvider = taskId === "sinopac-statements"
+    && verificationActorForSource(group?.verificationActorKey, launchVerificationSettings) === "solver"
+    ? "sinopac" as const
+    : undefined;
 
   const executeAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
@@ -372,7 +388,10 @@ export async function runCaptchaRetryCampaign(
     return { execution, routing, sessionCleaned };
   };
 
-  let executionOptions = dependencies.initialExecutionOptions;
+  let executionOptions: AutomationTaskExecutionOptions = {
+    ...dependencies.initialExecutionOptions,
+    hostOwnedDialogProvider,
+  };
   while (true) {
     const routed = await executeAndRoute(executionOptions);
     const execution = routed.execution;
@@ -391,16 +410,18 @@ export async function runCaptchaRetryCampaign(
     }
 
     if (routed.routing?.kind === "failed") {
-      if ("taskRunId" in execution && !routed.sessionCleaned) {
-        // A provider-owned dialog may make the resumed child fail before the
-        // route returns. Finalize from the coordinator as well so a
-        // fail-closed route cannot leave that resumed session running.
+      if ("taskRunId" in execution) {
+        // Session cleanup and task-run finalization are separate obligations.
+        // Resume may already have changed the shared row back to running.
+        const failureMessage = taskRunById(taskDb, execution.taskRunId!)?.errorMessage
+          ?? "Verification route failed closed.";
         await finalizeCaptchaRetryExecution(
           taskDb,
           execution.taskRunId!,
           execution,
           ledgerDir,
-          "Verification route failed closed.",
+          failureMessage,
+          routed.sessionCleaned ?? false,
         );
       }
       return { status: "failed" as const };
@@ -506,6 +527,7 @@ export async function runCaptchaRetryCampaign(
         taskRunId: execution.taskRunId,
         attempt: campaign.nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
+        hostOwnedDialogProvider,
       };
       continue;
     }

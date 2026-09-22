@@ -61,6 +61,10 @@ import {
   type AutomationProgressEvent,
 } from "../progress.ts";
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
+import {
+  SINOPAC_DIALOG_OWNER_ENV,
+  sinopacHostDialogOwner,
+} from "../sinopac-captcha.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 
@@ -71,6 +75,8 @@ export type AutomationTaskExecutionOptions = {
   taskRunId?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
+  /** Set on the original daemon launch, not only on a later resume CLI. */
+  hostOwnedDialogProvider?: "sinopac";
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
   attempt?: number;
@@ -98,6 +104,19 @@ export function resumeFailureMessage(output: string) {
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
   return automationConfigEnv({ baseEnv });
+}
+
+export function automationDialogOwnerLaunchEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  taskId: string,
+  session: string | null,
+  provider: AutomationTaskExecutionOptions["hostOwnedDialogProvider"],
+): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  if (provider === "sinopac" && taskId === "sinopac-statements" && session) {
+    env[SINOPAC_DIALOG_OWNER_ENV] = sinopacHostDialogOwner(session);
+  }
+  return env;
 }
 
 export function createAutomationOutputBuffer(
@@ -159,11 +178,16 @@ function createAutomationTaskRunExecution(
   const attempt = options.attempt ?? 1;
   const maxAttempts = options.maxAttempts ?? 1;
   const startedAt = new Date().toISOString();
-  const env = { ...(options.launchEnv ?? automationProcessEnv()) };
   const isLibrettoTask = task.command[0] === "libretto";
   const session = isLibrettoTask
     ? (options.resumeSession ?? createAutomationSessionId())
     : null;
+  const env = automationDialogOwnerLaunchEnv(
+    options.launchEnv ?? automationProcessEnv(),
+    task.id,
+    session,
+    options.resumeSession ? undefined : options.hostOwnedDialogProvider,
+  );
   const command = resolveTaskCommand(
     task,
     {

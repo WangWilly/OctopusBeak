@@ -72,6 +72,8 @@ export type AutomationTaskRunFinalizationContext = {
   logPath: string;
   ledgerDir: string;
   forceTerminated?: boolean;
+  /** The coordinator has already cleaned the exact browser session. */
+  sessionAlreadyCleaned?: boolean;
   dataVersionStore?: DataVersionStore;
 };
 
@@ -415,7 +417,7 @@ export async function finalizeAutomationTaskRun(
     logTail = tail(`${logTail}\n${statementRunSummaryLine(result.statementSummary.results)}\n`);
   }
   const sessionDisposition = shouldRetainAutomationSession(status) ? "retain" : "relinquish";
-  const sessionCleanup = sessionDisposition === "relinquish" && currentRun
+  const sessionCleanup = sessionDisposition === "relinquish" && !context.sessionAlreadyCleaned && currentRun
     && automationSessionOwnerForRun(currentRun)
     ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
     : null;
