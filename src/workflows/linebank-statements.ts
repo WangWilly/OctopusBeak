@@ -19,7 +19,7 @@ import {
 import type {
   DomesticDepositSourceTime,
   LineBankHumanAttestedV13ValidatedCapture,
-} from "../ledger/canonical/domestic-deposit-store.ts";
+} from "../ledger/canonical/linebank-domestic-deposit-contract.ts";
 import {
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositValidatedCapture,
