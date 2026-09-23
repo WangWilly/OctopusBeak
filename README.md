@@ -112,18 +112,10 @@ open out/OctopusBeak-darwin-arm64/OctopusBeak.app
 ```bash
 npm run run:fubon-all-statements
 npx libretto resume --session <session-name>
-npm run run:import-downloads-csv
 npm run libretto:close-all
 ```
 
-工作流程會將檔案寫到 `downloads/<workflow-name>/`。每份資料以一個 CSV 為主，並搭配同名的 JSON metadata；匯入器會把資料寫入 `data/ledger/ledger.sqlite`。
-
-建立假資料帳本：
-
-```bash
-npm run run:seed-mock-ledger-db
-npm run desktop:dev:mock
-```
+工作流程會將 CSV 與同名 JSON metadata 寫到 `downloads/<workflow-name>/`，財務資料則由桌面程式的 PGlite worker 儲存在 `data/pglite/`。
 
 直接執行 MAX / MaiCoin 同步時，需先設定 `MAX_ACCESS_KEY`、`MAX_SECRET_KEY` 與 `MAX_SUB_ACCOUNT`，再執行：
 
