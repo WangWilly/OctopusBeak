@@ -122,7 +122,7 @@ const linebankWorkflowSource = await readFile(
 assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(\)/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
 assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
-assert.match(linebankWorkflowSource, /commitCurrentDepositBalanceCapture/u);
+assert.match(linebankWorkflowSource, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/u);
 
 assert.deepEqual(
   linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),
