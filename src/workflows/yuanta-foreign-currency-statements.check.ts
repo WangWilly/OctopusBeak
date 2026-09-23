@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,12 +7,7 @@ import { Worker } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
-import {
-  admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureInTransaction,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
-import { executeCanonicalFinancialCommitRun } from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-relations.ts";
 
 const syntheticYuantaForeignAccountNumber = ["0012", "3456", "7890"].join("");
@@ -55,11 +50,11 @@ const foreignWorkflowSource = await readFile(
 );
 assert.match(
   foreignWorkflowSource,
-  /runCanonicalInvestmentRelationFollowThrough/,
+  /executePGliteWorkflowRun[\s\S]*?PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/,
 );
-assert.match(
+assert.doesNotMatch(
   foreignWorkflowSource,
-  /executeCanonicalFinancialCommitRun[\s\S]*?commitForeignCurrencyDepositCaptureInTransaction/,
+  /pgliteWorkflowEnabled|canonicalLedgerDir|executeCanonicalFinancialCommitRun|runCanonicalInvestmentRelationFollowThrough|commitForeignCurrencyDepositCaptureInTransaction/,
 );
 assert.doesNotMatch(
   foreignWorkflowSource,
@@ -1678,51 +1673,7 @@ assert.throws(
   /source currency/i,
 );
 
-const emptyYuantaCapture = buildYuantaForeignCurrencyCaptureInput(
-  [],
-  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all", replaceActiveSession: true },
-  "fx-empty-133",
-  "2026-08-24T12:00:00+08:00",
-  "yuanta-foreign-check-empty-observation",
-  "provider-explicit-no-data",
-);
-const yuantaEmptyDirectory = await mkdtemp(join(tmpdir(), "yuanta-foreign-empty-133-"));
-try {
-  const execution = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir: yuantaEmptyDirectory,
-    items: [
-      {
-        provider: "yuanta",
-        product: "foreign-currency-deposit",
-        itemKey: emptyYuantaCapture.accountNo,
-        commit: ({ writer, admission }) =>
-          commitForeignCurrencyDepositCaptureInTransaction(
-            writer,
-            emptyYuantaCapture,
-            admission,
-          ),
-      },
-    ],
-  });
-  const result = execution.items[0];
-  assert.equal(result?.status, "committed");
-  if (result?.status === "committed") assert.equal(result.value.transactionCount, 0);
-  const store = openCanonicalDatabaseHandle(yuantaEmptyDirectory);
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  store.close();
-} finally {
-  await rm(yuantaEmptyDirectory, { recursive: true, force: true });
-}
-
 const enabledPgliteDir = await mkdtemp(join(tmpdir(), "yuanta-foreign-pglite-"));
-const enabledNoSqliteDir = await mkdtemp(join(tmpdir(), "yuanta-foreign-no-sqlite-"));
 const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
   execArgv: ["--experimental-strip-types"],
   workerData: { dataDir: enabledPgliteDir },
@@ -1741,12 +1692,10 @@ try {
   await enabledServer.ready;
   Object.assign(process.env, enabledServer.env);
   await commitYuantaForeignCaptures(
-    enabledNoSqliteDir,
     [yuantaForeignCapture],
     {} as never,
     { readCurrentDepositBalances: async () => [] },
   );
-  assert.deepEqual(await readdir(enabledNoSqliteDir), []);
 } finally {
   for (const [key, value] of [
     ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
@@ -1758,7 +1707,6 @@ try {
   }
   await enabledServer.close();
   await enabledOwner.close();
-  await rm(enabledNoSqliteDir, { recursive: true, force: true });
 }
 const enabledPglite = await PGlite.create(enabledPgliteDir);
 try {
