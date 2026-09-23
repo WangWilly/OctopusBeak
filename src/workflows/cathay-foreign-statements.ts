@@ -8,7 +8,7 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
+  requirePGliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -18,35 +18,22 @@ import {
   createCathaySession,
   signInCathay,
 } from "./cathay-statements.js";
-import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import type {
-  ForeignCurrencyDepositCaptureInput,
-  commitForeignCurrencyDepositCaptureInTransaction,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import {
+  admitForeignCurrencyDepositCapture,
+  type ForeignCurrencyDepositCaptureInput,
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
 } from "./cathay-current-deposit-canonical.ts";
 import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
-import type {
-  CurrentDepositBalanceCaptureInput,
-  CurrentDepositBalanceCommitResult,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
-import type { CanonicalFinancialDepositCommitResult } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+import {
+  admitCurrentDepositBalanceCapture,
+  type CurrentDepositBalanceCaptureInput,
+} from "../ledger/pglite/current-deposit-admission.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
-
-function configuredCathayCanonicalLedgerDir(): string {
-  return (
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-    process.env.LEDGER_DIR?.trim() ||
-    DEFAULT_LEDGER_DIR
-  );
-}
 
 const dateRangeSchema = z.enum([
   "one_week",
@@ -541,49 +528,7 @@ export type CathayForeignCanonicalCaptureCollector = Readonly<{
 export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
   /** Focused-check seam; production uses the authenticated UI reader. */
   readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
-  /** Focused-check seam; production uses the canonical current-balance writer. */
-  commitCurrentDepositBalances?: (
-    canonicalLedgerDir: string,
-    captures: readonly CurrentDepositBalanceCaptureInput[],
-  ) => Promise<readonly CurrentDepositBalanceCommitResult[]>;
 }>;
-
-type CathayForeignCommitValue = ReturnType<
-  typeof commitForeignCurrencyDepositCaptureInTransaction
->;
-type CathayCanonicalCommitValue =
-  | CathayForeignCommitValue
-  | CurrentDepositBalanceCommitResult;
-
-function cathayForeignCommitItems(
-  captures: readonly ForeignCurrencyDepositCaptureInput[],
-  onCommitted?: (capture: ForeignCurrencyDepositCaptureInput) => void,
-): CanonicalFinancialCommitItem<CathayForeignCommitValue>[] {
-  return captures.map((capture) => ({
-    provider: "cathay",
-    product: "foreign-currency-deposit",
-    itemKey: capture.accountNo,
-    commit: async ({ writer, admission }) => {
-      const { commitForeignCurrencyDepositCaptureInTransaction } = await import(
-        "../ledger/canonical/foreign-currency-deposit.ts"
-      );
-      return commitForeignCurrencyDepositCaptureInTransaction(
-        writer,
-        capture,
-        admission,
-      );
-    },
-    ...(onCommitted
-      ? {
-          // Run only after the item transaction has committed, so current
-          // balances never use an uncommitted account identity.
-          resolveRelations: async () => {
-            onCommitted(capture);
-          },
-        }
-      : {}),
-  }));
-}
 
 /** Keep provider collection and canonical admission on one reusable seam.
  * Retries reset the pending batch before recollecting; only a successfully
@@ -618,70 +563,6 @@ export function createCathayForeignCanonicalCaptureCollector(
       }
     },
   };
-}
-
-export async function commitCathayForeignCanonicalCaptures(
-  canonicalLedgerDir: string | undefined,
-  captures: readonly ForeignCurrencyDepositCaptureInput[],
-): Promise<readonly CanonicalFinancialDepositCommitResult[]> {
-  if (!canonicalLedgerDir || captures.length === 0) return [];
-  const { executeCanonicalFinancialCommitRun } = await import(
-    "../ledger/canonical/canonical-financial-commit-execution.ts"
-  );
-  const items = cathayForeignCommitItems(captures);
-  const result = await executeCanonicalFinancialCommitRun<CathayForeignCommitValue>({
-    canonicalLedgerDir,
-    items,
-    provider: "cathay",
-    product: "foreign-currency-deposit",
-  });
-  if (result.status === "failed" || result.status === "cancelled")
-    throw new Error(
-      `Cathay foreign canonical persistence ${result.status}: ${result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-  return result.items.flatMap((item) =>
-    item.status === "committed" ? [item.value] : [],
-  );
-}
-
-async function commitCathayCurrentForeignDepositBalancesThroughExecution(
-  canonicalLedgerDir: string,
-  captures: readonly CurrentDepositBalanceCaptureInput[],
-): Promise<readonly CurrentDepositBalanceCommitResult[]> {
-  const [
-    { executeCanonicalFinancialCommitRun },
-    { commitCurrentDepositBalanceCaptureInTransaction },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-  ]);
-  const result = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: captures.map((capture) => ({
-      provider: "cathay",
-      product: "current-deposit-balance",
-      itemKey: capture.identity.sourceAccountKey,
-      commit: ({ writer, admission }) =>
-        commitCurrentDepositBalanceCaptureInTransaction(
-          writer,
-          admitCurrentDepositBalanceCapture(capture),
-          admission,
-        ),
-    })),
-    provider: "cathay",
-    product: "current-deposit-balance",
-  });
-  if (result.status === "failed" || result.status === "cancelled")
-    throw new Error(
-      `Cathay current foreign balance persistence ${result.status}: ${result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-  return result.items.flatMap((item) =>
-    item.status === "committed" ? [item.value] : [],
-  );
 }
 
 async function collectCathayCurrentForeignDepositBalanceCaptures(
@@ -749,155 +630,86 @@ async function collectCathayCurrentForeignDepositBalanceCaptures(
   return captures;
 }
 
-/** Execute foreign statements and current balances through one lifecycle-owned
- * handle. Only foreign captures that committed may feed current-balance items.
+/** Execute foreign statements and current balances through one child RPC
+ * client. Only foreign captures that committed may feed current-balance items.
  */
 export async function commitCathayForeignAndCurrentCanonicalCaptures(
   page: Page,
-  canonicalLedgerDir: string | undefined,
+  _canonicalLedgerDir: string | undefined,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
   options: {
     requireComplete?: boolean;
     readCurrentDepositBalances?: CathayCurrentForeignDepositBalanceCaptureOptions["readCurrentDepositBalances"];
   } = {},
 ): Promise<void> {
+  requirePGliteWorkflowEnabled(process.env);
   if (captures.length === 0) return;
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const financial = await executePGliteWorkflowRun({
-        client: client.workflow,
-        provider: "cathay",
-        product: "foreign-currency-deposit",
-        items: captures.map((capture) => ({
-          provider: "cathay",
-          product: "foreign-currency-deposit",
-          itemKey: capture.accountNo,
-          command: {
-            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-            request: { capture: admitForeignCurrencyDepositCapture(capture) },
-          },
-        } as const)),
-      });
-      if (options.requireComplete ? financial.status !== "completed"
-        : financial.status === "failed" || financial.status === "cancelled")
-        throw new Error(`Cathay foreign PGlite persistence ${financial.status}: ${financial.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      const committedCaptures = captures.filter((_, index) => financial.items[index]?.status === "committed");
-      if (committedCaptures.length === 0) return;
-      const currentCaptures = await collectCathayCurrentForeignDepositBalanceCaptures(
-        page, committedCaptures, options,
-      );
-      const balances = await executePGliteWorkflowRun({
-        client: client.workflow,
-        provider: "cathay",
-        product: "current-deposit-balance",
-        items: currentCaptures.map((capture) => ({
-          provider: "cathay",
-          product: "current-deposit-balance",
-          itemKey: capture.identity.sourceAccountKey,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(capture)),
-          },
-        } as const)),
-      });
-      if (options.requireComplete ? balances.status !== "completed"
-        : balances.status === "failed" || balances.status === "cancelled")
-        throw new Error(`Cathay foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      return;
-    } finally {
-      client.close();
-    }
-  }
-  if (!canonicalLedgerDir) return;
-  const [
-    { executeCanonicalFinancialCommitRun },
-    { commitForeignCurrencyDepositCaptureInTransaction },
-    { commitCurrentDepositBalanceCaptureInTransaction },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/foreign-currency-deposit.ts"),
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-  ]);
-  const committedForeignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
-  const items = async function* (): AsyncGenerator<
-    CanonicalFinancialCommitItem<CathayCanonicalCommitValue>
-  > {
-    for (const capture of captures) {
-      yield {
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const financial = await executePGliteWorkflowRun({
+      client: client.workflow,
+      provider: "cathay",
+      product: "foreign-currency-deposit",
+      items: captures.map((capture) => ({
         provider: "cathay",
         product: "foreign-currency-deposit",
         itemKey: capture.accountNo,
-        commit: ({ writer, admission }) =>
-          commitForeignCurrencyDepositCaptureInTransaction(
-            writer,
-            capture,
-            admission,
-          ),
-        resolveRelations: async () => {
-          committedForeignCaptures.push(capture);
+        command: {
+          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+          request: { capture: admitForeignCurrencyDepositCapture(capture) },
         },
-      };
-    }
-    if (committedForeignCaptures.length === 0) return;
+      } as const)),
+    });
+    if (
+      options.requireComplete
+        ? financial.status !== "completed"
+        : financial.status === "failed" || financial.status === "cancelled"
+    )
+      throw new Error(
+        `Cathay foreign PGlite persistence ${financial.status}: ${financial.diagnostics
+          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+          .join(", ")}`,
+      );
+    const committedCaptures = captures.filter(
+      (_, index) => financial.items[index]?.status === "committed",
+    );
+    if (committedCaptures.length === 0) return;
     const currentCaptures =
       await collectCathayCurrentForeignDepositBalanceCaptures(
         page,
-        committedForeignCaptures,
+        committedCaptures,
+        options,
       );
-    for (const capture of currentCaptures) {
-      yield {
+    const balances = await executePGliteWorkflowRun({
+      client: client.workflow,
+      provider: "cathay",
+      product: "current-deposit-balance",
+      items: currentCaptures.map((capture) => ({
         provider: "cathay",
         product: "current-deposit-balance",
         itemKey: capture.identity.sourceAccountKey,
-        commit: ({ writer, admission }) =>
-          commitCurrentDepositBalanceCaptureInTransaction(
-            writer,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(
             admitCurrentDepositBalanceCapture(capture),
-            admission,
           ),
-      };
-    }
-  };
-  const result = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: items(),
-    provider: "cathay",
-    product: "financial",
-  });
-  if (result.status === "failed" || result.status === "cancelled")
-    throw new Error(
-      `Cathay foreign canonical persistence ${result.status}: ${result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-}
-
-/** Capture current FX balances only after the statement capture has admitted the
- * existing account identity. The provider response is grouped by account so
- * multiple currencies remain one canonical depository identity. */
-export async function captureCathayCurrentForeignDepositBalances(
-  page: Page,
-  accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
-  canonicalLedgerDir: string | undefined,
-  options: CathayCurrentForeignDepositBalanceCaptureOptions = {},
-): Promise<readonly CurrentDepositBalanceCommitResult[]> {
-  if (accountCaptures.length === 0) return [];
-  if (!canonicalLedgerDir) {
-    throw new Error(
-      "Cathay current foreign balance capture requires the canonical ledger directory.",
-    );
+        },
+      } as const)),
+    });
+    if (
+      options.requireComplete
+        ? balances.status !== "completed"
+        : balances.status === "failed" || balances.status === "cancelled"
+    )
+      throw new Error(
+        `Cathay foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics
+          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+          .join(", ")}`,
+      );
+  } finally {
+    client.close();
   }
-  const captures = await collectCathayCurrentForeignDepositBalanceCaptures(
-    page,
-    accountCaptures,
-    options,
-  );
-  return await (
-    options.commitCurrentDepositBalances ??
-    commitCathayCurrentForeignDepositBalancesThroughExecution
-  )(canonicalLedgerDir, captures);
 }
 
 class CathayForeignApiClient {
@@ -1165,10 +977,9 @@ export default workflow("cathayForeignStatements", {
       canonicalCollector.onStatement,
     );
 
-    const canonicalLedgerDir = configuredCathayCanonicalLedgerDir();
     await commitCathayForeignAndCurrentCanonicalCaptures(
       page,
-      canonicalLedgerDir,
+      undefined,
       canonicalCollector.captures,
     );
 
