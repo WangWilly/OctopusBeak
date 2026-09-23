@@ -15,8 +15,6 @@ import {
   type CurrentDepositSourceRecordInput,
   type CurrentDepositTimeEvidence,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { CurrentDepositBalanceCommitResult } from "../ledger/canonical/current-deposit-balance-writer.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "cathay/domestic-deposit/current-balance-v1" as const;
@@ -241,50 +239,6 @@ export function buildCathayCurrentDepositBalanceCaptures(
     });
   }
   return captures;
-}
-
-export async function commitCathayCurrentDepositBalanceCaptures(
-  ledgerDir: string,
-  captures: readonly CurrentDepositBalanceCaptureInput[],
-): Promise<readonly CurrentDepositBalanceCommitResult[]> {
-  if (captures.length === 0) return [];
-  if (!ledgerDir.trim()) {
-    throw new Error("Cathay current deposit canonical ledger directory is required.");
-  }
-  const [
-    { commitCurrentDepositBalanceCaptureInTransaction },
-    { executeCanonicalFinancialCommitRun },
-  ] = await Promise.all([
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-  ]);
-  const items: CanonicalFinancialCommitItem<CurrentDepositBalanceCommitResult>[] =
-    captures.map((capture, index) => ({
-      provider: "cathay",
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}:${index}`,
-      commit: (transaction) =>
-        commitCurrentDepositBalanceCaptureInTransaction(
-          transaction.writer,
-          admitCurrentDepositBalanceCapture(capture),
-          transaction.admission,
-        ),
-    }));
-  const execution = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir: ledgerDir,
-    items,
-    provider: "cathay",
-    product: "current-balance",
-  });
-  if (execution.status !== "completed")
-    throw new Error(
-      `Cathay current deposit balance canonical execution ${execution.status}: ${execution.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-  return execution.items.flatMap((item) =>
-    item.status === "committed" ? [item.value] : [],
-  );
 }
 
 export function cathayCurrentSubjectDigest(
