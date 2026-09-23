@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import type { CanonicalSpendingTransaction } from "./canonical-categorization.ts";
+import type { CanonicalSpendingTransaction } from "./canonical-spending-contracts.ts";
 import type {
   CanonicalEInvoiceItemView,
   CanonicalEInvoiceView,
-} from "./einvoice.ts";
+} from "./einvoice-query-contract.ts";
 import type {
   ExactMoney,
   SpendingCandidateView,
@@ -11,7 +11,7 @@ import type {
   SpendingPair,
   SpendingRefundView,
   SpendingRecognitionSnapshot,
-} from "./spending-recognition.ts";
+} from "./spending-recognition-contracts.ts";
 import {
   calendarDayDistance,
   exactMoneyEqual,

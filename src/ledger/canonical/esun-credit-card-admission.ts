@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { admitCanonicalFinancialDepositCapture, type CanonicalFinancialDepositValidatedCapture } from "./canonical-financial-deposit-admission.ts";
-import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-card-persistence.ts";
+import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-card-contracts.ts";
 import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
