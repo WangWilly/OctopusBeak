@@ -280,6 +280,7 @@ export function createPGliteChildRpcServer({
   let readySettled = false;
   let closePromise: Promise<void> | undefined;
   const sockets = new Set<{ socket: Socket; port: LineSocketPort }>();
+  const connectionClosures = new Set<Promise<void>>();
   const report = (reason: string): void => {
     try {
       onProtocolError?.(reason);
@@ -295,6 +296,11 @@ export function createPGliteChildRpcServer({
     const port = new LineSocketPort(socket, report);
     const connection = { socket, port };
     sockets.add(connection);
+    let resolveConnectionCleanup!: () => void;
+    const connectionCleanup = new Promise<void>((resolve) => {
+      resolveConnectionCleanup = resolve;
+    });
+    connectionClosures.add(connectionCleanup);
     let authenticated = false;
     let terminated = false;
     let operationalServer: PGliteOperationalRpcServerLike | undefined;
@@ -314,7 +320,12 @@ export function createPGliteChildRpcServer({
       void Promise.all([
         operationalServer?.close() ?? Promise.resolve(),
         financialServer?.close() ?? Promise.resolve(),
-      ]).catch(() => undefined);
+      ])
+        .then(
+          () => resolveConnectionCleanup(),
+          () => resolveConnectionCleanup(),
+        )
+        .then(() => connectionClosures.delete(connectionCleanup));
     };
     const onMessage = (value: unknown): void => {
       if (terminated) return;
@@ -386,13 +397,15 @@ export function createPGliteChildRpcServer({
     for (const connection of sockets) connection.port.close();
     closePromise = new Promise<void>((resolve) => {
       const finish = (): void => {
-        void (serverBound ? removeEndpoint(endpoint) : Promise.resolve()).then(
-          () => resolve(),
-          () => {
-            report("endpoint-cleanup-failed");
-            resolve();
-          },
-        );
+        void Promise.all([...connectionClosures])
+          .then(() => serverBound ? removeEndpoint(endpoint) : Promise.resolve())
+          .then(
+            () => resolve(),
+            () => {
+              report("endpoint-cleanup-failed");
+              resolve();
+            },
+          );
       };
       if (!server.listening) finish();
       else server.close(finish);
