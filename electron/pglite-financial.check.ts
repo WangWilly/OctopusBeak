@@ -580,6 +580,41 @@ test("financial live views recover after a transient read failure and stop durin
   assert.equal(unsubscribeCount, 2, "all overview dependencies must drain on stop");
 });
 
+test("failed live subscription releases started dependencies and permits retry", async () => {
+  let failSetup = true;
+  let failRead = false;
+  let activeDependencies = 0;
+  const database = {
+    live: {
+      query: async () => {
+        if (failSetup) {
+          failSetup = false;
+          throw new Error("dependency setup failed");
+        }
+        activeDependencies += 1;
+        return { unsubscribe: async () => { activeDependencies -= 1; } };
+      },
+    },
+  } as unknown as import("@electric-sql/pglite/live").PGliteWithLive;
+  const registry = {
+    overviewCurrent: async () => {
+      if (failRead) throw new Error("initial read failed");
+      return { availability: "empty" };
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const views = createPGliteFinancialLiveViews(database, registry);
+  await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /dependency setup failed/u);
+  assert.equal(activeDependencies, 0, "a partial dependency setup must be drained");
+  failRead = true;
+  await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /initial read failed/u);
+  assert.equal(activeDependencies, 0, "failed initial recompute must be drained");
+  failRead = false;
+  const stop = await views.subscribe("financial.overview.current", {}, () => {});
+  assert.equal(activeDependencies, 2, "a later subscription must start both dependencies");
+  await stop();
+  assert.equal(activeDependencies, 0);
+});
+
 test("financial operation names stay allowlisted and transport failures are typed", () => {
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"), true);
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("financial.source.commit"), true);
