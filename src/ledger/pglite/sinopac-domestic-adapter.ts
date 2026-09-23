@@ -7,8 +7,8 @@ import type {
 import type {
   SinopacSourceRow,
   SinopacStatementValidatedCapture,
-} from "../canonical/sinopac-domestic-deposit.ts";
-import type { SinopacHumanAttestedV1Manifest } from "../canonical/sinopac-human-attestation.ts";
+} from "./sinopac-provider-admission.ts";
+import { isAdmittedSinopacStatementCaptureEvidence } from "./sinopac-provider-admission.ts";
 
 const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
   "sinopac/domestic-deposit/human-attested-v1";
@@ -18,7 +18,6 @@ const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
 export type SinopacPGliteFinancialCaptureInput = Readonly<{
   capture: SinopacStatementValidatedCapture;
   captureId: string;
-  humanAttestation: SinopacHumanAttestedV1Manifest;
 }>;
 
 export type SinopacPGliteFinancialCaptureResult = Readonly<{
@@ -242,12 +241,12 @@ function sinopacFinancialRecord(
   };
 }
 
-function identityEpochKey(manifest: SinopacHumanAttestedV1Manifest): string {
+function identityEpochKey(): string {
   const value = [
     "sinopac-human-attested-identity-epoch-v1",
-    manifest.attestationId,
-    manifest.evidenceVersion,
-    manifest.provenance.attestationContractFingerprint,
+    "sinopac-domestic-deposit-human-attested-v1",
+    SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    "sha256:ec011375014d525e074d9928cb78ed72355048652a655548904ff9ae3c4d90a1",
   ].join("\u0000");
   return `sha256:${Buffer.from(value).toString("base64url")}`;
 }
@@ -268,22 +267,15 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   input: SinopacPGliteFinancialCaptureInput,
 ): SinopacPGliteFinancialCaptureResult {
   const diagnostics: string[] = [];
+  if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
+    diagnostics.push("capture-not-runtime-admitted");
   if (input.capture.product !== "domestic-deposit")
     diagnostics.push("unsupported-product");
   if (input.capture.account.currency !== "TWD")
     diagnostics.push("unsupported-currency");
-  const manifest = input.humanAttestation;
-  if (
-    manifest.attestationId !== "sinopac-domestic-deposit-human-attested-v1" ||
-    manifest.evidenceVersion !== SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION ||
-    manifest.authorityRoute !== SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY ||
-    manifest.provenance.attestationContractFingerprint !==
-      "sha256:ec011375014d525e074d9928cb78ed72355048652a655548904ff9ae3c4d90a1" ||
-    manifest.providerGuaranteed !== false
-  )
-    diagnostics.push("human-attestation-mismatch");
-  else if (manifest.status !== "active")
-    diagnostics.push("human-attestation-revoked");
+  // The PGlite worker verifies and consumes the durable attestation in the
+  // financial transaction. This pure adapter carries only the immutable
+  // contract identity needed to derive the source epoch.
   if (unsupportedSinopacAuthority(input.capture.account.label))
     diagnostics.push("authority-shared-account");
   if (!input.captureId.trim()) diagnostics.push("capture-id-missing");
@@ -328,7 +320,7 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
     identity: {
       integrationNamespace: "sinopac",
       sourceConnectionKey: identity.sourceConnectionKey,
-      identityEpochKey: identityEpochKey(manifest),
+      identityEpochKey: identityEpochKey(),
       stream: "domestic-deposit",
       recordKind: "sinopac-domestic-deposit",
       subjectDigest: identity.subjectDigest,

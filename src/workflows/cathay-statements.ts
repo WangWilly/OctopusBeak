@@ -25,29 +25,21 @@ import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  commitCathayDomesticDepositSyncInTransaction,
-  ensureCathayHumanAttestationEvents,
-  recordInitialCathayHumanAttestationIfMissing,
   validateCathayDomesticDepositSyncInputForPGlite,
   type CathayStagedCapturePage,
-} from "../ledger/canonical/cathay-domestic-deposit.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+} from "../ledger/pglite/cathay-domestic-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
+  buildCathayDomesticFinancialRequestsForPGlite,
   cathayOpaqueIdentity,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
+} from "../ledger/pglite/cathay-domestic-adapter.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 import {
   readCathayCurrentDepositBalances,
 } from "./cathay-current-deposit-balances.ts";
@@ -1944,11 +1936,6 @@ export async function downloadCathayStatements(
     accountFilters.length === 0,
   );
 
-  const canonicalLedgerDir =
-    options.canonicalLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
   const sourceConnectionId =
     options.sourceConnectionId ??
     process.env.CATHAY_SOURCE_CONNECTION_REF ??
@@ -2099,6 +2086,24 @@ export async function downloadCathayStatements(
       downloads.push(await writeFiles(account, dateRange, statement));
     return downloads;
   }
+  const [
+    { DEFAULT_LEDGER_DIR },
+    { commitCathayDomesticDepositSyncInTransaction },
+    { ensureCathayHumanAttestationEvents, recordInitialCathayHumanAttestationIfMissing },
+    { executeCanonicalFinancialCommitRun },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+  ] = await Promise.all([
+    import("../ledger/db/client.ts"),
+    import("../ledger/canonical/cathay-domestic-deposit.ts"),
+    import("../ledger/canonical/cathay-human-attestation.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+  ]);
+  const canonicalLedgerDir =
+    options.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
     {
       provider: "cathay",

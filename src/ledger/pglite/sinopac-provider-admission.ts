@@ -1,141 +1,69 @@
-import {
-  createAdvertisedDomesticDepositPreflight,
-  type AdvertisedDomesticDepositContract,
-  type AdvertisedDomesticDepositPreflightInput,
-} from "./advertised-domestic-deposit-preflight.ts";
 import { createHash } from "node:crypto";
-import { buildSinopacDomesticDepositFinancialCaptureForPGlite as buildPureSinopacDomesticDepositFinancialCaptureForPGlite } from "../pglite/sinopac-domestic-adapter.ts";
-import {
-  admitSinopacStatementCaptureEvidence as admitPureSinopacStatementCaptureEvidence,
-} from "../pglite/sinopac-provider-admission.ts";
-import {
-  canonicalSourceAdmissionCommitResult,
-  createCanonicalSourceCaptureAdmission,
-} from "./canonical-source-capture-admission.ts";
-import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
-import {
-  type CanonicalSourceCommitResult,
-  type CanonicalSourceStore,
-} from "./canonical-source-store.ts";
-import {
-  admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureBatch,
-  type CanonicalFinancialDepositCommitResult,
-  type CanonicalFinancialDepositRecord,
-  type CanonicalFinancialDepositValidatedCapture,
-  type CanonicalFinancialDepositWriterStore,
-} from "./canonical-financial-deposit-writer.ts";
-import {
-  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
-} from "./bank-transaction-kind-enrichment.ts";
-import { combineDomesticDepositDescription } from "./domestic-deposit-store.ts";
-import {
-  SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
-  SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
-  SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
-  ensureSinopacHumanAttestationEvents,
-  getSinopacHumanAttestedV1Manifest,
-  isSinopacHumanAttestationDurablyActive,
-  isSinopacHumanAttestedV1Active,
-  isSinopacHumanAttestedV1Manifest,
-  latestSinopacHumanAttestationEvent,
-  recordInitialSinopacHumanAttestationIfMissing,
-  sinopacHumanAttestedIdentityEpochKey,
-  type SinopacHumanAttestedV1Manifest,
-} from "./sinopac-human-attestation.ts";
+import type {
+  CanonicalSourceAccountNumber,
+  CanonicalSourceEvidence,
+} from "../canonical/canonical-source-evidence.ts";
+import type {
+  CanonicalFinancialDepositCapture,
+  CanonicalFinancialDepositRecord,
+} from "../canonical/canonical-financial-deposit-writer.ts";
 
-export const SINOPAC_DOMESTIC_DEPOSIT_CONTRACT = {
-  source: "sinopac",
-  authority: "sinopac/domestic-deposit/preflight-v1",
-  contractVersion: "preflight-v1",
-  readiness: "preflight-only",
-  workflow: "sinopacStatements",
-  expectedRowWidth: 9,
-  accountingDateIndex: 0,
-  transactionDateIndex: 1,
-  transactionTimeIndex: 2,
-  provenance: {
-    evidenceBasis:
-      "provider SubInfo/RecordCount fields and explicit FAIL no-data response",
-    fixtureValues: "synthetic",
-    liveResponseRetained: false,
-  },
-  outflowIndex: 4,
-  inflowIndex: 5,
-  completenessEvidence: "response-count",
-  explicitNoDataEvidence: {
-    kind: "status-message",
-    status: "FAIL",
-    message: "查無資料",
-  },
-} as const satisfies AdvertisedDomesticDepositContract;
-
-export const SINOPAC_DOMESTIC_DEPOSIT_SYNTHETIC_FIXTURE_V1 = {
-  accountIdentity: "SYNTHETIC-SINOPAC-ACCOUNT",
-  scope: { startDate: "20260101", endDate: "20260131" },
-  records: [
-    {
-      values: [
-        "2026/01/02",
-        "2026/01/02",
-        "09:10",
-        "SYNTHETIC",
-        "100",
-        "",
-        "900",
-        "",
-        "",
-      ],
-    },
-  ],
-  transport: { reportedCount: 1 },
-} satisfies AdvertisedDomesticDepositPreflightInput;
-
-export const preflightSinopacDomesticDeposit =
-  createAdvertisedDomesticDepositPreflight(SINOPAC_DOMESTIC_DEPOSIT_CONTRACT);
-
-/** The provider capture contract remains source evidence. Financial mutation
- * crosses a separate, explicitly confirmed observed-human-attested route and
- * never upgrades foreign-currency captures. */
-export const SINOPAC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
-  "capture-evidence-v1" as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_ROUTE =
-  "sinopac/domestic-deposit/capture-evidence-v1" as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND =
-  "sinopac-domestic-deposit-capture-evidence-v1" as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION =
-  "sinopac/domestic-deposit/capture-evidence-v1/terminal-query" as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_IDENTITY_EPOCH =
-  "sinopac/domestic-deposit/capture-evidence-v1" as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_PROVIDER_GUARANTEED = false as const;
-export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS =
-  "canonical-human-attested" as const;
+export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
+  "sinopac/domestic-deposit/human-attested-v1" as const;
+export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION =
+  "human-attested-v1" as const;
 export const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
   SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE;
 export const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
   SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION;
 
+export const SINOPAC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION =
+  "capture-evidence-v1" as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_ROUTE =
+  "sinopac/domestic-deposit/capture-evidence-v1" as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND =
+  "sinopac-domestic-deposit-capture-evidence-v1" as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION =
+  "sinopac/domestic-deposit/capture-evidence-v1/terminal-query" as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_IDENTITY_EPOCH =
+  "sinopac/domestic-deposit/capture-evidence-v1" as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_PROVIDER_GUARANTEED = false as const;
+
+export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_READINESS =
+  "canonical-human-attested" as const;
+
 export const SINOPAC_FOREIGN_DEPOSIT_EVIDENCE_VERSION =
   "capture-evidence-v1" as const;
+
 export const SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_ROUTE =
   "sinopac/foreign-currency/capture-evidence-v1" as const;
+
 export const SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND =
   "sinopac-foreign-currency-capture-evidence-v1" as const;
+
 export const SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION =
   "sinopac/foreign-currency/capture-evidence-v1/terminal-query" as const;
+
 export const SINOPAC_FOREIGN_DEPOSIT_IDENTITY_EPOCH =
   "sinopac/foreign-currency/capture-evidence-v1" as const;
-// Vocabulary aliases keep the workflow's public "foreign statements" name
-// while preserving the canonical stream name used in source queries.
+
 export const SINOPAC_FOREIGN_STATEMENTS_EVIDENCE_VERSION =
   SINOPAC_FOREIGN_DEPOSIT_EVIDENCE_VERSION;
+
 export const SINOPAC_FOREIGN_STATEMENTS_SOURCE_EVIDENCE_ROUTE =
   SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_ROUTE;
+
 export const SINOPAC_FOREIGN_STATEMENTS_SOURCE_EVIDENCE_RECORD_KIND =
   SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_RECORD_KIND;
+
 export const SINOPAC_FOREIGN_STATEMENTS_SOURCE_EVIDENCE_RULE_VERSION =
   SINOPAC_FOREIGN_DEPOSIT_SOURCE_EVIDENCE_RULE_VERSION;
+
 export const SINOPAC_FOREIGN_STATEMENTS_IDENTITY_EPOCH =
   SINOPAC_FOREIGN_DEPOSIT_IDENTITY_EPOCH;
 
@@ -252,6 +180,7 @@ export type SinopacStatementCaptureValidationResult = {
 };
 
 const VALIDATED_SINOPAC_CAPTURE = new WeakSet<object>();
+
 const SOURCE_DIGEST = /^sha256:[A-Za-z0-9_-]+$/;
 
 function sinopacDigest(
@@ -758,526 +687,387 @@ export function createSinopacForeignCurrencySourceEvidence(
   return sourceEvidenceForCapture(capture, captureId);
 }
 
-export async function commitSinopacStatementSourceEvidence(
-  store: CanonicalSourceStore,
-  capture: SinopacStatementValidatedCapture,
-  captureId: string,
-): Promise<CanonicalSourceCommitResult> {
-  const evidence = sourceEvidenceForCapture(capture, captureId);
-  return createCanonicalSourceCaptureAdmission(store)
-    .admit(evidence)
-    .then((admitted) =>
-      canonicalSourceAdmissionCommitResult(admitted, evidence.records.length),
-    );
-}
+export const SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1 = Object.freeze({
+  authorityRoute: "sinopac/foreign-currency/deposit/human-attested-v1",
+  evidenceVersion: "foreign-currency/sinopac/human-attested-v1",
+  attestedAt: "2026-08-25",
+  attestedBy: "user-confirmed-live-run",
+  providerGuaranteed: false,
+  occurrenceProviderGuaranteed: false,
+  sourceKeyFields: [
+    "account",
+    "currency",
+    "DataText1",
+    "DataText4",
+    "DataText5",
+  ],
+  derivedFieldsExcluded: ["DataText9"],
+  collisionPolicy: "reject-colliding-tuples",
+} as const);
 
-export async function commitSinopacStatementSourceEvidenceBatch(
-  store: CanonicalSourceStore,
-  captures: readonly SinopacStatementValidatedCapture[],
-  captureId: string,
-): Promise<CanonicalSourceCommitResult[]> {
-  if (captures.length === 0)
-    throw new Error("SinoPac source batch cannot be empty.");
-  const evidences = captures.map((capture, index) =>
-    sourceEvidenceForCapture(capture, `${captureId}-${index}`),
-  );
-  const receipts = await createCanonicalSourceCaptureAdmission(store).admitBatch(
-    evidences,
-  );
-  return receipts.map((receipt, index) =>
-    canonicalSourceAdmissionCommitResult(
-      receipt,
-      evidences[index]!.records.length,
-    ),
-  );
-}
-
-export type SinopacDomesticDepositFinancialAdmissionInput = {
-  capture: SinopacStatementValidatedCapture;
-  captureId: string;
-  humanAttestation?: SinopacHumanAttestedV1Manifest;
-  personalAuthority?: SinopacPersonalAuthority;
-};
-
-export type SinopacPersonalAuthority = {
-  readonly source: "durable-attestation";
-};
-const SINOPAC_PERSONAL_AUTHORITIES = new WeakSet<object>();
-const SINOPAC_PERSONAL_AUTHORITY_SNAPSHOTS = new WeakMap<
-  object,
-  {
-    db: CanonicalFinancialDepositWriterStore["db"];
-    sequence: number;
-    eventAt: string;
-    manifestFingerprint: string;
-  }
->();
-export function createSinopacPersonalAuthority(
-  db: CanonicalFinancialDepositWriterStore["db"],
-): SinopacPersonalAuthority {
-  if (!isSinopacHumanAttestationDurablyActive(db))
-    throw new Error("SinoPac durable personal authority is not active.");
-  const latest = latestSinopacHumanAttestationEvent(db);
-  if (!latest || latest.eventKind !== "attested")
-    throw new Error("SinoPac durable personal authority event is unavailable.");
-  const authority = Object.freeze({ source: "durable-attestation" as const });
-  SINOPAC_PERSONAL_AUTHORITIES.add(authority);
-  SINOPAC_PERSONAL_AUTHORITY_SNAPSHOTS.set(authority, {
-    db,
-    sequence: latest.sequence,
-    eventAt: latest.eventAt,
-    manifestFingerprint: latest.manifestFingerprint,
-  });
-  return authority;
-}
-
-function validSinopacPersonalAuthority(
-  authority: SinopacPersonalAuthority | undefined,
-  expectedDb?: CanonicalFinancialDepositWriterStore["db"],
-): boolean {
-  if (!authority || !SINOPAC_PERSONAL_AUTHORITIES.has(authority)) return false;
-  const snapshot = SINOPAC_PERSONAL_AUTHORITY_SNAPSHOTS.get(authority);
-  if (!snapshot || (expectedDb && snapshot.db !== expectedDb)) return false;
-  try {
-    const latest = latestSinopacHumanAttestationEvent(snapshot.db);
-    return (
-      latest?.eventKind === "attested" &&
-      latest.sequence === snapshot.sequence &&
-      latest.eventAt === snapshot.eventAt &&
-      latest.manifestFingerprint === snapshot.manifestFingerprint &&
-      isSinopacHumanAttestationDurablyActive(snapshot.db)
-    );
-  } catch {
-    return false;
-  }
-}
-
-export type SinopacDomesticDepositFinancialAdmissionResult = {
+export type SinopacPGliteForeignFinancialCaptureResult = Readonly<{
   status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
+  capture: CanonicalFinancialDepositCapture | null;
   diagnostics: string[];
-};
+}>;
 
-export class SinopacDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SinopacDomesticDepositFinancialAdmissionError";
-  }
-}
+type ExactAmount = Readonly<{ coefficient: string; scale: number }>;
 
-function canonicalSinopacDate(value: string): string | null {
-  const compact = normalizedCell(value).replaceAll("/", "");
-  if (!/^\d{8}$/.test(compact)) return null;
-  const formatted = `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
-  const parsed = new Date(`${formatted}T00:00:00.000Z`);
-  return parsed.toISOString().slice(0, 10) === formatted ? formatted : null;
-}
+const FOREIGN_CURRENCY_CODES = new Set(
+  "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BOV BRL BSD BTN BWP BYN BZD CAD CDF CHE CHF CHW CLF CLP CNY COP COU CRC CUC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MXV MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SLL SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD USN UYI UYU UYW UZS VED VES VND VUV WST XAF XAG XAU XBA XBB XBC XBD XCD XDR XOF XPD XPF XPT XSU XTS XUA XXX YER ZAR ZMW ZWL".split(
+    " ",
+  ),
+);
 
-function canonicalSinopacTime(value: string): string | null {
-  const match = normalizedCell(value).match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/);
-  if (
-    !match ||
-    Number(match[1]) > 23 ||
-    Number(match[2]) > 59 ||
-    Number(match[3] ?? 0) > 59
-  )
-    return null;
-  return match[3] === undefined
-    ? `${match[1]}:${match[2]}`
-    : `${match[1]}:${match[2]}:${match[3]}`;
-}
-
-function financialAmount(
-  value: string,
-  allowZero = false,
-): { coefficient: string; scale: number } | null {
+function foreignExactAmount(value: string): ExactAmount {
   const normalized = normalizedCell(value).replaceAll(",", "");
-  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
-  const [whole = "", fractional = ""] = normalized.split(".");
-  const coefficient = `${whole}${fractional}`.replace(/^0+(?=\d)/, "") || "0";
-  if (!allowZero && BigInt(coefficient) === 0n) return null;
-  return { coefficient, scale: fractional.length };
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized))
+    throw new Error("SinoPac foreign amount must remain an exact decimal.");
+  const [whole, fraction = ""] = normalized.split(".");
+  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/, "") || "0";
+  let coefficient = digits;
+  let scale = fraction.length;
+  while (scale > 0 && coefficient.endsWith("0")) {
+    coefficient = coefficient.slice(0, -1) || "0";
+    scale -= 1;
+  }
+  return { coefficient, scale };
 }
 
-function unsupportedSinopacMarker(values: readonly string[]): boolean {
-  return /撤銷|撤销|沖正|冲正|更正|取消|退回|回沖|回冲|reversal|reversed|correction|cancel/i.test(
-    values.map(normalizedCell).join(" "),
+function foreignExactDecimal(value: string): string {
+  const exact = foreignExactAmount(value);
+  if (exact.scale === 0) return exact.coefficient;
+  const digits = exact.coefficient.padStart(exact.scale + 1, "0");
+  const splitAt = digits.length - exact.scale;
+  return `${digits.slice(0, splitAt)}.${digits.slice(splitAt)}`;
+}
+
+function foreignDate(value: string): string {
+  const normalized = normalizedCell(value).replaceAll("/", "-");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized))
+    throw new Error("SinoPac foreign source identity date is invalid.");
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== normalized
+  )
+    throw new Error("SinoPac foreign source identity date is invalid.");
+  return normalized;
+}
+
+function foreignTime(value: string): {
+  value: string;
+  precision: "minute" | "second";
+} {
+  const normalized = normalizedCell(value);
+  if (!/^\d{2}:\d{2}(?::\d{2})?$/.test(normalized))
+    throw new Error("SinoPac foreign source identity time is invalid.");
+  const [hour, minute, second] = normalized.split(":").map(Number);
+  if (hour! > 23 || minute! > 59 || (second !== undefined && second > 59))
+    throw new Error("SinoPac foreign source identity time is invalid.");
+  return normalized.length === 5
+    ? { value: `${normalized}:00`, precision: "minute" }
+    : { value: normalized, precision: "second" };
+}
+
+function foreignToken(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
+}
+
+function foreignCanonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) =>
+    typeof nested === "bigint" ? nested.toString() : nested,
   );
 }
 
-function unsupportedSinopacAuthority(label: string): boolean {
-  return /共同|共有|聯名|联名|代理|代管|joint|shared|co[- ]?owner|authorized/i.test(
-    label,
-  );
-}
-
-function sinopacFinancialRecord(
+function sinopacForeignRecord(
   capture: SinopacStatementValidatedCapture,
   row: SinopacSourceRow,
-  pageOrdinal: number,
-): { record: CanonicalFinancialDepositRecord | null; diagnostics: string[] } {
+): CanonicalFinancialDepositRecord {
   const values = row.values;
-  const diagnostics: string[] = [];
-  const accountingDate = canonicalSinopacDate(values[0] ?? "");
-  const transactionDate = canonicalSinopacDate(values[1] ?? "");
-  const transactionTime = canonicalSinopacTime(values[2] ?? "");
-  if (!accountingDate) diagnostics.push("accounting-date-invalid");
-  if (!transactionDate) diagnostics.push("transaction-date-invalid");
-  if (!transactionTime) diagnostics.push("transaction-time-invalid");
-  if (!accountingDate || !transactionDate || !transactionTime)
-    return { record: null, diagnostics };
-  const epochMilliseconds = Date.parse(
-    `${transactionDate}T${transactionTime}+08:00`,
-  );
-  if (!Number.isSafeInteger(epochMilliseconds)) {
-    diagnostics.push("effective-time-invalid");
-    return { record: null, diagnostics };
-  }
+  const accountNo = normalizedCell(capture.account.value);
+  const currency = normalizedCell(capture.account.currency).toUpperCase();
+  const localDate = foreignDate(values[0] ?? "");
+  const time = foreignTime(values[2] ?? "");
   const outflowText = normalizedCell(values[4]);
   const inflowText = normalizedCell(values[5]);
-  const outflow = financialAmount(outflowText);
-  const inflow = financialAmount(inflowText);
-  if ((Boolean(outflowText) && Boolean(inflowText)) || (!outflow && !inflow))
-    diagnostics.push("amount-column-conflict");
-  if ((outflowText && !outflow) || (inflowText && !inflow))
-    diagnostics.push("amount-invalid");
-  const balanceAfter = financialAmount(values[6] ?? "", true);
-  if (!balanceAfter) diagnostics.push("balance-invalid");
-  if (unsupportedSinopacMarker(values))
-    diagnostics.push("cancellation-marker-unsupported");
-  const amount = outflow ?? inflow;
-  const direction = outflow ? "outflow" : inflow ? "inflow" : null;
-  if (!amount || !direction || !balanceAfter || diagnostics.length > 0)
-    return { record: null, diagnostics };
-  const identity = deriveSinopacIdentity(capture);
-  const contentHash = sinopacDigest(
-    "sinopac-observed-content-v1",
-    ...values.map(normalizedCell),
-  );
-  const collisionKey = sinopacDigest(
-    "sinopac-observed-composite-fence-v1",
-    identity.subjectDigest,
-    accountingDate,
-    transactionDate,
-    transactionTime,
+  if (Boolean(outflowText) === Boolean(inflowText))
+    throw new Error(
+      "SinoPac foreign row must prove exactly one amount direction.",
+    );
+  const direction = outflowText ? "outflow" : "inflow";
+  const amountText = foreignExactDecimal(outflowText || inflowText);
+  const balanceText = foreignExactDecimal(values[6] ?? "");
+  const amount = foreignExactAmount(amountText);
+  const balanceAfter = foreignExactAmount(balanceText);
+  const sourceTimeText = normalizedCell(values[2]);
+  const signedAmount = `${direction === "outflow" ? "-" : "+"}${amountText}`;
+  const sourceKey = [
+    accountNo,
+    currency,
+    `${localDate}T${sourceTimeText}`,
+    signedAmount,
+    balanceText,
+  ].join(":");
+  const sourceTime = {
+    localDate,
+    localTime: time.value,
+    timeZone: "Asia/Taipei",
+    epochMilliseconds: Date.parse(`${localDate}T${time.value}+08:00`),
+    precision: time.precision,
+    timeOrigin: "source_reported" as const,
+  };
+  if (!Number.isSafeInteger(sourceTime.epochMilliseconds))
+    throw new Error(
+      "SinoPac foreign source time is outside the supported instant range.",
+    );
+  const description = normalizedCell(values[3]) || null;
+  const accountingDate = foreignDate(values[1] ?? "");
+  const note = normalizedCell(values[7]);
+  const reportedRateText = normalizedCell(values[8]);
+  const sourceReportedRate = reportedRateText
+    ? {
+        amount: foreignExactAmount(reportedRateText),
+        baseCurrency: currency,
+        quoteCurrency: "TWD",
+        observedOn: localDate,
+      }
+    : null;
+  const payload = {
+    sourceKey,
+    sequence: `${localDate}T${sourceTimeText}`,
+    amount,
+    balanceAfter,
+    currency,
     direction,
-    amount.coefficient,
-    String(amount.scale),
-    balanceAfter.coefficient,
-    String(balanceAfter.scale),
-  );
-  const occurrenceKey = sinopacDigest(
-    "sinopac-observed-composite-occurrence-v1",
-    collisionKey,
-    normalizedCell(values[3]),
-    normalizedCell(values[7]),
-    normalizedCell(values[8]),
-  );
-  const description = combineDomesticDepositDescription(values[3], values[7]);
+    currencyEvidence: { kind: "scope", currency },
+    sourceTime,
+    originalAmount: { amount, currency },
+    sourceReportedRate,
+    feeAmount: null,
+    description,
+    sourcePayload: {
+      identityAuthority: "human-attested",
+      identityContract:
+        SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion,
+      accountingDate,
+      note,
+      derivedFieldsExcluded:
+        SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.derivedFieldsExcluded,
+    },
+  };
+  const compactJson = foreignCanonicalJson(payload);
+  const sourceReportedRateEvidence = sourceReportedRate
+    ? {
+        amount: sourceReportedRate.amount,
+        baseCurrency: sourceReportedRate.baseCurrency,
+        quoteCurrency: sourceReportedRate.quoteCurrency,
+        observedOn: sourceReportedRate.observedOn,
+      }
+    : null;
   return {
-    diagnostics,
-    record: {
-      occurrenceKey,
-      collisionKey,
-      providerKey: collisionKey,
-      contentHash,
-      sequenceLexeme: `${pageOrdinal}:${row.rowOrdinal}`,
-      compactJson: stableSourceJson({
-        evidenceVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
-        accountingDate,
-        transactionDate,
-        transactionTime,
-        direction,
-        amount,
-        balanceAfter,
-        descriptionDigest: sinopacDigest(
-          "sinopac-description-v1",
-          normalizedCell(values[3]),
-        ),
-        noteDigest: sinopacDigest("sinopac-note-v1", normalizedCell(values[7])),
-        referenceDigest: sinopacDigest(
-          "sinopac-reference-v1",
-          normalizedCell(values[8]),
-        ),
-        providerGuaranteed: false,
-      }),
-      amount,
-      balanceAfter,
-      currency: "TWD",
-      description,
-      direction,
-      sourceTime: {
-        localDate: transactionDate,
-        localTime: transactionTime,
-        timeZone: "Asia/Taipei",
-        epochMilliseconds,
-      },
-      effectiveOn: accountingDate,
-      transactionDateTimeLocal: `${transactionDate}T${transactionTime}`,
+    occurrenceKey: foreignToken(`sinopac:occurrence:${sourceKey}`),
+    collisionKey: foreignToken(`sinopac:collision:${sourceKey}`),
+    providerKey: foreignToken(`sinopac:provider:${sourceKey}`),
+    contentHash: foreignToken(compactJson),
+    sequenceLexeme: payload.sequence,
+    compactJson,
+    amount,
+    balanceAfter,
+    currency,
+    direction,
+    sourceTime,
+    effectiveOn: localDate,
+    transactionDateTimeLocal: `${localDate}T${time.value}`,
+    description,
+    conversionEvidence: {
+      originalAmount: amount,
+      originalCurrency: currency,
+      bookedAmount: amount,
+      bookedCurrency: currency,
+      sourceReportedRate: sourceReportedRateEvidence,
+      impliedRate: null,
+      comparison: "not-comparable",
+      feeAmount: null,
+      feeCurrency: null,
+      evidenceOrigin: "source-row-conversion-evidence-v1",
     },
   };
 }
 
-export function admitSinopacDomesticDepositFinancialCapture(
-  input: SinopacDomesticDepositFinancialAdmissionInput,
-): SinopacDomesticDepositFinancialAdmissionResult {
-  return buildSinopacDomesticDepositFinancialCapture(input);
-}
-
-/** The PGlite financial command verifies durable authority inside its own
- * transaction; this builder only performs provider and semantic validation. */
-export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
-  input: Omit<SinopacDomesticDepositFinancialAdmissionInput, "personalAuthority">,
-): SinopacDomesticDepositFinancialAdmissionResult {
-  if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["capture-not-runtime-admitted"],
-    };
-  const pureAdmission = admitPureSinopacStatementCaptureEvidence(input.capture);
-  if (pureAdmission.status !== "admissible" || !pureAdmission.capture)
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: pureAdmission.diagnostics,
-    };
-  return buildPureSinopacDomesticDepositFinancialCaptureForPGlite({
-    capture: pureAdmission.capture,
-    captureId: input.captureId,
-  });
-}
-
-function buildSinopacDomesticDepositFinancialCapture(
-  input: SinopacDomesticDepositFinancialAdmissionInput,
-): SinopacDomesticDepositFinancialAdmissionResult {
+export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
+  capture: SinopacStatementValidatedCapture,
+  captureOccurrenceId: string,
+): SinopacPGliteForeignFinancialCaptureResult {
   const diagnostics: string[] = [];
-  if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
-    diagnostics.push("capture-not-runtime-admitted");
-  if (!validSinopacPersonalAuthority(input.personalAuthority))
-    diagnostics.push("authority-semantics-unproven");
-  if (input.capture.product !== "domestic-deposit")
-    diagnostics.push("unsupported-product");
-  if (input.capture.account.currency !== "TWD")
-    diagnostics.push("unsupported-currency");
-  const manifest =
-    input.humanAttestation ?? getSinopacHumanAttestedV1Manifest();
-  if (!isSinopacHumanAttestedV1Manifest(manifest))
-    diagnostics.push("human-attestation-mismatch");
-  else if (!isSinopacHumanAttestedV1Active())
-    diagnostics.push("human-attestation-revoked");
-  if (unsupportedSinopacAuthority(input.capture.account.label))
-    diagnostics.push("authority-shared-account");
-  if (!input.captureId.trim()) diagnostics.push("capture-id-missing");
-  if (input.capture.downloads.some((download) => !download.terminal))
-    diagnostics.push("terminal-evidence-missing");
   if (
-    input.capture.downloads.every((download) => download.rows.length === 0) &&
-    input.capture.zeroResultAuthority !== "provider-explicit-no-data"
+    !isAdmittedSinopacStatementCaptureEvidence(capture) ||
+    capture.product !== "foreign-currency"
   )
-    diagnostics.push("zero-result-authority-unproven");
-  const records: CanonicalFinancialDepositRecord[] = [];
-  for (const [pageOrdinal, download] of input.capture.downloads.entries()) {
-    for (const row of download.rows) {
-      const converted = sinopacFinancialRecord(input.capture, row, pageOrdinal);
-      diagnostics.push(...converted.diagnostics);
-      if (converted.record) records.push(converted.record);
-    }
-  }
-  if (diagnostics.length > 0)
     return {
       status: "blocked",
       capture: null,
-      diagnostics: [...new Set(diagnostics)],
+      diagnostics: ["capture-invalid"],
     };
-  const identity = deriveSinopacIdentity(input.capture);
-  const queryStart = canonicalSinopacDate(input.capture.queryRange.startDate);
-  const queryEnd = canonicalSinopacDate(input.capture.queryRange.endDate);
-  if (!queryStart || !queryEnd)
+  if (!captureOccurrenceId.trim())
     return {
       status: "blocked",
       capture: null,
-      diagnostics: ["query-range-invalid"],
+      diagnostics: ["capture-occurrence-id-missing"],
     };
-  const contractFingerprint = sinopacDigest(
-    "sinopac-contract-v1",
-    SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-    SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
-  );
-  const preflightFingerprint = sinopacDigest(
-    "sinopac-preflight-v1",
-    identity.subjectDigest,
-    queryStart,
-    queryEnd,
-  );
-  const capture = admitCanonicalFinancialDepositCapture({
-    captureId: input.captureId.trim(),
-    authorityRoute: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-    contractVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
-    identity: {
-      integrationNamespace: "sinopac",
-      sourceConnectionKey: identity.sourceConnectionKey,
-      identityEpochKey: sinopacHumanAttestedIdentityEpochKey(manifest),
-      stream: "domestic-deposit",
-      recordKind: "sinopac-domestic-deposit",
-      subjectDigest: identity.subjectDigest,
-      accountNo: input.capture.account.value,
-      ...(input.capture.account.accountNumber
-        ? { accountNumber: input.capture.account.accountNumber }
-        : {}),
-      accountType: "depository",
-      currency: "TWD",
-    },
-    observedAt: input.capture.observedAt,
-    scope: {
-      startDate: queryStart,
-      endDate: queryEnd,
-      scopeKind: "bounded-range",
-      completeness: "complete-range",
-      completenessBasis: "bounded-terminal-query",
-      completenessRuleVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-      absenceAuthority:
-        records.length === 0 ? "provider-explicit-no-data" : null,
-      contractFingerprint,
-      preflightFingerprint,
-      pageCount: input.capture.downloads.length,
-      withdrawalPolicy: "never-infer",
-    },
-    semantics: {
-      postingStatus: "posted",
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      postingRuleVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-      economicStatus: "normal",
-      administrativeState: "active",
-      semanticRuleVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-      effectiveTimeBasis: "transaction-time",
-      effectiveTimeRuleVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
-      timeZone: "Asia/Taipei",
-      timePrecision: "minute",
-      timeOrigin: "source_reported",
-      requireBalance: true,
-      providerGuaranteed: false,
-      occurrenceProviderGuaranteed: false,
-    },
-    pages: input.capture.downloads.map((download, pageOrdinal) => ({
-      pageOrdinal,
-      responseCode: "200",
-      terminal: download.terminal,
-      rowCount: download.rows.length,
-      responseDigest: download.contentDigest,
-      proofKind: "bounded-terminal-query",
-      contractFingerprint,
-      preflightFingerprint,
-      metadataJson: stableSourceJson({
-        pageOrdinal,
-        rowCount: download.rows.length,
-        zeroResultAuthority: input.capture.zeroResultAuthority ?? null,
-        providerGuaranteed: false,
-      }),
-    })),
-    records,
-  });
-  return { status: "admitted", capture, diagnostics: [] };
-}
-
-export async function commitCanonicalSinopacDomesticDepositCapture(
-  store: CanonicalFinancialDepositWriterStore,
-  input: SinopacDomesticDepositFinancialAdmissionInput,
-): Promise<CanonicalFinancialDepositCommitResult> {
-  if (!validSinopacPersonalAuthority(input.personalAuthority, store.db))
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac personal authority does not match this durable ledger generation.",
-    );
-  ensureSinopacHumanAttestationEvents(store.db);
-  let latest: ReturnType<typeof latestSinopacHumanAttestationEvent>;
-  try {
-    latest = latestSinopacHumanAttestationEvent(store.db);
-  } catch {
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac human attestation chain is invalid.",
-    );
-  }
-  if (latest?.eventKind === "revoked" || !isSinopacHumanAttestedV1Active())
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac human attestation is revoked; future admission is blocked.",
-    );
-  const admission = admitSinopacDomesticDepositFinancialCapture(input);
-  if (admission.status !== "admitted" || !admission.capture)
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      `SinoPac domestic deposit canonical admission blocked: ${admission.diagnostics.join(", ")}`,
-    );
-  recordInitialSinopacHumanAttestationIfMissing(
-    store.db,
-    input.capture.observedAt,
-  );
-  return commitCanonicalFinancialDepositCapture(
-    store,
-    admission.capture,
-    (db, results) =>
-      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
-        db,
-        results.map((result) => result.captureId),
-      ),
-  );
-}
-
-export async function commitCanonicalSinopacDomesticDepositCaptureBatch(
-  store: CanonicalFinancialDepositWriterStore,
-  inputs: readonly SinopacDomesticDepositFinancialAdmissionInput[],
-): Promise<CanonicalFinancialDepositCommitResult[]> {
-  if (inputs.length === 0)
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac financial capture batch cannot be empty.",
-    );
   if (
-    inputs.some(
-      (input) =>
-        !validSinopacPersonalAuthority(input.personalAuthority, store.db),
+    capture.downloads.every((download) => download.rows.length === 0) &&
+    capture.zeroResultAuthority !== "provider-explicit-no-data"
+  )
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: ["zero-result-authority-unproven"],
+    };
+  try {
+    const accountNo = normalizedCell(capture.account.value);
+    const currency = normalizedCell(capture.account.currency).toUpperCase();
+    if (!FOREIGN_CURRENCY_CODES.has(currency))
+      throw new Error("SinoPac foreign currency is invalid.");
+    const startDate = foreignDate(
+      capture.queryRange.startDate.replace(
+        /^(\d{4})(\d{2})(\d{2})$/,
+        "$1-$2-$3",
+      ),
+    );
+    const endDate = foreignDate(
+      capture.queryRange.endDate.replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3"),
+    );
+    if (startDate > endDate)
+      throw new Error("SinoPac foreign capture scope is inverted.");
+    const records = capture.downloads.flatMap((download) =>
+      download.rows.map((row) => sinopacForeignRecord(capture, row)),
+    );
+    if (
+      records.some(
+        (record) =>
+          record.effectiveOn < startDate || record.effectiveOn > endDate,
+      )
     )
-  )
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac batch personal authority does not match this durable ledger generation.",
+      throw new Error(
+        "SinoPac foreign source row falls outside the complete capture scope.",
+      );
+    const duplicateSourceKeys = new Set<string>();
+    for (const record of records) {
+      if (duplicateSourceKeys.has(record.occurrenceKey))
+        throw new Error(
+          "SinoPac foreign human-attested source identity collision.",
+        );
+      duplicateSourceKeys.add(record.occurrenceKey);
+    }
+    const contractVersion =
+      SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion;
+    const authorityRoute =
+      SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.authorityRoute;
+    const captureCurrencyScope = { kind: "currency" as const, currency };
+    const scopeFingerprint = foreignToken(
+      `${contractVersion}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`,
     );
-  ensureSinopacHumanAttestationEvents(store.db);
-  let latest: ReturnType<typeof latestSinopacHumanAttestationEvent>;
-  try {
-    latest = latestSinopacHumanAttestationEvent(store.db);
-  } catch {
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac human attestation chain is invalid.",
+    const responseDigest = foreignToken(
+      records.map((record) => record.contentHash).join("|"),
     );
+    const connectionKey = "sinopac-foreign-current-login";
+    const identityEpochKey =
+      SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion;
+    const captureId = `foreign-sinopac-${foreignToken(`${connectionKey}:${identityEpochKey}:${captureOccurrenceId.trim()}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`).slice("sha256:".length)}`;
+    const first = records[0]?.sourceTime ?? {
+      localDate: startDate,
+      localTime: "00:00:00",
+      timeZone: "Asia/Taipei",
+      epochMilliseconds: Date.parse(`${startDate}T00:00:00+08:00`),
+      precision: "date",
+      timeOrigin: "defaulted_local_midnight",
+    };
+    const preflightFingerprint = foreignToken(`${scopeFingerprint}:preflight`);
+    return {
+      status: "admitted",
+      diagnostics,
+      capture: {
+        captureId,
+        authorityRoute,
+        contractVersion,
+        identity: {
+          integrationNamespace: "sinopac",
+          sourceConnectionKey: foreignToken(connectionKey),
+          identityEpochKey: foreignToken(identityEpochKey),
+          stream: "foreign-currency-deposit",
+          recordKind: "sinopac-foreign-currency-deposit",
+          subjectDigest: foreignToken(
+            `${accountNo}:sinopac-foreign-currency-deposit`,
+          ),
+          accountNo,
+          sourceAccountKey: accountNo,
+          accountNumber: capture.account.accountNumber ?? null,
+          accountType: "depository",
+          currency: null,
+        },
+        observedAt: capture.observedAt,
+        scope: {
+          startDate,
+          endDate,
+          scopeKind: "bounded-range",
+          completeness: "complete-range",
+          completenessBasis: "foreign-currency-terminal-complete-range",
+          completenessRuleVersion: contractVersion,
+          absenceAuthority: "provider-explicit-no-data",
+          contractFingerprint: scopeFingerprint,
+          preflightFingerprint,
+          pageCount: 1,
+          withdrawalPolicy: "never-infer",
+        },
+        semantics: {
+          postingStatus: "posted",
+          postingOrigin: "human-attested",
+          postingBasis: "statement-posted-history",
+          postingRuleVersion: contractVersion,
+          economicStatus: "normal",
+          administrativeState: "active",
+          semanticRuleVersion: contractVersion,
+          effectiveTimeBasis: "transaction-time",
+          effectiveTimeRuleVersion: contractVersion,
+          timeZone: "Asia/Taipei",
+          timePrecision: first.precision ?? "second",
+          timeOrigin: first.timeOrigin ?? "source_reported",
+          requireBalance: true,
+          providerGuaranteed: false,
+          occurrenceProviderGuaranteed: false,
+        },
+        pages: [
+          {
+            pageOrdinal: 0,
+            responseCode: "200",
+            terminal: true,
+            rowCount: records.length,
+            responseDigest,
+            proofKind: "foreign-currency-terminal-statement",
+            contractFingerprint: scopeFingerprint,
+            preflightFingerprint,
+            metadataJson: foreignCanonicalJson({
+              source: "sinopac",
+              accountNo,
+              startDate,
+              endDate,
+              captureCurrencyScope,
+              currencyScope: "row-or-typed-scope",
+              completeness: "complete-range",
+            }),
+          },
+        ],
+        records,
+      },
+    };
+  } catch (error) {
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: [
+        error instanceof Error ? error.message : "foreign-capture-invalid",
+      ],
+    };
   }
-  if (latest?.eventKind === "revoked" || !isSinopacHumanAttestedV1Active())
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      "SinoPac human attestation is revoked; future admission is blocked.",
-    );
-  const admissions = inputs.map(admitSinopacDomesticDepositFinancialCapture);
-  const blocked = admissions.find(
-    (admission) => admission.status !== "admitted",
-  );
-  if (blocked)
-    throw new SinopacDomesticDepositFinancialAdmissionError(
-      `SinoPac domestic deposit canonical batch admission blocked: ${blocked.diagnostics.join(", ")}`,
-    );
-  recordInitialSinopacHumanAttestationIfMissing(
-    store.db,
-    inputs[0]!.capture.observedAt,
-  );
-  return commitCanonicalFinancialDepositCaptureBatch(
-    store,
-    admissions.map((admission) => admission.capture!),
-    (db, results) =>
-      commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
-        db,
-        results.map((result) => result.captureId),
-      ),
-  );
 }
-
-export {
-  SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
-  getSinopacHumanAttestedV1Manifest,
-  isSinopacHumanAttestationDurablyActive,
-  recordInitialSinopacHumanAttestationIfMissing,
-};
