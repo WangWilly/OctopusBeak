@@ -6,7 +6,7 @@ import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -28,9 +28,8 @@ import {
 } from "./yuanta-auth.ts";
 import {
   admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureInTransaction,
   type ForeignCurrencyDepositCaptureInput,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -38,24 +37,18 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
-} from "../ledger/canonical/investment-funding-relations.ts";
-import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
+} from "../ledger/canonical/investment-funding-contract.ts";
 
 const big5Decoder = new TextDecoder("big5");
 
@@ -2945,12 +2938,14 @@ export function buildYuantaForeignCurrencyCaptureInput(
   };
 }
 
-function configuredYuantaCanonicalLedgerDir(): string {
-  return (
+async function configuredYuantaCanonicalLedgerDir(): Promise<string> {
+  const configured =
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-    process.env.LEDGER_DIR?.trim() ||
-    DEFAULT_LEDGER_DIR
-  );
+    process.env.LEDGER_DIR?.trim();
+  if (configured) return configured;
+  if (pgliteWorkflowEnabled(process.env)) return "";
+  const { DEFAULT_LEDGER_DIR } = await import("../ledger/db/client.ts");
+  return DEFAULT_LEDGER_DIR;
 }
 
 /**
@@ -3055,6 +3050,18 @@ export async function commitYuantaForeignCaptures(
       client.close();
     }
   }
+
+  const [
+    { executeCanonicalFinancialCommitRun },
+    { commitForeignCurrencyDepositCaptureInTransaction },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+    { runCanonicalInvestmentRelationFollowThrough },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/foreign-currency-deposit.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    import("../ledger/canonical/canonical-relation-followthrough.ts"),
+  ]);
 
   const successfulAccounts = new Set<string>();
   const items = async function* (): AsyncGenerator<CanonicalFinancialCommitItem<unknown>> {
@@ -3207,8 +3214,9 @@ export default workflow("yuantaForeignCurrencyStatements", {
       sourceDownloads,
     );
 
-    const canonicalLedgerDir = configuredYuantaCanonicalLedgerDir();
-    if (canonicalLedgerDir) {
+    const pgliteEnabled = pgliteWorkflowEnabled(process.env);
+    const canonicalLedgerDir = await configuredYuantaCanonicalLedgerDir();
+    if (pgliteEnabled || canonicalLedgerDir) {
       const captureOccurrenceId = randomUUID();
       const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
       for (const row of rows) {
