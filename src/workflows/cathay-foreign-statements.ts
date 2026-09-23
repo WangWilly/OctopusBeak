@@ -21,6 +21,7 @@ import {
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import type {
   ForeignCurrencyDepositCaptureInput,
+  commitForeignCurrencyDepositCaptureInTransaction,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
 import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
