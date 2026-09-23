@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
   pgliteWorkflowEnabled,
@@ -15,13 +15,8 @@ import {
   admitCanonicalInvestmentCapture,
   CanonicalInvestmentAdmissionError,
   type InvestmentValidatedCapture,
-} from "../ledger/canonical/investment-financial.ts";
-import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
+} from "../ledger/canonical/investment-financial-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   buildYuantaInvestmentCapture,
   type YuantaCanonicalInvestmentRow,
@@ -2187,6 +2182,15 @@ async function commitYuantaFundCanonicalIfComplete(
       client.close();
     }
   }
+  const [
+    { commitCanonicalFinancialAdmissionInTransaction },
+    { executeCanonicalFinancialCommitRun },
+    { runCanonicalInvestmentRelationFollowThrough },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-admission.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/canonical-relation-followthrough.ts"),
+  ]);
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
     (capture) => ({
       provider: "yuanta-fund",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
-import { CanonicalInvestmentAdmissionError } from "../ledger/canonical/investment-financial.ts";
+import { CanonicalInvestmentAdmissionError } from "../ledger/canonical/investment-financial-admission.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
 
 registerHooks({
