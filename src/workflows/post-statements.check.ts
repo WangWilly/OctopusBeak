@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -8,7 +8,6 @@ import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { chromium } from "playwright";
-import { DatabaseSync } from "node:sqlite";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildPostDomesticDepositCapture,
@@ -498,179 +497,7 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
 });
 assert.equal(postCurrentBalanceRow.length, 1);
 
-const runDir = await mkdtemp(join(tmpdir(), "post-workflow-check-"));
-try {
-  const output = await runPostStatements({} as never, true, {
-    canonicalLedgerDir: runDir,
-    observedAt: "2026-08-24T10:11:12+08:00",
-    readCurrentDepositBalances: async () => [],
-    collectStatements: async () => [
-      {
-        accountId: "PRIVATE-ACCOUNT",
-        queryPeriods: ["2026/02/01~2026/08/24"],
-        queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-        httpStatus: 200,
-        itemShape: "array",
-        rows,
-        download: {
-          account: "PRIVATE-ACCOUNT 郵局",
-          accountId: "PRIVATE-ACCOUNT",
-          queryPeriods: ["2026/02/01~2026/08/24"],
-          baseName: "private",
-          csvFilename: "private.csv",
-          csvPath: "/private/private.csv",
-          csvBytes: 1,
-          jsonFilename: "private.json",
-          jsonPath: "/private/private.json",
-          jsonBytes: 1,
-          rowCount: 1,
-        },
-      },
-    ],
-  });
-  assert.deepEqual(
-    {
-      count: output.count,
-      rowCount: output.rowCount,
-      sourceCaptureCount: output.sourceCaptureCount,
-      status: output.status,
-    },
-    {
-      count: 1,
-      rowCount: 1,
-      sourceCaptureCount: 1,
-      status: "financial-admitted",
-    },
-  );
-  const db = new DatabaseSync(join(runDir, "canonical.sqlite"), {
-    readOnly: true,
-  });
-  assert.equal(
-    Number(
-      (
-        db.prepare("SELECT COUNT(*) AS count FROM source_records").get() as {
-          count: number;
-        }
-      ).count,
-    ),
-    1,
-  );
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  const payload = String(
-    (
-      db
-        .prepare("SELECT payload_json AS payload FROM source_records")
-        .get() as {
-        payload: string;
-      }
-    ).payload,
-  );
-  for (const privateToken of ["PRIVATE-ACCOUNT", "薪資", "123.45"])
-    assert.equal(payload.includes(privateToken), false, privateToken);
-  db.close();
-} finally {
-  await rm(runDir, { recursive: true, force: true });
-}
-
-const financialRunDir = await mkdtemp(
-  join(tmpdir(), "post-workflow-financial-check-"),
-);
-try {
-  const output = await runPostStatements({} as never, false, {
-    canonicalLedgerDir: financialRunDir,
-    observedAt: "2026-08-24T10:12:13+08:00",
-    readCurrentDepositBalances: async () => postCurrentBalanceRow,
-    collectStatements: async () => [
-      {
-        accountId: syntheticPostAccountNumber,
-        queryPeriods: ["2026/02/01~2026/08/24"],
-        queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-        httpStatus: 200,
-        itemShape: "array",
-        rows,
-        download: {
-          account: `${syntheticPostAccountNumber} 郵局`,
-          accountId: syntheticPostAccountNumber,
-          queryPeriods: ["2026/02/01~2026/08/24"],
-          baseName: "private-financial",
-          csvFilename: "private-financial.csv",
-          csvPath: "/private/private-financial.csv",
-          csvBytes: 1,
-          jsonFilename: "private-financial.json",
-          jsonPath: "/private/private-financial.json",
-          jsonBytes: 1,
-          rowCount: 1,
-        },
-      },
-    ],
-  });
-  assert.equal(output.status, "financial-admitted");
-  const db = new DatabaseSync(join(financialRunDir, "canonical.sqlite"), {
-    readOnly: true,
-  });
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/current-balance-v1'",
-          )
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  const balanceRow = db
-    .prepare(
-      "SELECT balance_coefficient, balance_scale FROM balance_observation_revisions",
-    )
-    .get() as { balance_coefficient: string; balance_scale: number };
-  assert.deepEqual({ ...balanceRow }, { balance_coefficient: "12345", balance_scale: 0 });
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/human-attested-v1'",
-          )
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  const accountIdentity = db
-    .prepare(
-      "SELECT source_account_key, account_no FROM financial_accounts WHERE stream = 'domestic-deposit'",
-    )
-    .get() as { source_account_key: string; account_no: string };
-  assert.equal(accountIdentity.source_account_key, syntheticPostAccountNumber);
-  assert.equal(accountIdentity.account_no, syntheticPostAccountNumber);
-  db.close();
-} finally {
-  await rm(financialRunDir, { recursive: true, force: true });
-}
-
 const enabledDir = await mkdtemp(join(tmpdir(), "post-pglite-workflow-"));
-const enabledLegacyDir = await mkdtemp(join(tmpdir(), "post-pglite-no-sqlite-"));
 const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
   execArgv: ["--experimental-strip-types"],
   workerData: { dataDir: enabledDir },
@@ -691,7 +518,6 @@ try {
   await enabledServer.ready;
   Object.assign(process.env, enabledServer.env);
   const output = await runPostStatements({} as never, false, {
-    canonicalLedgerDir: enabledLegacyDir,
     observedAt: "2026-08-24T10:12:13+08:00",
     readCurrentDepositBalances: async () => postCurrentBalanceRow,
     collectStatements: async () => [{
@@ -717,7 +543,6 @@ try {
     }],
   });
   assert.equal(output.status, "financial-admitted");
-  assert.deepEqual(await readdir(enabledLegacyDir), []);
 } finally {
   for (const [key, value] of [
     ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
@@ -729,7 +554,6 @@ try {
   }
   await enabledServer.close();
   await enabledOwner.close();
-  await rm(enabledLegacyDir, { recursive: true, force: true });
 }
 const enabledDb = await PGlite.create(enabledDir);
 try {
