@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { PGlite } from "@electric-sql/pglite";
+import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import {
   createCanonicalSourceStore,
 } from "../ledger/canonical/canonical-source-store.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailTelemetry,
@@ -172,6 +177,92 @@ try {
   await rm(sourceOnlyDir, { recursive: true, force: true });
 }
 
+const enabledDir = await mkdtemp(join(tmpdir(), "ctbc-pglite-workflow-"));
+const enabledLegacyDir = await mkdtemp(join(tmpdir(), "ctbc-pglite-no-sqlite-"));
+const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+  execArgv: ["--experimental-strip-types"],
+  workerData: { dataDir: enabledDir },
+});
+const enabledOwner = createPGliteViewWorkerClient(enabledWorker);
+const enabledServer = createPGliteChildRpcServer({
+  provider: {
+    operational: enabledOwner.operationalProvider,
+    financial: enabledOwner.financial.registry,
+  },
+});
+const priorEnabledEnv = {
+  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
+  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+};
+try {
+  await enabledServer.ready;
+  Object.assign(process.env, enabledServer.env);
+  const output = await runCtbcStatements({} as never, { telemetry: false }, {
+    canonicalLedgerDir: enabledLegacyDir,
+    observedAt: "2026-08-24T12:34:56+08:00",
+    readCurrentDepositBalances: async () => [],
+    collectStatements: async () => ({
+      output: { count: 1, rowCount: 1, downloads: [] },
+      captures: [{
+        accountId: "PRIVATE-CTBC-ACCOUNT",
+        queryPeriods: ["2026/08/01~2026/08/31"],
+        expectedRangeCount: 1,
+        responses: [{
+          rangeOrdinal: 0,
+          startDate: "2026/08/01",
+          endDate: "2026/08/31",
+          code: "0000",
+          nextKey: null,
+          terminal: true,
+          responseShape: {
+            hasRsData: true,
+            rsDataKind: "object",
+            hasDetailList: true,
+            detailListIsArray: true,
+            detailListRowCount: 1,
+            nextKeyPresent: false,
+          },
+          rows: ctbcDetailRowsToStatementRows(
+            { accountId: "PRIVATE-CTBC-ACCOUNT", label: "PRIVATE-CTBC-LABEL" },
+            [{
+              actDtFull: "2026/08/03",
+              trnDtFull: "2026/08/02",
+              actDtTm: "2026-08-03-09.08.07.000000",
+              memo1: "PRIVATE-CTBC-MEMO",
+              dbAmtDisplay: "0",
+              crAmtDisplay: "1,234",
+              balanceAmt: "5,678",
+            }],
+          ),
+        }],
+      }],
+    }),
+  });
+  assert.equal(output.status, "financial-admitted");
+  assert.deepEqual(await readdir(enabledLegacyDir), []);
+} finally {
+  for (const [key, value] of [
+    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorEnabledEnv.endpoint],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorEnabledEnv.token],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await enabledServer.close();
+  await enabledOwner.close();
+  await rm(enabledLegacyDir, { recursive: true, force: true });
+}
+const enabledDb = await PGlite.create(enabledDir);
+try {
+  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
+  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 2);
+} finally {
+  await enabledDb.close();
+  await rm(enabledDir, { recursive: true, force: true });
+}
+
 const successfulEmptyDir = await mkdtemp(
   join(tmpdir(), "ctbc-successful-empty-"),
 );
@@ -316,6 +407,11 @@ assert.equal(currentCapture.observations[0]?.sourceField, "balance");
 assert.equal(currentCapture.observations[0]?.time.sourceField, "serverTime");
 assert.equal(currentCapture.observations[0]?.time.sourceValue, "1788919783601");
 assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(currentCapture));
+const pgliteBalanceRequest = currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(currentCapture));
+assert.equal(pgliteBalanceRequest.capture.routeKey, "ctbc/domestic-deposit/current-balance-v1");
+assert.equal(pgliteBalanceRequest.account.sourceAccountKey, syntheticCtbcAccountNumber);
+assert.deepEqual(pgliteBalanceRequest.observations[0]?.balance, { coefficient: "13155", scale: 0 });
+assert.equal(pgliteBalanceRequest.observations[0]?.evidenceSourceValue, "1788919783601");
 assert.deepEqual(currentCapture.observations[0]?.balance, {
   coefficient: "13155",
   scale: 0,

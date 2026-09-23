@@ -94,7 +94,7 @@ export type AutomationTaskPrerequisiteNoticeRecord = {
   recordJson: string;
 };
 
-type CreateTaskRunInput = {
+export type CreateTaskRunInput = {
   taskId: string;
   script: string;
   kind: AutomationTaskKind;
@@ -111,6 +111,66 @@ type CreateTaskRunInput = {
   progress?: AutomationTaskProgress;
   humanAssistanceContract?: HumanAssistanceContract | null;
 };
+
+/**
+ * Async persistence seam used by the worker-owned PGlite implementation.
+ *
+ * The existing functions in this module intentionally keep their synchronous
+ * SQLite signatures until the application cutover.  New domain code can type
+ * against this port while receiving the same lifecycle and race semantics
+ * from an injected asynchronous store.
+ */
+export interface AutomationPersistencePort {
+  createTaskRun(input: CreateTaskRunInput): Promise<{ taskRunId: string }>;
+  updateTaskRun(taskRunId: string, update: AutomationTaskRunUpdate): Promise<void>;
+  transitionTaskRunToActive(
+    taskRunId: string,
+    update: AutomationTaskRunActiveUpdate,
+  ): Promise<{ status: AutomationTaskStatus; applied: boolean }>;
+  transitionTaskRunToTerminal(
+    taskRunId: string,
+    update: AutomationTaskRunTerminalUpdate,
+  ): Promise<{ status: AutomationTaskStatus; applied: boolean }>;
+  updateHumanAssistanceContract(
+    taskRunId: string,
+    input: HumanAssistanceContractInput,
+  ): Promise<HumanAssistanceContract>;
+  updateHumanAssistanceCompletion(
+    taskRunId: string,
+    status: HumanAssistanceCompletionStatus,
+  ): Promise<HumanAssistanceContract>;
+  taskRunById(taskRunId: string): Promise<AutomationTaskRun | null>;
+  activeTaskRuns(): Promise<AutomationTaskRun[]>;
+  latestTaskRuns(): Promise<Record<string, AutomationTaskRun>>;
+  todayTaskRunIds(input: { startUtc: Date; endUtc: Date }): Promise<string[]>;
+  hasSuccessfulTaskRunSince(taskId: string, occurrence: string): Promise<boolean>;
+  recentTaskRuns(limit?: number): Promise<AutomationTaskHistoryRow[]>;
+  upsertTaskPrerequisiteNotice(input: {
+    taskId: string;
+    prerequisiteId: string;
+    taskRunId: string;
+    detectedAt: string;
+    errorMessage?: string | null;
+  }): Promise<void>;
+  activeTaskPrerequisiteNotices(): Promise<AutomationTaskPrerequisiteNoticeRecord[]>;
+  allTaskPrerequisiteNotices(): Promise<AutomationTaskPrerequisiteNoticeRecord[]>;
+  resolveTaskPrerequisiteNotices(
+    taskId: string,
+    resolvedByTaskRunId: string,
+    resolvedAt: string,
+  ): Promise<void>;
+}
+
+/** Shared injection object for domain boundaries during the PGlite cutover. */
+export type AutomationPersistenceProvider = Readonly<{
+  automation: AutomationPersistencePort;
+}>;
+
+export function createAutomationPersistenceProvider(
+  automation: AutomationPersistencePort,
+): AutomationPersistenceProvider {
+  return Object.freeze({ automation });
+}
 
 export type AutomationTaskRunUpdate = Partial<
   Pick<
@@ -420,9 +480,15 @@ export function resolveTaskPrerequisiteNotices(
 
 export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
   const taskRunId = randomUUID();
+  const errorMessage = input.errorMessage === undefined || input.errorMessage === null
+    ? input.errorMessage ?? null
+    : sanitizeAutomationLogTail(input.errorMessage);
+  const logTail = sanitizeAutomationLogTail(input.logTail ?? "");
   const record = {
     taskRunId,
     ...input,
+    errorMessage,
+    logTail,
     humanAssistanceContract: input.humanAssistanceContract ?? null,
   };
   db.prepare(
@@ -446,9 +512,9 @@ export function createTaskRun(db: LedgerDatabase, input: CreateTaskRunInput) {
     input.finishedAt ?? null,
     input.exitCode ?? null,
     input.signal ?? null,
-    input.errorMessage ?? null,
+    errorMessage,
     input.logPath,
-    sanitizeAutomationLogTail(input.logTail ?? ""),
+    logTail,
     JSON.stringify(record),
   );
   return { taskRunId };

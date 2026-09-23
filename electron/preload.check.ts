@@ -33,3 +33,8 @@ assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
 assert.match(source, /acknowledgeVersion: .*ipcRenderer\.invoke\("data:acknowledgeVersion"/);
 assert.match(source, /onInvalidated\(listener\)/);
 assert.match(source, /ipcRenderer\.on\("data:invalidated"/);
+assert.match(source, /const dataViews = \{/);
+for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views:unsubscribe", "data-views:rows", "data-views:error"]) {
+  assert.match(source, new RegExp(channel.replace(/[-:]/gu, "[-:]")));
+}
+assert.match(source, /dataViews,/);

@@ -4,6 +4,17 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { executePGliteWorkflowRun } from "./pglite/workflow-run.ts";
+import type {
+  PGliteMaicoinSnapshot,
+  PGliteMaicoinStatementRow,
+} from "./pglite/maicoin-operational.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "./pglite/workflow-client.ts";
 import {
   DEFAULT_LEDGER_DIR,
   openLedgerDatabase,
@@ -940,6 +951,78 @@ function insertStatementRows(
   }
 }
 
+function pgliteSnapshotRows(
+  syncRunId: string,
+  capturedAt: string,
+  subAccount: string,
+  snapshots: readonly AccountSnapshot[],
+): PGliteMaicoinSnapshot[] {
+  return snapshots.map((snapshot) => ({
+    snapshotId: randomUUID(), syncRunId, capturedAt, subAccount,
+    walletType: snapshot.walletType,
+    currency: snapshot.account.currency.toLowerCase(),
+    balance: amount(snapshot.account.balance),
+    locked: amount(snapshot.account.locked),
+    staked: numeric(snapshot.account.staked),
+    principal: numeric(snapshot.account.principal),
+    interest: numeric(snapshot.account.interest),
+    totalQuantity: snapshot.totalQuantity,
+    priceMarket: snapshot.price.market,
+    priceCurrency: snapshot.price.currency,
+    price: snapshot.price.price,
+    valueTwd: snapshot.valueTwd,
+    priceAt: snapshot.price.at,
+    rawAccountJson: JSON.stringify(snapshot.account),
+    rawPriceJson: snapshot.price.raw === null ? null : JSON.stringify(snapshot.price.raw),
+  }));
+}
+
+function pgliteStatementRows(
+  syncRunId: string,
+  capturedAt: string,
+  statement: readonly StatementBatch[],
+  statementValues: StatementValueMap,
+): PGliteMaicoinStatementRow[] {
+  return statement.flatMap((batch) => batch.rows.map((row) => {
+    const statementId = statementIdFor(batch, row);
+    return {
+      statementId, syncRunId, capturedAt,
+      endpoint: batch.endpoint,
+      walletType: batch.walletType,
+      rowType: batch.rowType,
+      externalId: statementExternalId(row),
+      occurredAt: isoFromTimestamp(row.created_at),
+      currency: stringValue(row.currency),
+      amount: numeric(row.amount ?? row.volume ?? row.funds),
+      fee: numeric(row.fee),
+      feeCurrency: stringValue(row.fee_currency),
+      market: stringValue(row.market),
+      side: stringValue(row.side),
+      price: numeric(row.price),
+      valueTwd: statementValues.get(statementId) ?? null,
+      rawPayloadJson: JSON.stringify(row),
+    };
+  }));
+}
+
+/** Keep each authenticated socket frame below its 4 MiB transport ceiling. */
+function* maicoinRpcChunks<T>(rows: readonly T[]): Iterable<readonly T[]> {
+  let chunk: T[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const size = Buffer.byteLength(JSON.stringify(row));
+    if (size > 1_000_000) throw new Error("MaiCoin source row exceeds the PGlite RPC limit.");
+    if (chunk.length === 100 || bytes + size > 1_000_000) {
+      yield chunk;
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(row);
+    bytes += size;
+  }
+  if (chunk.length > 0) yield chunk;
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -965,6 +1048,35 @@ export async function commitMaicoinCanonicalInvestmentCaptures(
   const captures = buildMaicoinInvestmentCaptures(input).map(
     (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
   );
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "maicoin",
+        product: "investment",
+        items: captures.map((capture) => ({
+          provider: "maicoin",
+          product: "investment",
+          itemKey: capture.captureId,
+          command: { kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND, request: { capture } },
+          relationCommands: () => [{
+            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+            request: {
+              sourceConnectionKey: capture.identity.sourceConnectionKey,
+              observedAt: capture.observedAt,
+            },
+          }],
+        })),
+      });
+      if (result.status !== "completed")
+        throw new Error(`Maicoin PGlite canonical persistence ${result.status}: ${result.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+      return result.items.flatMap((item) => item.status === "committed" ? [item.value] : []);
+    } finally {
+      client.close();
+    }
+  }
   const items: CanonicalFinancialCommitItem<CanonicalFinancialDepositCommitResult[]>[] =
     captures.map((capture) => ({
       provider: "maicoin",
@@ -1007,10 +1119,23 @@ export async function syncMaicoin(params: CliParams) {
   const client = new MaxClient(credentials);
   const syncRunId = randomUUID();
   const startedAt = new Date().toISOString();
-  const db = openLedgerDatabase(params.ledgerDir);
-  insertSyncRun(db, params, syncRunId, startedAt);
-
+  const pglite = pgliteWorkflowEnabled(process.env)
+    ? requirePGliteChildRpcClientFromEnv()
+    : null;
+  const db = pglite ? null : openLedgerDatabase(params.ledgerDir);
+  let runStarted = false;
   try {
+    if (pglite) {
+      await pglite.ready;
+      await pglite.operationalProvider.maicoin.startRun({
+        syncRunId, startedAt,
+        subAccount: params.subAccount,
+        walletTypes: params.walletTypes,
+        statementLimit: params.statementLimit,
+        record: { status: "started", params },
+      });
+    } else if (db) insertSyncRun(db, params, syncRunId, startedAt);
+    runStarted = true;
     const walletSelection = await fetchWalletTypes(
       client,
       params.walletTypes,
@@ -1053,14 +1178,23 @@ export async function syncMaicoin(params: CliParams) {
       },
     );
 
-    db.exec("BEGIN");
-    try {
-      insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
-      insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+    if (pglite) {
+      for (const chunk of maicoinRpcChunks(pgliteSnapshotRows(
+        syncRunId, capturedAt, credentials.subAccount, snapshots,
+      ))) await pglite.operationalProvider.maicoin.appendSnapshots(chunk);
+      for (const chunk of maicoinRpcChunks(pgliteStatementRows(
+        syncRunId, capturedAt, statement, statementValues,
+      ))) await pglite.operationalProvider.maicoin.appendStatementRows(chunk);
+    } else if (db) {
+      db.exec("BEGIN");
+      try {
+        insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
+        insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
 
     const result = {
@@ -1079,19 +1213,27 @@ export async function syncMaicoin(params: CliParams) {
         .map((snapshot) => `${snapshot.walletType}:${snapshot.account.currency.toLowerCase()}`),
       totalValueTwd: snapshots.reduce((sum, snapshot) => sum + (snapshot.valueTwd ?? 0), 0),
     };
-    finishSyncRun(db, syncRunId, result);
+    if (pglite) await pglite.operationalProvider.maicoin.finishRun({
+      syncRunId, finishedAt: new Date().toISOString(), record: result,
+    });
+    else if (db) finishSyncRun(db, syncRunId, result);
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   } catch (error) {
-    finishSyncRun(db, syncRunId, {
+    const failedRecord = {
       status: "failed",
       syncRunId,
       errorName: error instanceof Error ? error.name : "Error",
       errorMessage: error instanceof Error ? error.message : String(error),
-    });
+    };
+    if (pglite && runStarted) await pglite.operationalProvider.maicoin.finishRun({
+      syncRunId, finishedAt: new Date().toISOString(), record: failedRecord,
+    }).catch(() => undefined);
+    else if (db && runStarted) finishSyncRun(db, syncRunId, failedRecord);
     throw error;
   } finally {
-    db.close();
+    pglite?.close();
+    db?.close();
   }
 }
 

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
+import { Worker } from "node:worker_threads";
 import type { DatabaseSync } from "node:sqlite";
 
 import type {
@@ -13,6 +15,8 @@ import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repay
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-domestic-deposit.ts";
+import { createPGliteChildRpcServer, type PGliteChildProvider } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -1180,4 +1184,51 @@ try {
   }
 } finally {
   await rm(emptyDir, { recursive: true, force: true });
+}
+
+const pgliteRunDir = await mkdtemp(join(tmpdir(), "yuanta-pglite-workflow-"));
+const pgliteWorker = createPGliteViewWorkerClient(new Worker(
+  new URL("../../electron/pglite-view-worker.ts", import.meta.url),
+  { execArgv: ["--experimental-strip-types"], workerData: { dataDir: join(pgliteRunDir, "pglite") } },
+));
+const pgliteServer = createPGliteChildRpcServer({
+  provider: {
+    operational: pgliteWorker.operationalProvider,
+    financial: pgliteWorker.financial.registry,
+  } as PGliteChildProvider,
+});
+const priorWorkflowEnvironment = Object.fromEntries(
+  Object.keys(pgliteServer.env).map((key) => [key, process.env[key]]),
+);
+try {
+  await pgliteServer.ready;
+  Object.assign(process.env, pgliteServer.env);
+  const output = await runYuantaStatements(
+    {} as never,
+    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
+    {
+      observedAt: stableConnectionIdentity.observedAt,
+      canonicalLedgerDir: pgliteRunDir,
+      readDepositAccountOptions: async () => [workflowAccount],
+      queryAccount: async () => undefined,
+      downloadStatementRows: async () => workflowDownload,
+      writeBankTransactionsFile: writeWorkflowFile as never,
+      sourceConnectionScope: stableConnectionScope,
+      sourceConnectionKey: stableConnectionKey,
+      readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
+    },
+  );
+  assert.equal(output.admissions[0]?.status, "financial-admitted");
+  assert.equal(output.relationResolution?.outcome, "no-admission");
+  assert.equal((await pgliteWorker.financial.registry.overviewCurrent()).availability, "available");
+  assert.equal(existsSync(join(pgliteRunDir, "canonical.sqlite")), false);
+  assert.equal(existsSync(join(pgliteRunDir, "ledger.sqlite")), false);
+} finally {
+  for (const [key, value] of Object.entries(priorWorkflowEnvironment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await pgliteServer.close();
+  await pgliteWorker.close();
+  await rm(pgliteRunDir, { recursive: true, force: true });
 }

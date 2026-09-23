@@ -39,6 +39,10 @@
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import SpendingDashboard from "$lib/spending/SpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
+  import {
+    createFinancialPageLiveStores,
+    type FinancialPageLiveStores,
+  } from "$lib/financial/client/page-live-stores.ts";
   import FirstRunWelcome from "$lib/welcome/FirstRunWelcome.svelte";
   import { resolveCompletedFirstRunWelcome } from "$lib/welcome/integration.ts";
   import {
@@ -122,6 +126,17 @@
   let completingFirstRunWelcome = false;
   let overviewLoadedForTaskFinishedAt: string | null = null;
   let overviewReloading = false;
+  let financialLiveStores: FinancialPageLiveStores | null = null;
+  let financialLiveEnabled = false;
+  let routeCapabilityResolved = false;
+  let financialLiveError = false;
+  let financialLiveRoute: DashboardRoute | null = null;
+  let stopFinancialLive: (() => void) | null = null;
+  let financialLiveWaiter: {
+    route: DashboardRoute;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
   const routeDataCache = createRouteLoadCache<RouteData>();
   const refreshUi = writable<RefreshUiState>(initialRefreshUiState);
   const blockKeys: Readonly<Record<DashboardRoute, readonly DashboardBlockKey[]>> = {
@@ -187,6 +202,7 @@
     );
   $: if (
     route === "overview"
+    && !financialLiveEnabled
     && onboardingStep === "overview"
     && !overviewReloading
     && automation.status === "ready"
@@ -200,6 +216,7 @@
   }
 
   function normalizeRoute() {
+    if (!routeCapabilityResolved) return;
     const previousRoute = route;
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
     route = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next) ? next as RouteId : "overview";
@@ -213,8 +230,13 @@
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
     if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
+    if (financialLiveEnabled && route !== "automation" && route !== "settings" && previousRoute !== route) {
+      startRouteLoad(route);
+    }
+    startFinancialLive(route === "settings" ? "automation" : route);
     const hasAutomationData = routeDataCache.read("automation") !== undefined
       || Object.values(routeBlocks.automation ?? {}).some((state) => "data" in state);
+    if (financialLiveEnabled && route !== "automation" && route !== "settings") return;
     void loadRoute(
       route,
       route === "automation" && previousRoute !== "automation" && hasAutomationData
@@ -229,6 +251,81 @@
 
   function viewData<T>(state: ViewLoadState<T>): T | undefined {
     return "data" in state ? state.data : undefined;
+  }
+
+  function stopActiveFinancialLive() {
+    financialLiveWaiter?.reject(new Error("Financial page subscription was replaced."));
+    financialLiveWaiter = null;
+    stopFinancialLive?.();
+    stopFinancialLive = null;
+    financialLiveRoute = null;
+  }
+
+  function applyLivePage<Value>(
+    nextRoute: DashboardRoute,
+    state: { status: "loading" } | { status: "error"; code: "subscription-failed" } | { status: "ready"; data: Value },
+    setValue: (value: Value) => void,
+  ) {
+    if (state.status === "error") {
+      financialLiveError = true;
+      failRouteLoad(nextRoute, new Error("Financial page subscription failed."));
+      if (financialLiveWaiter?.route === nextRoute) {
+        financialLiveWaiter.reject(new Error("Financial page subscription failed."));
+        financialLiveWaiter = null;
+      }
+      return;
+    }
+    if (state.status !== "ready") return;
+    financialLiveError = false;
+    setValue(state.data);
+    if (financialLiveWaiter?.route === nextRoute) {
+      financialLiveWaiter.resolve();
+      financialLiveWaiter = null;
+    }
+    routeDataCache.clear(nextRoute);
+    routeBlockLoadIds = {
+      ...routeBlockLoadIds,
+      [nextRoute]: (routeBlockLoadIds[nextRoute] ?? 0) + 1,
+    };
+    setRouteBlocks(nextRoute, {});
+  }
+
+  function startFinancialLive(nextRoute: DashboardRoute, alreadyStopped = false) {
+    if (!financialLiveEnabled || !financialLiveStores || nextRoute === "automation") {
+      stopActiveFinancialLive();
+      return;
+    }
+    if (financialLiveRoute === nextRoute && stopFinancialLive) return;
+    if (!alreadyStopped) stopActiveFinancialLive();
+    financialLiveError = false;
+    financialLiveRoute = nextRoute;
+    if (nextRoute === "overview") {
+      stopFinancialLive = financialLiveStores.overview().subscribe((state) => {
+        applyLivePage("overview", state, (value: OverviewPageDto) => { overview = finishViewLoad(value); });
+      });
+    } else if (nextRoute === "assets") {
+      stopFinancialLive = financialLiveStores.assets().subscribe((state) => {
+        applyLivePage("assets", state, (value: AssetsPageDto) => { assets = finishViewLoad(value); });
+      });
+    } else if (nextRoute === "liabilities") {
+      stopFinancialLive = financialLiveStores.liabilities().subscribe((state) => {
+        applyLivePage("liabilities", state, (value: LiabilitiesPageDto) => { liabilities = finishViewLoad(value); });
+      });
+    } else {
+      stopFinancialLive = financialLiveStores.spending().subscribe((state) => {
+        applyLivePage("spending", state, (value: SpendingPageDto) => { spending = finishViewLoad(value); });
+      });
+    }
+  }
+
+  function reloadFinancialLive(nextRoute: DashboardRoute): Promise<void> {
+    stopActiveFinancialLive();
+    startRouteLoad(nextRoute);
+    financialLiveError = false;
+    return new Promise<void>((resolve, reject) => {
+      financialLiveWaiter = { route: nextRoute, resolve, reject };
+      startFinancialLive(nextRoute, true);
+    });
   }
 
   function routeLabel(nextRoute: RouteId) {
@@ -639,7 +736,7 @@
     startRouteLoad("automation");
     startRouteLoad("overview");
     const automationBlocks = startRouteBlockLoads("automation", undefined, undefined, "route-entry");
-    startRouteBlockLoads("overview", undefined);
+    if (!financialLiveEnabled) startRouteBlockLoads("overview", undefined);
     const settled = await settleIndependentLoads({
       automation: async () => {
         const states = await automationBlocks;
@@ -647,7 +744,14 @@
         if (!data) throw new Error("Automation data unavailable.");
         return data;
       },
-      overview: () => routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
+      overview: financialLiveEnabled
+        ? async () => {
+          await reloadFinancialLive("overview");
+          const value = viewData(overview);
+          if (!value) throw new Error("Welcome overview data unavailable.");
+          return value;
+        }
+        : () => routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
     });
     const automationResult = settled.automation;
     const overviewResult = settled.overview;
@@ -694,6 +798,16 @@
       automationRefreshReason?: AutomationBlockRefreshReason;
     } = {},
   ) {
+    if (financialLiveEnabled && next !== "automation" && next !== "settings") {
+      if (route !== next || !options.force) return;
+      try {
+        await reloadFinancialLive(next);
+      } catch (error) {
+        if (route === next) failRouteLoad(next, error);
+        if (options.rethrow) throw error;
+      }
+      return;
+    }
     const readOptions: DataReadOptions | undefined = options.snapshot
       ? {
         expectedVersion: options.snapshot.version,
@@ -787,12 +901,26 @@
   }
 
   onMount(() => {
+    let mounted = true;
     onboardingState = readOnboardingState(localStorage);
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error));
-    void resolveFirstRunWelcome();
-    normalizeRoute();
+    // Resolve the capability before the first route load. Otherwise a PGlite
+    // session starts the legacy page and block reads before live subscribes.
+    void Promise.resolve(window.octopusBeak?.dataViews?.enabled?.() ?? false)
+      .catch(() => false)
+      .then((enabled) => {
+        if (!mounted) return;
+        if (enabled) {
+          financialLiveEnabled = true;
+          financialLiveStores = createFinancialPageLiveStores(window.octopusBeak.dataViews);
+        }
+        routeCapabilityResolved = true;
+        void resolveFirstRunWelcome().finally(() => {
+          if (mounted) normalizeRoute();
+        });
+      });
     const dataVersionLifecycle = installDataVersionLifecycle({
       data: window.octopusBeak.data,
       resumeTarget: window,
@@ -884,7 +1012,10 @@
     document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
     return () => {
+      mounted = false;
       dataVersionLifecycle.dispose();
+      stopActiveFinancialLive();
+      financialLiveStores = null;
       unsubscribeAutomationRuntime();
       unsubscribeAutomationController();
       removeEventListener("focus", onAutomationRuntimeResync);
@@ -893,6 +1024,12 @@
     };
   });
 </script>
+
+{#if financialLiveEnabled && financialLiveError}
+  <p role="status" data-financial-live-error>
+    {$locale === "zh-TW" ? "即時財務資料暫時無法更新，正在顯示最近可用資料。" : "Live financial data is temporarily unavailable; showing the latest available data."}
+  </p>
+{/if}
 
 {#if firstRunWelcomeState?.status === "active" || completingFirstRunWelcome}
   {#if firstRunWelcomeState}

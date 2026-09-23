@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteBaseline } from "../pglite/baseline.ts";
+import { PGliteStore } from "../pglite/transaction.ts";
+import { commitPGliteCanonicalCreditCardCapture } from "../pglite/credit-card.ts";
+import { creditCardCommandRequestFromCanonicalCapture } from "../pglite/credit-card-adapters.ts";
 import { join } from "node:path";
 import {
   YUANTA_CREDIT_CARD_CAPTURE_CONTRACT,
@@ -9,6 +14,7 @@ import {
   buildYuantaCreditCardAccountIdentityKey,
   buildYuantaCreditCardTransactionSourceKey,
   commitYuantaCreditCardCapture,
+  yuantaCanonicalSpineCapture,
   yuantaNeutralCreditCardCapture,
   type YuantaCreditCardCaptureInput,
   type YuantaCreditCardSourceRow,
@@ -101,6 +107,26 @@ function settledSummaries(): YuantaCreditCardStatementSummary[] {
     };
   });
 }
+
+test("Yuanta admitted credit-card capture commits through the PGlite card command", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const capture = buildYuantaCanonicalCreditCardCapture(options());
+    const request = creditCardCommandRequestFromCanonicalCapture(
+      yuantaCanonicalSpineCapture(capture),
+      yuantaNeutralCreditCardCapture(capture),
+    );
+    const result = await commitPGliteCanonicalCreditCardCapture(store, request);
+    assert.equal(result.transactionCount, capture.transactions.length);
+    assert.equal((await store.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM canonical_credit_card_transaction_details",
+    )).rows[0]?.count, capture.transactions.length);
+  } finally {
+    await store.close();
+  }
+});
 
 test("Yuanta credit-card v2 is a human-attested portfolio contract", () => {
   assert.equal(

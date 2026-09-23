@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   FUBON_LOAN_CONTRACT_VERSION,
   type LoanCapturePage,
@@ -1607,11 +1614,8 @@ export async function runFubonLoanStatements(
   const downloads: FubonLoanStatementsOutput["downloads"] = [];
   const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
 
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    provider: "fubon",
-    product: "loan",
-    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+  const enabled = pgliteWorkflowEnabled(process.env);
+  const items = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown> | PGliteWorkflowRunItem> {
     for (const account of loanAccounts) {
       scope = await selectLoanAccount(page, account);
       const availableQueryItems = await readAvailableLoanQueryItems(scope);
@@ -1708,6 +1712,45 @@ export async function runFubonLoanStatements(
           })),
         };
         const capture = buildFubonLoanCapture(captureInput);
+        if (enabled) {
+          const admitted = admitFubonLoanCapture(capture);
+          const repaymentAccount = extractFubonLoanAccountEvidence(
+            written.parsed.sourceAccountValue,
+            written.parsed.loanAccount,
+          );
+          const provenanceRecord = capture.records[0];
+          downloads.push(written.download);
+          yield {
+            provider: "fubon", product: "loan", itemKey: `${capture.captureId}:${queryItem}`,
+            command: { kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND, request: { capture: admitted } },
+            relationCommands: () => [{
+              kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+              request: {
+                sourceConnectionKey: relationSourceConnectionKey,
+                integrationNamespace: "fubon",
+                observedAt: capture.observedAt,
+                explicitLinks: overrides.explicitRelationLinks,
+                counterpartyEvidence: repaymentAccount && provenanceRecord ? [{
+                  captureId: capture.captureId,
+                  sourceRecordKey: provenanceRecord.sourceRecordKey,
+                  sourceConnectionKey: capture.identity.sourceConnectionKey,
+                  identityEpochKey: capture.identity.identityEpochKey,
+                  accountValue: repaymentAccount,
+                  role: "beneficiary",
+                  purpose: "loan_repayment",
+                  scope: "loan_contract",
+                  evidenceKind: "repayment-mandate",
+                  sourceField: "loan-account-selector",
+                  contractVersion: FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION,
+                  effectiveStartDate: capture.scope.startDate,
+                  effectiveEndDate: capture.scope.endDate,
+                  accountKey: capture.identity.accountKey,
+                }] : [],
+              },
+            }],
+          };
+          continue;
+        }
         yield {
           provider: "fubon",
           product: "loan",
@@ -1770,8 +1813,28 @@ export async function runFubonLoanStatements(
         };
       }
     }
-  })(),
-  });
+  };
+  const executionResult = enabled
+    ? await (async () => {
+        const client = requirePGliteChildRpcClientFromEnv();
+        try {
+          await client.ready;
+          return await executePGliteWorkflowRun({
+            client: client.workflow,
+            items: items() as AsyncIterable<PGliteWorkflowRunItem>,
+            provider: "fubon",
+            product: "loan",
+          });
+        } finally {
+          client.close();
+        }
+      })()
+    : await executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir,
+        provider: "fubon",
+        product: "loan",
+        items: items() as AsyncIterable<CanonicalFinancialCommitItem<unknown>>,
+      });
 
   if (executionResult.status !== "completed")
     throw new Error(

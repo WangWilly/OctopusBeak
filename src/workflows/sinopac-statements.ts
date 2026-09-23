@@ -11,12 +11,22 @@ import type { Dialog, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import {
   admitSinopacDomesticDepositFinancialCapture,
+  buildSinopacDomesticDepositFinancialCaptureForPGlite,
   admitSinopacStatementCaptureEvidence,
   createSinopacDomesticDepositSourceEvidence,
   createSinopacForeignCurrencySourceEvidence,
@@ -1522,6 +1532,126 @@ export async function runSinopacStatements(
         )
       : null,
   );
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const items: PGliteWorkflowRunItem[] = [];
+      for (const [index, { capture }] of captureInputs.entries()) {
+        const sourceEvidence = capture.product === "domestic-deposit"
+          ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
+          : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`);
+        const empty = capture.downloads.every((download) => download.rows.length === 0);
+        if (empty) {
+          items.push({
+            provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
+            command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
+          });
+          continue;
+        }
+        const financial = capture.product === "domestic-deposit"
+          ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
+              capture,
+              captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
+              humanAttestation: manifest,
+            })
+          : null;
+        if (financial && (financial.status !== "admitted" || !financial.capture))
+          throw new Error(`SinoPac domestic PGlite financial admission failed: ${financial.diagnostics.join(", ")}`);
+        const financialCapture = financial?.capture ?? preadmittedForeignCaptures[index];
+        if (!financialCapture) throw new Error("SinoPac PGlite financial capture is missing.");
+        const occurrenceKeys = new Set<string>();
+        const collisionKeys = new Map<string, string>();
+        const ambiguous = financialCapture.records.some((record) => {
+          if (occurrenceKeys.has(record.occurrenceKey)) return true;
+          occurrenceKeys.add(record.occurrenceKey);
+          if (record.collisionKey) {
+            const prior = collisionKeys.get(record.collisionKey);
+            if (prior && prior !== record.occurrenceKey) return true;
+            collisionKeys.set(record.collisionKey, record.occurrenceKey);
+          }
+          return false;
+        });
+        if (ambiguous) {
+          items.push({
+            provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
+            command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
+          });
+          continue;
+        }
+        items.push({
+          provider: "sinopac", product: capture.product, itemKey: `${capture.product}:${index}`,
+          command: {
+            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+            request: { steps: [
+              { kind: "source", request: sourceEvidence },
+              { kind: "deposit", request: { capture: financialCapture } },
+            ] },
+          },
+        });
+        financialCapturesForCurrent.push({
+          sourceCapture: capture,
+          financialCapture: {
+            identity: financialCapture.identity,
+            sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
+          },
+        });
+      }
+      const statements = await executePGliteWorkflowRun({
+        client: client.workflow, provider: "sinopac", product: "financial", items,
+      });
+      if (statements.status !== "completed")
+        throw new Error(`SinoPac PGlite financial commit ${statements.status}: ${statements.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+      if (financialCapturesForCurrent.length > 0) {
+        const currentRows = await readCurrent(page, { observedAt: new Date().toISOString() });
+        const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
+          financialCapturesForCurrent.map(({ financialCapture }) => financialCapture),
+        );
+        const balanceItems: PGliteWorkflowRunItem[] = [];
+        for (const row of currentRows) {
+          const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
+          const matching = existingByIdentity.get(exactKey);
+          if (!matching) {
+            const prefix = `${row.stream}\u0000${row.sourceAccountKey}\u0000`;
+            if ([...existingByIdentity.keys()].some((key) => key.startsWith(prefix)))
+              throw new Error("SinoPac current deposit currency does not match the existing statement scope.");
+            continue;
+          }
+          const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
+          balanceItems.push({
+            provider: "sinopac", product: "current-balance",
+            itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(balanceCapture)),
+            },
+          });
+        }
+        if (balanceItems.length > 0) {
+          const balances = await executePGliteWorkflowRun({
+            client: client.workflow, provider: "sinopac", product: "current-balance", items: balanceItems,
+          });
+          if (balances.status !== "completed")
+            throw new Error(`SinoPac PGlite current balance commit ${balances.status}: ${balances.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+        }
+      }
+    } finally {
+      client.close();
+    }
+    const downloads: SinopacDownload[] = [];
+    for (const { pending } of captureInputs) {
+      if (pending.rows.length === 0) continue;
+      downloads.push(await (overrides.writeStatementFile ?? writeStatementFiles)(
+        pending.account, pending.queryPeriods, pending.rows,
+      ));
+    }
+    return {
+      dateRange, count: downloads.length,
+      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+      downloads, skippedAccounts,
+      status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
+    };
+  }
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
   for (const [index, { capture }] of captureInputs.entries()) {
     executionItems.push({

@@ -4,6 +4,16 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   activateControlWithoutPointer,
   selectOptionWithoutPointer,
@@ -3164,6 +3174,7 @@ export async function runFubonStatements(
     sourceConnectionKey: stableSourceConnectionKey,
   } as const;
   const financialCaptures: ExistingFubonFinancialCapture[] = [];
+  const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitFubonDomesticDepositFinancialCapture>["capture"]>> = [];
   const sourceOnlyEntries: Array<{
     capture:
       | FubonDomesticDepositValidatedEvidence
@@ -3310,6 +3321,7 @@ export async function runFubonStatements(
           );
         financialInputs.push(financialInput);
         financialCaptures.push(financialCapture);
+        financialDepositCaptures.push(financialCapture);
         relationInputs.push({
           captureId: financialInput.captureId,
           sourceCapture: capture,
@@ -3362,6 +3374,53 @@ export async function runFubonStatements(
       });
     }
 
+    if (pgliteWorkflowEnabled(process.env)) {
+      const client = requirePGliteChildRpcClientFromEnv();
+      try {
+        await client.ready;
+        const items: PGliteWorkflowRunItem[] = [];
+        for (const entry of sourceOnlyEntries) items.push({
+          provider: "fubon", product: "domestic-deposit", itemKey: entry.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+            request: createFubonDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
+          },
+        });
+        for (const capture of financialDepositCaptures) {
+          const relation = relationInputs.find((item) => item.captureId === capture.captureId);
+          items.push({
+            provider: "fubon", product: "domestic-deposit", itemKey: capture.captureId,
+            command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
+            ...(relation ? {
+              relationCommands: () => [{
+                kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+                request: {
+                  sourceConnectionKey: stableSourceConnectionKey,
+                  integrationNamespace: "fubon",
+                  observedAt: capture.observedAt,
+                  counterpartyEvidence: relation.evidence,
+                },
+              }],
+            } : {}),
+          });
+        }
+        for (const capture of currentBalanceCaptures) items.push({
+          provider: "fubon", product: "current-balance",
+          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(capture),
+          },
+        });
+        const executionResult = await executePGliteWorkflowRun({
+          client: client.workflow, items, provider: "fubon", product: "financial",
+        });
+        if (executionResult.status !== "completed")
+          throw new Error(`Fubon PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
+      } finally {
+        client.close();
+      }
+    } else {
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
     for (const entry of sourceOnlyEntries) {
       executionItems.push({
@@ -3430,6 +3489,7 @@ export async function runFubonStatements(
       throw new Error(
         `Fubon canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
       );
+    }
 
     const downloads: FubonStatementsOutput["downloads"] = [];
     const evidence: FubonDepositStatementOutputEvidence[] = [];

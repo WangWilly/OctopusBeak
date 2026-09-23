@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
+import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
@@ -12,6 +17,7 @@ import {
   linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
   linebankHumanAttestedCapture,
+  normalizeLineBankFinancialCapture,
   linebankQueryWindows,
   linebankSortStatementRows,
   linebankSignIn,
@@ -1288,3 +1294,22 @@ assert.throws(
     }),
   /total row count mismatch/,
 );
+
+const pglite = await PGlite.create();
+const pgliteStore = new PGliteStore(pglite);
+try {
+  await applyPgliteBaseline(pglite);
+  const normalizedDomestic = normalizeLineBankFinancialCapture(canonicalCapture!);
+  const domestic = await commitPGliteCanonicalDepositCapture(
+    pgliteStore,
+    { capture: normalizedDomestic },
+  );
+  assert.equal(domestic.transactions.length, normalizedDomestic.records.length);
+  const foreign = await commitPGliteCanonicalDepositCapture(
+    pgliteStore,
+    { capture: admitForeignCurrencyDepositCapture(linebankForeignCapture) },
+  );
+  assert.equal(foreign.transactions.length, 1);
+} finally {
+  await pglite.close();
+}

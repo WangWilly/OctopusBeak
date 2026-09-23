@@ -1,4 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { PGlite } from "@electric-sql/pglite";
+import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { chromium, type Frame, type Page } from "playwright";
 import {
   emitHumanAssistanceStage,
@@ -13,12 +21,18 @@ import {
   indexHncbCurrentDepositFinancialCaptures,
   parseStatementExport,
   prepareHncbStatementQueryForm,
+  runHncbStatements,
 } from "./hncb-statements.ts";
 import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   parseHncbCurrentDepositOverviewTable,
 } from "./hncb-current-deposit-balances.ts";
+
+const accountA = ["0001", "0002", "0003"].join("");
+const accountB = ["0002", "0003", "0004"].join("");
+const overviewAccountA = ["0003", "0004", "0005"].join("");
+const overviewAccountB = ["0004", "0005", "0006"].join("");
 
 const parsedStatement = parseStatementExport(
   `
@@ -61,12 +75,12 @@ assert.deepEqual(parsedStatement.rows, [
 ]);
 
 const workflowCapture = buildHncbCapture(
-  { value: "001234567890", label: "HNCB 001234567890" },
+  { value: accountA, label: `HNCB ${accountA}` },
   { startDate: "2026/08/01", endDate: "2026/08/31" },
   "2026-08-31T12:00:00+08:00",
   {
-    account: "001234-567890",
-    accountId: "001234567890",
+    account: `${accountA.slice(0, 6)}-${accountA.slice(6)}`,
+    accountId: accountA,
     queryPeriod: "2026/08/01-2026/08/31",
     currency: "TWD",
     rows: [],
@@ -76,18 +90,18 @@ const workflowCapture = buildHncbCapture(
   },
 );
 assert.deepEqual(workflowCapture.account.accountNumber, {
-  value: "001234567890",
+  value: accountA,
   kind: "depository-account",
   evidenceVersion: "hncb/domestic-deposit/account-number-v1",
   sourceField: "select#acct1 option.value + workbook metadata 帳號",
 });
 const noDataSelectorCapture = buildHncbCapture(
-  { value: "012345678901", label: "012345678901" },
+  { value: accountB, label: accountB },
   { startDate: "2026/08/01", endDate: "2026/08/31" },
   "2026-08-31T12:00:00+08:00",
 );
 assert.deepEqual(noDataSelectorCapture.account.accountNumber, {
-  value: "012345678901",
+  value: accountB,
   kind: "depository-account",
   evidenceVersion: "hncb/domestic-deposit/account-number-v2",
   sourceField: "select#acct1 option.value + option.text",
@@ -97,8 +111,8 @@ const opaqueWorkflowCapture = buildHncbCapture(
   { startDate: "2026/08/01", endDate: "2026/08/31" },
   "2026-08-31T12:00:00+08:00",
   {
-    account: "001234567890",
-    accountId: "001234567890",
+    account: accountA,
+    accountId: accountA,
     queryPeriod: "2026/08/01-2026/08/31",
     currency: "TWD",
     rows: [],
@@ -111,7 +125,7 @@ assert.equal(opaqueWorkflowCapture.account.accountNumber, undefined);
 const hncbCurrentCapture = buildHncbCurrentDepositBalanceCapture(
   {
     source: "hncb",
-    accountNumber: "001234567890",
+    accountNumber: accountA,
     currency: "TWD",
     currencySourceLexeme: "TWD",
     available: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
@@ -132,12 +146,12 @@ const hncbCurrentCapture = buildHncbCurrentDepositBalanceCapture(
       sourceConnectionKey: "sha256:hncb-current-connection",
       identityEpochKey: "sha256:hncb-current-epoch",
       subjectDigest: "sha256:hncb-current-subject",
-      accountNo: "001234567890",
-      accountNumber: { value: "001234567890" },
+      accountNo: accountA,
+      accountNumber: { value: accountA },
     },
   },
 );
-assert.equal(hncbCurrentCapture.identity.sourceAccountKey, "001234567890");
+assert.equal(hncbCurrentCapture.identity.sourceAccountKey, accountA);
 assert.deepEqual(
   hncbCurrentCapture.observations.map((observation) => observation.sourceField),
   ["帳上餘額", "可用餘額"],
@@ -146,7 +160,7 @@ assert.equal(hncbCurrentCapture.records.length, 2);
 
 const overviewCurrentRow = {
     source: "hncb",
-    accountNumber: "166970072770",
+    accountNumber: overviewAccountB,
     currency: "",
     currencySourceLexeme: "",
     currencyResolution: "missing",
@@ -171,8 +185,8 @@ const overviewCurrentCapture = buildHncbCurrentDepositBalanceCapture(
       sourceConnectionKey: "sha256:hncb-current-connection",
       identityEpochKey: "sha256:hncb-current-epoch",
       subjectDigest: "sha256:hncb-current-subject",
-      accountNo: "166970072770",
-      accountNumber: { value: "166970072770" },
+      accountNo: overviewAccountB,
+      accountNumber: { value: overviewAccountB },
       currency: "TWD",
     },
   },
@@ -196,8 +210,8 @@ assert.throws(
           sourceConnectionKey: "sha256:hncb-current-connection",
           identityEpochKey: "sha256:hncb-current-epoch",
           subjectDigest: "sha256:hncb-current-subject",
-          accountNo: "166970072770",
-          accountNumber: { value: "166970072770" },
+          accountNo: overviewAccountB,
+          accountNumber: { value: overviewAccountB },
         },
       },
     ),
@@ -209,13 +223,13 @@ const indexed = indexHncbCurrentDepositFinancialCaptures([
       sourceConnectionKey: "same-connection",
       identityEpochKey: "same-epoch",
       subjectDigest: "same-subject",
-      accountNo: "166970072770",
-      accountNumber: { value: "166970072770" },
+      accountNo: overviewAccountB,
+      accountNumber: { value: overviewAccountB },
       currency: "TWD",
     },
   },
 ]);
-assert.equal(indexed.get("166970072770")?.identity.currency, "TWD");
+assert.equal(indexed.get(overviewAccountB)?.identity.currency, "TWD");
 assert.throws(
   () => parseStatementExport("x".repeat(16 * 1024 * 1024 + 1), "fallback"),
   /16 MiB safety limit/,
@@ -256,8 +270,8 @@ try {
           <td rowspan="2">明細查詢</td><td rowspan="2">轉帳</td><td rowspan="2">其他查詢</td>
         </tr>
         <tr><td>原幣</td><td>折合新台幣</td></tr>
-        <tr><td>166203735484</td><td>活儲</td><td>新台幣</td><td>11,389.00</td><td>11,389.00</td><td>-</td><td>-</td><td>餘額<table><tr><td>link</td></tr></table></td><td>明細</td><td>轉帳</td><td>其他</td></tr>
-        <tr><td>166970072770</td><td>活存</td><td></td><td>0.00</td><td>0.00</td><td>-</td><td>-</td><td>餘額</td><td>明細</td><td></td><td>其他</td></tr>
+        <tr><td>${overviewAccountA}</td><td>活儲</td><td>新台幣</td><td>11,389.00</td><td>11,389.00</td><td>-</td><td>-</td><td>餘額<table><tr><td>link</td></tr></table></td><td>明細</td><td>轉帳</td><td>其他</td></tr>
+        <tr><td>${overviewAccountB}</td><td>活存</td><td></td><td>0.00</td><td>0.00</td><td>-</td><td>-</td><td>餘額</td><td>明細</td><td></td><td>其他</td></tr>
         <tr><td colspan="11">查詢結果</td></tr>
         <tr><td colspan="9">&nbsp;列印&nbsp;</td></tr>
       </table>
@@ -277,9 +291,9 @@ try {
     },
   });
   assert.equal(overview.length, 2);
-  assert.equal(overview[0]?.accountNumber, "166203735484");
+  assert.equal(overview[0]?.accountNumber, overviewAccountA);
   assert.equal(overview[0]?.ledger.coefficient, "1138900");
-  assert.equal(overview[1]?.accountNumber, "166970072770");
+  assert.equal(overview[1]?.accountNumber, overviewAccountB);
   assert.equal(overview[1]?.currency, "");
   assert.equal(overview[1]?.currencyResolution, "missing");
   assert.equal(overview[1]?.ledger.coefficient, "0");
@@ -390,3 +404,81 @@ assert.equal(
   reopenedFrame,
 );
 assert.equal(observedTimeout, 5_000);
+
+const pgliteDir = await mkdtemp(join(tmpdir(), "hncb-pglite-workflow-"));
+const noSqliteDir = await mkdtemp(join(tmpdir(), "hncb-pglite-no-sqlite-"));
+const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+  execArgv: ["--experimental-strip-types"],
+  workerData: { dataDir: pgliteDir },
+});
+const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
+const pgliteServer = createPGliteChildRpcServer({ provider: {
+  operational: pgliteOwner.operationalProvider,
+  financial: pgliteOwner.financial.registry,
+} });
+const priorPgliteEnv = {
+  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
+  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+};
+try {
+  await pgliteServer.ready;
+  Object.assign(process.env, pgliteServer.env);
+  const account = { value: accountA, label: `HNCB ${accountA}` };
+  const output = await runHncbStatements({} as never, {
+    startDate: "2026/08/01",
+    endDate: "2026/08/20",
+    accountFilters: [],
+    outputDir: noSqliteDir,
+  }, {
+    canonicalLedgerDir: noSqliteDir,
+    readAccountOptions: async () => [account],
+    queryAccount: async () => ({} as Frame),
+    downloadStatement: async () => ({
+      account: `${accountA.slice(0, 6)}-${accountA.slice(6)}`,
+      accountId: account.value,
+      queryPeriod: "2026/08/01-2026/08/20",
+      currency: "TWD",
+      rows: [["2026/08/02", "09:10:11", "2026/08/03", "TWD", "100", "", "900", "fixture", "", "", ""]],
+      filename: "fixture.xls",
+      byteLength: 10,
+      contentDigest: `sha256:${createHash("sha256").update("fixture").digest("base64url")}`,
+    }),
+    writeStatementFile: async () => ({
+      accountId: account.value,
+      account: account.label,
+      queryPeriods: ["2026/08/01-2026/08/20"],
+      currency: "TWD",
+      baseName: "fixture",
+      csvFilename: "fixture.csv",
+      jsonFilename: "fixture.json",
+      csvPath: "fixture.csv",
+      jsonPath: "fixture.json",
+      csvBytes: 1,
+      jsonBytes: 1,
+      rowCount: 1,
+    }),
+    readCurrentDepositBalances: async () => [],
+  });
+  assert.equal(output.status, "financial-admitted");
+  assert.deepEqual(await readdir(noSqliteDir), []);
+} finally {
+  for (const [key, value] of [
+    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorPgliteEnv.required],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorPgliteEnv.endpoint],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorPgliteEnv.token],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await pgliteServer.close();
+  await pgliteOwner.close();
+  await rm(noSqliteDir, { recursive: true, force: true });
+}
+const pgliteDb = await PGlite.create(pgliteDir);
+try {
+  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
+} finally {
+  await pgliteDb.close();
+  await rm(pgliteDir, { recursive: true, force: true });
+}

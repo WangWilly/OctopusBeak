@@ -32,8 +32,18 @@ try {
     (rows) => received.push(rows[0]?.amount ?? -1),
   );
   await waitFor(() => received.at(-1) === 10);
-  await db.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [20, "2026-09"]);
+  await db.transaction(async (transaction) => {
+    await transaction.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [20, "2026-09"]);
+  });
   await waitFor(() => received.at(-1) === 20);
+  await assert.rejects(
+    db.transaction(async (transaction) => {
+      await transaction.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [99, "2026-09"]);
+      throw new Error("rollback this update");
+    }),
+    /rollback this update/u,
+  );
+  assert.equal(received.at(-1), 20, "rolled-back transactions must not publish view rows");
   await stop();
   await db.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [30, "2026-09"]);
   assert.equal(received.at(-1), 20);
@@ -120,3 +130,65 @@ try {
   reuseChannel.port1.close();
   reuseChannel.port2.close();
 }
+
+const pendingCloseChannel = new MessageChannel();
+try {
+  let resolveSubscribe!: (stop: () => Promise<void>) => void;
+  let subscribeStarted = false;
+  let stopCount = 0;
+  const server = createViewPortServer(pendingCloseChannel.port1, {
+    subscribe: () => {
+      subscribeStarted = true;
+      return new Promise<() => Promise<void>>((resolve) => { resolveSubscribe = resolve; });
+    },
+  });
+  pendingCloseChannel.port2.postMessage({ kind: "subscribe", id: 1, view: "slow", params: {} });
+  await waitFor(() => subscribeStarted);
+  const closing = server.close();
+  resolveSubscribe(async () => { stopCount++; });
+  await closing;
+  assert.equal(stopCount, 1, "server close must drain a subscription that was still initializing");
+} finally {
+  pendingCloseChannel.port1.close();
+  pendingCloseChannel.port2.close();
+}
+
+const stopFailureChannel = new MessageChannel();
+try {
+  const server = createViewPortServer(stopFailureChannel.port1, {
+    subscribe: async (_view, _params, onRows) => {
+      onRows([{ ready: true }]);
+      return async () => { throw new Error("stop failed"); };
+    },
+  });
+  const client = createViewPortClient(stopFailureChannel.port2);
+  const stop = await client.subscribe("system.health", {}, () => {});
+  await stop();
+  await client.close();
+  await server.close();
+} finally {
+  stopFailureChannel.port1.close();
+  stopFailureChannel.port2.close();
+}
+
+const throwingPort = {
+  on() {},
+  off() {},
+  postMessage() { throw new Error("port is gone"); },
+};
+const throwingClient = createViewPortClient(throwingPort);
+await assert.rejects(
+  throwingClient.subscribe("system.health", {}, () => {}),
+  /port is gone/u,
+);
+await throwingClient.close();
+
+const silentPort = {
+  on() {},
+  off() {},
+  postMessage() {},
+};
+const silentClient = createViewPortClient(silentPort);
+const neverReady = silentClient.subscribe("system.health", {}, () => {});
+await silentClient.close();
+await assert.rejects(neverReady, /closed/u);

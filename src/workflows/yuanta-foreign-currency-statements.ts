@@ -6,6 +6,15 @@ import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   parseFragment,
   type DefaultTreeAdapterTypes,
@@ -2949,10 +2958,11 @@ function configuredYuantaCanonicalLedgerDir(): string {
  * owns the one validated store for the run and each item callback only uses
  * the transaction-scoped writer/admission capability.
  */
-async function commitYuantaForeignCaptures(
+export async function commitYuantaForeignCaptures(
   canonicalLedgerDir: string,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
   page: Page,
+  options: { readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances } = {},
 ): Promise<void> {
   if (captures.length === 0) return;
   const admittedCaptures = captures.map((capture) =>
@@ -2960,6 +2970,91 @@ async function commitYuantaForeignCaptures(
     // transaction callback below and is recorded by the execution seam.
     admitForeignCurrencyDepositCapture(capture),
   );
+
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const successfulAccounts = new Set<string>();
+      const items = admittedCaptures.map((capture) => ({
+        provider: "yuanta",
+        product: "foreign-currency-deposit",
+        itemKey: capture.identity.accountNo,
+        command: {
+          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+          request: { capture },
+        },
+        relationCommands: () => {
+          return [{
+            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+            request: {
+              sourceConnectionKey: capture.identity.sourceConnectionKey,
+              observedAt: capture.observedAt,
+            },
+          }] as const;
+        },
+      } as const));
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow, items, provider: "yuanta", product: "foreign-currency-deposit",
+      });
+      if (result.status === "failed" || result.status === "cancelled")
+        throw new Error(`Yuanta foreign PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      for (const item of result.items) {
+        if (item.status === "committed" && item.relationWarnings?.length === 0)
+          successfulAccounts.add(item.itemKey);
+      }
+      if (successfulAccounts.size === 0) return;
+
+      const admittedByAccount = new Map(
+        admittedCaptures
+          .filter((capture) => successfulAccounts.has(capture.identity.accountNo))
+          .map((capture) => [capture.identity.accountNo, capture]),
+      );
+      const authorityCapture = admittedCaptures.find((capture) =>
+        successfulAccounts.has(capture.identity.accountNo));
+      if (!authorityCapture)
+        throw new Error("Yuanta foreign financial admission produced no canonical identity.");
+      const authority = {
+        sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
+        identityEpochKey: authorityCapture.identity.identityEpochKey,
+        authorityClass: "existing-financial-admission" as const,
+      };
+      const currentRows = await (options.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances)(page, "foreign", {
+        observedAt: new Date().toISOString(), financialAuthority: authority,
+      });
+      const currentObservedAt = new Date().toISOString();
+      const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(
+        [...admittedByAccount.values()],
+      );
+      const balanceItems = currentRows.map((unadjustedRow) => {
+        const row = { ...unadjustedRow, observedAt: currentObservedAt };
+        const matching = existingBySourceAccount.get(row.sourceAccountKey);
+        if (!matching)
+          throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
+        const capture = admitCurrentDepositBalanceCapture(
+          buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
+        );
+        return {
+          provider: "yuanta",
+          product: "current-deposit-balance",
+          itemKey: capture.identity.sourceAccountKey,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(capture),
+          },
+        } as const;
+      });
+      const balances = await executePGliteWorkflowRun({
+        client: client.workflow, items: balanceItems,
+        provider: "yuanta", product: "current-deposit-balance",
+      });
+      if (balances.status === "failed" || balances.status === "cancelled")
+        throw new Error(`Yuanta foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      return;
+    } finally {
+      client.close();
+    }
+  }
 
   const successfulAccounts = new Set<string>();
   const items = async function* (): AsyncGenerator<CanonicalFinancialCommitItem<unknown>> {
@@ -3000,7 +3095,7 @@ async function commitYuantaForeignCaptures(
       identityEpochKey: authorityCapture.identity.identityEpochKey,
       authorityClass: "existing-financial-admission" as const,
     };
-    const currentRows = await readYuantaCurrentDepositBalances(
+    const currentRows = await (options.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances)(
       page,
       "foreign",
       { observedAt: new Date().toISOString(), financialAuthority: authority },

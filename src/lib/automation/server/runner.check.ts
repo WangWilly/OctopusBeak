@@ -39,6 +39,7 @@ import {
   automationCleanupFailureDetails,
   automationSessionFromLog,
   automationProcessEnv,
+  pgliteWorkflowLaunchEnv,
   createAutomationSessionId,
   createAutomationProgressFrameParser,
   createAutomationTaskExecutionRunner,
@@ -68,6 +69,7 @@ import {
   startAutomationTask,
   startAutomationTasks,
 } from "./runner.ts";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import { automationDialogOwnerLaunchEnv } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 import {
@@ -170,6 +172,32 @@ test("runner execution preserves base env and applies the current session dialog
     db.close();
     rmSync(ledgerDir, { recursive: true, force: true });
   }
+});
+
+test("PGlite workflow launch requires and propagates its authenticated parent endpoint", () => {
+  const provider = {
+    automation: {},
+    pgliteWorkflow: {
+      required: true,
+      env: {
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "/tmp/pglite-child.sock",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "token-value",
+        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
+      },
+    },
+  } as unknown as import("./store.ts").AutomationPersistenceProvider;
+  assert.deepEqual(pgliteWorkflowLaunchEnv(provider), {
+    OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "/tmp/pglite-child.sock",
+    OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "token-value",
+    [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
+  });
+  assert.throws(
+    () => pgliteWorkflowLaunchEnv({
+      automation: {},
+      pgliteWorkflow: { required: true, env: { [PGLITE_WORKFLOW_REQUIRED_ENV]: "1" } },
+    } as unknown as import("./store.ts").AutomationPersistenceProvider),
+    /PGlite workflow transport is unavailable/u,
+  );
 });
 
 test("SinoPac solver dialog ownership is bound to the daemon launch session", () => {

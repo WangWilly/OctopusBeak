@@ -23,6 +23,12 @@ export type ExchangeRateRecord = {
   fetchedAt: string;
 };
 
+/** Async exchange-rate seam backed by the worker-owned PGlite database. */
+export interface ExchangeRatePersistencePort {
+  readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
+  upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
+}
+
 export type ExchangeRateSyncResult = {
   requestedCurrencies: string[];
   from: string | null;
@@ -35,7 +41,9 @@ type SyncOptions = {
   now?: () => Date;
 };
 
-export function requiredExchangeRateCurrencies(history: DailyHistoryRowDto[]) {
+export type ExchangeRateSyncOptions = SyncOptions;
+
+export function requiredExchangeRateCurrencies(history: readonly DailyHistoryRowDto[]) {
   return [...new Set(history.flatMap((row) =>
     AMOUNT_KEYS.flatMap((key) => row[key].map((amount) => amount.currency)),
   ))]
@@ -44,9 +52,21 @@ export function requiredExchangeRateCurrencies(history: DailyHistoryRowDto[]) {
 }
 
 export function readExchangeRates(
+  persistence: ExchangeRatePersistencePort,
+  currencies?: string[],
+): Promise<ExchangeRateRecord[]>;
+export function readExchangeRates(
   db: LedgerDatabase,
   currencies?: string[],
-): ExchangeRateRecord[] {
+): ExchangeRateRecord[];
+export function readExchangeRates(
+  databaseOrPersistence: LedgerDatabase | ExchangeRatePersistencePort,
+  currencies?: string[],
+): ExchangeRateRecord[] | Promise<ExchangeRateRecord[]> {
+  if ("readExchangeRates" in databaseOrPersistence) {
+    return databaseOrPersistence.readExchangeRates(currencies);
+  }
+  const db = databaseOrPersistence;
   if (currencies?.length === 0) return [];
   const placeholders = currencies?.map(() => "?").join(", ");
   return (db.prepare(`
@@ -112,11 +132,25 @@ function upsertExchangeRates(db: LedgerDatabase, rows: ExchangeRateRecord[]) {
   }
 }
 
-export async function syncExchangeRates(
+export function syncExchangeRates(
+  persistence: ExchangeRatePersistencePort,
+  request: ExchangeRateRequest,
+  options?: SyncOptions,
+): Promise<ExchangeRateSyncResult>;
+export function syncExchangeRates(
   ledgerDir: string,
+  request: ExchangeRateRequest,
+  options?: SyncOptions,
+): Promise<ExchangeRateSyncResult>;
+export async function syncExchangeRates(
+  ledgerDirOrPersistence: string | ExchangeRatePersistencePort,
   request: ExchangeRateRequest,
   options: SyncOptions = {},
 ): Promise<ExchangeRateSyncResult> {
+  if (typeof ledgerDirOrPersistence !== "string") {
+    return syncExchangeRatesWithPersistence(ledgerDirOrPersistence, request, options);
+  }
+  const ledgerDir = ledgerDirOrPersistence;
   const now = (options.now ?? (() => new Date()))();
   const to = now.toISOString().slice(0, 10);
   const currencies = [...new Set(request.currencies)]
@@ -177,4 +211,71 @@ export async function syncExchangeRates(
   } finally {
     db.close();
   }
+}
+
+/**
+ * Async counterpart used after the worker owns operational persistence.
+ * Network validation and coverage rules are shared with the SQLite command;
+ * only the injected read/upsert capability changes.
+ */
+export async function syncExchangeRatesWithPersistence(
+  persistence: ExchangeRatePersistencePort,
+  request: ExchangeRateRequest,
+  options: SyncOptions = {},
+): Promise<ExchangeRateSyncResult> {
+  const now = (options.now ?? (() => new Date()))();
+  const to = now.toISOString().slice(0, 10);
+  const currencies = [...new Set(request.currencies)]
+    .filter((currency) => currency !== "TWD" && currency !== "UNKNOWN")
+    .sort();
+  if (currencies.length === 0 || !request.requiredFrom) {
+    return { requestedCurrencies: currencies, from: null, to, written: 0 };
+  }
+
+  const from = synchronizationStart(
+    request.requiredFrom,
+    to,
+    currencies,
+    await persistence.readExchangeRates(currencies),
+  );
+  if (!from || from > to) {
+    return { requestedCurrencies: currencies, from, to, written: 0 };
+  }
+  const url = new URL(API_URL);
+  url.searchParams.set("base", "TWD");
+  url.searchParams.set("quotes", currencies.join(","));
+  url.searchParams.set("from", from);
+  url.searchParams.set("to", to);
+  const response = await (options.fetchImpl ?? fetch)(url, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Frankfurter request failed: ${response.status}`);
+  }
+  const parsed = apiResponseSchema.parse(await response.json())
+    .filter((row) => currencies.includes(row.quote));
+  if (parsed.some((row) => row.date < from || row.date > to)) {
+    throw new Error(`Frankfurter response date outside ${from}..${to}`);
+  }
+  for (const currency of currencies) {
+    if (!parsed.some((row) => row.quote === currency)) {
+      throw new Error(`Frankfurter response missing ${currency}`);
+    }
+  }
+  const fetchedAt = now.toISOString();
+  const rows = parsed.map((row): ExchangeRateRecord => {
+    const twdPerUnit = 1 / row.rate;
+    if (!Number.isFinite(twdPerUnit) || twdPerUnit <= 0) {
+      throw new Error(`Frankfurter response has invalid inverse rate for ${row.quote}`);
+    }
+    return {
+      rateDate: row.date,
+      currency: row.quote,
+      twdPerUnit,
+      source: SOURCE,
+      fetchedAt,
+    };
+  });
+  await persistence.upsertExchangeRates(rows);
+  return { requestedCurrencies: currencies, from, to, written: rows.length };
 }

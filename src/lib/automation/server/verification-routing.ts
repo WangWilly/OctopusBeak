@@ -37,12 +37,15 @@ import {
   providerVerificationHandlesChallengeImage,
 } from "./provider-verification.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
-import { finalizeFailedWaitingRun } from "./task-run-finalization.ts";
+import {
+  finalizeFailedWaitingRun,
+  finalizeFailedWaitingRunWithPersistence,
+} from "./task-run-finalization.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import { sessionFromRun } from "./automation-session-disposition.ts";
-import { taskRunById } from "./store.ts";
+import { taskRunById, type AutomationPersistenceProvider } from "./store.ts";
 
 export type VerificationRoutingDependencies = {
   solver: VerificationSolver;
@@ -344,6 +347,111 @@ export async function routeWaitingRunVerification(input: {
     onChallengeCaptured: input.onChallengeCaptured,
   };
 
+  return routeVerificationActor({
+    actor,
+    contract,
+    session,
+    confidenceThreshold,
+    dependencies,
+  });
+}
+
+/** Async worker-persistence variant of routeWaitingRunVerification. */
+export async function routeWaitingRunVerificationWithPersistence(input: {
+  taskId: string;
+  taskRunId: string;
+  session?: string;
+  provider: AutomationPersistenceProvider;
+  scheduleResume: (session: string) => void | Promise<void>;
+  solver?: VerificationSolver;
+  captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
+  captureChallengeAudio?: VerificationRoutingDependencies["captureChallengeAudio"];
+  providerCaptureChallengeAudio?: ProviderVerificationHost["captureChallengeAudio"];
+  validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
+  injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
+  providerProbePostSubmit?: ProviderVerificationHost["probePostSubmit"];
+  providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
+  injectSelections?: VerificationRoutingDependencies["injectSelections"];
+  clickTarget?: VerificationRoutingDependencies["clickTarget"];
+  finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
+  cleanupSession?: VerificationRoutingDependencies["cleanupSession"];
+  onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
+  providerVerification?: VerificationChallengeImageProvider;
+  genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
+  settings?: AutomationSettingsFile;
+}): Promise<VerificationRoutingOutcome> {
+  const task = taskById(input.taskId);
+  const group = task?.credentialGroupId
+    ? AUTOMATION_CREDENTIAL_GROUPS.find(
+        (candidate) => candidate.id === task.credentialGroupId,
+      )
+    : null;
+  const settings = input.settings ?? readAutomationSettings();
+  const actor = verificationActorForSource(group?.verificationActorKey, settings);
+  if (actor !== "solver") return { kind: "human" };
+
+  const run = await input.provider.automation.taskRunById(input.taskRunId);
+  if (!run) return { kind: "human" };
+  const contract = run.humanAssistanceContract;
+  const session = input.session ?? sessionFromRun(run);
+  const finalizeFailed =
+    input.finalizeFailed
+    ?? ((message: string) =>
+      finalizeFailedWaitingRunWithPersistence(input.provider, run, message));
+  if (!session) {
+    await finalizeFailed("Verification solver could not resolve the session.");
+    return { kind: "failed" };
+  }
+  const kind = contract?.challengeKind;
+  const confidenceThreshold = isSolverChallengeKind(kind)
+    ? contract?.solverConfidenceThreshold
+      ?? challengeConfidenceThreshold(settings, kind)
+    : undefined;
+  const providerVerification: VerificationChallengeImageProvider = input.providerVerification ?? {
+    handlesChallengeImage: providerVerificationHandlesChallengeImage,
+    captureChallengeImage: captureProviderVerificationImage,
+    isChallengeImageCurrent: isProviderVerificationImageCurrent,
+  };
+  const imageSelection = contract
+    ? selectVerificationChallengeImage(contract, {
+        provider: providerVerification,
+        genericCaptureChallengeImage: input.genericCaptureChallengeImage
+          ?? captureChallengeImageForContract,
+      })
+    : {
+        captureChallengeImage: input.genericCaptureChallengeImage
+          ?? captureChallengeImageForContract,
+        validateChallengeImage: undefined,
+        providerOwned: false,
+      };
+  const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
+  const selectedCapture = imageSelection.providerOwned
+    ? async (selectedSession: string, selectedContract: HumanAssistanceContract) => {
+        const image = await capture(selectedSession, selectedContract);
+        if (image === null) throw new ProviderChallengeImageCaptureError();
+        return image;
+      }
+    : capture;
+  const dependencies: VerificationRoutingDependencies = {
+    solver: input.solver ?? defaultLocalSolver,
+    captureChallengeImage: selectedCapture,
+    captureChallengeAudio: input.captureChallengeAudio
+      ?? input.providerCaptureChallengeAudio
+      ?? captureProviderVerificationAudio,
+    validateChallengeImage: input.validateChallengeImage
+      ?? imageSelection.validateChallengeImage,
+    injectAnswer: input.injectAnswer
+      ?? input.providerInjectAnswer
+      ?? injectProviderVerificationAnswer,
+    probePostSubmit: input.providerProbePostSubmit
+      ?? (input.providerVerification ? undefined : probeProviderVerificationPostSubmit),
+    injectSelections: input.injectSelections ?? injectVerificationSelections,
+    clickTarget: input.clickTarget ?? clickVerificationTarget,
+    resume: (selectedSession) => input.scheduleResume(selectedSession),
+    finalizeFailed,
+    cleanupSession: input.cleanupSession,
+    onChallengeCaptured: input.onChallengeCaptured,
+  };
   return routeVerificationActor({
     actor,
     contract,

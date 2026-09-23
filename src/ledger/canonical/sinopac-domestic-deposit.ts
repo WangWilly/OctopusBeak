@@ -1017,10 +1017,25 @@ function sinopacFinancialRecord(
 export function admitSinopacDomesticDepositFinancialCapture(
   input: SinopacDomesticDepositFinancialAdmissionInput,
 ): SinopacDomesticDepositFinancialAdmissionResult {
+  return buildSinopacDomesticDepositFinancialCapture(input, false);
+}
+
+/** The PGlite financial command verifies durable authority inside its own
+ * transaction; this builder only performs provider and semantic validation. */
+export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
+  input: Omit<SinopacDomesticDepositFinancialAdmissionInput, "personalAuthority">,
+): SinopacDomesticDepositFinancialAdmissionResult {
+  return buildSinopacDomesticDepositFinancialCapture(input, true);
+}
+
+function buildSinopacDomesticDepositFinancialCapture(
+  input: SinopacDomesticDepositFinancialAdmissionInput,
+  workerOwnsDurableAuthority: boolean,
+): SinopacDomesticDepositFinancialAdmissionResult {
   const diagnostics: string[] = [];
   if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
     diagnostics.push("capture-not-runtime-admitted");
-  if (!validSinopacPersonalAuthority(input.personalAuthority))
+  if (!workerOwnsDurableAuthority && !validSinopacPersonalAuthority(input.personalAuthority))
     diagnostics.push("authority-semantics-unproven");
   if (input.capture.product !== "domestic-deposit")
     diagnostics.push("unsupported-product");

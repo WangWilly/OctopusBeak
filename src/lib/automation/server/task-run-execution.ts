@@ -32,6 +32,7 @@ import {
   sessionPid,
   tail,
   claimAutomationTaskRunSession,
+  claimAutomationTaskRunSessionWithPersistence,
   refreshAutomationSession,
   sessionFromRun,
   type OwnedAutomationSession,
@@ -39,6 +40,7 @@ import {
 import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
+  finalizeAutomationTaskRunWithPersistence,
   isForceQuitRun,
   nextAttemptStatus,
   shouldMarkWaitingForHuman,
@@ -53,6 +55,7 @@ import {
   taskRunById,
   updateHumanAssistanceContract,
   updateTaskRun,
+  type AutomationPersistencePort,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 import type { AutomationTaskProgress } from "../types.ts";
@@ -86,7 +89,16 @@ export type AutomationTaskExecutionOptions = {
   /** Stop before launching a child when the host task was cancelled. */
   isCancellationRequested?: () => boolean;
   isForceTerminationRequested?: () => boolean;
-  onRuntimeUpdate?: (taskRunId: string) => void;
+  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  /**
+   * Worker-owned exchange-rate execution.  The callback is supplied only by
+   * the PGlite provider path; when absent, legacy tasks keep their child
+   * process behavior.
+   */
+  runExchangeRateSync?: (options: {
+    scheduledAtUtc?: string;
+    emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
+  }) => Promise<unknown>;
 };
 
 export function createAutomationSessionId(
@@ -286,6 +298,127 @@ function createAutomationTaskRunExecution(
   };
 }
 
+async function createAutomationTaskRunExecutionWithPersistence(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  persistence: AutomationPersistencePort,
+  options: AutomationTaskExecutionOptions,
+): Promise<AutomationTaskRunExecution | null> {
+  const attempt = options.attempt ?? 1;
+  const maxAttempts = options.maxAttempts ?? 1;
+  const startedAt = new Date().toISOString();
+  const isLibrettoTask = task.command[0] === "libretto";
+  const session = isLibrettoTask
+    ? (options.resumeSession ?? createAutomationSessionId())
+    : null;
+  const env = automationDialogOwnerLaunchEnv(
+    options.launchEnv ?? automationProcessEnv(),
+    task.id,
+    session,
+    options.resumeSession ? undefined : options.hostOwnedDialogProvider,
+  );
+  const command = resolveTaskCommand(
+    task,
+    {
+      resumeSession: options.resumeSession,
+      session: options.resumeSession ? undefined : (session ?? undefined),
+    },
+    env,
+  );
+  if (task.id === "exchange-rates" && options.scheduledAtUtc) {
+    if (command.command === "npm") command.args.push("--");
+    command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
+    command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
+  }
+  const activeRuns = options.resumeSession
+    ? await persistence.activeTaskRuns()
+    : [];
+  const resumeFrom = options.resumeSession
+    ? activeRuns.find(
+        (candidate) =>
+          candidate.taskId === task.id &&
+          candidate.status === "waiting_for_human" &&
+          sessionFromRun(candidate) === options.resumeSession,
+      )
+    : undefined;
+  const existingRun = options.taskRunId
+    ? await persistence.taskRunById(options.taskRunId)
+    : resumeFrom;
+  if (options.taskRunId && !existingRun) return null;
+  const logPath = existingRun?.logPath ?? join(
+    "data",
+    "automation",
+    "logs",
+    `${task.id}-${Date.now()}-${attempt}.log`,
+  );
+  const run = existingRun
+    ? { taskRunId: existingRun.taskRunId, attempt }
+    : {
+        ...(await persistence.createTaskRun({
+          taskId: task.id,
+          script: command.display,
+          kind: task.kind,
+          status: "running",
+          attempt,
+          maxAttempts,
+          startedAt,
+          logPath,
+          progress: indeterminateProgress(attempt),
+          humanAssistanceContract: resumeHumanAssistanceContract(
+            resumeFrom?.humanAssistanceContract,
+          ),
+        })),
+        attempt,
+      };
+  if (existingRun) {
+    await persistence.updateTaskRun(existingRun.taskRunId, {
+      status: "running",
+      attempt,
+      maxAttempts,
+      finishedAt: null,
+      exitCode: null,
+      signal: null,
+      errorMessage: null,
+      progress: indeterminateProgress(attempt),
+    });
+  }
+  const owner = session
+    ? {
+        taskId: task.id,
+        taskRunId: run.taskRunId,
+        session,
+        pid: sessionPid(session),
+      }
+    : null;
+  if (session) {
+    if (!options.resumeSession || !existingRun) {
+      appendLog(logPath, "automation-session: " + session + "\n");
+    }
+    if (!options.resumeSession) {
+      if (
+        !(await claimAutomationTaskRunSessionWithPersistence(
+          persistence,
+          run.taskRunId,
+          owner!,
+          { resumeFrom },
+        ))
+      ) return null;
+    } else if (!ownAutomationSession(owner!)) {
+      return null;
+    }
+  }
+  return {
+    task,
+    persistence,
+    run,
+    logPath,
+    command,
+    session,
+    owner,
+    executionId: options.executionId ?? createAutomationSessionId(),
+    onRuntimeUpdate: options.onRuntimeUpdate,
+  };
+}
+
 async function executeAutomationTaskProcess(
   execution: AutomationTaskRunExecution,
   isCancellationRequested?: () => boolean,
@@ -355,13 +488,37 @@ async function executeAutomationTaskProcess(
       logTail = tail(`${logTail}\n${line}\n`);
       outputPersistenceWarnings.push(line);
     };
+    let persistenceQueue = Promise.resolve();
+    const enqueuePersistence = (work: () => Promise<void>) => {
+      persistenceQueue = persistenceQueue.then(work).catch((error) => {
+        recordOutputPersistenceError(error);
+      });
+    };
     const persistRuntimeUpdate = () => {
+      if (execution.persistence) {
+        enqueuePersistence(async () => {
+          const current = await execution.persistence!.taskRunById(
+            execution.run.taskRunId,
+          );
+          if (isForceQuitRun(current)) return;
+          await execution.persistence!.updateTaskRun(
+            execution.run.taskRunId,
+            liveTaskRunUpdate(
+              logTail,
+              execution.run.attempt,
+              latestProgress ?? undefined,
+            ),
+          );
+          await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+        });
+        return;
+      }
       if (
         !isForceQuitRun(
-          taskRunById(execution.taskDb, execution.run.taskRunId),
+          taskRunById(execution.taskDb!, execution.run.taskRunId),
         )
       ) {
-        updateTaskRun(execution.taskDb, execution.run.taskRunId, {
+        updateTaskRun(execution.taskDb!, execution.run.taskRunId, {
           ...liveTaskRunUpdate(
             logTail,
             execution.run.attempt,
@@ -405,9 +562,19 @@ async function executeAutomationTaskProcess(
     ) => {
       const contractJson = JSON.stringify(latestHumanAssistanceContract);
       if (contractJson === lastHumanAssistanceContractJson) return;
+      if (execution.persistence) {
+        enqueuePersistence(async () => {
+          await execution.persistence!.updateHumanAssistanceContract(
+            execution.run.taskRunId,
+            latestHumanAssistanceContract,
+          );
+          lastHumanAssistanceContractJson = contractJson;
+        });
+        return;
+      }
       try {
         updateHumanAssistanceContract(
-          execution.taskDb,
+          execution.taskDb!,
           execution.run.taskRunId,
           latestHumanAssistanceContract,
         );
@@ -484,7 +651,7 @@ async function executeAutomationTaskProcess(
     child.stdio[3]?.on("data", hostContractParser.push);
     child.stdio[4]?.on("data", progressParser.push);
     let childSettled = false;
-    const finishChild = (processResult: {
+    const finishChild = async (processResult: {
       exitCode: number | null;
       signal: NodeJS.Signals | null;
       error: Error | null;
@@ -505,20 +672,19 @@ async function executeAutomationTaskProcess(
         recordOutputPersistenceError(error);
       }
       rmSync(humanAssistancePath, { force: true });
-      void gmailOtpServer.close().then(
-        async () => {
-          resolve(processResult);
-        },
-        async () => {
-          resolve(processResult);
-        },
-      );
+      try {
+        await gmailOtpServer.close();
+      } catch {
+        // Closing the local broker is best effort after the child exits.
+      }
+      await persistenceQueue;
+      resolve(processResult);
     };
     child.on("error", (error) => {
-      finishChild({ exitCode: null, signal: null, error });
+      void finishChild({ exitCode: null, signal: null, error });
     });
     child.on("close", (exitCode, signal) => {
-      finishChild({ exitCode, signal, error: null });
+      void finishChild({ exitCode, signal, error: null });
     });
   });
   return {
@@ -581,19 +747,29 @@ export function createAutomationProgressFrameParser(
           const completed = value.completed;
           const total = value.total;
           const percent = value.percent;
-          const attempt = value.attempt;
+          const attempt = value.attempt === undefined
+            ? undefined
+            : typeof value.attempt === "number"
+              ? value.attempt
+              : null;
+          const params = value.params;
+          const safeParams = params === undefined
+            ? undefined
+            : isSafeParams(params)
+              ? params
+              : null;
           if (
             (phaseCode !== null && typeof phaseCode !== "string")
             || (completed !== null && typeof completed !== "number")
             || (total !== null && typeof total !== "number")
             || (percent !== null && typeof percent !== "number")
-            || (attempt !== undefined && typeof attempt !== "number")
+            || attempt === null
             || (typeof completed === "number" && !Number.isFinite(completed))
             || (typeof total === "number" && !Number.isFinite(total))
             || (typeof percent === "number" && (!Number.isFinite(percent) || percent < 0 || percent > 100))
             || (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 0))
           ) continue;
-          if (value.params !== undefined && !isSafeParams(value.params)) continue;
+          if (safeParams === null) continue;
           onProgress({
             type: "progress",
             phaseCode: phaseCode as string | null,
@@ -601,7 +777,7 @@ export function createAutomationProgressFrameParser(
             total: total as number | null,
             percent: percent as number | null,
             ...(attempt === undefined ? {} : { attempt }),
-            ...(value.params !== undefined ? { params: value.params } : {}),
+            ...(safeParams !== undefined ? { params: safeParams } : {}),
           });
         } catch {
           // Malformed producer frames are ignored; diagnostics stay in logs.
@@ -702,6 +878,195 @@ export async function runAutomationTaskExecution(
       };
     }
     const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      result,
+    };
+  } finally {
+    activeTaskChildren.delete(task.id);
+  }
+}
+
+/** Execute one automation round against the injected worker persistence port. */
+export async function runAutomationTaskExecutionWithPersistence(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  persistence: AutomationPersistencePort,
+  options: AutomationTaskExecutionOptions,
+  onRunCreated: (taskRunId: string) => void | Promise<void>,
+) {
+  if (options.isCancellationRequested?.()) {
+    return { status: "cancelled" as const };
+  }
+  const execution = await createAutomationTaskRunExecutionWithPersistence(
+    task,
+    persistence,
+    options,
+  );
+  if (!execution) {
+    if (options.taskRunId && await persistence.taskRunById(options.taskRunId)) {
+      await persistence.updateTaskRun(options.taskRunId, {
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        errorMessage: "Automation task run could not be resumed.",
+      });
+    }
+    return { status: "failed" as const };
+  }
+  await onRunCreated(execution.run.taskRunId);
+  if (options.isCancellationRequested?.()) {
+    const cancelledResult: AutomationTaskProcessResult = {
+      exitCode: null,
+      signal: "SIGTERM",
+      error: new Error("Automation task cancelled."),
+      logTail: "",
+      resumeFailure: null,
+      statementSummary: null,
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+    if (options.deferFinalization) {
+      return {
+        status: "cancelled" as const,
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result: cancelledResult,
+      };
+    }
+    const finalized = await finalizeAutomationTaskRunWithPersistence(
+      {
+        provider: { automation: persistence },
+        taskId: task.id,
+        taskKind: task.kind,
+        taskRunId: execution.run.taskRunId,
+        logPath: execution.logPath,
+      },
+      cancelledResult,
+    );
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      };
+  }
+  if (task.id === "exchange-rates" && options.runExchangeRateSync) {
+    let result: AutomationTaskProcessResult;
+    let progressQueue = Promise.resolve();
+    const emitProgress = (event: Omit<AutomationProgressEvent, "type">) => {
+      progressQueue = progressQueue.then(async () => {
+        await persistence.updateTaskRun(execution.run.taskRunId, {
+          progress: {
+            phaseCode: event.phaseCode,
+            completed: event.completed,
+            total: event.total,
+            percent: event.percent,
+            attempt: execution.run.attempt,
+            ...(event.params ? { params: event.params } : {}),
+          },
+        });
+        await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+      });
+    };
+    try {
+      await options.runExchangeRateSync({
+        scheduledAtUtc: options.scheduledAtUtc,
+        emitProgress,
+      });
+      await progressQueue;
+      result = {
+        exitCode: 0,
+        signal: null,
+        error: null,
+        logTail: "",
+        resumeFailure: null,
+        statementSummary: null,
+        outputPersistenceWarnings: [],
+        externalPrerequisiteIds: [],
+      };
+    } catch (error) {
+      result = {
+        exitCode: 1,
+        signal: null,
+        error: error instanceof Error ? error : new Error(String(error)),
+        logTail: "",
+        resumeFailure: null,
+        statementSummary: null,
+        outputPersistenceWarnings: [],
+        externalPrerequisiteIds: [],
+      };
+    }
+    const provider = { automation: persistence };
+    if (options.deferFinalization) {
+      return {
+        status: automationTaskProcessStatus(task.kind, result, {
+          attempt: execution.run.attempt,
+          maxAttempts: options.maxAttempts ?? execution.run.attempt,
+          forceTerminated: options.isForceTerminationRequested?.() === true,
+        }),
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
+    const finalized = await finalizeAutomationTaskRunWithPersistence(
+      {
+        provider,
+        taskId: task.id,
+        taskKind: task.kind,
+        taskRunId: execution.run.taskRunId,
+        logPath: execution.logPath,
+        forceTerminated: options.isForceTerminationRequested?.() === true,
+      },
+      result,
+    );
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+    };
+  }
+  try {
+    const result = await executeAutomationTaskProcess(
+      execution,
+      options.isCancellationRequested,
+    );
+    const provider = { automation: persistence };
+    if (options.deferFinalization) {
+      return {
+        status: automationTaskProcessStatus(task.kind, result, {
+          attempt: execution.run.attempt,
+          maxAttempts: options.maxAttempts ?? execution.run.attempt,
+          forceTerminated: options.isForceTerminationRequested?.() === true,
+        }),
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
+    const finalized = await finalizeAutomationTaskRunWithPersistence(
+      {
+        provider,
+        taskId: task.id,
+        taskKind: task.kind,
+        taskRunId: execution.run.taskRunId,
+        logPath: execution.logPath,
+        forceTerminated: options.isForceTerminationRequested?.() === true,
+      },
+      result,
+    );
     return {
       status: finalized.status,
       taskRunId: execution.run.taskRunId,

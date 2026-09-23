@@ -32,8 +32,10 @@ export function createSharedLiveViews<Definitions extends ViewDefinitions>(
       params: ViewParams<Definitions[Name]>,
       onRows: (rows: ViewRow<Definitions[Name]>[]) => void,
     ): Promise<() => Promise<void>> {
+      if (!Object.prototype.hasOwnProperty.call(definitions, view)) {
+        throw new Error(`Unknown data view: ${view}`);
+      }
       const definition = definitions[view];
-      if (!definition) throw new Error(`Unknown data view: ${view}`);
       const key = viewSubscriptionKey(view, params);
       let entry = entries.get(key);
       if (!entry) {

@@ -14,12 +14,14 @@ import {
 import {
   captureCathayCurrentForeignDepositBalances,
   commitCathayForeignCanonicalCaptures,
+  commitCathayForeignAndCurrentCanonicalCaptures,
   createCathayForeignCanonicalCaptureCollector,
   downloadCathayForeignStatements,
 } from "./cathay-foreign-statements.js";
 import { retryableStage } from "./retryable-stage.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { pgliteWorkflowEnabled } from "../ledger/pglite/workflow-client.ts";
 
 const statementTypeSchema = z
   .enum(["domestic", "foreign_currency", "foreign"])
@@ -107,6 +109,7 @@ const cathayAllStatementsDependencies = {
   downloadCathayStatements,
   downloadCathayForeignStatements,
   commitCathayForeignCanonicalCaptures,
+  commitCathayForeignAndCurrentCanonicalCaptures,
   captureCathayCurrentForeignDepositBalances,
 };
 
@@ -122,6 +125,7 @@ export async function runCathayAllStatements(
     downloadCathayStatements,
     downloadCathayForeignStatements,
     commitCathayForeignCanonicalCaptures,
+    commitCathayForeignAndCurrentCanonicalCaptures,
     captureCathayCurrentForeignDepositBalances,
   } = { ...cathayAllStatementsDependencies, ...overrides };
   const input = rawInput as z.infer<typeof inputSchema> & {
@@ -216,22 +220,31 @@ export async function runCathayAllStatements(
             );
           },
         });
-        const committedForeignCaptures =
-          await commitCathayForeignCanonicalCaptures(
+        if (pgliteWorkflowEnabled(process.env)) {
+          await commitCathayForeignAndCurrentCanonicalCaptures(
+            page,
             canonicalLedgerDir,
             canonicalCollector.captures,
+            { requireComplete: true },
           );
-        if (
-          committedForeignCaptures.length !== canonicalCollector.captures.length
-        )
-          throw new Error(
-            "Cathay foreign canonical persistence partially completed.",
+        } else {
+          const committedForeignCaptures =
+            await commitCathayForeignCanonicalCaptures(
+              canonicalLedgerDir,
+              canonicalCollector.captures,
+            );
+          if (
+            committedForeignCaptures.length !== canonicalCollector.captures.length
+          )
+            throw new Error(
+              "Cathay foreign canonical persistence partially completed.",
+            );
+          await captureCathayCurrentForeignDepositBalances(
+            page,
+            canonicalCollector.captures,
+            canonicalLedgerDir,
           );
-        await captureCathayCurrentForeignDepositBalances(
-          page,
-          canonicalCollector.captures,
-          canonicalLedgerDir,
-        );
+        }
         return downloads.map((download) => ({
           type: "foreign" as const,
           ...download,

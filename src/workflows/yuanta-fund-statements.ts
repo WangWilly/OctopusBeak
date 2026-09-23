@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   admitCanonicalInvestmentCapture,
@@ -2148,6 +2155,38 @@ async function commitYuantaFundCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "yuanta-fund",
+        product: "investment",
+        items: captures.map((capture) => ({
+          provider: "yuanta-fund",
+          product: "investment",
+          itemKey: capture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+            request: { capture },
+          },
+          relationCommands: () => [{
+            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+            request: {
+              sourceConnectionKey: capture.identity.sourceConnectionKey,
+              observedAt: capture.observedAt,
+            },
+          }],
+        } as const)),
+      });
+      if (result.status !== "completed")
+        throw new Error(`Yuanta fund PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      return;
+    } finally {
+      client.close();
+    }
+  }
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
     (capture) => ({
       provider: "yuanta-fund",

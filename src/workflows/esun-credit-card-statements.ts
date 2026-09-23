@@ -8,10 +8,23 @@ import {
 } from "libretto";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import {
+  creditCardBalanceCommandRequest,
+  creditCardCommandRequestFromCanonicalCapture,
+} from "../ledger/pglite/credit-card-adapters.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
   commitEsunCreditCardCaptureInTransaction,
+  esunCanonicalSpineCapture,
+  esunNeutralCreditCardCapture,
   ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
   type EsunCreditCardCanonicalCaptureOptions,
   type EsunCreditCardIdentityInput,
@@ -1342,6 +1355,37 @@ export default workflow("esunCreditCardStatements", {
       "not-configured";
     let canonicalCaptureCount = 0;
     if (canonicalCapture) {
+      if (pgliteWorkflowEnabled(process.env)) {
+        const cardRequest = creditCardCommandRequestFromCanonicalCapture(
+          esunCanonicalSpineCapture(canonicalCapture),
+          esunNeutralCreditCardCapture(canonicalCapture),
+        );
+        const items: PGliteWorkflowRunItem[] = [{
+          provider: "esun", product: "credit-card", itemKey: canonicalCapture.captureId,
+          command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
+        }];
+        if (currentUsedCredit) {
+          const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
+          items.push({
+            provider: "esun", product: "current-balance", itemKey: balanceCapture.captureId,
+            command: {
+              kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+              request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
+            },
+          });
+        }
+        const client = requirePGliteChildRpcClientFromEnv();
+        try {
+          await client.ready;
+          const result = await executePGliteWorkflowRun({
+            client: client.workflow, items, provider: "esun", product: "credit-card",
+          });
+          if (result.status !== "completed")
+            throw new Error(`E.SUN credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
+        } finally {
+          client.close();
+        }
+      } else {
       const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
         {
           provider: "esun",
@@ -1386,6 +1430,7 @@ export default workflow("esunCreditCardStatements", {
         throw new Error(
           `E.SUN credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
         );
+      }
       canonicalAdmission = "admitted";
       canonicalCaptureCount = 1;
     }

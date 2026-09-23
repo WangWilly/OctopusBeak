@@ -1094,7 +1094,7 @@ function opaqueYuantaSpineToken(
     .digest("base64url")}`;
 }
 
-function yuantaCanonicalSpineCapture(
+export function yuantaCanonicalSpineCapture(
   capture: YuantaCreditCardValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
   const instrumentsByKey = new Map(

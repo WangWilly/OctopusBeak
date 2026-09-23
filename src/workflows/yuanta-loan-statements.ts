@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   clickAndWaitForNavigation,
   hasAttachedLocator,
@@ -1296,11 +1303,8 @@ export async function runYuantaLoanStatements(
   const dateRange = describeDateRange(input);
   const canonicalRange = canonicalLoanDateRange(input);
 
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    provider: "yuanta",
-    product: "loan",
-    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
+  const enabled = pgliteWorkflowEnabled(process.env);
+  const items = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown> | PGliteWorkflowRunItem> {
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
       await queryAccount(page, input, account);
@@ -1355,6 +1359,31 @@ export async function runYuantaLoanStatements(
       // exact immutable source-record keys that the Yuanta adapter will
       // persist.
       const capture = buildYuantaLoanCapture(captureInput);
+      if (enabled) {
+        const admitted = admitYuantaLoanCapture(capture);
+        const sourceEvidence = overrides.readCounterpartyAccountEvidence
+          ? await overrides.readCounterpartyAccountEvidence(page, account, accountRows)
+          : [yuantaLoanSelectorAccountEvidence(account)];
+        yield {
+          provider: "yuanta", product: "loan", itemKey: capture.captureId,
+          command: { kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND, request: { capture: admitted } },
+          relationCommands: () => [{
+            kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+            request: {
+              sourceConnectionKey,
+              integrationNamespace: "yuanta",
+              observedAt: capture.observedAt,
+              explicitLinks: overrides.explicitRelationLinks,
+              counterpartyEvidence: sourceEvidence.map((evidence) =>
+                materializeYuantaLoanCounterpartyEvidence(capture, evidence)),
+            },
+          }],
+          onRelationResult: (value: unknown) => {
+            relationResolution = value as LoanRepaymentRelationResolutionResult;
+          },
+        };
+        continue;
+      }
       yield {
         provider: "yuanta",
         product: "loan",
@@ -1405,8 +1434,28 @@ export async function runYuantaLoanStatements(
         },
       };
     }
-  })(),
-  });
+  };
+  const executionResult = enabled
+    ? await (async () => {
+        const client = requirePGliteChildRpcClientFromEnv();
+        try {
+          await client.ready;
+          return await executePGliteWorkflowRun({
+            client: client.workflow,
+            items: items() as AsyncIterable<PGliteWorkflowRunItem>,
+            provider: "yuanta",
+            product: "loan",
+          });
+        } finally {
+          client.close();
+        }
+      })()
+    : await executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir,
+        provider: "yuanta",
+        product: "loan",
+        items: items() as AsyncIterable<CanonicalFinancialCommitItem<unknown>>,
+      });
 
   if (executionResult.status !== "completed")
     throw new Error(

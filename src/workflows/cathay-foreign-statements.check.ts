@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { mock } from "node:test";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { Worker } from "node:worker_threads";
+import { PGlite } from "@electric-sql/pglite";
+import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { fileURLToPath } from "node:url";
 import {
   admitForeignCurrencyDepositCapture,
@@ -49,6 +53,7 @@ const {
   buildCathayForeignCurrencyCaptureInput,
   captureCathayCurrentForeignDepositBalances,
   commitCathayForeignCanonicalCaptures,
+  commitCathayForeignAndCurrentCanonicalCaptures,
   createCathayForeignCanonicalCaptureCollector,
   deriveCathayForeignAccountNumberEvidence,
   parseCathayApiJson,
@@ -240,6 +245,54 @@ try {
   assert.equal(currentCommit[0]?.observationCount, 1);
 } finally {
   await rm(freshForeignLedgerDirectory, { recursive: true, force: true });
+}
+
+const pgliteDir = await mkdtemp(join(tmpdir(), "cathay-foreign-pglite-"));
+const noSqliteDir = await mkdtemp(join(tmpdir(), "cathay-foreign-no-sqlite-"));
+const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+  execArgv: ["--experimental-strip-types"],
+  workerData: { dataDir: pgliteDir },
+});
+const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
+const pgliteServer = createPGliteChildRpcServer({ provider: {
+  operational: pgliteOwner.operationalProvider,
+  financial: pgliteOwner.financial.registry,
+} });
+const oldEnv = {
+  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
+  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+};
+try {
+  await pgliteServer.ready;
+  Object.assign(process.env, pgliteServer.env);
+  await commitCathayForeignAndCurrentCanonicalCaptures(
+    {} as never,
+    noSqliteDir,
+    [freshForeignCapture],
+    { requireComplete: true, readCurrentDepositBalances: async () => freshForeignRows },
+  );
+  assert.deepEqual(await readdir(noSqliteDir), []);
+} finally {
+  for (const [key, value] of [
+    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", oldEnv.required],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", oldEnv.endpoint],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", oldEnv.token],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await pgliteServer.close();
+  await pgliteOwner.close();
+  await rm(noSqliteDir, { recursive: true, force: true });
+}
+const pgliteDb = await PGlite.create(pgliteDir);
+try {
+  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
+  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM balance_observation_revisions")).rows[0]?.count, 1);
+} finally {
+  await pgliteDb.close();
+  await rm(pgliteDir, { recursive: true, force: true });
 }
 
 for (const missingOccurrence of [undefined, "   "] as const) {

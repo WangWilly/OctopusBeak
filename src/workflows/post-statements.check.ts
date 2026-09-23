@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
+import { PGlite } from "@electric-sql/pglite";
+import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { chromium } from "playwright";
 import { DatabaseSync } from "node:sqlite";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
@@ -663,4 +667,75 @@ try {
   db.close();
 } finally {
   await rm(financialRunDir, { recursive: true, force: true });
+}
+
+const enabledDir = await mkdtemp(join(tmpdir(), "post-pglite-workflow-"));
+const enabledLegacyDir = await mkdtemp(join(tmpdir(), "post-pglite-no-sqlite-"));
+const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+  execArgv: ["--experimental-strip-types"],
+  workerData: { dataDir: enabledDir },
+});
+const enabledOwner = createPGliteViewWorkerClient(enabledWorker);
+const enabledServer = createPGliteChildRpcServer({
+  provider: {
+    operational: enabledOwner.operationalProvider,
+    financial: enabledOwner.financial.registry,
+  },
+});
+const priorEnabledEnv = {
+  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
+  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+};
+try {
+  await enabledServer.ready;
+  Object.assign(process.env, enabledServer.env);
+  const output = await runPostStatements({} as never, false, {
+    canonicalLedgerDir: enabledLegacyDir,
+    observedAt: "2026-08-24T10:12:13+08:00",
+    readCurrentDepositBalances: async () => postCurrentBalanceRow,
+    collectStatements: async () => [{
+      accountId: syntheticPostAccountNumber,
+      queryPeriods: ["2026/02/01~2026/08/24"],
+      queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
+      httpStatus: 200,
+      itemShape: "array",
+      rows,
+      download: {
+        account: `${syntheticPostAccountNumber} 郵局`,
+        accountId: syntheticPostAccountNumber,
+        queryPeriods: ["2026/02/01~2026/08/24"],
+        baseName: "private-financial",
+        csvFilename: "private-financial.csv",
+        csvPath: "/private/private-financial.csv",
+        csvBytes: 1,
+        jsonFilename: "private-financial.json",
+        jsonPath: "/private/private-financial.json",
+        jsonBytes: 1,
+        rowCount: 1,
+      },
+    }],
+  });
+  assert.equal(output.status, "financial-admitted");
+  assert.deepEqual(await readdir(enabledLegacyDir), []);
+} finally {
+  for (const [key, value] of [
+    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorEnabledEnv.endpoint],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorEnabledEnv.token],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await enabledServer.close();
+  await enabledOwner.close();
+  await rm(enabledLegacyDir, { recursive: true, force: true });
+}
+const enabledDb = await PGlite.create(enabledDir);
+try {
+  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
+  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM balance_observation_revisions")).rows[0]?.count, 1);
+} finally {
+  await enabledDb.close();
+  await rm(enabledDir, { recursive: true, force: true });
 }

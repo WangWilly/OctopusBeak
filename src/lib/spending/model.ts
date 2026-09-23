@@ -4,6 +4,7 @@ import {
 } from "./categories.ts";
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
+import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
 
@@ -17,7 +18,62 @@ export type SpendingPurchaseReportDto = PurchaseReport;
 export type SpendingCandidateActionInput = Readonly<{
   kind: "candidate";
   candidateId: string;
+  /** Optional facts already visible in the current report; the writer validates them. */
+  invoiceIdentityId?: string;
+  transactionIdentityId?: string;
+  dataVersion?: number;
+  totalsByCurrency?: SpendingPurchaseReportDto["totalsByCurrency"];
+  pairingReportContext?: SpendingPairingReportContext;
 }>;
+
+export type SpendingPairingReportContext = Readonly<{
+  /** Index after removing the two standalone records, at the start of the link's date group. */
+  recordInsertIndex: number;
+  sameDatePurchaseIds: readonly string[];
+  candidateIds: readonly string[];
+  totalStatusAfter: SpendingPurchaseReportDto["totalStatus"];
+  /** Candidate confirmation/denial needs the displayed rows for targeted patches. */
+  candidateIndex?: number;
+  actedCandidateId?: string;
+  invoiceRecordIndex?: number;
+  paymentRecordIndex?: number;
+  invoiceRecord?: SpendingPurchaseReportView["records"][number];
+  paymentRecord?: SpendingPurchaseReportView["records"][number];
+}>;
+
+/** Build compact patch placement from the report displayed at the action click. */
+export function spendingPairingReportContext(
+  report: SpendingPurchaseReportView,
+  invoiceRecord: SpendingPurchaseReportView["records"][number],
+  paymentRecord: SpendingPurchaseReportView["records"][number],
+  actedCandidateId?: string,
+): SpendingPairingReportContext {
+  const remaining = report.records.filter((record) => record.purchaseId !== invoiceRecord.purchaseId && record.purchaseId !== paymentRecord.purchaseId);
+  const date = invoiceRecord.occurrence.value;
+  const first = remaining.findIndex((record) => record.occurrence.value >= date);
+  const start = first < 0 ? remaining.length : first;
+  const sameDatePurchaseIds: string[] = [];
+  for (let index = start; index < remaining.length && remaining[index]!.occurrence.value === date; index += 1)
+    sameDatePurchaseIds.push(remaining[index]!.purchaseId);
+  const candidateIds = [...new Set([...invoiceRecord.candidateIds, ...paymentRecord.candidateIds])];
+  const pendingLinked = candidateIds.filter((id) => id !== actedCandidateId);
+  const totalStatusAfter = pendingLinked.length > 0 || remaining.some((record) => record.candidateIds.some((id) => id !== actedCandidateId))
+    ? "includes-pending-confirmation" as const : "complete" as const;
+  return {
+    recordInsertIndex: start,
+    sameDatePurchaseIds,
+    candidateIds,
+    totalStatusAfter,
+    ...(actedCandidateId ? {
+      candidateIndex: report.candidates.findIndex((candidate) => candidate.candidateId === actedCandidateId),
+      actedCandidateId,
+      invoiceRecordIndex: report.records.findIndex((record) => record.purchaseId === invoiceRecord.purchaseId),
+      paymentRecordIndex: report.records.findIndex((record) => record.purchaseId === paymentRecord.purchaseId),
+      invoiceRecord,
+      paymentRecord,
+    } : {}),
+  };
+}
 
 export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly<{
   kind: "direct";
@@ -27,17 +83,15 @@ export type SpendingConfirmActionInput = SpendingCandidateActionInput | Readonly
   dataVersion?: number;
   totalsByCurrency?: SpendingPurchaseReportDto["totalsByCurrency"];
   /** Optional compact renderer state used when the worker has no report cache. */
-  pairingReportContext?: Readonly<{
-    recordInsertIndex: number;
-    candidateIds: readonly string[];
-    totalStatusAfter: SpendingPurchaseReportDto["totalStatus"];
-  }>;
+  pairingReportContext?: SpendingPairingReportContext;
 }>;
 
 /** A pairing request is bound to the report version shown in the renderer. */
 export type SpendingPairingCandidatesInput = Readonly<{
   invoiceIdentityId: string;
   dataVersion: number;
+  /** Revalidate a selected transaction across the complete ranking. */
+  selectedTransactionId?: string;
   offset?: number;
   limit?: number;
 }>;
@@ -62,6 +116,8 @@ export type SpendingPairingPrewarmResult =
 export type SpendingPairingCandidatesResult = Readonly<{
   dataVersion: number;
   candidates: readonly SpendingPairingCandidateView[];
+  /** Present only when selectedTransactionId was requested. */
+  selectedCandidate?: SpendingPairingCandidateView | null;
   totalCandidateCount: number;
   nextOffset: number | null;
 }>;

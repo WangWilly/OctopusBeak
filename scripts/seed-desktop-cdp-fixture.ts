@@ -7,7 +7,10 @@ import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
 } from "../src/lib/automation/server/config-files.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS } from "../src/lib/automation/server/tasks.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  automationCredentialKeyIsSecret,
+} from "../src/lib/automation/server/tasks.ts";
 import { seedMockLedger } from "../src/ledger/seed-mock-ledger-db.ts";
 
 export const desktopCdpFixtureCredentialGroupIds = [
@@ -33,7 +36,12 @@ export const desktopCdpFixtureCredentials = Object.fromEntries(
   desktopCdpFixtureCredentialGroupIds.flatMap((groupId) => {
     const group = fixtureCredentialGroup(groupId);
     return group.credentialFields
-      .filter((credentialField) => credentialField.redaction !== "none")
+      // Redaction describes how a value is displayed, not whether the
+      // workflow needs it.  The CDP fixture must provide inert values for
+      // every required secret, including password/API-key fields whose
+      // catalog default is `redaction: none`.  Non-secret settings such as
+      // MAX_SUB_ACCOUNT stay in the settings file.
+      .filter((credentialField) => automationCredentialKeyIsSecret(credentialField.key))
       .map((credentialField, index) => [
         credentialField.key,
         `fixture-cdp-${group.id}-${index + 1}`,
@@ -95,7 +103,12 @@ export function seedDesktopCdpFixture(
 
 /** Remove only the named disposable fixture root. */
 export function removeDesktopCdpFixture(userData: string) {
-  rmSync(assertDisposableFixtureRoot(userData), { recursive: true, force: true });
+  rmSync(assertDisposableFixtureRoot(userData), {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 }
 
 function main() {

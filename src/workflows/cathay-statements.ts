@@ -17,6 +17,14 @@ import {
   retrieveCathayGmailOtp,
 } from "./gmail-otp.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -32,6 +40,10 @@ import {
   type CanonicalFinancialCommitItem,
 } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
+import {
+  cathayOpaqueIdentity,
+  pgliteCathayDomesticFinancialRequests,
+} from "../ledger/canonical/canonical-source-store.ts";
 import {
   admitCurrentDepositBalanceCapture,
   commitCurrentDepositBalanceCaptureInTransaction,
@@ -2020,6 +2032,71 @@ export async function downloadCathayStatements(
       );
     }
     throw error;
+  }
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const requests = pgliteCathayDomesticFinancialRequests(syncInput);
+      const financial = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "cathay",
+        product: "domestic-deposit",
+        items: [{
+          provider: "cathay",
+          product: "domestic-deposit",
+          itemKey: `domestic-deposit:${sourceConnectionId}:${identityEpoch}`,
+          command: {
+            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+            request: { steps: requests.map((request) => ({ kind: "financial" as const, request })) },
+          },
+        }],
+      });
+      if (financial.status !== "completed")
+        throw new Error(`Cathay PGlite domestic persistence ${financial.status}: ${financial.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+      if (options.captureCurrentBalances) {
+        const currentRows = await (
+          options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
+        )(page, "domestic", {});
+        const admittedAccountKeys = new Set(stagedPages.map((entry) => entry.accountNo));
+        const selectedRows = currentRows.filter((row) => admittedAccountKeys.has(row.sourceAccountKey));
+        if (selectedRows.length === 0 ||
+          [...admittedAccountKeys].some((key) => !selectedRows.some((row) => row.sourceAccountKey === key)))
+          throw new Error("Cathay current domestic balance response omitted an admitted account.");
+        const observedAtForBalances = selectedRows[0]!.observedAt;
+        const opaqueConnection = cathayOpaqueIdentity(sourceConnectionId);
+        const opaqueEpoch = cathayOpaqueIdentity(identityEpoch);
+        const balanceCaptures = buildCathayCurrentDepositBalanceCaptures(selectedRows, {
+          sourceConnectionKey: opaqueConnection,
+          identityEpochKey: opaqueEpoch,
+          subjectDigest: cathayCurrentSubjectDigest(opaqueConnection, opaqueEpoch),
+          observedAt: observedAtForBalances,
+          scopeDate: observedAtForBalances.slice(0, 10),
+        });
+        const balances = await executePGliteWorkflowRun({
+          client: client.workflow,
+          provider: "cathay",
+          product: "current-balance",
+          items: balanceCaptures.map((capture, index) => ({
+            provider: "cathay",
+            product: "current-balance",
+            itemKey: `current-balance:${capture.identity.sourceAccountKey}:${index}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(capture)),
+            },
+          })),
+        });
+        if (balances.status !== "completed")
+          throw new Error(`Cathay PGlite domestic balance persistence ${balances.status}: ${balances.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+      }
+    } finally {
+      client.close();
+    }
+    const downloads: CathayStatementDownload[] = [];
+    for (const { account, statement } of stagedStatements)
+      downloads.push(await writeFiles(account, dateRange, statement));
+    return downloads;
   }
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
     {

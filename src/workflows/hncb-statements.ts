@@ -11,6 +11,15 @@ import {
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import {
   deriveHncbDomesticDepositAccountNumberEvidence,
@@ -1234,6 +1243,7 @@ export async function runHncbStatements(
     capture: HncbDomesticDepositValidatedEvidence;
     captureId: string;
     humanAttestation: ReturnType<typeof getHncbHumanAttestedV1Manifest>;
+    financialCapture: NonNullable<ReturnType<typeof admitHncbDomesticDepositFinancialCapture>["capture"]>;
   }> = [];
   const downloads: StatementDownload[] = [];
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
@@ -1309,6 +1319,7 @@ export async function runHncbStatements(
         capture,
         captureId: input.captureId,
         humanAttestation: manifest,
+        financialCapture: admission.capture,
       });
       financialCaptures.push(admission.capture);
       if (admission.capture.records.length > 0)
@@ -1353,6 +1364,51 @@ export async function runHncbStatements(
           buildHncbCurrentDepositBalanceCapture(row, matching),
         );
       });
+    }
+
+    if (pgliteWorkflowEnabled(process.env)) {
+      const client = requirePGliteChildRpcClientFromEnv();
+      try {
+        await client.ready;
+        const items = [
+          ...sourceOnlyEntries.map((entry) => ({
+            provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+            command: {
+              kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+              request: createHncbDomesticDepositSourceEvidence(entry.capture, entry.captureId),
+            },
+          } as const)),
+          ...financialInputs.map((entry) => ({
+            provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: entry.financialCapture },
+            },
+          } as const)),
+          ...currentBalanceCaptures.map((capture) => ({
+            provider: "hncb", product: "current-balance",
+            itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(capture),
+            },
+          } as const)),
+        ];
+        const committed = await executePGliteWorkflowRun({
+          client: client.workflow, items, provider: "hncb", product: "financial",
+        });
+        if (committed.status !== "completed")
+          throw new Error(`HNCB PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+        return {
+          dateRange,
+          usedExistingSession: overrides.usedExistingSession ?? false,
+          count: downloads.length,
+          downloads,
+          status,
+        };
+      } finally {
+        client.close();
+      }
     }
 
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];

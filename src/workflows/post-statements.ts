@@ -10,6 +10,15 @@ import {
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
@@ -942,6 +951,52 @@ export async function runPostStatements(
           buildPostCurrentDepositBalanceCapture(row, matching),
         ),
       );
+    }
+  }
+
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const items = [
+        ...sourceOnlyEntries.map((entry) => ({
+          provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+            request: createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
+          },
+        } as const)),
+        ...financialInputs.map((entry) => ({
+          provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+            request: { capture: entry.financialCapture },
+          },
+        } as const)),
+        ...currentBalanceCaptures.map((capture) => ({
+          provider: "post", product: "current-balance",
+          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(capture),
+          },
+        } as const)),
+      ];
+      const committed = await executePGliteWorkflowRun({
+        client: client.workflow, items, provider: "post", product: "financial",
+      });
+      if (committed.status !== "completed")
+        throw new Error(`Post PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      const downloads = statements.map((statement) => statement.download);
+      return {
+        count: downloads.length,
+        rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+        downloads,
+        sourceCaptureCount: captures.length,
+        status,
+      };
+    } finally {
+      client.close();
     }
   }
 

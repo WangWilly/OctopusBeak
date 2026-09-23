@@ -59,6 +59,17 @@ use new migrations. The
 development data could be rebuilt, but that does not justify an implicit or
 destructive cutover.
 
+For the 2026-09-22 cutover, the user explicitly superseded the historical-data
+transfer requirement above: all `canonical.sqlite` contents are disposable and
+rebuildable. The implementation may initialize a fresh, versioned PGlite
+baseline and leave both `canonical.sqlite` and `ledger.sqlite` untouched; it
+does not need a one-time historical-data migration, content-parity check, or
+SQLite rowid transfer. This decision does not authorize automatic startup
+migration, weaken the baseline's write-side constraints and trigger
+equivalents, or remove the requirement that later schema changes use reviewed
+migrations. The legacy SQLite files remain available for inspection and are
+not deleted by initialization.
+
 This architecture must preserve the pairing and interaction performance
 contract in [ADR 0028](./0028-interaction-and-pairing-performance-contract.md),
 including complete candidate coverage and transactional correctness. The
