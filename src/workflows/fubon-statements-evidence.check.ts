@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createServer } from "vite";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 
 const evidenceSourceConnectionScope =
@@ -15,17 +14,7 @@ const evidenceSourceConnectionIdentity = {
   ),
 };
 
-const server = await createServer({
-  configFile: false,
-  cacheDir: "/tmp/octopus-beak-fubon-statements-evidence-check",
-  server: { middlewareMode: true },
-  appType: "custom",
-  logLevel: "silent",
-});
-
-const module = await server
-  .ssrLoadModule("/src/workflows/fubon-statements.ts")
-  .finally(() => server.close());
+const module: Record<string, any> = await import("./fubon-statements.ts");
 
 class SyntheticCell {
   readonly textContent: string;
