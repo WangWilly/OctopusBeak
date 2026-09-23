@@ -243,6 +243,7 @@ try {
   if (previousIdentitySecret === undefined) delete process.env[identitySecretKey];
   else process.env[identitySecretKey] = previousIdentitySecret;
 }
+process.env[canonicalLedgerKey] = "/tmp/yuanta-all-statements-canonical-check";
 
 assert.deepEqual(
   observedCreditCardInput?.canonicalHumanAttestation,

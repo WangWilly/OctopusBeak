@@ -14,7 +14,7 @@ import {
 } from "../lib/automation/statement-selection.js";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { pgliteWorkflowEnabled } from "../ledger/pglite/workflow-client.ts";
 import yuantaCreditCardStatements, {
   yuantaCanonicalHumanAttestationFromEnvironment,
 } from "./yuanta-credit-card-statements.js";
@@ -98,13 +98,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function resolveYuantaCanonicalLedgerDir(): string {
+async function resolveYuantaCanonicalLedgerDir(): Promise<string | undefined> {
   const configured =
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
     process.env.LEDGER_DIR?.trim();
   if (configured && /[\u0000-\u001f\u007f]/u.test(configured))
     throw new Error("Invalid Yuanta canonical ledger directory.");
-  return configured || DEFAULT_LEDGER_DIR;
+  if (configured || pgliteWorkflowEnabled(process.env)) return configured;
+  return (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR;
 }
 
 function toComponentRun(
@@ -486,7 +487,7 @@ export async function runYuantaAllStatements(
   const input = rawInput as WorkflowInput;
   const credentials = input.credentials;
   const prepare = input.prepareBetweenComponents;
-  const canonicalLedgerDir = resolveYuantaCanonicalLedgerDir();
+  const canonicalLedgerDir = await resolveYuantaCanonicalLedgerDir();
   const canonicalHumanAttestation =
     yuantaCanonicalHumanAttestationFromEnvironment(credentials ?? {});
   const creditCardInput = canonicalHumanAttestation

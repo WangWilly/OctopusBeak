@@ -29,7 +29,7 @@ import {
   signInFubon,
 } from "./fubon-statements.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+import { pgliteWorkflowEnabled } from "../ledger/pglite/workflow-client.ts";
 import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import {
   deriveFubonSourceConnectionKey,
@@ -212,12 +212,12 @@ function readFubonLedgerDirectory(envName: string): string | undefined {
   return raw;
 }
 
-function resolveFubonCanonicalLedgerDir(): string {
-  return (
+async function resolveFubonCanonicalLedgerDir(): Promise<string | undefined> {
+  const configured =
     readFubonLedgerDirectory(FUBON_CANONICAL_LEDGER_DIR_ENV) ??
-    readFubonLedgerDirectory("LEDGER_DIR") ??
-    DEFAULT_LEDGER_DIR
-  );
+    readFubonLedgerDirectory("LEDGER_DIR");
+  if (configured || pgliteWorkflowEnabled(process.env)) return configured;
+  return (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR;
 }
 
 export async function runFubonAllStatements(
@@ -244,7 +244,7 @@ export async function runFubonAllStatements(
   const selectedIds = allSupportedStatementTypeIds(
     BANK_STATEMENT_CAPABILITIES.fubon,
   );
-  const canonicalLedgerDir = resolveFubonCanonicalLedgerDir();
+  const canonicalLedgerDir = await resolveFubonCanonicalLedgerDir();
   const sourceConnectionScope = fubonStableLoginScope(input.credentials);
   const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)

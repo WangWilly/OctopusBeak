@@ -350,7 +350,7 @@ assert.deepEqual(calls, [
 
 for (const selection of ["", "deposit,unknown"]) {
   process.env[selectionKey] = selection;
-  delete process.env[canonicalDirKey];
+  process.env[canonicalDirKey] = DEFAULT_LEDGER_DIR;
   delete process.env[ledgerDirKey];
   const selectedCalls: string[] = [];
   let sourceOnlyOptions:
