@@ -67,6 +67,7 @@
     type BlockStateMap,
   } from "$lib/shared-shell/block-load-state.ts";
   import {
+    wrapDashboardBlock,
     type DashboardBlockPayload,
     type DashboardBlockRoute,
     type DashboardBlockValueMap,
@@ -100,12 +101,9 @@
   type RouteId = OnboardingRoute;
   type DashboardRoute = Exclude<RouteId, "settings">;
   type RouteData = {
-    overview: OverviewPageDto;
-    assets: AssetsPageDto;
-    liabilities: LiabilitiesPageDto;
-    spending: SpendingPageDto;
     automation: AutomationDesktopModel;
   };
+  type FinancialRoute = Exclude<DashboardRoute, "automation">;
   type LoadState<T> = ViewLoadState<T>;
 
   let route: RouteId = "overview";
@@ -139,13 +137,7 @@
   } | null = null;
   const routeDataCache = createRouteLoadCache<RouteData>();
   const refreshUi = writable<RefreshUiState>(initialRefreshUiState);
-  const blockKeys: Readonly<Record<DashboardRoute, readonly DashboardBlockKey[]>> = {
-    overview: ["summary", "chart", "list", "details"],
-    assets: ["summary", "chart", "list"],
-    liabilities: ["summary", "chart", "list", "details"],
-    spending: ["summary", "chart", "list", "details"],
-    automation: ["summary", "list", "details"],
-  };
+  const automationBlockKeys: readonly DashboardBlockKey[] = ["summary", "list", "details"];
   let routeBlocks: Partial<Record<DashboardRoute, BlockStateMap<DashboardBlockPayload>>> = {};
   let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
   let routeBlockPromises: Partial<Record<DashboardRoute, Promise<Record<string, BlockState<DashboardBlockPayload>>>>> = {};
@@ -202,7 +194,6 @@
     );
   $: if (
     route === "overview"
-    && !financialLiveEnabled
     && onboardingStep === "overview"
     && !overviewReloading
     && automation.status === "ready"
@@ -211,7 +202,6 @@
       onboardingState?.selectedCredentialGroupId ?? null,
     ) !== overviewLoadedForTaskFinishedAt
   ) {
-    routeDataCache.clearAll();
     void loadRoute("overview", { force: true });
   }
 
@@ -230,13 +220,13 @@
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
     if (!location.hash || next !== route || encodedId === "" || (!acceptsId && encodedId) || (encodedId && !id) || extraSegments.length > 0) location.hash = canonicalHash;
-    if (financialLiveEnabled && route !== "automation" && route !== "settings" && previousRoute !== route) {
+    if (route !== "automation" && route !== "settings" && previousRoute !== route) {
       startRouteLoad(route);
     }
     startFinancialLive(route === "settings" ? "automation" : route);
     const hasAutomationData = routeDataCache.read("automation") !== undefined
       || Object.values(routeBlocks.automation ?? {}).some((state) => "data" in state);
-    if (financialLiveEnabled && route !== "automation" && route !== "settings") return;
+    if (route !== "automation" && route !== "settings" && financialLiveEnabled) return;
     void loadRoute(
       route,
       route === "automation" && previousRoute !== "automation" && hasAutomationData
@@ -262,9 +252,9 @@
   }
 
   function applyLivePage<Value>(
-    nextRoute: DashboardRoute,
+    nextRoute: FinancialRoute,
     state: { status: "loading" } | { status: "error"; code: "subscription-failed" } | { status: "ready"; data: Value },
-    setValue: (value: Value) => void,
+    setValue: (value: Value) => BlockStateMap<DashboardBlockPayload>,
   ) {
     if (state.status === "error") {
       financialLiveError = true;
@@ -277,21 +267,15 @@
     }
     if (state.status !== "ready") return;
     financialLiveError = false;
-    setValue(state.data);
+    setRouteBlocks(nextRoute, setValue(state.data));
     if (financialLiveWaiter?.route === nextRoute) {
       financialLiveWaiter.resolve();
       financialLiveWaiter = null;
     }
-    routeDataCache.clear(nextRoute);
-    routeBlockLoadIds = {
-      ...routeBlockLoadIds,
-      [nextRoute]: (routeBlockLoadIds[nextRoute] ?? 0) + 1,
-    };
-    setRouteBlocks(nextRoute, {});
   }
 
   function startFinancialLive(nextRoute: DashboardRoute, alreadyStopped = false) {
-    if (!financialLiveEnabled || !financialLiveStores || nextRoute === "automation") {
+    if (nextRoute === "automation" || !financialLiveEnabled || !financialLiveStores) {
       stopActiveFinancialLive();
       return;
     }
@@ -301,19 +285,37 @@
     financialLiveRoute = nextRoute;
     if (nextRoute === "overview") {
       stopFinancialLive = financialLiveStores.overview().subscribe((state) => {
-        applyLivePage("overview", state, (value: OverviewPageDto) => { overview = finishViewLoad(value); });
+        applyLivePage("overview", state, (value: OverviewPageDto) => {
+          overview = finishViewLoad(value);
+          if (automation.status === "ready") {
+            overviewLoadedForTaskFinishedAt = completedSourceTaskFinishedAt(
+              automation.data.automation.tasks,
+              onboardingState?.selectedCredentialGroupId ?? null,
+            );
+          }
+          return overviewBlocks(value);
+        });
       });
     } else if (nextRoute === "assets") {
       stopFinancialLive = financialLiveStores.assets().subscribe((state) => {
-        applyLivePage("assets", state, (value: AssetsPageDto) => { assets = finishViewLoad(value); });
+        applyLivePage("assets", state, (value: AssetsPageDto) => {
+          assets = finishViewLoad(value);
+          return assetsBlocks(value);
+        });
       });
     } else if (nextRoute === "liabilities") {
       stopFinancialLive = financialLiveStores.liabilities().subscribe((state) => {
-        applyLivePage("liabilities", state, (value: LiabilitiesPageDto) => { liabilities = finishViewLoad(value); });
+        applyLivePage("liabilities", state, (value: LiabilitiesPageDto) => {
+          liabilities = finishViewLoad(value);
+          return liabilitiesBlocks(value);
+        });
       });
     } else {
       stopFinancialLive = financialLiveStores.spending().subscribe((state) => {
-        applyLivePage("spending", state, (value: SpendingPageDto) => { spending = finishViewLoad(value); });
+        applyLivePage("spending", state, (value: SpendingPageDto) => {
+          spending = finishViewLoad(value);
+          return spendingBlocks(value);
+        });
       });
     }
   }
@@ -322,10 +324,113 @@
     stopActiveFinancialLive();
     startRouteLoad(nextRoute);
     financialLiveError = false;
+    if (!financialLiveEnabled || !financialLiveStores || nextRoute === "automation") {
+      const error = new Error("PGlite financial page views are unavailable.");
+      financialLiveError = true;
+      failRouteLoad(nextRoute, error);
+      return Promise.reject(error);
+    }
     return new Promise<void>((resolve, reject) => {
       financialLiveWaiter = { route: nextRoute, resolve, reject };
       startFinancialLive(nextRoute, true);
     });
+  }
+
+  function readyDashboardBlock<Route extends DashboardBlockRoute, Key extends DashboardBlockKeyForRoute<Route>>(
+    nextRoute: Route,
+    key: Key,
+    data: DashboardBlockValue<Route, Key>,
+  ): BlockState<DashboardBlockPayload> {
+    return finishViewLoad(wrapDashboardBlock(nextRoute, key, data));
+  }
+
+  function overviewBlocks(value: OverviewPageDto): BlockStateMap<DashboardBlockPayload> {
+    return {
+      summary: readyDashboardBlock("overview", "summary", {
+        availability: value.availability,
+        coverage: value.coverage,
+        sourceGaps: value.sourceGaps,
+        importedAt: value.importedAt,
+        summary: value.summary,
+      }),
+      chart: readyDashboardBlock("overview", "chart", {
+        historyAvailability: value.historyAvailability,
+        dailyHistory: value.dailyHistory,
+        accounts: value.accounts,
+        exchangeRates: value.exchangeRates,
+      }),
+      list: readyDashboardBlock("overview", "list", {
+        historyAvailability: value.historyAvailability,
+        dailyHistory: value.dailyHistory,
+        exchangeRates: value.exchangeRates,
+        latestExchangeRateDate: value.latestExchangeRateDate,
+      }),
+      details: readyDashboardBlock("overview", "details", {
+        sankey: value.sankey,
+        sankeyExchangeRates: value.sankeyExchangeRates,
+        sankeyLatestExchangeRateDate: value.sankeyLatestExchangeRateDate,
+      }),
+    };
+  }
+
+  function assetsBlocks(value: AssetsPageDto): BlockStateMap<DashboardBlockPayload> {
+    return {
+      summary: readyDashboardBlock("assets", "summary", { accounts: value.accounts }),
+      chart: readyDashboardBlock("assets", "chart", {
+        accounts: value.accounts,
+        dailyHistory: value.dailyHistory,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+      }),
+      list: readyDashboardBlock("assets", "list", {
+        accounts: value.accounts,
+        positionsByAccount: value.positionsByAccount,
+        transactionsByAccount: value.transactionsByAccount,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+      }),
+    };
+  }
+
+  function liabilitiesBlocks(value: LiabilitiesPageDto): BlockStateMap<DashboardBlockPayload> {
+    return {
+      summary: readyDashboardBlock("liabilities", "summary", { accounts: value.accounts }),
+      chart: readyDashboardBlock("liabilities", "chart", {
+        accounts: value.accounts,
+        dailyHistory: value.dailyHistory,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+      }),
+      list: readyDashboardBlock("liabilities", "list", {
+        accounts: value.accounts,
+        transactionsByAccount: value.transactionsByAccount,
+        dailyHistoryByAccount: value.dailyHistoryByAccount,
+      }),
+      details: readyDashboardBlock("liabilities", "details", {
+        marginAccounts: value.marginAccounts,
+        transactionsByAccount: value.transactionsByAccount,
+      }),
+    };
+  }
+
+  function spendingBlocks(value: SpendingPageDto): BlockStateMap<DashboardBlockPayload> {
+    return {
+      summary: readyDashboardBlock("spending", "summary", {
+        canonical: value.canonical,
+        purchaseReport: value.purchaseReport,
+      }),
+      chart: readyDashboardBlock("spending", "chart", {
+        canonical: value.canonical,
+        purchaseReport: value.purchaseReport,
+      }),
+      list: readyDashboardBlock("spending", "list", {
+        canonical: value.canonical,
+        purchaseReport: value.purchaseReport,
+        invoices: value.invoices,
+      }),
+      details: readyDashboardBlock("spending", "details", {
+        canonical: value.canonical,
+        purchaseReport: value.purchaseReport,
+        invoices: value.invoices,
+      }),
+    };
   }
 
   function routeLabel(nextRoute: RouteId) {
@@ -347,93 +452,6 @@
     states: BlockStateMap<DashboardBlockPayload>,
   ) {
     routeBlocks = { ...routeBlocks, [nextRoute]: states };
-  }
-
-  function blockData<
-    Route extends DashboardBlockRoute,
-    Key extends DashboardBlockKeyForRoute<Route>,
-  >(
-    nextRoute: Route,
-    key: Key,
-  ): DashboardBlockValue<Route, Key> | undefined {
-    const state = routeBlocks[nextRoute]?.[key as string] as BlockState<DashboardBlockPayload> | undefined;
-    if (!state || !("data" in state) || state.data === undefined) return undefined;
-    const payload = state.data as unknown as Extract<DashboardBlockPayload, { route: Route; block: Key }>;
-    return payload.data as unknown as DashboardBlockValue<Route, Key>;
-  }
-
-  function progressiveOverview(): OverviewPageDto | undefined {
-    const summary = blockData("overview", "summary");
-    const chart = blockData("overview", "chart");
-    const list = blockData("overview", "list");
-    const details = blockData("overview", "details");
-    if (!summary && !chart && !list && !details) return undefined;
-    return {
-      availability: summary?.availability ?? "awaiting",
-      coverage: summary?.coverage ?? "partial",
-      sourceGaps: summary?.sourceGaps ?? [],
-      importedAt: summary?.importedAt ?? null,
-      summary: summary?.summary ?? [],
-      dailyHistory: list?.dailyHistory ?? chart?.dailyHistory ?? [],
-      accounts: chart?.accounts ?? [],
-      sankey: details?.sankey ?? null,
-      sankeyExchangeRates: details?.sankeyExchangeRates ?? [],
-      sankeyLatestExchangeRateDate: details?.sankeyLatestExchangeRateDate ?? null,
-      exchangeRates: list?.exchangeRates ?? chart?.exchangeRates ?? [],
-      latestExchangeRateDate: list?.latestExchangeRateDate ?? null,
-      historyAvailability: list?.historyAvailability ?? chart?.historyAvailability ?? "unavailable",
-    };
-  }
-
-  function progressiveAssets(): AssetsPageDto | undefined {
-    const summary = blockData("assets", "summary");
-    const chart = blockData("assets", "chart");
-    const list = blockData("assets", "list");
-    if (!summary && !chart && !list) return undefined;
-    return {
-      availability: "available",
-      coverage: "partial",
-      sourceGaps: [],
-      importedAt: null,
-      accounts: list?.accounts ?? chart?.accounts ?? summary?.accounts ?? [],
-      positionsByAccount: list?.positionsByAccount ?? {},
-      transactionsByAccount: list?.transactionsByAccount ?? {},
-      dailyHistoryByAccount: list?.dailyHistoryByAccount ?? chart?.dailyHistoryByAccount ?? {},
-      dailyHistory: chart?.dailyHistory ?? [],
-    };
-  }
-
-  function progressiveLiabilities(): LiabilitiesPageDto | undefined {
-    const summary = blockData("liabilities", "summary");
-    const chart = blockData("liabilities", "chart");
-    const list = blockData("liabilities", "list");
-    const details = blockData("liabilities", "details");
-    if (!summary && !chart && !list && !details) return undefined;
-    return {
-      availability: "available",
-      coverage: "partial",
-      sourceGaps: [],
-      importedAt: null,
-      accounts: list?.accounts ?? chart?.accounts ?? summary?.accounts ?? [],
-      marginAccounts: details?.marginAccounts ?? [],
-      transactionsByAccount: list?.transactionsByAccount ?? details?.transactionsByAccount ?? {},
-      dailyHistoryByAccount: list?.dailyHistoryByAccount ?? chart?.dailyHistoryByAccount ?? {},
-      dailyHistory: chart?.dailyHistory ?? [],
-    };
-  }
-
-  function progressiveSpending(): SpendingPageDto | undefined {
-    const summary = blockData("spending", "summary");
-    const chart = blockData("spending", "chart");
-    const list = blockData("spending", "list");
-    const details = blockData("spending", "details");
-    const source = summary ?? chart ?? list ?? details;
-    if (!source) return undefined;
-    return {
-      canonical: source.canonical,
-      purchaseReport: source.purchaseReport,
-      invoices: list?.invoices ?? details?.invoices ?? [],
-    };
   }
 
   function progressiveAutomation(): AutomationDesktopModel | undefined {
@@ -462,33 +480,28 @@
     };
   }
 
-  $: overviewRenderValue = overviewValue ?? progressiveOverview();
-  $: assetsRenderValue = assetsValue ?? progressiveAssets();
-  $: liabilitiesRenderValue = liabilitiesValue ?? progressiveLiabilities();
-  $: spendingRenderValue = spendingValue ?? progressiveSpending();
+  $: overviewRenderValue = overviewValue;
+  $: assetsRenderValue = assetsValue;
+  $: liabilitiesRenderValue = liabilitiesValue;
+  $: spendingRenderValue = spendingValue;
   $: automationRenderValue = automationValue ?? progressiveAutomation();
 
   function loadRouteBlock(
-    nextRoute: DashboardRoute,
     key: DashboardBlockKey,
     options: DataReadOptions | undefined,
   ): Promise<DashboardBlockPayload> {
-    if (nextRoute === "overview") return window.octopusBeak.overview.loadBlock(key, options);
-    if (nextRoute === "assets") return window.octopusBeak.assets.loadBlock(key, options);
-    if (nextRoute === "liabilities") return window.octopusBeak.liabilities.loadBlock(key, options);
-    if (nextRoute === "spending") return window.octopusBeak.spending.loadBlock(key, options);
     return window.octopusBeak.automation.loadBlock(key, options);
   }
 
   function startRouteBlockLoadsUncoordinated(
-    nextRoute: DashboardRoute,
+    nextRoute: "automation",
     options: DataReadOptions | undefined,
     onlyKey?: DashboardBlockKey,
     refreshPhase: AutomationBlockRefreshPhase = "direct",
   ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
-    const loadId = (routeBlockLoadIds[nextRoute] ?? 0) + 1;
-    routeBlockLoadIds = { ...routeBlockLoadIds, [nextRoute]: loadId };
-    const keys = onlyKey ? [onlyKey] : blockKeys[nextRoute];
+    const loadId = (routeBlockLoadIds.automation ?? 0) + 1;
+    routeBlockLoadIds = { ...routeBlockLoadIds, automation: loadId };
+    const keys = onlyKey ? [onlyKey] : automationBlockKeys;
     const current = routeBlocks[nextRoute] ?? {};
     if (!onlyKey) {
       setRouteBlocks(nextRoute, beginIndependentBlocks(current, keys));
@@ -500,15 +513,14 @@
     }
     const loaders = Object.fromEntries(keys.map((key) => [
       key,
-      () => loadRouteBlock(nextRoute, key, options),
+      () => loadRouteBlock(key, options),
     ])) as Record<string, () => Promise<DashboardBlockPayload>>;
     let staleBlockDetected = false;
     const settled = loadIndependentBlocks(loaders, (key, state) => {
-      if (routeBlockLoadIds[nextRoute] !== loadId) return;
+      if (routeBlockLoadIds.automation !== loadId) return;
       const payload = "data" in state ? state.data : undefined;
       if (
-        nextRoute === "automation"
-        && payload?.route === "automation"
+        payload?.route === "automation"
         && isAutomationBlockStale(payload.data, automationRuntimeSnapshot)
         && refreshPhase !== "trailing"
       ) {
@@ -523,7 +535,7 @@
       });
     });
     void settled.then((states) => {
-      if (routeBlockLoadIds[nextRoute] !== loadId) return;
+      if (routeBlockLoadIds.automation !== loadId) return;
       // The per-block callbacks provide progressive rendering. The final
       // commit is a safety net for fast/parallel resolutions and guarantees
       // that a completed request cannot leave a block in loading state.
@@ -532,8 +544,7 @@
         ...states,
       });
       if (
-        nextRoute === "automation"
-        && staleBlockDetected
+        staleBlockDetected
         && refreshPhase !== "trailing"
       ) {
         void automationBlockRefreshCoordinator.refresh(
@@ -549,9 +560,9 @@
     });
     routeBlockPromises = { ...routeBlockPromises, [nextRoute]: settled };
     void settled.finally(() => {
-      if (routeBlockPromises[nextRoute] === settled) {
+      if (routeBlockPromises.automation === settled) {
         const remaining = { ...routeBlockPromises };
-        delete remaining[nextRoute];
+        delete remaining.automation;
         routeBlockPromises = remaining;
       }
     });
@@ -559,12 +570,12 @@
   }
 
   function startRouteBlockLoads(
-    nextRoute: DashboardRoute,
+    nextRoute: "automation",
     options: DataReadOptions | undefined,
     onlyKey?: DashboardBlockKey,
     refreshReason?: AutomationBlockRefreshReason,
   ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
-    if (nextRoute !== "automation" || !refreshReason) {
+    if (!refreshReason) {
       return startRouteBlockLoadsUncoordinated(nextRoute, options, onlyKey);
     }
     return automationBlockRefreshCoordinator.refresh(
@@ -579,7 +590,11 @@
   }
 
   function retryRouteBlock(nextRoute: DashboardRoute, key: string) {
-    const cached = routeDataCache.read(nextRoute);
+    if (nextRoute !== "automation") {
+      void loadRoute(nextRoute, { force: true });
+      return;
+    }
+    const cached = routeDataCache.read("automation");
     if (cached) {
       startRouteBlockLoads(
         nextRoute,
@@ -736,7 +751,6 @@
     startRouteLoad("automation");
     startRouteLoad("overview");
     const automationBlocks = startRouteBlockLoads("automation", undefined, undefined, "route-entry");
-    if (!financialLiveEnabled) startRouteBlockLoads("overview", undefined);
     const settled = await settleIndependentLoads({
       automation: async () => {
         const states = await automationBlocks;
@@ -744,14 +758,12 @@
         if (!data) throw new Error("Automation data unavailable.");
         return data;
       },
-      overview: financialLiveEnabled
-        ? async () => {
-          await reloadFinancialLive("overview");
-          const value = viewData(overview);
-          if (!value) throw new Error("Welcome overview data unavailable.");
-          return value;
-        }
-        : () => routeDataCache.load("overview", () => window.octopusBeak.overview.load()),
+      overview: async () => {
+        await reloadFinancialLive("overview");
+        const value = viewData(overview);
+        if (!value) throw new Error("Welcome overview data unavailable.");
+        return value;
+      },
     });
     const automationResult = settled.automation;
     const overviewResult = settled.overview;
@@ -798,13 +810,16 @@
       automationRefreshReason?: AutomationBlockRefreshReason;
     } = {},
   ) {
-    if (financialLiveEnabled && next !== "automation" && next !== "settings") {
-      if (route !== next || !options.force) return;
+    if (next !== "automation" && next !== "settings") {
+      if (route !== next || (financialLiveEnabled && !options.force)) return;
+      if (next === "overview") overviewReloading = true;
       try {
         await reloadFinancialLive(next);
       } catch (error) {
         if (route === next) failRouteLoad(next, error);
         if (options.rethrow) throw error;
+      } finally {
+        if (next === "overview") overviewReloading = false;
       }
       return;
     }
@@ -819,52 +834,24 @@
     const automationRefreshReason = next === "automation"
       ? options.automationRefreshReason ?? (options.force ? "manual" : undefined)
       : undefined;
-    const taskFinishedAt = next === "overview" && automation.status === "ready"
-      ? completedSourceTaskFinishedAt(
-        automation.data.automation.tasks,
-        onboardingState?.selectedCredentialGroupId ?? null,
-      )
-      : null;
     startRouteLoad(next);
     let blockLoads: Promise<Record<string, BlockState<DashboardBlockPayload>>> | null = null;
-    if (next !== "settings") {
-      const hasCachedData = routeDataCache.read(next) !== undefined;
-      const hasBlockRead = Object.values(routeBlocks[next] ?? {}).some((state) => state.status === "loading");
+    if (next === "automation") {
+      const hasCachedData = routeDataCache.read("automation") !== undefined;
+      const hasBlockRead = Object.values(routeBlocks.automation ?? {}).some((state) => state.status === "loading");
       const automationRefreshRequested = automationRefreshReason !== undefined;
       if (options.force || automationRefreshRequested || !hasCachedData && !hasBlockRead) {
         blockLoads = startRouteBlockLoads(
-          next,
+          "automation",
           readOptions,
           undefined,
           automationRefreshReason,
         );
       } else if (!hasCachedData) {
-        blockLoads = routeBlockPromises[next] ?? null;
+        blockLoads = routeBlockPromises.automation ?? null;
       }
     }
-    if (next === "overview") overviewReloading = true;
     try {
-      if (next === "overview") {
-        const data = await routeDataCache.load(
-          "overview",
-          () => window.octopusBeak.overview.load(readOptions),
-          options,
-        );
-        overview = finishViewLoad(data);
-        overviewLoadedForTaskFinishedAt = taskFinishedAt;
-      }
-      if (next === "assets") {
-        const data = await routeDataCache.load("assets", () => window.octopusBeak.assets.load(readOptions), options);
-        assets = finishViewLoad(data);
-      }
-      if (next === "liabilities") {
-        const data = await routeDataCache.load("liabilities", () => window.octopusBeak.liabilities.load(readOptions), options);
-        liabilities = finishViewLoad(data);
-      }
-      if (next === "spending") {
-        const data = await routeDataCache.load("spending", () => window.octopusBeak.spending.load(undefined, readOptions), options);
-        spending = finishViewLoad(data);
-      }
       if (next === "automation") {
         const data = await routeDataCache.load("automation", async () => {
           const states = blockLoads
@@ -895,8 +882,6 @@
       if (options.awaitBlocks && blockLoads) await blockLoads;
       failRouteLoad(next, error);
       if (options.rethrow) throw error;
-    } finally {
-      if (next === "overview") overviewReloading = false;
     }
   }
 
@@ -906,8 +891,8 @@
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error));
-    // Resolve the capability before the first route load. Otherwise a PGlite
-    // session starts the legacy page and block reads before live subscribes.
+    // Financial routes are PGlite-live-only, so resolve the capability before
+    // the first route load and never start legacy page/block reads.
     void Promise.resolve(window.octopusBeak?.dataViews?.enabled?.() ?? false)
       .catch(() => false)
       .then((enabled) => {
