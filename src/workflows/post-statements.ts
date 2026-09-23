@@ -14,7 +14,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -32,7 +31,6 @@ import {
 import {
   getPostHumanAttestedV1Manifest,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
@@ -89,8 +87,6 @@ const outputSchema = z.object({
   sourceCaptureCount: z.number().int().nonnegative(),
   status: z.enum(["source-only", "financial-admitted"]),
 });
-
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 export type PostCredentials = {
   post_user_id?: string;
@@ -155,7 +151,6 @@ export type PostStatementsRunDependencies = {
     telemetry: boolean,
   ) => Promise<PostCollectedStatement[]>;
   readCurrentDepositBalances?: typeof readPostCurrentDepositBalances;
-  canonicalLedgerDir?: string;
   observedAt?: string;
 };
 
@@ -867,11 +862,6 @@ export async function runPostStatements(
       );
     captures.push(admission.capture);
   }
-  const canonicalLedgerDir =
-    overrides.canonicalLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readPostCurrentDepositBalances;
   const captureEntries = captures.map((capture, index) => ({
@@ -880,9 +870,7 @@ export async function runPostStatements(
   }));
   const sourceOnlyEntries: typeof captureEntries = [];
   const financialInputs: Array<{
-    capture: PostDomesticDepositValidatedEvidence;
     captureId: string;
-    humanAttestation: ReturnType<typeof getPostHumanAttestedV1Manifest>;
     financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
   }> = [];
   const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] = [];
@@ -906,9 +894,7 @@ export async function runPostStatements(
       continue;
     }
     financialInputs.push({
-      capture,
       captureId: input.captureId,
-      humanAttestation: manifest,
       financialCapture: admission.capture,
     });
     financialCaptures.push({ identity: admission.capture.identity });
@@ -942,148 +928,50 @@ export async function runPostStatements(
     }
   }
 
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const items = [
-        ...sourceOnlyEntries.map((entry) => ({
-          provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-            request: createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
-          },
-        } as const)),
-        ...financialInputs.map((entry) => ({
-          provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-            request: { capture: entry.financialCapture },
-          },
-        } as const)),
-        ...currentBalanceCaptures.map((capture) => ({
-          provider: "post", product: "current-balance",
-          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(capture),
-          },
-        } as const)),
-      ];
-      const committed = await executePGliteWorkflowRun({
-        client: client.workflow, items, provider: "post", product: "financial",
-      });
-      if (committed.status !== "completed")
-        throw new Error(`Post PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      const downloads = statements.map((statement) => statement.download);
-      return {
-        count: downloads.length,
-        rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-        downloads,
-        sourceCaptureCount: captures.length,
-        status,
-      };
-    } finally {
-      client.close();
-    }
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const items = [
+      ...sourceOnlyEntries.map((entry) => ({
+        provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+          request: createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
+        },
+      } as const)),
+      ...financialInputs.map((entry) => ({
+        provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+          request: { capture: entry.financialCapture },
+        },
+      } as const)),
+      ...currentBalanceCaptures.map((capture) => ({
+        provider: "post", product: "current-balance",
+        itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
+      } as const)),
+    ];
+    const committed = await executePGliteWorkflowRun({
+      client: client.workflow, items, provider: "post", product: "financial",
+    });
+    if (committed.status !== "completed")
+      throw new Error(`Post PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+    const downloads = statements.map((statement) => statement.download);
+    return {
+      count: downloads.length,
+      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+      downloads,
+      sourceCaptureCount: captures.length,
+      status,
+    };
+  } finally {
+    client.close();
   }
 
-  const [
-    { CanonicalFinancialCommitItemError, executeCanonicalFinancialCommitRun },
-    { commitCanonicalFinancialDepositCaptureInTransaction },
-    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
-    { commitCurrentDepositBalanceCaptureInTransaction },
-    {
-      ensurePostHumanAttestationEvents,
-      isPostHumanAttestedV1Active,
-      latestPostHumanAttestationEvent,
-      recordInitialPostHumanAttestationIfMissing,
-    },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
-    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-    import("../ledger/canonical/post-human-attestation.ts"),
-  ]);
-
-  const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-  for (const entry of sourceOnlyEntries) {
-    executionItems.push({
-      provider: "post",
-      product: "domestic-deposit",
-      itemKey: entry.captureId,
-      commit: ({ admission }) => {
-        admission.admit(
-          createPostDomesticDepositSourceEvidence(entry.capture, entry.captureId),
-        );
-        return entry.captureId;
-      },
-    });
-  }
-  for (const financialInput of financialInputs) {
-    executionItems.push({
-      provider: "post",
-      product: "domestic-deposit",
-      itemKey: financialInput.captureId,
-      commit: ({ writer, admission, database }) => {
-        ensurePostHumanAttestationEvents(database);
-        let latest: ReturnType<typeof latestPostHumanAttestationEvent>;
-        try {
-          latest = latestPostHumanAttestationEvent(database);
-        } catch {
-          throw new CanonicalFinancialCommitItemError(
-            "Post human attestation chain is invalid.",
-          );
-        }
-        if (latest?.eventKind === "revoked" || !isPostHumanAttestedV1Active())
-          throw new CanonicalFinancialCommitItemError(
-            "Post human attestation is revoked; future admission is blocked.",
-          );
-        recordInitialPostHumanAttestationIfMissing(
-          database,
-          financialInput.capture.observedAt,
-        );
-        return commitCanonicalFinancialDepositCaptureInTransaction(
-          writer,
-          financialInput.financialCapture,
-          admission,
-          (db, results) =>
-            commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
-              db,
-              results.map((result) => result.captureId),
-            ),
-        );
-      },
-    });
-  }
-  for (const capture of currentBalanceCaptures) {
-    executionItems.push({
-      provider: "post",
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-      commit: ({ writer, admission }) =>
-        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
-    });
-  }
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: executionItems,
-    provider: "post",
-    product: "financial",
-  });
-  if (executionResult.status !== "completed")
-    throw new Error(
-      `Post canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-    );
-  const downloads = statements.map((statement) => statement.download);
-  return {
-    count: downloads.length,
-    rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-    downloads,
-    sourceCaptureCount: captures.length,
-    status,
-  };
 }
 
 export default workflow("postStatements", {
@@ -1104,12 +992,7 @@ export default workflow("postStatements", {
     });
 
     emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    const result = await runPostStatements(page, input.telemetry, {
-      canonicalLedgerDir:
-        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-        process.env.LEDGER_DIR ??
-        DEFAULT_LEDGER_DIR,
-    });
+    const result = await runPostStatements(page, input.telemetry);
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
