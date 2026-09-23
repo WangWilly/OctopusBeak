@@ -41,8 +41,17 @@ assert.doesNotMatch(
   workflowImports,
   /from "\.\.\/ledger\/(?:canonical\/(?:yuanta-credit-card|credit-card-current-balance-writer|bank-transaction-kind-enrichment)|db\/client)\.ts"/,
 );
-assert.match(workflowSource, /commitYuantaCreditCardCaptureInTransaction/);
-assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
+assert.match(workflowSource, /executePGliteWorkflowRun/);
+assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
+assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND/);
+assert.doesNotMatch(
+  workflowSource,
+  /pgliteWorkflowEnabled|CanonicalFinancialCommitItem|executeCanonicalFinancialCommitRun|canonicalLedgerDir|commitYuantaCreditCardCaptureInTransaction|commitCreditCardCurrentBalanceCaptureInTransaction|refreshCanonicalBankTransactionKindsAfterCreditCardCapture/,
+);
+assert.doesNotMatch(
+  workflowSource,
+  /import\(["']\.\.\/ledger\/(?:canonical\/(?:yuanta-credit-card|credit-card-current-balance-writer|bank-transaction-kind-enrichment|canonical-financial-commit-execution)|db\/client)\.ts["']\)/,
+);
 assert.doesNotMatch(
   workflowSource,
   /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,
