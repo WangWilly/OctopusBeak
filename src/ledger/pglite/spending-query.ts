@@ -315,14 +315,18 @@ async function transactionDateFacts(
     "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('canonical_credit_card_transaction_details', 'fubon_credit_transaction_details')",
   ));
   const result = new Map<string, DateFact>();
+  if (revisionIds?.length === 0) return result;
   for (const table of tableRows) {
-    try {
-      if (revisionIds?.length === 0) continue;
+    const chunks = revisionIds === undefined
+      ? [undefined]
+      : Array.from({ length: Math.ceil(revisionIds.length / 2_048) }, (_, index) =>
+        revisionIds.slice(index * 2_048, (index + 1) * 2_048));
+    for (const chunk of chunks) {
       const facts = rows(await pgliteQuery<Row>(reader,
         `SELECT revision_id, consume_date, posting_date, effective_date_basis
            FROM ${table.table_name}
-          ${revisionIds === undefined ? "" : `WHERE revision_id IN (${revisionIds.map(() => "?").join(",")})`}`,
-        revisionIds?.map((value) => bytes(value, "Transaction revision")) ?? [],
+          ${chunk === undefined ? "" : `WHERE revision_id IN (${chunk.map(() => "?").join(",")})`}`,
+        chunk?.map((value) => bytes(value, "Transaction revision")) ?? [],
       ));
       for (const row of facts) {
         result.set(idString(row.revision_id, "Transaction revision"), {
@@ -333,9 +337,6 @@ async function transactionDateFacts(
             : null,
         });
       }
-    } catch {
-      // A provider extension may be present in the schema manifest without
-      // having populated date facts yet.
     }
   }
   return result;
@@ -533,8 +534,7 @@ async function tagRows(
   const params = kind === "current"
     ? transactionIds?.map((value) => bytes(value, "Transaction identity")) ?? []
     : [knowledgeAt, ...(transactionIds?.map((value) => bytes(value, "Transaction identity")) ?? [])];
-  try {
-    const result = await pgliteQuery<TagRow>(reader,
+  const result = await pgliteQuery<TagRow>(reader,
       `SELECT tags.transaction_id, tags.tag_id, tags.assertion_id, tags.user_id,
               tags.display_label, tags.normalized_label, tags.lifecycle
          FROM current_transaction_tags tags
@@ -542,11 +542,8 @@ async function tagRows(
         WHERE ${kind === "current" ? "TRUE" : "commit_row.commit_sequence <= ?"}${filter}
         ORDER BY tags.transaction_id, tags.normalized_label, tags.tag_id`,
       params,
-    );
-    return rows(result);
-  } catch {
-    return [];
-  }
+  );
+  return rows(result);
 }
 
 function grouped<T extends Row>(values: readonly T[], key: (row: T) => string): ReadonlyMap<string, readonly T[]> {
@@ -803,11 +800,16 @@ async function querySpendingReport(
   if (base.length === 0) return emptySpendingReport(kind, knowledgeAt, financialAt);
   const transactionIds = base.map((row) => idString(row.transaction_id, "Transaction identity"));
   const revisionIds = base.map((row) => idString(row.revision_id, "Transaction revision"));
+  // A complete 100k-row report cannot bind every ID in one PostgreSQL query.
+  // Read the indexed projection tables once and select the requested rows
+  // while assembling the report below.
+  const scopedTransactionIds = transactionIds.length > 4_096 ? undefined : transactionIds;
+  const scopedRevisionIds = revisionIds.length > 4_096 ? undefined : revisionIds;
   const [facts, enrichments, categories, tags] = await Promise.all([
-    transactionDateFacts(reader, revisionIds),
-    enrichmentRows(reader, kind, knowledgeAt, transactionIds),
-    categoryRows(reader, kind, knowledgeAt, await activeGeneration(reader), transactionIds),
-    tagRows(reader, kind, knowledgeAt, transactionIds),
+    transactionDateFacts(reader, scopedRevisionIds),
+    enrichmentRows(reader, kind, knowledgeAt, scopedTransactionIds),
+    categoryRows(reader, kind, knowledgeAt, await activeGeneration(reader), scopedTransactionIds),
+    tagRows(reader, kind, knowledgeAt, scopedTransactionIds),
   ]);
   const enrichmentsBy = grouped(enrichments, (row) => idString(row.transaction_id, "Enrichment transaction"));
   const categoriesBy = grouped(categories, (row) => idString(row.transaction_id, "Categorization transaction"));
