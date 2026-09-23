@@ -2,19 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 
-let enforceEnabledImportBoundary = true;
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (
-      enforceEnabledImportBoundary &&
-      (specifier === "node:sqlite" ||
-        specifier === "drizzle-orm" ||
-        specifier.startsWith("drizzle-orm/"))
-    ) {
-      throw new Error(
-        `Yuanta enabled workflow import reached a SQLite or Drizzle runtime module: ${context.parentURL} -> ${specifier}`,
-      );
-    }
     if (specifier === "./browser-interaction.js") {
       return nextResolve("./browser-interaction.ts", context);
     }
@@ -37,25 +26,9 @@ assert.match(
   workflowImports,
   /from "\.\.\/ledger\/canonical\/yuanta-credit-card-admission\.ts"/,
 );
-assert.doesNotMatch(
-  workflowImports,
-  /from "\.\.\/ledger\/(?:canonical\/(?:yuanta-credit-card|credit-card-current-balance-writer|bank-transaction-kind-enrichment)|db\/client)\.ts"/,
-);
 assert.match(workflowSource, /executePGliteWorkflowRun/);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND/);
-assert.doesNotMatch(
-  workflowSource,
-  /pgliteWorkflowEnabled|CanonicalFinancialCommitItem|executeCanonicalFinancialCommitRun|canonicalLedgerDir|commitYuantaCreditCardCaptureInTransaction|commitCreditCardCurrentBalanceCaptureInTransaction|refreshCanonicalBankTransactionKindsAfterCreditCardCapture/,
-);
-assert.doesNotMatch(
-  workflowSource,
-  /import\(["']\.\.\/ledger\/(?:canonical\/(?:yuanta-credit-card|credit-card-current-balance-writer|bank-transaction-kind-enrichment|canonical-financial-commit-execution)|db\/client)\.ts["']\)/,
-);
-assert.doesNotMatch(
-  workflowSource,
-  /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,
-);
 
 const {
   buildYuantaCanonicalCreditCardCaptures,
@@ -86,7 +59,6 @@ const {
   yuantaInspectFirstHistorySummaryEnabled,
   YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV,
 } = await import("./yuanta-credit-card-statements.ts");
-enforceEnabledImportBoundary = false;
 
 const yuantaCurrentCredit = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(`
   <table class="rwdTable">

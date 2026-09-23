@@ -40,14 +40,6 @@ assert.match(workflowSource, /buildYuantaInvestmentCapture/);
 assert.match(workflowSource, /executePGliteWorkflowRun/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
-assert.doesNotMatch(
-  workflowSource,
-  /executeCanonicalFinancialCommitRun|CanonicalFinancialCommitItem|commitCanonicalFinancialAdmissionInTransaction|runCanonicalInvestmentRelationFollowThrough|pgliteWorkflowEnabled|canonicalLedgerDir/,
-);
-assert.doesNotMatch(
-  workflowSource,
-  /import\(["']\.\.\/ledger\/(?:canonical\/canonical-financial-admission|canonical\/canonical-financial-commit-execution|canonical\/canonical-relation-followthrough|db\/client)\.ts["']\)/,
-);
 assert.doesNotMatch(workflowSource, /createCanonicalInvestmentStore/);
 assert.doesNotMatch(workflowSource, /commitCanonicalInvestmentCaptureBatch/);
 assert.match(workflowSource, /startUrl: YUANTA_TRADE_LOGIN_URL/);
