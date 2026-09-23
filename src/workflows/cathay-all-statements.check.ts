@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "vite";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+
+const pgliteActivationKey = "OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED";
+const previousPgliteActivation = process.env[pgliteActivationKey];
+process.env[pgliteActivationKey] = "1";
 
 const source = await readFile(
   new URL("./cathay-all-statements.ts", import.meta.url),
@@ -245,12 +245,9 @@ assert.deepEqual(allProductsOutput.downloads, [
   { type: "foreign", ...foreignDownload },
 ]);
 
-const canonicalLedgerDirectory = await mkdtemp(
-  join(tmpdir(), "cathay-all-canonical-"),
-);
 const canonicalLedgerKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
 const previousCanonicalLedgerDirectory = process.env[canonicalLedgerKey];
-process.env[canonicalLedgerKey] = canonicalLedgerDirectory;
+process.env[canonicalLedgerKey] = "pglite-test-ledger";
 const foreignCanonicalAccount = {
   account: "CATHAY-FOREIGN-ALL-133",
   currencyList: [{ currencyCode: "USD" }],
@@ -270,8 +267,11 @@ const foreignCanonicalStatement = {
   ],
 };
 let foreignCanonicalAttempts = 0;
-let currentForeignBalanceCaptures = 0;
-const foreignCanonicalLifecycle: string[] = [];
+const pgliteCommitCalls: Array<Readonly<{
+  ledgerDir: string | undefined;
+  captureCount: number;
+  requireComplete: boolean | undefined;
+}>> = [];
 let foreignCanonicalOutput: Awaited<ReturnType<typeof runCathayAllStatements>>;
 try {
   foreignCanonicalOutput = await runCathayAllStatements(
@@ -295,7 +295,7 @@ try {
       }) => {
         try {
           return await options.run();
-        } catch (error) {
+        } catch {
           await options.reset?.();
           return options.run();
         }
@@ -315,40 +315,22 @@ try {
       ) => {
         foreignCanonicalAttempts += 1;
         assert.equal(typeof onStatement, "function");
-        onStatement?.(
-          foreignCanonicalAccount,
-          "USD",
-          foreignCanonicalStatement,
-        );
+        onStatement?.(foreignCanonicalAccount, "USD", foreignCanonicalStatement);
         if (foreignCanonicalAttempts === 1)
           throw new Error("transient Cathay foreign download failure");
         return [foreignDownload];
       },
-      captureCathayCurrentForeignDepositBalances: async (
+      commitCathayForeignAndCurrentCanonicalCaptures: async (
         _page: unknown,
-        captures: readonly unknown[],
         ledgerDir: string | undefined,
+        captures: readonly unknown[],
+        options?: { requireComplete?: boolean },
       ) => {
-        currentForeignBalanceCaptures += 1;
-        assert.equal(captures.length, 1);
-        assert.ok(ledgerDir);
-        const committedStore = createCanonicalSourceStore(ledgerDir);
-        try {
-          assert.equal(
-            Number(
-              (
-                committedStore.db
-                  .prepare("SELECT COUNT(*) AS count FROM financial_accounts")
-                  .get() as { count?: number }
-              ).count ?? 0,
-            ),
-            1,
-          );
-          foreignCanonicalLifecycle.push("foreign-account-commit-complete");
-        } finally {
-          committedStore.close();
-        }
-        return [];
+        pgliteCommitCalls.push({
+          ledgerDir,
+          captureCount: captures.length,
+          requireComplete: options?.requireComplete,
+        });
       },
     },
   );
@@ -358,35 +340,12 @@ try {
   else process.env[canonicalLedgerKey] = previousCanonicalLedgerDirectory;
 }
 assert.equal(foreignCanonicalAttempts, 2);
-assert.equal(currentForeignBalanceCaptures, 1);
-assert.deepEqual(foreignCanonicalLifecycle, ["foreign-account-commit-complete"]);
+assert.deepEqual(pgliteCommitCalls, [{
+  ledgerDir: "pglite-test-ledger",
+  captureCount: 1,
+  requireComplete: true,
+}]);
 assert.equal(foreignCanonicalOutput.count, 1);
-const canonicalStore = createCanonicalSourceStore(canonicalLedgerDirectory);
-try {
-  assert.equal(
-    Number(
-      (
-        canonicalStore.db
-          .prepare("SELECT COUNT(*) AS count FROM source_captures")
-          .get() as { count?: number }
-      ).count ?? 0,
-    ),
-    1,
-  );
-  assert.equal(
-    Number(
-      (
-        canonicalStore.db
-          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-          .get() as { count?: number }
-      ).count ?? 0,
-    ),
-    1,
-  );
-} finally {
-  canonicalStore.close();
-  await rm(canonicalLedgerDirectory, { recursive: true, force: true });
-}
 
 let canonicalCommitAttempts = 0;
 const canonicalCommitFailureOutput = await runCathayAllStatements(
@@ -407,12 +366,32 @@ const canonicalCommitFailureOutput = await runCathayAllStatements(
     retryableStage: async (options: { run: () => Promise<unknown> }) =>
       options.run(),
     downloadCathayStatements: async () => [],
-    downloadCathayForeignStatements: async () => [foreignDownload],
-    commitCathayForeignCanonicalCaptures: async () => {
-      canonicalCommitAttempts += 1;
-      throw new Error("canonical foreign commit unavailable");
+    downloadCathayForeignStatements: async (
+      _page: unknown,
+      _dateRange: string,
+      _accountFilters: string[],
+      _currencyFilters: string[],
+      _session: unknown,
+      onStatement?: (
+        account: typeof foreignCanonicalAccount,
+        currency: string,
+        statement: typeof foreignCanonicalStatement,
+      ) => void,
+    ) => {
+      onStatement?.(foreignCanonicalAccount, "USD", foreignCanonicalStatement);
+      return [foreignDownload];
     },
-    captureCathayCurrentForeignDepositBalances: async () => [],
+    commitCathayForeignAndCurrentCanonicalCaptures: async (
+      _page: unknown,
+      _ledgerDir: string | undefined,
+      captures: readonly unknown[],
+      options?: { requireComplete?: boolean },
+    ) => {
+      assert.equal(captures.length, 1);
+      assert.equal(options?.requireComplete, true);
+      canonicalCommitAttempts += 1;
+      throw new Error("PGlite foreign commit unavailable");
+    },
   },
 );
 assert.equal(canonicalCommitAttempts, 1);
@@ -632,3 +611,6 @@ try {
 }
 assert.deepEqual(noSelectionCalls, []);
 await server.close();
+if (previousPgliteActivation === undefined)
+  delete process.env[pgliteActivationKey];
+else process.env[pgliteActivationKey] = previousPgliteActivation;
