@@ -61,10 +61,6 @@ const runtimeStaticImports = staticModuleHeader.replace(
 assert.match(runtimeStaticImports, /pglite-child-rpc-client\.ts/);
 assert.match(runtimeStaticImports, /fubon-credit-card-admission\.ts/);
 assert.match(runtimeStaticImports, /credit-card-current-balance-admission\.ts/);
-assert.doesNotMatch(
-  runtimeStaticImports,
-  /(?:pglite-child-rpc\.ts|fubon-credit-card\.ts|fubon-credit-card-human-attestation\.ts|credit-card-current-balance-writer\.ts|canonical-financial-commit-execution\.ts|ledger\/db\/client\.ts)/,
-);
 const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );

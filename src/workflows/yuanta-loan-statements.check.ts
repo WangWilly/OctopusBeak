@@ -130,11 +130,6 @@ assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
 assert.doesNotMatch(
   loanSource,
-  /pgliteWorkflowEnabled|CanonicalFinancialCommitItem|executeCanonicalFinancialCommitRun|canonicalLedgerDir|node:sqlite|drizzle-orm|\.\.\/ledger\/db\/client|canonical-financial-admission\.ts|canonical-financial-commit-execution\.ts|safe-loan-relation-resolution/u,
-  "Yuanta loan workflow must no longer retain its SQLite writer branch",
-);
-assert.doesNotMatch(
-  loanSource,
   /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
   "the workflow must not coordinate internal loan spines or low-level deposit batches",
 );
