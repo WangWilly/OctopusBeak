@@ -35,6 +35,7 @@
     "check:package-lock": "node scripts/check-package-lock.mjs",
     "check:pglite-spending-performance": "node --no-warnings --experimental-strip-types src/ledger/pglite/spending-performance.ts",
     "check:pglite-pairing-ui-performance": "node --no-warnings --experimental-strip-types scripts/check-pglite-pairing-ui-performance.mjs",
+    "check:pglite-electron-ipc-performance": "node --no-warnings --experimental-strip-types scripts/check-pglite-electron-ipc-performance.mjs",
     "check:welcome-assets": "node --test scripts/welcome-assets.check.mjs",
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
     "check:libretto-patch": "node scripts/patch-libretto-run-cdp.check.mjs",
