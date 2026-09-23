@@ -120,6 +120,19 @@ export function createSpendingDesktopApi(
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   return {
+    dataViews: {
+      enabled: async () => true,
+      subscribe: async (view, _params, onRows) => {
+        const pages = {
+          "financial.overview.current": emptyOverview,
+          "financial.assets.current": emptyAssets,
+          "financial.liabilities.current": emptyLiabilities,
+          "financial.spending.current": spendingPage,
+        };
+        queueMicrotask(() => onRows([pages[view]]));
+        return () => {};
+      },
+    },
     display: { setScale: () => {} },
     settings: {
       load: async () => settings,
@@ -242,6 +255,7 @@ function installSpendingDesktopApi(model) {
   const blockValue = async () => spendingPage;
   const noOp = async () => ({ ok: true });
   window.__spendingLoadCount = 0;
+  window.__spendingLiveSubscribeCount = 0;
   localStorage.setItem("octopusbeak-welcome-v1", JSON.stringify({
     version: 1,
     status: "bypassed",
@@ -249,6 +263,20 @@ function installSpendingDesktopApi(model) {
     bankAutomationChoice: null,
   }));
   window.octopusBeak = {
+    dataViews: {
+      enabled: async () => true,
+      subscribe: async (view, _params, onRows) => {
+        const pages = {
+          "financial.overview.current": fixtureOverview,
+          "financial.assets.current": fixtureAssets,
+          "financial.liabilities.current": fixtureLiabilities,
+          "financial.spending.current": spendingPage,
+        };
+        window.__spendingLiveSubscribeCount += 1;
+        queueMicrotask(() => onRows([pages[view]]));
+        return () => {};
+      },
+    },
     display: { setScale: () => {} },
     settings: {
       load: async () => fixtureSettings,
