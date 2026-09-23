@@ -9,6 +9,7 @@ import { Worker } from "node:worker_threads";
 import { chromium } from "playwright";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteViewWorkerClient } from "../electron/pglite-view-worker-client.ts";
+import { createPGliteFinancialPageClient } from "../electron/pglite-financial-registry.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { createPGlitePairingPerformanceFixture } from "../src/ledger/pglite/spending-performance-fixture.ts";
 import { spendingPairingReportContext } from "../src/lib/spending/model.ts";
@@ -274,18 +275,23 @@ async function runSingle(runNumber) {
       ranked.candidates.map((candidate) => candidate.transactionId),
       "warm ranking must preserve the full ranking order",
     );
-    const model = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
-    model.purchaseReport.knowledgeAt = dataVersion;
-    const invoiceRecord = model.purchaseReport.records.find((record) => record.purchaseId === `invoice:${fixture.targetInvoiceId}`);
-    const paymentRecord = model.purchaseReport.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === fixture.targetTransactionId);
+    const rendererModel = makeRendererModel(fixture.targetInvoiceId, selectedCandidate);
+    const currentPage = await preflight.client.financial.registry.spendingCurrent();
+    assert.equal(currentPage.purchaseReport.knowledgeAt, dataVersion);
+    const model = {
+      ...currentPage,
+      purchaseReport: { ...currentPage.purchaseReport, records: [] },
+    };
+    const invoiceRecord = rendererModel.purchaseReport.records.find((record) => record.purchaseId === `invoice:${fixture.targetInvoiceId}`);
+    const paymentRecord = rendererModel.purchaseReport.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === fixture.targetTransactionId);
     assert.ok(invoiceRecord && paymentRecord, "renderer fixture must expose the direct-confirm target records");
-    const pairingReportContext = spendingPairingReportContext(model.purchaseReport, invoiceRecord, paymentRecord);
+    const pairingReportContext = spendingPairingReportContext(rendererModel.purchaseReport, invoiceRecord, paymentRecord);
     const directConfirmInput = {
       kind: "direct",
       invoiceIdentityId: fixture.targetInvoiceId,
       transactionIdentityId: fixture.targetTransactionId,
       dataVersion,
-      totalsByCurrency: model.purchaseReport.totalsByCurrency,
+      totalsByCurrency: rendererModel.purchaseReport.totalsByCurrency,
       pairingReportContext,
     };
     const warmConfirmStartedAt = performance.now();
@@ -314,17 +320,18 @@ async function runSingle(runNumber) {
     await coldConfirmWorker.client.close();
     coldConfirmWorker = null;
 
-    const rendererInvoiceIds = new Set(model.purchaseReport.records.flatMap((record) =>
+    const rendererInvoiceIds = new Set(rendererModel.purchaseReport.records.flatMap((record) =>
       record.invoice ? [record.invoice.invoiceId] : []));
-    assert.equal(model.purchaseReport.records.length, RENDERER_FIXTURE_SHAPE.records);
-    assert.equal(model.purchaseReport.records.filter((record) => record.basis === "linked").length, RENDERER_FIXTURE_SHAPE.linkedRecords);
-    assert.equal(model.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length, RENDERER_FIXTURE_SHAPE.bankTransactionRecords);
+    assert.equal(rendererModel.purchaseReport.records.length, RENDERER_FIXTURE_SHAPE.records);
+    assert.equal(rendererModel.purchaseReport.records.filter((record) => record.basis === "linked").length, RENDERER_FIXTURE_SHAPE.linkedRecords);
+    assert.equal(rendererModel.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length, RENDERER_FIXTURE_SHAPE.bankTransactionRecords);
     assert.equal(rendererInvoiceIds.size, RENDERER_FIXTURE_SHAPE.invoiceIdentities);
     server = await createSpendingViteServer();
     const address = server.httpServer?.address();
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     actual = await startWorker(dataDir);
+    const actualPage = createPGliteFinancialPageClient(actual.client.financial);
     progress("started UI worker");
     const uiWorkerStartupMs = actual.startupMs;
 
@@ -356,7 +363,7 @@ async function runSingle(runNumber) {
       confirmBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const value = await actual.client.financial.registry.confirmCandidate(input);
+        const value = await actualPage.applySpendingPageAction(input);
         progress(`UI confirm RPC completed (${(performance.now() - startedAt).toFixed(1)}ms)`);
         return value;
       } finally {
@@ -385,7 +392,32 @@ async function runSingle(runNumber) {
     // The harness supplies shell data APIs; these Pairing methods are replaced
     // below before navigation, so Pairing never uses no-op action defaults.
     await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
-    await page.addInitScript(() => {
+    await page.addInitScript(({ invoiceRecord, paymentRecord, targetMonth }) => {
+      let affectedRecords = null;
+      window.octopusBeak.spending.loadRecordPage = async (input) => ({
+        schemaVersion: 1,
+        knowledgeAt: input.knowledgeAt,
+        month: input.month ?? null,
+        day: input.day ?? null,
+        records: input.month === targetMonth
+          ? (affectedRecords ?? [invoiceRecord, paymentRecord])
+          : [],
+        nextCursor: null,
+      });
+      window.octopusBeak.spending.loadCandidatePage = async (input) => ({
+        schemaVersion: 1,
+        knowledgeAt: input.knowledgeAt,
+        month: input.month,
+        items: [],
+        totalCandidateCount: 0,
+        nextOffset: null,
+      });
+      window.octopusBeak.spending.cancelCandidatePage = async () => undefined;
+      window.octopusBeak.spending.applyPageAction = async (input) => {
+        const result = await window.__pairingConfirmThroughWorker(input);
+        affectedRecords = result.affectedRecords;
+        return result;
+      };
       window.__pairingPerformance = {
         longTasks: [],
         rafGaps: [],
@@ -475,12 +507,14 @@ async function runSingle(runNumber) {
         window.__pairingPrewarmDone = true;
         return result;
       };
-    });
+    }, { invoiceRecord, paymentRecord, targetMonth: selectedCandidate.occurrence.value.slice(0, 7) });
     await page.addInitScript(() => {
       localStorage.setItem("octopusbeak-locale", "en");
     });
     await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
     await page.locator("[data-purchase-report]").waitFor({ timeout: 30_000 });
+    await page.locator(".month-picker select").selectOption(selectedCandidate.occurrence.value.slice(0, 7));
+    await page.locator("[data-open-pairing]").first().waitFor({ timeout: 30_000 });
     const initialRenderedRecordCount = await page.locator("[data-purchase-record]").count();
     await page.waitForFunction(() => window.__pairingPrewarmStarted === true, undefined, { timeout: 30_000 });
     const prewarmDoneAtClick = await page.evaluate(() => window.__pairingPrewarmDone === true);
@@ -616,10 +650,11 @@ async function runSingle(runNumber) {
       existingLinkCountBefore: fixture.counts.activeLinks,
       existingLinkCountAfter: Number(persisted.activeLinks),
       actualFixtureCounts: fixture.counts,
-      rendererModelRecordCount: model.purchaseReport.records.length,
+      comparisonFixtureRecordCount: rendererModel.purchaseReport.records.length,
+      initialLivePayloadRecordCount: model.purchaseReport.records.length,
       rendererModelInvoiceIdentityCount: rendererInvoiceIds.size,
-      rendererModelLinkedRecordCount: model.purchaseReport.records.filter((record) => record.basis === "linked").length,
-      rendererModelBankTransactionRecordCount: model.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length,
+      rendererModelLinkedRecordCount: rendererModel.purchaseReport.records.filter((record) => record.basis === "linked").length,
+      rendererModelBankTransactionRecordCount: rendererModel.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length,
       initialRenderedRecordCount,
       postConfirmRenderedRecordCount,
       setupMs: fixture.setupMs,
