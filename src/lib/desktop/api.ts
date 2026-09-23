@@ -29,7 +29,7 @@ import type {
 import type {
   SpendingLoadInput,
   SpendingOverrideUpdate,
-} from "$lib/spending/server/store.ts";
+} from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
   HumanAssistanceContract,
