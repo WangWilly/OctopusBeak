@@ -42,7 +42,7 @@ import type {
   CurrentSpendingQueryResult,
   HistoricalSpendingQueryResult,
   LineageSpendingQueryResult,
-} from "../../lib/shared-ledger/server/financial-query.ts";
+} from "../../lib/shared-ledger/server/financial-query-contracts.ts";
 import type {
   SpendingInvoiceDto,
   SpendingPageDto,
