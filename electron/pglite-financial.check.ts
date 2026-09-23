@@ -9,6 +9,7 @@ import {
   createPGliteFinancialPageClient,
   PGliteFinancialError,
   PGLITE_FINANCIAL_OPERATIONS,
+  type PGliteFinancialRpcClient,
   type PGliteFinancialRegistry,
   type PGliteFinancialOperation,
 } from "./pglite-financial-registry.ts";
@@ -99,6 +100,23 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   }
 }
 
+test("pairing prewarm checks the commit version without materializing Spending", async () => {
+  let versionReads = 0;
+  const page = createPGliteFinancialPageClient({
+    registry: {
+      spendingVersion: async () => { versionReads += 1; return 7; },
+      spendingCurrent: async () => { throw new Error("full Spending read is not prewarm"); },
+    },
+  } as unknown as PGliteFinancialRpcClient);
+  assert.deepEqual(await page.prewarmPairingCandidates({ dataVersion: 7 }), {
+    status: "ready", dataVersion: 7, reused: false,
+  });
+  assert.deepEqual(await page.prewarmPairingCandidates({ dataVersion: 6 }), {
+    status: "stale", dataVersion: 7, requestedVersion: 6,
+  });
+  assert.equal(versionReads, 2);
+});
+
 test("one worker exposes named financial reads/writes and complete live snapshots", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rpc-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
@@ -112,6 +130,7 @@ test("one worker exposes named financial reads/writes and complete live snapshot
   try {
     const initial = await page.load("overview");
     assert.equal(initial.availability, "empty");
+    assert.equal(await client.financial.registry.spendingVersion(), 0);
     assert.ok(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"));
     assert.deepEqual(await client.financial.registry.currentLoanRelations(), []);
     assert.deepEqual(await client.financial.registry.currentLoanSettlementGroups(), []);

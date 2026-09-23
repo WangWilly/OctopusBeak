@@ -108,6 +108,7 @@ export const PGLITE_FINANCIAL_OPERATIONS = [
   "financial.assets.current",
   "financial.liabilities.current",
   "financial.spending.current",
+  "financial.spending.version",
   "financial.spending.pairing",
   "financial.spending.confirmCandidate",
   "financial.spending.denyCandidate",
@@ -192,6 +193,7 @@ export type PGliteFinancialRegistry = Readonly<{
   assetsCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<AssetsPageDto>;
   liabilitiesCurrent(expectedSources?: PGliteFinancialExpectedSources): Promise<LiabilitiesPageDto>;
   spendingCurrent(input?: SpendingLoadInput): Promise<SpendingPageDto>;
+  spendingVersion(): Promise<number>;
   spendingPairing(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
   confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
   denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
@@ -380,6 +382,8 @@ function validFinancialArgs(operation: PGliteFinancialOperation, args: readonly 
       return args.length === 0 || (args.length === 1 && Array.isArray(args[0]));
     case "financial.spending.current":
       return args.length === 0 || (args.length === 1 && plainRecord(args[0]));
+    case "financial.spending.version":
+      return args.length === 0;
     case "financial.spending.pairing":
       return args.length === 1 && plainRecord(args[0])
         && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
@@ -646,6 +650,12 @@ export function createPGliteFinancialRegistry(
     spendingCurrent(input = {}) {
       return spending.page(input);
     },
+    async spendingVersion() {
+      const result = await store.query<{ value: number | string }>(
+        "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
+      );
+      return Number(result.rows[0]?.value ?? 0);
+    },
     spendingPairing(input) {
       return spending.pairingCandidates(input);
     },
@@ -691,6 +701,7 @@ async function invoke(
     case "financial.assets.current": return registry.assetsCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
     case "financial.liabilities.current": return registry.liabilitiesCurrent(args[0] as PGliteFinancialExpectedSources | undefined);
     case "financial.spending.current": return registry.spendingCurrent(args[0] as SpendingLoadInput | undefined);
+    case "financial.spending.version": return registry.spendingVersion();
     case "financial.spending.pairing": return registry.spendingPairing(args[0] as SpendingPairingCandidatesInput);
     case "financial.spending.confirmCandidate": return registry.confirmCandidate(args[0] as SpendingConfirmActionInput);
     case "financial.spending.denyCandidate": return registry.denyCandidate(args[0] as SpendingCandidateActionInput);
@@ -894,6 +905,7 @@ export function createPGliteFinancialRpcClient(port: RpcPort, ready?: Promise<vo
     assetsCurrent: (expectedSources) => call("financial.assets.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<AssetsPageDto>,
     liabilitiesCurrent: (expectedSources) => call("financial.liabilities.current", expectedSources === undefined ? [] : [expectedSources]) as Promise<LiabilitiesPageDto>,
     spendingCurrent: (input) => call("financial.spending.current", input === undefined ? [] : [input]) as Promise<SpendingPageDto>,
+    spendingVersion: () => call("financial.spending.version", []) as Promise<number>,
     spendingPairing: (input) => call("financial.spending.pairing", [input]) as Promise<SpendingPairingCandidatesResult>,
     confirmCandidate: (input) => call("financial.spending.confirmCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
     denyCandidate: (input) => call("financial.spending.denyCandidate", [input]) as Promise<SpendingPurchaseActionResult>,
@@ -957,10 +969,10 @@ export function createPGliteFinancialPageClient(
     },
     rankPairingCandidates: (input: SpendingPairingCandidatesInput) => rpc.registry.spendingPairing(input),
     prewarmPairingCandidates: async (input: { dataVersion: number }) => {
-      const pageResult = await rpc.registry.spendingCurrent();
-      return pageResult.canonical.knowledgePoint === input.dataVersion
+      const currentVersion = await rpc.registry.spendingVersion();
+      return currentVersion === input.dataVersion
         ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
-        : { status: "stale" as const, dataVersion: pageResult.canonical.knowledgePoint, requestedVersion: input.dataVersion };
+        : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
     },
     confirmCandidate: (input: SpendingConfirmActionInput) => rpc.registry.confirmCandidate(input),
     denyCandidate: (input: SpendingCandidateActionInput) => rpc.registry.denyCandidate(input),
