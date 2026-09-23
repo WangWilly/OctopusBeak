@@ -2,8 +2,19 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 
+let enforceEnabledImportBoundary = true;
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (
+      enforceEnabledImportBoundary &&
+      (specifier === "node:sqlite" ||
+        specifier === "drizzle-orm" ||
+        specifier.startsWith("drizzle-orm/"))
+    ) {
+      throw new Error(
+        `Yuanta enabled workflow import reached a SQLite or Drizzle runtime module: ${context.parentURL} -> ${specifier}`,
+      );
+    }
     if (specifier === "./browser-interaction.js") {
       return nextResolve("./browser-interaction.ts", context);
     }
@@ -17,6 +28,18 @@ registerHooks({
 const workflowSource = await readFile(
   new URL("./yuanta-credit-card-statements.ts", import.meta.url),
   "utf8",
+);
+const workflowImports = workflowSource.slice(
+  0,
+  workflowSource.indexOf("\n\ntype BrowserScope"),
+);
+assert.match(
+  workflowImports,
+  /from "\.\.\/ledger\/canonical\/yuanta-credit-card-admission\.ts"/,
+);
+assert.doesNotMatch(
+  workflowImports,
+  /from "\.\.\/ledger\/(?:canonical\/(?:yuanta-credit-card|credit-card-current-balance-writer|bank-transaction-kind-enrichment)|db\/client)\.ts"/,
 );
 assert.match(workflowSource, /commitYuantaCreditCardCaptureInTransaction/);
 assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
@@ -54,6 +77,7 @@ const {
   yuantaInspectFirstHistorySummaryEnabled,
   YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV,
 } = await import("./yuanta-credit-card-statements.ts");
+enforceEnabledImportBoundary = false;
 
 const yuantaCurrentCredit = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(`
   <table class="rwdTable">

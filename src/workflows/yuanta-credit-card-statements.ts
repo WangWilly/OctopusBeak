@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
@@ -18,7 +18,6 @@ import {
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
-  commitYuantaCreditCardCaptureInTransaction,
   yuantaCanonicalSpineCapture,
   yuantaNeutralCreditCardCapture,
   type YuantaCreditCardCaptureBuilderOptions,
@@ -26,21 +25,17 @@ import {
   type YuantaCreditCardSourceRow,
   type YuantaCreditCardStatementSummary,
   type YuantaCreditCardValidatedCapture,
-} from "../ledger/canonical/yuanta-credit-card.ts";
-import { refreshCanonicalBankTransactionKindsAfterCreditCardCapture } from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
+} from "../ledger/canonical/yuanta-credit-card-admission.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
-} from "../ledger/canonical/credit-card-current-balance-writer.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import type {
+  CanonicalFinancialCommitItem,
 } from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
@@ -5667,6 +5662,19 @@ export default workflow("yuantaCreditCardStatements", {
             client.close();
           }
         } else {
+        const [
+          { commitYuantaCreditCardCaptureInTransaction },
+          { refreshCanonicalBankTransactionKindsAfterCreditCardCapture },
+          { commitCreditCardCurrentBalanceCaptureInTransaction },
+          { executeCanonicalFinancialCommitRun },
+          { DEFAULT_LEDGER_DIR },
+        ] = await Promise.all([
+          import("../ledger/canonical/yuanta-credit-card.ts"),
+          import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
+          import("../ledger/canonical/credit-card-current-balance-writer.ts"),
+          import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+          import("../ledger/db/client.ts"),
+        ]);
         const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
         for (const canonicalCapture of canonicalCaptures) {
           executionItems.push({
