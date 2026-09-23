@@ -64,12 +64,12 @@ try {
   assert.equal(await chart.locator(".canonical-chart-row").filter({ hasText: "USD" }).count(), 1);
   assert.match((await page.locator(".canonical-chart-card .panel-meta").first().textContent()) ?? "", /All months.*all categories.*currencies remain separate/u);
   assert.equal(await page.locator('[data-total-status="incomplete"]').count(), 0);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLiveSubscribeCount), 1);
 
   await page.getByRole("button", { name: "September 2026" }).click();
   assert.match((await page.locator(".canonical-summary-card .panel-meta").textContent()) ?? "", /September 2026.*All categories.*included/u);
   assert.equal(await page.locator(".canonical-category-chart .canonical-chart-row").count(), 2);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLiveSubscribeCount), 1);
 
   const summaryBeforeCategory = await page.locator(".canonical-summary-card").textContent();
   await page.getByRole("button", { name: "Transportation" }).click();
@@ -78,7 +78,7 @@ try {
   assert.equal(await page.locator(".canonical-summary-card").textContent(), summaryBeforeCategory);
   await page.getByRole("button", { name: "All" }).click();
   assert.equal(await page.locator(".canonical-record-list .canonical-record").count(), 1);
-  assert.equal(await page.evaluate(() => window.__spendingLoadCount), 1);
+  assert.equal(await page.evaluate(() => window.__spendingLiveSubscribeCount), 1);
 
   assert.deepEqual(errors, []);
 } finally {
