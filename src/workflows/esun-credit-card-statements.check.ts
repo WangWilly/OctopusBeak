@@ -15,7 +15,7 @@ import {
   isEsunCompleteGrid,
   parseEsunCurrentCreditCardUsedCreditHtml,
 } from "./esun-credit-card-statements.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 
 const workflowSource = await readFile(
@@ -24,6 +24,13 @@ const workflowSource = await readFile(
 );
 assert.match(workflowSource, /commitEsunCreditCardCaptureInTransaction/);
 assert.match(workflowSource, /executeCanonicalFinancialCommitRun/);
+assert.match(workflowSource, /pglite-child-rpc-client\.ts/);
+assert.match(workflowSource, /esun-credit-card-admission\.ts/);
+assert.match(workflowSource, /credit-card-current-balance-admission\.ts/);
+assert.match(workflowSource, /import\("\.\.\/ledger\/canonical\/canonical-financial-commit-execution\.ts"\)/);
+assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/db\/client\.ts"/);
+assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/canonical\/esun-credit-card\.ts"/);
+assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/canonical\/credit-card-current-balance-writer\.ts"/);
 assert.doesNotMatch(
   workflowSource,
   /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,

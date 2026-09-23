@@ -5,7 +5,7 @@ import type { FubonCreditCardValidatedCapture } from "../canonical/fubon-credit-
 import {
   sourceEvidenceFromCreditCardCurrentBalanceCapture,
   type CreditCardCurrentBalanceValidatedCapture,
-} from "../canonical/credit-card-current-balance-writer.ts";
+} from "../canonical/credit-card-current-balance-admission.ts";
 import type {
   PGliteCanonicalCreditCardBalanceCaptureRequest,
   PGliteCanonicalCreditCardCaptureRequest,
