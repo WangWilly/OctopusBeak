@@ -11,7 +11,6 @@ import {
 } from "../ledger/pglite/credit-card-adapters.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -41,7 +40,6 @@ import {
   type CreditCardCurrentBalanceObservationInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -50,7 +48,6 @@ import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 // completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
 
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 
@@ -2584,7 +2581,6 @@ export async function runFubonCreditCardStatements(
   page: Page,
   input: FubonCreditCardStatementsInput,
   overrides: {
-    canonicalLedgerDir?: string;
     panFingerprintKey?: FubonCreditCardPanFingerprintKey;
   } = {},
 ): Promise<FubonCreditCardStatementsOutput> {
@@ -2707,94 +2703,36 @@ export async function runFubonCreditCardStatements(
             : {}),
         })
       : [];
-  const canonicalLedgerDir =
-    overrides.canonicalLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
   let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
   if (canonicalCaptures.length > 0) {
-    if (pgliteWorkflowEnabled(process.env)) {
-      const requests = canonicalCaptures.map((capture) =>
-        fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)));
-      const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
-        provider: "fubon", product: "credit-card", itemKey: request.capture.captureId,
-        command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
-      }));
-      if (currentUsedCredit) {
-        const balanceCapture = fubonCreditCurrentSnapshotCapture(
-          canonicalCaptures[0]!, currentUsedCredit,
-        );
-        items.push({
-          provider: "fubon", product: "current-balance", itemKey: balanceCapture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-            request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
-          },
-        });
-      }
-      const client = requirePGliteChildRpcClientFromEnv();
-      try {
-        await client.ready;
-        const result = await executePGliteWorkflowRun({
-          client: client.workflow, items, provider: "fubon", product: "credit-card",
-        });
-        if (result.status !== "completed")
-          throw new Error(`Fubon credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
-      } finally {
-        client.close();
-      }
-    } else {
-      const [
-        { executeCanonicalFinancialCommitRun },
-        { commitFubonCreditCardCaptureInTransaction },
-        { commitCreditCardCurrentBalanceCaptureInTransaction },
-      ] = await Promise.all([
-        import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-        import("../ledger/canonical/fubon-credit-card.ts"),
-        import("../ledger/canonical/credit-card-current-balance-writer.ts"),
-      ]);
-      const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-      for (const canonicalCapture of canonicalCaptures) {
-        executionItems.push({
-          provider: "fubon",
-          product: "credit-card",
-          itemKey: canonicalCapture.captureId,
-          commit: ({ writer, admission }) =>
-            commitFubonCreditCardCaptureInTransaction(
-              writer,
-              canonicalCapture,
-              admission,
-            ),
-        });
-      }
-      if (currentUsedCredit) {
-        const balanceCapture = fubonCreditCurrentSnapshotCapture(
-          canonicalCaptures[0]!,
-          currentUsedCredit,
-        );
-        executionItems.push({
-          provider: "fubon",
-          product: "current-balance",
-          itemKey: balanceCapture.captureId,
-          commit: ({ writer, admission }) =>
-            commitCreditCardCurrentBalanceCaptureInTransaction(
-              writer,
-              balanceCapture,
-              admission,
-            ),
-        });
-      }
-      const executionResult = await executeCanonicalFinancialCommitRun({
-        canonicalLedgerDir,
-        items: executionItems,
-        provider: "fubon",
-        product: "credit-card",
+    const requests = canonicalCaptures.map((capture) =>
+      fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)));
+    const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
+      provider: "fubon", product: "credit-card", itemKey: request.capture.captureId,
+      command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
+    }));
+    if (currentUsedCredit) {
+      const balanceCapture = fubonCreditCurrentSnapshotCapture(
+        canonicalCaptures[0]!, currentUsedCredit,
+      );
+      items.push({
+        provider: "fubon", product: "current-balance", itemKey: balanceCapture.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+          request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
+        },
       });
-      if (executionResult.status !== "completed")
-        throw new Error(
-          `Fubon credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-        );
+    }
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow, items, provider: "fubon", product: "credit-card",
+      });
+      if (result.status !== "completed")
+        throw new Error(`Fubon credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
+    } finally {
+      client.close();
     }
     canonicalAdmission = "admitted";
   }
@@ -2860,12 +2798,6 @@ export default workflow("fubonCreditCardStatements", {
     };
     await openCreditCardLoginForm(page);
     await completeFubonHumanLogin(page, session, values);
-    const canonicalLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-      process.env.LEDGER_DIR?.trim() ||
-      DEFAULT_LEDGER_DIR;
-    return await runFubonCreditCardStatements(page, input, {
-      canonicalLedgerDir,
-    });
+    return await runFubonCreditCardStatements(page, input);
   },
 });
