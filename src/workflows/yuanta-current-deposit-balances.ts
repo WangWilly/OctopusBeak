@@ -1,6 +1,6 @@
 import type { Frame, Locator, Page, Response } from "playwright";
 
-import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-domestic-deposit.ts";
+import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 
 /**
  * Yuanta's current deposit summary is a source snapshot.  It is reached from

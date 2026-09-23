@@ -49,6 +49,9 @@ import {
   requireSourceConnectionIdentity,
   validateSourceConnectionIdentity,
 } from "./source-connection-identity.ts";
+import { deriveYuantaDomesticDepositAccountKey } from "./yuanta-deposit-account-key.ts";
+
+export { deriveYuantaDomesticDepositAccountKey } from "./yuanta-deposit-account-key.ts";
 
 export const YUANTA_DOMESTIC_DEPOSIT_CONTRACT = {
   source: "yuanta",
@@ -833,12 +836,6 @@ export type YuantaDomesticDepositAccountIdentity = {
   identityEpochKey: string;
   subjectDigest: string;
 };
-
-export function deriveYuantaDomesticDepositAccountKey(
-  accountValue: string,
-): string {
-  return yuantaDigest("yuanta-account-selector-v1", accountValue);
-}
 
 type YuantaSourceConnectionResolution = {
   sourceConnectionKey: `sha256:${string}` | null;
