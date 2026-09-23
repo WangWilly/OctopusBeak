@@ -1,6 +1,6 @@
 import { mkdir, open, stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import type { YuantaDomesticDepositCaptureEvidence } from "../ledger/canonical/yuanta-domestic-deposit.ts";
+import type { YuantaDomesticDepositCaptureEvidence } from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 
 export const YUANTA_OCCURRENCE_DIAGNOSTIC_DIRECTORY_ENV =
   "OCTOPUSBEAK_YUANTA_OCCURRENCE_DIAGNOSTIC_DIR" as const;
