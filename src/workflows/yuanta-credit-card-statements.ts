@@ -11,7 +11,6 @@ import {
 } from "../ledger/pglite/credit-card-adapters.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -33,9 +32,6 @@ import {
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
-import type {
-  CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
@@ -5607,7 +5603,8 @@ export default workflow("yuantaCreditCardStatements", {
           },
         };
 
-    let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
+    let canonicalAdmission: "not-configured" | "admitted" =
+      "not-configured";
     let canonicalCaptureCount = 0;
     if (
       canonicalHumanAttestation &&
@@ -5628,106 +5625,57 @@ export default workflow("yuantaCreditCardStatements", {
         statementSummaries,
       });
       if (canonicalCaptures.length > 0) {
-        if (pgliteWorkflowEnabled(process.env)) {
-          const requests = canonicalCaptures.map((capture) =>
-            creditCardCommandRequestFromCanonicalCapture(
-              yuantaCanonicalSpineCapture(capture),
-              yuantaNeutralCreditCardCapture(capture),
-            ));
-          const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
-            provider: "yuanta", product: "credit-card", itemKey: request.capture.captureId,
-            command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
-          }));
-          if (currentUsedCredit) {
-            const balanceCapture = yuantaCreditCurrentSnapshotCapture(
-              canonicalCaptures[0]!, currentUsedCredit,
-            );
-            items.push({
-              provider: "yuanta", product: "current-balance", itemKey: balanceCapture.captureId,
-              command: {
-                kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-                request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
-              },
-            });
-          }
-          const client = requirePGliteChildRpcClientFromEnv();
-          try {
-            await client.ready;
-            const result = await executePGliteWorkflowRun({
-              client: client.workflow, items, provider: "yuanta", product: "credit-card",
-            });
-            if (result.status !== "completed")
-              throw new Error(`Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
-          } finally {
-            client.close();
-          }
-        } else {
-        const [
-          { commitYuantaCreditCardCaptureInTransaction },
-          { refreshCanonicalBankTransactionKindsAfterCreditCardCapture },
-          { commitCreditCardCurrentBalanceCaptureInTransaction },
-          { executeCanonicalFinancialCommitRun },
-          { DEFAULT_LEDGER_DIR },
-        ] = await Promise.all([
-          import("../ledger/canonical/yuanta-credit-card.ts"),
-          import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
-          import("../ledger/canonical/credit-card-current-balance-writer.ts"),
-          import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-          import("../ledger/db/client.ts"),
-        ]);
-        const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-        for (const canonicalCapture of canonicalCaptures) {
-          executionItems.push({
-            provider: "yuanta",
-            product: "credit-card",
-            itemKey: canonicalCapture.captureId,
-            commit: ({ writer, admission }) => {
-              const result = commitYuantaCreditCardCaptureInTransaction(
-                writer,
-                canonicalCapture,
-                admission,
-              );
-              refreshCanonicalBankTransactionKindsAfterCreditCardCapture(
-                writer.db,
-              );
-              return result;
-            },
-          });
-        }
+        const requests = canonicalCaptures.map((capture) =>
+          creditCardCommandRequestFromCanonicalCapture(
+            yuantaCanonicalSpineCapture(capture),
+            yuantaNeutralCreditCardCapture(capture),
+          ),
+        );
+        const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
+          provider: "yuanta",
+          product: "credit-card",
+          itemKey: request.capture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
+            request,
+          },
+        }));
         if (currentUsedCredit) {
           const balanceCapture = yuantaCreditCurrentSnapshotCapture(
             canonicalCaptures[0]!,
             currentUsedCredit,
           );
-          executionItems.push({
+          items.push({
             provider: "yuanta",
             product: "current-balance",
             itemKey: balanceCapture.captureId,
-            commit: ({ writer, admission }) =>
-              commitCreditCardCurrentBalanceCaptureInTransaction(
-                writer,
+            command: {
+              kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+              request: creditCardBalanceCommandRequest(
                 balanceCapture,
-                admission,
+                requests[0]!.identity,
               ),
+            },
           });
         }
-        const canonicalLedgerDir =
-          process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-          process.env.LEDGER_DIR?.trim() ||
-          DEFAULT_LEDGER_DIR;
-        const executionResult = await executeCanonicalFinancialCommitRun({
-          canonicalLedgerDir,
-          items: executionItems,
-          provider: "yuanta",
-          product: "credit-card",
-        });
-        if (executionResult.status !== "completed")
-          throw new Error(
-            `Yuanta credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-          );
+        const client = requirePGliteChildRpcClientFromEnv();
+        try {
+          await client.ready;
+          const result = await executePGliteWorkflowRun({
+            client: client.workflow,
+            items,
+            provider: "yuanta",
+            product: "credit-card",
+          });
+          if (result.status !== "completed")
+            throw new Error(
+              `Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`,
+            );
+          canonicalAdmission = "admitted";
+          canonicalCaptureCount = canonicalCaptures.length;
+        } finally {
+          client.close();
         }
-        canonicalAdmission = "admitted";
-        canonicalCaptureCount = canonicalCaptures.length;
       }
     }
 
