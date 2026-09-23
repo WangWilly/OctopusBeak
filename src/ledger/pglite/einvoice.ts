@@ -8,7 +8,7 @@ import type {
   CanonicalEInvoiceMoney,
   CanonicalEInvoiceOccurrence,
   CanonicalEInvoiceProvenance,
-} from "../canonical/einvoice.ts";
+} from "../canonical/einvoice-contract.ts";
 import {
   stableCanonicalSourceJson,
   type CanonicalSourceEvidence,

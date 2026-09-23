@@ -12,9 +12,7 @@ import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
-  commitCanonicalEInvoiceCaptureInTransaction,
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
   E_INVOICE_ROUTE,
@@ -22,10 +20,9 @@ import {
   type CanonicalEInvoiceInput,
   type CanonicalEInvoiceItemInput,
   type CanonicalEInvoiceOccurrence,
-} from "../ledger/canonical/einvoice.ts";
+} from "../ledger/canonical/einvoice-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
-import { executeCanonicalFinancialCommitRun } from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
   pgliteWorkflowEnabled,
@@ -973,16 +970,19 @@ export function buildCanonicalEInvoiceCapture(
   };
 }
 
-function configuredCanonicalLedgerDir(explicit: string | undefined): string {
+function configuredCanonicalLedgerDir(
+  explicit: string | undefined,
+  defaultLedgerDir: string,
+): string {
   return explicit?.trim() ||
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
     process.env.LEDGER_DIR?.trim() ||
-    DEFAULT_LEDGER_DIR;
+    defaultLedgerDir;
 }
 
 export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
-  ledgerDir: string,
+  ledgerDir?: string,
 ) {
   if (pgliteWorkflowEnabled(process.env)) {
     const client = requirePGliteChildRpcClientFromEnv();
@@ -1012,8 +1012,21 @@ export async function commitCanonicalCapture(
       client.close();
     }
   }
+  const [
+    { DEFAULT_LEDGER_DIR },
+    { executeCanonicalFinancialCommitRun },
+    { commitCanonicalEInvoiceCaptureInTransaction },
+  ] = await Promise.all([
+    import("../ledger/db/client.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/einvoice.ts"),
+  ]);
+  const canonicalLedgerDir = configuredCanonicalLedgerDir(
+    ledgerDir,
+    DEFAULT_LEDGER_DIR,
+  );
   const result = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir: ledgerDir,
+    canonicalLedgerDir,
     items: [
       {
         provider: "einvoice",
@@ -1061,7 +1074,7 @@ export default workflow("einvoicePersonalInvoices", {
     emitAutomationProgress({ phaseCode: "workflow", completed: 90, total: 100, percent: 90 });
     const commit = await commitCanonicalCapture(
       capture,
-      configuredCanonicalLedgerDir(input.canonicalLedgerDir),
+      input.canonicalLedgerDir,
     );
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
