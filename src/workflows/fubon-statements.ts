@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -25,7 +25,6 @@ import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
   admitFubonDomesticDepositFinancialCapture,
-  commitCanonicalFubonDomesticDepositCaptureBatchInTransaction,
   createFubonDomesticDepositSourceEvidence,
   deriveFubonDomesticDepositAccountIdentity,
   FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -50,21 +49,17 @@ import {
   type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
-} from "../ledger/canonical/fubon-domestic-deposit.ts";
-import {
-  persistCounterpartyAccountEvidence,
+} from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
+import type {
   resolveLoanRepaymentRelations,
-  type TransactionCounterpartyAccountEvidenceInput,
+  TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-  type CanonicalFinancialCommitTransaction,
+import type {
+  CanonicalFinancialCommitItem,
+  CanonicalFinancialCommitTransaction,
 } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -76,14 +71,15 @@ import {
 } from "./fubon-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -3166,8 +3162,7 @@ export async function runFubonStatements(
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
   const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const resolveRelations =
-    overrides.resolveLoanRepaymentRelations ?? resolveLoanRepaymentRelations;
+  const resolveRelations = overrides.resolveLoanRepaymentRelations;
   const stableSourceConnectionKey = sourceConnectionKey;
   const stableSourceIdentity = {
     sourceConnectionScope,
@@ -3421,6 +3416,24 @@ export async function runFubonStatements(
         client.close();
       }
     } else {
+    const [
+      { executeCanonicalFinancialCommitRun },
+      { commitCanonicalFubonDomesticDepositCaptureBatchInTransaction },
+      {
+        persistCounterpartyAccountEvidence,
+        resolveLoanRepaymentRelations: resolveDefaultLoanRepaymentRelations,
+      },
+      { resolveLoanRelationsAfterCapture },
+      { commitCurrentDepositBalanceCaptureInTransaction },
+    ] = await Promise.all([
+      import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+      import("../ledger/canonical/fubon-domestic-deposit.ts"),
+      import("../ledger/canonical/loan-repayment-relations.ts"),
+      import("./safe-loan-relation-resolution.ts"),
+      import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    ]);
+    const legacyResolveRelations =
+      resolveRelations ?? resolveDefaultLoanRepaymentRelations;
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
     for (const entry of sourceOnlyEntries) {
       executionItems.push({
@@ -3458,7 +3471,7 @@ export async function runFubonStatements(
               resolveRelations: async ({ writer }) => {
                 for (const item of relation.evidence)
                   await persistCounterpartyAccountEvidence(writer, item);
-                await resolveLoanRelationsAfterCapture(writer, resolveRelations, {
+                await resolveLoanRelationsAfterCapture(writer, legacyResolveRelations, {
                   sourceConnectionKey: stableSourceConnectionKey,
                   integrationNamespace: "fubon",
                   observedAt: financialInput.capture.observedAt,
