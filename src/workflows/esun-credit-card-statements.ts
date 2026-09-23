@@ -15,7 +15,6 @@ import {
 } from "../ledger/pglite/credit-card-adapters.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -39,11 +38,8 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -1351,90 +1347,34 @@ export default workflow("esunCreditCardStatements", {
       "not-configured";
     let canonicalCaptureCount = 0;
     if (canonicalCapture) {
-      if (pgliteWorkflowEnabled(process.env)) {
-        const cardRequest = creditCardCommandRequestFromCanonicalCapture(
-          esunCanonicalSpineCapture(canonicalCapture),
-          esunNeutralCreditCardCapture(canonicalCapture),
-        );
-        const items: PGliteWorkflowRunItem[] = [{
-          provider: "esun", product: "credit-card", itemKey: canonicalCapture.captureId,
-          command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
-        }];
-        if (currentUsedCredit) {
-          const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
-          items.push({
-            provider: "esun", product: "current-balance", itemKey: balanceCapture.captureId,
-            command: {
-              kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-              request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
-            },
-          });
-        }
-        const client = requirePGliteChildRpcClientFromEnv();
-        try {
-          await client.ready;
-          const result = await executePGliteWorkflowRun({
-            client: client.workflow, items, provider: "esun", product: "credit-card",
-          });
-          if (result.status !== "completed")
-            throw new Error(`E.SUN credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
-        } finally {
-          client.close();
-        }
-      } else {
-      const [
-        { commitEsunCreditCardCaptureInTransaction },
-        { commitCreditCardCurrentBalanceCaptureInTransaction },
-        { executeCanonicalFinancialCommitRun },
-      ] = await Promise.all([
-        import("../ledger/canonical/esun-credit-card.ts"),
-        import("../ledger/canonical/credit-card-current-balance-writer.ts"),
-        import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-      ]);
-      const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
-        {
-          provider: "esun",
-          product: "credit-card",
-          itemKey: canonicalCapture.captureId,
-          commit: ({ writer, admission }) =>
-            commitEsunCreditCardCaptureInTransaction(
-              writer,
-              canonicalCapture,
-              admission,
-            ),
-        },
-      ];
+      const cardRequest = creditCardCommandRequestFromCanonicalCapture(
+        esunCanonicalSpineCapture(canonicalCapture),
+        esunNeutralCreditCardCapture(canonicalCapture),
+      );
+      const items: PGliteWorkflowRunItem[] = [{
+        provider: "esun", product: "credit-card", itemKey: canonicalCapture.captureId,
+        command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
+      }];
       if (currentUsedCredit) {
-        const balanceCapture = esunCreditCurrentSnapshotCapture(
-          canonicalCapture,
-          currentUsedCredit,
-        );
-        executionItems.push({
-          provider: "esun",
-          product: "current-balance",
-          itemKey: balanceCapture.captureId,
-          commit: ({ writer, admission }) =>
-            commitCreditCardCurrentBalanceCaptureInTransaction(
-              writer,
-              balanceCapture,
-              admission,
-            ),
+        const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
+        items.push({
+          provider: "esun", product: "current-balance", itemKey: balanceCapture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+            request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
+          },
         });
       }
-      const canonicalLedgerDir =
-        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-        process.env.LEDGER_DIR?.trim() ||
-        DEFAULT_LEDGER_DIR;
-      const executionResult = await executeCanonicalFinancialCommitRun({
-        canonicalLedgerDir,
-        items: executionItems,
-        provider: "esun",
-        product: "credit-card",
-      });
-      if (executionResult.status !== "completed")
-        throw new Error(
-          `E.SUN credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-        );
+      const client = requirePGliteChildRpcClientFromEnv();
+      try {
+        await client.ready;
+        const result = await executePGliteWorkflowRun({
+          client: client.workflow, items, provider: "esun", product: "credit-card",
+        });
+        if (result.status !== "completed")
+          throw new Error(`E.SUN credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
+      } finally {
+        client.close();
       }
       canonicalAdmission = "admitted";
       canonicalCaptureCount = 1;
