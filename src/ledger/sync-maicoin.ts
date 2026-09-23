@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun } from "./pglite/workflow-run.ts";
 import type {
   PGliteMaicoinSnapshot,
@@ -15,22 +15,10 @@ import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "./pglite/workflow-client.ts";
-import {
-  DEFAULT_LEDGER_DIR,
-  openLedgerDatabase,
-  type LedgerDatabase,
-} from "./db/client.ts";
+import type { LedgerDatabase } from "./db/client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import {
-  admitCanonicalInvestmentCapture,
-  type InvestmentValidatedCapture,
-} from "./canonical/investment-financial.ts";
-import { commitCanonicalFinancialAdmissionInTransaction } from "./canonical/canonical-financial-admission.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "./canonical/canonical-financial-commit-execution.ts";
-import { runCanonicalInvestmentRelationFollowThrough } from "./canonical/canonical-relation-followthrough.ts";
+import type { InvestmentValidatedCapture } from "./canonical/investment-financial.ts";
+import type { CanonicalFinancialCommitItem } from "./canonical/canonical-financial-commit-execution.ts";
 import type { CanonicalFinancialDepositCommitResult } from "./canonical/canonical-financial-deposit-writer.ts";
 import {
   buildMaicoinInvestmentCaptures,
@@ -44,6 +32,8 @@ import {
   type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const API_BASE_URL = "https://max-api.maicoin.com";
 const DEFAULT_STATEMENT_LIMIT = 1000;
@@ -1045,9 +1035,7 @@ export async function commitMaicoinCanonicalInvestmentCaptures(
   ledgerDir: string,
   input: MaicoinInvestmentCaptureBuildInput,
 ) {
-  const captures = buildMaicoinInvestmentCaptures(input).map(
-    (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
-  );
+  const captures = buildMaicoinInvestmentCaptures(input);
   if (pgliteWorkflowEnabled(process.env)) {
     const client = requirePGliteChildRpcClientFromEnv();
     try {
@@ -1077,8 +1065,22 @@ export async function commitMaicoinCanonicalInvestmentCaptures(
       client.close();
     }
   }
+  const [
+    { admitCanonicalInvestmentCapture },
+    { commitCanonicalFinancialAdmissionInTransaction },
+    { executeCanonicalFinancialCommitRun },
+    { runCanonicalInvestmentRelationFollowThrough },
+  ] = await Promise.all([
+    import("./canonical/investment-financial.ts"),
+    import("./canonical/canonical-financial-admission.ts"),
+    import("./canonical/canonical-financial-commit-execution.ts"),
+    import("./canonical/canonical-relation-followthrough.ts"),
+  ]);
+  const admittedCaptures = captures.map(
+    (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
+  );
   const items: CanonicalFinancialCommitItem<CanonicalFinancialDepositCommitResult[]>[] =
-    captures.map((capture) => ({
+    admittedCaptures.map((capture) => ({
       provider: "maicoin",
       product: "investment",
       itemKey: capture.captureId,
@@ -1122,7 +1124,9 @@ export async function syncMaicoin(params: CliParams) {
   const pglite = pgliteWorkflowEnabled(process.env)
     ? requirePGliteChildRpcClientFromEnv()
     : null;
-  const db = pglite ? null : openLedgerDatabase(params.ledgerDir);
+  const db = pglite
+    ? null
+    : (await import("./db/client.ts")).openLedgerDatabase(params.ledgerDir);
   let runStarted = false;
   try {
     if (pglite) {
@@ -1280,7 +1284,7 @@ async function selfTest() {
   assert.equal(priceForCurrency("btc", tickers).price, 1_550_000);
 
   const ledgerDir = await mkdtemp(join(tmpdir(), "maicoin-ledger-"));
-  const db = openLedgerDatabase(ledgerDir);
+  const db = (await import("./db/client.ts")).openLedgerDatabase(ledgerDir);
   const tables = new Set(
     (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
       name: string;
