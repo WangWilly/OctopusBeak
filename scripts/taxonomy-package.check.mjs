@@ -9,7 +9,7 @@ import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
   validateTaxonomyPackage,
 } from "../src/ledger/canonical/transaction-taxonomy.ts";
-import { classifyCathayDescription } from "../src/ledger/canonical/cathay-automatic-enrichment.ts";
+import { classifyCathayDescription } from "../src/ledger/canonical/cathay-description-classifier.ts";
 
 const publishedBaseline = JSON.parse(
   await readFile(new URL("./taxonomy-published-baseline.json", import.meta.url), "utf8"),

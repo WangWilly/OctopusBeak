@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeRendererModel } from "./check-pairing-ui-performance.mjs";
+import { makeRendererModel } from "./check-pglite-pairing-ui-performance.mjs";
 
 const candidate = {
   purchaseId: "transaction:00000000-0000-4000-8000-000000000001",
