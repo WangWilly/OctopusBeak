@@ -11,7 +11,7 @@ import {
 } from "./einvoice.ts";
 import { PGliteStore } from "./transaction.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput } from "../canonical/einvoice.ts";
+import type { CanonicalEInvoiceCaptureInput, CanonicalEInvoiceInput } from "../canonical/einvoice-contract.ts";
 
 const connection = "sha256:pglite-einvoice-check-connection";
 const epoch = "sha256:pglite-einvoice-check-epoch";

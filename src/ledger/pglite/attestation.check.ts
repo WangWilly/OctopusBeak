@@ -28,42 +28,42 @@ import { PGliteStore } from "./transaction.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import {
   CATHAY_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/cathay-human-attestation.ts";
+} from "../canonical/cathay-human-attestation-contract.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/ctbc-human-attestation.ts";
+} from "../canonical/ctbc-human-attestation-contract.ts";
 import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   esunCreditCardHumanAttestedManifestFingerprint,
-} from "../canonical/esun-credit-card-human-attestation.ts";
+} from "../canonical/esun-credit-card-human-attestation-contract.ts";
 import {
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   fubonCreditCardHumanAttestedLegacyV1ManifestFingerprint,
   fubonCreditCardHumanAttestedManifestFingerprint,
-} from "../canonical/fubon-credit-card-human-attestation.ts";
+} from "../canonical/fubon-credit-card-human-attestation-contract.ts";
 import {
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/fubon-human-attestation.ts";
+} from "../canonical/fubon-human-attestation-contract.ts";
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/hncb-human-attestation.ts";
+} from "../canonical/hncb-human-attestation-contract.ts";
 import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/post-human-attestation.ts";
+} from "../canonical/post-human-attestation-contract.ts";
 import {
   SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/sinopac-human-attestation.ts";
+} from "../canonical/sinopac-human-attestation-contract.ts";
 import {
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   yuantaCreditCardHumanAttestedV2ManifestFingerprint,
-} from "../canonical/yuanta-credit-card-human-attestation.ts";
+} from "../canonical/yuanta-credit-card-human-attestation-contract.ts";
 import {
   YUANTA_HUMAN_ATTESTED_V1_MANIFEST,
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
-} from "../canonical/yuanta-human-attestation.ts";
+} from "../canonical/yuanta-human-attestation-contract.ts";
 
 const fubon: PGliteHumanAttestationRouteMetadata = {
   authorityRoute: "fubon/domestic-deposit/human-attested-v1",

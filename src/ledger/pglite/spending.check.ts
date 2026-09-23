@@ -13,7 +13,7 @@ import {
   rankPGliteSpendingPaymentCandidates,
   resolvePGliteSpendingCandidate,
 } from "./spending-query.ts";
-import type { PurchaseReport } from "../canonical/spending-purchase-report.ts";
+import type { PurchaseReport } from "../canonical/spending-purchase-contracts.ts";
 import {
   commitPGliteSpendingRefundRevision,
   applyPGliteSpendingPageAction,

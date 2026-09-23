@@ -14,7 +14,7 @@ import {
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import {
   createForeignCurrencyDepositCapture,
-} from "../canonical/foreign-currency-deposit.ts";
+} from "../canonical/foreign-currency-deposit-admission.ts";
 import { YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../canonical/foreign-currency-deposit.fixtures.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
@@ -31,8 +31,8 @@ import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositFinancialCapture,
   deriveFubonDomesticDepositAccountIdentity,
-} from "../canonical/fubon-domestic-deposit.ts";
-import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
+} from "../canonical/fubon-domestic-deposit-admission.ts";
+import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation-contract.ts";
 import { classifyCathayDescription } from "../canonical/cathay-description-classifier.ts";
 import { deriveSourceConnectionIdentityKey } from "../canonical/source-connection-identity.ts";
 
