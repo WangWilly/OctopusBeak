@@ -112,18 +112,10 @@ The packaged desktop app includes Libretto, so regular users do not need to inst
 ```bash
 npm run run:fubon-all-statements
 npx libretto resume --session <session-name>
-npm run run:import-downloads-csv
 npm run libretto:close-all
 ```
 
-Workflows write files under `downloads/<workflow-name>/`. The preferred shape is one CSV per dataset with matching JSON metadata. The importer writes records to `data/ledger/ledger.sqlite`.
-
-Create a mock ledger:
-
-```bash
-npm run run:seed-mock-ledger-db
-npm run desktop:dev:mock
-```
+Workflows write CSV files and matching JSON metadata under `downloads/<workflow-name>/`. The desktop PGlite worker stores financial data in `data/pglite/`.
 
 For direct MAX / MaiCoin sync, set `MAX_ACCESS_KEY`, `MAX_SECRET_KEY`, and `MAX_SUB_ACCOUNT`, then run:
 
