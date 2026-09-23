@@ -916,7 +916,19 @@ export function createPGliteFinancialLiveViews(
         };
         const trigger = () => {
           if (!initialReady) return;
-          if (view === "financial.spending.current" && registry.isSpendingPageActionInFlight?.()) {
+          if (view === "financial.spending.current") {
+            if (registry.isSpendingPageActionInFlight?.()) return;
+            // A page action already publishes its exact summary delta. The
+            // commit notification may arrive just after that publication;
+            // avoid rebuilding the same full summary ahead of a Pairing click.
+            // A separate commit still has a newer version and is recomputed.
+            void registry.spendingVersion().then((version) => {
+              if (stopped) return;
+              const published = (entry?.lastValue as SpendingPageDto | undefined)?.purchaseReport.knowledgeAt ?? -1;
+              if (version > published) return recompute();
+            }).catch((error) => {
+              for (const listener of listeners) listener.error(error);
+            });
             return;
           }
           void recompute().catch((error) => {
