@@ -10,7 +10,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
@@ -44,7 +43,6 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
@@ -2938,151 +2936,52 @@ export function buildYuantaForeignCurrencyCaptureInput(
   };
 }
 
-async function configuredYuantaCanonicalLedgerDir(): Promise<string> {
-  const configured =
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-    process.env.LEDGER_DIR?.trim();
-  if (configured) return configured;
-  if (pgliteWorkflowEnabled(process.env)) return "";
-  const { DEFAULT_LEDGER_DIR } = await import("../ledger/db/client.ts");
-  return DEFAULT_LEDGER_DIR;
-}
-
 /**
- * Keep the provider workflow focused on observation.  The execution module
- * owns the one validated store for the run and each item callback only uses
- * the transaction-scoped writer/admission capability.
+ * Keep provider observation in the workflow and persist admitted captures
+ * through the PGlite child worker, which owns the transaction and relations.
  */
 export async function commitYuantaForeignCaptures(
-  canonicalLedgerDir: string,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
   page: Page,
   options: { readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances } = {},
 ): Promise<void> {
   if (captures.length === 0) return;
   const admittedCaptures = captures.map((capture) =>
-    // Admission here is validation-only. Persistence remains owned by the
-    // transaction callback below and is recorded by the execution seam.
+    // Admission validates the provider evidence before the worker persists it.
     admitForeignCurrencyDepositCapture(capture),
   );
 
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const successfulAccounts = new Set<string>();
-      const items = admittedCaptures.map((capture) => ({
-        provider: "yuanta",
-        product: "foreign-currency-deposit",
-        itemKey: capture.identity.accountNo,
-        command: {
-          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-          request: { capture },
-        },
-        relationCommands: () => {
-          return [{
-            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-            request: {
-              sourceConnectionKey: capture.identity.sourceConnectionKey,
-              observedAt: capture.observedAt,
-            },
-          }] as const;
-        },
-      } as const));
-      const result = await executePGliteWorkflowRun({
-        client: client.workflow, items, provider: "yuanta", product: "foreign-currency-deposit",
-      });
-      if (result.status === "failed" || result.status === "cancelled")
-        throw new Error(`Yuanta foreign PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      for (const item of result.items) {
-        if (item.status === "committed" && item.relationWarnings?.length === 0)
-          successfulAccounts.add(item.itemKey);
-      }
-      if (successfulAccounts.size === 0) return;
-
-      const admittedByAccount = new Map(
-        admittedCaptures
-          .filter((capture) => successfulAccounts.has(capture.identity.accountNo))
-          .map((capture) => [capture.identity.accountNo, capture]),
-      );
-      const authorityCapture = admittedCaptures.find((capture) =>
-        successfulAccounts.has(capture.identity.accountNo));
-      if (!authorityCapture)
-        throw new Error("Yuanta foreign financial admission produced no canonical identity.");
-      const authority = {
-        sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
-        identityEpochKey: authorityCapture.identity.identityEpochKey,
-        authorityClass: "existing-financial-admission" as const,
-      };
-      const currentRows = await (options.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances)(page, "foreign", {
-        observedAt: new Date().toISOString(), financialAuthority: authority,
-      });
-      const currentObservedAt = new Date().toISOString();
-      const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(
-        [...admittedByAccount.values()],
-      );
-      const balanceItems = currentRows.map((unadjustedRow) => {
-        const row = { ...unadjustedRow, observedAt: currentObservedAt };
-        const matching = existingBySourceAccount.get(row.sourceAccountKey);
-        if (!matching)
-          throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
-        const capture = admitCurrentDepositBalanceCapture(
-          buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
-        );
-        return {
-          provider: "yuanta",
-          product: "current-deposit-balance",
-          itemKey: capture.identity.sourceAccountKey,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(capture),
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const successfulAccounts = new Set<string>();
+    const items = admittedCaptures.map((capture) => ({
+      provider: "yuanta",
+      product: "foreign-currency-deposit",
+      itemKey: capture.identity.accountNo,
+      command: {
+        kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+        request: { capture },
+      },
+      relationCommands: () => {
+        return [{
+          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+          request: {
+            sourceConnectionKey: capture.identity.sourceConnectionKey,
+            observedAt: capture.observedAt,
           },
-        } as const;
-      });
-      const balances = await executePGliteWorkflowRun({
-        client: client.workflow, items: balanceItems,
-        provider: "yuanta", product: "current-deposit-balance",
-      });
-      if (balances.status === "failed" || balances.status === "cancelled")
-        throw new Error(`Yuanta foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      return;
-    } finally {
-      client.close();
+        }] as const;
+      },
+    } as const));
+    const result = await executePGliteWorkflowRun({
+      client: client.workflow, items, provider: "yuanta", product: "foreign-currency-deposit",
+    });
+    if (result.status === "failed" || result.status === "cancelled")
+      throw new Error(`Yuanta foreign PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+    for (const item of result.items) {
+      if (item.status === "committed" && item.relationWarnings?.length === 0)
+        successfulAccounts.add(item.itemKey);
     }
-  }
-
-  const [
-    { executeCanonicalFinancialCommitRun },
-    { commitForeignCurrencyDepositCaptureInTransaction },
-    { commitCurrentDepositBalanceCaptureInTransaction },
-    { runCanonicalInvestmentRelationFollowThrough },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/foreign-currency-deposit.ts"),
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-    import("../ledger/canonical/canonical-relation-followthrough.ts"),
-  ]);
-
-  const successfulAccounts = new Set<string>();
-  const items = async function* (): AsyncGenerator<CanonicalFinancialCommitItem<unknown>> {
-    for (const capture of captures) {
-      yield {
-        provider: "yuanta",
-        product: "foreign-currency-deposit",
-        itemKey: capture.accountNo,
-        commit: ({ writer, admission }) =>
-          commitForeignCurrencyDepositCaptureInTransaction(
-            writer,
-            capture,
-            admission,
-          ),
-        resolveRelations: async ({ writer }) => {
-          await runCanonicalInvestmentRelationFollowThrough(writer);
-          successfulAccounts.add(capture.accountNo);
-        },
-      };
-    }
-
     if (successfulAccounts.size === 0) return;
 
     const admittedByAccount = new Map(
@@ -3091,62 +2990,49 @@ export async function commitYuantaForeignCaptures(
         .map((capture) => [capture.identity.accountNo, capture]),
     );
     const authorityCapture = admittedCaptures.find((capture) =>
-      successfulAccounts.has(capture.identity.accountNo),
-    );
+      successfulAccounts.has(capture.identity.accountNo));
     if (!authorityCapture)
-      throw new Error(
-        "Yuanta foreign financial admission produced no canonical identity.",
-      );
+      throw new Error("Yuanta foreign financial admission produced no canonical identity.");
     const authority = {
       sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
       identityEpochKey: authorityCapture.identity.identityEpochKey,
       authorityClass: "existing-financial-admission" as const,
     };
-    const currentRows = await (options.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances)(
-      page,
-      "foreign",
-      { observedAt: new Date().toISOString(), financialAuthority: authority },
-    );
+    const currentRows = await (options.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances)(page, "foreign", {
+      observedAt: new Date().toISOString(), financialAuthority: authority,
+    });
     const currentObservedAt = new Date().toISOString();
     const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(
       [...admittedByAccount.values()],
     );
-    const currentCaptures = currentRows.map((unadjustedRow) => {
+    const balanceItems = currentRows.map((unadjustedRow) => {
       const row = { ...unadjustedRow, observedAt: currentObservedAt };
       const matching = existingBySourceAccount.get(row.sourceAccountKey);
       if (!matching)
-        throw new Error(
-          "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
-        );
-      return buildYuantaForeignCurrentDepositBalanceCapture(row, matching);
-    });
-    for (const capture of currentCaptures) {
-      yield {
+        throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
+      const capture = admitCurrentDepositBalanceCapture(
+        buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
+      );
+      return {
         provider: "yuanta",
         product: "current-deposit-balance",
         itemKey: capture.identity.sourceAccountKey,
-        commit: ({ writer, admission }) =>
-          commitCurrentDepositBalanceCaptureInTransaction(
-            writer,
-            admitCurrentDepositBalanceCapture(capture),
-            admission,
-          ),
-      };
-    }
-  };
-
-  const result = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: items(),
-    provider: "yuanta",
-    product: "foreign-currency-deposit",
-  });
-  if (result.status === "failed" || result.status === "cancelled")
-    throw new Error(
-      `Yuanta foreign canonical persistence ${result.status}: ${result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
+      } as const;
+    });
+    const balances = await executePGliteWorkflowRun({
+      client: client.workflow, items: balanceItems,
+      provider: "yuanta", product: "current-deposit-balance",
+    });
+    if (balances.status === "failed" || balances.status === "cancelled")
+      throw new Error(`Yuanta foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+    return;
+  } finally {
+    client.close();
+  }
 }
 
 export default workflow("yuantaForeignCurrencyStatements", {
@@ -3214,43 +3100,35 @@ export default workflow("yuantaForeignCurrencyStatements", {
       sourceDownloads,
     );
 
-    const pgliteEnabled = pgliteWorkflowEnabled(process.env);
-    const canonicalLedgerDir = await configuredYuantaCanonicalLedgerDir();
-    if (pgliteEnabled || canonicalLedgerDir) {
-      const captureOccurrenceId = randomUUID();
-      const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
-      for (const row of rows) {
-        const accountRows = grouped.get(row.accountValue) ?? [];
-        accountRows.push(row);
-        grouped.set(row.accountValue, accountRows);
-      }
-      const captures = accounts.map((account) => {
-        const accountRows = grouped.get(account.value) ?? [];
-        const accountDownloads = sourceDownloads.filter(
-          (download) => download.accountValue === account.value,
-        );
-        const zeroResultAuthority =
-          accountRows.length === 0 &&
-          accountDownloads.length > 0 &&
-          accountDownloads.every((download) => download.rowCount === 0)
-            ? ("provider-explicit-no-data" as const)
-            : undefined;
-        return buildYuantaForeignCurrencyCaptureInput(
-          accountRows,
-          input,
-          account.value,
-          new Date().toISOString(),
-          captureOccurrenceId,
-          zeroResultAuthority,
-          credentials.yuanta_user_id ?? "",
-        );
-      });
-      await commitYuantaForeignCaptures(
-        canonicalLedgerDir,
-        captures,
-        page,
-      );
+    const captureOccurrenceId = randomUUID();
+    const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
+    for (const row of rows) {
+      const accountRows = grouped.get(row.accountValue) ?? [];
+      accountRows.push(row);
+      grouped.set(row.accountValue, accountRows);
     }
+    const captures = accounts.map((account) => {
+      const accountRows = grouped.get(account.value) ?? [];
+      const accountDownloads = sourceDownloads.filter(
+        (download) => download.accountValue === account.value,
+      );
+      const zeroResultAuthority =
+        accountRows.length === 0 &&
+        accountDownloads.length > 0 &&
+        accountDownloads.every((download) => download.rowCount === 0)
+          ? ("provider-explicit-no-data" as const)
+          : undefined;
+      return buildYuantaForeignCurrencyCaptureInput(
+        accountRows,
+        input,
+        account.value,
+        new Date().toISOString(),
+        captureOccurrenceId,
+        zeroResultAuthority,
+        credentials.yuanta_user_id ?? "",
+      );
+    });
+    await commitYuantaForeignCaptures(captures, page);
 
     return {
       dateRange,
