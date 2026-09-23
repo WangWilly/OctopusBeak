@@ -31,7 +31,7 @@ assert.match(source, /yuanta-all-component-page-ready[\s\S]*durationMs/);
 assert.match(source, /yuanta-all-component-page-not-ready[\s\S]*durationMs/);
 assert.match(source, /yuantaCanonicalHumanAttestationFromEnvironment/);
 assert.match(source, /canonicalHumanAttestation/);
-assert.match(source, /canonicalLedgerDir/);
+assert.doesNotMatch(source, /canonicalLedgerDir/);
 assert.doesNotMatch(source, /canonical(Source|Financial)LedgerDir/);
 assert.doesNotMatch(source, /RepaymentRouteInventory/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
@@ -96,12 +96,9 @@ assert.equal(workflow.handler, runYuantaAllStatements);
 
 const selectionKey = "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES";
 const previousSelection = process.env[selectionKey];
-const canonicalLedgerKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
-const previousCanonicalLedger = process.env[canonicalLedgerKey];
 const identitySecretKey = "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
 const previousIdentitySecret = process.env[identitySecretKey];
 process.env[selectionKey] = "foreign_currency,fund";
-process.env[canonicalLedgerKey] = "/tmp/yuanta-all-statements-canonical-check";
 process.env[identitySecretKey] = "synthetic-managed-secret";
 const calls: string[] = [];
 const ctx = { page: {}, session: "yuanta-session" };
@@ -220,10 +217,7 @@ try {
         run: async (actualCtx: unknown, input: Record<string, unknown>) => {
           assert.equal(actualCtx, ctx);
           assert.equal(input.credentials, credentials);
-          assert.equal(
-            input.canonicalLedgerDir,
-            "/tmp/yuanta-all-statements-canonical-check",
-          );
+          assert.equal(input.canonicalLedgerDir, undefined);
           calls.push("run:fund");
           return fundOutput;
         },
@@ -237,13 +231,9 @@ try {
 } finally {
   if (previousSelection === undefined) delete process.env[selectionKey];
   else process.env[selectionKey] = previousSelection;
-  if (previousCanonicalLedger === undefined)
-    delete process.env[canonicalLedgerKey];
-  else process.env[canonicalLedgerKey] = previousCanonicalLedger;
   if (previousIdentitySecret === undefined) delete process.env[identitySecretKey];
   else process.env[identitySecretKey] = previousIdentitySecret;
 }
-process.env[canonicalLedgerKey] = "/tmp/yuanta-all-statements-canonical-check";
 
 assert.deepEqual(
   observedCreditCardInput?.canonicalHumanAttestation,
