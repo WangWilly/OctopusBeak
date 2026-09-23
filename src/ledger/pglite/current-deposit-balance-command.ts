@@ -1,7 +1,7 @@
 import {
   sourceEvidenceFromCapture,
   type CurrentDepositBalanceValidatedCapture,
-} from "../canonical/current-deposit-balance-writer.ts";
+} from "./current-deposit-admission.ts";
 import type { PGliteCanonicalBalanceCaptureRequest } from "./balance.ts";
 
 /** Adapt the already validated provider snapshot to a data-only child command. */
