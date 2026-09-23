@@ -1,6 +1,6 @@
 # PGlite-owned live financial views
 
-Status: accepted (target architecture; implementation pending)
+Status: accepted and implemented (direct cutover)
 
 The desktop app will replace its canonical SQLite database with one PGlite
 database owned by a dedicated database worker. This is a direct cutover, not a
@@ -70,9 +70,31 @@ equivalents, or remove the requirement that later schema changes use reviewed
 migrations. The legacy SQLite files remain available for inspection and are
 not deleted by initialization.
 
-This architecture must preserve the pairing and interaction performance
-contract in [ADR 0028](./0028-interaction-and-pairing-performance-contract.md),
-including complete candidate coverage and transactional correctness. The
-dedicated worker, typed IPC boundary, live query granularity, and migration
-command are implementation obligations to verify before switching the app;
-this ADR does not claim they are already implemented.
+This architecture preserves the pairing and interaction performance contract
+in [ADR 0028](./0028-interaction-and-pairing-performance-contract.md),
+including complete candidate coverage and transactional correctness.
+
+## Cutover implementation and verification
+
+The desktop runtime now opens only the worker-owned PGlite database in
+`data/pglite/`. Financial workflows use typed child RPC commands; Electron
+main and preload expose scoped page commands and live subscriptions. The
+financial routes consume those live views, and the Spending page shows the
+selected month while its Pairing dialog pages globally ranked candidates.
+The fresh PGlite baseline replaces the superseded historical transfer
+command. Existing `canonical.sqlite` and `ledger.sqlite` files are neither
+opened nor modified by this cutover.
+
+Daily asset and liability history uses dates with observed balances only.
+Asset observations include investment valuations observed on that date; gaps
+are not filled with the preceding balance. Exchange-rate demand follows the
+same observation dates.
+
+Acceptance on the 2026-09-23 development machine covered the complete unit,
+browser, Electron/CDP, build, and package-lock checks. The isolated 100,000
+transaction / 10,001 invoice / 10,000 existing-link benchmark covered all
+90,000 eligible candidates across 900 pages. Its cold/warm worker ranking
+was 513/316 ms and confirmation was 31/26 ms. The compact live-page UI
+benchmark recorded 586 ms to open Pairing, 116 ms to confirm, and 61/28 ms
+to show feedback, with a 70 ms maximum renderer long task. These figures are
+local acceptance evidence for ADR 0028, not a cross-machine guarantee.
