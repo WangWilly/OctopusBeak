@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { openLedgerDatabase, type LedgerDatabase } from "./db/client.ts";
+import type { LedgerDatabase } from "./db/client.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
 import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 
@@ -160,6 +160,7 @@ export async function syncExchangeRates(
     return { requestedCurrencies: currencies, from: null, to, written: 0 };
   }
 
+  const { openLedgerDatabase } = await import("./db/client.ts");
   const db = openLedgerDatabase(ledgerDir);
   try {
     const from = synchronizationStart(

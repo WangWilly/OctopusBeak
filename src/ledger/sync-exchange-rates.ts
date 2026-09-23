@@ -3,21 +3,19 @@ import {
   appendExchangeRateAuditRecord,
   type ExchangeRateAuditRecord,
 } from "./exchange-rate-audit-log.ts";
-import {
-  loadExchangeRateRequest,
-  type ExchangeRateRequest,
-} from "./exchange-rate-requirements.ts";
+import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 import {
   syncExchangeRates,
   type ExchangeRateSyncResult,
 } from "./exchange-rates.ts";
-import { DEFAULT_LEDGER_DIR } from "./db/client.ts";
 import {
   emitAutomationProgress,
   type AutomationProgressEvent,
 } from "../lib/automation/progress.ts";
 
 const AUDIT_LOG_PATH = "data/automation/logs/exchange-rates.log";
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
+const PGLITE_WORKFLOW_REQUIRED_ENV = "OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED";
 
 type CommandOptions = {
   argv?: string[];
@@ -73,14 +71,21 @@ export async function runExchangeRateSyncCommand(
   try {
     emitProgress({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
     scheduled = scheduledAtUtc(options.argv ?? []);
-    request = await (options.loadRequest ?? loadExchangeRateRequest)(
-      options.ledgerDir ?? DEFAULT_LEDGER_DIR,
-    );
+    const pgliteRequired = process.env[PGLITE_WORKFLOW_REQUIRED_ENV] === "1";
+    if (pgliteRequired && (!options.loadRequest || !options.sync)) {
+      throw new Error(
+        "PGlite-required exchange-rate sync needs worker-owned request and persistence callbacks.",
+      );
+    }
+    const ledgerDir = options.ledgerDir ?? DEFAULT_LEDGER_DIR;
+    request = options.loadRequest
+      ? await options.loadRequest(ledgerDir)
+      : await (await import("./exchange-rate-requirements.ts"))
+        .loadExchangeRateRequest(ledgerDir);
     emitProgress({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
-    const result = await (options.sync ?? syncExchangeRates)(
-      options.ledgerDir ?? DEFAULT_LEDGER_DIR,
-      request,
-    );
+    const result = options.sync
+      ? await options.sync(ledgerDir, request)
+      : await syncExchangeRates(ledgerDir, request);
     emitProgress({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
     audit({
       scheduledAtUtc: scheduled,
