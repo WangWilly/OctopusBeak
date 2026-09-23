@@ -32,7 +32,7 @@ import {
   commitCathayDomesticDepositSyncInTransaction,
   ensureCathayHumanAttestationEvents,
   recordInitialCathayHumanAttestationIfMissing,
-  validateCathayDomesticDepositSyncInput,
+  validateCathayDomesticDepositSyncInputForPGlite,
   type CathayStagedCapturePage,
 } from "../ledger/canonical/cathay-domestic-deposit.ts";
 import {
@@ -42,8 +42,8 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
   cathayOpaqueIdentity,
-  pgliteCathayDomesticFinancialRequests,
 } from "../ledger/canonical/canonical-source-store.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import {
   admitCurrentDepositBalanceCapture,
   commitCurrentDepositBalanceCaptureInTransaction,
@@ -2016,11 +2016,12 @@ export async function downloadCathayStatements(
     observedAt,
     pages: stagedPages,
   };
+  let validatedSync: ReturnType<typeof validateCathayDomesticDepositSyncInputForPGlite>;
   try {
     // Validate before opening the execution run so provider scope errors keep
     // their established diagnostics; the transaction adapter validates again
     // at the canonical persistence seam.
-    validateCathayDomesticDepositSyncInput(syncInput);
+    validatedSync = validateCathayDomesticDepositSyncInputForPGlite(syncInput);
   } catch (error) {
     if (isCathayDateScopeValidationError(error)) {
       console.warn(
@@ -2037,7 +2038,7 @@ export async function downloadCathayStatements(
     const client = requirePGliteChildRpcClientFromEnv();
     try {
       await client.ready;
-      const requests = pgliteCathayDomesticFinancialRequests(syncInput);
+      const requests = buildCathayDomesticFinancialRequestsForPGlite(validatedSync);
       const financial = await executePGliteWorkflowRun({
         client: client.workflow,
         provider: "cathay",

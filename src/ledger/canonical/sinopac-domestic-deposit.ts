@@ -4,6 +4,7 @@ import {
   type AdvertisedDomesticDepositPreflightInput,
 } from "./advertised-domestic-deposit-preflight.ts";
 import { createHash } from "node:crypto";
+import { buildSinopacDomesticDepositFinancialCaptureForPGlite as buildPureSinopacDomesticDepositFinancialCaptureForPGlite } from "../pglite/sinopac-domestic-adapter.ts";
 import {
   canonicalSourceAdmissionCommitResult,
   createCanonicalSourceCaptureAdmission,
@@ -1017,7 +1018,7 @@ function sinopacFinancialRecord(
 export function admitSinopacDomesticDepositFinancialCapture(
   input: SinopacDomesticDepositFinancialAdmissionInput,
 ): SinopacDomesticDepositFinancialAdmissionResult {
-  return buildSinopacDomesticDepositFinancialCapture(input, false);
+  return buildSinopacDomesticDepositFinancialCapture(input);
 }
 
 /** The PGlite financial command verifies durable authority inside its own
@@ -1025,17 +1026,26 @@ export function admitSinopacDomesticDepositFinancialCapture(
 export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   input: Omit<SinopacDomesticDepositFinancialAdmissionInput, "personalAuthority">,
 ): SinopacDomesticDepositFinancialAdmissionResult {
-  return buildSinopacDomesticDepositFinancialCapture(input, true);
+  if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: ["capture-not-runtime-admitted"],
+    };
+  return buildPureSinopacDomesticDepositFinancialCaptureForPGlite({
+    ...input,
+    humanAttestation:
+      input.humanAttestation ?? getSinopacHumanAttestedV1Manifest(),
+  });
 }
 
 function buildSinopacDomesticDepositFinancialCapture(
   input: SinopacDomesticDepositFinancialAdmissionInput,
-  workerOwnsDurableAuthority: boolean,
 ): SinopacDomesticDepositFinancialAdmissionResult {
   const diagnostics: string[] = [];
   if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
     diagnostics.push("capture-not-runtime-admitted");
-  if (!workerOwnsDurableAuthority && !validSinopacPersonalAuthority(input.personalAuthority))
+  if (!validSinopacPersonalAuthority(input.personalAuthority))
     diagnostics.push("authority-semantics-unproven");
   if (input.capture.product !== "domestic-deposit")
     diagnostics.push("unsupported-product");
