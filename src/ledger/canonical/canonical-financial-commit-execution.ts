@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import {
   createCanonicalSourceStore,
   type CanonicalSourceStore,
@@ -24,6 +25,7 @@ import {
   withCanonicalSourceCaptureAdmissionTransaction,
 } from "./canonical-source-capture-admission.ts";
 import type { ValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../pglite/workflow-client.ts";
 
 /** The four outcomes a controlled provider persistence run can report. */
 export type CanonicalFinancialCommitRunStatus =
@@ -500,6 +502,11 @@ async function openStore(
   options: Parameters<typeof createCanonicalSourceStore>[1],
   runtime?: CanonicalRuntimeOptions,
 ): Promise<CanonicalSourceStore> {
+  // The writer lease is a sidecar next to canonical.sqlite.  Create the
+  // caller-selected ledger directory before acquiring that lease so a fresh
+  // nested directory cannot fail with ENOENT before schema initialization
+  // gets a chance to run.
+  if (ledgerDir !== ":memory:") await mkdir(ledgerDir, { recursive: true });
   return withLedgerOperation(ledgerDir, () => {
     const hasExplicitRuntime =
       runtime !== undefined &&
@@ -627,6 +634,10 @@ function aggregateStatus<T>(
 export async function executeCanonicalFinancialCommitRun<T>(
   request: CanonicalFinancialCommitRunRequest<T>,
 ): Promise<CanonicalFinancialCommitRunResult<T>> {
+  if (process.env[PGLITE_WORKFLOW_REQUIRED_ENV] === "1")
+    throw new CanonicalFinancialCommitFatalError(
+      "This financial workflow must use the PGlite worker command; SQLite admission is disabled for this run.",
+    );
   if (
     request === null ||
     typeof request !== "object" ||

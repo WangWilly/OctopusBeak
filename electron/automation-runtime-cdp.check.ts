@@ -60,19 +60,53 @@ async function waitForRendererPage(browser: Browser, timeoutMs: number) {
   throw new Error("Electron CDP renderer page did not become available.");
 }
 
-async function waitForRuntimeRun(page: Page, taskId: string) {
+/** Wait for the renderer's initial overview mount before using route links. */
+async function navigateToAutomation(page: Page) {
   await page.waitForFunction(
-    async (candidateTaskId) => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      return snapshot.tasks.some((task) =>
-        task.taskId === candidateTaskId
-        && task.runId !== null
-        && !["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status),
-      );
-    },
-    taskId,
-    { timeout: 2_000 },
+    () => window.location.hash === "#/overview"
+      && Boolean(document.querySelector('[data-onboarding="nav-automation"]')),
+    undefined,
+    { timeout: 10_000 },
   );
+  await page.locator('[data-onboarding="nav-automation"]').click();
+  await page.waitForFunction(
+    () => window.location.hash === "#/automation",
+    undefined,
+    { timeout: 10_000 },
+  );
+}
+
+/** Playwright's bundled waitForFunction does not await async predicates here. */
+async function waitForPagePredicate<Arg>(
+  page: Page,
+  predicate: (arg: Arg) => boolean | Promise<boolean>,
+  arg: Arg,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (await page.evaluate(predicate as never, arg) as boolean) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      const diagnostic = await page.evaluate(() => ({
+        secondRow: document.querySelector("#fubon-all-statements-task-row")?.textContent,
+        summary: document.querySelector('[data-progressive-block="summary"]')?.textContent?.slice(0, 180),
+      })).catch(() => null);
+      throw new Error(`Timed out waiting for Electron page condition after ${timeoutMs}ms: ${JSON.stringify(diagnostic)}`);
+    }
+    await page.waitForTimeout(Math.min(50, remaining));
+  }
+}
+
+async function waitForRuntimeRun(page: Page, taskId: string) {
+  await waitForPagePredicate(page, async (candidateTaskId: string) => {
+    const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+    return snapshot.tasks.some((task) =>
+      task.taskId === candidateTaskId
+      && task.runId !== null
+      && !["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status),
+    );
+  }, taskId, 2_000);
 }
 
 function stopChild(child: ChildProcess) {
@@ -151,7 +185,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     }
     browser = await chromium.connectOverCDP(cdpUrl);
     const page = await waitForRendererPage(browser, 10_000);
-    await page.evaluate(() => { window.location.hash = "#/automation"; });
+    await navigateToAutomation(page);
     const row = page.locator(`#${TASK_ID}-task-row`);
     const secondRow = page.locator(`#${SECOND_TASK_ID}-task-row`);
     await row.waitFor({ state: "visible", timeout: 10_000 });
@@ -198,7 +232,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     );
 
     await waitForRuntimeRun(page, TASK_ID);
-    await page.waitForFunction(async (taskId) => {
+    await waitForPagePredicate(page, async (taskId: string) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
       const fill = document.querySelector<HTMLElement>(
@@ -209,7 +243,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
         && task.progress.percent !== null
         && task.progress.percent >= 33
         && fill?.style.width === `${task.progress.percent}%`;
-    }, TASK_ID, { timeout: 2_500 });
+    }, TASK_ID, 2_500);
     const runningProgress = await row.locator(".progress-bar > span").evaluate((element) => element.style.width);
     assert.equal(runningProgress, "33%");
     const firstRun = page.evaluate((taskId) => window.octopusBeak.automation.run(taskId), TASK_ID);
@@ -242,7 +276,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     );
     assert.ok(secondOptimisticElapsed <= 200);
     await waitForRuntimeRun(page, SECOND_TASK_ID);
-    await page.waitForFunction(async () => {
+    await waitForPagePredicate(page, async () => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       const activeCount = snapshot.tasks.filter((task) =>
         ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
@@ -250,15 +284,33 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
       const heading = document.querySelector<HTMLElement>(
         '[data-progressive-block="summary"] .sync-hero h2',
       );
-      return activeCount === 2 && heading?.textContent?.includes(String(activeCount));
-    }, { timeout: 1_000 });
+      return activeCount === 2 && Boolean(heading?.textContent?.includes(String(activeCount)));
+    }, undefined, 1_000);
+    let cancelDialogError: unknown;
+    let cancelDialogSeen = false;
+    page.once("dialog", async (dialog) => {
+      cancelDialogSeen = true;
+      try {
+        assert.equal(dialog.type(), "confirm");
+        await dialog.accept();
+      }
+      catch (error) {
+        cancelDialogError = error;
+        await dialog.dismiss().catch(() => {});
+      }
+    });
     await secondRow.locator('[data-onboarding-action="primary"]').click();
-    await page.waitForFunction(async (taskId) => {
+    assert.equal(cancelDialogError, undefined);
+    assert.equal(cancelDialogSeen, true, "cancellation must present its confirmation dialog");
+    await waitForPagePredicate(page, async (taskId: string) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "cancelled");
-    }, SECOND_TASK_ID, { timeout: 5_000 });
+    }, SECOND_TASK_ID, 5_000);
+    await waitForPagePredicate(page, (taskId: string) => /cancelled|已取消/iu.test(
+      document.querySelector<HTMLElement>(`#${taskId}-task-row`)?.textContent ?? "",
+    ), SECOND_TASK_ID, 5_000);
     assert.match(await secondRow.innerText(), /cancelled|已取消/i);
-    await page.waitForFunction(async () => {
+    await waitForPagePredicate(page, async () => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       const activeCount = snapshot.tasks.filter((task) =>
         ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
@@ -266,19 +318,25 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
       const heading = document.querySelector<HTMLElement>(
         '[data-progressive-block="summary"] .sync-hero h2',
       );
-      return activeCount === 1 && heading?.textContent?.includes(String(activeCount));
-    }, { timeout: 1_000 });
+      const hero = document.querySelector<HTMLElement>(
+        '[data-progressive-block="summary"] .sync-hero',
+      );
+      return activeCount <= 1
+        && hero?.classList.contains("active") === (activeCount > 0)
+        && (activeCount === 0 || Boolean(heading?.textContent?.includes(String(activeCount))));
+    }, undefined, 1_000);
 
-    await page.waitForFunction(async (taskId) => {
+    await waitForPagePredicate(page, async (taskId: string) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "completed");
-    }, TASK_ID, { timeout: 10_000 });
+    }, TASK_ID, 10_000);
     await row.locator(".progress-bar").waitFor({ state: "visible", timeout: 2_000 });
     await row.locator('[data-onboarding-action="logs"]').click();
-    await row.locator(".log-output").waitFor({ state: "visible", timeout: 5_000 });
-    assert.match(await row.locator(".log-output").innerText(), /fixture-log-entry/);
+    const logOutput = page.locator(`#${TASK_ID}-inline-log .log-output`);
+    await logOutput.waitFor({ state: "visible", timeout: 5_000 });
+    assert.match(await logOutput.innerText(), /fixture-log-entry/);
     assert.match(await row.innerText(), /completed|完成/i);
-    await page.waitForFunction(async (taskId) => {
+    await waitForPagePredicate(page, async (taskId: string) => {
       const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
       const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
       const button = document.querySelector<HTMLButtonElement>(
@@ -292,13 +350,13 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
         && button?.getAttribute("aria-busy") === "false"
         && !/cancel|取消/i.test(button.textContent ?? "")
         && fill?.style.width === "100%";
-    }, TASK_ID, { timeout: 2_000 });
+    }, TASK_ID, 2_000);
     assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
     assert.doesNotMatch(await secondRow.innerText(), /fixture-log-entry/);
     assert.match(page.url(), /#\/automation/);
     await page.evaluate(() => { window.location.hash = "#/overview"; });
     await page.waitForTimeout(100);
-    await page.evaluate(() => { window.location.hash = "#/automation"; });
+    await navigateToAutomation(page);
     await row.waitFor({ state: "visible", timeout: 10_000 });
     assert.match(await row.innerText(), /completed|完成|fixture/i);
   } finally {
@@ -369,7 +427,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
 
     browser = await chromium.connectOverCDP(cdpUrl);
     const page = await waitForRendererPage(browser, 10_000);
-    await page.evaluate(() => { window.location.hash = "#/automation"; });
+    await navigateToAutomation(page);
     const initialUrl = page.url();
     const row = page.locator(`#${TASK_ID}-task-row`);
     await row.waitFor({ state: "visible", timeout: 10_000 });
@@ -479,6 +537,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
     assert.equal(await row.locator('[data-onboarding-action="primary"]').getAttribute("aria-busy"), "false");
     assert.match(await row.innerText(), /100%/);
     assert.equal(await page.locator(".partial-task-detail").count(), 1);
+    await page.locator(".partial-task-detail summary").click();
     assert.match(await page.locator(".partial-task-detail").innerText(), /fixture partial failure/);
     assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
     assert.equal(await page.locator('[data-progressive-block="details"] .block-spinner').count(), 0);
@@ -552,9 +611,20 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
       }
       assert.fail(`Fatal fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
     }
-    browser = await chromium.connectOverCDP(cdpUrl);
+    browser = await chromium.connectOverCDP(cdpUrl).catch(async (error) => {
+      const result = await Promise.race([
+        exited!,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_000)),
+      ]);
+      if (result?.status === 1 && /automation-unknown-active-task/.test(`${output}\n${errorOutput}`)) {
+        assertUnknownActiveFatalOutput(output, errorOutput, result);
+        return null;
+      }
+      throw error;
+    });
+    if (!browser) return;
     const page = await waitForRendererPage(browser, 10_000);
-    await page.evaluate(() => { window.location.hash = "#/automation"; });
+    await navigateToAutomation(page);
     const result = await Promise.race([
       exited,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),

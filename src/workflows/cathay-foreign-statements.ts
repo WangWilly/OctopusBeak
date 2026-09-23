@@ -4,6 +4,14 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   type CathayCredentials,
   type CathaySession,
@@ -736,12 +744,65 @@ async function collectCathayCurrentForeignDepositBalanceCaptures(
 /** Execute foreign statements and current balances through one lifecycle-owned
  * handle. Only foreign captures that committed may feed current-balance items.
  */
-async function commitCathayForeignAndCurrentCanonicalCaptures(
+export async function commitCathayForeignAndCurrentCanonicalCaptures(
   page: Page,
   canonicalLedgerDir: string | undefined,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
+  options: {
+    requireComplete?: boolean;
+    readCurrentDepositBalances?: CathayCurrentForeignDepositBalanceCaptureOptions["readCurrentDepositBalances"];
+  } = {},
 ): Promise<void> {
-  if (!canonicalLedgerDir || captures.length === 0) return;
+  if (captures.length === 0) return;
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const financial = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "cathay",
+        product: "foreign-currency-deposit",
+        items: captures.map((capture) => ({
+          provider: "cathay",
+          product: "foreign-currency-deposit",
+          itemKey: capture.accountNo,
+          command: {
+            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+            request: { capture: admitForeignCurrencyDepositCapture(capture) },
+          },
+        } as const)),
+      });
+      if (options.requireComplete ? financial.status !== "completed"
+        : financial.status === "failed" || financial.status === "cancelled")
+        throw new Error(`Cathay foreign PGlite persistence ${financial.status}: ${financial.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      const committedCaptures = captures.filter((_, index) => financial.items[index]?.status === "committed");
+      if (committedCaptures.length === 0) return;
+      const currentCaptures = await collectCathayCurrentForeignDepositBalanceCaptures(
+        page, committedCaptures, options,
+      );
+      const balances = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "cathay",
+        product: "current-deposit-balance",
+        items: currentCaptures.map((capture) => ({
+          provider: "cathay",
+          product: "current-deposit-balance",
+          itemKey: capture.identity.sourceAccountKey,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(capture)),
+          },
+        } as const)),
+      });
+      if (options.requireComplete ? balances.status !== "completed"
+        : balances.status === "failed" || balances.status === "cancelled")
+        throw new Error(`Cathay foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      return;
+    } finally {
+      client.close();
+    }
+  }
+  if (!canonicalLedgerDir) return;
   const committedForeignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
   const items = async function* (): AsyncGenerator<
     CanonicalFinancialCommitItem<CathayCanonicalCommitValue>

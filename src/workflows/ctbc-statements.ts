@@ -9,6 +9,15 @@ import {
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
@@ -1303,6 +1312,75 @@ export async function runCtbcStatements(
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
   const manifest = getCtbcHumanAttestedV1Manifest();
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const financialCaptures: ExistingCtbcFinancialCapture[] = [];
+      const items = captureEntries.map(({ capture, captureId }) => {
+        const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
+        if (capture.responses.every((response) => response.rows.length === 0))
+          return {
+            provider: "ctbc", product: "domestic-deposit", itemKey: captureId,
+            command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
+          } as const;
+        const admission = admitCtbcDomesticDepositFinancialCapture({
+          capture, captureId: `ctbc-financial-${captureId}`, humanAttestation: manifest,
+        });
+        if (admission.status !== "admitted" || !admission.capture)
+          throw new Error(`CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`);
+        financialCaptures.push(admission.capture);
+        return {
+          provider: "ctbc", product: "domestic-deposit", itemKey: captureId,
+          command: {
+            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+            request: { steps: [
+              { kind: "source", request: source },
+              { kind: "deposit", request: { capture: admission.capture } },
+            ] },
+          },
+        } as const;
+      });
+      const committed = await executePGliteWorkflowRun({
+        client: client.workflow, items, provider: "ctbc", product: "financial",
+      });
+      if (committed.status !== "completed")
+        throw new Error(`CTBC PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      if (financialCaptures.length > 0) {
+        const currentRows = await readCurrent(page, { observedAt: ctbcObservedAt() });
+        const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+        const balances = currentRows.map((row) => {
+          const matching = existing.get(
+            `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+          );
+          if (!matching)
+            throw new Error("CTBC current deposit snapshot contains an account without an existing admitted identity.");
+          return {
+            provider: "ctbc", product: "current-balance",
+            itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
+                buildCtbcCurrentDepositBalanceCapture(row, matching),
+              )),
+            },
+          } as const;
+        });
+        const balanceResult = await executePGliteWorkflowRun({
+          client: client.workflow, items: balances, provider: "ctbc", product: "current-balance",
+        });
+        if (balanceResult.status !== "completed")
+          throw new Error(`CTBC PGlite balance commit ${balanceResult.status}: ${balanceResult.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      }
+      return {
+        ...collected.output,
+        sourceCaptureCount: captures.length,
+        status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
+      };
+    } finally {
+      client.close();
+    }
+  }
   const financialCaptures: ExistingCtbcFinancialCapture[] = [];
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = captureEntries.map(
     ({ capture, captureId }) => ({

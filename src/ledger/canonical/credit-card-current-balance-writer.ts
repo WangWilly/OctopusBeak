@@ -513,7 +513,7 @@ export function admitCreditCardCurrentBalanceCapture(
   return input as CreditCardCurrentBalanceValidatedCapture;
 }
 
-function sourceEvidenceFromCapture(capture: CreditCardCurrentBalanceValidatedCapture) {
+export function sourceEvidenceFromCreditCardCurrentBalanceCapture(capture: CreditCardCurrentBalanceValidatedCapture) {
   return {
     captureId: capture.captureId,
     integrationNamespace: capture.identity.integrationNamespace,
@@ -718,7 +718,7 @@ export function commitCreditCardCurrentBalanceCaptureInTransaction(
   const account = findExistingAccount(store.db, capture.identity);
   if (account.currency !== null && capture.observations.some((observation) => observation.currency.toUpperCase() !== account.currency?.toUpperCase()))
     fail("Credit-card balance currency does not match the existing account.");
-  const sourceContext = capability.admit(sourceEvidenceFromCapture(capture));
+  const sourceContext = capability.admit(sourceEvidenceFromCreditCardCurrentBalanceCapture(capture));
   capability.linkFinancialAccount({ accountId: account.accountId, scopeId: sourceContext.scopeId, sourceRecordIds: sourceContext.sourceRecordIds });
   const revisions = persistObservations(store.db, capture, account.accountId, sourceContext.captureId, sourceContext.commitId, sourceContext.sourceRecordIds);
   createCanonicalProjectionRuntime(store.db).applyCommit({ commitId: sourceContext.commitId, kind: "source_capture" });

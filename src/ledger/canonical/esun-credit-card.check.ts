@@ -5,6 +5,11 @@ import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteBaseline } from "../pglite/baseline.ts";
+import { PGliteStore } from "../pglite/transaction.ts";
+import { commitPGliteCanonicalCreditCardCapture } from "../pglite/credit-card.ts";
+import { creditCardCommandRequestFromCanonicalCapture } from "../pglite/credit-card-adapters.ts";
 import {
   ESUN_CREDIT_CARD_CAPTURE_CONTRACT,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
@@ -14,6 +19,7 @@ import {
   buildEsunCreditCardAccountIdentityKey,
   buildEsunCreditCardTransactionSourceKey,
   commitEsunCreditCardCapture,
+  esunCanonicalSpineCapture,
   esunNeutralCreditCardCapture,
   type EsunCreditCardCaptureInput,
   type EsunCreditCardSourceRow,
@@ -88,6 +94,26 @@ function options(
     ...overrides,
   };
 }
+
+test("E.SUN admitted credit-card capture commits through the PGlite card command", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const capture = buildEsunCanonicalCreditCardCapture(options());
+    const request = creditCardCommandRequestFromCanonicalCapture(
+      esunCanonicalSpineCapture(capture),
+      esunNeutralCreditCardCapture(capture),
+    );
+    const result = await commitPGliteCanonicalCreditCardCapture(store, request);
+    assert.equal(result.transactionCount, 2);
+    assert.equal((await store.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM canonical_credit_card_transaction_details",
+    )).rows[0]?.count, 2);
+  } finally {
+    await store.close();
+  }
+});
 
 function legacyEsunV1SourceKey(
   transaction: {

@@ -16,6 +16,7 @@ import {
   type CanonicalEnrichmentRunInput,
 } from "./canonical-enrichment.ts";
 import { createCanonicalProjectionRuntime } from "./canonical-projection-runtime.ts";
+import { classifyBankTransactionKind } from "./transaction-kind-classifier.ts";
 
 const FOREIGN_CURRENCY_DEPOSIT_STREAM = "foreign-currency-deposit" as const;
 const CATHAY_DOMESTIC_SCOPE = "cathay/domestic-deposit" as const;
@@ -418,13 +419,6 @@ function readActiveLoanTransactions(
   return new Set(rows.map((row) => idKey(row.transaction_id, "Loan repayment transaction ID")));
 }
 
-function textFor(transaction: CurrentTransaction): string {
-  return [transaction.description, transaction.sourcePayload]
-    .filter((value): value is string => Boolean(value && value.trim()))
-    .join(" ")
-    .toLowerCase();
-}
-
 function exactAmountKey(coefficient: string, scale: number): string {
   if (!/^-?\d+$/u.test(coefficient) || !Number.isSafeInteger(scale) || scale < 0)
     throw new Error("Financial amount is not an exact decimal.");
@@ -516,74 +510,12 @@ function readCreditCardStatementMatches(
   return matches;
 }
 
-function explicitSelfTransfer(text: string): boolean {
-  return /(自轉|自動轉帳|本人(?:帳戶|轉帳|匯款)|同名(?:轉帳|帳戶)|自有帳戶|轉入本人|轉出本人)/u.test(text);
-}
-
-function explicitExternalTransfer(text: string): boolean {
-  return /(匯款|電匯|跨行|ach|wire|swift|remittance|轉出至|轉入自)/iu.test(text);
-}
-
-function explicitInvestment(text: string): boolean {
-  return /(股票|證券|etf|基金|共同基金|信託|複委託|美股|台股|投資|brokerage|security)/iu.test(text);
-}
-
-const YUANTA_SCHEDULED_FUND_SUBSCRIPTION_DESCRIPTION =
-  /^\s*轉帳支取\s*·\s*\d{16}\s+YT\d{2}\s+FS\d{8}\s+約定申購\s+\d{5}\s+174\s+FISB\s*$/iu;
-
-function isYuantaScheduledFundSubscription(
-  transaction: CurrentTransaction,
-): boolean {
-  return (
-    transaction.integrationNamespace === "yuanta" &&
-    transaction.stream === "domestic-deposit" &&
-    transaction.direction === "outflow" &&
-    typeof transaction.description === "string" &&
-    YUANTA_SCHEDULED_FUND_SUBSCRIPTION_DESCRIPTION.test(
-      transaction.description,
-    )
-  );
-}
-
-function isFubonStructuredCreditCardPayment(
-  transaction: CurrentTransaction,
-): boolean {
-  if (
-    transaction.integrationNamespace !== "fubon" ||
-    transaction.stream !== "domestic-deposit" ||
-    transaction.direction !== "outflow" ||
-    typeof transaction.description !== "string"
-  )
-    return false;
-  const compactDescription = transaction.description.replace(/\s+/gu, "");
-  return /^(?:行動|網路)?繳費·(?:繳)?[^·]+信用卡(?:款|費)[^·]*$/u.test(
-    compactDescription,
-  );
-}
-
-function isFubonStructuredLoanPayment(
-  transaction: CurrentTransaction,
-): boolean {
-  if (
-    transaction.integrationNamespace !== "fubon" ||
-    transaction.stream !== "domestic-deposit" ||
-    transaction.direction !== "outflow" ||
-    typeof transaction.description !== "string"
-  )
-    return false;
-  const sourceAction = transaction.description.split("·", 1)[0]
-    ?.replace(/\s+/gu, "") ?? "";
-  return sourceAction === "放款繳款";
-}
-
 function classify(
   transaction: CurrentTransaction,
   fundingDirection: "inflow" | "outflow" | undefined,
   loanTransactions: ReadonlySet<string>,
   creditCardStatements: ReadonlyMap<string, CreditCardStatementMatch>,
 ): TransactionClassification {
-  const text = textFor(transaction);
-  const direction = transaction.direction;
   const sourceValue = transaction.description ?? transaction.sourcePayload ?? "";
 
   if (fundingDirection) {
@@ -596,7 +528,7 @@ function classify(
       sourceValue: fundingDirection,
     };
   }
-  if (loanTransactions.has(transaction.transactionId) && direction === "outflow")
+  if (loanTransactions.has(transaction.transactionId) && transaction.direction === "outflow")
     return {
       value: "payment.loan",
       evidenceKind: "loan-relation",
@@ -613,214 +545,17 @@ function classify(
       sourceValue: creditCardStatement.statementRevisionId,
     };
 
-  if (isYuantaScheduledFundSubscription(transaction))
-    return {
-      value: "investment.trade.buy",
-      evidenceKind: "bank-rule",
-      sourceField: "source_description",
-      sourceValue,
-    };
-
-  if (isFubonStructuredCreditCardPayment(transaction))
-    return {
-      value: "payment.credit_card",
-      evidenceKind: "bank-rule",
-      sourceField: "source_description",
-      sourceValue,
-    };
-
-  if (isFubonStructuredLoanPayment(transaction))
-    return {
-      value: "payment.loan",
-      evidenceKind: "bank-rule",
-      sourceField: "source_description",
-      sourceValue,
-    };
-
-  if (explicitSelfTransfer(text))
-    return {
-      value: "transfer.internal",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (explicitExternalTransfer(text))
-    return {
-      value: "transfer.external",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(繳卡|卡費|信用卡繳|credit\s*card\s*(?:payment|bill)|card\s*payment)/iu.test(text))
-    return {
-      value: "payment.credit_card",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(還款|還本|房貸|信貸|車貸|貸款繳|loan\s*(?:payment|repayment))/iu.test(text))
-    return {
-      value: "payment.loan",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(提款|提領|atm|自動櫃員機|cash\s*withdrawal)/iu.test(text))
-    return {
-      value: "cash.withdrawal",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(現金存入|現金存款|現金入帳|cash\s*deposit)/iu.test(text) && direction === "inflow")
-    return {
-      value: "cash.deposit",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (explicitInvestment(text)) {
-    if (/(複委託扣|投資(?:帳戶)?扣|證券(?:戶)?扣)/u.test(text) && direction === "outflow")
-      return {
-        value: "transfer.investment_contribution",
-        evidenceKind: "bank-rule",
-        sourceField: "source_kind",
-        sourceValue,
-      };
-    if (/(複委託入|投資(?:帳戶)?入|證券(?:戶)?入)/u.test(text) && direction === "inflow")
-      return {
-        value: "transfer.investment_withdrawal",
-        evidenceKind: "bank-rule",
-        sourceField: "source_kind",
-        sourceValue,
-      };
-    if (/(賣出|賣股|sell|贖回)/iu.test(text))
-      return {
-        value: "investment.trade.sell",
-        evidenceKind: "bank-rule",
-        sourceField: "source_kind",
-        sourceValue,
-      };
-    if (direction === "outflow" && /(買股|買股票|股票買|申購|買基金|buy)/iu.test(text))
-      return {
-        value: "investment.trade.buy",
-        evidenceKind: "bank-rule",
-        sourceField: "source_kind",
-        sourceValue,
-      };
-  }
-  if (/(手續費|服務費|管理費|費用|fee|commission)/iu.test(text))
-    return {
-      value: /投資|證券|股票|基金|複委託|commission/iu.test(text)
-        ? "fee.investment"
-        : /信用卡|卡片|card/iu.test(text)
-          ? "fee.card"
-          : "fee.bank",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(利息|interest)/iu.test(text))
-    return {
-      value: direction === "inflow" ? "interest.earned" : "interest.charged",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(退款|退刷|退回|refund)/iu.test(text))
-    return {
-      value: "refund",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(沖銷|撤銷|作廢|reversal|void)/iu.test(text))
-    return {
-      value: "reversal",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(貸款撥款|撥款|loan\s*disbursement)/iu.test(text) && direction === "inflow")
-    return {
-      value: "loan.disbursement",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(薪資|薪水|工資|salary|payroll)/iu.test(text) && direction === "inflow")
-    return {
-      value: "income.employment.salary",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(獎金|bonus)/iu.test(text) && direction === "inflow")
-    return {
-      value: "income.employment.bonus",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(股息|股利|dividend)/iu.test(text) && direction === "inflow")
-    return {
-      value: "income.dividend",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(租金|rental)/iu.test(text) && direction === "inflow")
-    return {
-      value: "income.rental",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  if (/(稅|稅款|tax)/iu.test(text))
-    return {
-      value: direction === "inflow" ? "tax.refund" : "tax.payment",
-      evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-      sourceValue,
-    };
-  return {
-    value: direction === "outflow" ? "purchase" : "receipt",
-    evidenceKind: "bank-rule",
-      sourceField: "source_kind",
-    sourceValue,
-  };
+  const generic = classifyBankTransactionKind({
+    direction: transaction.direction,
+    description: transaction.description,
+    sourcePayload: transaction.sourcePayload,
+    integrationNamespace: transaction.integrationNamespace,
+    stream: transaction.stream,
+  });
+  return { ...generic, sourceValue };
 }
 
-export function classifyBankTransactionKind(input: Readonly<{
-  direction: "inflow" | "outflow";
-  description?: string | null;
-  sourcePayload?: string | null;
-  integrationNamespace?: string;
-  stream?: string;
-}>): Readonly<{ value: string; evidenceKind: "bank-rule"; sourceField: string }> {
-  const transaction = {
-    transactionId: "",
-    sourceRecordId: "",
-    sourceConnectionKey: "",
-    identityEpoch: "",
-    integrationNamespace: input.integrationNamespace ?? "",
-    stream: input.stream ?? "",
-    direction: input.direction,
-    amountCoefficient: "0",
-    amountScale: 0,
-    currency: "XXX",
-    effectiveOn: "1970-01-01",
-    description: input.description ?? null,
-    sourcePayload: input.sourcePayload ?? null,
-    observedAt: "",
-  } satisfies CurrentTransaction;
-  const result = classify(transaction, undefined, new Set(), new Map());
-  return {
-    value: result.value,
-    evidenceKind: "bank-rule",
-    sourceField: result.sourceField,
-  };
-}
+export { classifyBankTransactionKind } from "./transaction-kind-classifier.ts";
 
 function outputForTransaction(
   transaction: CurrentTransaction,

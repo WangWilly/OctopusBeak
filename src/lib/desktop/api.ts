@@ -183,6 +183,56 @@ export type ViewerInputResult = {
   resumed: boolean;
 };
 
+export type DataViewErrorCode =
+  | "invalid-request"
+  | "duplicate-subscription"
+  | "subscription-failed"
+  | "worker-unavailable"
+  | "worker-disabled";
+
+export type DataViewSubscribeRequest = {
+  requestId: string;
+  view: string;
+  params: object;
+};
+
+export type DataViewUnsubscribeRequest = {
+  requestId: string;
+  subscriptionId: string;
+};
+
+export type DataViewSubscribeResult =
+  | { ok: true; subscriptionId: string }
+  | { ok: false; code: DataViewErrorCode; message: string };
+
+export type DataViewUnsubscribeResult =
+  | { ok: true }
+  | { ok: false; code: DataViewErrorCode; message: string };
+
+export type DataViewRowsEvent = {
+  requestId: string;
+  subscriptionId: string;
+  rows: unknown[];
+};
+
+export type DataViewErrorEvent = {
+  requestId: string;
+  subscriptionId?: string;
+  code: DataViewErrorCode;
+  message: string;
+};
+
+export type DataViewsApi = {
+  /** Whether the staged PGlite data-view bridge is active for this session. */
+  enabled(): Promise<boolean>;
+  subscribe(
+    view: string,
+    params: object,
+    onRows: (rows: unknown[]) => void,
+    onError?: (error: DataViewErrorEvent) => void,
+  ): Promise<() => Promise<void>>;
+};
+
 export function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
   return Math.min(1.5, Math.max(0.75, percent / 100));
@@ -249,6 +299,7 @@ export type OctopusBeakApi = {
     acknowledgeVersion(version: number): Promise<DataVersionSnapshot>;
     onInvalidated(listener: (event: DataInvalidationEvent) => void): () => void;
   };
+  dataViews: DataViewsApi;
 };
 
 export const octopusBeakApiChannels = [
@@ -295,6 +346,11 @@ export const octopusBeakApiChannels = [
   "data:getVersion",
   "data:acknowledgeVersion",
   "data:invalidated",
+  "data-views:subscribe",
+  "data-views:enabled",
+  "data-views:unsubscribe",
+  "data-views:rows",
+  "data-views:error",
 ] as const;
 
 export type OctopusBeakApiChannel = typeof octopusBeakApiChannels[number];

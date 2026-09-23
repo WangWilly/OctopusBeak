@@ -1456,7 +1456,7 @@ function reconcileEsunLegacySourceSequences(
   }
 }
 
-function esunCanonicalSpineCapture(
+export function esunCanonicalSpineCapture(
   capture: EsunCreditCardValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
   const instrumentsByKey = new Map(

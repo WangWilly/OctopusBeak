@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteBaseline } from "../pglite/baseline.ts";
+import { PGliteStore } from "../pglite/transaction.ts";
+import { commitPGliteCanonicalCreditCardCapture } from "../pglite/credit-card.ts";
+import { fubonCreditCardCommandRequest } from "../pglite/credit-card-adapters.ts";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +21,7 @@ import {
   buildFubonCreditCardAccountIdentityKey,
   buildFubonCreditCardStatementEvidenceKey,
   buildFubonCreditCardTransactionSourceKey,
+  fubonCanonicalSpineCapture,
   type FubonCreditCardCaptureInput,
   type FubonCreditCardTransactionInput,
 } from "./fubon-credit-card.ts";
@@ -181,6 +187,23 @@ function capture(
     ...overrides,
   };
 }
+
+test("Fubon admitted credit-card capture commits through the PGlite card command", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const admitted = admitFubonCreditCardCapture(capture());
+    const request = fubonCreditCardCommandRequest(admitted, fubonCanonicalSpineCapture(admitted));
+    const result = await commitPGliteCanonicalCreditCardCapture(store, request);
+    assert.equal(result.transactionCount, 2);
+    assert.equal((await store.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM canonical_credit_card_transaction_details",
+    )).rows[0]?.count, 2);
+  } finally {
+    await store.close();
+  }
+});
 
 function fubonBillingTransitionCapture(input: {
   captureId: string;
@@ -908,6 +931,52 @@ test("Fubon billing lifecycle preserves one transaction across billed recurrence
     assert.equal(count("fubon_credit_transaction_details"), 3);
   } finally {
     store.close();
+  }
+});
+
+test("PGlite Fubon billing lifecycle preserves one transaction across billed recurrence", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    for (const input of [
+      { captureId: "pglite-fubon-unbilled", observedAt: "2026-08-25T00:00:00.000Z", billingStatus: "unbilled" as const, sourceRecordKey: "pglite-row-unbilled" },
+      { captureId: "pglite-fubon-billed", observedAt: "2026-09-01T00:00:00.000Z", billingStatus: "billed" as const, sourceRecordKey: "pglite-row-billed", statementKey: "statement-2026-07" },
+      { captureId: "pglite-fubon-billed-repeat", observedAt: "2026-09-02T00:00:00.000Z", billingStatus: "billed" as const, sourceRecordKey: "pglite-row-billed-repeat", statementKey: "statement-2026-07" },
+    ]) {
+      const capture = admitFubonCreditCardCapture(fubonBillingTransitionCapture(input));
+      await commitPGliteCanonicalCreditCardCapture(store, fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)));
+    }
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM canonical_credit_card_transaction_lifecycle")).rows[0]?.count, 3);
+    const lifecycle = await store.query<{ billing_status: string; statement_key: string | null }>(
+      "SELECT billing_status, statement_key FROM canonical_credit_card_transaction_lifecycle ORDER BY billing_status DESC, statement_key NULLS FIRST",
+    );
+    assert.deepEqual(lifecycle.rows.map((row) => row.billing_status).sort(), ["billed", "billed", "unbilled"]);
+    const unrelatedInput = fubonBillingTransitionCapture({
+      captureId: "pglite-fubon-unrelated", observedAt: "2026-09-03T00:00:00.000Z",
+      billingStatus: "unbilled", sourceRecordKey: "pglite-row-unrelated",
+    });
+    const unrelated = admitFubonCreditCardCapture({
+      ...unrelatedInput,
+      transactions: [{ ...unrelatedInput.transactions[0]!, description: "SYNTHETIC DISTINCT PURCHASE" }],
+    });
+    await commitPGliteCanonicalCreditCardCapture(store,
+      fubonCreditCardCommandRequest(unrelated, fubonCanonicalSpineCapture(unrelated)));
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
+    const regression = admitFubonCreditCardCapture(fubonBillingTransitionCapture({
+      captureId: "pglite-fubon-regression", observedAt: "2026-09-04T00:00:00.000Z",
+      billingStatus: "unbilled", sourceRecordKey: "pglite-row-regression",
+    }));
+    await assert.rejects(
+      commitPGliteCanonicalCreditCardCapture(store,
+        fubonCreditCardCommandRequest(regression, fubonCanonicalSpineCapture(regression))),
+      /cannot regress from billed to unbilled/u,
+    );
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 4);
+  } finally {
+    await store.close();
   }
 });
 

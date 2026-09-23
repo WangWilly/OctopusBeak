@@ -11,7 +11,7 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
     type SpendingPurchaseReportView as PurchaseReport,
   } from "../purchase-matching.ts";
-  import type { SpendingPageDto, SpendingPairingCandidateView } from "../model.ts";
+  import { spendingPairingReportContext, type SpendingPageDto, type SpendingPairingCandidateView } from "../model.ts";
   import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
@@ -38,6 +38,7 @@
   let selectedMonth: string | null = null;
   let busyAction: string | null = null;
   let actionError = "";
+  let pairingFeedback = "";
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
   let paymentVisibleCount = 10;
@@ -48,6 +49,8 @@
   let selectedDay: string | null = null;
   let showAllCandidates = false;
   let pairingCandidates: readonly SpendingPairingCandidateView[] | null = null;
+  let validatedSelectedCandidate: SpendingPairingCandidateView | null = null;
+  let pairingDataVersion: number | null = null;
   let pairingCandidateTotal = 0;
   let pairingNextOffset: number | null = null;
   let pairingCandidatesLoading = false;
@@ -112,6 +115,24 @@
     selectedMonth = null;
     actionError = "";
   }
+  $: if (pairingInvoice?.invoice && pairingDataVersion !== report.knowledgeAt) {
+    const currentInvoice = report.records.find((record) =>
+      record.basis === "invoice" && record.invoice?.invoiceId === pairingInvoice?.invoice?.invoiceId);
+    if (currentInvoice) {
+      pairingInvoice = currentInvoice;
+      pairingDataVersion = report.knowledgeAt;
+      pairingCandidates = null;
+      validatedSelectedCandidate = null;
+      pairingCandidateTotal = 0;
+      pairingNextOffset = null;
+      paymentVisibleCount = initialPairingCandidateCount;
+      pairingCandidatesLoading = true;
+      void loadPairingCandidates(currentInvoice, ++pairingRequestToken);
+    } else {
+      closePairing();
+      actionError = $t.purchaseSpending.pairingInvoiceUnavailable;
+    }
+  }
   // Candidate preparation stays in the financial worker.  Fire it once for
   // each immutable report version without delaying the shell or renderer.
   $: if (report.knowledgeAt !== pairingPrewarmVersion) {
@@ -139,8 +160,14 @@
     candidateVisibleCount = Math.min(10, visibleCandidates.length);
   }
   $: visibleCandidateRows = visibleCandidates.slice(0, candidateVisibleCount);
-  $: visibleEligiblePayments = (pairingCandidates ?? []).slice(0, paymentVisibleCount);
-  $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId) ?? null;
+  $: visibleEligiblePayments = [
+    ...(validatedSelectedCandidate && selectedPaymentId === validatedSelectedCandidate.transactionId &&
+      !(pairingCandidates ?? []).slice(0, paymentVisibleCount).some((candidate) => candidate.transactionId === selectedPaymentId)
+      ? [validatedSelectedCandidate] : []),
+    ...(pairingCandidates ?? []).slice(0, paymentVisibleCount),
+  ];
+  $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId)
+    ?? (validatedSelectedCandidate?.transactionId === selectedPaymentId ? validatedSelectedCandidate : null);
   $: monthTotals = reportDerived.monthTotals;
   $: visibleTotals = totalsByCurrency(monthRecords);
   $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
@@ -410,9 +437,22 @@
     busyAction = `${action}:${candidateId}`;
     actionError = "";
     try {
+      const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
+      const invoiceRecord = candidate ? candidateRecord(candidate.candidateId, "invoice") : null;
+      const paymentRecord = candidate ? candidateRecord(candidate.candidateId, "transaction") : null;
+      const context = candidate && invoiceRecord && paymentRecord
+        ? spendingPairingReportContext(report, invoiceRecord, paymentRecord, candidateId) : null;
+      const request = candidate && context ? {
+        kind: "candidate" as const, candidateId,
+        invoiceIdentityId: invoiceRecord!.invoice!.invoiceId,
+        transactionIdentityId: paymentRecord!.transaction!.transactionId,
+        dataVersion: report.knowledgeAt,
+        totalsByCurrency: report.totalsByCurrency,
+        pairingReportContext: context,
+      } : { kind: "candidate" as const, candidateId };
       const next = action === "confirmCandidate"
-        ? await window.octopusBeak.spending.confirmCandidate({ kind: "candidate", candidateId })
-        : await window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId });
+        ? await window.octopusBeak.spending.confirmCandidate(request)
+        : await window.octopusBeak.spending.denyCandidate(request);
       report = applySpendingPurchaseReportPatch(report, next.patch);
       selectedMonth = activeMonth;
     } catch (error) {
@@ -422,9 +462,13 @@
     }
   }
 
+
   function openPairing(record: PurchaseRecord) {
     pairingInvoice = record;
+    pairingDataVersion = report.knowledgeAt;
     selectedPaymentId = "";
+    pairingFeedback = "";
+    validatedSelectedCandidate = null;
     paymentVisibleCount = initialPairingCandidateCount;
     pairingCandidates = null;
     pairingCandidateTotal = 0;
@@ -438,7 +482,10 @@
   function closePairing() {
     pairingRequestToken += 1;
     pairingInvoice = null;
+    pairingDataVersion = null;
     selectedPaymentId = "";
+    pairingFeedback = "";
+    validatedSelectedCandidate = null;
     pairingCandidates = null;
     pairingCandidateTotal = 0;
     pairingNextOffset = null;
@@ -448,18 +495,26 @@
   async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
     const invoiceIdentityId = record.invoice?.invoiceId;
     if (!invoiceIdentityId) return;
+    const expectedDataVersion = report.knowledgeAt;
+    const selectedAtRequest = selectedPaymentId;
     try {
       const result = await window.octopusBeak.spending.rankPairingCandidates({
         invoiceIdentityId,
-        dataVersion: report.knowledgeAt,
+        dataVersion: expectedDataVersion,
+        selectedTransactionId: selectedAtRequest || undefined,
         limit: initialPairingCandidateCount,
       });
       if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
-      if (result.dataVersion !== report.knowledgeAt)
+      if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt)
         throw new Error($t.purchaseSpending.pairingDataChanged);
       pairingCandidates = result.candidates;
       pairingCandidateTotal = result.totalCandidateCount;
       pairingNextOffset = result.nextOffset;
+      validatedSelectedCandidate = result.selectedCandidate ?? null;
+      if (selectedAtRequest && selectedAtRequest === selectedPaymentId && !result.selectedCandidate) {
+        selectedPaymentId = "";
+        pairingFeedback = $t.purchaseSpending.pairingSelectionUnavailable;
+      }
     } catch (error) {
       if (requestToken !== pairingRequestToken) return;
       pairingCandidates = [];
@@ -507,7 +562,7 @@
       } catch (error) {
         actionError = error instanceof Error ? error.message : String(error);
       } finally {
-        pairingCandidatesLoading = false;
+        if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
       }
     }
     paymentVisibleCount = Math.min(nextVisibleCount, pairingCandidateTotal);
@@ -515,16 +570,22 @@
 
   async function confirmDirectPair() {
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
-    if (!invoiceIdentityId || !selectedPaymentId) return;
+    if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading) return;
     busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
     actionError = "";
     try {
+      const paymentRecord = report.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === selectedPaymentId);
+      const pairCandidate = report.candidates.find((candidate) =>
+        candidateRecord(candidate.candidateId, "invoice")?.invoice?.invoiceId === invoiceIdentityId &&
+        candidateRecord(candidate.candidateId, "transaction")?.transaction?.transactionId === selectedPaymentId);
+      const context = pairingInvoice && paymentRecord ? spendingPairingReportContext(report, pairingInvoice, paymentRecord, pairCandidate?.candidateId) : undefined;
       const next = await window.octopusBeak.spending.confirmCandidate({
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
         dataVersion: report.knowledgeAt,
         totalsByCurrency: report.totalsByCurrency,
+        pairingReportContext: context,
       });
       report = applySpendingPurchaseReportPatch(report, next.patch);
       closePairing();
@@ -785,6 +846,7 @@
             <button type="button" class="button secondary" onclick={closePairing}>{$t.common.close}</button>
           </div>
           <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
+          {#if pairingFeedback}<p class="panel-meta pairing-feedback" role="status">{pairingFeedback}</p>{/if}
           <div class="pairing-invoice-summary">
             <strong>{recordLabel(pairingInvoice)}</strong>
             <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
@@ -796,7 +858,7 @@
             {:else}
               {#each visibleEligiblePayments as payment (payment.purchaseId)}
                 <label class="payment-option">
-                  <input type="radio" name="spending-payment" value={payment.transactionId} bind:group={selectedPaymentId} />
+                  <input type="radio" name="spending-payment" value={payment.transactionId} bind:group={selectedPaymentId} onchange={() => pairingFeedback = ""} />
                   <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
                 </label>
               {:else}
@@ -820,7 +882,7 @@
           {#if busyAction !== null}
             <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.savingPair}</span>
           {/if}
-          <button type="button" class="button primary" disabled={!selectedPaymentId || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
+          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
     {/if}

@@ -4,10 +4,23 @@ import { join } from "node:path";
 import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import {
+  creditCardBalanceCommandRequest,
+  creditCardCommandRequestFromCanonicalCapture,
+} from "../ledger/pglite/credit-card-adapters.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
   commitYuantaCreditCardCaptureInTransaction,
+  yuantaCanonicalSpineCapture,
+  yuantaNeutralCreditCardCapture,
   type YuantaCreditCardCaptureBuilderOptions,
   type YuantaCreditCardIdentityInput,
   type YuantaCreditCardSourceRow,
@@ -5620,6 +5633,40 @@ export default workflow("yuantaCreditCardStatements", {
         statementSummaries,
       });
       if (canonicalCaptures.length > 0) {
+        if (pgliteWorkflowEnabled(process.env)) {
+          const requests = canonicalCaptures.map((capture) =>
+            creditCardCommandRequestFromCanonicalCapture(
+              yuantaCanonicalSpineCapture(capture),
+              yuantaNeutralCreditCardCapture(capture),
+            ));
+          const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
+            provider: "yuanta", product: "credit-card", itemKey: request.capture.captureId,
+            command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
+          }));
+          if (currentUsedCredit) {
+            const balanceCapture = yuantaCreditCurrentSnapshotCapture(
+              canonicalCaptures[0]!, currentUsedCredit,
+            );
+            items.push({
+              provider: "yuanta", product: "current-balance", itemKey: balanceCapture.captureId,
+              command: {
+                kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+                request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
+              },
+            });
+          }
+          const client = requirePGliteChildRpcClientFromEnv();
+          try {
+            await client.ready;
+            const result = await executePGliteWorkflowRun({
+              client: client.workflow, items, provider: "yuanta", product: "credit-card",
+            });
+            if (result.status !== "completed")
+              throw new Error(`Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
+          } finally {
+            client.close();
+          }
+        } else {
         const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
         for (const canonicalCapture of canonicalCaptures) {
           executionItems.push({
@@ -5670,6 +5717,7 @@ export default workflow("yuantaCreditCardStatements", {
           throw new Error(
             `Yuanta credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
           );
+        }
         canonicalAdmission = "admitted";
         canonicalCaptureCount = canonicalCaptures.length;
       }

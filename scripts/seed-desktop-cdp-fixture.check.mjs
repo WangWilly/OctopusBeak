@@ -9,7 +9,10 @@ import {
   removeDesktopCdpFixture,
   seedDesktopCdpFixture,
 } from "./seed-desktop-cdp-fixture.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS } from "../src/lib/automation/server/tasks.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  automationCredentialKeyIsSecret,
+} from "../src/lib/automation/server/tasks.ts";
 import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 
 assert.throws(
@@ -32,7 +35,7 @@ try {
     .flatMap((groupId) => AUTOMATION_CREDENTIAL_GROUPS
       .find((group) => group.id === groupId)
       .credentialFields
-      .filter((credentialField) => credentialField.redaction !== "none")
+      .filter((credentialField) => automationCredentialKeyIsSecret(credentialField.key))
       .map((credentialField) => credentialField.key))
     .sort();
   assert.deepEqual(Object.keys(credentials).sort(), expectedCredentialKeys);

@@ -729,7 +729,7 @@ function requireValidatedCapture(input: CurrentDepositBalanceValidatedCapture): 
   if (!VALIDATED_CAPTURES.has(input)) fail("Current deposit capture did not cross the validated seam.");
 }
 
-function sourceEvidenceFromCapture(
+export function sourceEvidenceFromCapture(
   capture: CurrentDepositBalanceValidatedCapture,
 ): Readonly<{
   captureId: string;

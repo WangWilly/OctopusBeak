@@ -30,6 +30,11 @@ try {
     // @ts-expect-error The view rows have an amount, not an accountId.
     await views.subscribe("spending.summary", { month: "2026-09" }, (rows: { accountId: string }[]) => rows);
   }
+  await assert.rejects(
+    views.subscribe("toString" as never, {} as never, () => {}),
+    /Unknown data view: toString/u,
+    "inherited object properties must not become named views",
+  );
   const first: Total[][] = [];
   const second: Total[][] = [];
   const stopFirst = await views.subscribe("spending.summary", { month: "2026-09" }, (rows: Total[]) => first.push(rows));

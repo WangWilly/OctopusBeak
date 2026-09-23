@@ -1355,7 +1355,7 @@ function resolveFubonTransactionPersistenceIdentities(
   return resolved;
 }
 
-function fubonCanonicalSpineCapture(
+export function fubonCanonicalSpineCapture(
   capture: FubonCreditCardValidatedCapture,
   persistenceIdentities: FubonTransactionPersistenceIdentityMap = new Map(),
 ): CanonicalFinancialDepositValidatedCapture {

@@ -1,7 +1,64 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
-import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
+import type {
+  DataViewErrorEvent,
+  DataViewRowsEvent,
+  DataViewSubscribeResult,
+  DataViewUnsubscribeResult,
+  OctopusBeakApi,
+  AutomationRuntimeSnapshot,
+} from "../src/lib/desktop/api.ts";
 import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
-import type { AutomationRuntimeSnapshot } from "../src/lib/desktop/api.ts";
+
+let nextDataViewRequestId = 1;
+
+function dataViewError(result: { code: string; message: string }): Error {
+  const error = new Error(result.message);
+  Object.assign(error, { code: result.code });
+  return error;
+}
+
+const dataViews = {
+  enabled: () => ipcRenderer.invoke("data-views:enabled"),
+  subscribe(view: string, params: object, onRows: (rows: unknown[]) => void, onError?: (error: DataViewErrorEvent) => void) {
+    const requestId = `renderer-view-${nextDataViewRequestId++}`;
+    const removeListeners = () => {
+      ipcRenderer.removeListener("data-views:rows", rowsHandler);
+      ipcRenderer.removeListener("data-views:error", errorHandler);
+    };
+    const rowsHandler = (_event: Electron.IpcRendererEvent, event: DataViewRowsEvent) => {
+      if (event.requestId === requestId) onRows(event.rows);
+    };
+    const errorHandler = (_event: Electron.IpcRendererEvent, event: DataViewErrorEvent) => {
+      if (event.requestId === requestId) {
+        removeListeners();
+        onError?.(event);
+      }
+    };
+    ipcRenderer.on("data-views:rows", rowsHandler);
+    ipcRenderer.on("data-views:error", errorHandler);
+    return ipcRenderer.invoke("data-views:subscribe", { requestId, view, params })
+      .then((result: DataViewSubscribeResult) => {
+        if (!result.ok) {
+          removeListeners();
+          throw dataViewError(result);
+        }
+        let stopped = false;
+        return async () => {
+          if (stopped) return;
+          stopped = true;
+          removeListeners();
+          const response = await ipcRenderer.invoke(
+            "data-views:unsubscribe",
+            { requestId, subscriptionId: result.subscriptionId },
+          ) as DataViewUnsubscribeResult;
+          if (!response.ok) throw dataViewError(response);
+        };
+      }, (error: unknown) => {
+        removeListeners();
+        throw error;
+      });
+  },
+};
 
 function displayScaleZoomFactor(percent: number) {
   if (!Number.isFinite(percent)) throw new TypeError("Display scale must be finite.");
@@ -84,6 +141,7 @@ const api: OctopusBeakApi = {
       return () => ipcRenderer.removeListener("data:invalidated", handler);
     },
   },
+  dataViews,
 };
 
 contextBridge.exposeInMainWorld("octopusBeak", api);

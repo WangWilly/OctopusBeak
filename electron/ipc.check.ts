@@ -12,6 +12,8 @@ assert.equal(octopusBeakApiChannels.includes("spending:revokeLink"), true);
 assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
+for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views:unsubscribe", "data-views:rows", "data-views:error"] as const)
+  assert.equal(octopusBeakApiChannels.includes(channel), true);
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
 assert.match(source, /ipcMain\.handle\("settings:load"/);
@@ -29,6 +31,8 @@ assert.match(
   /createFinancialPageWorkerClient/,
   "financial page loads must cross a worker boundary so projection reads cannot block Electron main",
 );
+assert.match(source, /registerPGliteViewIpc/);
+assert.match(source, /pgliteViews\?\.enabled/);
 assert.match(source, /withExpectedDataVersion/);
 assert.match(source, /options\?\.expectedVersion/);
 for (const channel of ["overview:block", "assets:block", "liabilities:block", "spending:block", "automation:block"])
@@ -55,7 +59,7 @@ assert.doesNotMatch(
   /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
   "liabilities projection must not execute synchronously on Electron main",
 );
-assert.match(source, /return \{\s*close: async \(\) => \{[\s\S]*financialPages\.close\(\);[\s\S]*\},?\s*\}/);
+assert.match(source, /return \{\s*close: async \(\) => \{[\s\S]*ownsFinancialPages[\s\S]*financialPages as ReturnType<typeof createFinancialPageWorkerClient>\)[\s\S]*\.close\(\);[\s\S]*\},?\s*\}/);
 assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
 assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);

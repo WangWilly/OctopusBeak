@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Worker } from "node:worker_threads";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
@@ -18,6 +19,8 @@ import {
   fubonStableLoginScope,
 } from "./fubon-source-connection.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { createPGliteChildRpcServer, type PGliteChildProvider } from "../../electron/pglite-child-rpc.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 
 const joinDigits = (...segments: string[]) => segments.join("");
 const fubonCurrentAccountNumber = joinDigits("0012", "3456", "7890", "12");
@@ -1233,3 +1236,68 @@ await assert.rejects(
     ),
   /unknown option read failure/,
 );
+
+const pgliteRunDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fubon-pglite-workflow-"));
+const pgliteWorker = createPGliteViewWorkerClient(new Worker(
+  new URL("../../electron/pglite-view-worker.ts", import.meta.url),
+  { execArgv: ["--experimental-strip-types"], workerData: { dataDir: join(pgliteRunDir, "pglite") } },
+));
+const pgliteServer = createPGliteChildRpcServer({
+  provider: {
+    operational: pgliteWorker.operationalProvider,
+    financial: pgliteWorker.financial.registry,
+  } as PGliteChildProvider,
+});
+const priorWorkflowEnvironment = Object.fromEntries(
+  Object.keys(pgliteServer.env).map((key) => [key, process.env[key]]),
+);
+try {
+  await pgliteServer.ready;
+  Object.assign(process.env, pgliteServer.env);
+  const fixture = FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2;
+  const statement: FubonParsedDepositStatement = {
+    account: fixture.account.label,
+    accountId: fixture.account.value,
+    queryPeriod: "synthetic",
+    branchName: fixture.account.branchName,
+    rows: fixture.pages.flatMap((page) => page.rows.map((row) => [...row.cells])),
+    pages: fixture.pages.map((page) => ({
+      ...page,
+      rows: page.rows.map((row) => ({ ...row, cells: [...row.cells] as typeof row.cells })),
+    })),
+    accountOption: fixture.account,
+  };
+  const identity = fubonStableLoginScope({ fubon_user_id: "FUBON-USER-001", fubon_account: "FUBON-LOGIN-001" })!;
+  const key = deriveFubonSourceConnectionKey({ fubon_user_id: "FUBON-USER-001", fubon_account: "FUBON-LOGIN-001" })!;
+  const output = await runFubonStatements(
+    {} as never,
+    { dateRanges: ["30"], downloadFormat: "EXCEL" },
+    {
+      canonicalLedgerDir: pgliteRunDir,
+      sourceConnectionScope: identity,
+      sourceConnectionKey: key,
+      readCurrentDepositBalances: async () => [],
+      openTransactionDetailForAccountIndex: async () => "****0000",
+      readDepositAccountOptions: async () => [fixture.account],
+      selectDepositAccount: async () => undefined,
+      fetchDepositStatement: async () => statement,
+      writeDepositStatementFiles: async () => ({
+        accountId: "****0000", account: "****0000", queryPeriods: ["synthetic"],
+        branchName: fixture.account.branchName, baseName: "synthetic",
+        csvFilename: "synthetic.csv", csvPath: "synthetic.csv", csvBytes: 0,
+        jsonFilename: "synthetic.json", jsonPath: "synthetic.json", jsonBytes: 0,
+        rowCount: statement.rows.length,
+      }),
+    },
+  );
+  assert.equal(output.admissions[0]?.status, "financial-admitted");
+  assert.equal((await pgliteWorker.financial.registry.overviewCurrent()).accounts.length, 1);
+} finally {
+  for (const [key, value] of Object.entries(priorWorkflowEnvironment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await pgliteServer.close();
+  await pgliteWorker.close();
+  await rm(pgliteRunDir, { recursive: true, force: true });
+}

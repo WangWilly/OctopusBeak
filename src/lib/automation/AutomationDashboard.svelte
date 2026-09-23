@@ -74,8 +74,11 @@
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
 
-  function blockState(key: string): BlockState<DashboardBlockPayload> {
-    return blocks[key] ?? { status: "loading" };
+  function blockState(
+    source: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
+    key: string,
+  ): BlockState<DashboardBlockPayload> {
+    return source[key] ?? { status: "loading" };
   }
 
   function automationBlockData<Key extends "summary" | "list" | "details">(
@@ -1442,7 +1445,7 @@
   </svelte:fragment>
 
   <div class:sync-sheet-open={syncOpen} class="content automation-content">
-    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+    <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
     {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, renderedPendingActions)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
@@ -1503,7 +1506,7 @@
     </section>
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="details" state={blockState("details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
+    <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
     {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, renderedPendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
     {#if detailsNoticeGroups.length}
@@ -1558,7 +1561,7 @@
     {/if}
     </ProgressiveBlock>
 
-    <ProgressiveBlock label="list" state={blockState("list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
+    <ProgressiveBlock label="list" state={blockState(blocks, "list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
     {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
@@ -1643,7 +1646,7 @@
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
-                  {#if task.isActive || task.progressPercent !== null}
+                  {#if task.isActive || (task.progressPercent !== null && !["cancelled", "failed", "interrupted"].includes(task.status))}
                   <div class="progress-cell">
                     <div
                       class="progress-bar"
@@ -1657,6 +1660,9 @@
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
                     <span class="mono">{progressLabel(task, $t)}</span>
+                    {#if task.status === "completed" || task.status === "partial"}
+                      <span class={`chip ${statusClass(task.status)}`}>{$t.automation.statusLabels[task.status]}</span>
+                    {/if}
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
@@ -2802,7 +2808,8 @@
   }
 
   .progress-bar {
-    width: 100%;
+    flex: 1 0 40px;
+    min-width: 40px;
     height: 6px;
     overflow: hidden;
     border-radius: 999px;

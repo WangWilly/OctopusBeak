@@ -16,6 +16,9 @@ import {
   type CanonicalEnrichmentCommitResult,
   type CanonicalEnrichmentOutput,
 } from "./canonical-enrichment.ts";
+import { classifyCathayDescription } from "./cathay-description-classifier.ts";
+export { classifyCathayDescription } from "./cathay-description-classifier.ts";
+export type { CathayDescriptionClassification } from "./cathay-description-classifier.ts";
 
 const CATHAY_STREAM = "domestic-deposit";
 const CATHAY_CONTRACT_VERSION = "cathay/domestic-deposit/v1";
@@ -28,11 +31,6 @@ type CurrentCathayTransaction = Readonly<{
   identityEpoch: string;
   stream: string;
   description: string | null;
-}>;
-
-export type CathayDescriptionClassification = Readonly<{
-  candidates: readonly Readonly<{ value: string; confidenceBasisPoints: number }>[];
-  tie: boolean;
 }>;
 
 export type CathayAutomaticEnrichmentOptions = Readonly<{
@@ -122,32 +120,6 @@ function readCurrentCathayTransactions(
       description: typeof source.description === "string" ? source.description : null,
     }];
   });
-}
-
-/**
- * The Cathay provider retains only the compact description as source
- * evidence. These rules deliberately produce Derived Kind assertions; they
- * never promote a description, merchant name, MCC, or a combined signal to
- * Source taxonomy evidence.
- */
-export function classifyCathayDescription(
-  description: string | null | undefined,
-): CathayDescriptionClassification {
-  if (!description || description.trim() === "") return { candidates: [], tie: false };
-  const text = description.toLowerCase();
-  const candidates: Array<{ value: string; confidenceBasisPoints: number }> = [];
-  if (/\bdeposit\b/u.test(text))
-    candidates.push({ value: "cash.deposit", confidenceBasisPoints: 9_200 });
-  if (/\btransfer\b/u.test(text))
-    candidates.push({ value: "transfer.internal", confidenceBasisPoints: 8_600 });
-  if (/\bcredit(?:\s+card)?\b/u.test(text))
-    candidates.push({ value: "payment.credit_card", confidenceBasisPoints: 8_200 });
-  if (candidates.length === 0) return { candidates, tie: false };
-  const highest = Math.max(...candidates.map((candidate) => candidate.confidenceBasisPoints));
-  return {
-    candidates,
-    tie: candidates.filter((candidate) => candidate.confidenceBasisPoints === highest).length > 1,
-  };
 }
 
 function unsupportedOutput(

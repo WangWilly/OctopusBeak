@@ -19,6 +19,8 @@ const CONTRACT_PURGE_IMPLEMENTATION =
   "src/ledger/canonical/canonical-contract-purge.ts";
 const LIFECYCLE_CONTRACT_TEST =
   "src/ledger/canonical/canonical-schema-lifecycle.check.ts";
+const PGLITE_BASELINE_GENERATOR =
+  "src/ledger/pglite/baseline-generator.ts";
 const SOURCE_STORE = "src/ledger/canonical/canonical-source-store.ts";
 const LOCAL_IDENTIFIER_MODULE =
   "src/ledger/canonical/canonical-local-identifier.ts";
@@ -31,6 +33,9 @@ const DIRECT_IMPORT_ALLOWLIST = new Set([
   DATABASE_IMPLEMENTATION,
   CONTRACT_PURGE_IMPLEMENTATION,
   LIFECYCLE_CONTRACT_TEST,
+  // Offline generation compares the reviewed SQLite schema with the checked
+  // static PGlite baseline. Runtime initialization imports baseline-sql.ts.
+  PGLITE_BASELINE_GENERATOR,
 ]);
 
 const SOURCE_STORE_PHYSICAL_EXPORTS = new Set([

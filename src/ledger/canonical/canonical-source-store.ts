@@ -1242,7 +1242,7 @@ export type CathayDomesticDepositSyncTransactionStore = Pick<
   "db" | "commitClock"
 >;
 
-function cathayOpaqueIdentity(value: string): string {
+export function cathayOpaqueIdentity(value: string): string {
   const normalized = value.trim();
   if (/^sha256:[A-Za-z0-9_-]+$/u.test(normalized)) return normalized;
   return `sha256:${createHash("sha256")
@@ -1389,6 +1389,60 @@ function cathaySyncAdmissionEvidence(
     pages,
     records,
   };
+}
+
+/** Data-only Cathay domestic facts for the PGlite worker. A single provider
+ * response can contain multiple accounts, each with its own complete scope. */
+export function pgliteCathayDomesticFinancialRequests(
+  input: CathayDomesticDepositSyncInput,
+): import("../pglite/canonical-source-store.ts").PGliteCanonicalFinancialCommitRequest[] {
+  const validated = validateSyncInput(input);
+  const sourceConnectionKey = cathayOpaqueIdentity(validated.sourceConnectionId);
+  const identityEpoch = cathayOpaqueIdentity(validated.identityEpoch);
+  return validated.scopes.map((scope) => {
+    const capture = cathaySyncAdmissionEvidence(
+      { ...validated, scopes: [scope] },
+      sourceConnectionKey,
+      identityEpoch,
+    );
+    const transactions = scope.rows.map((row, index) => ({
+      sourceOccurrenceKey: capture.records[index]!.occurrenceKey,
+      sourceSequence: row.sequence,
+      amount: { coefficient: row.amount.coefficient.toString(), scale: row.amount.scale },
+      balanceAfter: { coefficient: row.balance.coefficient.toString(), scale: row.balance.scale },
+      currency: scope.currency,
+      direction: row.direction,
+      postingStatus: CATHAY_POSTING_MAPPING.postingStatus,
+      postingOrigin: CATHAY_POSTING_MAPPING.origin,
+      postingBasis: CATHAY_POSTING_MAPPING.basis,
+      postingRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      description: row.description,
+      economicStatus: "normal" as const,
+      administrativeState: "active" as const,
+      semanticRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      effectiveOn: row.accountDate,
+      transactionDateTimeLocal: row.transactionDateTime,
+      timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
+      timePrecision: "second" as const,
+      timeOrigin: "source_reported" as const,
+      effectiveTimeBasis: "accounting" as const,
+      effectiveTimeRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      utcInstantUtcUs: row.utcInstantUtcUs,
+    }));
+    return {
+      capture: { ...capture, accountNumber: scope.accountNumber },
+      account: {
+        sourceAccountKey: scope.accountNo,
+        accountNo: scope.accountNumber?.value ?? null,
+        accountType: "depository" as const,
+        currency: scope.currency,
+      },
+      accountIdentifier: scope.accountNumber,
+      transactions,
+      withdrawalPolicy: scope.absenceAuthority === "comparable-complete-range"
+        ? "allow-inference" as const : "never-infer" as const,
+    };
+  });
 }
 
 type LifecycleEventKind = CathayCanonicalLifecycleEvent["kind"];

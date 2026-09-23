@@ -9,6 +9,14 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import type {
   DomesticDepositSourceTime,
   LineBankHumanAttestedV13ValidatedCapture,
@@ -22,6 +30,7 @@ import {
   commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
 } from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
 import {
+  admitForeignCurrencyDepositCapture,
   commitForeignCurrencyDepositCaptureInTransaction,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
@@ -96,7 +105,7 @@ function linebankCompactFinancialRecord(
 }
 
 /** Keep LINE Bank's provider vocabulary in the adapter before execution. */
-function normalizeLineBankFinancialCapture(
+export function normalizeLineBankFinancialCapture(
   capture: LineBankHumanAttestedV13ValidatedCapture,
 ): CanonicalFinancialDepositValidatedCapture {
   const contractFingerprint = linebankCanonicalToken(
@@ -197,8 +206,8 @@ function normalizeLineBankFinancialCapture(
       description: record.description ?? null,
       direction: record.direction,
       sourceTime: {
-        localDate: record.sourceTime.localDate,
-        localTime: record.sourceTime.localTime,
+        localDate: linebankCanonicalDate(record.sourceTime.localDate),
+        localTime: `${record.sourceTime.localTime.slice(0, 2)}:${record.sourceTime.localTime.slice(2, 4)}:${record.sourceTime.localTime.slice(4, 6)}`,
         timeZone: record.sourceTime.timeZone,
         epochMilliseconds: record.sourceTime.epochMilliseconds,
       },
@@ -1557,6 +1566,73 @@ async function downloadLineBankStatements(
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
     DEFAULT_LEDGER_DIR;
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const statementItems = [
+        ...canonicalCaptures.map((capture) => ({
+          provider: "linebank", product: "domestic-deposit", itemKey: capture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+            request: { capture: normalizeLineBankFinancialCapture(capture) },
+          },
+        } as const)),
+        ...foreignCanonicalCaptures.map((capture, index) => ({
+          provider: "linebank", product: "foreign-currency",
+          itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
+          command: {
+            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+            request: { capture: admitForeignCurrencyDepositCapture(capture) },
+          },
+        } as const)),
+      ];
+      const statements = await executePGliteWorkflowRun({
+        client: client.workflow, items: statementItems,
+        provider: "linebank", product: "financial",
+      });
+      if (statements.status !== "completed")
+        throw new Error(`LINE Bank PGlite commit ${statements.status}: ${statements.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      let balanceItems: PGliteWorkflowRunItem[] = [];
+      if (currentBalanceRows.length > 0 && canonicalCaptures.length > 0) {
+        const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+          currentBalanceRows,
+          canonicalCaptures.map((capture) => ({
+            accountKey: capture.accountKey,
+            sourceConnection: capture.sourceConnection,
+            identityEpoch: capture.identityEpoch,
+            observedAt: capture.observedAt,
+          })),
+        );
+        balanceItems = currentBalanceCaptures.map((capture, index) => ({
+          provider: "linebank", product: "current-balance",
+          itemKey: `current-balance:${index}`,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(capture)),
+          },
+        }));
+      }
+      const balances = await executePGliteWorkflowRun({
+        client: client.workflow, items: balanceItems,
+        provider: "linebank", product: "current-balance",
+      });
+      if (balances.status !== "completed")
+        throw new Error(`LINE Bank PGlite balance commit ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+      const canonicalCaptureCount = [...statements.items, ...balances.items].reduce(
+        (count, item) => count + (item.status === "committed" ? item.admissionSummaries.length : 0), 0,
+      );
+      return {
+        dateRange,
+        count: downloads.length,
+        rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
+        canonicalCaptureCount,
+        downloads,
+      };
+    } finally {
+      client.close();
+    }
+  }
   const committedDomesticCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
   const committedDomesticCaptureInputs: LineBankHumanAttestedV13ValidatedCapture[] = [];
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [

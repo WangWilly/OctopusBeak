@@ -25,6 +25,13 @@ import {
 } from "../ledger/canonical/einvoice.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { executeCanonicalFinancialCommitRun } from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import {
+  PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
+  pgliteWorkflowEnabled,
+} from "../ledger/pglite/workflow-client.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteCanonicalEInvoiceCommitResult } from "../ledger/pglite/einvoice.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
 const SEARCH_URL =
@@ -977,6 +984,34 @@ export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
   ledgerDir: string,
 ) {
+  if (pgliteWorkflowEnabled(process.env)) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow,
+        items: [{
+          provider: "einvoice",
+          product: "personal-invoice",
+          itemKey: capture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
+            request: capture,
+          },
+        }],
+        provider: "einvoice",
+        product: "personal-invoice",
+      });
+      const committed = result.items[0];
+      if (committed?.status !== "committed")
+        throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
+          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+          .join(", ")}`);
+      return committed.value as PGliteCanonicalEInvoiceCommitResult;
+    } finally {
+      client.close();
+    }
+  }
   const result = await executeCanonicalFinancialCommitRun({
     canonicalLedgerDir: ledgerDir,
     items: [

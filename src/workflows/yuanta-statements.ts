@@ -5,6 +5,16 @@ import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  pgliteWorkflowEnabled,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
@@ -1186,6 +1196,7 @@ export async function runYuantaStatements(
   }> = [];
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
   const financialCaptures: ExistingYuantaFinancialCapture[] = [];
+  const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitYuantaDomesticDepositFinancialCapture>["capture"]>> = [];
   const sourceOnlyEntries: Array<{
     capture: YuantaDomesticDepositValidatedEvidence;
     captureId: string;
@@ -1293,6 +1304,7 @@ export async function runYuantaStatements(
           );
         financialInputs.push(financialInput);
         financialCaptures.push(financialAdmission.capture);
+        financialDepositCaptures.push(financialAdmission.capture);
         relationInputs.push({
           captureId: financialInput.captureId,
           evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
@@ -1346,6 +1358,56 @@ export async function runYuantaStatements(
       });
     }
 
+    if (pgliteWorkflowEnabled(process.env)) {
+      const client = requirePGliteChildRpcClientFromEnv();
+      try {
+        await client.ready;
+        const items: PGliteWorkflowRunItem[] = [];
+        for (const entry of sourceOnlyEntries) items.push({
+          provider: "yuanta", product: "domestic-deposit", itemKey: entry.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+            request: createYuantaDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
+          },
+        });
+        for (const [index, capture] of financialDepositCaptures.entries()) {
+          const relation = relationInputs.find((item) => item.captureId === capture.captureId);
+          items.push({
+            provider: "yuanta", product: "domestic-deposit", itemKey: capture.captureId,
+            command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
+            ...(relation ? {
+              relationCommands: () => [{
+                kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+                request: {
+                  sourceConnectionKey,
+                  integrationNamespace: "yuanta",
+                  observedAt: capture.observedAt,
+                  counterpartyEvidence: relation.evidence,
+                },
+              }],
+              onRelationResult: (value: unknown) => {
+                relationResolution = value as LoanRepaymentRelationResolutionResult;
+              },
+            } : {}),
+          });
+        }
+        for (const capture of currentBalanceCaptures) items.push({
+          provider: "yuanta", product: "current-balance",
+          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+          command: {
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(capture),
+          },
+        });
+        const executionResult = await executePGliteWorkflowRun({
+          client: client.workflow, items, provider: "yuanta", product: "financial",
+        });
+        if (executionResult.status !== "completed")
+          throw new Error(`Yuanta PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
+      } finally {
+        client.close();
+      }
+    } else {
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
     for (const entry of sourceOnlyEntries) {
       executionItems.push({
@@ -1418,6 +1480,7 @@ export async function runYuantaStatements(
       throw new Error(
         `Yuanta canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
       );
+    }
 
     const file = await write(
       nextTimestamp,

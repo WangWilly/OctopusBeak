@@ -487,6 +487,8 @@ function directPairingPatchFromContext(
     ? Object.freeze([{ kind: "remove" as const, id: inferred.candidateKey }])
     : Object.freeze([]);
   const linked = linkedPurchaseRecord(invoice, payment, link, linkedCandidateIds);
+  const tieOffset = context.sameDatePurchaseIds.findIndex((id) => id.localeCompare(linked.purchaseId) > 0);
+  const recordInsertIndex = context.recordInsertIndex + (tieOffset < 0 ? context.sameDatePurchaseIds.length : tieOffset);
   const invoiceAmount = invoice.revision.total
     ? {
         coefficient: invoice.revision.total.coefficient,
@@ -507,7 +509,7 @@ function directPairingPatchFromContext(
       recordOperations: Object.freeze([
         { kind: "remove" as const, id: `invoice:${invoiceId}` },
         { kind: "remove" as const, id: `transaction:${transactionId}` },
-        { kind: "upsert" as const, index: context.recordInsertIndex, value: linked },
+        { kind: "upsert" as const, index: recordInsertIndex, value: linked },
       ]),
       candidateOperations,
     }),
@@ -616,6 +618,8 @@ function pairingCandidatesInput(input: unknown): SpendingPairingCandidatesInput 
   return {
     invoiceIdentityId: value.invoiceIdentityId.trim(),
     dataVersion: value.dataVersion as number,
+    selectedTransactionId: typeof value.selectedTransactionId === "string" && value.selectedTransactionId.trim()
+      ? value.selectedTransactionId.trim() : undefined,
     offset: Number.isSafeInteger(value.offset) && (value.offset as number) >= 0 ? value.offset as number : 0,
     limit: Number.isSafeInteger(value.limit) && (value.limit as number) > 0
       ? Math.min(value.limit as number, 100)
@@ -934,7 +938,10 @@ export function rankSpendingPaymentCandidates(
     const offset = action.offset ?? 0;
     const limit = action.limit ?? 50;
     const page = ranked.slice(offset, offset + limit);
-    const pageIds = new Set(page.map((candidate) => candidate.transactionId));
+    const selectedRank = action.selectedTransactionId
+      ? ranked.find((candidate) => candidate.transactionId === action.selectedTransactionId)
+      : undefined;
+    const pageIds = new Set([...page.map((candidate) => candidate.transactionId), ...(selectedRank ? [selectedRank.transactionId] : [])]);
     const pageTransactions = new Map<string, SpendingPairingIndexEntry["transaction"]>();
     if (pageIds.size > 0) {
       for (const entry of index.entries) {
@@ -952,6 +959,11 @@ export function rankSpendingPaymentCandidates(
     return Object.freeze({
       dataVersion: currentVersion,
       candidates: Object.freeze(candidates),
+      ...(action.selectedTransactionId !== undefined ? {
+        selectedCandidate: selectedRank
+          ? createSpendingPairingCandidateViewFromTransaction(pageTransactions.get(selectedRank.transactionId)! as SpendingPurchaseTransactionView)
+          : null,
+      } : {}),
       totalCandidateCount: ranked.length,
       nextOffset: offset + candidates.length < ranked.length ? offset + candidates.length : null,
     });
@@ -1103,6 +1115,9 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
       throw new TypeError("Spending pairing report insert index must be a non-negative integer.");
     if (!Array.isArray(context.candidateIds) || context.candidateIds.some((candidateId) => typeof candidateId !== "string"))
       throw new TypeError("Spending pairing report candidate ids must be an array of strings.");
+    if (context.sameDatePurchaseIds !== undefined &&
+        (!Array.isArray(context.sameDatePurchaseIds) || context.sameDatePurchaseIds.some((id) => typeof id !== "string")))
+      throw new TypeError("Spending pairing same-date ids must be an array of strings.");
     if (context.totalStatusAfter !== "complete" && context.totalStatusAfter !== "includes-pending-confirmation")
       throw new TypeError("Spending pairing report total status is invalid.");
   }
@@ -1120,6 +1135,7 @@ function confirmActionValue(input: unknown): SpendingConfirmActionInput {
       ? {
           pairingReportContext: {
             recordInsertIndex: (pairingReportContext as Record<string, unknown>).recordInsertIndex as number,
+            sameDatePurchaseIds: Object.freeze([...(((pairingReportContext as Record<string, unknown>).sameDatePurchaseIds ?? []) as string[])]),
             candidateIds: Object.freeze([...(pairingReportContext as Record<string, unknown>).candidateIds as string[]]),
             totalStatusAfter: (pairingReportContext as Record<string, unknown>).totalStatusAfter as SpendingPurchaseReportDto["totalStatus"],
           },

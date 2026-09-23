@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import {
   type CanonicalFinancialCommitItem,
   type CanonicalFinancialCommitTransaction,
 } from "./canonical-financial-commit-execution.ts";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../pglite/workflow-client.ts";
 
 const token = (value: string): `sha256:${string}` => `sha256:${value}`;
 
@@ -117,6 +118,26 @@ async function rowsFor(directory: string): Promise<{
     handle.close();
   }
 }
+
+test("PGlite-required workflow cannot open the legacy canonical SQLite store", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pglite-required-legacy-guard-"));
+  const previous = process.env[PGLITE_WORKFLOW_REQUIRED_ENV];
+  try {
+    process.env[PGLITE_WORKFLOW_REQUIRED_ENV] = "1";
+    await assert.rejects(
+      executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir: directory,
+        items: [item("legacy", (transaction) => admit(transaction, "legacy"))],
+      }),
+      /must use the PGlite worker command/u,
+    );
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    if (previous === undefined) delete process.env[PGLITE_WORKFLOW_REQUIRED_ENV];
+    else process.env[PGLITE_WORKFLOW_REQUIRED_ENV] = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Canonical Financial Commit reuses one handle and commits each Capture independently", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canonical-commit-execution-"));
@@ -641,5 +662,26 @@ test("invalid evidence is an item failure and diagnostics are sanitized", async 
     assert.doesNotMatch(diagnostic.message, /Users|account-123|not-a-date/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("fresh nested canonical ledger directories are created before the writer lease", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonical-commit-nested-root-"));
+  const directory = join(root, "provider", "financial");
+  try {
+    const result = await executeCanonicalFinancialCommitRun({
+      canonicalLedgerDir: directory,
+      items: [
+        item("nested-directory", (transaction) => {
+          admit(transaction, "nested-directory");
+          return "ok";
+        }),
+      ],
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(result.committedCount, 1);
+    assert.deepEqual(await rowsFor(directory), { captures: 1, commits: 1 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -23,6 +23,7 @@ export const HARD_PERFORMANCE_FILES = Object.freeze([
  * NSApplication lifecycle is not safe to run inside the broad test lane. */
 export const ELECTRON_CDP_FILES = Object.freeze([
   "electron/automation-runtime-cdp.check.ts",
+  "electron/pglite-route-cdp.check.ts",
 ]);
 
 function walk(directory) {
@@ -81,6 +82,7 @@ function runNodeTests(files, options = {}) {
   const args = ["--no-warnings", "--experimental-strip-types"];
   if (options.coverage) args.push("--experimental-test-coverage");
   args.push("--test");
+  if (options.forceExit) args.push("--test-force-exit");
   if (options.serial) args.push("--test-concurrency=1");
   if (options.reportPrefix) {
     args.push(
@@ -139,6 +141,7 @@ async function runLane(lane, options = {}) {
   return runNodeTests(files, {
     ...options,
     serial: lane === "browser" || lane === "electron-cdp",
+    forceExit: lane === "electron-cdp",
   });
 }
 
