@@ -6,8 +6,8 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-} from "../canonical/cathay-domestic-deposit.ts";
-import { validateCathayDomesticDepositSyncInputForPGlite } from "../canonical/canonical-source-store.ts";
+  validateCathayDomesticDepositSyncInputForPGlite,
+} from "./cathay-domestic-admission.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";

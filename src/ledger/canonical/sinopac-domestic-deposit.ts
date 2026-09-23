@@ -6,6 +6,9 @@ import {
 import { createHash } from "node:crypto";
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite as buildPureSinopacDomesticDepositFinancialCaptureForPGlite } from "../pglite/sinopac-domestic-adapter.ts";
 import {
+  admitSinopacStatementCaptureEvidence as admitPureSinopacStatementCaptureEvidence,
+} from "../pglite/sinopac-provider-admission.ts";
+import {
   canonicalSourceAdmissionCommitResult,
   createCanonicalSourceCaptureAdmission,
 } from "./canonical-source-capture-admission.ts";
@@ -1032,10 +1035,16 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
       capture: null,
       diagnostics: ["capture-not-runtime-admitted"],
     };
+  const pureAdmission = admitPureSinopacStatementCaptureEvidence(input.capture);
+  if (pureAdmission.status !== "admissible" || !pureAdmission.capture)
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: pureAdmission.diagnostics,
+    };
   return buildPureSinopacDomesticDepositFinancialCaptureForPGlite({
-    ...input,
-    humanAttestation:
-      input.humanAttestation ?? getSinopacHumanAttestedV1Manifest(),
+    capture: pureAdmission.capture,
+    captureId: input.captureId,
   });
 }
 

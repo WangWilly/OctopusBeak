@@ -8,19 +8,15 @@ import {
 } from "./cathay-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceCommitResult,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositSourceRecordInput,
   type CurrentDepositTimeEvidence,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+import type { CurrentDepositBalanceCommitResult } from "../ledger/canonical/current-deposit-balance-writer.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "cathay/domestic-deposit/current-balance-v1" as const;
@@ -255,6 +251,13 @@ export async function commitCathayCurrentDepositBalanceCaptures(
   if (!ledgerDir.trim()) {
     throw new Error("Cathay current deposit canonical ledger directory is required.");
   }
+  const [
+    { commitCurrentDepositBalanceCaptureInTransaction },
+    { executeCanonicalFinancialCommitRun },
+  ] = await Promise.all([
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+  ]);
   const items: CanonicalFinancialCommitItem<CurrentDepositBalanceCommitResult>[] =
     captures.map((capture, index) => ({
       provider: "cathay",

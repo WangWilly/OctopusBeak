@@ -6,8 +6,7 @@ import {
   admitSinopacStatementCaptureEvidence,
   createSinopacDomesticDepositSourceEvidence,
   type SinopacStatementCaptureEvidence,
-} from "../canonical/sinopac-domestic-deposit.ts";
-import { SINOPAC_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/sinopac-human-attestation.ts";
+} from "./sinopac-provider-admission.ts";
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "./sinopac-domestic-adapter.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
@@ -45,7 +44,6 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
   const financial = buildSinopacDomesticDepositFinancialCaptureForPGlite({
     capture,
     captureId: "sinopac-financial-synthetic",
-    humanAttestation: SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
   });
   assert.equal(financial.status, "admitted", financial.diagnostics.join(", "));
   const database = await PGlite.create();

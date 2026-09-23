@@ -25,53 +25,30 @@ import {
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import {
-  admitSinopacDomesticDepositFinancialCapture,
   admitSinopacStatementCaptureEvidence,
   createSinopacDomesticDepositSourceEvidence,
   createSinopacForeignCurrencySourceEvidence,
-  createSinopacPersonalAuthority,
   deriveSinopacStatementAccountNumberEvidence,
-  getSinopacHumanAttestedV1Manifest,
   SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   type SinopacStatementCaptureEvidence,
   type SinopacStatementValidatedCapture,
-} from "../ledger/canonical/sinopac-domestic-deposit.ts";
+} from "../ledger/pglite/sinopac-provider-admission.ts";
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-domestic-adapter.ts";
-import {
-  commitCanonicalFinancialDepositCaptureBatchInTransaction,
-} from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import {
-  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
-} from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
-import { admitSinopacForeignCurrencyFinancialCapture } from "../ledger/canonical/sinopac-foreign-deposit.ts";
-import {
-  commitForeignCurrencyDepositCaptureInTransaction,
-  type ForeignCurrencyDepositAdmittedCapture,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
+import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-provider-admission.ts";
 import {
   readSinopacCurrentDepositBalances,
   type SinopacCurrentDepositBalanceRow,
 } from "./sinopac-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  CanonicalFinancialCommitItemError,
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import {
-  ensureSinopacHumanAttestationEvents,
-  recordInitialSinopacHumanAttestationIfMissing,
-} from "../ledger/canonical/sinopac-human-attestation.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
@@ -1515,23 +1492,6 @@ export async function runSinopacStatements(
     }
   }
 
-  const canonicalLedgerDir =
-    overrides.canonicalLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
-  const manifest = getSinopacHumanAttestedV1Manifest();
-  // Foreign identity validation is independent of the database capability.
-  // Perform it before opening the execution run so provider collisions retain
-  // their domain error and cannot be mistaken for a persistence failure.
-  const preadmittedForeignCaptures = captureInputs.map(({ capture }, index) =>
-    capture.product === "foreign-currency"
-      ? admitSinopacForeignCurrencyFinancialCapture(
-          capture,
-          `${captureOccurrenceId}:foreign:${index}`,
-        )
-      : null,
-  );
   if (pgliteWorkflowEnabled(process.env)) {
     const client = requirePGliteChildRpcClientFromEnv();
     try {
@@ -1553,12 +1513,14 @@ export async function runSinopacStatements(
           ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
               capture,
               captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
-              humanAttestation: manifest,
             })
-          : null;
+          : buildSinopacForeignCurrencyFinancialCaptureForPGlite(
+              capture,
+              `${captureOccurrenceId}:foreign:${index}`,
+            );
         if (financial && (financial.status !== "admitted" || !financial.capture))
-          throw new Error(`SinoPac domestic PGlite financial admission failed: ${financial.diagnostics.join(", ")}`);
-        const financialCapture = financial?.capture ?? preadmittedForeignCaptures[index];
+          throw new Error(`SinoPac ${capture.product} PGlite financial admission failed: ${financial.diagnostics.join(", ")}`);
+        const financialCapture = financial.capture;
         if (!financialCapture) throw new Error("SinoPac PGlite financial capture is missing.");
         const occurrenceKeys = new Set<string>();
         const collisionKeys = new Map<string, string>();
@@ -1652,19 +1614,70 @@ export async function runSinopacStatements(
       status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
     };
   }
+  const [
+    { DEFAULT_LEDGER_DIR },
+    {
+      admitSinopacStatementCaptureEvidence: admitLegacySinopacStatementCaptureEvidence,
+      admitSinopacDomesticDepositFinancialCapture,
+      createSinopacPersonalAuthority,
+      createSinopacDomesticDepositSourceEvidence: createLegacySinopacDomesticDepositSourceEvidence,
+      createSinopacForeignCurrencySourceEvidence: createLegacySinopacForeignCurrencySourceEvidence,
+      getSinopacHumanAttestedV1Manifest,
+    },
+    { admitSinopacForeignCurrencyFinancialCapture },
+    { commitCanonicalFinancialDepositCaptureBatchInTransaction },
+    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
+    { commitForeignCurrencyDepositCaptureInTransaction },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+    { CanonicalFinancialCommitItemError, executeCanonicalFinancialCommitRun },
+    { ensureSinopacHumanAttestationEvents, recordInitialSinopacHumanAttestationIfMissing },
+  ] = await Promise.all([
+    import("../ledger/db/client.ts"),
+    import("../ledger/canonical/sinopac-domestic-deposit.ts"),
+    import("../ledger/canonical/sinopac-foreign-deposit.ts"),
+    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
+    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
+    import("../ledger/canonical/foreign-currency-deposit.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/sinopac-human-attestation.ts"),
+  ]);
+  const legacyCaptureInputs = captureInputs.map(({ capture, pending }) => {
+    const admitted = admitLegacySinopacStatementCaptureEvidence(capture);
+    if (admitted.status !== "admissible" || !admitted.capture)
+      throw new Error(`SinoPac legacy statement source admission blocked: ${admitted.diagnostics.join(", ")}`);
+    return { capture: admitted.capture, pending };
+  });
+  const manifest = getSinopacHumanAttestedV1Manifest();
+  // Foreign identity validation is independent of the database capability.
+  // Perform it before opening the execution run so provider collisions retain
+  // their domain error and cannot be mistaken for a persistence failure.
+  const preadmittedForeignCaptures = legacyCaptureInputs.map(({ capture }, index) =>
+    capture.product === "foreign-currency"
+      ? admitSinopacForeignCurrencyFinancialCapture(
+          capture,
+          `${captureOccurrenceId}:foreign:${index}`,
+        )
+      : null,
+  );
+  const canonicalLedgerDir =
+    overrides.canonicalLedgerDir ??
+    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
+    process.env.LEDGER_DIR ??
+    DEFAULT_LEDGER_DIR;
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-  for (const [index, { capture }] of captureInputs.entries()) {
+  for (const [index, { capture }] of legacyCaptureInputs.entries()) {
     executionItems.push({
       provider: "sinopac",
       product: capture.product,
       itemKey: `${capture.product}:${index}`,
       commit: (transaction) => {
         const sourceEvidence = capture.product === "domestic-deposit"
-          ? createSinopacDomesticDepositSourceEvidence(
+          ? createLegacySinopacDomesticDepositSourceEvidence(
               capture,
               `${captureOccurrenceId}:source:${index}`,
             )
-          : createSinopacForeignCurrencySourceEvidence(
+          : createLegacySinopacForeignCurrencySourceEvidence(
               capture,
               `${captureOccurrenceId}:source:${index}`,
             );
@@ -1891,8 +1904,7 @@ export default workflow("sinopacStatements", {
     const result = await runSinopacStatements(page, input, accounts, {
       canonicalLedgerDir:
         process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-        process.env.LEDGER_DIR ??
-        DEFAULT_LEDGER_DIR,
+        process.env.LEDGER_DIR,
     });
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
