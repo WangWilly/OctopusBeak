@@ -1,145 +1,35 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  assertCtbcHumanAttestationManifest,
+  ctbcHumanAttestationFingerprint,
+  freezeCtbcHumanAttestationManifest,
+  getCtbcHumanAttestedV1Manifest,
+  isCtbcHumanAttestationDateTime,
+  isCtbcHumanAttestedV1Active,
+  replaceCtbcHumanAttestedV1Manifest,
+  CTBC_HUMAN_ATTESTED_V1_MANIFEST,
+  type CtbcHumanAttestationEvent,
+  type CtbcHumanAttestedV1Manifest,
+  type CtbcOpaqueToken,
+} from "./ctbc-human-attestation-contract.ts";
+import {
   isValidatedCanonicalDatabase,
   runCanonicalSchemaRepair,
 } from "./canonical-schema-lifecycle.ts";
-
-type CtbcOpaqueToken = `sha256:${string}`;
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value))
-    return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
-
-export const CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
-  "ctbc/domestic-deposit/human-attested-v1" as const;
-export const CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION =
-  "human-attested-v1" as const;
-/** Explicitly confirmed by the user on 2026-08-24 for production activation. */
-export const CTBC_HUMAN_ATTESTED_V1_CONFIRMED: boolean = true;
-
-/** Observed contract; this does not claim a provider-guaranteed occurrence ID. */
-export const CTBC_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
-  attestationId: "ctbc-domestic-deposit-human-attested-v1",
-  evidenceVersion: CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
-  authorityRoute: CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
-  status: "active",
-  attestedAt: "2026-08-24",
-  attestedBy: "user-confirmed-ctbc-observed-human-attested-2026-08-24",
-  provenance: {
-    kind: "user-confirmation",
-    attestationContractFingerprint:
-      "sha256:111ba05815bc0ac82156617c96e3538f81226c54fdbbe4f5b2325230690e9778",
-    source: "CTBC domestic deposit observed human-attested contract",
-  },
-  authority: "personal-authenticated-session",
-  currency: "TWD",
-  providerGuaranteed: false,
-  semantics: {
-    posting: "posted-history-only",
-    direction: "provider-debit-or-credit-exclusive-zero-sentinel",
-    effectiveTime: "transaction-date-time-observed-Asia/Taipei",
-    accountingDate: "provider-accounting-date-retained-separately",
-    cancellation: "unsupported-reject",
-    occurrence: "observed-composite-fence-not-provider-unique",
-    completeness: "every-visible-range-terminal-next-key-empty",
-    zeroResult: "provider-code-9201-only",
-    withdrawal: "never-infer-missing-row",
-  },
-  revokedAt: null,
-  revocationReason: null,
-} as const);
-
-export type CtbcHumanAttestedV1Manifest = Omit<
-  typeof CTBC_HUMAN_ATTESTED_V1_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
-
-export type CtbcHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: CtbcOpaqueToken;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: CtbcHumanAttestedV1Manifest =
-  CTBC_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(currentManifest);
-
-function fingerprint(manifest = currentManifest): CtbcOpaqueToken {
-  return manifest.provenance.attestationContractFingerprint as CtbcOpaqueToken;
-}
-
-export function ctbcHumanAttestedIdentityEpochKey(
-  manifest: CtbcHumanAttestedV1Manifest = currentManifest,
-): CtbcOpaqueToken {
-  return `sha256:${Buffer.from(
-    [
-      "ctbc-human-attested-identity-epoch-v1",
-      manifest.attestationId,
-      manifest.evidenceVersion,
-      manifest.provenance.attestationContractFingerprint,
-    ].join("\0"),
-  ).toString("base64url")}`;
-}
-
-function validAt(value: string): boolean {
-  return (
-    /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
-}
-
-function assertManifest(): void {
-  if (
-    currentManifest.attestationId !==
-      CTBC_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
-    currentManifest.authorityRoute !==
-      CTBC_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute ||
-    currentManifest.provenance.attestationContractFingerprint !==
-      CTBC_HUMAN_ATTESTED_V1_MANIFEST.provenance
-        .attestationContractFingerprint ||
-    currentManifest.providerGuaranteed !== false
-  )
-    throw new Error(
-      "CTBC attestation manifest does not match the immutable contract.",
-    );
-}
-
-export function getCtbcHumanAttestedV1Manifest(): CtbcHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
-export function isCtbcHumanAttestedV1Manifest(
-  value: unknown,
-): value is CtbcHumanAttestedV1Manifest {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
-  );
-}
-
-export function isCtbcHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
+export {
+  CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
+  CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
+  CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
+  CTBC_HUMAN_ATTESTED_V1_MANIFEST,
+  ctbcHumanAttestedIdentityEpochKey,
+  getCtbcHumanAttestedV1Manifest,
+  isCtbcHumanAttestedV1Manifest,
+  isCtbcHumanAttestedV1Active,
+  type CtbcHumanAttestedV1Manifest,
+  type CtbcHumanAttestationEvent,
+  type CtbcOpaqueToken,
+} from "./ctbc-human-attestation-contract.ts";
 
 export function ensureCtbcHumanAttestationEvents(db: DatabaseSync): void {
   if (isValidatedCanonicalDatabase(db)) {
@@ -159,13 +49,13 @@ export function ensureCtbcHumanAttestationEvents(db: DatabaseSync): void {
 
 function readChain(db: DatabaseSync): CtbcHumanAttestationEvent[] {
   ensureCtbcHumanAttestationEvents(db);
-  assertManifest();
+  assertCtbcHumanAttestationManifest();
   const rows = db
     .prepare(
       "SELECT attestation_id, evidence_version, event_kind, manifest_status, event_at, reason, manifest_fingerprint, event_sequence " +
         "FROM ctbc_attestation_events WHERE attestation_id = ? ORDER BY event_sequence ASC",
     )
-    .all(currentManifest.attestationId) as Array<Record<string, unknown>>;
+    .all(getCtbcHumanAttestedV1Manifest().attestationId) as Array<Record<string, unknown>>;
   const chain: CtbcHumanAttestationEvent[] = [];
   for (const [index, row] of rows.entries()) {
     const event = {
@@ -182,11 +72,11 @@ function readChain(db: DatabaseSync): CtbcHumanAttestationEvent[] {
     };
     const previous = chain.at(-1);
     if (
-      event.attestationId !== currentManifest.attestationId ||
-      event.evidenceVersion !== currentManifest.evidenceVersion ||
-      event.manifestFingerprint !== fingerprint() ||
+      event.attestationId !== getCtbcHumanAttestedV1Manifest().attestationId ||
+      event.evidenceVersion !== getCtbcHumanAttestedV1Manifest().evidenceVersion ||
+      event.manifestFingerprint !== ctbcHumanAttestationFingerprint() ||
       event.sequence !== index + 1 ||
-      !validAt(event.eventAt) ||
+      !isCtbcHumanAttestationDateTime(event.eventAt) ||
       event.manifestStatus !==
         (event.eventKind === "attested" ? "active" : "revoked") ||
       (event.eventKind === "revoked" && !event.reason?.trim()) ||
@@ -205,7 +95,7 @@ export function latestCtbcHumanAttestationEvent(
   db: DatabaseSync,
 ): CtbcHumanAttestationEvent | null {
   const latest = readChain(db).at(-1) ?? null;
-  if (!latest && currentManifest.status === "revoked")
+  if (!latest && getCtbcHumanAttestedV1Manifest().status === "revoked")
     throw new Error(
       "CTBC revoked attestation has no durable revocation event.",
     );
@@ -216,11 +106,11 @@ function recordEvent(db: DatabaseSync, event: CtbcHumanAttestationEvent): void {
   const chain = readChain(db);
   const previous = chain.at(-1);
   if (
-    event.attestationId !== currentManifest.attestationId ||
-    event.evidenceVersion !== currentManifest.evidenceVersion ||
-    event.manifestFingerprint !== fingerprint() ||
+    event.attestationId !== getCtbcHumanAttestedV1Manifest().attestationId ||
+    event.evidenceVersion !== getCtbcHumanAttestedV1Manifest().evidenceVersion ||
+    event.manifestFingerprint !== ctbcHumanAttestationFingerprint() ||
     event.sequence !== chain.length + 1 ||
-    !validAt(event.eventAt) ||
+    !isCtbcHumanAttestationDateTime(event.eventAt) ||
     event.manifestStatus !==
       (event.eventKind === "attested" ? "active" : "revoked") ||
     (event.eventKind === "revoked" && !event.reason?.trim()) ||
@@ -254,13 +144,13 @@ export function recordInitialCtbcHumanAttestationIfMissing(
     throw new Error("Cannot attest a revoked CTBC manifest.");
   if (latestCtbcHumanAttestationEvent(db)) return;
   recordEvent(db, {
-    attestationId: currentManifest.attestationId,
-    evidenceVersion: currentManifest.evidenceVersion,
+    attestationId: getCtbcHumanAttestedV1Manifest().attestationId,
+    evidenceVersion: getCtbcHumanAttestedV1Manifest().evidenceVersion,
     eventKind: "attested",
     manifestStatus: "active",
     eventAt: observedAt,
-    reason: currentManifest.attestedBy,
-    manifestFingerprint: fingerprint(),
+    reason: getCtbcHumanAttestedV1Manifest().attestedBy,
+    manifestFingerprint: ctbcHumanAttestationFingerprint(),
     sequence: 1,
   });
 }
@@ -270,18 +160,17 @@ export function revokeCtbcHumanAttestedV1(
   reason: string,
   db?: DatabaseSync,
 ): CtbcHumanAttestedV1Manifest {
-  if (!validAt(at) || !reason.trim())
+  if (!isCtbcHumanAttestationDateTime(at) || !reason.trim())
     throw new Error("CTBC attestation revocation requires time and reason.");
   const latest = db ? latestCtbcHumanAttestationEvent(db) : null;
-  if (latest?.eventKind === "revoked") return currentManifest;
-  const revoked = deepFreeze({
-    ...currentManifest,
+  if (latest?.eventKind === "revoked") return getCtbcHumanAttestedV1Manifest();
+  const revoked = freezeCtbcHumanAttestationManifest({
+    ...getCtbcHumanAttestedV1Manifest(),
     status: "revoked" as const,
     revokedAt: at,
     revocationReason: reason.trim(),
   });
-  currentManifest = revoked;
-  VALIDATED_MANIFESTS.add(revoked);
+  replaceCtbcHumanAttestedV1Manifest(revoked);
   if (db)
     recordEvent(db, {
       attestationId: revoked.attestationId,
@@ -290,7 +179,7 @@ export function revokeCtbcHumanAttestedV1(
       manifestStatus: "revoked",
       eventAt: at,
       reason: reason.trim(),
-      manifestFingerprint: fingerprint(revoked),
+      manifestFingerprint: ctbcHumanAttestationFingerprint(revoked),
       sequence: (latest?.sequence ?? 0) + 1,
     });
   return revoked;
@@ -301,19 +190,18 @@ export function restoreCtbcHumanAttestedV1(
   reason = "user-confirmed-restoration",
   db?: DatabaseSync,
 ): CtbcHumanAttestedV1Manifest {
-  if (!validAt(at) || !reason.trim())
+  if (!isCtbcHumanAttestationDateTime(at) || !reason.trim())
     throw new Error("CTBC attestation restoration requires time and reason.");
   const latest = db ? latestCtbcHumanAttestationEvent(db) : null;
-  if (currentManifest.status === "active" && latest?.eventKind !== "revoked")
-    return currentManifest;
-  const restored = deepFreeze({
-    ...currentManifest,
+  if (getCtbcHumanAttestedV1Manifest().status === "active" && latest?.eventKind !== "revoked")
+    return getCtbcHumanAttestedV1Manifest();
+  const restored = freezeCtbcHumanAttestationManifest({
+    ...getCtbcHumanAttestedV1Manifest(),
     status: "active" as const,
     revokedAt: null,
     revocationReason: null,
   });
-  currentManifest = restored;
-  VALIDATED_MANIFESTS.add(restored);
+  replaceCtbcHumanAttestedV1Manifest(restored);
   if (db)
     recordEvent(db, {
       attestationId: restored.attestationId,
@@ -322,7 +210,7 @@ export function restoreCtbcHumanAttestedV1(
       manifestStatus: "active",
       eventAt: at,
       reason: reason.trim(),
-      manifestFingerprint: fingerprint(restored),
+      manifestFingerprint: ctbcHumanAttestationFingerprint(restored),
       sequence: (latest?.sequence ?? 0) + 1,
     });
   return restored;
