@@ -7,7 +7,6 @@ import {
   statSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   cdpEndpointForSession,
   readLibrettoSessionState,
@@ -28,8 +27,6 @@ import {
   type TimerDeps,
 } from "./session-lifecycle.ts";
 import {
-  taskRunById,
-  transitionTaskRunToTerminal,
   type AutomationPersistencePort,
   type AutomationTaskRun,
 } from "./store.ts";
@@ -280,103 +277,7 @@ export async function relinquishAutomationSessionForTask(
   return finalizeOwnedAutomationSession(taskId, deps);
 }
 
-export function claimAutomationTaskRunSession(
-  db: ReturnType<typeof openLedgerDatabase>,
-  taskRunId: string,
-  owner: OwnedAutomationSession,
-  options: { resumeSession?: string; resumeFrom?: AutomationTaskRun } = {},
-) {
-  const current = ownedAutomationSession(owner.taskId);
-  const currentRun = current ? taskRunById(db, current.taskRunId) : null;
-  const currentRunIsTerminal =
-    currentRun?.status === "completed" ||
-    currentRun?.status === "partial" ||
-    currentRun?.status === "failed" ||
-    currentRun?.status === "cancelled" ||
-    currentRun?.status === "interrupted";
-  const currentHasExpectedDaemon = Boolean(
-    current?.pid !== null &&
-    current?.pid !== undefined &&
-    isExpectedLibrettoDaemon(current.pid, current.session),
-  );
-  const mayReplaceTerminalOwner = Boolean(
-    current &&
-    currentRunIsTerminal &&
-    !isAutomationSessionCleanupPending(current.session) &&
-    !currentHasExpectedDaemon,
-  );
-  const resumeFrom = options.resumeFrom;
-  let claimError: unknown = null;
-  const isResumeHandoff = Boolean(
-    options.resumeSession &&
-    options.resumeSession === owner.session &&
-    resumeFrom?.status === "waiting_for_human" &&
-    resumeFrom.taskId === owner.taskId &&
-    resumeFrom.taskRunId !== taskRunId &&
-    sessionFromRun(resumeFrom) === owner.session &&
-    (!current ||
-      (current.taskRunId === resumeFrom.taskRunId &&
-        current.session === owner.session)),
-  );
-  if (
-    (!options.resumeSession || isResumeHandoff) &&
-    (!current || isResumeHandoff || mayReplaceTerminalOwner)
-  ) {
-    if (resumeFrom) {
-      const claimRejected = new Error(
-        "Automation session registry claim rejected",
-      );
-      let registryClaimed = false;
-      db.exec("BEGIN");
-      try {
-        const sourceTransition = transitionTaskRunToTerminal(db, resumeFrom.taskRunId, {
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-          errorMessage: `Superseded by resume handoff: ${taskRunId}`,
-          logTail: tail(
-            `${resumeFrom.logTail}\nautomation-resume-handoff: ${taskRunId}\n`,
-          ),
-        });
-        if (!sourceTransition.applied) throw claimRejected;
-        if (!ownAutomationSession(owner)) throw claimRejected;
-        registryClaimed = true;
-        db.exec("COMMIT");
-        disarmAutomationSessionTimeout(owner.taskId);
-        return true;
-      } catch (error) {
-        try {
-          db.exec("ROLLBACK");
-        } finally {
-          if (registryClaimed)
-            restoreAutomationSessionOwnership(owner, current ?? null);
-        }
-        claimError = error;
-      }
-    } else if (ownAutomationSession(owner)) {
-      disarmAutomationSessionTimeout(owner.taskId);
-      return true;
-    }
-  }
-  transitionTaskRunToTerminal(db, taskRunId, {
-    status: "failed",
-    finishedAt: new Date().toISOString(),
-    exitCode: null,
-    signal: null,
-    errorMessage:
-      claimError &&
-      errorMessage(claimError) !== "Automation session registry claim rejected"
-        ? `Automation session handoff failed: ${errorMessage(claimError)}`
-        : "Automation session is still closing. Try again after cleanup finishes.",
-  });
-  return false;
-}
-
-/**
- * Async equivalent of claimAutomationTaskRunSession for the worker-owned
- * persistence port.  The session registry remains process-local; persisted
- * task-run transitions use the injected port and never open a database here.
- */
-export async function claimAutomationTaskRunSessionWithPersistence(
+export async function claimAutomationTaskRunSession(
   persistence: AutomationPersistencePort,
   taskRunId: string,
   owner: OwnedAutomationSession,

@@ -10,17 +10,16 @@ import {
   automationRunHistory,
 } from "./desktop-api.ts";
 import {
-  exchangeRateRequestFromOverview,
   hydrateAutomationRuntimeState,
   persistCancellationTransitionForRunWithPersistence,
   recoverAbandonedAutomationSessions,
   runAutomationTask,
   startAutomationTask,
 } from "./runner.ts";
-import {
-  finalizeTaskRunTransitionWithPersistence,
-} from "./task-run-finalization.ts";
-import { runAutomationTaskExecutionWithPersistence } from "./task-run-execution.ts";
+import { finalizeTaskRunTransition } from "./task-run-finalization.ts";
+import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
   humanAssistanceContractForTask,
   humanSessionForTask,
@@ -60,7 +59,24 @@ try {
     { requiredFrom: "2026-01-01", currencies: ["JPY", "USD"] },
     "a populated canonical overview derives earliest history and non-TWD currencies",
   );
-  const provider = createPgliteOperationalProvider(store);
+  const provider = {
+    ...createPgliteOperationalProvider(store),
+  pgliteWorkflow: {
+      required: true,
+      env: {
+        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "pglite-persistence-check-token",
+    },
+  },
+  exchangeRates: {
+    async readExchangeRates() { return []; },
+    async upsertExchangeRates() {},
+  },
+  financial: {
+    async overviewCurrent() { return { dailyHistory: [] }; },
+  },
+};
   const run = await provider.automation.createTaskRun({
     taskId: "exchange-rates",
     script: "run:exchange-rates",
@@ -109,7 +125,7 @@ try {
     "cancelling",
   );
   assert.equal(cancelling?.status, "cancelling");
-  const cancelled = await finalizeTaskRunTransitionWithPersistence(
+  const cancelled = await finalizeTaskRunTransition(
     provider,
     { taskRunId: run.taskRunId, logPath: "data/automation/logs/pglite-human.log" },
     {
@@ -142,11 +158,11 @@ try {
 
   let exchangeSyncCalled = 0;
   const exchangeExecution = async (
-    task: Parameters<typeof runAutomationTaskExecutionWithPersistence>[0],
-    persistence: Parameters<typeof runAutomationTaskExecutionWithPersistence>[1],
-    options: Parameters<typeof runAutomationTaskExecutionWithPersistence>[2],
-    onRunCreated: Parameters<typeof runAutomationTaskExecutionWithPersistence>[3],
-  ) => runAutomationTaskExecutionWithPersistence(
+    task: Parameters<typeof runAutomationTaskExecution>[0],
+    persistence: Parameters<typeof runAutomationTaskExecution>[1],
+    options: Parameters<typeof runAutomationTaskExecution>[2],
+    onRunCreated: Parameters<typeof runAutomationTaskExecution>[3],
+  ) => runAutomationTaskExecution(
     task,
     persistence,
     {
@@ -165,10 +181,10 @@ try {
   // seam. The runner owns the campaign/finalization flow; the injected seam
   // only stands in for spawning Libretto so this check never opens SQLite.
   const deterministicExecution = async (
-    _task: Parameters<typeof runAutomationTaskExecutionWithPersistence>[0],
-    persistence: Parameters<typeof runAutomationTaskExecutionWithPersistence>[1],
-    options: Parameters<typeof runAutomationTaskExecutionWithPersistence>[2],
-    onRunCreated: Parameters<typeof runAutomationTaskExecutionWithPersistence>[3],
+    _task: Parameters<typeof runAutomationTaskExecution>[0],
+    persistence: Parameters<typeof runAutomationTaskExecution>[1],
+    options: Parameters<typeof runAutomationTaskExecution>[2],
+    onRunCreated: Parameters<typeof runAutomationTaskExecution>[3],
   ) => {
     const created = options.taskRunId
       ? await persistence.taskRunById(options.taskRunId)
@@ -228,7 +244,7 @@ try {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const delayedProvider: AutomationPersistenceProvider = { automation: delayedAutomation };
+  const delayedProvider: AutomationPersistenceProvider = { ...provider, automation: delayedAutomation };
   const delayedResult = await runAutomationTask("exchange-rates", delayedProvider, {
     runExecution: deterministicExecution,
   });
@@ -248,7 +264,7 @@ try {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const rejectedProvider: AutomationPersistenceProvider = { automation: rejectedAutomation };
+  const rejectedProvider: AutomationPersistenceProvider = { ...provider, automation: rejectedAutomation };
   const unhandled: unknown[] = [];
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);

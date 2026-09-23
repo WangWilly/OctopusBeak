@@ -1,12 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   syncExchangeRates,
-  requiredExchangeRateCurrencies,
   type ExchangeRatePersistencePort,
 } from "../../../ledger/exchange-rates.ts";
-import type { ExchangeRateRequest } from "../../../ledger/exchange-rate-requirements.ts";
+import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import { runExchangeRateSyncCommand } from "../../../ledger/sync-exchange-rates.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
@@ -15,7 +13,6 @@ import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,
   scheduleAutomationTaskRunTimeout,
-  scheduleAutomationTaskRunTimeoutWithPersistence,
 } from "./task-run-finalization.ts";
 import {
   accumulateAutomationOutput,
@@ -28,7 +25,6 @@ import {
   liveTaskRunUpdate,
   resumeFailureMessage,
   runAutomationTaskExecution,
-  runAutomationTaskExecutionWithPersistence,
   terminateAutomationTaskProcessTree,
   terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
@@ -68,17 +64,9 @@ import {
   WAITING_SESSION_TIMEOUT_MS,
 } from "./session-lifecycle.ts";
 import {
-  activeTaskRuns,
-  assertAutomationRuntimeSchema,
-  createTaskRun,
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
-  latestTaskRuns,
-  transitionTaskRunToActive,
-  taskRunById,
-  transitionTaskRunToTerminal,
   type AutomationPersistenceProvider,
-  updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -90,46 +78,13 @@ import {
 import { readAutomationSettings } from "./settings.ts";
 import {
   runCaptchaRetryCampaign,
-  runCaptchaRetryCampaignWithPersistence,
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 
 export { closeLibrettoSession };
 
-export function hydrateAutomationRuntimeState(
-  provider: AutomationPersistenceProvider,
-): Promise<ReturnType<typeof automationRuntimeState.snapshot>>;
-export function hydrateAutomationRuntimeState(
-  ledgerDir?: string,
-): ReturnType<typeof automationRuntimeState.snapshot>;
-export function hydrateAutomationRuntimeState(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return hydrateAutomationRuntimeStateWithPersistence(ledgerDirOrProvider);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    assertAutomationRuntimeSchema(db);
-    const runs = Object.values(latestTaskRuns(db)).map((run) =>
-      runtimeTaskSnapshotFromRun(run),
-    );
-    automationRuntimeState.reset();
-    for (const run of runs) automationRuntimeState.upsert(run);
-    return automationRuntimeState.snapshot();
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * Async worker seam for runtime hydration.  The legacy helper above stays
- * available until the application cutover, while this path consumes only the
- * shared injected persistence provider and never opens a database itself.
- */
-export async function hydrateAutomationRuntimeStateWithPersistence(
+export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
 ) {
   const runs = Object.values(await provider.automation.latestTaskRuns()).map((run) =>
@@ -141,9 +96,6 @@ export async function hydrateAutomationRuntimeStateWithPersistence(
 }
 
 const activeTaskRunIds = new Map<string, string>();
-const activeTaskLedgerDirs = new Map<string, string>();
-/** Provider/context retained while a worker-owned task is running. */
-const activeTaskPersistence = new Map<string, AutomationPersistenceProvider>();
 const cancellationRequestedTaskIds = new Set<string>();
 const forceTerminationRequestedTaskIds = new Set<string>();
 const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -154,19 +106,8 @@ export type StartAutomationTaskOptions = {
   resumeSession?: string;
   taskRunId?: string;
   /** Test/worker seam for the async execution runner. */
-  runExecution?: typeof runAutomationTaskExecutionWithPersistence;
+  runExecution?: typeof runAutomationTaskExecution;
 };
-
-/** Derive the same exchange-rate coverage request as the legacy overview path. */
-export function exchangeRateRequestFromOverview(
-  overview: Pick<OverviewPageDto, "dailyHistory">,
-): ExchangeRateRequest {
-  const dailyHistory = overview.dailyHistory;
-  return {
-    requiredFrom: dailyHistory.map((row) => row.date).sort()[0] ?? null,
-    currencies: requiredExchangeRateCurrencies(dailyHistory),
-  };
-}
 
 type PGliteWorkflowCapability = Readonly<{
   required: boolean;
@@ -175,7 +116,7 @@ type PGliteWorkflowCapability = Readonly<{
 
 /**
  * Carry the authenticated parent-worker endpoint through every automation
- * child boundary. An enabled PGlite provider without that endpoint fails
+ * child boundary. A provider without that endpoint fails
  * before a workflow process can fall back to a private database.
  */
 export function pgliteWorkflowLaunchEnv(
@@ -184,14 +125,14 @@ export function pgliteWorkflowLaunchEnv(
   const workflow = (provider as AutomationPersistenceProvider & {
     pgliteWorkflow?: PGliteWorkflowCapability;
   }).pgliteWorkflow;
-  if (!workflow) return {};
+  if (!workflow) throw new Error("PGlite workflow transport is unavailable.");
   const values = Object.values(workflow.env);
   if (
-    workflow.required
-    && (workflow.env[PGLITE_WORKFLOW_REQUIRED_ENV] !== "1"
-      || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT?.trim()
-      || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN?.trim()
-      || values.some((value) => typeof value !== "string" || value.length === 0))
+    !workflow.required
+    || workflow.env[PGLITE_WORKFLOW_REQUIRED_ENV] !== "1"
+    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT?.trim()
+    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN?.trim()
+    || values.some((value) => typeof value !== "string" || value.length === 0)
   ) {
     throw new Error("PGlite workflow transport is unavailable.");
   }
@@ -214,7 +155,9 @@ function exchangeRateSyncForProvider(
       overviewCurrent(expectedSources?: readonly unknown[]): Promise<OverviewPageDto>;
     }, "overviewCurrent">;
   }).financial;
-  if (!persistence || !financial) return undefined;
+  if (!persistence || !financial) {
+    throw new Error("PGlite exchange-rate persistence is unavailable.");
+  }
   return ({ scheduledAtUtc, emitProgress }) => runExchangeRateSyncCommand({
     argv: scheduledAtUtc ? ["--scheduled-at-utc", scheduledAtUtc] : [],
     loadRequest: async () => exchangeRateRequestFromOverview(await financial.overviewCurrent()),
@@ -225,7 +168,7 @@ function exchangeRateSyncForProvider(
 
 type PersistenceRunOptions = StartAutomationTaskOptions & {
   claimed?: boolean;
-  runExecution?: typeof runAutomationTaskExecutionWithPersistence;
+  runExecution?: typeof runAutomationTaskExecution;
 };
 
 export type StartedAutomationTask = {
@@ -233,50 +176,6 @@ export type StartedAutomationTask = {
   runId: string;
   runtime: ReturnType<typeof automationRuntimeState.snapshot>;
 };
-
-type AutomationTaskExecutionRunnerInput = {
-  task: NonNullable<ReturnType<typeof taskById>>;
-  taskDb: ReturnType<typeof openLedgerDatabase>;
-  ledgerDir: string;
-  baseLaunchEnv: NodeJS.ProcessEnv;
-  currentTaskRunId: () => string | null;
-  onRunCreated: (taskRunId: string) => void;
-  onRuntimeUpdate?: (taskRunId: string) => void;
-  isCancellationRequested: () => boolean;
-  isForceTerminationRequested?: () => boolean;
-  runExecution?: typeof runAutomationTaskExecution;
-};
-
-/**
- * Build the execution closure shared by every round in one user operation.
- * The captured environment is the stable base; narrowly scoped per-execution
- * capabilities, such as a session-bound dialog owner, override only their key.
- */
-export function createAutomationTaskExecutionRunner(
-  input: AutomationTaskExecutionRunnerInput,
-) {
-  const execute = input.runExecution ?? runAutomationTaskExecution;
-  return (executionOptions: AutomationTaskExecutionOptions) =>
-    execute(
-      input.task,
-      input.taskDb,
-      input.ledgerDir,
-      {
-        ...executionOptions,
-        launchEnv: {
-          ...input.baseLaunchEnv,
-          ...(executionOptions.launchEnv ?? {}),
-        },
-        taskRunId:
-          executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
-        isCancellationRequested: input.isCancellationRequested,
-        isForceTerminationRequested: input.isForceTerminationRequested,
-        onRuntimeUpdate: input.onRuntimeUpdate,
-        deferFinalization: true,
-      },
-      input.onRunCreated,
-    );
-}
 
 type AutomationTaskPersistenceExecutionRunnerInput = {
   task: NonNullable<ReturnType<typeof taskById>>;
@@ -287,14 +186,14 @@ type AutomationTaskPersistenceExecutionRunnerInput = {
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
   isCancellationRequested: () => boolean;
   isForceTerminationRequested?: () => boolean;
-  runExecution?: typeof runAutomationTaskExecutionWithPersistence;
+  runExecution?: typeof runAutomationTaskExecution;
 };
 
 /** Build the async execution closure used by all provider-backed rounds. */
 export function createAutomationTaskExecutionRunnerWithPersistence(
   input: AutomationTaskPersistenceExecutionRunnerInput,
 ) {
-  const execute = input.runExecution ?? runAutomationTaskExecutionWithPersistence;
+  const execute = input.runExecution ?? runAutomationTaskExecution;
   return (executionOptions: AutomationTaskExecutionOptions) =>
     execute(
       input.task,
@@ -401,26 +300,6 @@ function runtimeForTask(taskId: string) {
   return automationRuntimeState.snapshot().tasks.find((task) => task.taskId === taskId);
 }
 
-export function persistCancellationTransitionForRun(
-  db: ReturnType<typeof openLedgerDatabase>,
-  runId: string,
-  status: "cancelling" | "cancelled",
-  finishedAt: string | null = null,
-) {
-  const run = taskRunById(db, runId);
-  if (!run || isTerminalTaskRunStatus(run.status)) return run;
-  if (!isActiveTaskRunStatus(run.status)) return run;
-  if (status === "cancelled") {
-    transitionTaskRunToTerminal(db, runId, {
-      status,
-      finishedAt: finishedAt ?? new Date().toISOString(),
-    });
-  } else {
-    transitionTaskRunToActive(db, runId, { status });
-  }
-  return taskRunById(db, runId);
-}
-
 /** Persist cancellation through the async worker port before publishing UI state. */
 export async function persistCancellationTransitionForRunWithPersistence(
   provider: AutomationPersistenceProvider,
@@ -441,98 +320,6 @@ export async function persistCancellationTransitionForRunWithPersistence(
     await persistence.transitionTaskRunToActive(runId, { status });
   }
   return persistence.taskRunById(runId);
-}
-
-function persistCancellationTransition(
-  taskId: string,
-  status: "cancelling" | "cancelled",
-  finishedAt: string | null = null,
-) {
-  const runtime = runtimeForTask(taskId);
-  const activeRunId = activeTaskRunIds.get(taskId);
-  const runId = runtime?.runId ?? (activeRunId && activeRunId !== "pending" && activeRunId !== "queued" ? activeRunId : null);
-  if (!runId) return null;
-  const db = openLedgerDatabase(activeTaskLedgerDirs.get(taskId) ?? process.env.LEDGER_DIR ?? "data/ledger");
-  try {
-    return persistCancellationTransitionForRun(db, runId, status, finishedAt);
-  } finally {
-    db.close();
-  }
-}
-
-function preparedRunForTask(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  ledgerDir: string,
-  options: StartAutomationTaskOptions = {},
-  existingRun?: AutomationTaskRun,
-) {
-  if (existingRun) return existingRun;
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const created = createTaskRun(db, {
-      taskId: task.id,
-      script: options.scheduledAtUtc
-        ? `${task.script} --scheduled-at-utc ${options.scheduledAtUtc}`
-        : task.script,
-      kind: task.kind,
-      status: "preparing",
-      attempt: 1,
-      maxAttempts: task.maxAttempts,
-      startedAt: new Date().toISOString(),
-      logPath: join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
-    });
-    const run = taskRunById(db, created.taskRunId);
-    if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
-    return run;
-  } finally {
-    db.close();
-  }
-}
-
-function startPreparedTask(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  ledgerDir: string,
-  options: StartAutomationTaskOptions = {},
-  existingRun?: AutomationTaskRun,
-): StartedAutomationTask {
-  const run = preparedRunForTask(task, ledgerDir, options, existingRun);
-  activeTaskRunIds.set(task.id, run.taskRunId);
-  activeTaskLedgerDirs.set(task.id, ledgerDir);
-  const runtime = automationRuntimeState.upsert(
-    runtimeTaskSnapshotFromRun(run, "preparing"),
-  );
-  void runAutomationTask(task.id, ledgerDir, {
-    claimed: true,
-    taskRunId: options.taskRunId ?? run.taskRunId,
-    scheduledAtUtc: options.scheduledAtUtc,
-    resumeSession: options.resumeSession,
-  }).then(() => {
-    const db = openLedgerDatabase(ledgerDir);
-    try {
-      const finalRun = taskRunById(db, run.taskRunId);
-      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
-    } finally {
-      db.close();
-    }
-  }).catch((error) => {
-    console.error("automation-task-run-failed", error);
-    const db = openLedgerDatabase(ledgerDir);
-    try {
-      const failed = taskRunById(db, run.taskRunId);
-      if (failed) {
-        updateTaskRun(db, run.taskRunId, {
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-          errorMessage: "Automation task failed to start.",
-        });
-        const finalized = taskRunById(db, run.taskRunId);
-        if (finalized) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalized));
-      }
-    } finally {
-      db.close();
-    }
-  });
-  return { taskId: task.id, runId: run.taskRunId, runtime };
 }
 
 async function preparedRunForTaskWithPersistence(
@@ -567,7 +354,6 @@ async function startPreparedTaskWithPersistence(
 ): Promise<StartedAutomationTask> {
   const run = await preparedRunForTaskWithPersistence(task, provider, options, existingRun);
   activeTaskRunIds.set(task.id, run.taskRunId);
-  activeTaskPersistence.set(task.id, provider);
   const runtime = automationRuntimeState.upsert(
     runtimeTaskSnapshotFromRun(run, "preparing"),
   );
@@ -599,7 +385,7 @@ async function startPreparedTaskWithPersistence(
   return { taskId: task.id, runId: run.taskRunId, runtime };
 }
 
-async function startAutomationTaskWithPersistence(
+export async function startAutomationTask(
   taskId: string,
   provider: AutomationPersistenceProvider,
   options: StartAutomationTaskOptions = {},
@@ -637,7 +423,6 @@ async function startAutomationTaskWithPersistence(
   }
   if (current === "pending") throw new Error(`Automation task is still preparing: ${taskId}`);
   claimTask(taskId);
-  activeTaskPersistence.set(taskId, provider);
   try {
     let existingRun: AutomationTaskRun | undefined;
     if (options.taskRunId) {
@@ -647,7 +432,6 @@ async function startAutomationTaskWithPersistence(
     return await startPreparedTaskWithPersistence(task, provider, options, existingRun);
   } catch (error) {
     activeTaskRunIds.delete(taskId);
-    activeTaskPersistence.delete(taskId);
     throw error;
   }
 }
@@ -692,73 +476,6 @@ export async function runAutomationBatch(
   if (errors.length) throw errors[0];
 }
 
-export function startAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  options?: StartAutomationTaskOptions,
-): Promise<StartedAutomationTask>;
-export function startAutomationTask(
-  taskId: string,
-  ledgerDir?: string,
-  options?: StartAutomationTaskOptions,
-): StartedAutomationTask;
-export function startAutomationTask(
-  taskId: string,
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-  options: StartAutomationTaskOptions = {},
-): StartedAutomationTask | Promise<StartedAutomationTask> {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return startAutomationTaskWithPersistence(taskId, ledgerDirOrProvider, options);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  validateScheduledAtUtc(options.scheduledAtUtc);
-  const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find(
-        (candidate) => candidate.id === task.credentialGroupId,
-      )
-    : null;
-  if (
-    !options.resumeSession &&
-    group &&
-    isStatementSelectionGroup(group) &&
-    group.id !== "fubon" &&
-    group.id !== "sinopac"
-  ) {
-    selectStatementTypes(group, readAutomationSettings(), "strict");
-  }
-  const current = activeTaskRunIds.get(taskId);
-  if (options.resumeSession && current) {
-    throw new Error(`Automation task is already running: ${taskId}`);
-  }
-  if (current && current !== "pending") {
-    const snapshot = runtimeForTask(taskId);
-    if (snapshot) return { taskId, runId: snapshot.runId ?? current, runtime: automationRuntimeState.snapshot() };
-  }
-  if (current === "pending") throw new Error(`Automation task is still preparing: ${taskId}`);
-  claimTask(taskId);
-  try {
-    let existingRun: AutomationTaskRun | undefined;
-    if (options.taskRunId) {
-      const db = openLedgerDatabase(ledgerDir);
-      try {
-        existingRun = taskRunById(db, options.taskRunId) ?? undefined;
-      } finally {
-        db.close();
-      }
-      if (!existingRun) throw new Error(`Missing automation task run: ${options.taskRunId}`);
-    }
-    return startPreparedTask(task, ledgerDir, options, existingRun);
-  } catch (error) {
-    // The claim is a lease, not a durable run.  If the preparing row cannot be
-    // committed, release it so the next click can retry safely.
-    activeTaskRunIds.delete(taskId);
-    activeTaskLedgerDirs.delete(taskId);
-    throw error;
-  }
-}
-
 async function cancelAutomationTaskWithPersistence(
   taskId: string,
   provider: AutomationPersistenceProvider,
@@ -799,7 +516,6 @@ async function cancelAutomationTaskWithPersistence(
       automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancelledRun, "cancelled"));
     }
     activeTaskRunIds.delete(taskId);
-    activeTaskPersistence.delete(taskId);
     cancellationRequestedTaskIds.delete(taskId);
     forceTerminationRequestedTaskIds.delete(taskId);
     const queuedTimer = cancellationForceTimers.get(taskId);
@@ -830,82 +546,37 @@ async function cancelAutomationTaskWithPersistence(
   return { cancelled: taskId };
 }
 
-export function startAutomationTasks(
+export async function startAutomationTasks(
   taskIds: readonly string[],
   provider: AutomationPersistenceProvider,
-): Promise<StartedAutomationTask[]>;
-export function startAutomationTasks(
-  taskIds: readonly string[],
-  ledgerDir?: string,
-): StartedAutomationTask[];
-export function startAutomationTasks(
-  taskIds: readonly string[],
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-) : StartedAutomationTask[] | Promise<StartedAutomationTask[]> {
+): Promise<StartedAutomationTask[]> {
   const uniqueTaskIds = [...new Set(taskIds)];
   let settings: ReturnType<typeof readAutomationSettings> | undefined;
   for (const taskId of uniqueTaskIds) {
     const task = taskById(taskId);
-    if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+    if (!task) throw new Error("Unknown automation task: " + taskId);
     const group = task.credentialGroupId
-      ? AUTOMATION_CREDENTIAL_GROUPS.find(
-          (candidate) => candidate.id === task.credentialGroupId,
-        )
+      ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
       : null;
-    if (
-      group &&
-      isStatementSelectionGroup(group) &&
-      group.id !== "fubon" &&
-      group.id !== "sinopac"
-    ) {
+    if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
       settings ??= readAutomationSettings();
       selectStatementTypes(group, settings, "strict");
     }
   }
-  if (typeof ledgerDirOrProvider !== "string") {
-    return Promise.all(uniqueTaskIds.map((taskId) =>
-      startAutomationTask(taskId, ledgerDirOrProvider),
-    ));
-  }
-  return uniqueTaskIds.map((taskId) => startAutomationTask(taskId, ledgerDirOrProvider));
+  return Promise.all(uniqueTaskIds.map((taskId) => startAutomationTask(taskId, provider)));
 }
 
-export function startAutomationResume(
+export async function startAutomationResume(
   taskId: string,
   session: string,
   provider: AutomationPersistenceProvider,
-): Promise<StartedAutomationTask>;
-export function startAutomationResume(
-  taskId: string,
-  session: string,
-  ledgerDir?: string,
-): StartedAutomationTask;
-export function startAutomationResume(
-  taskId: string,
-  session: string,
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-) : StartedAutomationTask | Promise<StartedAutomationTask> {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+): Promise<StartedAutomationTask> {
+  if (!taskById(taskId)) throw new Error("Unknown automation task: " + taskId);
   if (!session.match(/^[\w-]+$/))
-    throw new Error(`Invalid Libretto session: ${session}`);
-  if (typeof ledgerDirOrProvider !== "string") {
-    return ledgerDirOrProvider.automation.latestTaskRuns().then((latest) => {
-      const currentRun = latest[taskId] ?? null;
-      return startAutomationTask(taskId, ledgerDirOrProvider, {
-        resumeSession: session,
-        ...(currentRun ? { taskRunId: currentRun.taskRunId } : {}),
-      });
-    }).then((started) => started);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const db = openLedgerDatabase(ledgerDir);
-  let currentRun: AutomationTaskRun | null = null;
-  try {
-    currentRun = latestTaskRuns(db)[taskId] ?? null;
-  } finally {
-    db.close();
-  }
-  return startAutomationTask(taskId, ledgerDir, {
+    throw new Error("Invalid Libretto session: " + session);
+  const latest = await provider.automation.latestTaskRuns();
+  const currentRun = latest[taskId] ?? null;
+  return startAutomationTask(taskId, provider, {
     resumeSession: session,
     ...(currentRun ? { taskRunId: currentRun.taskRunId } : {}),
   });
@@ -913,69 +584,9 @@ export function startAutomationResume(
 
 export async function cancelAutomationTask(
   taskId: string,
-  provider?: AutomationPersistenceProvider,
+  provider: AutomationPersistenceProvider,
 ): Promise<{ cancelled: string }> {
-  const injectedProvider = provider ?? activeTaskPersistence.get(taskId);
-  if (injectedProvider) {
-    return cancelAutomationTaskWithPersistence(taskId, injectedProvider);
-  }
-  if (!activeTaskRunIds.has(taskId))
-    throw new Error(`Automation task is not running: ${taskId}`);
-  cancellationRequestedTaskIds.add(taskId);
-  const cancellationRequestedAt = new Date().toISOString();
-  const cancellingRun = persistCancellationTransition(taskId, "cancelling");
-  const runtime = runtimeForTask(taskId);
-  if (cancellingRun) {
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
-  } else if (runtime) {
-    automationRuntimeState.upsert({
-      ...runtime,
-      status: "cancelling",
-      cancellationRequestedAt,
-      forceTerminateAvailable: false,
-      updatedAt: cancellationRequestedAt,
-    });
-  }
-  if (activeTaskRunIds.get(taskId) === "queued") {
-    const cancelledRun = persistCancellationTransition(taskId, "cancelled", new Date().toISOString());
-    if (cancelledRun) {
-      automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancelledRun, "cancelled"));
-    }
-    activeTaskRunIds.delete(taskId);
-    activeTaskLedgerDirs.delete(taskId);
-    cancellationRequestedTaskIds.delete(taskId);
-    forceTerminationRequestedTaskIds.delete(taskId);
-    const queuedTimer = cancellationForceTimers.get(taskId);
-    if (queuedTimer) clearTimeout(queuedTimer);
-    cancellationForceTimers.delete(taskId);
-    return { cancelled: taskId };
-  }
-  const previousTimer = cancellationForceTimers.get(taskId);
-  if (previousTimer) clearTimeout(previousTimer);
-  cancellationForceTimers.set(taskId, setTimeout(() => {
-    cancellationForceTimers.delete(taskId);
-    if (!activeTaskRunIds.has(taskId)) return;
-    const current = runtimeForTask(taskId);
-    if (!current || current.status !== "cancelling") return;
-    automationRuntimeState.upsert({
-      ...current,
-      forceTerminateAvailable: true,
-      updatedAt: new Date().toISOString(),
-    });
-  }, 10_000));
-  const child = automationTaskChild(taskId);
-  // A CAPTCHA retry round can be between child processes while its previous
-  // session is being cleaned up. Keep the cancellation request latched so the
-  // campaign coordinator observes it after cleanup and never starts round N+1.
-  if (!child) {
-    // Yield briefly so a pending execution can observe the latched request
-    // before a caller that polls cancellation in a tight loop continues.
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    return { cancelled: taskId };
-  }
-  child.kill("SIGTERM");
-  await relinquishAutomationSessionForTask(taskId);
-  return { cancelled: taskId };
+  return cancelAutomationTaskWithPersistence(taskId, provider);
 }
 
 /** Force termination is available only after the normal cancellation grace period. */
@@ -1014,45 +625,13 @@ async function forceTerminateAutomationTaskWithPersistence(
 
 export async function forceTerminateAutomationTask(
   taskId: string,
-  provider?: AutomationPersistenceProvider,
+  provider: AutomationPersistenceProvider,
 ) {
-  const injectedProvider = provider ?? activeTaskPersistence.get(taskId);
-  if (injectedProvider) {
-    return forceTerminateAutomationTaskWithPersistence(taskId, injectedProvider);
-  }
-  if (!activeTaskRunIds.has(taskId))
-    throw new Error(`Automation task is not running: ${taskId}`);
-  forceTerminationRequestedTaskIds.add(taskId);
-  cancellationRequestedTaskIds.add(taskId);
-  const timer = cancellationForceTimers.get(taskId);
-  if (timer) clearTimeout(timer);
-  cancellationForceTimers.delete(taskId);
-  const cancellingRun = persistCancellationTransition(taskId, "cancelling");
-  const runtime = runtimeForTask(taskId);
-  if (cancellingRun) {
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
-  } else if (runtime) {
-    automationRuntimeState.upsert({
-      ...runtime,
-      status: "cancelling",
-      forceTerminateAvailable: true,
-      updatedAt: new Date().toISOString(),
-    });
-  }
-  const child = automationTaskChild(taskId);
-  await terminateAutomationTaskProcessTree(taskId);
-  await relinquishAutomationSessionForTask(taskId);
-  return { cancelled: taskId };
+  return forceTerminateAutomationTaskWithPersistence(taskId, provider);
 }
 
 export type AbandonedAutomationRecoveryDependencies =
   LiveAutomationSessionDependencies & {
-    finalizeRun?: (
-      db: ReturnType<typeof openLedgerDatabase>,
-      run: Pick<AutomationTaskRun, "taskRunId" | "taskId">,
-      reason: string,
-      status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
-    ) => Promise<void>;
     finalizeRunWithPersistence?: (
       provider: AutomationPersistenceProvider,
       run: AutomationTaskRun,
@@ -1060,8 +639,7 @@ export type AbandonedAutomationRecoveryDependencies =
       status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
     ) => Promise<void>;
     claimSession?: typeof claimAutomationSessionForCleanup;
-    scheduleWaitingTimeout?: typeof scheduleAutomationTaskRunTimeout;
-    scheduleWaitingTimeoutWithPersistence?: typeof scheduleAutomationTaskRunTimeoutWithPersistence;
+    scheduleWaitingTimeoutWithPersistence?: typeof scheduleAutomationTaskRunTimeout;
     now?: () => number;
   };
 
@@ -1079,36 +657,6 @@ function waitingSessionExpired(
   }
 }
 
-async function preserveWaitingHumanSession(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: AutomationTaskRun,
-  ledgerDir: string,
-  dependencies: AbandonedAutomationRecoveryDependencies,
-) {
-  if (!run.humanAssistanceContract) return false;
-  if (waitingSessionExpired(run, dependencies.now ?? (() => Date.now())))
-    return false;
-  const owner = automationSessionOwnerForRun(run);
-  if (!owner || owner.pid === null) return false;
-  if (!(await isLiveOwnedAutomationSession(owner, dependencies))) return false;
-  const claimSession =
-    dependencies.claimSession ?? claimAutomationSessionForCleanup;
-  try {
-    if (!claimSession(owner)) return false;
-    (dependencies.scheduleWaitingTimeout ?? scheduleAutomationTaskRunTimeout)({
-      taskDb: db,
-      taskId: run.taskId,
-      taskKind: run.kind,
-      taskRunId: run.taskRunId,
-      logPath: run.logPath,
-      ledgerDir,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function preserveWaitingHumanSessionWithPersistence(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
@@ -1123,7 +671,7 @@ async function preserveWaitingHumanSessionWithPersistence(
   try {
     if (!claimSession(owner)) return false;
     (dependencies.scheduleWaitingTimeoutWithPersistence
-      ?? scheduleAutomationTaskRunTimeoutWithPersistence)({
+      ?? scheduleAutomationTaskRunTimeout)({
       provider,
       taskId: run.taskId,
       taskRunId: run.taskRunId,
@@ -1137,140 +685,53 @@ async function preserveWaitingHumanSessionWithPersistence(
 
 export async function recoverAbandonedAutomationSessions(
   provider: AutomationPersistenceProvider,
-  dependencies?: AbandonedAutomationRecoveryDependencies,
-): Promise<void>;
-export async function recoverAbandonedAutomationSessions(
-  ledgerDir?: string,
-  dependencies?: AbandonedAutomationRecoveryDependencies,
-): Promise<void>;
-export async function recoverAbandonedAutomationSessions(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
   dependencies: AbandonedAutomationRecoveryDependencies = {},
 ): Promise<void> {
-  if (typeof ledgerDirOrProvider !== "string") {
-    const errors: unknown[] = [];
-    for (const run of await ledgerDirOrProvider.automation.activeTaskRuns()) {
-      try {
-        if (
-          run.status === "waiting_for_human"
-          && await preserveWaitingHumanSessionWithPersistence(
-            ledgerDirOrProvider,
-            run,
-            dependencies,
-          )
-        ) continue;
-        await (dependencies.finalizeRunWithPersistence ?? finalizePersistedRun)(
-          ledgerDirOrProvider,
-          run,
-          "App 前次異常結束",
-          "interrupted",
-        );
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (errors.length) {
-      throw new AggregateError(errors, "Failed to finalize persisted automation runs");
-    }
-    return;
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const db = openLedgerDatabase(ledgerDir);
   const errors: unknown[] = [];
-  try {
-    for (const run of activeTaskRuns(db)) {
-      try {
-        if (
-          run.status === "waiting_for_human" &&
-          (await preserveWaitingHumanSession(db, run, ledgerDir, dependencies))
-        ) {
-          continue;
-        }
-        await (dependencies.finalizeRun ?? finalizePersistedRun)(
-          db,
-          run,
-          "App 前次異常結束",
-          "interrupted",
-        );
-      } catch (error) {
-        errors.push(error);
-      }
+  for (const run of await provider.automation.activeTaskRuns()) {
+    try {
+      if (
+        run.status === "waiting_for_human"
+        && await preserveWaitingHumanSessionWithPersistence(provider, run, dependencies)
+      ) continue;
+      await (dependencies.finalizeRunWithPersistence ?? finalizePersistedRun)(
+        provider,
+        run,
+        "App 前次異常結束",
+        "interrupted",
+      );
+    } catch (error) {
+      errors.push(error);
     }
-  } finally {
-    db.close();
   }
-  if (errors.length)
-    throw new AggregateError(
-      errors,
-      "Failed to finalize persisted automation runs",
-    );
+  if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
 export async function shutdownAutomationSessions(
   provider: AutomationPersistenceProvider,
-  dependencies?: Partial<{
-    finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
-    finalizePersistedRuns: typeof finalizePersistedActiveRuns;
-  }>,
-): Promise<void>;
-export async function shutdownAutomationSessions(
-  ledgerDir?: string,
-  dependencies?: Partial<{
-    finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
-    finalizePersistedRuns: typeof finalizePersistedActiveRuns;
-  }>,
-): Promise<void>;
-export async function shutdownAutomationSessions(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
   dependencies: Partial<{
     finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
     finalizePersistedRuns: typeof finalizePersistedActiveRuns;
   }> = {},
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    terminateAutomationTaskProcesses();
-    const errors: unknown[] = [];
-    const finalizeOwnedSessions =
-      dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
-    const finalizePersistedRuns =
-      dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
-    try {
-      await finalizeOwnedSessions();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      await finalizePersistedRuns(ledgerDirOrProvider, "App 關閉，人工操作未完成");
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length) {
-      throw new AggregateError(errors, "Failed to shut down automation sessions");
-    }
-    return;
-  }
-  const actualLedgerDir = ledgerDirOrProvider ?? process.env.LEDGER_DIR ?? "data/ledger";
+): Promise<void> {
   terminateAutomationTaskProcesses();
   const errors: unknown[] = [];
-  const finalizeOwnedSessions =
-    dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
-  const finalizePersistedRuns =
-    dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
+  const finalizeOwnedSessions = dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
+  const finalizePersistedRuns = dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
   try {
     await finalizeOwnedSessions();
   } catch (error) {
     errors.push(error);
   }
   try {
-    await finalizePersistedRuns(actualLedgerDir, "App 關閉，人工操作未完成");
+    await finalizePersistedRuns(provider, "App 關閉，人工操作未完成");
   } catch (error) {
     errors.push(error);
   }
-  if (errors.length)
-    throw new AggregateError(errors, "Failed to shut down automation sessions");
+  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation sessions");
 }
 
-async function runAutomationTaskWithPersistence(
+export async function runAutomationTask(
   taskId: string,
   provider: AutomationPersistenceProvider,
   options: PersistenceRunOptions = {},
@@ -1279,7 +740,6 @@ async function runAutomationTaskWithPersistence(
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   validateScheduledAtUtc(options.scheduledAtUtc);
   if (!options.claimed) claimTask(taskId);
-  activeTaskPersistence.set(taskId, provider);
   try {
     const launchEnv = {
       ...automationProcessEnv(),
@@ -1307,7 +767,7 @@ async function runAutomationTaskWithPersistence(
       isForceTerminationRequested: () => automationTaskForceTerminationRequested(taskId),
       runExecution: options.runExecution,
     });
-    const result = await runCaptchaRetryCampaignWithPersistence({
+    const result = await runCaptchaRetryCampaign({
       taskId,
       provider,
       launchVerificationSettings,
@@ -1327,98 +787,10 @@ async function runAutomationTaskWithPersistence(
     return result;
   } finally {
     activeTaskRunIds.delete(taskId);
-    activeTaskPersistence.delete(taskId);
     cancellationRequestedTaskIds.delete(taskId);
     forceTerminationRequestedTaskIds.delete(taskId);
     const forceTimer = cancellationForceTimers.get(taskId);
     if (forceTimer) clearTimeout(forceTimer);
     cancellationForceTimers.delete(taskId);
-  }
-}
-
-export function runAutomationTask(
-  taskId: string,
-  ledgerDir?: string,
-  options?: PersistenceRunOptions,
-): Promise<Awaited<ReturnType<typeof runAutomationTaskWithPersistence>>>;
-export function runAutomationTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  options?: PersistenceRunOptions,
-): Promise<Awaited<ReturnType<typeof runAutomationTaskWithPersistence>>>;
-export async function runAutomationTask(
-  taskId: string,
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-  options: PersistenceRunOptions = {},
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return runAutomationTaskWithPersistence(taskId, ledgerDirOrProvider, options);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  validateScheduledAtUtc(options.scheduledAtUtc);
-  if (!options.claimed) claimTask(taskId);
-  activeTaskLedgerDirs.set(taskId, ledgerDir);
-
-  let db: ReturnType<typeof openLedgerDatabase> | null = null;
-  try {
-    db = openLedgerDatabase(ledgerDir);
-    const launchEnv = { ...automationProcessEnv() };
-    // Verification actor and solver settings belong to this user operation.
-    // Capture them once so a settings-file edit while a CAPTCHA campaign is
-    // between rounds cannot silently change the next execution's policy.
-    const launchVerificationSettings = { ...readAutomationSettings() };
-    let taskRunId: string | null = null;
-    const onRunCreated = (createdTaskRunId: string) => {
-      taskRunId = createdTaskRunId;
-      activeTaskRunIds.set(taskId, createdTaskRunId);
-      const created = taskRunById(db!, createdTaskRunId);
-      if (created) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(created));
-    };
-    const execution = createAutomationTaskExecutionRunner({
-      task,
-      taskDb: db,
-      ledgerDir,
-      baseLaunchEnv: launchEnv,
-      currentTaskRunId: () => taskRunId,
-      onRunCreated,
-      onRuntimeUpdate: (updatedTaskRunId) => {
-        const updated = taskRunById(db!, updatedTaskRunId);
-        if (updated) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(updated));
-      },
-      isCancellationRequested: () =>
-        automationTaskCancellationRequested(taskId),
-      isForceTerminationRequested: () =>
-        automationTaskForceTerminationRequested(taskId),
-    });
-    const result = await runCaptchaRetryCampaign({
-      taskId,
-      taskDb: db,
-      ledgerDir,
-      launchVerificationSettings,
-      initialExecutionOptions: {
-        scheduledAtUtc: options.scheduledAtUtc,
-        resumeSession: options.resumeSession,
-        taskRunId: options.taskRunId,
-      },
-      execute: execution,
-      isCancellationRequested: () =>
-        automationTaskCancellationRequested(taskId),
-    });
-    if (taskRunId) {
-      const finalRun = taskRunById(db, taskRunId);
-      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
-    }
-    return result;
-  } finally {
-    activeTaskRunIds.delete(taskId);
-    activeTaskLedgerDirs.delete(taskId);
-    cancellationRequestedTaskIds.delete(taskId);
-    forceTerminationRequestedTaskIds.delete(taskId);
-    const forceTimer = cancellationForceTimers.get(taskId);
-    if (forceTimer) clearTimeout(forceTimer);
-    cancellationForceTimers.delete(taskId);
-    db?.close();
   }
 }

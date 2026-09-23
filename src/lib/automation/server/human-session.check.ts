@@ -1,81 +1,41 @@
 import assert from "node:assert/strict";
+import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
+import {
+  applyPgliteOperationalBaseline,
+  createPgliteOperationalProvider,
+} from "../../../ledger/pglite/operational.ts";
+import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   forceQuitHumanSessionForTask,
-  humanAssistanceContractForTask,
   humanSessionFromRun,
 } from "./human-session.ts";
-import {
-  finalizeExactOwnedAutomationSession,
-  ownAutomationSession,
-  ownedAutomationSession,
-} from "./session-lifecycle.ts";
-import { claimAutomationTaskRunSession } from "./automation-session-disposition.ts";
-import { createTaskRun, taskRunById } from "./store.ts";
-import { automationRuntimeState } from "./runtime-state.ts";
 
-assert.equal(
-  humanSessionFromRun(
-    {
+test("waiting human session is derived from the persisted run tail", () => {
+  assert.equal(
+    humanSessionFromRun({
       status: "waiting_for_human",
-      logTail: "Workflow paused. run `npx libretto resume --session ses-1p4q`.",
-    },
-    "demo-task",
-  ),
-  "ses-1p4q",
-);
-
-assert.throws(
-  () => humanSessionFromRun({ status: "completed", logTail: "" }, "demo-task"),
-  /not waiting for human input/,
-);
-
-test("legacy waiting runs expose no inferred human assistance contract", () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-legacy-assistance-"),
+      logTail: "Workflow paused. libretto resume --session ses-1p4q",
+    }, "demo-task"),
+    "ses-1p4q",
   );
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    createTaskRun(db, {
-      taskId: "yuanta-all-statements",
-      script: "run:yuanta-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "legacy.log"),
-      logTail:
-        "manual-auth-required: enter a CAPTCHA; resume --session ses-legacy",
-    });
-    db.close();
-    assert.equal(
-      humanAssistanceContractForTask("yuanta-all-statements", ledgerDir),
-      null,
-    );
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
+  assert.throws(
+    () => humanSessionFromRun({ status: "completed", logTail: "" }, "demo-task"),
+    /not waiting for human input/u,
+  );
+  assert.throws(
+    () => humanSessionFromRun({ status: "waiting_for_human", logTail: "paused" }, "demo-task"),
+    /Missing Libretto resume session/u,
+  );
 });
 
-assert.throws(
-  () =>
-    humanSessionFromRun(
-      { status: "waiting_for_human", logTail: "paused" },
-      "demo-task",
-    ),
-  /Missing Libretto resume session/,
-);
-
-test("force quit persists failure before surfacing cleanup failure", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-force-quit-"));
+test("force quit persists the terminal state before surfacing cleanup failure", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
   try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
       taskId: "fubon-all-statements",
       script: "run:fubon-all-statements",
       kind: "crawler",
@@ -83,255 +43,23 @@ test("force quit persists failure before surfacing cleanup failure", async () =>
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "force-quit.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-force-quit`.",
+      logPath: "/tmp/automation-force-quit.log",
+      logTail: "Workflow paused. libretto resume --session ses-force-quit",
     });
-    db.close();
-
     await assert.rejects(
-      forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir, {
+      forceQuitHumanSessionForTask("fubon-all-statements", provider, {
         readSessionState() {
           throw new Error("state unavailable");
         },
       }),
-      /state unavailable/,
+      /state unavailable/u,
     );
-
-    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    const stored = taskRunById(verifiedDb, run.taskRunId);
-    verifiedDb.close();
+    const stored = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(stored?.status, "cancelled");
     assert.equal(stored?.terminationMode, "forced");
-    assert.match(stored?.errorMessage ?? "", /^Browser session force quit\./);
-    assert.match(
-      stored?.errorMessage ?? "",
-      /Session cleanup failed: state unavailable/,
-    );
+    assert.match(stored?.errorMessage ?? "", /^Browser session force quit\./u);
+    assert.match(stored?.errorMessage ?? "", /Session cleanup failed: state unavailable/u);
   } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("force quit state-read failure cannot leave a terminal owner fencing later starts", async () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-force-quit-restart-"),
-  );
-  const taskId = "fubon-all-statements";
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const previous = createTaskRun(db, {
-      taskId,
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "force-quit-restart.log"),
-      logTail:
-        "automation-session: ses-force-quit-restart\nWorkflow paused. run `npx libretto resume --session ses-force-quit-restart`.",
-    });
-    const previousOwner = {
-      taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-force-quit-restart",
-      pid: null,
-    };
-    assert.equal(ownAutomationSession(previousOwner), true);
-    db.close();
-
-    await assert.rejects(
-      forceQuitHumanSessionForTask(taskId, ledgerDir, {
-        readSessionState() {
-          throw new Error("state unavailable after process exit");
-        },
-      }),
-      /state unavailable after process exit/,
-    );
-
-    const restartDb = openLedgerDatabase(ledgerDir);
-    assert.equal(taskRunById(restartDb, previous.taskRunId)?.status, "cancelled");
-    const next = createTaskRun(restartDb, {
-      taskId,
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "restart.log"),
-    });
-    assert.equal(
-      claimAutomationTaskRunSession(restartDb, next.taskRunId, {
-        taskId,
-        taskRunId: next.taskRunId,
-        session: "ses-force-quit-next",
-        pid: null,
-      }),
-      true,
-    );
-    assert.equal(ownedAutomationSession(taskId)?.taskRunId, next.taskRunId);
-    restartDb.close();
-  } finally {
-    await finalizeExactOwnedAutomationSession(
-      ownedAutomationSession(taskId) ?? {
-        taskId,
-        taskRunId: "absent",
-        session: "absent",
-      },
-      {
-        async closeSession() {},
-        isExpectedDaemon() {
-          return false;
-        },
-        signalProcessGroup() {},
-        async wait() {},
-      },
-    );
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("force quit finalizes the exact waiting run without appending a log", async () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-force-quit-success-"),
-  );
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
-      taskId: "fubon-all-statements",
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "force-quit-success.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-force-quit`.",
-    });
-    db.close();
-
-    const runtimeStatuses: string[] = [];
-    const unsubscribe = automationRuntimeState.subscribe((snapshot) => {
-      const task = snapshot.tasks.find((candidate) => candidate.runId === run.taskRunId);
-      if (task) runtimeStatuses.push(task.status);
-    });
-    let forceQuitResult!: { session: string | null };
-    try {
-      forceQuitResult = await forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir, {
-        readSessionState() {
-          return null;
-        },
-        claimSession() {
-          return true;
-        },
-        async finalizeSession() {
-          return true;
-        },
-      });
-    } finally {
-      unsubscribe();
-    }
-    assert.deepEqual(forceQuitResult, { session: "ses-force-quit" });
-    assert.deepEqual(runtimeStatuses, ["cancelled"]);
-
-    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.status, "cancelled");
-    assert.equal(taskRunById(verifiedDb, run.taskRunId)?.terminationMode, "forced");
-    verifiedDb.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("force quit leaves a waiting run when its session identity is missing", async () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-force-quit-missing-session-"),
-  );
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
-      taskId: "fubon-all-statements",
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "force-quit-missing-session.log"),
-      logTail: "Workflow paused.",
-    });
-    db.close();
-
-    await assert.rejects(
-      forceQuitHumanSessionForTask("fubon-all-statements", ledgerDir),
-      /Missing Libretto resume session/,
-    );
-
-    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    assert.equal(
-      taskRunById(verifiedDb, run.taskRunId)?.status,
-      "waiting_for_human",
-    );
-    verifiedDb.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("force quit leaves a resumed owner untouched", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-force-quit-owner-"));
-  const newer = {
-    taskId: "fubon-all-statements",
-    taskRunId: "new-run",
-    session: "ses-new",
-  };
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const old = createTaskRun(db, {
-      taskId: newer.taskId,
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "force-quit-owner.log"),
-      logTail: "Workflow paused. run `npx libretto resume --session ses-old`.",
-    });
-    db.close();
-    ownAutomationSession({ ...newer, pid: null });
-
-    await assert.rejects(
-      forceQuitHumanSessionForTask(newer.taskId, ledgerDir, {
-        readSessionState() {
-          return null;
-        },
-      }),
-      /ownership changed/,
-    );
-
-    assert.equal(
-      ownedAutomationSession(newer.taskId)?.taskRunId,
-      newer.taskRunId,
-    );
-    const verifiedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    assert.match(
-      taskRunById(verifiedDb, old.taskRunId)?.errorMessage ?? "",
-      /Session cleanup failed: Automation session ownership changed/,
-    );
-    verifiedDb.close();
-  } finally {
-    await finalizeExactOwnedAutomationSession(newer, {
-      async closeSession() {},
-      isExpectedDaemon() {
-        return false;
-      },
-      signalProcessGroup() {},
-      async wait() {},
-    });
-    rmSync(ledgerDir, { recursive: true, force: true });
+    await store.close();
   }
 });

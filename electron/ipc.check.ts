@@ -28,11 +28,13 @@ assert.match(source, /ipcMain\.handle\("data:acknowledgeVersion"/);
 assert.match(source, /data:invalidated/);
 assert.match(
   source,
-  /createFinancialPageWorkerClient/,
-  "financial page loads must cross a worker boundary so projection reads cannot block Electron main",
+  /PGliteFinancialPageClient/,
+  "financial page requests use the worker-owned PGlite registry",
 );
 assert.match(source, /registerPGliteViewIpc/);
-assert.match(source, /pgliteViews\?\.enabled/);
+assert.doesNotMatch(source, /financial-page-worker|createFinancialPageWorkerClient/);
+assert.match(source, /pgliteOperational: \{/);
+assert.match(source, /pgliteFinancial: PGliteFinancialPageClient/);
 assert.match(source, /withExpectedDataVersion/);
 assert.match(source, /options\?\.expectedVersion/);
 for (const channel of ["overview:block", "assets:block", "liabilities:block", "spending:block", "automation:block"])
@@ -59,7 +61,8 @@ assert.doesNotMatch(
   /ipcMain\.handle\("liabilities:load", \(\) => loadLiabilities/,
   "liabilities projection must not execute synchronously on Electron main",
 );
-assert.match(source, /return \{\s*close: async \(\) => \{[\s\S]*ownsFinancialPages[\s\S]*financialPages as ReturnType<typeof createFinancialPageWorkerClient>\)[\s\S]*\.close\(\);[\s\S]*\},?\s*\}/);
+assert.match(source, /await pgliteViewRegistration\.close\(\)/);
+assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);
 assert.match(source, /ipcMain\.handle\("automation:cathayGmailOtpStatus"/);
 assert.match(source, /ipcMain\.handle\("automation:enableCathayGmailOtp"/);
 assert.match(source, /ipcMain\.handle\(\s*"automation:setCathayGmailOtpEnabled"/);

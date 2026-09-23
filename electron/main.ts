@@ -17,13 +17,11 @@ import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler } from "./exchange-rate-scheduler.ts";
 import { registerCathayGmailOtpElectronRuntime } from "./gmail-oauth.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
-import { initializeCanonicalRuntimeBeforeWindow } from "./startup-ledger.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
 import { AutomationRuntimeInvariantError } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
-  pgliteOperationalEnabled,
   type PGliteOperationalRuntime,
 } from "./pglite-runtime.ts";
 import {
@@ -101,11 +99,10 @@ const handleBeforeQuit = createBeforeQuitHandler({
     scheduler?.stop();
     await ipcRegistration?.close();
     if (activeAutomationTaskIds().length > 0) {
-      if (pgliteOperationalRuntime) {
-        await shutdownAutomationSessions(pgliteOperationalRuntime.provider);
-      } else {
-        await shutdownAutomationSessions();
+      if (!pgliteOperationalRuntime) {
+        throw new Error("PGlite automation provider is unavailable during shutdown.");
       }
+      await shutdownAutomationSessions(pgliteOperationalRuntime.provider);
     }
     await pgliteOperationalRuntime?.close();
   },
@@ -220,10 +217,10 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
-  pgliteOperationalRuntime = createPGliteOperationalRuntime({
-    enabled: pgliteOperationalEnabled(),
+  const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
   });
+  pgliteOperationalRuntime = operationalRuntime;
   registerAutomationCredentialSafeStorage();
   registerCathayGmailOtpElectronRuntime(appRoot);
   try {
@@ -231,25 +228,13 @@ async function start() {
   } catch (error) {
     console.warn("libretto-run-cdp-patch-failed", error);
   }
-  // The PGlite activation gate owns the financial store when enabled.  Do not
-  // create or validate the retired SQLite canonical database on that path;
-  // doing so would make a fresh PGlite startup depend on an unrelated file
-  // and would violate the single-worker ownership boundary.
-  if (!pgliteOperationalRuntime) {
-    await initializeCanonicalRuntimeBeforeWindow(userData);
-  }
-  const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
   const automationRuntimeReady = new Promise<void>((resolve, reject) => {
     setImmediate(() => {
-      const provider = pgliteOperationalRuntime?.provider;
-      (provider
-        ? recoverAbandonedAutomationSessions(provider)
-          .then(() => hydrateAutomationRuntimeState(provider))
-        : recoverAbandonedAutomationSessions(ledgerDir)
-          .then(() => hydrateAutomationRuntimeState(ledgerDir)))
+      recoverAbandonedAutomationSessions(operationalRuntime.provider)
+        .then(() => hydrateAutomationRuntimeState(operationalRuntime.provider))
         .then(() => {
           // This is an isolated Electron regression seam. It is only active
           // for the disposable CDP fixture and lets the fatal invariant be
@@ -305,25 +290,17 @@ async function start() {
       setTimer: (callback, ms) => setTimeout(callback, ms),
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
-      // Automation run history is financial legacy state. The unified sync
-      // runner owns its operational status; until it is available, a scheduled
-      // exchange-rate run is never suppressed by the retired ledger.
-      hasSuccessSince: (occurrenceUtc) => pgliteOperationalRuntime
-        ? pgliteOperationalRuntime.provider.automation.hasSuccessfulTaskRunSince(
-            "exchange-rates",
-            occurrenceUtc,
-          )
-        : false,
+      hasSuccessSince: (occurrenceUtc) => operationalRuntime.provider.automation.hasSuccessfulTaskRunSince(
+        "exchange-rates",
+        occurrenceUtc,
+      ),
       isTaskActive: () => activeAutomationTaskIds().includes("exchange-rates"),
       startTask: (scheduledAtUtc) => {
-        if (pgliteOperationalRuntime) {
-          return startAutomationTask(
-            "exchange-rates",
-            pgliteOperationalRuntime.provider,
-            { scheduledAtUtc },
-          ).then(() => undefined);
-        }
-        startAutomationTask("exchange-rates", ledgerDir, { scheduledAtUtc });
+        return startAutomationTask(
+          "exchange-rates",
+          operationalRuntime.provider,
+          { scheduledAtUtc },
+        ).then(() => undefined);
       },
       reportError: (error) => console.error("exchange-rate-scheduler-error", error),
     });
@@ -332,24 +309,19 @@ async function start() {
     onSystemSettingsChanged: () => scheduler?.reschedule(),
     onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
-    ...(pgliteOperationalRuntime
-      ? {
-        pgliteViews: {
-          enabled: true,
-          dataDir: pgliteOperationalRuntime.dataDir,
-        },
-        pgliteOperational: {
-          provider: pgliteOperationalRuntime.provider,
-          worker: pgliteOperationalRuntime.worker,
-          dataDir: pgliteOperationalRuntime.dataDir,
-        },
-        pgliteFinancial: createPGliteFinancialPageClient(
-          pgliteOperationalRuntime.worker.financial,
-          pgliteOperationalRuntime.worker.subscribe,
-          configuredOverviewSources,
-        ),
-      }
-      : {}),
+    pgliteViews: {
+      dataDir: operationalRuntime.dataDir,
+    },
+    pgliteOperational: {
+      provider: operationalRuntime.provider,
+      worker: operationalRuntime.worker,
+      dataDir: operationalRuntime.dataDir,
+    },
+    pgliteFinancial: createPGliteFinancialPageClient(
+      operationalRuntime.worker.financial,
+      operationalRuntime.worker.subscribe,
+      configuredOverviewSources,
+    ),
   });
   // Recovery owns the persisted active-run boundary.  Do not let the
   // scheduler claim a new run until that boundary has been reconciled; the

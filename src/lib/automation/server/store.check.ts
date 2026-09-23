@@ -1,263 +1,51 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openLedgerDatabase, type LedgerDatabase } from "../../../ledger/db/client.ts";
+import test from "node:test";
 import {
-  activeTaskRuns,
-  createTaskRun,
-  hasSuccessfulTaskRunSince,
-  latestTaskRuns,
-  recentTaskRuns,
-  taskRunById,
-  transitionTaskRunToActive,
-  todayTaskRunIds,
-  transitionTaskRunToTerminal,
-  updateTaskRun,
+  ACTIVE_TASK_RUN_STATUSES,
+  TERMINAL_TASK_RUN_STATUSES,
+  isActiveTaskRunStatus,
+  isTerminalTaskRunStatus,
+  resumeHumanAssistanceContract,
 } from "./store.ts";
 
-let recentTaskRunsSql = "";
-const fakeDb = {
-  prepare(sql: string) {
-    recentTaskRunsSql = sql;
-    return {
-      all(limit: number) {
-        assert.equal(limit, 100);
-        return [{
-          task_run_id: "history-1",
-          task_id: "fubon-all-statements",
-          script: "run:fubon-all-statements",
-          kind: "crawler",
-          status: "completed",
-          started_at: "2026-06-30T01:00:00.000Z",
-          finished_at: "2026-06-30T01:01:00.000Z",
-          exit_code: 0,
-          signal: null,
-          error_message: null,
-          log_path: "data/automation/logs/fubon.log",
-        }];
-      },
-    };
-  },
-} as unknown as LedgerDatabase;
+test("automation store exports provider-neutral run state semantics", () => {
+  assert.deepEqual(ACTIVE_TASK_RUN_STATUSES, [
+    "queued",
+    "preparing",
+    "running",
+    "retrying",
+    "cancelling",
+    "waiting_for_human",
+  ]);
+  assert.deepEqual(TERMINAL_TASK_RUN_STATUSES, [
+    "completed",
+    "partial",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]);
+  assert.equal(isActiveTaskRunStatus("waiting_for_human"), true);
+  assert.equal(isActiveTaskRunStatus("completed"), false);
+  assert.equal(isTerminalTaskRunStatus("interrupted"), true);
+  assert.equal(isTerminalTaskRunStatus("running"), false);
+});
 
-assert.equal(recentTaskRuns(fakeDb, 100)[0]?.taskRunId, "history-1");
-assert.doesNotMatch(recentTaskRunsSql, /SELECT\s+\*/i);
-assert.doesNotMatch(recentTaskRunsSql, /\blog_tail\b|\brecord_json\b/i);
-
-const ledgerDir = mkdtempSync(join(tmpdir(), "automation-store-"));
-
-try {
-  const db = openLedgerDatabase(ledgerDir);
-  const indexes = db.prepare("PRAGMA index_list('automation_task_runs')").all() as { name: string }[];
-  assert.equal(indexes.some((index) => index.name === "idx_automation_task_runs_started_at"), true);
-  const startedAt = "2026-06-30T01:00:00.000Z";
-  const finishedAt = "2026-06-30T01:02:00.000Z";
-
-  const run = createTaskRun(db, {
-    taskId: "fubon-all-statements",
-    script: "run:fubon-all-statements",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 2,
-    startedAt,
-    logPath: "data/automation/logs/fubon.log",
-  });
-
-  updateTaskRun(db, run.taskRunId, {
-    status: "completed",
-    attempt: 2,
-    maxAttempts: 10,
-    finishedAt,
-    exitCode: 0,
-    logTail: "ok",
-  });
-
-  const latest = latestTaskRuns(db);
-  assert.equal(latest["fubon-all-statements"]?.status, "completed");
-  assert.equal(latest["fubon-all-statements"]?.finishedAt, finishedAt);
-  const completedRun = taskRunById(db, run.taskRunId);
-  assert.equal(completedRun?.status, "completed");
-  assert.equal(completedRun?.attempt, 2);
-  assert.equal(completedRun?.maxAttempts, 10);
-  assert.equal(JSON.parse(completedRun?.recordJson ?? "{}").recordJson, undefined);
-  assert.equal(taskRunById(db, "missing"), null);
-
-  assert.throws(
-    () => updateTaskRun(db, run.taskRunId, { logTail: "ok\nagain" }),
-    /terminal automation task run is immutable/i,
-  );
-
-  const todayRunIds = todayTaskRunIds(db, {
-    startUtc: new Date("2026-06-30T00:00:00.000Z"),
-    endUtc: new Date("2026-07-01T00:00:00.000Z"),
-  });
-  assert.deepEqual(todayRunIds, ["fubon-all-statements"]);
-
-  const raced = createTaskRun(db, {
-    taskId: "raced-terminal-task",
-    script: "run:raced-terminal-task",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt,
-    logPath: "data/automation/logs/raced-terminal.log",
-  });
-  const firstTransition = transitionTaskRunToTerminal(db, raced.taskRunId, {
-    status: "completed",
-    finishedAt,
-    exitCode: 0,
-    signal: null,
-    errorMessage: null,
-    logTail: "first finalizer",
-  });
-  const competingTransition = transitionTaskRunToTerminal(db, raced.taskRunId, {
-    status: "failed",
-    finishedAt,
-    exitCode: 1,
-    signal: null,
-    errorMessage: "late finalizer",
-    logTail: "second finalizer",
-  });
-  assert.deepEqual(firstTransition, { status: "completed", applied: true });
-  assert.deepEqual(competingTransition, { status: "completed", applied: false });
-  assert.equal(taskRunById(db, raced.taskRunId)?.errorMessage, null);
-
-  const queuedCancellation = createTaskRun(db, {
-    taskId: "queued-cancellation-task",
-    script: "run:queued-cancellation-task",
-    kind: "sync",
-    status: "queued",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt,
-    logPath: "data/automation/logs/queued-cancellation.log",
-  });
-  assert.deepEqual(
-    transitionTaskRunToActive(db, queuedCancellation.taskRunId, {
-      status: "cancelling",
-    }),
-    { status: "cancelling", applied: true },
-  );
-  assert.deepEqual(
-    transitionTaskRunToTerminal(db, queuedCancellation.taskRunId, {
-      status: "cancelled",
-      finishedAt,
-      exitCode: null,
-      signal: "SIGTERM",
-      errorMessage: null,
-      logTail: "cancelled",
-    }),
-    { status: "cancelled", applied: true },
-  );
-  assert.deepEqual(
-    transitionTaskRunToActive(db, queuedCancellation.taskRunId, {
-      status: "cancelling",
-    }),
-    { status: "cancelled", applied: false },
-  );
-
-  for (let index = 0; index < 101; index += 1) {
-    const startedAt = new Date(Date.UTC(2026, 5, 30, 4, 0, index)).toISOString();
-    const finishedAt = new Date(Date.UTC(2026, 5, 30, 4, 0, index + 1)).toISOString();
-    createTaskRun(db, {
-      taskId: "hncb-statements",
-      script: "run:hncb-statements",
-      kind: "crawler",
-      status: "completed",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt,
-      finishedAt,
-      exitCode: 0,
-      logPath: `data/automation/logs/hncb-${index}.log`,
-      logTail: "ok",
-    });
-  }
-
-  const history = recentTaskRuns(db, 100);
-  assert.equal(history.length, 100);
-  assert.equal(history[0]?.taskId, "hncb-statements");
-  assert.equal(history[0]?.startedAt, "2026-06-30T04:01:40.000Z");
-  assert.equal(history.at(-1)?.startedAt, "2026-06-30T04:00:01.000Z");
-
-  createTaskRun(db, {
-    taskId: "running-task",
-    script: "run:running-task",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: "2026-06-30T05:00:00.000Z",
-    logPath: "data/automation/logs/running.log",
-  });
-  createTaskRun(db, {
-    taskId: "waiting-task",
-    script: "run:waiting-task",
-    kind: "crawler",
-    status: "waiting_for_human",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: "2026-06-30T05:01:00.000Z",
-    logPath: "data/automation/logs/waiting.log",
-  });
-  assert.deepEqual(
-    activeTaskRuns(db).map((item) => item.status).sort(),
-    ["running", "waiting_for_human"],
-  );
-
-  const occurrence = "2026-07-14T22:00:00.000Z";
-  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), false);
-  for (const [status, finishedAt] of [
-    ["running", null],
-    ["failed", "2026-07-14T22:01:00.000Z"],
-    ["completed", "2026-07-14T21:59:59.999Z"],
-  ] as const) {
-    createTaskRun(db, {
-      taskId: "exchange-rates",
-      script: "run:exchange-rates",
-      kind: "sync",
-      status,
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T21:00:00.000Z",
-      finishedAt,
-      logPath: `data/automation/logs/exchange-rates-${status}.log`,
-    });
-  }
-  const cancelled = createTaskRun(db, {
-    taskId: "exchange-rates",
-    script: "run:exchange-rates",
-    kind: "sync",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: "2026-07-14T21:00:00.000Z",
-    logPath: "data/automation/logs/exchange-rates-cancelled.log",
-  });
-  db.prepare(`
-    UPDATE automation_task_runs
-    SET status = 'cancelled', finished_at = ?
-    WHERE task_run_id = ?
-  `).run("2026-07-14T22:02:00.000Z", cancelled.taskRunId);
-  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), false);
-  createTaskRun(db, {
-    taskId: "exchange-rates",
-    script: "run:exchange-rates",
-    kind: "sync",
-    status: "completed",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: occurrence,
-    finishedAt: occurrence,
-    exitCode: 0,
-    logPath: "data/automation/logs/exchange-rates-completed.log",
-  });
-  assert.equal(hasSuccessfulTaskRunSince(db, "exchange-rates", occurrence), true);
-
-  db.close();
-} finally {
-  rmSync(ledgerDir, { recursive: true, force: true });
-}
+test("resuming a run retains only a pending assistance contract", () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    version: 2,
+    stageId: "otp",
+    title: "Enter OTP",
+    targets: [],
+    contextRegions: [],
+    completion: { mode: "inline" as const, targetIds: [], status: "pending" as const },
+    focus: { targetId: "otp", contextRegionIds: [] },
+  };
+  const entered = {
+    ...pending,
+    completion: { mode: "inline" as const, targetIds: [], status: "entered" as const },
+  };
+  assert.equal(resumeHumanAssistanceContract(pending), pending);
+  assert.equal(resumeHumanAssistanceContract(entered), null);
+  assert.equal(resumeHumanAssistanceContract(undefined), null);
+});

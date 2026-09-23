@@ -8,7 +8,6 @@ import type {
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
-import type { SpendingCategory } from "$lib/spending/categories.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -28,7 +27,6 @@ import type {
 } from "$lib/spending/model.ts";
 import type {
   SpendingLoadInput,
-  SpendingOverrideUpdate,
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type {
@@ -276,8 +274,6 @@ export type OctopusBeakApi = {
     confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
     denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
     revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
-    updateItemCategory(input: { itemKey: string; category: SpendingCategory }): Promise<{ ok: true }>;
-    updateTransactionOverride(input: SpendingOverrideUpdate): Promise<{ ok: true }>;
   };
   automation: {
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
@@ -332,8 +328,6 @@ export const octopusBeakApiChannels = [
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",
-  "spending:updateItemCategory",
-  "spending:updateTransactionOverride",
   "automation:block",
   "automation:saveCredentials",
   "automation:cathayGmailOtpStatus",

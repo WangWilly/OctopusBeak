@@ -1,62 +1,25 @@
 import assert from "node:assert/strict";
+import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import {
-  activeTaskRuns,
-  activeTaskPrerequisiteNotices,
-  allTaskPrerequisiteNotices,
-  createTaskRun,
-  taskRunById,
-  updateTaskRun,
-} from "./store.ts";
-import { taskById } from "./tasks.ts";
+  applyPgliteOperationalBaseline,
+  createPgliteOperationalProvider,
+} from "../../../ledger/pglite/operational.ts";
+import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
+import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import { createDataVersionStore } from "../../shared-shell/data-version.ts";
-import { liveTaskRunUpdate } from "./task-run-execution.ts";
 import {
   finalizeAutomationTaskRun,
-  finalizeFailedWaitingRun,
-  finalizePersistedRun,
+  finalizeTaskRunTransition,
   type AutomationTaskProcessResult,
-  type AutomationTaskRunFinalizationContext,
 } from "./task-run-finalization.ts";
-import { automationRuntimeState } from "./runtime-state.ts";
-
-function createExecution(ledgerDir: string, taskId = "exchange-rates") {
-  const db = openLedgerDatabase(ledgerDir);
-  const task = taskById(taskId)!;
-  const logPath = join(ledgerDir, "automation.log");
-  const run = createTaskRun(db, {
-    taskId: task.id,
-    script: "run:exchange-rates",
-    kind: task.kind,
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-    logPath,
-  });
-  const finalization = {
-    taskDb: db,
-    taskId: task.id,
-    taskKind: task.kind,
-    taskRunId: run.taskRunId,
-    logPath,
-    ledgerDir,
-    dataVersionStore: createDataVersionStore(),
-  } satisfies AutomationTaskRunFinalizationContext;
-  return { db, run, finalization };
-}
 
 function result(overrides: Partial<AutomationTaskProcessResult> = {}): AutomationTaskProcessResult {
   return {
     exitCode: 0,
     signal: null,
     error: null,
-    logTail: "",
+    logTail: "workflow finished",
     resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
@@ -65,242 +28,87 @@ function result(overrides: Partial<AutomationTaskProcessResult> = {}): Automatio
   };
 }
 
-test("live finalization persists a partial statement outcome through one transition", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-live-"));
+test("provider finalization persists partial summary and invalidates once", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
   try {
-    const { db, run, finalization } = createExecution(ledgerDir);
-    const summary = {
-      status: "partial" as const,
-      results: [
-        { typeId: "deposit", status: "success" as const },
-        { typeId: "loan", status: "failed" as const, error: "no account" },
-      ],
-    };
-
-    assert.deepEqual(
-      await finalizeAutomationTaskRun(finalization, result({ statementSummary: summary })),
-      { status: "partial" },
-    );
-    const persisted = taskRunById(db, run.taskRunId)!;
-    assert.equal(persisted.status, "partial");
-    assert.equal(persisted.errorMessage, null);
-    assert.ok(readFileSync(persisted.logPath, "utf8").includes(statementRunSummaryLine(summary.results)));
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("successful automation finalization emits one data invalidation event", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-invalidation-"));
-  try {
-    const { db, finalization } = createExecution(ledgerDir);
-    const store = finalization.dataVersionStore!;
-    const events: unknown[] = [];
-    const unsubscribe = store.subscribe((event) => events.push(event));
-
-    assert.deepEqual(await finalizeAutomationTaskRun(finalization, result()), { status: "completed" });
-    assert.equal(events.length, 1);
-    const event = events[0] as {
-      version: number;
-      reason: string;
-      changedAt: string;
-    };
-    assert.equal(event.version, 1);
-    assert.equal(event.reason, "automation-completed");
-    assert.match(event.changedAt, /^\d{4}-\d\d-\d\dT/);
-    unsubscribe();
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("external prerequisite notices are deduplicated and resolved by a successful rerun", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-prerequisite-"));
-  try {
-    const first = createExecution(ledgerDir, "yuanta-trade-statements");
-    await finalizeAutomationTaskRun(first.finalization, result({
-      exitCode: 1,
-      error: new Error("certificate component unavailable"),
-      externalPrerequisiteIds: ["yuanta-servisign"],
-    }));
-    assert.equal(activeTaskPrerequisiteNotices(first.db).length, 1);
-
-    const second = createExecution(ledgerDir, "yuanta-trade-statements");
-    await finalizeAutomationTaskRun(second.finalization, result({
-      exitCode: 1,
-      error: new Error("certificate component unavailable"),
-      externalPrerequisiteIds: ["yuanta-servisign"],
-    }));
-    const active = activeTaskPrerequisiteNotices(second.db);
-    assert.equal(active.length, 1);
-    assert.equal(active[0]?.latestTaskRunId, second.run.taskRunId);
-    assert.equal(active[0]?.latestErrorMessage, "certificate component unavailable");
-    assert.equal(allTaskPrerequisiteNotices(second.db).length, 1);
-
-    const successful = createExecution(ledgerDir, "yuanta-trade-statements");
-    await finalizeAutomationTaskRun(successful.finalization, result());
-    assert.deepEqual(activeTaskPrerequisiteNotices(successful.db), []);
-    const resolved = allTaskPrerequisiteNotices(successful.db)[0];
-    assert.equal(resolved?.resolvedByTaskRunId, successful.run.taskRunId);
-    assert.ok(resolved?.resolvedAt);
-    first.db.close();
-    second.db.close();
-    successful.db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("waiting for human remains active until a later run takes over", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-waiting-"));
-  try {
-    const { db, run, finalization } = createExecution(ledgerDir);
-    assert.deepEqual(
-      await finalizeAutomationTaskRun(
-        finalization,
-        result({ logTail: "Workflow paused. resume --session ses-waiting" }),
-      ),
-      { status: "waiting_for_human" },
-    );
-    assert.deepEqual(
-      await finalizeAutomationTaskRun(finalization, result()),
-      { status: "waiting_for_human" },
-    );
-    assert.equal(taskRunById(db, run.taskRunId)?.status, "waiting_for_human");
-    assert.deepEqual(activeTaskRuns(db).map((active) => active.taskRunId), [run.taskRunId]);
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("resume failure remains in flight until task-run finalization completes", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-resume-failure-"));
-  try {
-    const { db, run, finalization } = createExecution(ledgerDir);
-    const logTail = "Workflow failed after resume: Unexpected end of JSON input";
-    updateTaskRun(db, run.taskRunId, liveTaskRunUpdate(logTail));
-
-    assert.deepEqual(
-      await finalizeAutomationTaskRun(
-        finalization,
-        result({
-          exitCode: 1,
-          logTail,
-          resumeFailure: "Unexpected end of JSON input",
-        }),
-      ),
-      { status: "failed" },
-    );
-    const persisted = taskRunById(db, run.taskRunId)!;
-    assert.equal(persisted.status, "failed");
-    assert.ok(persisted.finishedAt, "failed run must be finalized after its process exits");
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("a failed waiting run finalizes with the solver exhaustion message", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-solver-"));
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
       taskId: "fubon-all-statements",
       script: "run:fubon-all-statements",
       kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-08T08:00:00.000Z",
-      logPath: join(ledgerDir, "waiting.log"),
-    });
-    await finalizeFailedWaitingRun(
-      db,
-      taskRunById(db, run.taskRunId)!,
-      "Verification solver exhausted its attempts.",
-    );
-    const persisted = taskRunById(db, run.taskRunId)!;
-    assert.equal(persisted.status, "failed");
-    assert.match(
-      persisted.errorMessage ?? "",
-      /^Verification solver exhausted its attempts\./,
-    );
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("waiting finalization publishes the terminal runtime after persistence", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-runtime-"));
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
-      taskId: "fubon-all-statements",
-      script: "run:fubon-all-statements",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "waiting-runtime.log"),
-      logTail: "Workflow paused. resume --session ses-waiting-runtime",
-    });
-    const observed: string[] = [];
-    const unsubscribe = automationRuntimeState.subscribe((snapshot) => {
-      const task = snapshot.tasks.find((candidate) => candidate.runId === run.taskRunId);
-      if (!task || task.status === "waiting_for_human") return;
-      const persisted = taskRunById(db, run.taskRunId);
-      if (persisted) observed.push(`${task.status}:${persisted.status}`);
-    });
-    try {
-      await finalizeFailedWaitingRun(
-        db,
-        taskRunById(db, run.taskRunId)!,
-        "Verification solver exhausted its attempts.",
-      );
-    } finally {
-      unsubscribe();
-    }
-    assert.deepEqual(observed, ["failed:failed"]);
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("persisted finalization preserves the primary error and is idempotent", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-finalization-recovery-"));
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const task = taskById("exchange-rates")!;
-    const logPath = join(ledgerDir, "recovery.log");
-    const run = createTaskRun(db, {
-      taskId: task.id,
-      script: "run:exchange-rates",
-      kind: task.kind,
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath,
-      errorMessage: "workflow failed",
+      logPath: "/tmp/automation-finalization.log",
     });
-    await finalizePersistedRun(db, taskRunById(db, run.taskRunId)!, "App abnormal exit");
-    await finalizePersistedRun(db, taskRunById(db, run.taskRunId)!, "different reason");
-    const persisted = taskRunById(db, run.taskRunId)!;
-
-    assert.equal(persisted.status, "failed");
-    assert.equal(
-      persisted.errorMessage,
-      "workflow failed\nSession cleanup failed: Missing Libretto session identity",
-    );
-    assert.equal(readFileSync(logPath, "utf8").split("automation-session-finalize:").length, 2);
-    db.close();
+    const invalidations = createDataVersionStore();
+    const summary = {
+      status: "partial" as const,
+      results: [
+        { typeId: "deposit", status: "success" as const },
+        { typeId: "loan", status: "failed" as const, error: "missing account" },
+      ],
+    };
+    assert.deepEqual(await finalizeAutomationTaskRun({
+      provider,
+      taskId: "fubon-all-statements",
+      taskKind: "crawler",
+      taskRunId: created.taskRunId,
+      logPath: "/tmp/automation-finalization.log",
+      dataVersionStore: invalidations,
+    }, result({ statementSummary: summary })), { status: "partial" });
+    const saved = await provider.automation.taskRunById(created.taskRunId);
+    assert.equal(saved?.status, "partial");
+    assert.ok((saved?.logTail ?? "").includes(statementRunSummaryLine(summary.results)));
+    assert.equal(invalidations.snapshot().version, 1);
   } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
+    await store.close();
+  }
+});
+
+test("terminal provider transition is idempotent under a stale finalizer", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: "/tmp/automation-transition.log",
+    });
+    const first = await finalizeTaskRunTransition(provider, {
+      taskRunId: created.taskRunId,
+      logPath: "/tmp/automation-transition.log",
+    }, {
+      status: "completed",
+      exitCode: 0,
+      signal: null,
+      errorMessage: null,
+      logTail: "complete",
+    });
+    const stale = await finalizeTaskRunTransition(provider, {
+      taskRunId: created.taskRunId,
+      logPath: "/tmp/automation-transition.log",
+    }, {
+      status: "failed",
+      exitCode: 1,
+      signal: null,
+      errorMessage: "late failure",
+      logTail: "late",
+    });
+    assert.deepEqual(first, { status: "completed", skipped: false });
+    assert.deepEqual(stale, { status: "completed", skipped: true });
+    assert.equal((await provider.automation.taskRunById(created.taskRunId))?.errorMessage, null);
+  } finally {
+    await store.close();
   }
 });

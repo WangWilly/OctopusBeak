@@ -13,9 +13,6 @@ import {
   type PGliteViewWorkerClient,
 } from "./pglite-view-worker-client.ts";
 
-/** The cutover switch remains opt-in until every financial domain is ported. */
-export const PGLITE_OPERATIONAL_FEATURE_ENV = "OCTOPUSBEAK_PGLITE_OPERATIONAL" as const;
-
 export type PGliteOperationalProvider = AutomationPersistenceProvider & {
   exchangeRates: ExchangeRatePersistencePort;
   maicoin: PGliteMaicoinPersistencePort;
@@ -39,27 +36,17 @@ export type PGliteOperationalRuntime = Readonly<{
 export type PGliteOperationalRuntimeOptions = {
   dataDir: string;
   workerPath?: string;
-  /** The caller supplies the central activation decision. */
-  enabled?: boolean;
   /** Protocol-test seam; production creates exactly one worker client. */
   worker?: PGliteViewWorkerClient;
 };
 
-export function pgliteOperationalEnabled(
-  environment: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return environment[PGLITE_OPERATIONAL_FEATURE_ENV] === "1";
-}
-
 /**
- * Create the one worker-owned operational provider when explicitly enabled.
- * The default is null, which keeps the existing SQLite runtime untouched
- * during the staged financial cutover.
+ * Create the single worker-owned operational provider used by the desktop.
+ * PGlite is the only supported runtime store.
  */
 export function createPGliteOperationalRuntime(
   options: PGliteOperationalRuntimeOptions,
-): PGliteOperationalRuntime | null {
-  if (options.enabled !== true) return null;
+): PGliteOperationalRuntime {
   if (!options.dataDir || typeof options.dataDir !== "string") {
     throw new TypeError("PGlite operational runtime requires an explicit data directory.");
   }

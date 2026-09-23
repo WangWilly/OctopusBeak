@@ -102,8 +102,6 @@ const api: OctopusBeakApi = {
     confirmCandidate: (input) => ipcRenderer.invoke("spending:confirmCandidate", input),
     denyCandidate: (input) => ipcRenderer.invoke("spending:denyCandidate", input),
     revokeLink: (input) => ipcRenderer.invoke("spending:revokeLink", input),
-    updateItemCategory: (input) => ipcRenderer.invoke("spending:updateItemCategory", input),
-    updateTransactionOverride: (input) => ipcRenderer.invoke("spending:updateTransactionOverride", input),
   },
   automation: {
     loadBlock: (block, options) => ipcRenderer.invoke("automation:block", block, options),
