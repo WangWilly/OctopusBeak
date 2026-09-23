@@ -8,7 +8,7 @@ import {
 } from "libretto";
 import type { Frame, Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
@@ -22,7 +22,6 @@ import {
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
-  commitEsunCreditCardCaptureInTransaction,
   esunCanonicalSpineCapture,
   esunNeutralCreditCardCapture,
   ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
@@ -31,23 +30,20 @@ import {
   type EsunCreditCardSettledPeriod,
   type EsunCreditCardSourceRow,
   type EsunCreditCardValidatedCapture,
-} from "../ledger/canonical/esun-credit-card.ts";
+} from "../ledger/canonical/esun-credit-card-admission.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
-} from "../ledger/canonical/credit-card-current-balance-writer.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -1386,6 +1382,15 @@ export default workflow("esunCreditCardStatements", {
           client.close();
         }
       } else {
+      const [
+        { commitEsunCreditCardCaptureInTransaction },
+        { commitCreditCardCurrentBalanceCaptureInTransaction },
+        { executeCanonicalFinancialCommitRun },
+      ] = await Promise.all([
+        import("../ledger/canonical/esun-credit-card.ts"),
+        import("../ledger/canonical/credit-card-current-balance-writer.ts"),
+        import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+      ]);
       const executionItems: CanonicalFinancialCommitItem<unknown>[] = [
         {
           provider: "esun",
