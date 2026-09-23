@@ -8,6 +8,35 @@ import {
   commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
 } from "./bank-transaction-kind-enrichment.ts";
 import { assertValidatedCanonicalDatabase } from "./canonical-schema-lifecycle.ts";
+import {
+  admitCounterpartyAccountEvidence,
+  counterpartyAccountDigest,
+  counterpartyEvidenceText as text,
+  counterpartyEvidenceValidDate as validDate,
+  normalizeCounterpartyAccountValue,
+  COUNTERPARTY_ACCOUNT_EVIDENCE_VERSION,
+  YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
+  type AdmittedCounterpartyAccountEvidence,
+  type CounterpartyAccountPurpose,
+  type CounterpartyAccountRole,
+  type CounterpartyAccountScope,
+  type TransactionCounterpartyAccountEvidenceInput,
+} from "./counterparty-account-evidence.ts";
+
+export {
+  admitCounterpartyAccountEvidence,
+  counterpartyAccountDigest,
+  normalizeCounterpartyAccountValue,
+  COUNTERPARTY_ACCOUNT_EVIDENCE_VERSION,
+  YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
+};
+export type {
+  AdmittedCounterpartyAccountEvidence,
+  CounterpartyAccountPurpose,
+  CounterpartyAccountRole,
+  CounterpartyAccountScope,
+  TransactionCounterpartyAccountEvidenceInput,
+};
 
 /** Resolver rules are versioned because provider note/date contracts may
  * change without changing the meaning of already admitted relations. */
@@ -15,16 +44,6 @@ export const LOAN_REPAYMENT_RELATION_RESOLVER_VERSION =
   "loan-repayment-relation/v1" as const;
 export const LOAN_REPAYMENT_RELATION_RESOLUTION_AUTHORITY =
   "canonical/loan-repayment-relation-resolution-v1" as const;
-export const COUNTERPARTY_ACCOUNT_EVIDENCE_VERSION =
-  "counterparty-account/v1" as const;
-/**
- * Live Yuanta domestic-deposit CSV observations show a complete loan account
- * in 備註 as `00` followed by the 14-digit account exposed by the loan
- * statement selector.  The contract is deliberately exact: it is not a
- * general leading-zero trimming rule.
- */
-export const YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION =
-  "yuanta/transaction-note-loan-account-leading-00/v1" as const;
 /**
  * A provider-specific fixed note/code contract is deliberately explicit and
  * versioned.  Callers must establish this contract from live Institution
@@ -45,50 +64,6 @@ export type InstitutionRepaymentDateContract = Readonly<{
   comparison: "signed-calendar-day-offset";
   allowedSignedDayOffsets: readonly number[];
 }>;
-
-export type CounterpartyAccountRole = "originator" | "beneficiary";
-export type CounterpartyAccountPurpose = "loan_repayment" | string;
-export type CounterpartyAccountScope =
-  | "loan_contract"
-  | "shared_collection"
-  | null;
-
-/**
- * Evidence is intentionally generic.  A deposit, foreign-currency, loan or
- * future provider integration can attach the same shape to a transaction or
- * to an account-level repayment mandate.
- */
-export type TransactionCounterpartyAccountEvidenceInput = Readonly<{
-  captureId: string;
-  sourceRecordKey: string;
-  sourceConnectionKey: string;
-  identityEpochKey: string;
-  accountValue: string;
-  normalizedAccountValue?: string;
-  accountDigest?: string;
-  role: CounterpartyAccountRole;
-  purpose: CounterpartyAccountPurpose;
-  scope?: CounterpartyAccountScope;
-  evidenceKind?: "transaction-counterparty-account" | "repayment-mandate";
-  sourceField?: string;
-  contractVersion: string;
-  effectiveStartDate?: string | null;
-  effectiveEndDate?: string | null;
-  /** Required when the source record has no transaction revision (for
-   * example, a repayment-setting page). */
-  accountKey?: string;
-}>;
-
-export type AdmittedCounterpartyAccountEvidence =
-  TransactionCounterpartyAccountEvidenceInput & Readonly<{
-    sourceValue: string;
-    normalizedAccountValue: string;
-    accountDigest: `sha256:${string}`;
-    evidenceKind:
-      | "transaction-counterparty-account"
-      | "repayment-mandate";
-    sourceField: string;
-  }>;
 
 export type PersistedCounterpartyAccountEvidence = Readonly<{
   evidenceId: string;
@@ -315,27 +290,11 @@ function digest(...parts: string[]): `sha256:${string}` {
     .digest("base64url")}`;
 }
 
-function text(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim() === "")
-    throw new Error(`${label} is required.`);
-  return value;
-}
-
 function opaqueId(value: unknown, label: string): string {
   const result = text(value, label).trim();
   if (!/^sha256:[A-Za-z0-9_-]+$/u.test(result))
     throw new Error(`${label} must be an opaque sha256 token.`);
   return result;
-}
-
-function validDate(value: string | null | undefined, label: string): string | null {
-  if (value === null || value === undefined || value === "") return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value))
-    throw new Error(`${label} must be YYYY-MM-DD.`);
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value)
-    throw new Error(`${label} must be a valid calendar date.`);
-  return value;
 }
 
 function observedCalendarDate(value: unknown): string | null {
@@ -347,31 +306,6 @@ function observedCalendarDate(value: unknown): string | null {
   } catch {
     return null;
   }
-}
-
-/** Normalize a complete account value. Masked values are a deliberate stop. */
-export function normalizeCounterpartyAccountValue(value: string): string {
-  const normalized = value
-    .normalize("NFKC")
-    .trim()
-    .replace(/[\s-]+/gu, "");
-  if (!normalized) throw new Error("Counterparty account value is required.");
-  if (/[*#•xX]/u.test(normalized))
-    throw new Error(
-      "Masked counterparty account values cannot be admitted as exact evidence.",
-    );
-  return normalized;
-}
-
-export function counterpartyAccountDigest(
-  integrationNamespace: string,
-  normalizedValue: string,
-): `sha256:${string}` {
-  return digest(
-    COUNTERPARTY_ACCOUNT_EVIDENCE_VERSION,
-    text(integrationNamespace, "Integration namespace").trim().toLowerCase(),
-    normalizedValue,
-  );
 }
 
 /**
@@ -520,96 +454,6 @@ export function admitInstitutionGeneratedRepaymentNoteEvidence(
       "Institution-generated repayment note source field",
     ).trim(),
     fixedValue,
-  });
-}
-
-export function admitCounterpartyAccountEvidence(
-  input: TransactionCounterpartyAccountEvidenceInput,
-  integrationNamespace: string,
-): AdmittedCounterpartyAccountEvidence {
-  const sourceValue = text(input.accountValue, "Counterparty account source value");
-  const defaultNormalizedAccountValue =
-    normalizeCounterpartyAccountValue(sourceValue);
-  const requestedNormalizedAccountValue = input.normalizedAccountValue;
-  const namespace = text(
-    integrationNamespace,
-    "Counterparty account integration namespace",
-  )
-    .trim()
-    .toLowerCase();
-  const isYuantaLoanAccountNoteAlias =
-    namespace === "yuanta" &&
-    input.contractVersion ===
-      YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION &&
-    input.evidenceKind === "transaction-counterparty-account" &&
-    input.role === "beneficiary" &&
-    input.purpose === "loan_repayment" &&
-    input.sourceField === "備註" &&
-    /^00\d{14}$/u.test(defaultNormalizedAccountValue) &&
-    requestedNormalizedAccountValue ===
-      defaultNormalizedAccountValue.slice(2);
-  if (
-    requestedNormalizedAccountValue !== undefined &&
-    requestedNormalizedAccountValue !== defaultNormalizedAccountValue &&
-    !isYuantaLoanAccountNoteAlias
-  )
-    throw new Error("Counterparty account normalization does not match the source value.");
-  const normalizedAccountValue =
-    requestedNormalizedAccountValue ?? defaultNormalizedAccountValue;
-  const accountDigest = counterpartyAccountDigest(
-    namespace,
-    normalizedAccountValue,
-  );
-  if (input.accountDigest !== undefined && input.accountDigest !== accountDigest)
-    throw new Error("Counterparty account digest does not match the normalized value.");
-  if (input.role !== "originator" && input.role !== "beneficiary")
-    throw new Error("Counterparty account role is unsupported.");
-  const purpose = text(input.purpose, "Counterparty account purpose").trim();
-  const scope = input.scope ?? null;
-  if (
-    scope !== null &&
-    scope !== "loan_contract" &&
-    scope !== "shared_collection"
-  )
-    throw new Error("Counterparty account scope is unsupported.");
-  const effectiveStartDate = validDate(
-    input.effectiveStartDate,
-    "Counterparty account effective start date",
-  );
-  const effectiveEndDate = validDate(
-    input.effectiveEndDate,
-    "Counterparty account effective end date",
-  );
-  if (
-    effectiveStartDate !== null &&
-    effectiveEndDate !== null &&
-    effectiveStartDate > effectiveEndDate
-  )
-    throw new Error("Counterparty account effective dates are inverted.");
-  return Object.freeze({
-    ...input,
-    captureId: text(input.captureId, "Counterparty account capture ID").trim(),
-    sourceRecordKey: text(
-      input.sourceRecordKey,
-      "Counterparty account source record key",
-    ).trim(),
-    sourceConnectionKey: text(
-      input.sourceConnectionKey,
-      "Counterparty account source connection key",
-    ).trim(),
-    identityEpochKey: text(
-      input.identityEpochKey,
-      "Counterparty account identity epoch key",
-    ).trim(),
-      sourceValue,
-    normalizedAccountValue,
-    accountDigest,
-    purpose,
-    scope,
-    evidenceKind: input.evidenceKind ?? "transaction-counterparty-account",
-    sourceField: text(input.sourceField ?? "counterparty-account", "Counterparty account source field").trim(),
-    effectiveStartDate,
-    effectiveEndDate,
   });
 }
 

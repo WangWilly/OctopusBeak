@@ -3,7 +3,7 @@ import type { InvestmentFundingEvidence } from "../canonical/investment-financia
 import {
   admitCounterpartyAccountEvidence,
   type TransactionCounterpartyAccountEvidenceInput,
-} from "../canonical/loan-repayment-relations.ts";
+} from "../canonical/counterparty-account-evidence.ts";
 import {
   assertPGliteCanonicalCommitNotCancelled,
   type PGliteCanonicalCommitOptions,
