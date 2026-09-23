@@ -3,7 +3,12 @@ import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
 } from "../canonical/canonical-source-evidence.ts";
+import { parseExactDecimalLexeme } from "../canonical/exact-decimal-lexeme.ts";
+import type { ExactDecimal } from "../canonical/exact-decimal-lexeme.ts";
 import type { CathayValidatedDomesticSync } from "./cathay-domestic-adapter.ts";
+
+export { parseExactDecimalLexeme } from "../canonical/exact-decimal-lexeme.ts";
+export type { ExactDecimal } from "../canonical/exact-decimal-lexeme.ts";
 
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit" as const;
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY =
@@ -96,8 +101,6 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
     observedAt: "2026-08-17T12:00:00+08:00",
   };
 
-export type ExactDecimal = { coefficient: bigint; scale: number };
-
 export const MAX_CANONICAL_SCALE = 9007199254740991n;
 
 export function canonicalStoredInteger(value: unknown): string | null {
@@ -127,19 +130,6 @@ export function isCanonicalStoredExactAmount(
   } catch {
     return false;
   }
-}
-
-export function parseExactDecimalLexeme(lexeme: string): ExactDecimal {
-  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(lexeme)) {
-    throw new Error(`Invalid exact decimal lexeme: ${lexeme}`);
-  }
-  const negative = lexeme.startsWith("-");
-  const unsigned = negative ? lexeme.slice(1) : lexeme;
-  const [whole, fraction = ""] = unsigned.split(".");
-  return {
-    coefficient: BigInt(`${negative ? "-" : ""}${whole}${fraction}`),
-    scale: fraction.length,
-  };
 }
 
 export type LosslessJsonNumber = { kind: "number"; lexeme: string };
