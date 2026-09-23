@@ -10,7 +10,7 @@ import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
   pgliteWorkflowEnabled,
@@ -23,13 +23,8 @@ import {
   type InvestmentFundingEvidence,
   type InvestmentTransactionAction,
   type InvestmentValidatedCapture,
-} from "../ledger/canonical/investment-financial.ts";
-import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
+} from "../ledger/canonical/investment-financial-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   buildYuantaInvestmentCapture,
   YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -44,7 +39,7 @@ import {
   YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
   type YuantaForeignSettlementMarketCode,
-} from "../ledger/canonical/investment-funding-relations.ts";
+} from "../ledger/canonical/investment-funding-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR as YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
@@ -1619,6 +1614,15 @@ async function commitYuantaTradeCanonicalIfComplete(
       client.close();
     }
   }
+  const [
+    { commitCanonicalFinancialAdmissionInTransaction },
+    { executeCanonicalFinancialCommitRun },
+    { runCanonicalInvestmentRelationFollowThrough },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-admission.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/canonical-relation-followthrough.ts"),
+  ]);
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
     (capture) => ({
       provider: "yuanta-trade",
