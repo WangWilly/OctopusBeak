@@ -20,7 +20,6 @@ import {
 } from "./cathay-foreign-statements.js";
 import { retryableStage } from "./retryable-stage.js";
 import { runSelectedStatements } from "./run-selected-statements.js";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import { pgliteWorkflowEnabled } from "../ledger/pglite/workflow-client.ts";
 
 const statementTypeSchema = z
@@ -94,13 +93,16 @@ const outputSchema = z.object({
 
 const inputSchema = createInputSchema();
 
-function resolveCathayCanonicalLedgerDir(): string {
+async function resolveCathayCanonicalLedgerDir(
+  pgliteEnabled: boolean,
+): Promise<string | undefined> {
   const configured =
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
     process.env.LEDGER_DIR?.trim();
   if (configured && /[\u0000-\u001f\u007f]/u.test(configured))
     throw new Error("Invalid Cathay canonical ledger directory.");
-  return configured || DEFAULT_LEDGER_DIR;
+  if (configured || pgliteEnabled) return configured;
+  return (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR;
 }
 const cathayAllStatementsDependencies = {
   signInCathay,
@@ -145,7 +147,8 @@ export async function runCathayAllStatements(
     .filter((typeId) => requestedIds.has(typeId));
   if (!selectedIds.length)
     throw new Error("Select at least one Cathay statement type.");
-  const canonicalLedgerDir = resolveCathayCanonicalLedgerDir();
+  const pgliteEnabled = pgliteWorkflowEnabled(process.env);
+  const canonicalLedgerDir = await resolveCathayCanonicalLedgerDir(pgliteEnabled);
   emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
   page.on("dialog", async (dialog) => {
@@ -220,7 +223,7 @@ export async function runCathayAllStatements(
             );
           },
         });
-        if (pgliteWorkflowEnabled(process.env)) {
+        if (pgliteEnabled) {
           await commitCathayForeignAndCurrentCanonicalCaptures(
             page,
             canonicalLedgerDir,
@@ -228,9 +231,10 @@ export async function runCathayAllStatements(
             { requireComplete: true },
           );
         } else {
+          const legacyCanonicalLedgerDir = canonicalLedgerDir!;
           const committedForeignCaptures =
             await commitCathayForeignCanonicalCaptures(
-              canonicalLedgerDir,
+              legacyCanonicalLedgerDir,
               canonicalCollector.captures,
             );
           if (
@@ -242,7 +246,7 @@ export async function runCathayAllStatements(
           await captureCathayCurrentForeignDepositBalances(
             page,
             canonicalCollector.captures,
-            canonicalLedgerDir,
+            legacyCanonicalLedgerDir,
           );
         }
         return downloads.map((download) => ({

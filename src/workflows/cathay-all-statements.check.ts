@@ -37,9 +37,9 @@ const server = await createServer({
   appType: "custom",
   logLevel: "silent",
 });
-const module = await server
-  .ssrLoadModule("/src/workflows/cathay-all-statements.ts")
-  .finally(() => server.close());
+const module = await server.ssrLoadModule(
+  "/src/workflows/cathay-all-statements.ts",
+);
 const workflow = module.default;
 const runCathayAllStatements = module.runCathayAllStatements;
 assert.equal(workflow.handler, runCathayAllStatements);
@@ -631,3 +631,4 @@ try {
   else process.env[selectionKey] = previousSelection;
 }
 assert.deepEqual(noSelectionCalls, []);
+await server.close();
