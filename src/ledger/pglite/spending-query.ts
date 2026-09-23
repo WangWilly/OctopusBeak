@@ -5,7 +5,7 @@ import type {
   CanonicalEInvoiceMoneyView,
   CanonicalEInvoiceView,
   CanonicalEInvoiceLineageQuery,
-} from "../canonical/einvoice.ts";
+} from "../canonical/einvoice-query-contract.ts";
 import {
   E_INVOICE_CURRENCY_AUTHORITY,
   E_INVOICE_INTEGRATION_NAMESPACE,
@@ -19,7 +19,7 @@ import type {
   CanonicalSpendingReport,
   CanonicalSpendingTag,
   CanonicalSpendingTransaction,
-} from "../canonical/canonical-categorization.ts";
+} from "../canonical/canonical-spending-contracts.ts";
 import {
   CANONICAL_SPENDING_INCLUSION_POLICY,
 } from "../canonical/spending-inclusion-policy.ts";
@@ -29,15 +29,13 @@ import type {
   SpendingPair,
   SpendingRecognitionSnapshot,
   SpendingRefundView,
-} from "../canonical/spending-recognition.ts";
+} from "../canonical/spending-recognition-contracts.ts";
 import {
   composePurchaseReport,
   evaluateSpendingMatchCandidates,
 } from "../canonical/spending-purchase-report-core.ts";
-import type {
-  PurchaseLineage,
-  PurchaseReport,
-} from "../canonical/spending-purchase-report.ts";
+import type { PurchaseLineage } from "../canonical/spending-purchase-contracts.ts";
+import type { PurchaseReport } from "../canonical/spending-purchase-report-core.ts";
 import type {
   CurrentSpendingQueryResult,
   HistoricalSpendingQueryResult,

@@ -21,7 +21,7 @@ import type {
   SpendingRefundRevisionInput,
   SpendingRefundView,
   SpendingDedupLinkView,
-} from "../canonical/spending-recognition.ts";
+} from "../canonical/spending-recognition-contracts.ts";
 import {
   evaluateSpendingMatchCandidates,
 } from "../canonical/spending-purchase-report-core.ts";
