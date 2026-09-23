@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -22,8 +21,12 @@ assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(source, /deriveFubonCanonicalHumanAttestation/);
 assert.match(source, /FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY/);
 assert.match(source, /panFingerprintKey/);
-assert.match(source, /canonicalLedgerDir/);
 assert.doesNotMatch(source, /canonical(Source|Financial)LedgerDir/);
+assert.doesNotMatch(
+  source,
+  /canonicalLedgerDir|DEFAULT_LEDGER_DIR|resolveFubonCanonicalLedgerDir|ledger\/db\/client|pgliteWorkflowEnabled/u,
+  "Fubon statement aggregation must not resolve a legacy SQLite ledger path",
+);
 assert.doesNotMatch(source, /RepaymentRouteInventory/);
 assert.doesNotMatch(source, /fubon_card_identity_fingerprint_key/);
 assert.match(
@@ -56,14 +59,9 @@ assert.equal(workflow.handler, runFubonAllStatements);
 
 const selectionKey = "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES";
 const previousSelection = process.env[selectionKey];
-const canonicalDirKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
-const previousCanonicalDir = process.env[canonicalDirKey];
-const ledgerDirKey = "LEDGER_DIR";
-const previousLedgerDir = process.env[ledgerDirKey];
 const managedSecretKey = "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
 const previousManagedSecret = process.env[managedSecretKey];
 process.env[selectionKey] = "credit_card";
-process.env[canonicalDirKey] = "/tmp/fubon-all-statements-canonical-check";
 process.env[managedSecretKey] = "synthetic-managed-secret";
 const calls: string[] = [];
 const page = {
@@ -98,7 +96,6 @@ let observedDepositSourceConnectionKey: string | undefined;
 let observedLoanSourceConnectionKey: string | undefined;
 let observedDepositSourceConnectionScope: string | undefined;
 let observedLoanSourceConnectionScope: string | undefined;
-let observedLoanCanonicalDir: string | undefined;
 let observedPanFingerprintKey:
   { secret: string; keyVersion?: string } | undefined;
 let observedCreditCardInput: Record<string, unknown> | undefined;
@@ -170,13 +167,11 @@ try {
         actualPage: unknown,
         _input: unknown,
         options?: {
-          canonicalLedgerDir?: string;
           sourceConnectionKey?: string;
           sourceConnectionScope?: string;
         },
       ) => {
         assert.equal(actualPage, page);
-        observedLoanCanonicalDir = options?.canonicalLedgerDir;
         observedLoanSourceConnectionKey = options?.sourceConnectionKey;
         observedLoanSourceConnectionScope = options?.sourceConnectionScope;
         calls.push("loan");
@@ -191,15 +186,10 @@ try {
 } finally {
   if (previousSelection === undefined) delete process.env[selectionKey];
   else process.env[selectionKey] = previousSelection;
-  if (previousCanonicalDir === undefined) delete process.env[canonicalDirKey];
-  else process.env[canonicalDirKey] = previousCanonicalDir;
-  if (previousLedgerDir === undefined) delete process.env[ledgerDirKey];
-  else process.env[ledgerDirKey] = previousLedgerDir;
   if (previousManagedSecret === undefined) delete process.env[managedSecretKey];
   else process.env[managedSecretKey] = previousManagedSecret;
 }
 
-assert.equal(observedLoanCanonicalDir, "/tmp/fubon-all-statements-canonical-check");
 assert.equal(
   observedDepositSourceConnectionKey,
   observedLoanSourceConnectionKey,
@@ -344,8 +334,6 @@ assert.deepEqual(calls, [
 
 for (const selection of ["", "deposit,unknown"]) {
   process.env[selectionKey] = selection;
-  process.env[canonicalDirKey] = DEFAULT_LEDGER_DIR;
-  delete process.env[ledgerDirKey];
   const selectedCalls: string[] = [];
   let sourceOnlyOptions:
     | { sourceConnectionKey?: string; sourceConnectionScope?: string }
@@ -400,10 +388,6 @@ for (const selection of ["", "deposit,unknown"]) {
   } finally {
     if (previousSelection === undefined) delete process.env[selectionKey];
     else process.env[selectionKey] = previousSelection;
-    if (previousCanonicalDir === undefined) delete process.env[canonicalDirKey];
-    else process.env[canonicalDirKey] = previousCanonicalDir;
-    if (previousLedgerDir === undefined) delete process.env[ledgerDirKey];
-    else process.env[ledgerDirKey] = previousLedgerDir;
   }
   assert.deepEqual(sourceOnlyOptions, {
     sourceConnectionScope: fubonStableLoginScope({
@@ -425,32 +409,3 @@ for (const selection of ["", "deposit,unknown"]) {
     "loan",
   ]);
 }
-
-// Control characters in the canonical path are invalid and must fail before
-// login. There is only one production ledger setting, so no alias conflict
-// can be silently selected.
-process.env[canonicalDirKey] = "\ninvalid";
-let invalidLoginCalled = false;
-try {
-  await assert.rejects(
-    () =>
-      runFubonAllStatements(
-        ctx,
-        { credentials: {}, statements: {}, creditCards: {}, loans: {} },
-        {
-          signInFubon: async () => {
-            invalidLoginCalled = true;
-          },
-        },
-      ),
-    /Invalid Fubon ledger directory/,
-  );
-} finally {
-  if (previousSelection === undefined) delete process.env[selectionKey];
-  else process.env[selectionKey] = previousSelection;
-  if (previousCanonicalDir === undefined) delete process.env[canonicalDirKey];
-  else process.env[canonicalDirKey] = previousCanonicalDir;
-  if (previousLedgerDir === undefined) delete process.env[ledgerDirKey];
-  else process.env[ledgerDirKey] = previousLedgerDir;
-}
-assert.equal(invalidLoginCalled, false);

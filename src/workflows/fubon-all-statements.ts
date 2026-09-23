@@ -29,7 +29,6 @@ import {
   signInFubon,
 } from "./fubon-statements.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
-import { pgliteWorkflowEnabled } from "../ledger/pglite/workflow-client.ts";
 import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import {
   deriveFubonSourceConnectionKey,
@@ -201,25 +200,6 @@ const fubonAllStatementsDependencies = {
   signOutFubon,
 };
 
-const FUBON_CANONICAL_LEDGER_DIR_ENV = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
-
-function readFubonLedgerDirectory(envName: string): string | undefined {
-  const raw = process.env[envName];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
-    throw new Error(`Invalid Fubon ledger directory in ${envName}.`);
-  }
-  return raw;
-}
-
-async function resolveFubonCanonicalLedgerDir(): Promise<string | undefined> {
-  const configured =
-    readFubonLedgerDirectory(FUBON_CANONICAL_LEDGER_DIR_ENV) ??
-    readFubonLedgerDirectory("LEDGER_DIR");
-  if (configured || pgliteWorkflowEnabled(process.env)) return configured;
-  return (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR;
-}
-
 export async function runFubonAllStatements(
   ctx: LibrettoWorkflowContext,
   rawInput: unknown,
@@ -244,7 +224,6 @@ export async function runFubonAllStatements(
   const selectedIds = allSupportedStatementTypeIds(
     BANK_STATEMENT_CAPABILITIES.fubon,
   );
-  const canonicalLedgerDir = await resolveFubonCanonicalLedgerDir();
   const sourceConnectionScope = fubonStableLoginScope(input.credentials);
   const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)
@@ -292,7 +271,6 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "loans", () =>
             runFubonLoanStatements(page, input.loans, {
-              canonicalLedgerDir,
               sourceConnectionScope,
               sourceConnectionKey,
             }),
