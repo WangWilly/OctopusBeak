@@ -423,7 +423,7 @@ export function parseRfc3339UtcMicros(value: string, label: string): number {
     micros < BigInt(Number.MIN_SAFE_INTEGER)
   )
     throw new Error(
-      `${label} microseconds exceed the safe SQLite binding range.`,
+      `${label} microseconds exceed the safe integer range.`,
     );
   return Number(micros);
 }
