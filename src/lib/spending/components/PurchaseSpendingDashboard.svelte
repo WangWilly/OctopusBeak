@@ -82,6 +82,14 @@
   let candidatePageMonthKey = "";
   let candidatePageRequestId: string | null = null;
   let candidatePageTimer: ReturnType<typeof setTimeout> | null = null;
+  let recordRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingRecordRefresh: Readonly<{
+    knowledgeAt: number;
+    month: string;
+    day: string | null;
+    key: string;
+    requestToken: number;
+  }> | null = null;
   let monthDataRequestToken = 0;
   let candidatePageRequestToken = 0;
   let requestedMonthDataKey = "";
@@ -118,6 +126,8 @@
     return () => {
       cancelAnimationFrame(firstFrame);
       cancelAnimationFrame(chartFrame);
+      if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+      pendingRecordRefresh = null;
     };
   });
 
@@ -281,6 +291,7 @@
   }
 
   function resetMonthPageState() {
+    cancelPendingRecordRefresh();
     monthDataRequestToken += 1;
     void cancelPendingCandidatePage();
     requestedMonthDataKey = "";
@@ -503,10 +514,46 @@
     });
     if (month && liveAlreadyPublishedAction && !currentPageRequestPending) {
       recordPageLoading = true;
-      void refreshRecordsAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
     } else if (month && !liveAlreadyPublishedAction) {
-      void refreshRecordsAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
     }
+  }
+
+  function scheduleRecordRefreshAfterAction(
+    knowledgeAt: number,
+    month: string,
+    day: string | null,
+    key: string,
+    requestToken: number,
+  ) {
+    pendingRecordRefresh = { knowledgeAt, month, day, key, requestToken };
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    // The action result already patches affected rows and summary. Give a
+    // subsequent Pairing click priority over this full page reconciliation.
+    recordRefreshTimer = setTimeout(() => {
+      recordRefreshTimer = null;
+      flushRecordRefreshAfterAction();
+    }, 1_200);
+  }
+
+  function cancelPendingRecordRefresh() {
+    const hadPending = pendingRecordRefresh !== null;
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
+    pendingRecordRefresh = null;
+    if (hadPending) recordPageLoading = false;
+  }
+
+  function flushRecordRefreshAfterAction() {
+    if (pairingInvoice || !pendingRecordRefresh) return;
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
+    const request = pendingRecordRefresh;
+    pendingRecordRefresh = null;
+    void refreshRecordsAfterAction(
+      request.knowledgeAt, request.month, request.day, request.key, request.requestToken,
+    );
   }
 
   async function refreshRecordsAfterAction(
@@ -833,6 +880,7 @@
   }
 
   async function decideCandidate(candidateId: string, action: "confirmCandidate" | "denyCandidate") {
+    cancelPendingRecordRefresh();
     busyAction = `${action}:${candidateId}`;
     actionError = "";
     try {
@@ -879,6 +927,8 @@
 
 
   function openPairing(record: PurchaseRecord) {
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
     pairingInvoice = record;
     pairingDataVersion = report.knowledgeAt;
     selectedPaymentId = "";
@@ -908,6 +958,7 @@
     pairingCandidateTotal = 0;
     pairingNextOffset = null;
     pairingCandidatesLoading = false;
+    if (busyAction === null) flushRecordRefreshAfterAction();
     if (reloadMonthCandidates && report.summary && activeMonth)
       scheduleCandidatePageLoad(report.knowledgeAt, activeMonth, candidatePageMonthKey);
   }
@@ -989,6 +1040,7 @@
   }
 
   async function confirmDirectPair() {
+    cancelPendingRecordRefresh();
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
     if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading) return;
     busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
@@ -1030,6 +1082,7 @@
 
   async function revokeLink(record: PurchaseRecord) {
     if (!record.link) return;
+    cancelPendingRecordRefresh();
     const action = `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`;
     busyAction = action;
     actionError = "";
