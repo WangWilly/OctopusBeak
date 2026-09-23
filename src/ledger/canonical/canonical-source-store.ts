@@ -82,6 +82,8 @@ import {
   type CanonicalContractPurgeRequest,
   type CanonicalContractPurgeResult,
 } from "./canonical-contract-purge-runtime.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "../pglite/cathay-domestic-adapter.ts";
+import type { CathayValidatedDomesticSync } from "../pglite/cathay-domestic-adapter.ts";
 
 async function withCanonicalWriter<T>(
   ledgerDir: string,
@@ -1015,6 +1017,13 @@ export function validateCathayDomesticDepositSyncInput(
   validateSyncInput(input);
 }
 
+/** Validate once and return normalized provider facts to the pure PGlite adapter. */
+export function validateCathayDomesticDepositSyncInputForPGlite(
+  input: CathayDomesticDepositSyncInput,
+): CathayValidatedDomesticSync {
+  return validateSyncInput(input);
+}
+
 export type CanonicalAmount = { coefficient: string; scale: number };
 export type CanonicalAssertionSupportState = "supported" | "withdrawn";
 export type CanonicalEconomicStatus =
@@ -1396,53 +1405,9 @@ function cathaySyncAdmissionEvidence(
 export function pgliteCathayDomesticFinancialRequests(
   input: CathayDomesticDepositSyncInput,
 ): import("../pglite/canonical-source-store.ts").PGliteCanonicalFinancialCommitRequest[] {
-  const validated = validateSyncInput(input);
-  const sourceConnectionKey = cathayOpaqueIdentity(validated.sourceConnectionId);
-  const identityEpoch = cathayOpaqueIdentity(validated.identityEpoch);
-  return validated.scopes.map((scope) => {
-    const capture = cathaySyncAdmissionEvidence(
-      { ...validated, scopes: [scope] },
-      sourceConnectionKey,
-      identityEpoch,
-    );
-    const transactions = scope.rows.map((row, index) => ({
-      sourceOccurrenceKey: capture.records[index]!.occurrenceKey,
-      sourceSequence: row.sequence,
-      amount: { coefficient: row.amount.coefficient.toString(), scale: row.amount.scale },
-      balanceAfter: { coefficient: row.balance.coefficient.toString(), scale: row.balance.scale },
-      currency: scope.currency,
-      direction: row.direction,
-      postingStatus: CATHAY_POSTING_MAPPING.postingStatus,
-      postingOrigin: CATHAY_POSTING_MAPPING.origin,
-      postingBasis: CATHAY_POSTING_MAPPING.basis,
-      postingRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
-      description: row.description,
-      economicStatus: "normal" as const,
-      administrativeState: "active" as const,
-      semanticRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
-      effectiveOn: row.accountDate,
-      transactionDateTimeLocal: row.transactionDateTime,
-      timeZone: CATHAY_DOMESTIC_DEPOSIT_TIME_ZONE,
-      timePrecision: "second" as const,
-      timeOrigin: "source_reported" as const,
-      effectiveTimeBasis: "accounting" as const,
-      effectiveTimeRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
-      utcInstantUtcUs: row.utcInstantUtcUs,
-    }));
-    return {
-      capture: { ...capture, accountNumber: scope.accountNumber },
-      account: {
-        sourceAccountKey: scope.accountNo,
-        accountNo: scope.accountNumber?.value ?? null,
-        accountType: "depository" as const,
-        currency: scope.currency,
-      },
-      accountIdentifier: scope.accountNumber,
-      transactions,
-      withdrawalPolicy: scope.absenceAuthority === "comparable-complete-range"
-        ? "allow-inference" as const : "never-infer" as const,
-    };
-  });
+  return buildCathayDomesticFinancialRequestsForPGlite(
+    validateSyncInput(input),
+  );
 }
 
 type LifecycleEventKind = CathayCanonicalLifecycleEvent["kind"];

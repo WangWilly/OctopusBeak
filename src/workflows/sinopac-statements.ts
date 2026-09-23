@@ -26,7 +26,6 @@ import {
 } from "./human-assistance.ts";
 import {
   admitSinopacDomesticDepositFinancialCapture,
-  buildSinopacDomesticDepositFinancialCaptureForPGlite,
   admitSinopacStatementCaptureEvidence,
   createSinopacDomesticDepositSourceEvidence,
   createSinopacForeignCurrencySourceEvidence,
@@ -37,6 +36,7 @@ import {
   type SinopacStatementCaptureEvidence,
   type SinopacStatementValidatedCapture,
 } from "../ledger/canonical/sinopac-domestic-deposit.ts";
+import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-domestic-adapter.ts";
 import {
   commitCanonicalFinancialDepositCaptureBatchInTransaction,
 } from "../ledger/canonical/canonical-financial-deposit-writer.ts";

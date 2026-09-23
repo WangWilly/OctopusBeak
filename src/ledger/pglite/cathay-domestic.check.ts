@@ -6,8 +6,9 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  pgliteCathayDomesticFinancialRequests,
 } from "../canonical/cathay-domestic-deposit.ts";
+import { validateCathayDomesticDepositSyncInputForPGlite } from "../canonical/canonical-source-store.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -31,7 +32,7 @@ test("Cathay domestic multi-account capture commits as one PGlite item", async (
       preflightFingerprint: "synthetic-preflight-v1",
       absenceAuthority: "comparable-complete-range" as const,
     });
-    const requests = pgliteCathayDomesticFinancialRequests({
+    const validated = validateCathayDomesticDepositSyncInputForPGlite({
       sourceConnectionId: "synthetic-sync-connection",
       identityEpoch: "synthetic-sync-epoch",
       authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -43,6 +44,7 @@ test("Cathay domestic multi-account capture commits as one PGlite item", async (
         page(accountB, CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE.replace(accountA, accountB)),
       ],
     });
+    const requests = buildCathayDomesticFinancialRequestsForPGlite(validated);
     assert.equal(requests.length, 2);
     const result = await commitPGliteCanonicalMixedCapture(store, {
       steps: requests.map((request) => ({ kind: "financial" as const, request })),
