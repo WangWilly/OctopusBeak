@@ -282,7 +282,6 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "creditCards", () =>
             runFubonCreditCardStatements(page, creditCardInput, {
-              canonicalLedgerDir,
               ...(managedSecret
                 ? { panFingerprintKey: { secret: managedSecret } }
                 : {}),

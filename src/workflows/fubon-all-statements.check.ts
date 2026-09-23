@@ -160,12 +160,10 @@ try {
         actualPage: unknown,
         actualInput: unknown,
         options?: {
-          canonicalLedgerDir?: string;
           panFingerprintKey?: { secret: string; keyVersion?: string };
         },
       ) => {
         assert.equal(actualPage, page);
-        assert.equal(options?.canonicalLedgerDir, observedCanonicalDir);
         observedCreditCardInput = actualInput as Record<string, unknown>;
         observedPanFingerprintKey = options?.panFingerprintKey;
         calls.push("credit-card");
