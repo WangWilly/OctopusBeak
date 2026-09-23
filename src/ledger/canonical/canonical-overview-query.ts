@@ -16,17 +16,19 @@ import {
   type AccountDisplay,
   type AccountDisplayInput,
 } from "../../lib/shared-ledger/account-display.ts";
+import {
+  exactAmountToNumber,
+  type CanonicalOverviewExactAmount,
+} from "../pglite/overview-amount.ts";
+
+export { exactAmountToNumber };
+export type { CanonicalOverviewExactAmount };
 
 export type CanonicalOverviewAvailability =
   | "empty"
   | "awaiting"
   | "available"
   | "unavailable";
-
-export type CanonicalOverviewExactAmount = Readonly<{
-  coefficient: string;
-  scale: number;
-}>;
 
 export type CanonicalOverviewAmountTrace = Readonly<{
   kind:
@@ -937,17 +939,4 @@ function addExact(left: CanonicalOverviewExactAmount, right: CanonicalOverviewEx
   const leftCoefficient = BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale);
   const rightCoefficient = BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale);
   return normalize({ coefficient: (leftCoefficient + rightCoefficient).toString(), scale });
-}
-
-export function exactAmountToNumber(value: CanonicalOverviewExactAmount): number {
-  const coefficient = BigInt(value.coefficient);
-  const number = Number(coefficient) / 10 ** value.scale;
-  // The exact coefficient/scale remains authoritative when a value cannot be
-  // represented by JavaScript's presentation number. Returning zero here
-  // would turn an overflow or underflow into a fabricated financial value.
-  return coefficient !== 0n && number === 0
-    ? Number.NaN
-    : Number.isFinite(number)
-      ? number
-      : Number.NaN;
 }
