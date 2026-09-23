@@ -9,7 +9,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
@@ -30,7 +29,6 @@ import {
   YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
   type YuantaDomesticDepositCaptureEvidence,
   type YuantaDomesticDepositValidatedEvidence,
-  type YuantaDomesticDepositFinancialAdmissionInput,
   type YuantaDomesticDepositDownloadEvidence,
   type YuantaDomesticDepositTelemetryManifest,
   type YuantaDomesticDepositAccountNumberEvidence,
@@ -39,7 +37,6 @@ import {
   getYuantaHumanAttestedV2Manifest,
   isYuantaHumanAttestedV2Active,
 } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   deriveSourceConnectionIdentityKey,
   requireSourceConnectionIdentity,
@@ -55,7 +52,6 @@ import {
   YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import type {
-  resolveLoanRepaymentRelations,
   LoanRepaymentRelationResolutionResult,
   TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations.ts";
@@ -249,7 +245,6 @@ export type YuantaStatementsRunDependencies = {
     account: { label: string; value: string },
   ) => Promise<YuantaStatementDownload>;
   writeBankTransactionsFile?: typeof writeBankTransactionsFile;
-  canonicalLedgerDir?: string;
   /** Explicit opt-in directory for raw, local-only occurrence diagnostics. */
   occurrenceDiagnosticDirectory?: string | null;
   /** Stable provider-login scope; never contains a password or session. */
@@ -258,8 +253,6 @@ export type YuantaStatementsRunDependencies = {
   sourceConnectionKey?: string;
   /** Deterministic capture clock for checks; production uses Taiwan local time. */
   observedAt?: () => string;
-  /** Injected in checks; production uses the canonical resolver. */
-  resolveRelations?: typeof resolveLoanRepaymentRelations;
   /** Injected in checks; production reads the authenticated current-balance page. */
   readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances;
 };
@@ -1194,7 +1187,6 @@ export async function runYuantaStatements(
     capture: YuantaDomesticDepositValidatedEvidence;
     captureId: string;
   }> = [];
-  const financialInputs: YuantaDomesticDepositFinancialAdmissionInput[] = [];
   const relationInputs: Array<{
     captureId: string;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
@@ -1295,7 +1287,6 @@ export async function runYuantaStatements(
           throw new Error(
             "Yuanta domestic deposit admission lost its canonical capture.",
           );
-        financialInputs.push(financialInput);
         financialCaptures.push(financialAdmission.capture);
         financialDepositCaptures.push(financialAdmission.capture);
         relationInputs.push({
@@ -1351,7 +1342,6 @@ export async function runYuantaStatements(
       });
     }
 
-    if (pgliteWorkflowEnabled(process.env)) {
       const client = requirePGliteChildRpcClientFromEnv();
       try {
         await client.ready;
@@ -1363,7 +1353,7 @@ export async function runYuantaStatements(
             request: createYuantaDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
           },
         });
-        for (const [index, capture] of financialDepositCaptures.entries()) {
+        for (const capture of financialDepositCaptures) {
           const relation = relationInputs.find((item) => item.captureId === capture.captureId);
           items.push({
             provider: "yuanta", product: "domestic-deposit", itemKey: capture.captureId,
@@ -1400,105 +1390,6 @@ export async function runYuantaStatements(
       } finally {
         client.close();
       }
-    } else {
-    const [
-      { DEFAULT_LEDGER_DIR },
-      { executeCanonicalFinancialCommitRun },
-      yuantaDepositWriter,
-      currentBalanceWriter,
-      loanRelations,
-      { resolveLoanRelationsAfterCapture },
-    ] = await Promise.all([
-      import("../ledger/db/client.ts"),
-      import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-      import("../ledger/canonical/yuanta-domestic-deposit.ts"),
-      import("../ledger/canonical/current-deposit-balance-writer.ts"),
-      import("../ledger/canonical/loan-repayment-relations.ts"),
-      import("./safe-loan-relation-resolution.ts"),
-    ]);
-    const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-    const resolveRelations =
-      overrides.resolveRelations ?? loanRelations.resolveLoanRepaymentRelations;
-    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-    for (const entry of sourceOnlyEntries) {
-      executionItems.push({
-        provider: "yuanta",
-        product: "domestic-deposit",
-        itemKey: entry.captureId,
-        commit: ({ admission }) => {
-          admission.admit(
-            createYuantaDomesticDepositSourceEvidence(
-              entry.capture,
-              entry.captureId,
-              stableSourceIdentity,
-            ),
-          );
-          return entry.captureId;
-        },
-      });
-    }
-    for (const financialInput of financialInputs) {
-      const relation = relationInputs.find(
-        (candidate) => candidate.captureId === financialInput.captureId,
-      );
-      executionItems.push({
-        provider: "yuanta",
-        product: "domestic-deposit",
-        itemKey: financialInput.captureId,
-        commit: ({ writer, admission }) =>
-          yuantaDepositWriter.commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
-            writer,
-            [financialInput],
-            admission,
-          )[0]!,
-        ...(relation
-          ? {
-              resolveRelations: async ({ writer }) => {
-                for (const item of relation.evidence)
-                  await loanRelations.persistCounterpartyAccountEvidence(
-                    writer,
-                    item,
-                  );
-                relationResolution = await resolveLoanRelationsAfterCapture(
-                  writer,
-                  resolveRelations,
-                  {
-                    sourceConnectionKey,
-                    integrationNamespace: "yuanta",
-                    observedAt: financialInput.capture.observedAt,
-                    failureEvent: "yuanta-loan-relation-resolution-failed",
-                  },
-                );
-              },
-            }
-          : {}),
-      });
-    }
-    const currentBalanceItems: CanonicalFinancialCommitItem<unknown>[] = currentBalanceCaptures.map((capture) => ({
-      provider: "yuanta",
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-      commit: ({ writer, admission }) =>
-        currentBalanceWriter.commitCurrentDepositBalanceCaptureInTransaction(
-          writer,
-          capture,
-          admission,
-        ),
-    }));
-    const executionResult = await executeCanonicalFinancialCommitRun({
-      canonicalLedgerDir,
-      items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
-        yield* executionItems;
-        yield* currentBalanceItems;
-      })(),
-      provider: "yuanta",
-      product: "financial",
-    });
-    if (executionResult.status !== "completed")
-      throw new Error(
-        `Yuanta canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-      );
-    }
 
     const file = await write(
       nextTimestamp,
@@ -1543,16 +1434,8 @@ export default workflow("yuantaStatements", {
 
     await openTransactionDetailsPage(page);
     await chooseDateRange(page, input.dateRange);
-    const configuredCanonicalLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-      process.env.LEDGER_DIR;
-    const canonicalLedgerDir = configuredCanonicalLedgerDir ??
-      (pgliteWorkflowEnabled(process.env)
-        ? undefined
-        : (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR);
     const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
     const output = await runYuantaStatements(page, input, {
-      ...(canonicalLedgerDir ? { canonicalLedgerDir } : {}),
       sourceConnectionScope,
       sourceConnectionKey: deriveSourceConnectionIdentityKey(
         "yuanta",
