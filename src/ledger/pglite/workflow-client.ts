@@ -49,7 +49,7 @@ import {
   type PGliteCanonicalInvestmentRelationResolutionRequest,
   type PGliteCanonicalInvestmentRelationResolutionResult,
 } from "./relations.ts";
-import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
 import type { PGliteCanonicalMixedCommitRequest, PGliteCanonicalMixedCommitResult } from "./mixed-commit.ts";
 
 export {
