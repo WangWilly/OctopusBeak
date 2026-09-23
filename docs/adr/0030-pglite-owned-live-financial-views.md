@@ -101,5 +101,15 @@ production Electron preload/IPC/worker benchmark on the same fixture recorded
 maximum renderer long task. Navigation and refresh feedback measured 10/1 ms;
 their full operations measured 969/1,721 ms. The shell appeared after
 1,728 ms and the overview data was ready after 23,422 ms on this fixture.
+The later full Pairing sequence also covers revoking a link, immediately
+reopening its candidate list, and confirming it again. In two isolated runs,
+the initial open took 513/563 ms, the initial confirmation 104/112 ms, the
+post-revoke reopen 859/908 ms, and the second confirmation 88/86 ms. Every
+measured click showed feedback within 45 ms. The post-revoke case initially
+exceeded one second because duplicate live-summary and stale record-page work
+queued ahead of ranking; action-version gating and deferred record-page
+reconciliation removed that contention. Full overview readiness and route
+completion varied with the 100,000-row fixture, while their shell/navigation
+feedback remained within the 200 ms contract.
 These figures are local acceptance evidence for ADR 0028, not a cross-machine
 guarantee.
