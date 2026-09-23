@@ -207,7 +207,7 @@
           </label>
           <span class="chip">{$t.common.days30}</span>
         </div>
-        {#if chartData.historyAvailability === "unavailable"}
+        {#if chartData.historyAvailability !== "available" || chartHistory.length === 0}
           <div class="card pad projection-state history-state" role="status" data-overview-state="history-unavailable">
             {$t.overview.historyUnavailable}
           </div>
@@ -260,7 +260,7 @@
           </span>
         {/if}
       </div>
-      {#if listData.historyAvailability === "unavailable"}
+      {#if listData.historyAvailability !== "available" || listData.dailyHistory.length === 0}
         <div class="projection-state history-state" role="status">{$t.overview.historyUnavailable}</div>
       {:else}
         {#key dailyCurrency}

@@ -6,6 +6,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
 import {
+  createPGliteFinancialRegistry,
   createPGliteFinancialLiveViews,
   createPGliteFinancialPageClient,
   PGliteFinancialError,
@@ -15,10 +16,17 @@ import {
   type PGliteFinancialOperation,
 } from "./pglite-financial-registry.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
+import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-requirements.ts";
+import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
+import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
+import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 
 const token = (letter: string): string => `sha256:${letter.repeat(64)}`;
 
-function sourceCommitRequest(captureId: string): import("../src/ledger/pglite/canonical-source-store.ts").PGliteCanonicalFinancialCommitRequest {
+function sourceCommitRequest(
+  captureId: string,
+  sourceAccountKey = "synthetic-account-1",
+): import("../src/ledger/pglite/canonical-source-store.ts").PGliteCanonicalFinancialCommitRequest {
   const occurrenceKey = token(`${captureId}-occurrence`);
   return {
     capture: {
@@ -44,7 +52,7 @@ function sourceCommitRequest(captureId: string): import("../src/ledger/pglite/ca
         kind: "point-in-time",
         completeness: "single-page",
         ruleVersion: "synthetic-completeness-v1",
-        sourceAccountKey: "synthetic-account-1",
+        sourceAccountKey,
       },
       pages: [{
         pageOrdinal: 0,
@@ -62,7 +70,7 @@ function sourceCommitRequest(captureId: string): import("../src/ledger/pglite/ca
       }],
     },
     account: {
-      sourceAccountKey: "synthetic-account-1",
+      sourceAccountKey,
       accountNo: "123456",
       accountType: "depository",
       currency: "TWD",
@@ -89,6 +97,74 @@ function sourceCommitRequest(captureId: string): import("../src/ledger/pglite/ca
       effectiveTimeBasis: "accounting",
       effectiveTimeRuleVersion: "synthetic-v1",
       utcInstantUtcUs: 1,
+    }],
+  };
+}
+
+function balanceCaptureRequest(
+  captureId: string,
+  effectiveAt: string,
+  coefficient: string,
+  currency: string,
+): import("../src/ledger/pglite/balance.ts").PGliteCanonicalBalanceCaptureRequest {
+  const occurrenceKey = token(`${captureId}-occurrence`);
+  const date = effectiveAt.slice(0, 10);
+  return {
+    capture: {
+      captureId,
+      integrationNamespace: "synthetic",
+      sourceConnectionKey: token("a"),
+      identityEpoch: token("b"),
+      stream: "domestic-deposit",
+      recordKind: "synthetic-balance",
+      routeKey: "synthetic/domestic-deposit/v8",
+      contractVersion: "synthetic-v8",
+      subjectDigest: token(`${captureId}-subject`),
+      observedAt: effectiveAt,
+      accountNumber: null,
+      scope: {
+        startDate: date,
+        endDate: date,
+        dateFormat: "YYYY-MM-DD",
+        kind: "point-in-time",
+        completeness: "single-page",
+        ruleVersion: "synthetic-v8",
+        sourceAccountKey: "123456",
+        accountNo: "123456",
+      },
+      pages: [{
+        pageOrdinal: 0,
+        responseCode: "200",
+        rowCount: 1,
+        terminal: true,
+        metadata: { provider: "synthetic" },
+      }],
+      records: [{
+        occurrenceKey,
+        collisionKey: token(`${captureId}-collision`),
+        providerKey: token(`${captureId}-provider`),
+        contentHash: token(`${captureId}-content`),
+        compact: { balance: { coefficient, scale: 0 }, effectiveAt, currency },
+      }],
+    },
+    account: {
+      sourceAccountKey: "123456",
+      accountType: "depository",
+      currency: "TWD",
+    },
+    observations: [{
+      observationKey: token("ledger-observation"),
+      balanceKind: "ledger",
+      balance: { coefficient, scale: 0 },
+      currency,
+      effectiveAt,
+      effectiveTimeBasis: "provider-system-time",
+      effectiveTimeRuleVersion: "synthetic-v8",
+      evidenceSourceRecordKey: occurrenceKey,
+      evidenceSourceField: "balance",
+      evidenceSourceValue: coefficient,
+      evidenceContractVersion: "synthetic-v8",
+      sourceOccurrenceKey: occurrenceKey,
     }],
   };
 }
@@ -212,6 +288,46 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     await stop?.();
     await client.close();
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("PGlite overview exposes observed daily balances to exchange-rate requirements", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  await applyPgliteBaseline(database);
+  await applyPgliteOperationalBaseline(store);
+  const operational = createPgliteOperationalProvider(store);
+  const registry = createPGliteFinancialRegistry(store, operational.exchangeRates);
+  try {
+    await registry.sourceCommit(sourceCommitRequest("overview-history-source", "123456"));
+    await registry.balanceCapture(balanceCaptureRequest(
+      "overview-history-twd-1",
+      "2026-09-22T04:00:00.000Z",
+      "1000",
+      "TWD",
+    ));
+    await registry.balanceCapture(balanceCaptureRequest(
+      "overview-history-usd",
+      "2026-09-22T06:00:00.000Z",
+      "425",
+      "USD",
+    ));
+    await registry.balanceCapture(balanceCaptureRequest(
+      "overview-history-twd-2",
+      "2026-09-24T04:00:00.000Z",
+      "1300",
+      "TWD",
+    ));
+
+    const overview = await registry.overviewCurrent();
+    assert.equal(overview.historyAvailability, "available");
+    assert.deepEqual(overview.dailyHistory.map((row) => row.date), ["2026-09-22", "2026-09-24"]);
+    assert.deepEqual(exchangeRateRequestFromOverview(overview), {
+      requiredFrom: "2026-09-22",
+      currencies: ["USD"],
+    });
+  } finally {
+    await store.close();
   }
 });
 

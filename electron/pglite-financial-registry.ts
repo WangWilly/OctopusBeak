@@ -25,7 +25,7 @@ import type {
   SpendingPurchaseActionResult,
 } from "../src/lib/spending/model.ts";
 import { mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
-import type { AccountRowDto, CurrencyAmountDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
+import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
 import type {
   CanonicalOverviewAmount,
   CanonicalOverviewExpectedSource,
@@ -40,6 +40,7 @@ import {
   selectPGliteOverviewAssets,
   selectPGliteOverviewLiabilities,
 } from "../src/ledger/pglite/overview.ts";
+import { readPGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
 import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
@@ -466,6 +467,7 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
 function mapOverview(
   result: CanonicalOverviewCurrentQueryResult,
   rates: readonly ExchangeRateRecord[],
+  dailyHistory: readonly DailyHistoryRowDto[],
 ): OverviewPageDto {
   const projection = result.projection;
   const accounts: AccountRowDto[] = projection.accounts.map((account) => ({
@@ -490,17 +492,17 @@ function mapOverview(
   return {
     availability: projection.availability,
     coverage: projection.availability === "unavailable" ? "unavailable" : projection.sourceGaps.length > 0 || projection.availability !== "available" ? "partial" : "complete",
-    historyAvailability: "unavailable",
+    historyAvailability: dailyHistory.length > 0 ? "available" : "unavailable",
     sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
     importedAt: projection.importedAt,
     summary: overviewSummary(accounts),
-    dailyHistory: [],
+    dailyHistory: dailyHistory.map((row) => ({ ...row })),
     accounts,
     sankey: buildCanonicalOverviewSankeyGraph(projection.positions, rateMap),
     sankeyExchangeRates: rates.filter((rate) => currencies.includes(rate.currency)).map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
     sankeyLatestExchangeRateDate: latestRateDate(rates.filter((rate) => currencies.includes(rate.currency))),
-    exchangeRates: [],
-    latestExchangeRateDate: null,
+    exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+    latestExchangeRateDate: latestRateDate(rates),
   };
 }
 
@@ -552,9 +554,22 @@ export function createPGliteFinancialRegistry(
           transaction,
           { expectedSources },
         ).current();
-        const currencies = [...new Set(result.projection.positions.map((position) => position.currency).filter((currency) => currency !== "TWD"))];
+        const dailyHistory = await readPGliteDailyHistory(
+          transaction,
+          result.projection.knowledgePoint,
+          result.projection.accounts,
+        );
+        const currencies = [...new Set([
+          ...result.projection.positions.map((position) => position.currency),
+          ...dailyHistory.flatMap((row) => [
+            ...row.netAssets,
+            ...row.dailyChange,
+            ...row.assets,
+            ...row.liabilities,
+          ].map((amount) => amount.currency)),
+        ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
         const rates = currencies.length === 0 ? [] : await readExchangeRatesOnReader(transaction, currencies);
-        return mapOverview(result, rates);
+        return mapOverview(result, rates, dailyHistory);
       });
     },
     async assetsCurrent(expectedSources = []) {
