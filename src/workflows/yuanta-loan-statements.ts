@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   pgliteWorkflowEnabled,
@@ -15,41 +15,35 @@ import {
   hasAttachedLocator,
 } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import {
-  type LoanCapturePage,
-  type LoanSourceCompletenessEvidence,
+import type {
+  LoanCapturePage,
+  LoanSourceCompletenessEvidence,
 } from "../ledger/canonical/loan-financial.ts";
 import {
   YUANTA_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
-  admitYuantaLoanCapture,
+  assertYuantaLoanCaptureAccountNumberEvidence,
   buildYuantaLoanCapture,
-  type YuantaLoanAccountNumberEvidence,
-  type YuantaLoanCaptureBuildInput,
-  type YuantaLoanStatementRow,
-} from "../ledger/canonical/yuanta-loan.ts";
-import { commitCanonicalFinancialAdmissionInTransaction } from "../ledger/canonical/canonical-financial-admission.ts";
-import {
-  CanonicalFinancialCommitItemError,
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/yuanta-loan-admission.ts";
+import type {
+  YuantaLoanAccountNumberEvidence,
+  YuantaLoanCaptureBuildInput,
+  YuantaLoanStatementRow,
+} from "../ledger/canonical/yuanta-loan-admission.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
   yuantaSourceConnectionScope,
   type YuantaCredentials,
 } from "./yuanta-auth.ts";
-import {
-  persistCounterpartyAccountEvidence,
+import type {
   resolveLoanRepaymentRelations,
-  type LoanRepaymentRelationResolutionResult,
-  type TransactionCounterpartyAccountEvidenceInput,
+  LoanRepaymentRelationResolutionResult,
+  TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations.ts";
 import {
   deriveSourceConnectionIdentityKey,
   requireSourceConnectionIdentity,
 } from "../ledger/canonical/source-connection-identity.ts";
-import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -1280,16 +1274,31 @@ export async function runYuantaLoanStatements(
   const traversePages =
     overrides.traverseLoanStatementPages ?? traverseYuantaLoanStatementPages;
   const write = overrides.writeLoanStatementsFile ?? writeLoanStatementsFile;
+  const enabled = pgliteWorkflowEnabled(process.env);
+  const legacy = enabled
+    ? undefined
+    : await (async () => {
+        const [admission, execution, relations, followthrough, ledger, yuanta] =
+          await Promise.all([
+            import("../ledger/canonical/canonical-financial-admission.ts"),
+            import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+            import("../ledger/canonical/loan-repayment-relations.ts"),
+            import("./safe-loan-relation-resolution.ts"),
+            import("../ledger/db/client.ts"),
+            import("../ledger/canonical/yuanta-loan.ts"),
+          ]);
+        return { admission, execution, relations, followthrough, ledger, yuanta };
+      })();
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta loan", overrides);
   const canonicalLedgerDir =
     overrides.canonicalLedgerDir ??
     process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
     process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
+    legacy?.ledger.DEFAULT_LEDGER_DIR;
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
   const resolveRelations =
-    overrides.resolveRelations ?? resolveLoanRepaymentRelations;
+    overrides.resolveRelations ?? legacy?.relations.resolveLoanRepaymentRelations;
   let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
 
   await openStatementPage(page);
@@ -1303,7 +1312,6 @@ export async function runYuantaLoanStatements(
   const dateRange = describeDateRange(input);
   const canonicalRange = canonicalLoanDateRange(input);
 
-  const enabled = pgliteWorkflowEnabled(process.env);
   const items = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown> | PGliteWorkflowRunItem> {
     for (const account of accounts) {
       const maskedAccount = maskAccountLabel(account.label);
@@ -1360,13 +1368,13 @@ export async function runYuantaLoanStatements(
       // persist.
       const capture = buildYuantaLoanCapture(captureInput);
       if (enabled) {
-        const admitted = admitYuantaLoanCapture(capture);
+        assertYuantaLoanCaptureAccountNumberEvidence(capture);
         const sourceEvidence = overrides.readCounterpartyAccountEvidence
           ? await overrides.readCounterpartyAccountEvidence(page, account, accountRows)
           : [yuantaLoanSelectorAccountEvidence(account)];
         yield {
           provider: "yuanta", product: "loan", itemKey: capture.captureId,
-          command: { kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND, request: { capture: admitted } },
+          command: { kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND, request: { capture } },
           relationCommands: () => [{
             kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
             request: {
@@ -1390,14 +1398,14 @@ export async function runYuantaLoanStatements(
         itemKey: capture.captureId,
         commit: (transaction) => {
           transaction.throwIfCancelled();
-          const admitted = admitYuantaLoanCapture(capture);
-          const [result] = commitCanonicalFinancialAdmissionInTransaction(
+          const admitted = legacy!.yuanta.admitYuantaLoanCapture(capture);
+          const [result] = legacy!.admission.commitCanonicalFinancialAdmissionInTransaction(
             transaction.writer,
             { kind: "loan", capture: admitted },
             transaction.admission,
           );
           if (!result)
-            throw new CanonicalFinancialCommitItemError(
+            throw new legacy!.execution.CanonicalFinancialCommitItemError(
               "Yuanta loan financial commit returned no result.",
             );
           return {
@@ -1415,14 +1423,15 @@ export async function runYuantaLoanStatements(
               )
             : [yuantaLoanSelectorAccountEvidence(account)];
           for (const evidence of sourceEvidence) {
-            await persistCounterpartyAccountEvidence(
+            await legacy!.relations.persistCounterpartyAccountEvidence(
               writer,
               materializeYuantaLoanCounterpartyEvidence(capture, evidence),
             );
           }
+          const { resolveLoanRelationsAfterCapture } = legacy!.followthrough;
           relationResolution = await resolveLoanRelationsAfterCapture(
             writer,
-            resolveRelations,
+            resolveRelations ?? legacy!.relations.resolveLoanRepaymentRelations,
             {
               sourceConnectionKey,
               integrationNamespace: "yuanta",
@@ -1450,8 +1459,8 @@ export async function runYuantaLoanStatements(
           client.close();
         }
       })()
-    : await executeCanonicalFinancialCommitRun({
-        canonicalLedgerDir,
+    : await legacy!.execution.executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir: canonicalLedgerDir!,
         provider: "yuanta",
         product: "loan",
         items: items() as AsyncIterable<CanonicalFinancialCommitItem<unknown>>,
@@ -1503,11 +1512,10 @@ export default workflow("yuantaLoanStatements", {
       credentials,
       input.replaceActiveSession,
     );
+    const canonicalLedgerDir =
+      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ?? process.env.LEDGER_DIR;
     const output = await runYuantaLoanStatements(page, input, {
-      canonicalLedgerDir:
-        process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-        process.env.LEDGER_DIR ??
-        DEFAULT_LEDGER_DIR,
+      ...(canonicalLedgerDir !== undefined ? { canonicalLedgerDir } : {}),
       sourceConnectionScope,
       sourceConnectionKey: deriveSourceConnectionIdentityKey(
         "yuanta",
