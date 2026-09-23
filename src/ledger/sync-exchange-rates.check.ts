@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExchangeRateAuditRecord } from "./exchange-rate-audit-log.ts";
+import { exchangeRateRequestFromOverview } from "./exchange-rate-requirements.ts";
 import { runExchangeRateSyncCommand } from "./sync-exchange-rates.ts";
 
 const request = { requiredFrom: "2026-07-01", currencies: ["USD"] };
@@ -138,5 +142,75 @@ test("invalid scheduled timestamp is audited as a failure and rejected", async (
     assert.equal(records.length, 1);
     assert.equal(records[0]?.scheduledAtUtc, null);
     assert.equal(records[0]?.status, "failed");
+  }
+});
+
+test("injected provider path syncs the currencies and start date from overview history", async () => {
+  const request = exchangeRateRequestFromOverview({
+    dailyHistory: [
+      {
+        date: "2026-07-10",
+        netAssets: [{ currency: "USD", value: 100 }],
+        dailyChange: [],
+        assets: [],
+        liabilities: [],
+        accountChanges: [],
+        positionCount: 1,
+      },
+      {
+        date: "2026-01-03",
+        netAssets: [{ currency: "TWD", value: 100 }],
+        dailyChange: [{ currency: "JPY", value: 2 }],
+        assets: [],
+        liabilities: [],
+        accountChanges: [],
+        positionCount: 1,
+      },
+    ],
+  });
+  assert.deepEqual(request, {
+    requiredFrom: "2026-01-03",
+    currencies: ["JPY", "USD"],
+  });
+
+  const injectedResult = { ...result, requestedCurrencies: request.currencies };
+  const { options, records } = harness({
+    loadRequest: async () => request,
+    sync: async (_ledgerDir: string, received: typeof request) => {
+      assert.deepEqual(received, request);
+      return injectedResult;
+    },
+  });
+  assert.deepEqual(await runExchangeRateSyncCommand(options), injectedResult);
+  assert.equal(records[0]?.requiredFrom, "2026-01-03");
+  assert.deepEqual(records[0]?.currencies, ["JPY", "USD"]);
+});
+
+test("standalone defaults load requirements and rates through one PGlite worker", async () => {
+  const ledgerDir = await mkdtemp(join(tmpdir(), "exchange-rates-pglite-cli-"));
+  try {
+    const { options, records } = harness({
+      ledgerDir,
+      loadRequest: undefined,
+      sync: undefined,
+    });
+    const result = await runExchangeRateSyncCommand(options);
+    assert.deepEqual(result, {
+      requestedCurrencies: [],
+      from: null,
+      to: new Date().toISOString().slice(0, 10),
+      written: 0,
+    });
+    assert.deepEqual(records, [{
+      scheduledAtUtc: null,
+      startedAtUtc: "2026-07-14T22:00:01.000Z",
+      finishedAtUtc: "2026-07-14T22:00:02.000Z",
+      requiredFrom: null,
+      currencies: [],
+      written: 0,
+      status: "success",
+    }]);
+  } finally {
+    await rm(ledgerDir, { recursive: true, force: true });
   }
 });

@@ -1,5 +1,6 @@
-import { loadOverview } from "../lib/overview/server/load-overview.ts";
 import { requiredExchangeRateCurrencies } from "./exchange-rates.ts";
+import type { OverviewPageDto } from "../lib/overview/types.ts";
+import { createExchangeRateCliPGliteWorkerClient } from "./pglite/exchange-rate-cli-worker.ts";
 
 export type ExchangeRateRequirement = {
   component: string;
@@ -11,6 +12,16 @@ export type ExchangeRateRequest = {
   requiredFrom: string | null;
   currencies: string[];
 };
+
+export function exchangeRateRequestFromOverview(
+  overview: Pick<OverviewPageDto, "dailyHistory">,
+): ExchangeRateRequest {
+  const dailyHistory = overview.dailyHistory;
+  return {
+    requiredFrom: dailyHistory.map((row) => row.date).sort()[0] ?? null,
+    currencies: requiredExchangeRateCurrencies(dailyHistory),
+  };
+}
 
 type ExchangeRateRequirementProvider = (
   ledgerDir: string,
@@ -33,12 +44,16 @@ export function aggregateExchangeRateRequirements(
 export async function overviewDailyAssetChangesRequirement(
   ledgerDir: string,
 ): Promise<ExchangeRateRequirement> {
-  const { dailyHistory } = await loadOverview(ledgerDir);
-  return {
-    component: "overview-daily-asset-changes",
-    requiredFrom: dailyHistory.map((row) => row.date).sort()[0] ?? null,
-    currencies: requiredExchangeRateCurrencies(dailyHistory),
-  };
+  const worker = createExchangeRateCliPGliteWorkerClient(ledgerDir);
+  try {
+    await worker.ready;
+    return {
+      component: "overview-daily-asset-changes",
+      ...exchangeRateRequestFromOverview(await worker.overviewCurrent()),
+    };
+  } finally {
+    await worker.close();
+  }
 }
 
 export const exchangeRateRequirementProviders: ExchangeRateRequirementProvider[] = [
