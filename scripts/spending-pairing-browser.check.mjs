@@ -70,7 +70,7 @@ const invoiceRecordValue = {
   refund: null,
 };
 
-const candidateValues = Array.from({ length: 11 }, (_, index) => {
+const candidateValues = Array.from({ length: 60 }, (_, index) => {
   const transaction = transactionRecord(index);
   return {
     purchaseId: transaction.purchaseId,
@@ -88,7 +88,7 @@ const purchaseReport = {
   knowledgeAt: 1,
   financialAt: null,
   records: [invoiceRecordValue, ...Array.from({ length: candidateValues.length }, (_, index) => transactionRecord(index))],
-  totalsByCurrency: [{ currency: "TWD", coefficient: String(100 + candidateValues.reduce((sum, candidate) => sum + Number(candidate.amount.coefficient), 0)), scale: 0, count: 12 }],
+  totalsByCurrency: [{ currency: "TWD", coefficient: String(100 + candidateValues.reduce((sum, candidate) => sum + Number(candidate.amount.coefficient), 0)), scale: 0, count: candidateValues.length + 1 }],
   totalStatus: "complete",
   candidates: [],
 };
@@ -119,11 +119,16 @@ try {
     window.__pairingRankCalls = [];
     window.octopusBeak.spending.rankPairingCandidates = async (input) => {
       window.__pairingRankCalls.push(input);
-      if (input.offset === 1 && window.__pairingRankCalls.length === 2) {
-        return { dataVersion: 2, candidates: candidates.slice(1), totalCandidateCount: candidates.length, nextOffset: null };
+      if (input.offset === 50 && window.__pairingRankCalls.length === 2) {
+        return {
+          dataVersion: 2,
+          candidates: candidates.slice(input.offset, input.offset + 50),
+          totalCandidateCount: candidates.length,
+          nextOffset: input.offset + 50 < candidates.length ? input.offset + 50 : null,
+        };
       }
       const offset = input.offset ?? 0;
-      const limit = input.limit ?? 10;
+      const limit = Math.min(input.limit ?? 50, 50);
       const page = candidates.slice(offset, offset + limit);
       const nextOffset = offset + page.length < candidates.length ? offset + page.length : null;
       return { dataVersion: 1, candidates: page, totalCandidateCount: candidates.length, nextOffset };
@@ -138,11 +143,19 @@ try {
   await page.locator("[data-open-pairing]").first().click();
   await page.locator("[data-pairing-dialog]").waitFor();
   await page.locator("[data-pairing-dialog] .payment-option").first().waitFor();
-  assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 1);
+  assert.equal(
+    await page.locator("[data-pairing-dialog] .payment-option").count(),
+    50,
+    "the pairing dialog initially renders the first globally ranked page",
+  );
 
   await page.locator("[data-show-more-payments]").click();
   await page.waitForTimeout(25);
-  assert.equal(await page.locator("[data-pairing-dialog] .payment-option").count(), 1);
+  assert.equal(
+    await page.locator("[data-pairing-dialog] .payment-option").count(),
+    50,
+    "a stale candidate page must not replace or append to the current ranked page",
+  );
   await page.locator("[data-show-more-payments]").click();
   await page.waitForTimeout(25);
   const rankCallCount = await page.evaluate(() => window.__pairingRankCalls.length);

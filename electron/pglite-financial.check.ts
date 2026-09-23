@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
 import {
@@ -262,19 +263,33 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
         knowledgePoint: number;
         transactions: readonly unknown[];
         includedTransactions: readonly unknown[];
-      }
+      };
+      purchaseReport: {
+        knowledgeAt: number;
+        records: readonly unknown[];
+        summary?: {
+          recordCount: number;
+          monthTotals: readonly Readonly<{ month: string; recordCount: number }>[];
+        };
+      };
     };
     assert.equal(overview.accounts.length, 1, "overview must expose the committed account");
     assert.notEqual(overview.availability, "empty", "overview must observe the committed fact");
     assert.equal(assets.accounts.length, 1, "assets must expose the committed account");
     const committedTransactionId = committed.transactions[0]?.transactionId;
     assert.ok(committedTransactionId, "the typed source commit must return a transaction identity");
-    assert.ok(
-      spending.canonical.transactions.some((row) =>
-        (row as { transactionId?: unknown }).transactionId === committedTransactionId,
-      ),
-      "spending must expose the committed transaction row, even when classification is an explicit eligibility gap",
-    );
+    assert.deepEqual(spending.canonical.transactions, [], "the live Spending summary must stay compact");
+    assert.deepEqual(spending.purchaseReport.records, [], "the live Spending summary must not materialize full report rows");
+    assert.ok(spending.purchaseReport.summary, "the compact Spending page must include grouped totals and counts");
+    assert.equal(spending.purchaseReport.summary.recordCount, 0, "an ineligible source fact must not become a purchase row");
+    assert.deepEqual(spending.purchaseReport.summary.monthTotals, [], "the compact summary must omit months without eligible purchase rows");
+    const committedPage = await page.loadSpendingRecordPage({
+      knowledgeAt: spending.purchaseReport.knowledgeAt,
+      month: "2026-01",
+      day: "2026-01-01",
+    });
+    assert.equal(committedPage.knowledgeAt, spending.purchaseReport.knowledgeAt);
+    assert.deepEqual(committedPage.records, [], "the version-bound purchase page must omit this ineligible source fact");
     assert.ok(
       spending.canonical.knowledgePoint >= committed.commitSequence,
       "spending must observe at least the source commit knowledge point (projection may add a derived canonical commit)",
@@ -282,18 +297,38 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     await Promise.all(stops.splice(0).map((stop) => stop()));
     await client.close();
 
+    const persistedDatabase = await PGlite.create(dataDir);
+    try {
+      const persistedTransactions = await persistedDatabase.query<{ transaction_id: string }>(
+        `SELECT encode(transaction_id, 'hex') AS transaction_id
+           FROM current_transactions
+          WHERE transaction_id = decode($1, 'hex')`,
+        [committedTransactionId.replaceAll("-", "")],
+      );
+      assert.equal(
+        persistedTransactions.rows.length,
+        1,
+        "the committed ineligible transaction fact must remain durable even though compact purchase pages omit it",
+      );
+    } finally {
+      await persistedDatabase.close();
+    }
+
     const reopenedWorker = start();
     const reopened = createPGliteViewWorkerClient(reopenedWorker);
     try {
       const persistedOverview = await reopened.financial.registry.overviewCurrent();
       const persistedSpending = await reopened.financial.registry.spendingCurrent();
+      const reopenedPage = createPGliteFinancialPageClient(reopened.financial, reopened.subscribe);
       assert.equal(persistedOverview.accounts.length, 1, "canonical account must survive worker close/reopen");
-      assert.ok(
-        persistedSpending.canonical.transactions.some((row) =>
-          (row as { transactionId?: unknown }).transactionId === committedTransactionId,
-        ),
-        "the current Spending transaction projection must survive worker close/reopen",
-      );
+      assert.deepEqual(persistedSpending.canonical.transactions, [], "reopened Spending remains a compact summary");
+      assert.ok(persistedSpending.purchaseReport.summary, "reopened Spending retains its compact summary");
+      assert.equal(persistedSpending.purchaseReport.summary.recordCount, 0);
+      assert.deepEqual((await reopenedPage.loadSpendingRecordPage({
+        knowledgeAt: persistedSpending.purchaseReport.knowledgeAt,
+        month: "2026-01",
+        day: "2026-01-01",
+      })).records, [], "the empty eligible purchase page must survive worker close/reopen");
       assert.ok(
         persistedSpending.canonical.knowledgePoint >= committed.commitSequence,
         "spending knowledge point must survive worker close/reopen",
@@ -315,6 +350,7 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
     workerData: { dataDir },
   });
   const client = createPGliteViewWorkerClient(worker);
+  const page = createPGliteFinancialPageClient(client.financial, client.subscribe);
   try {
     const result = await client.financial.registry.mixedCommit({
       steps: [
@@ -324,7 +360,15 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
     });
     assert.equal(result.admissions.length, 1);
     assert.equal(result.financial.length, 1);
-    assert.equal((await client.financial.registry.spendingCurrent()).canonical.transactions.length, 1);
+    const spending = await client.financial.registry.spendingCurrent();
+    assert.deepEqual(spending.canonical.transactions, [], "the live read returns a compact summary, not full transaction rows");
+    assert.equal(spending.purchaseReport.summary?.recordCount, 0, "the unclassified source fact is outside the purchase row set");
+    const committedPage = await page.loadSpendingRecordPage({
+      knowledgeAt: spending.purchaseReport.knowledgeAt,
+      month: "2026-01",
+      day: "2026-01-01",
+    });
+    assert.deepEqual(committedPage.records, [], "the mixed command's unclassified fact is not a purchase row");
     const invalid = sourceCommitRequest("invalid-rpc");
     await assert.rejects(client.financial.registry.mixedCommit({
       steps: [
@@ -333,7 +377,14 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
       ],
     }), /PGlite financial operation failed/u);
     const reopened = await client.financial.registry.spendingCurrent();
-    assert.equal(reopened.canonical.transactions.length, 1);
+    assert.deepEqual(reopened.canonical.transactions, [], "a failed mixed command keeps the compact response shape");
+    assert.equal(reopened.purchaseReport.summary?.recordCount, 0, "a failed mixed command must not add a purchase row");
+    const afterRollbackPage = await page.loadSpendingRecordPage({
+      knowledgeAt: reopened.purchaseReport.knowledgeAt,
+      month: "2026-01",
+      day: "2026-01-01",
+    });
+    assert.deepEqual(afterRollbackPage.records, [], "rollback preserves the empty eligible purchase page");
   } finally {
     await client.close();
     await rm(dataDir, { recursive: true, force: true });

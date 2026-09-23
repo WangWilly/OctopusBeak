@@ -970,7 +970,7 @@
           pairingCandidates = null;
           pairingCandidateTotal = 0;
           pairingNextOffset = null;
-          paymentVisibleCount = 10;
+          paymentVisibleCount = initialPairingCandidateCount;
           pairingCandidatesLoading = true;
           const restartToken = ++pairingRequestToken;
           void loadPairingCandidates(pairingInvoice, restartToken);
