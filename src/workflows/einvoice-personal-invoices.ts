@@ -25,7 +25,6 @@ import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-co
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-  pgliteWorkflowEnabled,
 } from "../ledger/pglite/workflow-client.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalEInvoiceCommitResult } from "../ledger/pglite/einvoice.ts";
@@ -131,7 +130,6 @@ export type InvoiceCaptureRecord = Readonly<{
 
 const inputSchema = z.object({
   /** Override only for isolated checks; desktop supplies LEDGER_DIR. */
-  canonicalLedgerDir: z.string().optional(),
 });
 
 const outputSchema = z.object({
@@ -970,87 +968,35 @@ export function buildCanonicalEInvoiceCapture(
   };
 }
 
-function configuredCanonicalLedgerDir(
-  explicit: string | undefined,
-  defaultLedgerDir: string,
-): string {
-  return explicit?.trim() ||
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-    process.env.LEDGER_DIR?.trim() ||
-    defaultLedgerDir;
-}
-
 export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
-  ledgerDir?: string,
 ) {
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const result = await executePGliteWorkflowRun({
-        client: client.workflow,
-        items: [{
-          provider: "einvoice",
-          product: "personal-invoice",
-          itemKey: capture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-            request: capture,
-          },
-        }],
-        provider: "einvoice",
-        product: "personal-invoice",
-      });
-      const committed = result.items[0];
-      if (committed?.status !== "committed")
-        throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
-          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-          .join(", ")}`);
-      return committed.value as PGliteCanonicalEInvoiceCommitResult;
-    } finally {
-      client.close();
-    }
-  }
-  const [
-    { DEFAULT_LEDGER_DIR },
-    { executeCanonicalFinancialCommitRun },
-    { commitCanonicalEInvoiceCaptureInTransaction },
-  ] = await Promise.all([
-    import("../ledger/db/client.ts"),
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/einvoice.ts"),
-  ]);
-  const canonicalLedgerDir = configuredCanonicalLedgerDir(
-    ledgerDir,
-    DEFAULT_LEDGER_DIR,
-  );
-  const result = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: [
-      {
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const result = await executePGliteWorkflowRun({
+      client: client.workflow,
+      items: [{
         provider: "einvoice",
         product: "personal-invoice",
         itemKey: capture.captureId,
-        commit: ({ writer, admission }) =>
-          commitCanonicalEInvoiceCaptureInTransaction(
-            writer,
-            capture,
-            admission,
-          ),
-      },
-    ],
-    provider: "einvoice",
-    product: "personal-invoice",
-  });
-  const item = result.items[0];
-  if (item?.status !== "committed")
-    throw new Error(
-      `E-Invoice canonical persistence ${result.status}: ${result.diagnostics
+        command: {
+          kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
+          request: capture,
+        },
+      }],
+      provider: "einvoice",
+      product: "personal-invoice",
+    });
+    const committed = result.items[0];
+    if (committed?.status !== "committed")
+      throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
         .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-  return item.value;
+        .join(", ")}`);
+    return committed.value as PGliteCanonicalEInvoiceCommitResult;
+  } finally {
+    client.close();
+  }
 }
 
 export default workflow("einvoicePersonalInvoices", {
@@ -1072,10 +1018,7 @@ export default workflow("einvoicePersonalInvoices", {
     const result = await readAllInvoices(ctx.page);
     const capture = buildCanonicalEInvoiceCapture(result, input.credentials);
     emitAutomationProgress({ phaseCode: "workflow", completed: 90, total: 100, percent: 90 });
-    const commit = await commitCanonicalCapture(
-      capture,
-      input.canonicalLedgerDir,
-    );
+    const commit = await commitCanonicalCapture(capture);
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
 
     return {

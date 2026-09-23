@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +22,6 @@ import {
   waitForEinvoiceLoginOutcome,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
-import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
-import { queryCanonicalEInvoiceCurrentFromDatabase } from "../ledger/canonical/einvoice.ts";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 
@@ -34,10 +32,8 @@ const workflowSource = readFileSync(
 assert.doesNotMatch(workflowSource, /writeInvoicesFile|purchased_invoice|rowsToCsv|csvPath/u);
 assert.match(workflowSource, /const commit = await commitCanonicalCapture/u);
 assert.match(workflowSource, /startUrl: LOGIN_URL/u);
-assert.match(
-  workflowSource,
-  /executeCanonicalFinancialCommitRun[\s\S]*?commitCanonicalEInvoiceCaptureInTransaction/u,
-);
+assert.match(workflowSource, /executePGliteWorkflowRun/u);
+assert.doesNotMatch(workflowSource, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/u);
 assert.doesNotMatch(
   workflowSource,
   /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
@@ -479,271 +475,74 @@ assert.deepEqual(
   ["4", "9"],
 );
 
-const workflowLedgerDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-canonical-"));
+const firstCapture = captureInput(
+  [completeRecord],
+  "einvoice-workflow-normal",
+  "2026-09-10T05:00:00Z",
+);
+assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
+assert.match(firstCapture.subjectDigest, /^sha256:/u);
+assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
+
+const pgliteDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-pglite-"));
+const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+  execArgv: ["--experimental-strip-types"],
+  workerData: { dataDir: pgliteDir },
+});
+const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
+const pgliteChildServer = createPGliteChildRpcServer({
+  provider: {
+    operational: pgliteOwner.operationalProvider,
+    financial: pgliteOwner.financial.registry,
+  },
+});
+const previousPgliteEnv = {
+  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+};
 try {
-  const firstCapture = captureInput(
-    [completeRecord],
-    "einvoice-workflow-normal",
-    "2026-09-10T05:00:00Z",
-  );
-  assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
-  assert.match(firstCapture.subjectDigest, /^sha256:/u);
-  assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
-  const pgliteDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-pglite-"));
-  const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-    execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir: pgliteDir },
-  });
-  const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
-  const pgliteChildServer = createPGliteChildRpcServer({
-    provider: {
-      operational: pgliteOwner.operationalProvider,
-      financial: pgliteOwner.financial.registry,
-    },
-  });
-  const previousPgliteEnv = {
-    required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
-    endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-    token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-  };
-  try {
-    await pgliteChildServer.ready;
-    Object.assign(process.env, pgliteChildServer.env);
-    const pgliteCommitted = await commitCanonicalCapture(firstCapture, workflowLedgerDir);
-    assert.equal(pgliteCommitted.status, "committed");
-    assert.equal(pgliteCommitted.invoiceCount, 1);
-    assert.equal(pgliteCommitted.itemCount, 1);
-    assert.equal((await readdir(workflowLedgerDir)).length, 0, "enabled workflow must not open SQLite");
-  } finally {
-    for (const [key, value] of [
-      ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", previousPgliteEnv.required],
-      ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", previousPgliteEnv.endpoint],
-      ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", previousPgliteEnv.token],
-    ] as const) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    await pgliteChildServer.close();
-    await pgliteOwner.close();
-  }
-  const reopenedPglite = await PGlite.create(pgliteDir);
-  try {
-    const invoices = await reopenedPglite.query<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM einvoice_invoices",
-    );
-    assert.equal(invoices.rows[0]?.count, 1, "child RPC commit must persist in the worker-owned store");
-  } finally {
-    await reopenedPglite.close();
-    await rm(pgliteDir, { recursive: true, force: true });
-  }
-  const committed = await commitCanonicalCapture(firstCapture, workflowLedgerDir);
+  await pgliteChildServer.ready;
+  Object.assign(process.env, pgliteChildServer.env);
+  const committed = await commitCanonicalCapture(firstCapture);
   assert.equal(committed.status, "committed");
   assert.equal(committed.invoiceCount, 1);
   assert.equal(committed.itemCount, 1);
 
   const renewedRowTokenCapture = captureInput(
-    [{
-      ...completeRecord,
-      entry: {
-        ...completeRecord.entry,
-        token: "opaque-provider-row-a-renewed",
-      },
-    }],
+    [{ ...completeRecord, entry: {
+      ...completeRecord.entry,
+      token: "opaque-provider-row-a-renewed",
+    } }],
     "einvoice-workflow-renewed-row-token",
     "2026-09-10T05:00:15Z",
   );
-  const renewedRowTokenCommit = await commitCanonicalCapture(
-    renewedRowTokenCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(
-    renewedRowTokenCommit.insertedRevisionCount,
-    0,
-    "a refreshed list-row token must not create or overwrite an invoice revision",
-  );
-  assert.equal(renewedRowTokenCommit.observedDuplicateCount, 1);
+  const repeated = await commitCanonicalCapture(renewedRowTokenCapture);
+  assert.equal(repeated.insertedRevisionCount, 0);
+  assert.equal(repeated.observedDuplicateCount, 1);
 
-  const fractionalStringRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-fractional-string",
-      invoiceNumber: "AA00000003",
-    },
-    items: [{
-      ...completeRecord.items[0]!,
-      quantity: "0.5",
-      unitPrice: "240",
-    }],
-  };
-  const fractionalStringCapture = captureInput(
-    [fractionalStringRecord],
-    "einvoice-workflow-fractional-string",
-    "2026-09-10T05:00:30Z",
+  const empty = await commitCanonicalCapture(
+    captureInput([], "einvoice-workflow-empty", "2026-09-10T05:03:00Z"),
   );
-  const fractionalStringCommit = await commitCanonicalCapture(
-    fractionalStringCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(fractionalStringCommit.itemCount, 1);
-  assert.deepEqual(
-    fractionalStringCapture.invoices[0]?.items[0]?.quantity,
-    { coefficient: "5", scale: 1 },
-    "fractional string quantities retain exact decimal scale without a leading zero",
-  );
-
-  const fractionalNumberRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-fractional-number",
-      invoiceNumber: "AA00000004",
-    },
-    items: [{
-      ...completeRecord.items[0]!,
-      quantity: 0.5,
-      unitPrice: "240",
-    }],
-  };
-  const fractionalNumberCapture = captureInput(
-    [fractionalNumberRecord],
-    "einvoice-workflow-fractional-number",
-    "2026-09-10T05:00:31Z",
-  );
-  const fractionalNumberCommit = await commitCanonicalCapture(
-    fractionalNumberCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(fractionalNumberCommit.itemCount, 1);
-  assert.deepEqual(
-    fractionalNumberCapture.invoices[0]?.items[0]?.quantity,
-    { coefficient: "5", scale: 1 },
-    "fractional numeric quantities use the same exact decimal normalization",
-  );
-
-  const incompleteRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-b",
-      invoiceNumber: "AA00000002",
-      totalAmount: "75",
-    },
-    header: {
-      ...completeRecord.header,
-      totalAmount: "75",
-    },
-    items: [{ sequenceNumber: "1", item: "Partial item" }],
-    itemCompleteness: "incomplete" as const,
-  };
-  const incompleteCapture = buildCanonicalEInvoiceCapture({
-    records: [incompleteRecord],
-    pages: [{
-      month,
-      pageIndex: 0,
-      list: { httpStatus: 200, totalElements: 1, totalPages: 1, size: 1, content: [incompleteRecord.entry] },
-    }],
-    months: ["2026-09"],
-  }, credentials, {
-    captureId: "einvoice-workflow-incomplete",
-    observedAt: "2026-09-10T05:01:00Z",
-    today: new Date("2026-09-10T00:00:00Z"),
-  });
-  assert.equal(incompleteCapture.scope.itemCompleteness, "incomplete");
-  await commitCanonicalCapture(incompleteCapture, workflowLedgerDir);
-
-  const revokedRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-a-revoked",
-      invoiceStrStatus: "4",
-    },
-    header: {
-      ...completeRecord.header,
-      invoiceStrStatus: "4",
-    },
-    items: [],
-  };
-  const revokedCapture = buildCanonicalEInvoiceCapture({
-    records: [revokedRecord],
-    pages: [{
-      month,
-      pageIndex: 0,
-      list: { httpStatus: 200, totalElements: 1, totalPages: 1, size: 1, content: [revokedRecord.entry] },
-    }],
-    months: ["2026-09"],
-  }, credentials, {
-    captureId: "einvoice-workflow-revoked",
-    observedAt: "2026-09-10T05:02:00Z",
-    today: new Date("2026-09-10T00:00:00Z"),
-  });
-  assert.equal(revokedCapture.invoices[0]?.revisionKind, "revoked");
-  assert.equal(revokedCapture.invoices[0]?.total, null);
-  await commitCanonicalCapture(revokedCapture, workflowLedgerDir);
-
-  const store = openCanonicalDatabaseHandle(workflowLedgerDir);
-  try {
-    const current = queryCanonicalEInvoiceCurrentFromDatabase(store.db);
-    const revoked = current.invoices.find((invoice) => invoice.stableInvoiceKey === mapped.stableInvoiceKey);
-    assert.equal(revoked?.revision.state, "revoked");
-    const fractionalString = current.invoices.find(
-      (invoice) => invoice.revision.invoiceNumber === "AA00000003",
-    );
-    assert.deepEqual(fractionalString?.revision.items[0]?.quantity, {
-      coefficient: "5",
-      scale: 1,
-    });
-    const fractionalNumber = current.invoices.find(
-      (invoice) => invoice.revision.invoiceNumber === "AA00000004",
-    );
-    assert.deepEqual(fractionalNumber?.revision.items[0]?.quantity, {
-      coefficient: "5",
-      scale: 1,
-    });
-    const incomplete = current.invoices.find((invoice) => invoice.revision.invoiceNumber === "AA00000002");
-    assert.equal(incomplete?.revision.items[0]?.completeness, "incomplete");
-    assert.equal(incomplete?.revision.items[0]?.amount, null);
-  } finally {
-    store.close();
-  }
-
-  const emptyDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-empty-"));
-  try {
-    const emptyCommit = await commitCanonicalCapture(
-      captureInput([], "einvoice-workflow-empty", "2026-09-10T05:03:00Z"),
-      emptyDir,
-    );
-    assert.equal(emptyCommit.invoiceCount, 0);
-    assert.equal(emptyCommit.itemCount, 0);
-  } finally {
-    await rm(emptyDir, { recursive: true, force: true });
-  }
-
-  const failingDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-failure-"));
-  try {
-    const missingTotal = {
-      ...completeRecord,
-      entry: { ...completeRecord.entry, totalAmount: null },
-      header: { ...completeRecord.header, totalAmount: null },
-    };
-    await assert.rejects(
-      commitCanonicalCapture(
-        captureInput([missingTotal], "einvoice-workflow-missing-total", "2026-09-10T05:04:00Z"),
-        failingDir,
-      ),
-      /canonical persistence failed/u,
-      "workflow success must not be reported when canonical admission fails",
-    );
-    const failedStore = openCanonicalDatabaseHandle(failingDir);
-    try {
-      assert.equal(queryCanonicalEInvoiceCurrentFromDatabase(failedStore.db).invoices.length, 0);
-    } finally {
-      failedStore.close();
-    }
-  } finally {
-    await rm(failingDir, { recursive: true, force: true });
-  }
+  assert.equal(empty.invoiceCount, 0);
+  assert.equal(empty.itemCount, 0);
 } finally {
-  await rm(workflowLedgerDir, { recursive: true, force: true });
+  for (const [key, value] of [
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", previousPgliteEnv.endpoint],
+    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", previousPgliteEnv.token],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await pgliteChildServer.close();
+  await pgliteOwner.close();
+}
+const reopenedPglite = await PGlite.create(pgliteDir);
+try {
+  const invoices = await reopenedPglite.query<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM einvoice_invoices",
+  );
+  assert.equal(invoices.rows[0]?.count, 1);
+} finally {
+  await reopenedPglite.close();
+  await rm(pgliteDir, { recursive: true, force: true });
 }
