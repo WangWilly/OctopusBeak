@@ -25,7 +25,7 @@ import {
 } from "../ledger/canonical/fubon-loan-admission.ts";
 import type {
   ExplicitLoanTransactionLink,
-} from "../ledger/canonical/loan-repayment-relations.ts";
+} from "../ledger/canonical/loan-repayment-relations-contract.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
