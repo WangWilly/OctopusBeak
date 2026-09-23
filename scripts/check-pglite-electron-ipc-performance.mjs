@@ -147,6 +147,31 @@ try {
   const confirmMs = await sample(page, "complete", 60_000);
   assert.equal(await page.locator("[data-pairing-dialog]").count(), 0);
 
+  const revokeSelector = `[data-purchase-record][data-transaction-id="${fixture.targetTransactionId}"] [data-revoke-link]`;
+  await arm(page, revokeSelector, {
+    feedback: `${revokeSelector}:disabled`,
+    complete: '[data-purchase-day="2026-01-01"] [data-open-pairing]',
+  });
+  await page.locator(revokeSelector).click();
+  const revokeFeedbackMs = await sample(page, "feedback");
+  const revokeMs = await sample(page, "complete", 60_000);
+  await arm(page, '[data-purchase-day="2026-01-01"] [data-open-pairing]', {
+    feedback: '[data-pairing-dialog][data-pairing-feedback="open-dialog"]',
+    complete: `[data-pairing-dialog] input[name="spending-payment"][value="${fixture.targetTransactionId}"]`,
+  });
+  await page.locator('[data-purchase-day="2026-01-01"] [data-open-pairing]').first().click();
+  const reopenAfterRevokeFeedbackMs = await sample(page, "feedback");
+  const reopenAfterRevokeMs = await sample(page, "complete", 60_000);
+  await page.locator(`[data-pairing-dialog] input[value="${fixture.targetTransactionId}"]`).check();
+  await arm(page, '[data-confirm-direct-pair]', {
+    feedback: '[data-pairing-feedback="confirm-busy"]',
+    complete: `[data-purchase-record][data-basis="linked"][data-transaction-id="${fixture.targetTransactionId}"]`,
+  });
+  await page.locator('[data-confirm-direct-pair]').click();
+  const warmConfirmFeedbackMs = await sample(page, "feedback");
+  const warmConfirmMs = await sample(page, "complete", 60_000);
+  assert.equal(await page.locator("[data-pairing-dialog]").count(), 0);
+
   await arm(page, ".refresh-trigger", {
     feedback: '.refresh-trigger[data-refresh-state="refreshing"]',
     complete: '.refresh-trigger[data-refresh-state="current"]',
@@ -162,12 +187,16 @@ try {
     fixture: fixture.counts, shellStartupMs, overviewReadyMs,
     navigationFeedbackMs, navigationMs, refreshFeedbackMs, refreshMs,
     openFeedbackMs, openMs, confirmFeedbackMs, confirmMs,
+    revokeFeedbackMs, revokeMs, reopenAfterRevokeFeedbackMs, reopenAfterRevokeMs,
+    warmConfirmFeedbackMs, warmConfirmMs,
     totalCandidateCount, maxRendererLongTaskMs: Math.max(0, ...longTasks),
   };
   console.log(JSON.stringify(evidence, null, 2));
-  assert.ok(navigationFeedbackMs <= 200 && refreshFeedbackMs <= 200 && openFeedbackMs <= 200 && confirmFeedbackMs <= 200,
+  assert.ok(navigationFeedbackMs <= 200 && refreshFeedbackMs <= 200 && openFeedbackMs <= 200 && confirmFeedbackMs <= 200
+    && revokeFeedbackMs <= 200 && reopenAfterRevokeFeedbackMs <= 200 && warmConfirmFeedbackMs <= 200,
     "Electron interaction feedback exceeded 200 ms");
-  assert.ok(openMs <= 1_000 && confirmMs <= 1_000, "Electron IPC Pairing exceeded one second");
+  assert.ok(openMs <= 1_000 && confirmMs <= 1_000 && reopenAfterRevokeMs <= 1_000 && warmConfirmMs <= 1_000,
+    "Electron IPC Pairing exceeded one second");
 } catch (error) {
   console.error(output.slice(-3_000));
   failure = error;
