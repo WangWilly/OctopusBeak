@@ -5,7 +5,7 @@ import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -21,11 +21,8 @@ import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
-  commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction,
   createYuantaDomesticDepositSourceEvidence,
   createYuantaDomesticDepositTelemetryManifest,
-  getYuantaHumanAttestedV2Manifest,
-  isYuantaHumanAttestedV2Active,
   isYuantaSourceOnlyFinancialDiagnostic,
   YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
@@ -37,16 +34,16 @@ import {
   type YuantaDomesticDepositDownloadEvidence,
   type YuantaDomesticDepositTelemetryManifest,
   type YuantaDomesticDepositAccountNumberEvidence,
-} from "../ledger/canonical/yuanta-domestic-deposit.ts";
+} from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+  getYuantaHumanAttestedV2Manifest,
+  isYuantaHumanAttestedV2Active,
+} from "../ledger/canonical/yuanta-human-attestation-contract.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   deriveSourceConnectionIdentityKey,
   requireSourceConnectionIdentity,
 } from "../ledger/canonical/source-connection-identity.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   authenticateYuantaBank as sharedAuthenticateYuantaBank,
   dismissYuantaBankNotice,
@@ -55,13 +52,13 @@ import {
 } from "./yuanta-auth.ts";
 import {
   admitCounterpartyAccountEvidence,
-  persistCounterpartyAccountEvidence,
-  resolveLoanRepaymentRelations,
   YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
-  type LoanRepaymentRelationResolutionResult,
-  type TransactionCounterpartyAccountEvidenceInput,
+} from "../ledger/canonical/counterparty-account-evidence.ts";
+import type {
+  resolveLoanRepaymentRelations,
+  LoanRepaymentRelationResolutionResult,
+  TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations.ts";
-import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
 import {
   writeYuantaOccurrenceDiagnosticCandidate,
   yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
@@ -73,14 +70,13 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 export {
   dismissYuantaBankNotice,
   type YuantaCredentials,
@@ -1172,9 +1168,6 @@ export async function runYuantaStatements(
     overrides.writeBankTransactionsFile ?? writeBankTransactionsFile;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
-  const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const resolveRelations =
-    overrides.resolveRelations ?? resolveLoanRepaymentRelations;
   const occurrenceDiagnosticDirectory =
     overrides.occurrenceDiagnosticDirectory === undefined
       ? yuantaOccurrenceDiagnosticDirectoryFromEnvironment()
@@ -1408,6 +1401,24 @@ export async function runYuantaStatements(
         client.close();
       }
     } else {
+    const [
+      { DEFAULT_LEDGER_DIR },
+      { executeCanonicalFinancialCommitRun },
+      yuantaDepositWriter,
+      currentBalanceWriter,
+      loanRelations,
+      { resolveLoanRelationsAfterCapture },
+    ] = await Promise.all([
+      import("../ledger/db/client.ts"),
+      import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+      import("../ledger/canonical/yuanta-domestic-deposit.ts"),
+      import("../ledger/canonical/current-deposit-balance-writer.ts"),
+      import("../ledger/canonical/loan-repayment-relations.ts"),
+      import("./safe-loan-relation-resolution.ts"),
+    ]);
+    const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
+    const resolveRelations =
+      overrides.resolveRelations ?? loanRelations.resolveLoanRepaymentRelations;
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
     for (const entry of sourceOnlyEntries) {
       executionItems.push({
@@ -1435,7 +1446,7 @@ export async function runYuantaStatements(
         product: "domestic-deposit",
         itemKey: financialInput.captureId,
         commit: ({ writer, admission }) =>
-          commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
+          yuantaDepositWriter.commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
             writer,
             [financialInput],
             admission,
@@ -1444,7 +1455,10 @@ export async function runYuantaStatements(
           ? {
               resolveRelations: async ({ writer }) => {
                 for (const item of relation.evidence)
-                  await persistCounterpartyAccountEvidence(writer, item);
+                  await loanRelations.persistCounterpartyAccountEvidence(
+                    writer,
+                    item,
+                  );
                 relationResolution = await resolveLoanRelationsAfterCapture(
                   writer,
                   resolveRelations,
@@ -1465,7 +1479,11 @@ export async function runYuantaStatements(
       product: "current-balance",
       itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
       commit: ({ writer, admission }) =>
-        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
+        currentBalanceWriter.commitCurrentDepositBalanceCaptureInTransaction(
+          writer,
+          capture,
+          admission,
+        ),
     }));
     const executionResult = await executeCanonicalFinancialCommitRun({
       canonicalLedgerDir,
@@ -1527,11 +1545,14 @@ export default workflow("yuantaStatements", {
     await chooseDateRange(page, input.dateRange);
     const configuredCanonicalLedgerDir =
       process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-      process.env.LEDGER_DIR ??
-      DEFAULT_LEDGER_DIR;
+      process.env.LEDGER_DIR;
+    const canonicalLedgerDir = configuredCanonicalLedgerDir ??
+      (pgliteWorkflowEnabled(process.env)
+        ? undefined
+        : (await import("../ledger/db/client.ts")).DEFAULT_LEDGER_DIR);
     const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
     const output = await runYuantaStatements(page, input, {
-      canonicalLedgerDir: configuredCanonicalLedgerDir,
+      ...(canonicalLedgerDir ? { canonicalLedgerDir } : {}),
       sourceConnectionScope,
       sourceConnectionKey: deriveSourceConnectionIdentityKey(
         "yuanta",
