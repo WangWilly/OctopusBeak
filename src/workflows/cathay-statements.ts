@@ -17,7 +17,7 @@ import {
   retrieveCathayGmailOtp,
 } from "./gmail-otp.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
