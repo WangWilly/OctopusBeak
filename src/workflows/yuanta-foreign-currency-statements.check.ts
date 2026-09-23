@@ -8,7 +8,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-relations.ts";
+import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
 
 const syntheticYuantaForeignAccountNumber = ["0012", "3456", "7890"].join("");
 

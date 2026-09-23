@@ -12,7 +12,7 @@ import {
 import type {
   LoanCapturePage,
   LoanSourceCompletenessEvidence,
-} from "../ledger/canonical/loan-financial.ts";
+} from "../ledger/canonical/loan-financial-contracts.ts";
 import { FUBON_LOAN_CONTRACT_VERSION } from "../ledger/canonical/loan-admission.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import {
