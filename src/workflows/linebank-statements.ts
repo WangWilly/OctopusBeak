@@ -9,7 +9,7 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -23,23 +23,16 @@ import type {
 } from "../ledger/canonical/domestic-deposit-store.ts";
 import {
   admitCanonicalFinancialDepositCapture,
-  commitCanonicalFinancialDepositCaptureInTransaction,
   type CanonicalFinancialDepositValidatedCapture,
-} from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import {
-  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
-} from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
+} from "../ledger/canonical/canonical-financial-deposit-admission.ts";
 import {
   admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureInTransaction,
   type ForeignCurrencyDepositCaptureInput,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-  type CanonicalFinancialCommitTransaction,
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import type {
+  CanonicalFinancialCommitItem,
+  CanonicalFinancialCommitTransaction,
 } from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 import {
   buildLinebankCurrentDepositBalanceCaptures,
 } from "./linebank-current-deposit-canonical.ts";
@@ -49,10 +42,7 @@ import {
   type LineBankCurrentDepositBalanceRow,
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
-import {
-  admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -62,6 +52,7 @@ export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
 const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
 const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 function linebankCanonicalToken(...parts: string[]): string {
   return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;
@@ -1633,6 +1624,19 @@ async function downloadLineBankStatements(
       client.close();
     }
   }
+  const [
+    { commitCanonicalFinancialDepositCaptureInTransaction },
+    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
+    { commitForeignCurrencyDepositCaptureInTransaction },
+    { executeCanonicalFinancialCommitRun },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
+    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
+    import("../ledger/canonical/foreign-currency-deposit.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+  ]);
   const committedDomesticCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
   const committedDomesticCaptureInputs: LineBankHumanAttestedV13ValidatedCapture[] = [];
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [

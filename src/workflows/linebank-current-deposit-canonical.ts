@@ -7,7 +7,7 @@ import {
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
