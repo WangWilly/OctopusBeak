@@ -41,7 +41,12 @@ async function waitForCdpEndpoint(cdpUrl: string, timeoutMs: number) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${cdpUrl}/json/version`);
-      if (response.ok) return;
+      if (response.ok) {
+        const metadata = await response.json() as { webSocketDebuggerUrl?: unknown };
+        if (typeof metadata.webSocketDebuggerUrl === "string") {
+          return metadata.webSocketDebuggerUrl;
+        }
+      }
     } catch {
       // Electron has not opened the debugging endpoint yet.
     }
@@ -590,7 +595,7 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
       child!.once("error", () => resolve({ status: null, signal: null }));
     });
     const launchResult = await Promise.race([
-      waitForCdpEndpoint(cdpUrl, 5_000).then(() => ({ ready: true as const })),
+      waitForCdpEndpoint(cdpUrl, 5_000).then((webSocketUrl) => ({ ready: true as const, webSocketUrl })),
       exited.then((result) => ({ ready: false as const, result })),
     ]);
     if (!launchResult.ready) {
@@ -611,7 +616,7 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
       }
       assert.fail(`Fatal fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
     }
-    browser = await chromium.connectOverCDP(cdpUrl).catch(async (error) => {
+    browser = await chromium.connectOverCDP(launchResult.webSocketUrl, { timeout: 5_000 }).catch(async (error) => {
       const result = await Promise.race([
         exited!,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_000)),
@@ -620,7 +625,9 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
         assertUnknownActiveFatalOutput(output, errorOutput, result);
         return null;
       }
-      throw error;
+      throw new Error(
+        `Fatal fixture CDP connection failed: ${String(error)}; childExit=${String(child?.exitCode)} childSignal=${String(child?.signalCode)} stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`,
+      );
     });
     if (!browser) return;
     const page = await waitForRendererPage(browser, 10_000);

@@ -78,6 +78,10 @@ function handleAutomationRuntimeFatal(details: {
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
   terminateAutomationTaskProcesses();
+  // A fatal invariant must retain exit status 1 without waiting for normal
+  // before-quit cleanup or a CDP connection to finish closing.
+  app.removeListener("before-quit", handleBeforeQuit);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
   app.exit(1);
 }
 
@@ -146,6 +150,7 @@ function guardWindowNavigation(window: BrowserWindow, rendererUrl: string) {
 }
 
 async function createWindow(rendererUrl: string, preloadPath: string) {
+  if (automationRuntimeFatalHandled) throw new Error("Automation runtime is unavailable.");
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.focus();
     return mainWindow;
@@ -177,6 +182,10 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
 
     try {
       await window.loadURL(`${rendererUrl}#/overview`);
+      if (automationRuntimeFatalHandled) {
+        window.destroy();
+        throw new Error("Automation runtime is unavailable.");
+      }
       return window;
     } catch (error) {
       if (!window.isDestroyed()) window.destroy();
@@ -192,6 +201,7 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
 }
 
 function showStartupError(error: unknown) {
+  if (automationRuntimeFatalHandled) return;
   dialog.showErrorBox(
     "OctopusBeak failed to start",
     error instanceof Error ? error.stack || error.message : String(error),
@@ -349,12 +359,14 @@ async function start() {
   });
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
+  if (automationRuntimeFatalHandled) return;
   await createWindow(currentRendererUrl, currentPreloadPath);
 }
 
 app.whenReady().then(start).catch(showStartupError);
 
 app.on("activate", () => {
+  if (automationRuntimeFatalHandled) return;
   if (BrowserWindow.getAllWindows().length === 0 && currentRendererUrl && currentPreloadPath) {
     void createWindow(currentRendererUrl, currentPreloadPath).catch(showStartupError);
   }
