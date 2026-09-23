@@ -101,6 +101,13 @@ export class CanonicalLoanAdmissionError extends Error {
   }
 }
 
+export class CanonicalLoanConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalLoanConflictError";
+  }
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function token(...parts: string[]): `sha256:${string}` {

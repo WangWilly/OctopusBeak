@@ -26,6 +26,7 @@ import {
 } from "./canonical-source-evidence.ts";
 import {
   CanonicalLoanAdmissionError,
+  CanonicalLoanConflictError,
   LOAN_EVENT_CONTRACT_MAPPINGS,
   FUBON_LOAN_CONTRACT_VERSION,
   YUANTA_LOAN_CONTRACT_VERSION,
@@ -65,6 +66,7 @@ export {
   YUANTA_LOAN_COUNTERPART_CONTRACT_VERSION,
   LOAN_EVENT_CONTRACT_MAPPINGS,
   CanonicalLoanAdmissionError,
+  CanonicalLoanConflictError,
   canonicalLoanToken,
   canonicalLoanSourceIdentity,
   parseCanonicalLoanAmount,
@@ -524,13 +526,6 @@ export type LoanLineageQuery = {
   sourceId?: LoanSourceId;
   integrationNamespace?: LoanSourceId;
 };
-
-export class CanonicalLoanConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CanonicalLoanConflictError";
-  }
-}
 
 const VALIDATED_CAPTURES = new WeakSet<object>();
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
