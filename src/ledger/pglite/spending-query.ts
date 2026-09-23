@@ -11,7 +11,7 @@ import {
   E_INVOICE_INTEGRATION_NAMESPACE,
   E_INVOICE_RECORD_KIND,
   E_INVOICE_STREAM,
-} from "../canonical/einvoice.ts";
+} from "../canonical/einvoice-contract.ts";
 import type {
   CanonicalSpendingCategoryComponent,
   CanonicalSpendingCategorization,
@@ -22,7 +22,7 @@ import type {
 } from "../canonical/canonical-categorization.ts";
 import {
   CANONICAL_SPENDING_INCLUSION_POLICY,
-} from "../canonical/canonical-categorization.ts";
+} from "../canonical/spending-inclusion-policy.ts";
 import type {
   SpendingCandidateView,
   SpendingDedupLinkView,
@@ -33,15 +33,27 @@ import type {
 import {
   composePurchaseReport,
   evaluateSpendingMatchCandidates,
-  type PurchaseLineage,
-  type PurchaseReport,
+} from "../canonical/spending-purchase-report-core.ts";
+import type {
+  PurchaseLineage,
+  PurchaseReport,
 } from "../canonical/spending-purchase-report.ts";
 import type {
   CurrentSpendingQueryResult,
   HistoricalSpendingQueryResult,
   LineageSpendingQueryResult,
 } from "../../lib/shared-ledger/server/financial-query.ts";
-import type { SpendingInvoiceDto, SpendingPageDto } from "../../lib/spending/model.ts";
+import type {
+  SpendingInvoiceDto,
+  SpendingPageDto,
+  SpendingRecordPageRequest,
+  SpendingRecordPageDto,
+  SpendingCandidatePageRequest,
+  SpendingCandidatePageDto,
+  SpendingPurchaseReportSummaryDto,
+  SpendingPurchaseReportDto,
+  SpendingSummaryDto,
+} from "../../lib/spending/model.ts";
 import {
   createSpendingPairingCandidateViewFromTransaction,
 } from "../../lib/spending/pairing-presentation.ts";
@@ -94,6 +106,7 @@ export function cachedPGliteSpendingSnapshot(
 }
 
 type Row = Readonly<Record<string, unknown>>;
+
 type Money = Readonly<{ coefficient: string; scale: number; currency: string }>;
 type QueryKind = "current" | "historical";
 
@@ -790,11 +803,13 @@ async function querySpendingReport(
 ): Promise<CanonicalSpendingReport> {
   const base = await transactionRows(reader, kind, knowledgeAt, financialAt, request);
   if (base.length === 0) return emptySpendingReport(kind, knowledgeAt, financialAt);
+  const transactionIds = base.map((row) => idString(row.transaction_id, "Transaction identity"));
+  const revisionIds = base.map((row) => idString(row.revision_id, "Transaction revision"));
   const [facts, enrichments, categories, tags] = await Promise.all([
-    transactionDateFacts(reader),
-    enrichmentRows(reader, kind, knowledgeAt),
-    categoryRows(reader, kind, knowledgeAt, await activeGeneration(reader)),
-    tagRows(reader, kind, knowledgeAt),
+    transactionDateFacts(reader, revisionIds),
+    enrichmentRows(reader, kind, knowledgeAt, transactionIds),
+    categoryRows(reader, kind, knowledgeAt, await activeGeneration(reader), transactionIds),
+    tagRows(reader, kind, knowledgeAt, transactionIds),
   ]);
   const enrichmentsBy = grouped(enrichments, (row) => idString(row.transaction_id, "Enrichment transaction"));
   const categoriesBy = grouped(categories, (row) => idString(row.transaction_id, "Categorization transaction"));
@@ -872,6 +887,13 @@ export async function queryPGliteSpendingDirectPair(
 type DeterministicCandidatePairRow = Readonly<{
   invoiceId: string;
   transactionId: string;
+  candidateId: string;
+  invoiceDate: string;
+  transactionDate: string;
+  dateDistanceDays: number;
+  algorithm: string;
+  algorithmVersion: string;
+  similarityEvidence: Readonly<Record<string, unknown>>;
 }>;
 
 function deterministicCandidateKey(invoiceId: string, transactionId: string): string {
@@ -887,9 +909,25 @@ function deterministicCandidateKey(invoiceId: string, transactionId: string): st
  * over the whole benchmark fixture while retaining the canonical matcher as
  * the final validator below.
  */
+function spendingMonthDateBounds(month: string): Readonly<{ start: string; end: string }> {
+  const start = `${month}-01`;
+  const first = new Date(`${start}T00:00:00.000Z`);
+  const next = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 1));
+  next.setUTCDate(next.getUTCDate() - 1);
+  return { start, end: next.toISOString().slice(0, 10) };
+}
+
+function shiftIsoDate(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 async function queryDeterministicCandidatePairs(
   reader: PGliteSpendingReader,
+  month?: string,
 ): Promise<readonly DeterministicCandidatePairRow[]> {
+  const monthBounds = month === undefined ? null : spendingMonthDateBounds(month);
   const invoiceRows = rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
        SELECT revision.invoice_id, revision.amount_coefficient,
@@ -906,9 +944,23 @@ async function queryDeterministicCandidatePairs(
      )
      SELECT invoice_id, amount_coefficient, amount_scale, currency, occurrence_value
        FROM ranked
-      WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL`,
+      WHERE revision_rank = 1 AND state = 'active' AND amount_coefficient IS NOT NULL
+        ${monthBounds ? "AND occurrence_value BETWEEN ? AND ?" : ""}`,
+    monthBounds ? [shiftIsoDate(monthBounds.start, -7), shiftIsoDate(monthBounds.end, 7)] : [],
   ));
-  const transactions = await queryPairingTransactionsDirect(reader);
+  const activeLinkedInvoiceRows = monthBounds
+    ? rows(await pgliteQuery<Row>(reader, "SELECT invoice_id FROM current_spending_dedup_links"))
+    : [];
+  const linkedInvoiceIds = new Set(activeLinkedInvoiceRows.map((row) => idString(row.invoice_id, "Linked candidate invoice")));
+  // For a month-scoped dashboard page, every valid pair has its transaction
+  // date within seven days of an invoice date that is either in the month or
+  // within seven days of a transaction date in the month. Therefore the
+  // union is completely covered by the month window extended by seven days.
+  // Keep the global no-bounds path for per-invoice Pairing ranking.
+  const transactions = await queryPairingTransactionsDirect(reader, monthBounds ? {
+    start: shiftIsoDate(monthBounds.start, -7),
+    end: shiftIsoDate(monthBounds.end, 7),
+  } : undefined);
   const byMoney = new Map<string, PairingTransaction[]>();
   for (const transaction of transactions) {
     const key = exactMoneyKey(transaction.amount);
@@ -920,15 +972,32 @@ async function queryDeterministicCandidatePairs(
   for (const row of invoiceRows) {
     const amount = exactMoney(row, "amount_coefficient", "amount_scale", "currency");
     const invoiceId = idString(row.invoice_id, "Candidate invoice");
+    if (monthBounds && linkedInvoiceIds.has(invoiceId)) continue;
     const invoiceDate = stringValue(row.occurrence_value, "Candidate invoice occurrence");
     const candidates = byMoney.get(exactMoneyKey(amount)) ?? [];
     for (const transaction of candidates) {
       const transactionDate = transaction.consumeDate ?? transaction.postingDate ?? transaction.effectiveOn;
-      if (calendarDayDistance(invoiceDate, transactionDate) <= 7) {
-        pairs.push(Object.freeze({ invoiceId, transactionId: transaction.transactionId }));
-      }
+      const dateDistanceDays = calendarDayDistance(invoiceDate, transactionDate);
+      if (!Number.isFinite(dateDistanceDays) || dateDistanceDays > 7) continue;
+      if (monthBounds && !invoiceDate.startsWith(`${month}-`) && !transactionDate.startsWith(`${month}-`)) continue;
+      pairs.push(Object.freeze({
+        invoiceId,
+        transactionId: transaction.transactionId,
+        candidateId: deterministicCandidateKey(invoiceId, transaction.transactionId),
+        invoiceDate,
+        transactionDate,
+        dateDistanceDays,
+        algorithm: "amount-currency-date-similarity",
+        algorithmVersion: "v2",
+        similarityEvidence: Object.freeze({
+          exactAmountAndCurrency: true,
+          calendarDayDistance: dateDistanceDays,
+          transactionDateBasis: transaction.consumeDate ? "consume-date" : transaction.postingDate ? "posting-date-fallback" : "effective-date",
+        }),
+      }));
     }
   }
+  pairs.sort((left, right) => left.dateDistanceDays - right.dateDistanceDays || left.invoiceId.localeCompare(right.invoiceId) || left.transactionId.localeCompare(right.transactionId));
   return Object.freeze(pairs);
 }
 
@@ -1072,6 +1141,7 @@ type PairingTransaction = SpendingMatchingTransaction & Readonly<{
 /** Read eligible transaction facts from the transactional derived projection. */
 async function queryPairingTransactionsDirect(
   reader: PGliteSpendingReader,
+  dateBounds?: Readonly<{ start: string; end: string }>,
 ): Promise<readonly PairingTransaction[]> {
   // One JSON result avoids PGlite's per-row wire parser cost for the 100k
   // supported dataset. The source-neutral ranker below still orders every
@@ -1080,7 +1150,10 @@ async function queryPairingTransactionsDirect(
     `SELECT json_agg(json_build_array(encode(transaction_id, 'hex'), effective_on,
       description, amount_coefficient, amount_scale, currency,
       consume_date, posting_date, effective_date_basis)) AS packed
-       FROM current_spending_pairing_entries`);
+       FROM current_spending_pairing_entries
+      WHERE TRUE ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
+    dateBounds ? [dateBounds.start, dateBounds.end] : [],
+  );
   const value = packed.rows[0]?.packed;
   const resultRows = (Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"))) as readonly (readonly unknown[])[];
   const transactions = Object.freeze(resultRows.map((row) => {
@@ -1159,8 +1232,9 @@ function invoiceItem(row: Row): CanonicalEInvoiceItemView {
 async function invoiceViewFromRow(
   reader: PGliteSpendingReader,
   row: Row,
+  suppliedItemRows?: readonly Row[],
 ): Promise<CanonicalEInvoiceView> {
-  const itemRows = rows(await pgliteQuery<Row>(reader,
+  const itemRows = suppliedItemRows ?? rows(await pgliteQuery<Row>(reader,
     `SELECT item_id, sequence, completeness, name,
             quantity_coefficient, quantity_scale,
             unit_price_coefficient, unit_price_scale, unit_price_currency,
@@ -1208,16 +1282,52 @@ async function invoiceViewFromRow(
   });
 }
 
+async function invoiceViewsFromRows(
+  reader: PGliteSpendingReader,
+  sourceRows: readonly Row[],
+): Promise<readonly CanonicalEInvoiceView[]> {
+  if (sourceRows.length === 0) return Object.freeze([]);
+  const revisionIds = sourceRows.map((row) => row.revision_id);
+  const itemRows = rows(await pgliteQuery<Row>(reader,
+    `SELECT revision_id, item_id, sequence, completeness, name,
+            quantity_coefficient, quantity_scale,
+            unit_price_coefficient, unit_price_scale, unit_price_currency,
+            unit_price_currency_authority, amount_coefficient, amount_scale,
+            amount_currency, amount_currency_authority, source_fact_json
+       FROM einvoice_items
+      WHERE revision_id IN (${revisionIds.map(() => "?").join(",")})
+      ORDER BY revision_id, sequence`,
+    revisionIds,
+  ));
+  const itemsByRevision = new Map<string, Row[]>();
+  for (const item of itemRows) {
+    const key = idString(item.revision_id, "Invoice item revision");
+    const items = itemsByRevision.get(key);
+    if (items) items.push(item);
+    else itemsByRevision.set(key, [item]);
+  }
+  const views = await Promise.all(sourceRows.map((row) =>
+    invoiceViewFromRow(reader, row, itemsByRevision.get(idString(row.revision_id, "Invoice revision")) ?? []),
+  ));
+  return Object.freeze(views);
+}
+
 async function invoices(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
   historical = false,
   invoiceIdentity?: string,
+  invoiceIdentities?: readonly string[],
 ): Promise<readonly CanonicalEInvoiceView[]> {
+  if (invoiceIdentities?.length === 0) return Object.freeze([]);
   const cutoff = historical ? "WHERE source_rows.commit_sequence <= ?" : "";
-  const identityFilter = invoiceIdentity === undefined
-    ? ""
-    : `${cutoff ? "AND" : "WHERE"} source_rows.invoice_id = ?`;
+  const identityFilter = invoiceIdentities !== undefined
+    ? `${cutoff ? "AND" : "WHERE"} source_rows.invoice_id IN (${invoiceIdentities.map(() => "?").join(",")})`
+    : invoiceIdentity === undefined
+      ? ""
+      : `${cutoff ? "AND" : "WHERE"} source_rows.invoice_id = ?`;
+  if (invoiceIdentity !== undefined && invoiceIdentities !== undefined)
+    throw new TypeError("Invoice query accepts one identity filter.");
   const result = await pgliteQuery<Row>(reader,
     `WITH source_rows AS (
        SELECT revision.revision_id, revision.invoice_id, revision.source_record_id,
@@ -1250,15 +1360,11 @@ async function invoices(
      )
      SELECT * FROM ranked WHERE revision_rank = 1 ORDER BY commit_sequence, stable_invoice_key`,
     historical
-      ? invoiceIdentity === undefined ? [knowledgeAt] : [knowledgeAt, bytes(invoiceIdentity, "Invoice identity")]
-      : invoiceIdentity === undefined ? [] : [bytes(invoiceIdentity, "Invoice identity")],
+      ? [knowledgeAt, ...(invoiceIdentities?.map((value) => bytes(value, "Invoice identity")) ?? (invoiceIdentity === undefined ? [] : [bytes(invoiceIdentity, "Invoice identity")]))]
+      : invoiceIdentities?.map((value) => bytes(value, "Invoice identity")) ?? (invoiceIdentity === undefined ? [] : [bytes(invoiceIdentity, "Invoice identity")]),
   );
   const resultRows = rows(result);
-  const views: CanonicalEInvoiceView[] = [];
-  for (const row of resultRows) {
-    views.push(await invoiceViewFromRow(reader, row));
-  }
-  return Object.freeze(views);
+  return invoiceViewsFromRows(reader, resultRows);
 }
 
 function linkFromRow(row: Row): SpendingDedupLinkView {
@@ -1299,20 +1405,35 @@ function refundFromRow(row: Row): SpendingRefundView {
 
 export async function querySpendingRecognition(
   reader: PGliteSpendingReader,
-  request: Readonly<{ knowledgeAt?: number }> = {},
+  request: Readonly<{ knowledgeAt?: number; invoiceIds?: readonly string[]; transactionIds?: readonly string[] }> = {},
 ): Promise<SpendingRecognitionSnapshot> {
   const current = await latest(reader);
   const cutoff = request.knowledgeAt ?? current;
   if (!Number.isSafeInteger(cutoff) || cutoff < 0 || cutoff > current) throw new Error("Spending recognition knowledge cutoff is invalid.");
+  const targetedRecognition = request.invoiceIds !== undefined || request.transactionIds !== undefined;
+  if (targetedRecognition && !request.invoiceIds?.length && !request.transactionIds?.length) {
+    return Object.freeze({ knowledgeAt: cutoff, candidates: Object.freeze([]), activeLinks: Object.freeze([]), denied: Object.freeze([]), refunds: Object.freeze([]) });
+  }
+  const pairIdentityFilters: string[] = [];
+  const pairIdentityParams: unknown[] = [];
+  if (request.invoiceIds?.length) {
+    pairIdentityFilters.push(`event.invoice_id IN (${request.invoiceIds.map(() => "?").join(",")})`);
+    pairIdentityParams.push(...request.invoiceIds.map((value) => bytes(value, "Recognition invoice")));
+  }
+  if (request.transactionIds?.length) {
+    pairIdentityFilters.push(`event.transaction_id IN (${request.transactionIds.map(() => "?").join(",")})`);
+    pairIdentityParams.push(...request.transactionIds.map((value) => bytes(value, "Recognition transaction")));
+  }
+  const pairIdentityFilter = pairIdentityFilters.length > 0 ? `AND (${pairIdentityFilters.join(" OR ")})` : "";
   const pairRows = rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
        SELECT event.*, commit_row.commit_sequence,
               ROW_NUMBER() OVER (PARTITION BY event.invoice_id, event.transaction_id ORDER BY commit_row.commit_sequence DESC, event.event_id DESC) AS event_rank
          FROM spending_dedup_decision_events event
          JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
-        WHERE commit_row.commit_sequence <= ?
+        WHERE commit_row.commit_sequence <= ? ${pairIdentityFilter}
      ) SELECT * FROM ranked WHERE event_rank = 1`,
-    [cutoff],
+    [cutoff, ...pairIdentityParams],
   ));
   const activeLinks: SpendingDedupLinkView[] = [];
   const denied: SpendingPair[] = [];
@@ -1325,13 +1446,24 @@ export async function querySpendingRecognition(
     if (eventKind === "confirmed") activeLinks.push(linkFromRow(row));
     else if (eventKind === "denied") denied.push({ invoiceId, transactionId });
   }
+  const candidateIdentityFilters: string[] = [];
+  const candidateIdentityParams: unknown[] = [];
+  if (request.invoiceIds?.length) {
+    candidateIdentityFilters.push(`candidate.invoice_id IN (${request.invoiceIds.map(() => "?").join(",")})`);
+    candidateIdentityParams.push(...request.invoiceIds.map((value) => bytes(value, "Candidate invoice")));
+  }
+  if (request.transactionIds?.length) {
+    candidateIdentityFilters.push(`candidate.transaction_id IN (${request.transactionIds.map(() => "?").join(",")})`);
+    candidateIdentityParams.push(...request.transactionIds.map((value) => bytes(value, "Candidate transaction")));
+  }
+  const candidateIdentityFilter = candidateIdentityFilters.length > 0 ? `AND (${candidateIdentityFilters.join(" OR ")})` : "";
   const candidateRows = rows(await pgliteQuery<Row>(reader,
     `SELECT candidate.*, created.commit_sequence
        FROM spending_match_candidates candidate
        JOIN canonical_commits created ON created.commit_id = candidate.created_commit_id
-      WHERE created.commit_sequence <= ?
+      WHERE created.commit_sequence <= ? ${candidateIdentityFilter}
       ORDER BY created.commit_sequence, candidate.candidate_id`,
-    [cutoff],
+    [cutoff, ...candidateIdentityParams],
   ));
   const candidates = candidateRows.map((row) => {
     const invoiceId = idString(row.invoice_id, "Candidate invoice");
@@ -1346,7 +1478,10 @@ export async function querySpendingRecognition(
       status: status.get(pairKey(invoiceId, transactionId)) ?? "candidate",
     } satisfies SpendingCandidateView;
   });
-  const refundRows = rows(await pgliteQuery<Row>(reader,
+  const refundIdentityFilter = !request.transactionIds?.length
+    ? ""
+    : `AND identity.transaction_id IN (${request.transactionIds.map(() => "?").join(",")})`;
+  const refundRows = request.transactionIds?.length === 0 ? [] : rows(await pgliteQuery<Row>(reader,
     `WITH ranked AS (
        SELECT revision.*, identity.stable_refund_key,
               identity.transaction_id, commit_row.commit_sequence,
@@ -1354,9 +1489,9 @@ export async function querySpendingRecognition(
          FROM spending_refund_revisions revision
          JOIN spending_refund_identities identity ON identity.refund_id = revision.refund_id
          JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
-        WHERE commit_row.commit_sequence <= ?
+        WHERE commit_row.commit_sequence <= ? ${refundIdentityFilter}
      ) SELECT * FROM ranked WHERE revision_rank = 1 ORDER BY commit_sequence, refund_id`,
-    [cutoff],
+    [cutoff, ...(request.transactionIds?.map((value) => bytes(value, "Refund transaction")) ?? [])],
   ));
   const refunds = refundRows.map(refundFromRow);
   return Object.freeze({ knowledgeAt: cutoff, candidates: Object.freeze(candidates), activeLinks: Object.freeze(activeLinks), denied: Object.freeze(denied), refunds: Object.freeze(refunds.filter((refund) => refund.state === "active")) });
@@ -1936,6 +2071,684 @@ export async function queryCurrentSpending(
   return { status: "ok", kind: "current", product: "spending", spending, invoices: invoiceViews, purchaseReport };
 }
 
+function jsonRows(value: unknown, label: string): readonly Row[] {
+  if (Array.isArray(value)) return value as readonly Row[];
+  try {
+    const parsed: unknown = JSON.parse(String(value ?? "[]"));
+    if (!Array.isArray(parsed)) throw new Error("array required");
+    return parsed as readonly Row[];
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON array.`, { cause: error });
+  }
+}
+
+function summaryMoneyRows(value: unknown, label: string) {
+  return Object.freeze(jsonRows(value, label).map((row) => {
+    const coefficient = stringValue(row.coefficient, `${label} coefficient`);
+    if (!/^-?\d+(?:\.0+)?$/u.test(coefficient))
+      throw new Error(`${label} coefficient is not an integer.`);
+    let exactCoefficient = BigInt(coefficient.replace(/\.0+$/u, ""));
+    let scale = numeric(row.scale, `${label} scale`);
+    while (scale > 0 && exactCoefficient % 10n === 0n) {
+      exactCoefficient /= 10n;
+      scale -= 1;
+    }
+    return Object.freeze({
+      currency: stringValue(row.currency, `${label} currency`),
+      coefficient: exactCoefficient.toString(),
+      scale,
+      count: numeric(row.count, `${label} count`),
+    });
+  }));
+}
+
+type SpendingRecordCursor = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  month: string | null;
+  day: string | null;
+  occurrence: string;
+  purchaseId: string;
+}>;
+
+function spendingRecordCursorToken(cursor: SpendingRecordCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function spendingRecordCursorFromToken(
+  token: string | null | undefined,
+  request: Readonly<{ knowledgeAt: number; month: string | null; day: string | null }>,
+): SpendingRecordCursor | null {
+  if (!token) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as Partial<SpendingRecordCursor>;
+    if (parsed.schemaVersion !== 1 || parsed.knowledgeAt !== request.knowledgeAt
+        || parsed.month !== request.month || parsed.day !== request.day
+        || typeof parsed.occurrence !== "string" || !ISO_DATE.test(parsed.occurrence.slice(0, 10))
+        || typeof parsed.purchaseId !== "string" || parsed.purchaseId.length === 0)
+      throw new Error("invalid cursor fields");
+    return parsed as SpendingRecordCursor;
+  } catch (error) {
+    throw new Error("Spending record cursor is stale or invalid; reload the current page.", { cause: error });
+  }
+}
+
+function validSpendingMonth(value: string): boolean {
+  return /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(value);
+}
+
+function validSpendingDate(value: string): boolean {
+  if (!ISO_DATE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function sqlUuid(expression: string): string {
+  const hex = `encode(${expression}, 'hex')`;
+  return `substring(${hex} from 1 for 8) || '-' || substring(${hex} from 9 for 4) || '-' || substring(${hex} from 13 for 4) || '-' || substring(${hex} from 17 for 4) || '-' || substring(${hex} from 21 for 12)`;
+}
+
+/** Read one version-bound, keyset-paged slice of current Spending records. */
+export async function queryCurrentSpendingRecordPage(
+  reader: PGliteSpendingReader,
+  request: SpendingRecordPageRequest,
+): Promise<SpendingRecordPageDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new Error("Spending record page data version is stale; reload Spending.");
+  const month = request.month ?? null;
+  const day = request.day ?? null;
+  if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending record page month is invalid.");
+  if (day !== null && (!validSpendingDate(day) || month !== day.slice(0, 7)))
+    throw new TypeError("Spending record page day must belong to its month.");
+  const cursor = spendingRecordCursorFromToken(request.cursor, { knowledgeAt: current, month, day });
+  const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
+    ? Math.min(request.limit ?? 50, 100)
+    : 50;
+  const monthFilter = month === null ? "" : "AND SUBSTRING(purchase_rows.occurrence_value, 1, 7) = ?";
+  const dayFilter = day === null ? "" : "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) = ?";
+  const cursorFilter = cursor === null
+    ? ""
+    : "AND (purchase_rows.occurrence_value < ? OR (purchase_rows.occurrence_value = ? AND purchase_rows.purchase_id > ?))";
+  const invoiceUuid = sqlUuid("invoice_id");
+  const transactionUuid = sqlUuid("transaction_id");
+  const eventUuid = sqlUuid("link.event_id");
+  const refundUuid = sqlUuid("refund_id");
+  const params: unknown[] = [current, current];
+  if (month !== null) params.push(month);
+  if (day !== null) params.push(day);
+  if (cursor !== null) params.push(cursor.occurrence, cursor.occurrence, cursor.purchaseId);
+  params.push(limit + 1);
+  const result = await pgliteQuery<Row>(reader, `
+    WITH invoice_ranked AS (
+      SELECT revision.invoice_id, revision.amount_coefficient,
+             revision.amount_scale, revision.currency, revision.state,
+             revision.occurrence_value, commit_row.commit_sequence,
+             ROW_NUMBER() OVER (
+               PARTITION BY revision.invoice_id
+               ORDER BY revision.revision_number DESC,
+                        commit_row.commit_sequence DESC, revision.revision_id DESC
+             ) AS revision_rank
+        FROM einvoice_invoice_revisions revision
+        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       WHERE commit_row.commit_sequence <= ?
+    ), active_invoices AS MATERIALIZED (
+      SELECT invoice_id, amount_coefficient, amount_scale, currency, occurrence_value
+        FROM invoice_ranked
+       WHERE revision_rank = 1 AND state = 'active'
+    ), linked_transactions AS MATERIALIZED (
+      SELECT current_row.transaction_id, revision.amount_coefficient,
+             revision.amount_scale, revision.currency,
+             COALESCE(facts.consume_date, facts.posting_date, revision.effective_on) AS occurrence_value
+        FROM current_spending_dedup_links active_link
+        JOIN current_transactions current_row ON current_row.transaction_id = active_link.transaction_id
+        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment kind
+          ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
+        LEFT JOIN LATERAL (
+          SELECT consume_date, posting_date
+            FROM canonical_credit_card_transaction_details detail
+           WHERE detail.revision_id = current_row.revision_id
+           ORDER BY detail.source_record_id
+           LIMIT 1
+        ) facts ON TRUE
+       WHERE revision.administrative_state = 'active'
+         AND revision.economic_status = 'normal'
+         AND revision.posting_status = 'posted'
+         AND revision.direction = 'outflow'
+         AND kind.taxonomy_code IS NOT NULL
+         AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
+         AND kind.taxonomy_code NOT LIKE 'transfer.%'
+         AND kind.taxonomy_code NOT LIKE 'cash.%'
+         AND kind.taxonomy_code NOT LIKE 'investment.%'
+         AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
+         AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+    ), eligible_transactions AS MATERIALIZED (
+      SELECT transaction_id, amount_coefficient, amount_scale, currency,
+             COALESCE(consume_date, posting_date, effective_on) AS occurrence_value
+        FROM current_spending_pairing_entries
+      UNION ALL
+      SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
+        FROM linked_transactions
+    ), valid_links AS MATERIALIZED (
+      SELECT active_link.invoice_id, active_link.transaction_id,
+             active_link.confirmed_event_id AS event_id
+        FROM current_spending_dedup_links active_link
+        JOIN active_invoices invoice ON invoice.invoice_id = active_link.invoice_id
+        JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = active_link.transaction_id
+    ), refund_ranked AS (
+      SELECT revision.refund_id, identity.transaction_id,
+             revision.amount_coefficient, revision.amount_scale, revision.currency,
+             revision.occurrence_value, revision.state, commit_row.commit_sequence,
+             ROW_NUMBER() OVER (
+               PARTITION BY revision.refund_id
+               ORDER BY revision.revision_number DESC,
+                        commit_row.commit_sequence DESC, revision.revision_id DESC
+             ) AS revision_rank
+        FROM spending_refund_revisions revision
+        JOIN spending_refund_identities identity ON identity.refund_id = revision.refund_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       WHERE commit_row.commit_sequence <= ?
+    ), active_refunds AS MATERIALIZED (
+      SELECT refund_id, transaction_id, occurrence_value
+        FROM refund_ranked
+       WHERE revision_rank = 1 AND state = 'active'
+         AND amount_coefficient IS NOT NULL AND occurrence_value IS NOT NULL
+    ), purchase_rows AS MATERIALIZED (
+      SELECT 'linked' AS basis, invoice.occurrence_value,
+             invoice.invoice_id, transaction_row.transaction_id, link.event_id,
+             NULL::bytea AS refund_id,
+             'link:' || ${eventUuid} AS purchase_id
+        FROM valid_links link
+        JOIN active_invoices invoice ON invoice.invoice_id = link.invoice_id
+        JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = link.transaction_id
+      UNION ALL
+      SELECT 'invoice', invoice.occurrence_value, invoice.invoice_id, NULL::bytea,
+             NULL::bytea, NULL::bytea,
+             'invoice:' || ${invoiceUuid}
+        FROM active_invoices invoice
+       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.invoice_id = invoice.invoice_id)
+      UNION ALL
+      SELECT 'bank-transaction', transaction_row.occurrence_value, NULL::bytea,
+             transaction_row.transaction_id, NULL::bytea, NULL::bytea,
+             'transaction:' || ${transactionUuid}
+        FROM eligible_transactions transaction_row
+       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.transaction_id = transaction_row.transaction_id)
+         AND NOT EXISTS (SELECT 1 FROM active_refunds refund WHERE refund.transaction_id = transaction_row.transaction_id)
+      UNION ALL
+      SELECT 'refund', refund.occurrence_value, NULL::bytea, refund.transaction_id,
+             NULL::bytea, refund.refund_id,
+             'refund:' || ${refundUuid}
+        FROM active_refunds refund
+    ), selected_rows AS (
+      SELECT purchase_rows.*
+        FROM purchase_rows
+       WHERE TRUE ${monthFilter} ${dayFilter} ${cursorFilter}
+       ORDER BY purchase_rows.occurrence_value DESC, purchase_rows.purchase_id ASC
+       LIMIT ?
+    )
+    SELECT basis, occurrence_value, invoice_id, transaction_id, event_id, refund_id, purchase_id
+      FROM selected_rows
+     ORDER BY occurrence_value DESC, purchase_id ASC
+  `, params);
+  const selected = rows(result);
+  const hasNext = selected.length > limit;
+  const visibleRows = selected.slice(0, limit);
+  const invoiceIds = [...new Set(visibleRows.flatMap((row) => row.invoice_id ? [idString(row.invoice_id, "Spending page invoice")] : []))];
+  const transactionIds = [...new Set(visibleRows.flatMap((row) => row.transaction_id ? [idString(row.transaction_id, "Spending page transaction")] : []))];
+  const [invoiceViews, spending, recognition] = await Promise.all([
+    invoices(reader, current, false, undefined, invoiceIds),
+    querySpendingReport(reader, "current", current, null, { transactionIds }),
+    querySpendingRecognition(reader, { knowledgeAt: current, invoiceIds, transactionIds }),
+  ]);
+  const composed = composePurchaseReport({
+    request: { kind: "current" },
+    knowledgeAt: current,
+    invoices: invoiceViews,
+    transactions: spending.includedTransactions,
+    recognition,
+  });
+  const recordById = new Map(composed.records.map((record) => [record.purchaseId, record]));
+  const pageRecords = visibleRows.flatMap((row) => {
+    const purchaseId = stringValue(row.purchase_id, "Spending purchase identity");
+    const record = recordById.get(purchaseId);
+    return record ? [record] : [];
+  });
+  const last = visibleRows.at(-1);
+  const page: SpendingRecordPageDto = Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    month,
+    day,
+    records: Object.freeze(pageRecords),
+    nextCursor: hasNext && last ? spendingRecordCursorToken({
+      schemaVersion: 1,
+      knowledgeAt: current,
+      month,
+      day,
+      occurrence: stringValue(last.occurrence_value, "Spending page occurrence"),
+      purchaseId: stringValue(last.purchase_id, "Spending page purchase identity"),
+    }) : null,
+  });
+  return page;
+}
+
+/** Hydrate only the rows touched by one compact action, without walking the
+ * selected month keyset. The caller pins this read to the post-write version.
+ */
+export async function queryCurrentSpendingActionRecords(
+  reader: PGliteSpendingReader,
+  request: Readonly<{
+    knowledgeAt: number;
+    invoiceIdentityId: string;
+    transactionIdentityId: string;
+  }>,
+): Promise<readonly PurchaseReport["records"][number][]> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new Error("Spending action records data version is stale; reload Spending.");
+  const [invoiceViews, spending, recognition] = await Promise.all([
+    invoices(reader, current, false, undefined, [request.invoiceIdentityId]),
+    querySpendingReport(reader, "current", current, null, {
+      transactionIds: [request.transactionIdentityId],
+    }),
+    querySpendingRecognition(reader, {
+      knowledgeAt: current,
+      invoiceIds: [request.invoiceIdentityId],
+      transactionIds: [request.transactionIdentityId],
+    }),
+  ]);
+  const composed = composePurchaseReport({
+    request: { kind: "current" },
+    knowledgeAt: current,
+    invoices: invoiceViews,
+    transactions: spending.includedTransactions,
+    recognition,
+  });
+  return Object.freeze(composed.records.filter((record) =>
+    record.invoice?.invoiceId === request.invoiceIdentityId ||
+    record.transaction?.transactionId === request.transactionIdentityId));
+}
+
+type MonthSpendingCandidate = Readonly<{
+  candidate: PurchaseReport["candidates"][number];
+  invoiceId: string;
+  transactionId: string;
+}>;
+
+async function queryDurableCandidatePairsForMonth(
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  month: string,
+): Promise<ReadonlySet<string>> {
+  const rowsForMonth = rows(await pgliteQuery<Row>(reader,
+    `WITH invoice_ranked AS (
+       SELECT revision.invoice_id, revision.state, revision.occurrence_value,
+              ROW_NUMBER() OVER (
+                PARTITION BY revision.invoice_id
+                ORDER BY revision.revision_number DESC, commit_row.commit_sequence DESC, revision.revision_id DESC
+              ) AS revision_rank
+         FROM einvoice_invoice_revisions revision
+         JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+        WHERE commit_row.commit_sequence <= ?
+     )
+     SELECT candidate.invoice_id, candidate.transaction_id
+       FROM spending_match_candidates candidate
+       JOIN canonical_commits created ON created.commit_id = candidate.created_commit_id
+       JOIN invoice_ranked invoice ON invoice.invoice_id = candidate.invoice_id AND invoice.revision_rank = 1 AND invoice.state = 'active'
+       JOIN current_spending_pairing_entries transaction_row ON transaction_row.transaction_id = candidate.transaction_id
+      WHERE created.commit_sequence <= ?
+        AND (SUBSTRING(invoice.occurrence_value, 1, 7) = ?
+             OR SUBSTRING(COALESCE(transaction_row.consume_date, transaction_row.posting_date, transaction_row.effective_on), 1, 7) = ?)
+        AND NOT EXISTS (SELECT 1 FROM current_spending_dedup_links link WHERE link.invoice_id = candidate.invoice_id)
+        AND NOT EXISTS (SELECT 1 FROM current_spending_dedup_links link WHERE link.transaction_id = candidate.transaction_id)`,
+    [knowledgeAt, knowledgeAt, month, month],
+  ));
+  return new Set(rowsForMonth.map((row) => pairKey(
+    idString(row.invoice_id, "Month candidate invoice"),
+    idString(row.transaction_id, "Month candidate transaction"),
+  )));
+}
+
+async function queryCurrentMonthSpendingCandidates(
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  month: string,
+): Promise<readonly MonthSpendingCandidate[]> {
+  const [recognition, durableMonthPairs, deterministicPairs] = await Promise.all([
+    querySpendingRecognition(reader, { knowledgeAt }),
+    queryDurableCandidatePairsForMonth(reader, knowledgeAt, month),
+    queryDeterministicCandidatePairs(reader, month),
+  ]);
+  const durableCandidates = recognition.candidates.filter((candidate) =>
+    candidate.status === "candidate" && durableMonthPairs.has(pairKey(candidate.invoiceId, candidate.transactionId)),
+  );
+  const statusByPair = new Map<string, string>();
+  for (const candidate of recognition.candidates)
+    statusByPair.set(pairKey(candidate.invoiceId, candidate.transactionId), candidate.status);
+  for (const link of recognition.activeLinks)
+    statusByPair.set(pairKey(link.invoiceId, link.transactionId), "confirmed");
+  for (const denied of recognition.denied)
+    statusByPair.set(pairKey(denied.invoiceId, denied.transactionId), "denied");
+  const pendingDurablePairs = new Set(durableCandidates.map((candidate) => pairKey(candidate.invoiceId, candidate.transactionId)));
+  const inferred = deterministicPairs
+    .filter((pair) => {
+      const key = pairKey(pair.invoiceId, pair.transactionId);
+      const status = statusByPair.get(key);
+      return status === undefined && !pendingDurablePairs.has(key);
+    })
+    .map((pair) => Object.freeze({
+      candidate: Object.freeze({
+        invoiceId: pair.invoiceId,
+        transactionId: pair.transactionId,
+        candidateId: pair.candidateId,
+        algorithm: pair.algorithm,
+        algorithmVersion: pair.algorithmVersion,
+        similarityEvidence: pair.similarityEvidence,
+        status: "candidate" as const,
+      }),
+      invoiceId: pair.invoiceId,
+      transactionId: pair.transactionId,
+    }));
+  const durable = durableCandidates.map((candidate) => Object.freeze({
+    candidate,
+    invoiceId: candidate.invoiceId,
+    transactionId: candidate.transactionId,
+  }));
+  return Object.freeze([...durable, ...inferred]);
+}
+
+/** Read one asynchronous, month-bound pending-pairing slice. */
+export async function queryCurrentSpendingCandidatePage(
+  reader: PGliteSpendingReader,
+  request: SpendingCandidatePageRequest,
+  cachedCandidates?: readonly MonthSpendingCandidate[],
+): Promise<SpendingCandidatePageDto> {
+  const current = await latest(reader);
+  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
+    throw new Error("Spending candidate page data version is stale; reload Spending.");
+  if (!validSpendingMonth(request.month)) throw new TypeError("Spending candidate page month is invalid.");
+  const offset = Number.isSafeInteger(request.offset) && (request.offset ?? 0) >= 0 ? request.offset ?? 0 : 0;
+  const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
+    ? Math.min(request.limit ?? 20, 100)
+    : 20;
+  const candidates = cachedCandidates ?? await queryCurrentMonthSpendingCandidates(reader, current, request.month);
+  const candidatePage = candidates.slice(offset, offset + limit);
+  const invoiceIds = [...new Set(candidatePage.map((item) => item.invoiceId))];
+  const transactionIds = [...new Set(candidatePage.map((item) => item.transactionId))];
+  const [invoiceViews, spending, recognition] = await Promise.all([
+    invoices(reader, current, false, undefined, invoiceIds),
+    querySpendingReport(reader, "current", current, null, { transactionIds }),
+    querySpendingRecognition(reader, { knowledgeAt: current, invoiceIds, transactionIds }),
+  ]);
+  const report = composePurchaseReport({
+    request: { kind: "current" },
+    knowledgeAt: current,
+    invoices: invoiceViews,
+    transactions: spending.includedTransactions,
+    recognition: Object.freeze({
+      knowledgeAt: current,
+      candidates: Object.freeze([]),
+      activeLinks: Object.freeze([]),
+      denied: Object.freeze([]),
+      refunds: recognition.refunds,
+    }),
+  });
+  const invoicesById = new Map(invoiceViews.map((invoice) => [invoice.invoiceId, invoice]));
+  const recordById = new Map(report.records.map((record) => [record.purchaseId, record]));
+  const invoiceCandidateIds = new Map<string, string[]>();
+  const transactionCandidateIds = new Map<string, string[]>();
+  for (const item of candidatePage) {
+    (invoiceCandidateIds.get(item.invoiceId) ?? invoiceCandidateIds.set(item.invoiceId, []).get(item.invoiceId)!).push(item.candidate.candidateId);
+    (transactionCandidateIds.get(item.transactionId) ?? transactionCandidateIds.set(item.transactionId, []).get(item.transactionId)!).push(item.candidate.candidateId);
+  }
+  const withCandidateIds = (record: PurchaseReport["records"][number] | undefined, candidateIds: readonly string[] | undefined) => {
+    if (!record || !candidateIds?.length) return record ?? null;
+    const ids = [...new Set([...record.candidateIds, ...candidateIds])];
+    return Object.freeze({ ...record, candidateIds: Object.freeze(ids), possibleDuplicate: true });
+  };
+  const items = candidatePage.flatMap((item) => {
+    const invoice = invoicesById.get(item.invoiceId);
+    if (!invoice) return [];
+    const invoiceRecord = withCandidateIds(
+      recordById.get(`invoice:${item.invoiceId}`),
+      invoiceCandidateIds.get(item.invoiceId),
+    );
+    if (!invoiceRecord) throw new Error("Spending month candidate invoice is not visible at this data version.");
+    const paymentRecord = withCandidateIds(
+      recordById.get(`transaction:${item.transactionId}`),
+      transactionCandidateIds.get(item.transactionId),
+    );
+    return [{ candidate: item.candidate, invoiceRecord, paymentRecord }];
+  });
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt: current,
+    month: request.month,
+    items: Object.freeze(items),
+    totalCandidateCount: candidates.length,
+    nextOffset: offset + items.length < candidates.length ? offset + items.length : null,
+  });
+}
+
+/**
+ * Build the current Spending summary from compact indexed facts. The legacy
+ * full report remains available through queryCurrentSpending; this query only
+ * returns grouped totals/counts and never materializes transaction or invoice
+ * view objects on the worker or renderer.
+ */
+export async function queryCurrentSpendingSummary(
+  reader: PGliteSpendingReader,
+  request: Readonly<{ knowledgeAt?: number }> = {},
+): Promise<SpendingSummaryDto> {
+  const current = await latest(reader);
+  const knowledgeAt = request.knowledgeAt ?? current;
+  if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0 || knowledgeAt !== current)
+    throw new Error("Spending summary data version is stale; reload Spending.");
+
+  const result = await pgliteQuery<Row>(reader, `
+    WITH invoice_ranked AS (
+      SELECT revision.invoice_id, revision.amount_coefficient,
+             revision.amount_scale, revision.currency, revision.state,
+             revision.occurrence_value, commit_row.commit_sequence,
+             ROW_NUMBER() OVER (
+               PARTITION BY revision.invoice_id
+               ORDER BY revision.revision_number DESC,
+                        commit_row.commit_sequence DESC, revision.revision_id DESC
+             ) AS revision_rank
+        FROM einvoice_invoice_revisions revision
+        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       WHERE commit_row.commit_sequence <= ?
+    ), active_invoices AS MATERIALIZED (
+      SELECT invoice_id, amount_coefficient, amount_scale, currency, occurrence_value
+        FROM invoice_ranked
+       WHERE revision_rank = 1 AND state = 'active'
+    ), linked_transactions AS MATERIALIZED (
+      SELECT current_row.transaction_id, revision.amount_coefficient,
+             revision.amount_scale, revision.currency,
+             COALESCE(facts.consume_date, facts.posting_date, revision.effective_on) AS occurrence_value
+        FROM current_spending_dedup_links active_link
+        JOIN current_transactions current_row ON current_row.transaction_id = active_link.transaction_id
+        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment kind
+          ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
+        LEFT JOIN LATERAL (
+          SELECT consume_date, posting_date
+            FROM canonical_credit_card_transaction_details detail
+           WHERE detail.revision_id = current_row.revision_id
+           ORDER BY detail.source_record_id
+           LIMIT 1
+        ) facts ON TRUE
+       WHERE revision.administrative_state = 'active'
+         AND revision.economic_status = 'normal'
+         AND revision.posting_status = 'posted'
+         AND revision.direction = 'outflow'
+         AND kind.taxonomy_code IS NOT NULL
+         AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
+         AND kind.taxonomy_code NOT LIKE 'transfer.%'
+         AND kind.taxonomy_code NOT LIKE 'cash.%'
+         AND kind.taxonomy_code NOT LIKE 'investment.%'
+         AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
+         AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+    ), eligible_transactions AS MATERIALIZED (
+      SELECT transaction_id, amount_coefficient, amount_scale, currency,
+             COALESCE(consume_date, posting_date, effective_on) AS occurrence_value
+        FROM current_spending_pairing_entries
+      UNION ALL
+      SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
+        FROM linked_transactions
+    ), valid_links AS MATERIALIZED (
+      SELECT active_link.invoice_id, active_link.transaction_id
+        FROM current_spending_dedup_links active_link
+        JOIN active_invoices invoice ON invoice.invoice_id = active_link.invoice_id
+        JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = active_link.transaction_id
+    ), refund_ranked AS (
+      SELECT revision.refund_id, identity.transaction_id,
+             revision.amount_coefficient, revision.amount_scale, revision.currency,
+             revision.occurrence_value, revision.state, commit_row.commit_sequence,
+             ROW_NUMBER() OVER (
+               PARTITION BY revision.refund_id
+               ORDER BY revision.revision_number DESC,
+                        commit_row.commit_sequence DESC, revision.revision_id DESC
+             ) AS revision_rank
+        FROM spending_refund_revisions revision
+        JOIN spending_refund_identities identity ON identity.refund_id = revision.refund_id
+        JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+       WHERE commit_row.commit_sequence <= ?
+    ), active_refunds AS MATERIALIZED (
+      SELECT refund_id, transaction_id, amount_coefficient, amount_scale,
+             currency, occurrence_value
+        FROM refund_ranked
+       WHERE revision_rank = 1 AND state = 'active'
+    ), purchase_rows AS MATERIALIZED (
+      SELECT 'linked' AS basis, invoice.occurrence_value,
+             transaction_row.amount_coefficient, transaction_row.amount_scale,
+             transaction_row.currency, invoice.invoice_id, transaction_row.transaction_id
+        FROM valid_links link
+        JOIN active_invoices invoice ON invoice.invoice_id = link.invoice_id
+        JOIN eligible_transactions transaction_row ON transaction_row.transaction_id = link.transaction_id
+      UNION ALL
+      SELECT 'invoice', invoice.occurrence_value,
+             invoice.amount_coefficient, invoice.amount_scale, invoice.currency,
+             invoice.invoice_id, NULL::bytea
+        FROM active_invoices invoice
+       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.invoice_id = invoice.invoice_id)
+      UNION ALL
+      SELECT 'bank-transaction', transaction_row.occurrence_value,
+             transaction_row.amount_coefficient, transaction_row.amount_scale,
+             transaction_row.currency, NULL::bytea, transaction_row.transaction_id
+        FROM eligible_transactions transaction_row
+       WHERE NOT EXISTS (SELECT 1 FROM valid_links link WHERE link.transaction_id = transaction_row.transaction_id)
+         AND NOT EXISTS (SELECT 1 FROM active_refunds refund WHERE refund.transaction_id = transaction_row.transaction_id)
+      UNION ALL
+      SELECT 'refund', refund.occurrence_value,
+             refund.amount_coefficient, refund.amount_scale, refund.currency,
+             NULL::bytea, refund.transaction_id
+        FROM active_refunds refund
+       WHERE refund.amount_coefficient IS NOT NULL AND refund.occurrence_value IS NOT NULL
+    ), scaled_amounts AS MATERIALIZED (
+      SELECT SUBSTRING(occurrence_value, 1, 7) AS month,
+             SUBSTRING(occurrence_value, 1, 10) AS date, currency,
+             amount_coefficient::numeric * POWER(
+               10::numeric, MAX(amount_scale) OVER () - amount_scale
+             ) AS coefficient,
+             MAX(amount_scale) OVER () AS scale
+        FROM purchase_rows
+       WHERE amount_coefficient IS NOT NULL
+    ), amount_groups AS (
+      SELECT GROUPING(month) AS all_months, GROUPING(date) AS all_days,
+             month, date, currency, SUM(coefficient)::text AS coefficient,
+             MAX(scale) AS scale, COUNT(*) AS count
+        FROM scaled_amounts
+       GROUP BY GROUPING SETS ((currency), (month, currency), (month, date, currency))
+    ), record_groups AS (
+      SELECT GROUPING(month) AS all_months, GROUPING(date) AS all_days,
+             month, date, COUNT(*) AS record_count, COUNT(DISTINCT date) AS active_day_count
+        FROM (
+          SELECT SUBSTRING(occurrence_value, 1, 7) AS month,
+                 SUBSTRING(occurrence_value, 1, 10) AS date
+            FROM purchase_rows
+        ) records
+       GROUP BY GROUPING SETS ((), (month), (month, date))
+    )
+    SELECT
+      (SELECT record_count FROM record_groups WHERE all_months = 1) AS record_count,
+      NULL::bigint AS candidate_count,
+      NULL::bigint AS pending_candidate_count,
+      COALESCE((SELECT json_agg(json_build_object(
+        'currency', currency, 'coefficient', coefficient, 'scale', scale, 'count', count
+      ) ORDER BY currency) FROM amount_groups WHERE all_months = 1), '[]'::json) AS totals,
+      COALESCE((SELECT json_agg(json_build_object(
+        'month', stats.month, 'recordCount', stats.record_count, 'activeDayCount', stats.active_day_count,
+        'pendingCandidateCount', NULL,
+        'totalsByCurrency', COALESCE((
+          SELECT json_agg(json_build_object(
+            'currency', amounts.currency, 'coefficient', amounts.coefficient,
+            'scale', amounts.scale, 'count', amounts.count
+          ) ORDER BY amounts.currency)
+            FROM amount_groups amounts
+           WHERE amounts.all_months = 0 AND amounts.all_days = 1 AND amounts.month = stats.month
+        ), '[]'::json)
+      ) ORDER BY stats.month) FROM record_groups stats
+         WHERE stats.all_months = 0 AND stats.all_days = 1), '[]'::json) AS months,
+      COALESCE((SELECT json_agg(json_build_object(
+        'month', stats.month, 'date', stats.date, 'recordCount', stats.record_count,
+        'totalsByCurrency', COALESCE((
+          SELECT json_agg(json_build_object(
+            'currency', amounts.currency, 'coefficient', amounts.coefficient,
+            'scale', amounts.scale, 'count', amounts.count
+          ) ORDER BY amounts.currency)
+            FROM amount_groups amounts
+           WHERE amounts.all_months = 0 AND amounts.all_days = 0
+             AND amounts.month = stats.month AND amounts.date = stats.date
+        ), '[]'::json)
+      ) ORDER BY stats.month, stats.date) FROM record_groups stats
+         WHERE stats.all_months = 0 AND stats.all_days = 0), '[]'::json) AS days
+  `, [knowledgeAt, knowledgeAt]);
+
+  const row = rows(result)[0];
+  if (!row) throw new Error("Spending summary query returned no row.");
+  const totalsByCurrency = summaryMoneyRows(row.totals, "Spending totals");
+  const monthTotals = jsonRows(row.months, "Spending month totals").map((month) => Object.freeze({
+    month: stringValue(month.month, "Spending month"),
+    recordCount: numeric(month.recordCount, "Spending month record count"),
+    activeDayCount: numeric(month.activeDayCount, "Spending active day count"),
+    pendingCandidateCount: month.pendingCandidateCount === null
+      ? null
+      : numeric(month.pendingCandidateCount, "Spending month candidate count"),
+    totalsByCurrency: summaryMoneyRows(month.totalsByCurrency, "Spending month totals"),
+  }));
+  const dayTotals = jsonRows(row.days, "Spending day totals").map((day) => Object.freeze({
+    month: stringValue(day.month, "Spending day month"),
+    date: stringValue(day.date, "Spending day"),
+    recordCount: numeric(day.recordCount, "Spending day record count"),
+    totalsByCurrency: summaryMoneyRows(day.totalsByCurrency, "Spending day totals"),
+  }));
+  const purchaseReport: SpendingPurchaseReportSummaryDto = Object.freeze({
+    recordCount: numeric(row.record_count, "Spending record count"),
+    candidateCount: row.candidate_count === null ? null : numeric(row.candidate_count, "Spending candidate count"),
+    pendingCandidateCount: row.pending_candidate_count === null ? null : numeric(row.pending_candidate_count, "Spending pending candidate count"),
+    candidateState: "unloaded",
+    currencies: Object.freeze(totalsByCurrency.map((amount) => amount.currency)),
+    totalsByCurrency,
+    monthTotals: Object.freeze(monthTotals),
+    dayTotals: Object.freeze(dayTotals),
+  });
+  return Object.freeze({
+    schemaVersion: 1,
+    knowledgeAt,
+    availability: purchaseReport.recordCount > 0 ? "available" : "empty",
+    inclusionPolicy: CANONICAL_SPENDING_INCLUSION_POLICY,
+    purchaseReport: Object.freeze({
+      ...purchaseReport,
+      kind: "current",
+      financialAt: null,
+      status: "ok",
+      totalStatus: "complete",
+    }),
+  });
+}
+
 export async function queryHistoricalSpending(
   reader: PGliteSpendingReader,
   request: Readonly<{ financialAt: string; knowledgeAt: number }>,
@@ -2061,6 +2874,61 @@ export async function querySpendingPage(
   return spendingPageFromCurrent(await queryCurrentSpending(reader), request);
 }
 
+function spendingPageFromSummary(
+  summary: SpendingSummaryDto,
+  request: Readonly<{ selectedMonth?: string; selectedCategory?: string }> = {},
+): SpendingPageDto {
+  const money = summary.purchaseReport.totalsByCurrency.map((amount) => ({
+    currency: amount.currency,
+    value: Number(amount.coefficient) / 10 ** amount.scale,
+    exact: { coefficient: amount.coefficient, scale: amount.scale },
+  }));
+  const purchaseReport: SpendingPurchaseReportDto = Object.freeze({
+    status: "ok",
+    kind: "current",
+    knowledgeAt: summary.knowledgeAt,
+    financialAt: null,
+    records: Object.freeze([]),
+    totalsByCurrency: summary.purchaseReport.totalsByCurrency,
+    totalStatus: summary.purchaseReport.totalStatus,
+    candidates: Object.freeze([]),
+    summary: summary.purchaseReport,
+  });
+  return Object.freeze({
+    canonical: Object.freeze({
+      availability: summary.availability,
+      policy: summary.inclusionPolicy,
+      knowledgePoint: summary.knowledgeAt,
+      selectedMonth: request.selectedMonth ?? null,
+      selectedCategory: request.selectedCategory ?? null,
+      transactions: Object.freeze([]),
+      includedTransactions: Object.freeze([]),
+      totalsByCurrency: money,
+      categoryTotalsByCurrency: Object.freeze([]),
+      unclassifiedByCurrency: Object.freeze([]),
+      classificationCoverage: Object.freeze({
+        includedCount: 0,
+        classifiedCount: 0,
+        unclassifiedCount: 0,
+        includedAmountByCurrency: Object.freeze([]),
+        classifiedAmountByCurrency: Object.freeze([]),
+        unclassifiedAmountByCurrency: Object.freeze([]),
+      }),
+      reportEligibility: Object.freeze({ status: "complete", gapCount: 0, gapAmountByCurrency: Object.freeze([]) }),
+      totalStatus: "complete",
+    }),
+    purchaseReport,
+    invoices: Object.freeze([]),
+  });
+}
+
+export async function queryCurrentSpendingSummaryPage(
+  reader: PGliteSpendingReader,
+  request: Readonly<{ selectedMonth?: string; selectedCategory?: string }> = {},
+): Promise<SpendingPageDto> {
+  return spendingPageFromSummary(await queryCurrentSpendingSummary(reader), request);
+}
+
 export async function rankPGliteSpendingPaymentCandidates(
   reader: PGliteSpendingReader,
   input: SpendingPairingCandidatesInput,
@@ -2154,6 +3022,11 @@ function rankSpendingPaymentCandidatesFromSnapshot(
 }
 
 export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
+  let monthCandidateCache: Readonly<{
+    knowledgeAt: number;
+    month: string;
+    candidates: readonly MonthSpendingCandidate[];
+  }> | null = null;
   return Object.freeze({
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
@@ -2163,6 +3036,25 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       cachePGliteSpendingSnapshot(store, result);
       return result;
     },
+    summary: (request?: Parameters<typeof queryCurrentSpendingSummary>[1]) =>
+      store.transaction((transaction) => queryCurrentSpendingSummary(transaction, request)),
+    summaryPage: (request?: Parameters<typeof queryCurrentSpendingSummaryPage>[1]) =>
+      store.transaction((transaction) => queryCurrentSpendingSummaryPage(transaction, request)),
+    recordPage: (request: SpendingRecordPageRequest) =>
+      store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, request)),
+    candidatePage: async (request: SpendingCandidatePageRequest) => store.transaction(async (transaction) => {
+      const knowledgeAt = await latest(transaction);
+      if (knowledgeAt !== request.knowledgeAt)
+        throw new Error("Spending candidate page data version is stale; reload Spending.");
+      if (!monthCandidateCache || monthCandidateCache.knowledgeAt !== knowledgeAt || monthCandidateCache.month !== request.month) {
+        monthCandidateCache = Object.freeze({
+          knowledgeAt,
+          month: request.month,
+          candidates: await queryCurrentMonthSpendingCandidates(transaction, knowledgeAt, request.month),
+        });
+      }
+      return queryCurrentSpendingCandidatePage(transaction, request, monthCandidateCache.candidates);
+    }),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
     page: async (request?: Parameters<typeof querySpendingPage>[1]) => {
       let result: CurrentSpendingQueryResult | null = null;

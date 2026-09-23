@@ -26,7 +26,9 @@ const dataViews = {
       ipcRenderer.removeListener("data-views:error", errorHandler);
     };
     const rowsHandler = (_event: Electron.IpcRendererEvent, event: DataViewRowsEvent) => {
-      if (event.requestId === requestId) onRows(event.rows);
+      if (event.requestId === requestId) {
+        onRows(event.rows);
+      }
     };
     const errorHandler = (_event: Electron.IpcRendererEvent, event: DataViewErrorEvent) => {
       if (event.requestId === requestId) {
@@ -90,6 +92,10 @@ const api: OctopusBeakApi = {
   },
   spending: {
     load: (input, options) => ipcRenderer.invoke("spending:load", input, options),
+    loadRecordPage: (input) => ipcRenderer.invoke("spending:record-page", input),
+    loadCandidatePage: (input, requestId) => ipcRenderer.invoke("spending:candidate-page", input, requestId),
+    cancelCandidatePage: (requestId) => ipcRenderer.invoke("spending:candidate-page-cancel", requestId),
+    applyPageAction: (input) => ipcRenderer.invoke("spending:page-action", input),
     loadBlock: (block, options) => ipcRenderer.invoke("spending:block", block, options),
     rankPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-candidates", input),
     prewarmPairingCandidates: (input) => ipcRenderer.invoke("spending:pairing-prewarm", input),

@@ -19,6 +19,12 @@ import type {
   SpendingLinkActionInput,
   SpendingPageDto,
   SpendingPurchaseActionResult,
+  SpendingCandidatePageDto,
+  SpendingCandidatePageRequest,
+  SpendingRecordPageDto,
+  SpendingRecordPageRequest,
+  SpendingPageActionRequest,
+  SpendingPageActionResult,
 } from "$lib/spending/model.ts";
 import type {
   SpendingLoadInput,
@@ -260,6 +266,10 @@ export type OctopusBeakApi = {
   };
   spending: {
     load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
+    loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingRecordPageDto>;
+    loadCandidatePage(input: SpendingCandidatePageRequest, requestId: string): Promise<SpendingCandidatePageDto>;
+    cancelCandidatePage(requestId: string): Promise<boolean>;
+    applyPageAction(input: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
@@ -313,6 +323,10 @@ export const octopusBeakApiChannels = [
   "liabilities:block",
   "spending:load",
   "spending:block",
+  "spending:record-page",
+  "spending:candidate-page",
+  "spending:candidate-page-cancel",
+  "spending:page-action",
   "spending:pairing-candidates",
   "spending:pairing-prewarm",
   "spending:confirmCandidate",
