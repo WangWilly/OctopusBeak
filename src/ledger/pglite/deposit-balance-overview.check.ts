@@ -37,7 +37,7 @@ import {
 } from "../canonical/fubon-domestic-deposit.ts";
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
 import { deriveSourceConnectionIdentityKey } from "../canonical/source-connection-identity.ts";
-import { createForeignCurrencyDepositCapture } from "../canonical/foreign-currency-deposit.ts";
+import { createForeignCurrencyDepositCapture } from "../canonical/foreign-currency-deposit-admission.ts";
 import { YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../canonical/foreign-currency-deposit.fixtures.ts";
 
 const token = (value: string): string => `sha256:${createHash("sha256").update(value).digest("base64url")}`;

@@ -17,7 +17,7 @@ import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
   CanonicalFinancialNonTransactionRecord,
-} from "../canonical/canonical-financial-deposit-writer.ts";
+} from "../canonical/canonical-financial-deposit-admission.ts";
 import {
   requireCanonicalSourceToken,
   validateCanonicalSourceAccountNumber,
