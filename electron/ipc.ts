@@ -5,8 +5,6 @@ import {
   shell,
   type OpenDialogOptions,
 } from "electron";
-import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 import {
   automationCancel,
   cathayGmailOtpStatus,
@@ -54,13 +52,7 @@ import {
   updateHumanAssistanceContractForTask,
   updateHumanAssistanceCompletionForTask,
 } from "../src/lib/automation/server/human-session.ts";
-import {
-  updateSpendingItemCategory,
-  updateSpendingTransactionOverride,
-  type SpendingLoadInput,
-  type SpendingOverrideUpdate,
-} from "../src/lib/spending/server/store.ts";
-import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
+import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import {
   registerPGliteViewIpc,
   type PGliteViewIpcRegistration,
@@ -110,22 +102,18 @@ export function registerOctopusBeakIpc({
   ) => void | Promise<void>;
   onAutomationRuntimeFatal?: (details: { code: string; stage: string }) => void;
   onAutomationRuntimeReady?: () => Promise<void> | void;
-  /** Explicitly disabled by default until every domain view/command is ready. */
-  pgliteViews?: {
-    enabled?: boolean;
+  pgliteViews: {
     dataDir?: string;
     workerPath?: string;
   };
-  /** Shared worker-owned operational provider; absent while the gate is off. */
-  pgliteOperational?: {
+  pgliteOperational: {
     provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort };
     worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
     dataDir?: string;
     workerPath?: string;
   };
-  /** Shared worker financial registry; absent while the staged gate is off. */
-  pgliteFinancial?: PGliteFinancialPageClient;
-} = {}) {
+  pgliteFinancial: PGliteFinancialPageClient;
+}) {
   const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
     const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
     const details = {
@@ -156,28 +144,21 @@ export function registerOctopusBeakIpc({
       reportAutomationRuntimeFatal(stage, error);
     }
   };
+  const operationalProvider = pgliteOperational.provider;
   const readHumanSession = (taskId: string): Promise<string> =>
-    operationalProvider
-      ? humanSessionForTask(taskId, operationalProvider)
-      : Promise.resolve(humanSessionForTask(taskId));
+    humanSessionForTask(taskId, operationalProvider);
   const readHumanContract = (taskId: string): Promise<Awaited<ReturnType<typeof humanAssistanceContractForTask>>> =>
-    operationalProvider
-      ? humanAssistanceContractForTask(taskId, operationalProvider)
-      : Promise.resolve(humanAssistanceContractForTask(taskId));
+    humanAssistanceContractForTask(taskId, operationalProvider);
   const updateHumanContract = (
     taskId: string,
     input: Parameters<typeof updateHumanAssistanceContractForTask>[1],
   ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceContractForTask>>> =>
-    operationalProvider
-      ? updateHumanAssistanceContractForTask(taskId, input, operationalProvider)
-      : Promise.resolve(updateHumanAssistanceContractForTask(taskId, input));
+    updateHumanAssistanceContractForTask(taskId, input, operationalProvider);
   const updateHumanCompletion = (
     taskId: string,
     status: Parameters<typeof updateHumanAssistanceCompletionForTask>[1],
   ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceCompletionForTask>>> =>
-    operationalProvider
-      ? updateHumanAssistanceCompletionForTask(taskId, status, operationalProvider)
-      : Promise.resolve(updateHumanAssistanceCompletionForTask(taskId, status));
+    updateHumanAssistanceCompletionForTask(taskId, status, operationalProvider);
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
     const windows = BrowserWindow.getAllWindows();
     for (const window of windows) {
@@ -189,21 +170,15 @@ export function registerOctopusBeakIpc({
       if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
     }
   });
-  const financialPages = pgliteFinancial ?? createFinancialPageWorkerClient(
-    new Worker(join(__dirname, "financial-page-worker.cjs")),
-  );
+  const financialPages = pgliteFinancial;
   const spendingCandidatePageControllers = new Map<string, AbortController>();
-  const ownsFinancialPages = !pgliteFinancial;
-  const sharedPgliteWorker = pgliteOperational?.worker;
-  const pgliteViewRegistration: PGliteViewIpcRegistration | null = pgliteViews?.enabled
-    ? registerPGliteViewIpc({
-      dataDir: pgliteOperational?.dataDir ?? pgliteViews.dataDir ?? "",
-      workerPath: pgliteOperational?.workerPath ?? pgliteViews.workerPath,
-      ...(sharedPgliteWorker ? { worker: sharedPgliteWorker, workerOwned: false } : {}),
-    }, ipcMain)
-    : null;
-  ipcMain.handle("data-views:enabled", () => pgliteViewRegistration !== null);
-  const operationalProvider = pgliteOperational?.provider;
+  const sharedPgliteWorker = pgliteOperational.worker;
+  const pgliteViewRegistration: PGliteViewIpcRegistration = registerPGliteViewIpc({
+    dataDir: pgliteOperational.dataDir ?? pgliteViews.dataDir ?? "",
+    workerPath: pgliteOperational.workerPath ?? pgliteViews.workerPath,
+    ...(sharedPgliteWorker ? { worker: sharedPgliteWorker, workerOwned: false } : {}),
+  }, ipcMain);
+  ipcMain.handle("data-views:enabled", () => true);
   const automationCredentials = createAutomationCredentialStateCache(
     readAutomationCredentialState,
   );
@@ -307,11 +282,9 @@ export function registerOctopusBeakIpc({
       ),
   );
   ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
-    if (!pgliteFinancial) throw new Error("Versioned Spending pages are unavailable on the legacy financial provider.");
     return pgliteFinancial.loadSpendingRecordPage(request);
   });
   ipcMain.handle("spending:candidate-page", async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
-    if (!pgliteFinancial) throw new Error("Versioned Spending pages are unavailable on the legacy financial provider.");
     if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
       throw new TypeError("Spending candidate page request id is invalid.");
     if (spendingCandidatePageControllers.has(requestId))
@@ -333,7 +306,6 @@ export function registerOctopusBeakIpc({
     return true;
   });
   ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
-    if (!pgliteFinancial) throw new Error("Compact Spending actions are unavailable on the legacy financial provider.");
     return pgliteFinancial.applySpendingPageAction(request);
   });
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
@@ -350,17 +322,6 @@ export function registerOctopusBeakIpc({
   );
   ipcMain.handle("spending:revokeLink", (_event, input) =>
     financialPages.revokeLink(input),
-  );
-  ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
-    await updateSpendingItemCategory(input);
-    return { ok: true as const };
-  });
-  ipcMain.handle(
-    "spending:updateTransactionOverride",
-    (_event, input: SpendingOverrideUpdate) => {
-      updateSpendingTransactionOverride(input);
-      return { ok: true as const };
-    },
   );
   ipcMain.handle(
     "automation:block",
@@ -404,19 +365,16 @@ export function registerOctopusBeakIpc({
           } catch (error) {
             reportAutomationRuntimeFatal("automation-block", error);
           }
-          if (pgliteFinancial && operationalProvider) {
-            const core = await loadAutomationCoreSnapshot(
-              operationalProvider,
-              credentialState.status,
-              runtimeSnapshot,
-              credentialState.states,
-            );
-            const model = credentialState
-              ? applyAutomationCredentialState(core, credentialState)
-              : core;
-            return projectFinancialBlock(model, block as never, "automation" as never);
-          }
-          return financialPages.loadBlock("automation", block, options, credentialState, runtimeSnapshot);
+          const core = await loadAutomationCoreSnapshot(
+            operationalProvider,
+            credentialState.status,
+            runtimeSnapshot,
+            credentialState.states,
+          );
+          const model = credentialState
+            ? applyAutomationCredentialState(core, credentialState)
+            : core;
+          return projectFinancialBlock(model, block as never, "automation" as never);
         },
       ),
   );
@@ -487,35 +445,23 @@ export function registerOctopusBeakIpc({
   );
   ipcMain.handle("automation:run", async (_event, taskId: string) => {
     await ensureAutomationRuntimeReady("automation-run");
-    return operationalProvider
-      ? automationRun(taskId, operationalProvider)
-      : automationRun(taskId);
+    return automationRun(taskId, operationalProvider);
   });
   ipcMain.handle("automation:runMany", async (_event, taskIds: string[]) => {
     await ensureAutomationRuntimeReady("automation-run-many");
-    return operationalProvider
-      ? automationRunMany(taskIds, operationalProvider)
-      : automationRunMany(taskIds);
+    return automationRunMany(taskIds, operationalProvider);
   });
   ipcMain.handle("automation:resume", async (_event, taskId: string) => {
     await ensureAutomationRuntimeReady("automation-resume");
-    return operationalProvider
-      ? automationResume(taskId, operationalProvider)
-      : automationResume(taskId);
+    return automationResume(taskId, operationalProvider);
   });
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
-    operationalProvider
-      ? automationCancel(taskId, operationalProvider)
-      : automationCancel(taskId),
+    automationCancel(taskId, operationalProvider),
   );
   ipcMain.handle("automation:forceTerminate", (_event, taskId: string) =>
-    operationalProvider
-      ? automationForceTerminate(taskId, operationalProvider)
-      : automationForceTerminate(taskId),
+    automationForceTerminate(taskId, operationalProvider),
   );
-  ipcMain.handle("automation:runHistory", () => operationalProvider
-    ? automationRunHistory(operationalProvider)
-    : automationRunHistory());
+  ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
   ipcMain.handle(
     "automation:openExternalPrerequisite",
     async (_event, prerequisiteId: string) => {
@@ -545,7 +491,7 @@ export function registerOctopusBeakIpc({
       const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
@@ -562,7 +508,7 @@ export function registerOctopusBeakIpc({
       const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
@@ -620,9 +566,7 @@ export function registerOctopusBeakIpc({
         );
       if (resumed) {
         await ensureAutomationRuntimeReady("automation-resume");
-        await (operationalProvider
-          ? automationResume(taskId, operationalProvider)
-          : automationResume(taskId));
+        await automationResume(taskId, operationalProvider);
       }
       return { ok: true as const, contract: updatedContract, resumed };
     },
@@ -634,7 +578,7 @@ export function registerOctopusBeakIpc({
       const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
@@ -652,9 +596,7 @@ export function registerOctopusBeakIpc({
     },
   );
   ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
-    await (operationalProvider
-      ? forceQuitHumanSessionForTask(taskId, operationalProvider)
-      : forceQuitHumanSessionForTask(taskId));
+    await forceQuitHumanSessionForTask(taskId, operationalProvider);
     return { ok: true as const, closed: true };
   });
   ipcMain.handle("automation:runtimeSnapshot", async () => {
@@ -680,10 +622,7 @@ export function registerOctopusBeakIpc({
     close: async () => {
       unsubscribeFromDataInvalidation();
       unsubscribeFromAutomationRuntime();
-      await pgliteViewRegistration?.close();
-      if (ownsFinancialPages) {
-        await (financialPages as ReturnType<typeof createFinancialPageWorkerClient>).close();
-      }
+      await pgliteViewRegistration.close();
     },
   };
 }

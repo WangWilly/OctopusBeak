@@ -14,10 +14,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
 ]);
 
 /** These are explicit performance lanes, not ordinary functional tests. */
-export const HARD_PERFORMANCE_FILES = Object.freeze([
-  "scripts/check-pairing-performance.ts",
-  "scripts/check-pairing-ui-performance.mjs",
-]);
+export const HARD_PERFORMANCE_FILES = Object.freeze([]);
 
 /** Electron/CDP checks need an isolated process because Electron's macOS
  * NSApplication lifecycle is not safe to run inside the broad test lane. */

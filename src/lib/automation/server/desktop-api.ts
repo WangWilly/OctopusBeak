@@ -34,11 +34,8 @@ import {
   startAutomationTask,
 } from "./runner.ts";
 import {
-  activeTaskPrerequisiteNotices,
-  latestTaskRuns,
-  recentTaskRuns,
-  todayTaskRunIds,
   type AutomationPersistenceProvider,
+  type AutomationTaskHistoryRow,
   type AutomationTaskPrerequisiteNoticeRecord,
 } from "./store.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
@@ -46,7 +43,6 @@ import {
   certificateFilename,
   validateCertificateFilePath,
 } from "./credential-file.ts";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import type {
   AutomationCoreSnapshot,
   AutomationCredentialGroupCoreDto,
@@ -127,10 +123,6 @@ const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
 const certificateFileCredentialKeys = new Set([
   "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
 ]);
-
-function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
-  return pagePrerequisiteNoticesFromRows(activeTaskPrerequisiteNotices(db));
-}
 
 function pagePrerequisiteNoticesFromRows(
   notices: readonly AutomationTaskPrerequisiteNoticeRecord[],
@@ -228,100 +220,12 @@ function coreCredentialGroup(
  * credentials.  Workers use this function directly; the credential state is
  * supplied separately by Electron main only for the details block.
  */
-export function loadAutomationCoreSnapshot(
-  provider: AutomationPersistenceProvider,
-  credentialStatus?: Readonly<Record<string, boolean>>,
-  runtime?: AutomationRuntimeSnapshot,
-  credentialStates?: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">>,
-): Promise<AutomationCoreSnapshot>;
-export function loadAutomationCoreSnapshot(
-  ledgerDir?: string,
-  credentialStatus?: Readonly<Record<string, boolean>>,
-  runtime?: AutomationRuntimeSnapshot,
-  credentialStates?: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">>,
-): AutomationCoreSnapshot;
-export function loadAutomationCoreSnapshot(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-  credentialStatus: Readonly<Record<string, boolean>> = {},
-  runtime: AutomationRuntimeSnapshot = automationRuntimeState.snapshot(),
-  credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
-): AutomationCoreSnapshot | Promise<AutomationCoreSnapshot> {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return loadAutomationCoreSnapshotWithPersistence(
-      ledgerDirOrProvider,
-      credentialStatus,
-      runtime,
-      credentialStates,
-    );
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const settings = readAutomationSettings();
-  const enabledGroups = automationGroupEnabledStatus(settings);
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const activeTaskIds = activeAutomationTaskIds();
-    const range = businessDayUtcRange(
-      undefined,
-      automationBusinessTimezone(settings),
-    );
-    const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
-      const enabled = enabledGroups[group.id] !== false;
-      const selectionSettings = { ...settings, [group.enabledKey]: enabled };
-      const selection = isStatementSelectionGroup(group)
-        ? group.id === "fubon" ||
-          group.id === "yuanta" ||
-          group.id === "sinopac"
-          ? {
-              selectedIds: allSupportedStatementTypeIds(group),
-              needsSetup: false,
-            }
-          : selectStatementTypes(group, selectionSettings, "display")
-        : { selectedIds: [], needsSetup: false };
-      return coreCredentialGroup(
-        group,
-        enabled,
-        selection.selectedIds,
-        selection.needsSetup,
-      );
-    });
-    return {
-      runtimeSessionId: runtime.sessionId,
-      runtimeRevision: runtime.revision,
-      automation: {
-        ...buildAutomationPageModel({
-          tasks: enabledAutomationTasks(enabledGroups),
-          latestRuns: latestTaskRuns(db),
-          todayRunTaskIds: todayTaskRunIds(db, {
-            startUtc: range.startUtc,
-            endUtc: range.endUtc,
-          }),
-          activeTaskIds,
-          credentials: { ...credentialStatus },
-          setupRequiredGroupIds: new Set(
-            credentialGroups
-              .filter((group) => group.statementSetupRequired)
-              .map((group) => group.id),
-          ),
-          externalPrerequisiteNotices: pagePrerequisiteNotices(db),
-          active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
-          businessDate: range.businessDate,
-          runtime,
-          credentialStates: { ...credentialStates },
-        }),
-      },
-      credentialGroups,
-    };
-  } finally {
-    db.close();
-  }
-}
-
 /**
  * Promise-based page snapshot seam for the worker-owned PGlite store.  All
  * persistence reads are awaited before the page model is assembled, keeping
  * runtime state and persisted history from being published out of order.
  */
-export async function loadAutomationCoreSnapshotWithPersistence(
+export async function loadAutomationCoreSnapshot(
   provider: AutomationPersistenceProvider,
   credentialStatus: Readonly<Record<string, boolean>> = {},
   runtime: AutomationRuntimeSnapshot = automationRuntimeState.snapshot(),
@@ -405,34 +309,7 @@ export function applyAutomationCredentialState(
   };
 }
 
-/** Main-process compatibility helper used by run/resume validation only. */
-export function loadAutomationDesktopModel(
-  provider: AutomationPersistenceProvider,
-): Promise<AutomationDesktopModel>;
-export function loadAutomationDesktopModel(ledgerDir?: string): AutomationDesktopModel;
-export function loadAutomationDesktopModel(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-): AutomationDesktopModel | Promise<AutomationDesktopModel> {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return loadAutomationDesktopModelWithPersistence(ledgerDirOrProvider);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const raw = currentCredentialState();
-  const credentialState: AutomationCredentialStateDto = {
-    revision: 0,
-    status: raw.status,
-    fileNames: raw.fileNames,
-    invalidFileKeys: raw.invalidFileKeys,
-    invalidFileReasons: raw.invalidFileReasons,
-    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
-  };
-  return applyAutomationCredentialState(
-    loadAutomationCoreSnapshot(ledgerDir, raw.status),
-    credentialState,
-  );
-}
-
-export async function loadAutomationDesktopModelWithPersistence(
+export async function loadAutomationDesktopModel(
   provider: AutomationPersistenceProvider,
 ): Promise<AutomationDesktopModel> {
   const raw = currentCredentialState();
@@ -445,7 +322,7 @@ export async function loadAutomationDesktopModelWithPersistence(
     cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
   };
   return applyAutomationCredentialState(
-    await loadAutomationCoreSnapshotWithPersistence(provider, raw.status),
+    await loadAutomationCoreSnapshot(provider, raw.status),
     credentialState,
   );
 }
@@ -550,13 +427,13 @@ export function assertAutomationTasksCanStart(
   );
 }
 
-export function assertAutomationTaskCanStart(
+export async function assertAutomationTaskCanStart(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  provider: AutomationPersistenceProvider,
 ) {
   return assertAutomationTaskCanStartInModel(
     taskId,
-    loadAutomationDesktopModel(ledgerDir),
+    await loadAutomationDesktopModel(provider),
   );
 }
 
@@ -606,90 +483,29 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   return { saved: true as const };
 }
 
-export function automationRun(
+export async function automationRun(
   taskId: string,
   provider: AutomationPersistenceProvider,
-): Promise<{ started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }>;
-export function automationRun(
-  taskId: string,
-  ledgerDir?: string,
-): { started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> };
-export function automationRun(
-  taskId: string,
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return (async () => {
-      const current = currentAutomationTaskRun(taskId);
-      if (current) {
-        return { started: taskId, runId: current.runId, runtime: current.runtime };
-      }
-      const model = await loadAutomationDesktopModelWithPersistence(ledgerDirOrProvider);
-      const task = assertAutomationTaskCanStartInModel(taskId, model);
-      const started = await startAutomationTask(task.id, ledgerDirOrProvider);
-      return { started: task.id, runId: started.runId, runtime: started.runtime };
-    })();
-  }
-  const ledgerDir = ledgerDirOrProvider;
+): Promise<{ started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
   const current = currentAutomationTaskRun(taskId);
   if (current) {
     return { started: taskId, runId: current.runId, runtime: current.runtime };
   }
-  const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-  const started = startAutomationTask(task.id, ledgerDir);
+  const model = await loadAutomationDesktopModel(provider);
+  const task = assertAutomationTaskCanStartInModel(taskId, model);
+  const started = await startAutomationTask(task.id, provider);
   return { started: task.id, runId: started.runId, runtime: started.runtime };
 }
 
-export function automationRunMany(
+export async function automationRunMany(
   taskIds: string[],
   provider: AutomationPersistenceProvider,
-): Promise<AutomationRunManyResult>;
-export function automationRunMany(
-  taskIds: string[],
-  ledgerDir?: string,
-): AutomationRunManyResult;
-export function automationRunMany(
-  taskIds: string[],
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-): AutomationRunManyResult | Promise<AutomationRunManyResult> {
-  if (
-    !Array.isArray(taskIds) ||
-    taskIds.some((taskId) => typeof taskId !== "string")
-  ) {
+): Promise<AutomationRunManyResult> {
+  if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
     throw new TypeError("Task IDs must be an array of strings.");
   }
   if (taskIds.length === 0) return { started: [] as string[], results: {} };
-  if (typeof ledgerDirOrProvider !== "string") {
-    return (async () => {
-      const model = await loadAutomationDesktopModelWithPersistence(ledgerDirOrProvider);
-      const started: string[] = [];
-      const errors: Record<string, string> = {};
-      const results: Record<string, AutomationRunManyTaskResult> = {};
-      for (const taskId of [...new Set(taskIds)]) {
-        try {
-          const existing = currentAutomationTaskRun(taskId);
-          if (existing) {
-            results[taskId] = { status: "already_running", runId: existing.runId };
-            continue;
-          }
-          const task = assertAutomationTaskCanStartInModel(taskId, model);
-          const run = await startAutomationTask(task.id, ledgerDirOrProvider);
-          started.push(task.id);
-          results[task.id] = { status: "started", runId: run.runId };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          errors[taskId] = message;
-          results[taskId] = { status: "error", error: message };
-        }
-      }
-      return {
-        started,
-        results,
-        ...(Object.keys(errors).length ? { errors } : {}),
-      };
-    })();
-  }
-  const ledgerDir = ledgerDirOrProvider;
+  const model = await loadAutomationDesktopModel(provider);
   const started: string[] = [];
   const errors: Record<string, string> = {};
   const results: Record<string, AutomationRunManyTaskResult> = {};
@@ -700,34 +516,22 @@ export function automationRunMany(
         results[taskId] = { status: "already_running", runId: existing.runId };
         continue;
       }
-      const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-      const run = startAutomationTask(task.id, ledgerDir);
+      const task = assertAutomationTaskCanStartInModel(taskId, model);
+      const run = await startAutomationTask(task.id, provider);
       started.push(task.id);
-      results[task.id] = {
-        status: "started",
-        runId: run.runId,
-      };
+      results[task.id] = { status: "started", runId: run.runId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors[taskId] = message;
       results[taskId] = { status: "error", error: message };
     }
   }
-  return {
-    started,
-    results,
-    ...(Object.keys(errors).length ? { errors } : {}),
-  };
+  return { started, results, ...(Object.keys(errors).length ? { errors } : {}) };
 }
 
 export function automationCancel(
   taskId: string,
   provider: AutomationPersistenceProvider,
-): Promise<{ cancelled: string }>;
-export function automationCancel(taskId: string): Promise<{ cancelled: string }>;
-export function automationCancel(
-  taskId: string,
-  provider?: AutomationPersistenceProvider,
 ): Promise<{ cancelled: string }> {
   return cancelAutomationTask(taskId, provider);
 }
@@ -735,40 +539,14 @@ export function automationCancel(
 export function automationForceTerminate(
   taskId: string,
   provider: AutomationPersistenceProvider,
-): Promise<{ cancelled: string }>;
-export function automationForceTerminate(taskId: string): Promise<{ cancelled: string }>;
-export function automationForceTerminate(
-  taskId: string,
-  provider?: AutomationPersistenceProvider,
 ): Promise<{ cancelled: string }> {
   return forceTerminateAutomationTask(taskId, provider);
 }
 
 export function automationRunHistory(
   provider: AutomationPersistenceProvider,
-  limit?: number,
-): Promise<ReturnType<typeof recentTaskRuns>>;
-export function automationRunHistory(ledgerDir?: string): ReturnType<typeof recentTaskRuns>;
-export function automationRunHistory(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
   limit = 100,
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return automationRunHistoryWithPersistence(ledgerDirOrProvider, limit);
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    return recentTaskRuns(db, 100);
-  } finally {
-    db.close();
-  }
-}
-
-export function automationRunHistoryWithPersistence(
-  provider: AutomationPersistenceProvider,
-  limit = 100,
-) {
+): Promise<AutomationTaskHistoryRow[]> {
   return provider.automation.recentTaskRuns(limit);
 }
 
@@ -792,51 +570,20 @@ export function assertHumanAssistanceCompletionCanResume(
   }
 }
 
-export function automationResume(
+export async function automationResume(
   taskId: string,
   provider: AutomationPersistenceProvider,
-): Promise<{ resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }>;
-export function automationResume(
-  taskId: string,
-  ledgerDir?: string,
-): { resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> };
-export function automationResume(
-  taskId: string,
-  ledgerDirOrProvider: string | AutomationPersistenceProvider = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  if (typeof ledgerDirOrProvider !== "string") {
-    return (async () => {
-      const task = taskById(taskId);
-      if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-      const model = await loadAutomationDesktopModelWithPersistence(ledgerDirOrProvider);
-      const row = model.automation.tasks.find((item) => item.id === taskId);
-      if (!row) throw new Error("Task is disabled.");
-      if (row.status !== "waiting_for_human")
-        throw new Error("Task is not waiting for human input.");
-      assertHumanAssistanceCompletionCanResume(
-        row.humanAssistanceContract?.completion,
-      );
-      const session = resumeSessionFromLog(row.logTail);
-      if (!session)
-        throw new Error("Missing Libretto resume session in latest log.");
-      const resumed = await startAutomationResume(task.id, session, ledgerDirOrProvider);
-      return { resumed: task.id, runId: resumed.runId, runtime: resumed.runtime };
-    })();
-  }
-  const ledgerDir = ledgerDirOrProvider;
+): Promise<{ resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
   const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const model = loadAutomationDesktopModel(ledgerDir);
+  if (!task) throw new Error("Unknown automation task: " + taskId);
+  const model = await loadAutomationDesktopModel(provider);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status !== "waiting_for_human")
     throw new Error("Task is not waiting for human input.");
-  assertHumanAssistanceCompletionCanResume(
-    row.humanAssistanceContract?.completion,
-  );
+  assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
   const session = resumeSessionFromLog(row.logTail);
-  if (!session)
-    throw new Error("Missing Libretto resume session in latest log.");
-  const resumed = startAutomationResume(task.id, session, ledgerDir);
+  if (!session) throw new Error("Missing Libretto resume session in latest log.");
+  const resumed = await startAutomationResume(task.id, session, provider);
   return { resumed: task.id, runId: resumed.runId, runtime: resumed.runtime };
 }

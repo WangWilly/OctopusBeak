@@ -25,8 +25,6 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "spending:confirmCandidate",
   "spending:denyCandidate",
   "spending:revokeLink",
-  "spending:updateItemCategory",
-  "spending:updateTransactionOverride",
   "automation:block",
   "automation:saveCredentials",
   "automation:cathayGmailOtpStatus",

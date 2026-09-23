@@ -30,7 +30,6 @@ export default defineConfig({
       entry: {
         main: "electron/main.ts",
         preload: "electron/preload.ts",
-        "financial-page-worker": "electron/financial-page-worker.ts",
         "pglite-view-worker": "electron/pglite-view-worker.ts",
       },
       formats: ["cjs"],

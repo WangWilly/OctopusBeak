@@ -8,7 +8,7 @@ import {
   createPGliteOperationalRpcClient,
   type PGliteOperationalOperation,
 } from "./pglite-operational-rpc.ts";
-import { createPGliteOperationalRuntime, pgliteOperationalEnabled } from "./pglite-runtime.ts";
+import { createPGliteOperationalRuntime } from "./pglite-runtime.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 
 class SilentPort {
@@ -33,8 +33,10 @@ test("the worker exposes operational start/read/write/failure through one provid
   });
   const client = createPGliteViewWorkerClient(worker);
   const rawClient = createPGliteOperationalRpcClient(worker);
+  const runtime = createPGliteOperationalRuntime({ dataDir, worker: client });
   try {
-    const created = await client.operationalProvider.automation.createTaskRun({
+    assert.equal(runtime.provider.pgliteWorkflow.required, true);
+    const created = await runtime.provider.automation.createTaskRun({
       taskId: "exchange-rates",
       script: "run:exchange-rates",
       kind: "sync",
@@ -47,24 +49,24 @@ test("the worker exposes operational start/read/write/failure through one provid
     });
     assert.ok(created.taskRunId);
     assert.equal(
-      (await client.operationalProvider.automation.taskRunById(created.taskRunId))?.status,
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.status,
       "running",
     );
-    await client.operationalProvider.automation.updateTaskRun(created.taskRunId, {
+    await runtime.provider.automation.updateTaskRun(created.taskRunId, {
       logTail: "updated-progress",
     });
     assert.equal(
-      (await client.operationalProvider.automation.taskRunById(created.taskRunId))?.logTail,
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,
       "updated-progress",
     );
-    await client.operationalProvider.exchangeRates.upsertExchangeRates([{
+    await runtime.provider.exchangeRates.upsertExchangeRates([{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.5,
       source: "check",
       fetchedAt: "2026-09-22T00:00:00.000Z",
     }]);
-    assert.deepEqual(await client.operationalProvider.exchangeRates.readExchangeRates(["USD"]), [{
+    assert.deepEqual(await runtime.provider.exchangeRates.readExchangeRates(["USD"]), [{
       rateDate: "2026-09-22",
       currency: "USD",
       twdPerUnit: 31.5,
@@ -73,7 +75,7 @@ test("the worker exposes operational start/read/write/failure through one provid
     }]);
 
     await assert.rejects(
-      client.operationalProvider.automation.updateTaskRun("missing-run", { logTail: "x" }),
+      runtime.provider.automation.updateTaskRun("missing-run", { logTail: "x" }),
       /PGlite operational operation failed/u,
     );
     await assert.rejects(
@@ -82,41 +84,29 @@ test("the worker exposes operational start/read/write/failure through one provid
       "the wire rejects arbitrary SQL names",
     );
     assert.equal(
-      (await client.operationalProvider.automation.taskRunById(created.taskRunId))?.logTail,
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,
       "updated-progress",
       "the provider remains usable after an operation failure",
     );
   } finally {
-    await client.close();
+    await runtime.close();
     rawClient.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });
 
-test("the central operational gate remains off unless explicitly enabled", () => {
-  assert.equal(pgliteOperationalEnabled({}), false);
-  assert.equal(
-    createPGliteOperationalRuntime({
-      enabled: false,
-      dataDir: "/tmp/this-must-not-open",
-    }),
-    null,
-  );
-  assert.equal(
-    createPGliteOperationalRuntime({
-      enabled: false,
-      dataDir: "/tmp/this-must-not-open",
-    }),
-    null,
-    "an explicit false activation wins over an ambient environment switch",
+test("the operational runtime requires its PGlite data directory", () => {
+  assert.throws(
+    () => createPGliteOperationalRuntime({ dataDir: "" }),
+    /requires an explicit data directory/u,
   );
 });
 
-test("Electron main keeps the operational provider behind the central gate", async () => {
+test("Electron main starts the required PGlite provider without SQLite startup", async () => {
   const source = await readFile(new URL("./main.ts", import.meta.url), "utf8");
-  assert.match(source, /enabled:\s*pgliteOperationalEnabled\(\)/u);
   assert.match(source, /createPGliteOperationalRuntime\(/u);
-  assert.match(source, /pgliteOperationalRuntime\?\.provider/u);
+  assert.match(source, /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)/u);
+  assert.doesNotMatch(source, /initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/u);
 });
 
 test("closing the operational transport rejects requests still waiting on the wire", async () => {

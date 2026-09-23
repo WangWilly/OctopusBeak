@@ -2,7 +2,6 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import {
   parseStatementRunSummary,
   type StatementRunSummary,
@@ -12,6 +11,7 @@ import {
   createHumanAssistanceContractFrameParser,
   HUMAN_ASSISTANCE_HOST_FD_ENV,
   HUMAN_ASSISTANCE_HOST_PATH_ENV,
+  type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import {
   GMAIL_OTP_IPC_ENDPOINT_ENV,
@@ -32,7 +32,6 @@ import {
   sessionPid,
   tail,
   claimAutomationTaskRunSession,
-  claimAutomationTaskRunSessionWithPersistence,
   refreshAutomationSession,
   sessionFromRun,
   type OwnedAutomationSession,
@@ -40,7 +39,6 @@ import {
 import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
-  finalizeAutomationTaskRunWithPersistence,
   isForceQuitRun,
   nextAttemptStatus,
   shouldMarkWaitingForHuman,
@@ -49,12 +47,7 @@ import {
   type AutomationTaskRunExecution,
 } from "./task-run-finalization.ts";
 import {
-  activeTaskRuns,
-  createTaskRun,
   resumeHumanAssistanceContract,
-  taskRunById,
-  updateHumanAssistanceContract,
-  updateTaskRun,
   type AutomationPersistencePort,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
@@ -90,11 +83,7 @@ export type AutomationTaskExecutionOptions = {
   isCancellationRequested?: () => boolean;
   isForceTerminationRequested?: () => boolean;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
-  /**
-   * Worker-owned exchange-rate execution.  The callback is supplied only by
-   * the PGlite provider path; when absent, legacy tasks keep their child
-   * process behavior.
-   */
+  /** Worker-owned exchange-rate command; absence fails closed. */
   runExchangeRateSync?: (options: {
     scheduledAtUtc?: string;
     emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
@@ -182,123 +171,7 @@ export function accumulateAutomationOutput(
   };
 }
 
-function createAutomationTaskRunExecution(
-  task: NonNullable<ReturnType<typeof taskById>>,
-  taskDb: ReturnType<typeof openLedgerDatabase>,
-  options: AutomationTaskExecutionOptions,
-): AutomationTaskRunExecution | null {
-  const attempt = options.attempt ?? 1;
-  const maxAttempts = options.maxAttempts ?? 1;
-  const startedAt = new Date().toISOString();
-  const isLibrettoTask = task.command[0] === "libretto";
-  const session = isLibrettoTask
-    ? (options.resumeSession ?? createAutomationSessionId())
-    : null;
-  const env = automationDialogOwnerLaunchEnv(
-    options.launchEnv ?? automationProcessEnv(),
-    task.id,
-    session,
-    options.resumeSession ? undefined : options.hostOwnedDialogProvider,
-  );
-  const command = resolveTaskCommand(
-    task,
-    {
-      resumeSession: options.resumeSession,
-      session: options.resumeSession ? undefined : (session ?? undefined),
-    },
-    env,
-  );
-  if (task.id === "exchange-rates" && options.scheduledAtUtc) {
-    if (command.command === "npm") command.args.push("--");
-    command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
-    command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
-  }
-  const resumeFrom = options.resumeSession
-    ? activeTaskRuns(taskDb).find(
-        (candidate) =>
-          candidate.taskId === task.id &&
-          candidate.status === "waiting_for_human" &&
-          sessionFromRun(candidate) === options.resumeSession,
-      )
-    : undefined;
-  const existingRun = options.taskRunId
-    ? taskRunById(taskDb, options.taskRunId)
-    : resumeFrom;
-  if (options.taskRunId && !existingRun) return null;
-  const logPath = existingRun?.logPath ?? join(
-    "data",
-    "automation",
-    "logs",
-    `${task.id}-${Date.now()}-${attempt}.log`,
-  );
-  const run = existingRun
-    ? { taskRunId: existingRun.taskRunId, attempt }
-    : {
-        ...createTaskRun(taskDb, {
-          taskId: task.id,
-          script: command.display,
-          kind: task.kind,
-          status: "running",
-          attempt,
-          maxAttempts,
-          startedAt,
-          logPath,
-          progress: indeterminateProgress(attempt),
-          humanAssistanceContract: resumeHumanAssistanceContract(
-            resumeFrom?.humanAssistanceContract,
-          ),
-        }),
-        attempt,
-      };
-  if (existingRun) {
-    updateTaskRun(taskDb, existingRun.taskRunId, {
-      status: "running",
-      attempt,
-      maxAttempts,
-      finishedAt: null,
-      exitCode: null,
-      signal: null,
-      errorMessage: null,
-      progress: indeterminateProgress(attempt),
-    });
-  }
-  const owner = session
-    ? {
-        taskId: task.id,
-        taskRunId: run.taskRunId,
-        session,
-        pid: sessionPid(session),
-      }
-    : null;
-  if (session) {
-    if (!options.resumeSession || !existingRun) {
-      appendLog(logPath, "automation-session: " + session + "\n");
-    }
-    if (!options.resumeSession) {
-      if (
-        !claimRunAutomationSession(taskDb, run.taskRunId, owner!, {
-          resumeFrom,
-        })
-      )
-        return null;
-    } else if (!ownAutomationSession(owner!)) {
-      return null;
-    }
-  }
-  return {
-    task,
-    taskDb,
-    run,
-    logPath,
-    command,
-    session,
-    owner,
-    executionId: options.executionId ?? createAutomationSessionId(),
-    onRuntimeUpdate: options.onRuntimeUpdate,
-  };
-}
-
-async function createAutomationTaskRunExecutionWithPersistence(
+async function createAutomationTaskRunExecution(
   task: NonNullable<ReturnType<typeof taskById>>,
   persistence: AutomationPersistencePort,
   options: AutomationTaskExecutionOptions,
@@ -395,7 +268,7 @@ async function createAutomationTaskRunExecutionWithPersistence(
     }
     if (!options.resumeSession) {
       if (
-        !(await claimAutomationTaskRunSessionWithPersistence(
+        !(await claimAutomationTaskRunSession(
           persistence,
           run.taskRunId,
           owner!,
@@ -494,40 +367,21 @@ async function executeAutomationTaskProcess(
         recordOutputPersistenceError(error);
       });
     };
-    const persistRuntimeUpdate = () => {
-      if (execution.persistence) {
-        enqueuePersistence(async () => {
-          const current = await execution.persistence!.taskRunById(
-            execution.run.taskRunId,
-          );
-          if (isForceQuitRun(current)) return;
-          await execution.persistence!.updateTaskRun(
-            execution.run.taskRunId,
-            liveTaskRunUpdate(
-              logTail,
-              execution.run.attempt,
-              latestProgress ?? undefined,
-            ),
-          );
-          await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-        });
-        return;
-      }
-      if (
-        !isForceQuitRun(
-          taskRunById(execution.taskDb!, execution.run.taskRunId),
-        )
-      ) {
-        updateTaskRun(execution.taskDb!, execution.run.taskRunId, {
-          ...liveTaskRunUpdate(
-            logTail,
-            execution.run.attempt,
-            latestProgress ?? undefined,
-          ),
-        });
-        execution.onRuntimeUpdate?.(execution.run.taskRunId);
-      }
-    };
+    const persistRuntimeUpdate = () => enqueuePersistence(async () => {
+      const current = await execution.persistence.taskRunById(
+        execution.run.taskRunId,
+      );
+      if (isForceQuitRun(current)) return;
+      await execution.persistence.updateTaskRun(
+        execution.run.taskRunId,
+        liveTaskRunUpdate(
+          logTail,
+          execution.run.attempt,
+          latestProgress ?? undefined,
+        ),
+      );
+      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+    });
     const recordProgress = () => {
       if (progressTimer) return;
       progressTimer = setTimeout(() => {
@@ -555,35 +409,16 @@ async function executeAutomationTaskProcess(
       };
       recordProgress();
     });
-    const onHumanAssistanceContract = (
-      latestHumanAssistanceContract: Parameters<
-        typeof updateHumanAssistanceContract
-      >[2],
-    ) => {
+    const onHumanAssistanceContract = (latestHumanAssistanceContract: HumanAssistanceContractInput) => {
       const contractJson = JSON.stringify(latestHumanAssistanceContract);
       if (contractJson === lastHumanAssistanceContractJson) return;
-      if (execution.persistence) {
-        enqueuePersistence(async () => {
-          await execution.persistence!.updateHumanAssistanceContract(
-            execution.run.taskRunId,
-            latestHumanAssistanceContract,
-          );
-          lastHumanAssistanceContractJson = contractJson;
-        });
-        return;
-      }
-      try {
-        updateHumanAssistanceContract(
-          execution.taskDb!,
+      enqueuePersistence(async () => {
+        await execution.persistence.updateHumanAssistanceContract(
           execution.run.taskRunId,
           latestHumanAssistanceContract,
         );
         lastHumanAssistanceContractJson = contractJson;
-      } catch (error) {
-        const warning = `human-assistance-contract-rejected: ${errorMessage(error)}`;
-        console.error(warning);
-        outputPersistenceWarnings.push(warning);
-      }
+      });
     };
     const hostContractParser = createHumanAssistanceContractFrameParser(
       onHumanAssistanceContract,
@@ -792,108 +627,6 @@ export function createAutomationProgressFrameParser(
 
 export async function runAutomationTaskExecution(
   task: NonNullable<ReturnType<typeof taskById>>,
-  taskDb: ReturnType<typeof openLedgerDatabase>,
-  ledgerDir: string,
-  options: AutomationTaskExecutionOptions,
-  onRunCreated: (taskRunId: string) => void,
-) {
-  if (options.isCancellationRequested?.()) {
-    return { status: "cancelled" as const };
-  }
-  const execution = createAutomationTaskRunExecution(task, taskDb, options);
-  if (!execution) {
-    if (options.taskRunId && taskRunById(taskDb, options.taskRunId)) {
-      updateTaskRun(taskDb, options.taskRunId, {
-        status: "failed",
-        finishedAt: new Date().toISOString(),
-        errorMessage: "Automation task run could not be resumed.",
-      });
-    }
-    return { status: "failed" as const };
-  }
-  onRunCreated(execution.run.taskRunId);
-  if (options.isCancellationRequested?.()) {
-    const cancelledResult: AutomationTaskProcessResult = {
-      exitCode: null,
-      signal: "SIGTERM",
-      error: new Error("Automation task cancelled."),
-      logTail: "",
-      resumeFailure: null,
-      statementSummary: null,
-      outputPersistenceWarnings: [],
-      externalPrerequisiteIds: [],
-    };
-    if (options.deferFinalization) {
-      return {
-        status: "cancelled" as const,
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        session: execution.session,
-        owner: execution.owner,
-        result: cancelledResult,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun({
-      taskDb,
-      taskId: task.id,
-      taskKind: task.kind,
-      taskRunId: execution.run.taskRunId,
-      logPath: execution.logPath,
-      ledgerDir,
-    }, cancelledResult);
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-      session: execution.session,
-      owner: execution.owner,
-    };
-  }
-  try {
-    const result = await executeAutomationTaskProcess(
-      execution,
-      options.isCancellationRequested,
-    );
-    const finalizationContext: AutomationTaskRunFinalizationContext = {
-      taskDb,
-      taskId: task.id,
-      taskKind: task.kind,
-      taskRunId: execution.run.taskRunId,
-      logPath: execution.logPath,
-      ledgerDir,
-      forceTerminated: options.isForceTerminationRequested?.() === true,
-    };
-    if (options.deferFinalization) {
-      return {
-        status: automationTaskProcessStatus(task.kind, result, {
-          attempt: execution.run.attempt,
-          maxAttempts: options.maxAttempts ?? execution.run.attempt,
-          forceTerminated: finalizationContext.forceTerminated,
-        }),
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        session: execution.session,
-        owner: execution.owner,
-        result,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(finalizationContext, result);
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-      session: execution.session,
-      owner: execution.owner,
-      result,
-    };
-  } finally {
-    activeTaskChildren.delete(task.id);
-  }
-}
-
-/** Execute one automation round against the injected worker persistence port. */
-export async function runAutomationTaskExecutionWithPersistence(
-  task: NonNullable<ReturnType<typeof taskById>>,
   persistence: AutomationPersistencePort,
   options: AutomationTaskExecutionOptions,
   onRunCreated: (taskRunId: string) => void | Promise<void>,
@@ -901,7 +634,10 @@ export async function runAutomationTaskExecutionWithPersistence(
   if (options.isCancellationRequested?.()) {
     return { status: "cancelled" as const };
   }
-  const execution = await createAutomationTaskRunExecutionWithPersistence(
+  if (task.id === "exchange-rates" && !options.runExchangeRateSync) {
+    throw new Error("PGlite exchange-rate synchronization is unavailable.");
+  }
+  const execution = await createAutomationTaskRunExecution(
     task,
     persistence,
     options,
@@ -938,7 +674,7 @@ export async function runAutomationTaskExecutionWithPersistence(
         result: cancelledResult,
       };
     }
-    const finalized = await finalizeAutomationTaskRunWithPersistence(
+    const finalized = await finalizeAutomationTaskRun(
       {
         provider: { automation: persistence },
         taskId: task.id,
@@ -956,7 +692,7 @@ export async function runAutomationTaskExecutionWithPersistence(
       owner: execution.owner,
       };
   }
-  if (task.id === "exchange-rates" && options.runExchangeRateSync) {
+  if (task.id === "exchange-rates") {
     let result: AutomationTaskProcessResult;
     let progressQueue = Promise.resolve();
     const emitProgress = (event: Omit<AutomationProgressEvent, "type">) => {
@@ -975,7 +711,11 @@ export async function runAutomationTaskExecutionWithPersistence(
       });
     };
     try {
-      await options.runExchangeRateSync({
+      const runExchangeRateSync = options.runExchangeRateSync;
+      if (!runExchangeRateSync) {
+        throw new Error("PGlite exchange-rate synchronization is unavailable.");
+      }
+      await runExchangeRateSync({
         scheduledAtUtc: options.scheduledAtUtc,
         emitProgress,
       });
@@ -1017,7 +757,7 @@ export async function runAutomationTaskExecutionWithPersistence(
         result,
       };
     }
-    const finalized = await finalizeAutomationTaskRunWithPersistence(
+    const finalized = await finalizeAutomationTaskRun(
       {
         provider,
         taskId: task.id,
@@ -1056,7 +796,7 @@ export async function runAutomationTaskExecutionWithPersistence(
         result,
       };
     }
-    const finalized = await finalizeAutomationTaskRunWithPersistence(
+    const finalized = await finalizeAutomationTaskRun(
       {
         provider,
         taskId: task.id,

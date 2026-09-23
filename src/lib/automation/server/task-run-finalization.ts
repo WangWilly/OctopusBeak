@@ -1,4 +1,3 @@
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import {
   statementRunSummaryLine,
@@ -30,16 +29,9 @@ export {
 } from "./automation-session-disposition.ts";
 export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
-  activeTaskRuns,
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
-  resolveTaskPrerequisiteNotices,
-  taskRunById,
-  transitionTaskRunToTerminal,
   type AutomationPersistenceProvider,
-  upsertTaskPrerequisiteNotice,
-  type AutomationTaskRunTerminalUpdate,
-  updateTaskRun,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -55,9 +47,7 @@ import {
 
 export type AutomationTaskRunExecution = {
   task: NonNullable<ReturnType<typeof taskById>>;
-  /** Legacy execution owns a SQLite handle; async workers use persistence. */
-  taskDb?: ReturnType<typeof openLedgerDatabase>;
-  persistence?: AutomationPersistenceProvider["automation"];
+  persistence: AutomationPersistenceProvider["automation"];
   run: Pick<AutomationTaskRun, "taskRunId" | "attempt">;
   logPath: string;
   command: ReturnType<typeof resolveTaskCommand>;
@@ -68,19 +58,6 @@ export type AutomationTaskRunExecution = {
 };
 
 export type AutomationTaskRunFinalizationContext = {
-  taskDb: ReturnType<typeof openLedgerDatabase>;
-  taskId: string;
-  taskKind: AutomationTaskKind;
-  taskRunId: string;
-  logPath: string;
-  ledgerDir: string;
-  forceTerminated?: boolean;
-  /** The coordinator has already cleaned the exact browser session. */
-  sessionAlreadyCleaned?: boolean;
-  dataVersionStore?: DataVersionStore;
-};
-
-export type AsyncAutomationTaskRunFinalizationContext = {
   provider: AutomationPersistenceProvider;
   taskId: string;
   taskKind: AutomationTaskKind;
@@ -171,112 +148,7 @@ export type AsyncTaskRunFinalizationIntent = {
   terminationMode?: "forced";
 };
 
-async function finalizeTaskRunTransition(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: Pick<AutomationTaskRun, "taskRunId" | "logPath">,
-  intent: TaskRunFinalizationIntent,
-  implementation: TaskRunFinalizationImplementation = {},
-) {
-  const current = taskRunById(db, run.taskRunId);
-  if (!current) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-  if (isTerminalTaskRunStatus(current.status)) return { status: current.status, skipped: true };
-  if (!isActiveTaskRunStatus(current.status) || current.status === "queued") {
-    return { status: current.status, skipped: true };
-  }
-  if (
-    current.status === "waiting_for_human"
-    && intent.status !== "failed"
-    && intent.status !== "cancelled"
-    && intent.status !== "interrupted"
-  ) {
-    return { status: current.status, skipped: true };
-  }
-
-  let status = intent.status;
-  let taskError = intent.errorMessage;
-  let logTail = intent.logTail;
-  const cleanupResult = intent.sessionDisposition === "relinquish"
-    ? implementation.sessionCleanup
-    : null;
-  if (cleanupResult) {
-    taskError = cleanupResult.errorMessage;
-    if (cleanupResult.cleanupFailed && (status === "completed" || status === "partial")) {
-      status = "failed";
-    }
-  }
-
-  const afterCleanup = taskRunById(db, run.taskRunId);
-  if (!afterCleanup) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-  if (isTerminalTaskRunStatus(afterCleanup.status)) {
-    return { status: afterCleanup.status, skipped: true };
-  }
-
-  const summaryLine = intent.statementSummary
-    ? statementRunSummaryLine(intent.statementSummary.results)
-    : null;
-  const logAppend = implementation.sessionFinalizationLog
-    ? "automation-session-finalize: session="
-      + (cleanupResult?.session ?? "unknown")
-      + " pid=" + (cleanupResult?.pid ?? "unknown")
-      + " cleanup-error=" + (cleanupResult?.cleanupFailed ? "failed" : "none") + "\n"
-    : summaryLine
-      ? `\n${summaryLine}\n`
-      : null;
-  if (logAppend) {
-    try {
-      appendLog(run.logPath, logAppend);
-    } catch (error) {
-      const warning = sanitizeAutomationLogChunk(
-        `automation-output-write-failed: ${errorMessage(error)}`,
-      );
-      console.error(warning);
-      taskError = [taskError, warning].filter(Boolean).join("\n") || null;
-      logTail = tail(`${logTail}\n${warning}\n`);
-    }
-  }
-  if (status === "waiting_for_human") {
-    updateTaskRun(db, run.taskRunId, {
-      status,
-      finishedAt: null,
-      exitCode: intent.exitCode,
-      signal: intent.signal,
-      logTail,
-      errorMessage: taskError,
-    });
-    const persisted = taskRunById(db, run.taskRunId);
-    if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
-    return { status: persisted.status, skipped: false };
-  }
-  if (!isTerminalTaskRunStatus(status)) {
-    return { status, skipped: true };
-  }
-  const terminalStatus = status as AutomationTaskRunTerminalUpdate["status"];
-  const transition = transitionTaskRunToTerminal(db, run.taskRunId, {
-    status: terminalStatus,
-    finishedAt: new Date().toISOString(),
-    exitCode: intent.exitCode,
-    signal: intent.signal,
-    logTail,
-    errorMessage: taskError,
-    ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
-  });
-  if (!transition.applied) {
-    return { status: transition.status, skipped: true };
-  }
-  const persisted = taskRunById(db, run.taskRunId);
-  if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
-  automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(persisted));
-  return { status: persisted.status, skipped: false };
-}
-
-/**
- * Async state-transition seam for the worker-owned operational store.
- * Session cleanup and log-file ownership remain orchestration concerns; this
- * function makes the persisted lifecycle transition itself awaitable and
- * conditional, matching the SQLite finalizer's race and terminal semantics.
- */
-export async function finalizeTaskRunTransitionWithPersistence(
+export async function finalizeTaskRunTransition(
   provider: AutomationPersistenceProvider,
   run: Pick<AutomationTaskRun, "taskRunId" | "logPath">,
   intent: AsyncTaskRunFinalizationIntent,
@@ -336,8 +208,8 @@ export async function finalizeTaskRunTransitionWithPersistence(
  * finalizeAutomationTaskRun.  All persistence reads and writes are awaited;
  * the function deliberately accepts only the injected port.
  */
-export async function finalizeAutomationTaskRunWithPersistence(
-  context: AsyncAutomationTaskRunFinalizationContext,
+export async function finalizeAutomationTaskRun(
+  context: AutomationTaskRunFinalizationContext,
   result: AutomationTaskProcessResult,
 ) {
   const resumeFailure = result.resumeFailure;
@@ -385,7 +257,7 @@ export async function finalizeAutomationTaskRunWithPersistence(
     && automationSessionOwnerForRun(currentRun)
     ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
     : null;
-  const transition = await finalizeTaskRunTransitionWithPersistence(
+  const transition = await finalizeTaskRunTransition(
     context.provider,
     { taskRunId: context.taskRunId, logPath: context.logPath },
     {
@@ -400,7 +272,7 @@ export async function finalizeAutomationTaskRunWithPersistence(
     },
   );
   if (!transition.skipped && sessionDisposition === "retain") {
-    scheduleAutomationTaskRunTimeoutWithPersistence({
+    scheduleAutomationTaskRunTimeout({
       provider: context.provider,
       taskId: context.taskId,
       taskRunId: context.taskRunId,
@@ -444,87 +316,41 @@ export async function finalizePersistedRun(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
   reason: string,
-  status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
-): Promise<void>;
-export async function finalizePersistedRun(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: AutomationTaskRun,
-  reason: string,
-  status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
-): Promise<void>;
-export async function finalizePersistedRun(
-  databaseOrProvider: ReturnType<typeof openLedgerDatabase> | AutomationPersistenceProvider,
-  run: AutomationTaskRun,
-  reason: string,
   status: Extract<AutomationTaskStatus, "failed" | "interrupted"> = "failed",
 ): Promise<void> {
-  if ("automation" in databaseOrProvider) {
-    const current = await databaseOrProvider.automation.taskRunById(run.taskRunId);
-    if (!current || isTerminalTaskRunStatus(current.status)) return;
-    const sessionCleanup = await finalizeAutomationSessionForRun(
-      current,
-      current.errorMessage ?? reason,
-      "recovery",
-    );
-    await finalizeTaskRunTransitionWithPersistence(databaseOrProvider, run, {
-      status,
-      exitCode: null,
-      signal: null,
-      errorMessage: sessionCleanup.errorMessage,
-      logTail: current.logTail,
-    });
-    return;
-  }
-  const db = databaseOrProvider;
-  const current = taskRunById(db, run.taskRunId);
+  const current = await provider.automation.taskRunById(run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
   const sessionCleanup = await finalizeAutomationSessionForRun(
     current,
     current.errorMessage ?? reason,
     "recovery",
   );
-  await finalizeTaskRunTransition(db, run, {
+  const finalizationLog = "automation-session-finalize: session="
+    + (sessionCleanup.session ?? "unknown")
+    + " pid=" + (sessionCleanup.pid ?? "unknown")
+    + " cleanup-error=" + (sessionCleanup.cleanupFailed ? "failed" : "none") + "\n";
+  let logTail = current.logTail;
+  let errorText = sessionCleanup.errorMessage;
+  try {
+    appendLog(current.logPath, finalizationLog);
+  } catch (error) {
+    const warning = sanitizeAutomationLogChunk(
+      "automation-output-write-failed: " + errorMessage(error),
+    );
+    console.error(warning);
+    errorText = [errorText, warning].filter(Boolean).join("\n") || null;
+    logTail = tail(logTail + "\n" + warning + "\n");
+  }
+  await finalizeTaskRunTransition(provider, run, {
     status,
-    sessionDisposition: "relinquish",
     exitCode: null,
     signal: null,
-    errorMessage: null,
-    logTail: current.logTail,
-  }, {
-    sessionFinalizationLog: true,
-    sessionCleanup,
+    errorMessage: errorText,
+    logTail,
   });
 }
 
 export async function finalizeForceQuitTaskRun(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: AutomationTaskRun,
-  dependencies: ForceQuitFinalizationDependencies = {},
-) {
-  const current = taskRunById(db, run.taskRunId);
-  if (!current || current.status !== "waiting_for_human") {
-    throw new Error(`Automation task is not waiting for human input: ${run.taskId}`);
-  }
-  const { operationalError, ...sessionCleanup } = await forceQuitAutomationSessionForRun(
-    run,
-    dependencies,
-  );
-  await finalizeTaskRunTransition(db, run, {
-    status: "cancelled",
-    sessionDisposition: "relinquish",
-    exitCode: null,
-    signal: null,
-    errorMessage: null,
-    logTail: run.logTail,
-    terminationMode: "forced",
-  }, {
-    sessionCleanup,
-  });
-  if (operationalError) throw operationalError;
-  return { session: sessionCleanup.session };
-}
-
-export async function finalizeForceQuitTaskRunWithPersistence(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
   dependencies: ForceQuitFinalizationDependencies = {},
@@ -537,7 +363,7 @@ export async function finalizeForceQuitTaskRunWithPersistence(
     run,
     dependencies,
   );
-  await finalizeTaskRunTransitionWithPersistence(provider, run, {
+  await finalizeTaskRunTransition(provider, run, {
     status: "cancelled",
     exitCode: null,
     signal: null,
@@ -550,30 +376,6 @@ export async function finalizeForceQuitTaskRunWithPersistence(
 }
 
 export async function finalizeFailedWaitingRun(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: AutomationTaskRun,
-  workflowError: string,
-) {
-  const current = taskRunById(db, run.taskRunId);
-  if (!current || current.status !== "waiting_for_human") return;
-  const sessionCleanup = await finalizeAutomationSessionForRun(
-    current,
-    workflowError,
-    "exact",
-  );
-  await finalizeTaskRunTransition(db, run, {
-    status: "failed",
-    sessionDisposition: "relinquish",
-    exitCode: null,
-    signal: null,
-    errorMessage: null,
-    logTail: current.logTail,
-  }, {
-    sessionCleanup,
-  });
-}
-
-export async function finalizeFailedWaitingRunWithPersistence(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
   workflowError: string,
@@ -585,7 +387,7 @@ export async function finalizeFailedWaitingRunWithPersistence(
     workflowError,
     "exact",
   );
-  await finalizeTaskRunTransitionWithPersistence(provider, run, {
+  await finalizeTaskRunTransition(provider, run, {
     status: "failed",
     exitCode: null,
     signal: null,
@@ -597,86 +399,23 @@ export async function finalizeFailedWaitingRunWithPersistence(
 export async function finalizePersistedActiveRuns(
   provider: AutomationPersistenceProvider,
   reason: string,
-): Promise<void>;
-export async function finalizePersistedActiveRuns(
-  ledgerDir: string,
-  reason: string,
-  finalizeRun?: typeof finalizePersistedRun,
-): Promise<void>;
-export async function finalizePersistedActiveRuns(
-  ledgerDirOrProvider: string | AutomationPersistenceProvider,
-  reason: string,
-  finalizeRun: typeof finalizePersistedRun = finalizePersistedRun,
 ): Promise<void> {
-  if (typeof ledgerDirOrProvider !== "string") {
-    const errors: unknown[] = [];
-    try {
-      for (const run of await ledgerDirOrProvider.automation.activeTaskRuns()) {
-        try {
-          await finalizePersistedRun(ledgerDirOrProvider, run, reason);
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length) {
-      throw new AggregateError(errors, "Failed to finalize persisted automation runs");
-    }
-    return;
-  }
-  const ledgerDir = ledgerDirOrProvider;
-  const db = openLedgerDatabase(ledgerDir);
   const errors: unknown[] = [];
   try {
-    for (const run of activeTaskRuns(db)) {
+    for (const run of await provider.automation.activeTaskRuns()) {
       try {
-        await finalizeRun(db, run, reason);
+        await finalizePersistedRun(provider, run, reason);
       } catch (error) {
         errors.push(error);
       }
     }
-  } finally {
-    db.close();
+  } catch (error) {
+    errors.push(error);
   }
   if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
-export function scheduleAutomationTaskRunTimeout(
-  context: AutomationTaskRunFinalizationContext,
-) {
-  const initialRun = taskRunById(context.taskDb, context.taskRunId);
-  if (!initialRun || !sessionFromRun(initialRun)) return;
-  armAutomationSessionDispositionTimeout(context.taskId, async () => {
-    const timeoutDb = openLedgerDatabase(context.ledgerDir);
-    try {
-      const run = taskRunById(timeoutDb, context.taskRunId);
-      if (!run || run.status !== "waiting_for_human") return;
-      const sessionCleanup = await finalizeAutomationSessionForRun(
-        run,
-        "等待人工操作超過 20 分鐘",
-        "exact",
-      );
-      await finalizeTaskRunTransition(timeoutDb, run, {
-        status: "failed",
-        sessionDisposition: "relinquish",
-        exitCode: null,
-        signal: null,
-        errorMessage: null,
-        logTail: run.logTail,
-      }, {
-        sessionCleanup,
-      });
-    } catch (error) {
-      console.error("automation-session-timeout-failed", error);
-    } finally {
-      timeoutDb.close();
-    }
-  });
-}
-
-export type AsyncAutomationTaskRunTimeoutContext = {
+export type AutomationTaskRunTimeoutContext = {
   provider: AutomationPersistenceProvider;
   taskId: string;
   taskRunId: string;
@@ -684,8 +423,8 @@ export type AsyncAutomationTaskRunTimeoutContext = {
 };
 
 /** Schedule the same waiting-session timeout using only async persistence. */
-export function scheduleAutomationTaskRunTimeoutWithPersistence(
-  context: AsyncAutomationTaskRunTimeoutContext,
+export function scheduleAutomationTaskRunTimeout(
+  context: AutomationTaskRunTimeoutContext,
 ) {
   void context.provider.automation.taskRunById(context.taskRunId).then((initialRun) => {
     if (!initialRun || !sessionFromRun(initialRun)) return;
@@ -698,7 +437,7 @@ export function scheduleAutomationTaskRunTimeoutWithPersistence(
           "等待人工操作超過 20 分鐘",
           "exact",
         );
-        await finalizeTaskRunTransitionWithPersistence(
+        await finalizeTaskRunTransition(
           context.provider,
           { taskRunId: context.taskRunId, logPath: context.logPath },
           {
@@ -716,98 +455,4 @@ export function scheduleAutomationTaskRunTimeoutWithPersistence(
   }).catch((error) => {
     console.error("automation-session-timeout-schedule-failed", error);
   });
-}
-
-export async function finalizeAutomationTaskRun(
-  context: AutomationTaskRunFinalizationContext,
-  result: AutomationTaskProcessResult,
-) {
-  const resumeFailure = result.resumeFailure;
-  const cancelled = context.forceTerminated === true
-    || result.signal === "SIGTERM"
-    || result.error?.message === "Automation task cancelled.";
-  let status: AutomationTaskStatus = cancelled
-    ? "cancelled"
-    : result.error || resumeFailure
-    ? "failed"
-    : nextAttemptStatus({
-      kind: context.taskKind,
-      attempt: 1,
-      maxAttempts: 1,
-      exitCode: result.exitCode,
-      waitingForHuman: shouldMarkWaitingForHuman(result.logTail),
-    });
-  if (status === "completed" && result.statementSummary) status = result.statementSummary.status;
-  const statementFailure = result.statementSummary?.status === "failed"
-    ? result.statementSummary.results
-      .filter((statement) => statement.status === "failed")
-      .map((statement) => `${statement.typeId}: ${statement.error ?? "Failed"}`)
-      .join("\n") || "No statement components completed."
-    : null;
-  let taskError = result.error?.message
-    ?? resumeFailure
-    ?? (status === "failed" ? statementFailure || finalFailureMessage(result.logTail, result.exitCode) : null);
-  taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
-  const currentRun = taskRunById(context.taskDb, context.taskRunId);
-  if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
-  if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
-  if (isForceQuitRun(currentRun)) return { status: "failed" as const };
-  let logTail = result.logTail;
-  if (result.statementSummary) {
-    logTail = tail(`${logTail}\n${statementRunSummaryLine(result.statementSummary.results)}\n`);
-  }
-  const sessionDisposition = shouldRetainAutomationSession(status) ? "retain" : "relinquish";
-  const sessionCleanup = sessionDisposition === "relinquish" && !context.sessionAlreadyCleaned && currentRun
-    && automationSessionOwnerForRun(currentRun)
-    ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
-    : null;
-  const transition = await finalizeTaskRunTransition(context.taskDb, {
-    taskRunId: context.taskRunId,
-    logPath: context.logPath,
-  }, {
-    status,
-    sessionDisposition,
-    exitCode: result.exitCode,
-    signal: result.signal,
-    errorMessage: taskError,
-    logTail,
-    statementSummary: result.statementSummary,
-  }, {
-    sessionCleanup,
-  });
-  if (!transition.skipped && sessionDisposition === "retain") {
-    scheduleAutomationTaskRunTimeout(context);
-  }
-  if (!transition.skipped) {
-    if (transition.status === "completed" || transition.status === "partial") {
-      (context.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
-    }
-    const task = taskById(context.taskId);
-    const prerequisites = new Map(
-      (task?.externalPrerequisites ?? [])
-        .filter(isValidExternalPrerequisiteMetadata)
-        .map((prerequisite) => [prerequisite.id, prerequisite]),
-    );
-    if (transition.status === "completed") {
-      resolveTaskPrerequisiteNotices(
-        context.taskDb,
-        context.taskId,
-        context.taskRunId,
-        new Date().toISOString(),
-      );
-    } else if (transition.status === "failed" || transition.status === "partial") {
-      const detectedAt = new Date().toISOString();
-      for (const prerequisiteId of result.externalPrerequisiteIds) {
-        if (!prerequisites.has(prerequisiteId)) continue;
-        upsertTaskPrerequisiteNotice(context.taskDb, {
-          taskId: context.taskId,
-          prerequisiteId,
-          taskRunId: context.taskRunId,
-          detectedAt,
-          errorMessage: taskError,
-        });
-      }
-    }
-  }
-  return { status: transition.status };
 }
