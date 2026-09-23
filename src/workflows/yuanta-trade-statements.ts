@@ -13,7 +13,6 @@ import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -24,7 +23,6 @@ import {
   type InvestmentTransactionAction,
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial-admission.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   buildYuantaInvestmentCapture,
   YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -173,7 +171,6 @@ const inputSchema = z.object({
   holdingTypes: z.array(holdingTypeSchema).default(holdingTypeSchema.options),
   tradeTypes: z.array(tradeTypeSchema).default(tradeTypeSchema.options),
   outputDir: z.string().default("downloads/yuanta-trade-statements"),
-  canonicalLedgerDir: z.string().default("data/ledger"),
 });
 
 const generatedTableFileSchema = z.object({
@@ -1466,7 +1463,6 @@ export function assertYuantaTradeCanonicalOccurrenceIdentities(
   return identities;
 }
 async function commitYuantaTradeCanonicalIfComplete(
-  input: WorkflowInput,
   credentials: YuantaTradeCredentials,
   holdingRows: CsvRow[],
   tradeRows: CsvRow[],
@@ -1582,79 +1578,35 @@ async function commitYuantaTradeCanonicalIfComplete(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   if (captures.length === 0) return;
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const result = await executePGliteWorkflowRun({
-        client: client.workflow,
-        provider: "yuanta-trade",
-        product: "investment",
-        items: captures.map((capture) => ({
-          provider: "yuanta-trade",
-          product: "investment",
-          itemKey: capture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-            request: { capture },
-          },
-          relationCommands: () => [{
-            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-            request: {
-              sourceConnectionKey: capture.identity.sourceConnectionKey,
-              observedAt: capture.observedAt,
-            },
-          }],
-        } as const)),
-      });
-      if (result.status !== "completed")
-        throw new Error(`Yuanta trade PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      return;
-    } finally {
-      client.close();
-    }
-  }
-  const [
-    { commitCanonicalFinancialAdmissionInTransaction },
-    { executeCanonicalFinancialCommitRun },
-    { runCanonicalInvestmentRelationFollowThrough },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-admission.ts"),
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/canonical-relation-followthrough.ts"),
-  ]);
-  const executionItems: CanonicalFinancialCommitItem<unknown>[] = captures.map(
-    (capture) => ({
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const result = await executePGliteWorkflowRun({
+      client: client.workflow,
       provider: "yuanta-trade",
       product: "investment",
-      itemKey: capture.captureId,
-      commit: ({ writer, admission }) =>
-        commitCanonicalFinancialAdmissionInTransaction(
-          writer,
-          { kind: "investment", captures: [capture] },
-          admission,
-        ),
-      resolveRelations: async ({ writer }) => {
-        await runCanonicalInvestmentRelationFollowThrough(
-          writer,
-          undefined,
-          "yuanta-trade-investment-relation-resolution-failed",
-        );
-      },
-    }),
-  );
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir: input.canonicalLedgerDir,
-    items: executionItems,
-    provider: "yuanta-trade",
-    product: "investment",
-  });
-  if (executionResult.status !== "completed")
-    throw new Error(
-      `Yuanta trade canonical persistence ${executionResult.status}: ${executionResult.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
+      items: captures.map((capture) => ({
+        provider: "yuanta-trade",
+        product: "investment",
+        itemKey: capture.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+          request: { capture },
+        },
+        relationCommands: () => [{
+          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+          request: {
+            sourceConnectionKey: capture.identity.sourceConnectionKey,
+            observedAt: capture.observedAt,
+          },
+        }],
+      } as const)),
+    });
+    if (result.status !== "completed")
+      throw new Error(`Yuanta trade PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+  } finally {
+    client.close();
+  }
 }
 
 export default workflow("yuantaTradeStatements", {
@@ -1792,7 +1744,6 @@ export default workflow("yuantaTradeStatements", {
       );
     }
     await commitYuantaTradeCanonicalIfComplete(
-      input,
       credentials,
       holdingRows,
       tradeRows,

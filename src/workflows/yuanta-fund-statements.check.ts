@@ -44,9 +44,17 @@ assert.doesNotMatch(source, /selectedFunds = fundPositions\.filter/);
 assert.match(source, /runFundMenuAction\(/);
 assert.match(source, /startUrl: YUANTA_ENTRY_URL/);
 assert.match(source, /evaluateYuantaFundCanonicalAdmission/);
-assert.match(source, /executeCanonicalFinancialCommitRun/);
-assert.match(source, /commitCanonicalFinancialAdmissionInTransaction/);
-assert.match(source, /runCanonicalInvestmentRelationFollowThrough/);
+assert.match(source, /executePGliteWorkflowRun/);
+assert.match(source, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
+assert.match(source, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
+assert.doesNotMatch(
+  source,
+  /executeCanonicalFinancialCommitRun|CanonicalFinancialCommitItem|commitCanonicalFinancialAdmissionInTransaction|runCanonicalInvestmentRelationFollowThrough|pgliteWorkflowEnabled|canonicalLedgerDir/,
+);
+assert.doesNotMatch(
+  source,
+  /import\(["']\.\.\/ledger\/(?:canonical\/canonical-financial-admission|canonical\/canonical-financial-commit-execution|canonical\/canonical-relation-followthrough|db\/client)\.ts["']\)/,
+);
 assert.doesNotMatch(source, /createCanonicalInvestmentStore/);
 assert.doesNotMatch(source, /commitCanonicalInvestmentCaptureBatch/);
 assert.match(source, /reference-nav-and-fx-basis-date/);
