@@ -53,7 +53,7 @@ try {
   assert.equal(JSON.parse(markerText).version, CANONICAL_RESET_VERSION);
 
   const restartCalls: string[] = [];
-  const restarted = initializeCanonicalRuntimeBeforeWindow(freshRoot, {
+  const restarted = await initializeCanonicalRuntimeBeforeWindow(freshRoot, {
     openCanonical: fakeOpen(restartCalls),
   });
   assert.equal(restarted.status, "completed");

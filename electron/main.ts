@@ -226,7 +226,7 @@ async function start() {
   // doing so would make a fresh PGlite startup depend on an unrelated file
   // and would violate the single-worker ownership boundary.
   if (!pgliteOperationalRuntime) {
-    initializeCanonicalRuntimeBeforeWindow(userData);
+    await initializeCanonicalRuntimeBeforeWindow(userData);
   }
   const ledgerDir = process.env.LEDGER_DIR ?? "data/ledger";
   // Reconcile abandoned execution rows off the shell's critical path. The
