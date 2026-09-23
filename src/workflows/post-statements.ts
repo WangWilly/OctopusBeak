@@ -10,7 +10,7 @@ import {
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -28,32 +28,18 @@ import {
   derivePostDomesticDepositAccountNumberEvidence,
   type PostDomesticDepositCaptureEvidence,
   type PostDomesticDepositValidatedEvidence,
-} from "../ledger/canonical/post-domestic-deposit.ts";
-import { commitCanonicalFinancialDepositCaptureInTransaction } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction } from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
+} from "../ledger/canonical/post-domestic-deposit-admission.ts";
 import {
-  ensurePostHumanAttestationEvents,
   getPostHumanAttestedV1Manifest,
-  isPostHumanAttestedV1Active,
-  latestPostHumanAttestationEvent,
-  recordInitialPostHumanAttestationIfMissing,
-} from "../ledger/canonical/post-human-attestation.ts";
-import {
-  CanonicalFinancialCommitItemError,
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/post-human-attestation-contract.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
   readPostCurrentDepositBalances,
   type ExistingPostCurrentDepositFinancialCapture,
 } from "./post-current-deposit-balances.ts";
-import {
-  admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -103,6 +89,8 @@ const outputSchema = z.object({
   sourceCaptureCount: z.number().int().nonnegative(),
   status: z.enum(["source-only", "financial-admitted"]),
 });
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 export type PostCredentials = {
   post_user_id?: string;
@@ -999,6 +987,25 @@ export async function runPostStatements(
       client.close();
     }
   }
+
+  const [
+    { CanonicalFinancialCommitItemError, executeCanonicalFinancialCommitRun },
+    { commitCanonicalFinancialDepositCaptureInTransaction },
+    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+    {
+      ensurePostHumanAttestationEvents,
+      isPostHumanAttestedV1Active,
+      latestPostHumanAttestationEvent,
+      recordInitialPostHumanAttestationIfMissing,
+    },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
+    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    import("../ledger/canonical/post-human-attestation.ts"),
+  ]);
 
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
   for (const entry of sourceOnlyEntries) {

@@ -7,7 +7,7 @@ import {
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
