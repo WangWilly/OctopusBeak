@@ -35,7 +35,7 @@ import {
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
 
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
+const DEFAULT_LEDGER_DIR = process.env.OCTOPUSBEAK_PGLITE_DATA_DIR ?? "data/pglite";
 
 type MaicoinPGliteClient = Pick<
   PGliteChildRpcClient,
@@ -219,7 +219,7 @@ Options:
 
 function parseCli(argv: string[]): CliParams {
   const params: CliParams = {
-    ledgerDir: process.env.LEDGER_DIR ?? DEFAULT_LEDGER_DIR,
+    ledgerDir: DEFAULT_LEDGER_DIR,
     walletTypes: [...WALLET_TYPES],
     statementJson: null,
     statementLimit: DEFAULT_STATEMENT_LIMIT,
