@@ -1,14 +1,49 @@
 import type {
-  CanonicalFinancialCommitAdmissionSummary,
-  CanonicalFinancialCommitDiagnostic,
-  CanonicalFinancialCommitItemResult,
-  CanonicalFinancialCommitRunResult,
-} from "../canonical/canonical-financial-commit-execution.ts";
-import type {
   PGliteWorkflowClient,
   PGliteWorkflowCommand,
   PGliteWorkflowFailureCategory,
 } from "./workflow-client.ts";
+
+export type PGliteWorkflowDiagnostic = Readonly<{
+  provider: string;
+  product: string;
+  itemKey: string;
+  stage: "admission" | "commit" | "relation-resolution" | "cancellation" | "run";
+  errorCode: string;
+  message: string;
+}>;
+
+export type PGliteWorkflowAdmissionSummary = Readonly<{
+  captureId: string;
+  commitSequence: number;
+}>;
+
+export type PGliteWorkflowItemResult<T> =
+  | Readonly<{
+      itemKey: string;
+      provider: string;
+      product: string;
+      status: "committed";
+      admissionSummaries: readonly PGliteWorkflowAdmissionSummary[];
+      value: T;
+      relationWarnings: readonly PGliteWorkflowDiagnostic[];
+    }>
+  | Readonly<{
+      itemKey: string;
+      provider: string;
+      product: string;
+      status: "failed";
+      failureKind: "item" | "fatal";
+      diagnostics: readonly PGliteWorkflowDiagnostic[];
+    }>;
+
+export type PGliteWorkflowRunResult<T> = Readonly<{
+  status: "completed" | "partially-completed" | "failed" | "cancelled";
+  items: readonly PGliteWorkflowItemResult<T>[];
+  diagnostics: readonly PGliteWorkflowDiagnostic[];
+  committedCount: number;
+  failedCount: number;
+}>;
 
 /** A serializable worker command is the only financial action in an item. */
 export type PGliteWorkflowRunItem = Readonly<{
@@ -58,9 +93,9 @@ function classify(error: unknown, signal?: AbortSignal): ClassifiedFailure {
 
 function diagnostic(
   identity: DiagnosticIdentity,
-  stage: CanonicalFinancialCommitDiagnostic["stage"],
+  stage: PGliteWorkflowDiagnostic["stage"],
   code: string,
-): CanonicalFinancialCommitDiagnostic {
+): PGliteWorkflowDiagnostic {
   return Object.freeze({
     provider: safeIdentity(identity.provider, "provider"),
     product: safeIdentity(identity.product, "financial"),
@@ -77,7 +112,7 @@ function diagnostic(
   });
 }
 
-function admissionSummaries(value: unknown): readonly CanonicalFinancialCommitAdmissionSummary[] {
+function admissionSummaries(value: unknown): readonly PGliteWorkflowAdmissionSummary[] {
   const mixed = value && typeof value === "object" && "admissions" in value
     ? value as { admissions?: unknown; financial?: unknown; deposits?: unknown }
     : null;
@@ -102,7 +137,7 @@ function admissionSummaries(value: unknown): readonly CanonicalFinancialCommitAd
   }));
 }
 
-function resultStatus(results: readonly CanonicalFinancialCommitItemResult<unknown>[], fatal: boolean, cancelled: boolean) {
+function resultStatus(results: readonly PGliteWorkflowItemResult<unknown>[], fatal: boolean, cancelled: boolean) {
   if (cancelled) return "cancelled" as const;
   if (fatal) return "failed" as const;
   const committed = results.filter((item) => item.status === "committed").length;
@@ -117,9 +152,9 @@ function resultStatus(results: readonly CanonicalFinancialCommitItemResult<unkno
  */
 export async function executePGliteWorkflowRun(
   request: PGliteWorkflowRunRequest,
-): Promise<CanonicalFinancialCommitRunResult<unknown>> {
-  const results: CanonicalFinancialCommitItemResult<unknown>[] = [];
-  const diagnostics: CanonicalFinancialCommitDiagnostic[] = [];
+): Promise<PGliteWorkflowRunResult<unknown>> {
+  const results: PGliteWorkflowItemResult<unknown>[] = [];
+  const diagnostics: PGliteWorkflowDiagnostic[] = [];
   const fallback = {
     provider: request.provider ?? "provider",
     product: request.product ?? "financial",
@@ -166,7 +201,7 @@ export async function executePGliteWorkflowRun(
         }
         continue;
       }
-      let summaries: readonly CanonicalFinancialCommitAdmissionSummary[];
+      let summaries: readonly PGliteWorkflowAdmissionSummary[];
       try {
         summaries = admissionSummaries(value);
       } catch {
@@ -186,7 +221,7 @@ export async function executePGliteWorkflowRun(
         fatal = true;
         break;
       }
-      const warnings: CanonicalFinancialCommitDiagnostic[] = [];
+      const warnings: PGliteWorkflowDiagnostic[] = [];
       try {
         for (const command of item.relationCommands?.(value) ?? []) {
           const relationResult = await request.client.commit(command);
