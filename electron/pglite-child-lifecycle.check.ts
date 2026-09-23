@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -161,17 +161,6 @@ function startChild(environment: NodeJS.ProcessEnv): ChildOutput {
   };
 }
 
-async function sqliteFilesWithin(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await sqliteFilesWithin(path));
-    else if (entry.name === "canonical.sqlite" || entry.name === "ledger.sqlite") files.push(path);
-  }
-  return files;
-}
-
 test("PGlite child RPC launches, reconnects, and fails closed when its parent closes", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-pglite-child-lifecycle-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
@@ -223,7 +212,6 @@ test("PGlite child RPC launches, reconnects, and fails closed when its parent cl
     await server.ready;
     await workerClient.financial.registry.overviewCurrent();
     assert.equal(await child.waitForLine("READY:first:"), "READY:first:empty");
-    assert.deepEqual(await sqliteFilesWithin(dataDir), []);
 
     blockNextOperation = true;
     child.child.stdin.write("reconnect\n");
@@ -240,7 +228,6 @@ test("PGlite child RPC launches, reconnects, and fails closed when its parent cl
     assert.equal(await child.waitForExit(), true, "the child process exits after its owner disconnects");
     assert.equal(child.child.exitCode, 0);
     assert.equal(child.stderr(), "");
-    assert.deepEqual(await sqliteFilesWithin(dataDir), []);
   } finally {
     if (child.child.exitCode === null && child.child.signalCode === null) {
       if (!await child.waitForExit()) {

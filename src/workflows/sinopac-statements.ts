@@ -202,7 +202,6 @@ export type SinopacStatementsRunDependencies = {
     queryPeriods: string[],
     rows: SinopacStatementRow[],
   ) => Promise<SinopacDownload>;
-  /** Directory containing the shared canonical.sqlite source store. */
   /** Injected in checks; production passively reads the authenticated balance POST. */
   readCurrentDepositBalances?: typeof readSinopacCurrentDepositBalances;
 };

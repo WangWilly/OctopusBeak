@@ -12,8 +12,7 @@ export { validateCanonicalSourceAccountNumber };
 
 /**
  * The PGlite worker has its own source-admission boundary.  It deliberately
- * does not import the SQLite admission module: importing that module would
- * pull the synchronous `node:sqlite` engine into the worker bundle.
+ * stays independent of the retired synchronous admission runtime.
  */
 export type PGliteCanonicalSourceRecord = CanonicalSourceRecord;
 export type PGliteCanonicalSourceEvidence = CanonicalSourceEvidence;
