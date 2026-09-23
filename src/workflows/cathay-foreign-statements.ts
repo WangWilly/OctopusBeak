@@ -635,7 +635,6 @@ async function collectCathayCurrentForeignDepositBalanceCaptures(
  */
 export async function commitCathayForeignAndCurrentCanonicalCaptures(
   page: Page,
-  _canonicalLedgerDir: string | undefined,
   captures: readonly ForeignCurrencyDepositCaptureInput[],
   options: {
     requireComplete?: boolean;
@@ -979,7 +978,6 @@ export default workflow("cathayForeignStatements", {
 
     await commitCathayForeignAndCurrentCanonicalCaptures(
       page,
-      undefined,
       canonicalCollector.captures,
     );
 

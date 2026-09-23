@@ -213,7 +213,6 @@ try {
   Object.assign(process.env, pgliteServer.env);
   await commitCathayForeignAndCurrentCanonicalCaptures(
     {} as never,
-    undefined,
     [freshForeignCapture],
     { requireComplete: true, readCurrentDepositBalances: async () => freshForeignRows },
   );
