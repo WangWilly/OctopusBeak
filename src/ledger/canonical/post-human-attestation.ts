@@ -4,141 +4,34 @@ import {
   isValidatedCanonicalDatabase,
   runCanonicalSchemaRepair,
 } from "./canonical-schema-lifecycle.ts";
+import {
+  assertPostHumanAttestedV1Manifest,
+  freezePostHumanAttestationManifest,
+  getPostHumanAttestedV1Manifest,
+  isPostHumanAttestedV1Active,
+  POST_HUMAN_ATTESTED_V1_MANIFEST,
+  postHumanAttestationFingerprint,
+  replacePostHumanAttestedV1Manifest,
+  validPostHumanAttestationEventAt,
+  type PostHumanAttestationEvent,
+  type PostHumanAttestedV1Manifest,
+} from "./post-human-attestation-contract.ts";
+
+export {
+  POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
+  POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
+  POST_HUMAN_ATTESTED_V1_MANIFEST,
+  getPostHumanAttestedV1Manifest,
+  isPostHumanAttestedV1Active,
+  isPostHumanAttestedV1Manifest,
+  postHumanAttestedIdentityEpochKey,
+  type PostHumanAttestationEvent,
+  type PostHumanAttestedV1Manifest,
+} from "./post-human-attestation-contract.ts";
 
 type PostOpaqueToken = `sha256:${string}`;
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  for (const key of Reflect.ownKeys(value as object)) {
-    const child = (value as Record<PropertyKey, unknown>)[key];
-    if (child !== null && typeof child === "object") deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
-
-export const POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
-  "post/domestic-deposit/human-attested-v1" as const;
-export const POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION =
-  "human-attested-v1" as const;
-
-/** User-confirmed 1A/2A/3A observations. No provider uniqueness is claimed. */
-export const POST_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
-  attestationId: "post-domestic-deposit-human-attested-v1",
-  evidenceVersion: POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
-  authorityRoute: POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
-  status: "active",
-  attestedAt: "2026-08-24",
-  attestedBy: "user-confirmed-post-observed-human-attested-2026-08-24",
-  provenance: {
-    kind: "user-confirmation",
-    attestationContractFingerprint:
-      "sha256:5b2698c998f1335476ff1d0bc9009294afdbd18576fa728c20a0563fcdb30bf4",
-    source: "Chunghwa Post domestic deposit observed human-attested contract",
-  },
-  authority: "personal-authenticated-session-all-visible-domestic-accounts",
-  currency: "TWD",
-  providerGuaranteed: false,
-  semantics: {
-    posting: "statement-item-posted-history",
-    direction: "dr-flg-plus-inflow-minus-outflow",
-    effectiveTime: "prs-date-effective-with-tx-time-Asia/Taipei",
-    accountingDate: "prs-date",
-    cancellation: "independent-row-no-original-link",
-    occurrence: "local-composite-not-provider-unique",
-    completeness: "accepted-range-terminal-http-200-nonempty-item",
-    zeroResult: "unproven-reject",
-    withdrawal: "never-infer-missing-row",
-  },
-  revokedAt: null,
-  revocationReason: null,
-} as const);
-
-export type PostHumanAttestedV1Manifest = Omit<
-  typeof POST_HUMAN_ATTESTED_V1_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
-
-export type PostHumanAttestationEvent = {
-  attestationId: string;
-  evidenceVersion: string;
-  eventKind: "attested" | "revoked";
-  manifestStatus: "active" | "revoked";
-  eventAt: string;
-  reason: string | null;
-  manifestFingerprint: PostOpaqueToken;
-  sequence: number;
-};
-
-const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: PostHumanAttestedV1Manifest =
-  POST_HUMAN_ATTESTED_V1_MANIFEST;
-VALIDATED_MANIFESTS.add(POST_HUMAN_ATTESTED_V1_MANIFEST);
-
-function fingerprint(manifest: PostHumanAttestedV1Manifest): PostOpaqueToken {
-  return manifest.provenance.attestationContractFingerprint as PostOpaqueToken;
-}
-
-export function postHumanAttestedIdentityEpochKey(
-  manifest: PostHumanAttestedV1Manifest = currentManifest,
-): PostOpaqueToken {
-  return `sha256:${Buffer.from(
-    [
-      "post-human-attested-identity-epoch-v1",
-      manifest.attestationId,
-      manifest.evidenceVersion,
-      fingerprint(manifest),
-    ].join("\0"),
-  ).toString("base64url")}`;
-}
-
-function assertManifest(manifest: PostHumanAttestedV1Manifest): void {
-  if (
-    manifest !== currentManifest ||
-    manifest.attestationId !== POST_HUMAN_ATTESTED_V1_MANIFEST.attestationId ||
-    manifest.evidenceVersion !==
-      POST_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion ||
-    manifest.authorityRoute !==
-      POST_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute ||
-    fingerprint(manifest) !== fingerprint(POST_HUMAN_ATTESTED_V1_MANIFEST) ||
-    manifest.providerGuaranteed !== false
-  )
-    throw new Error(
-      "Post attestation manifest does not match the immutable contract.",
-    );
-}
-
-function validEventAt(value: string): boolean {
-  return (
-    /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
-}
-
-export function getPostHumanAttestedV1Manifest(): PostHumanAttestedV1Manifest {
-  return currentManifest;
-}
-
-export function isPostHumanAttestedV1Manifest(
-  value: unknown,
-): value is PostHumanAttestedV1Manifest {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    VALIDATED_MANIFESTS.has(value) &&
-    value === currentManifest
-  );
-}
-
-export function isPostHumanAttestedV1Active(): boolean {
-  return currentManifest.status === "active";
-}
-
+const fingerprint = postHumanAttestationFingerprint;
+const validEventAt = validPostHumanAttestationEventAt;
 export function ensurePostHumanAttestationEvents(db: DatabaseSync): void {
   if (isValidatedCanonicalDatabase(db)) {
     runCanonicalSchemaRepair(db, "canonical/attestation/post-events/v1");
@@ -175,14 +68,14 @@ type StoredEvent = {
 
 function eventChain(db: DatabaseSync): PostHumanAttestationEvent[] {
   ensurePostHumanAttestationEvents(db);
-  assertManifest(currentManifest);
+  assertPostHumanAttestedV1Manifest();
   const rows = db
     .prepare(
       "SELECT attestation_id,evidence_version,event_kind,manifest_status,event_at,reason,manifest_fingerprint,event_sequence " +
         "FROM post_attestation_events WHERE attestation_id = ? " +
         "ORDER BY event_sequence ASC,event_at ASC,rowid ASC",
     )
-    .all(currentManifest.attestationId) as StoredEvent[];
+    .all(getPostHumanAttestedV1Manifest().attestationId) as StoredEvent[];
   const chain: PostHumanAttestationEvent[] = [];
   for (const [index, row] of rows.entries()) {
     const event: PostHumanAttestationEvent = {
@@ -197,9 +90,9 @@ function eventChain(db: DatabaseSync): PostHumanAttestationEvent[] {
     };
     const previous = chain.at(-1);
     if (
-      event.attestationId !== currentManifest.attestationId ||
-      event.evidenceVersion !== currentManifest.evidenceVersion ||
-      event.manifestFingerprint !== fingerprint(currentManifest) ||
+      event.attestationId !== getPostHumanAttestedV1Manifest().attestationId ||
+      event.evidenceVersion !== getPostHumanAttestedV1Manifest().evidenceVersion ||
+      event.manifestFingerprint !== fingerprint() ||
       event.sequence !== index + 1 ||
       !validEventAt(event.eventAt) ||
       (index === 0 && event.eventKind !== "attested") ||
@@ -220,7 +113,7 @@ export function latestPostHumanAttestationEvent(
   db: DatabaseSync,
 ): PostHumanAttestationEvent | null {
   const latest = eventChain(db).at(-1) ?? null;
-  if (!latest && currentManifest.status === "revoked")
+  if (!latest && getPostHumanAttestedV1Manifest().status === "revoked")
     throw new Error(
       "Post revoked attestation has no durable revocation event.",
     );
@@ -231,17 +124,17 @@ function recordEvent(db: DatabaseSync, event: PostHumanAttestationEvent): void {
   const chain = eventChain(db);
   const previous = chain.at(-1);
   if (
-    event.attestationId !== currentManifest.attestationId ||
-    event.evidenceVersion !== currentManifest.evidenceVersion ||
-    event.manifestFingerprint !== fingerprint(currentManifest) ||
+    event.attestationId !== getPostHumanAttestedV1Manifest().attestationId ||
+    event.evidenceVersion !== getPostHumanAttestedV1Manifest().evidenceVersion ||
+    event.manifestFingerprint !== fingerprint() ||
     event.sequence !== chain.length + 1 ||
     !validEventAt(event.eventAt) ||
     (event.eventKind === "attested" &&
       (event.manifestStatus !== "active" ||
-        currentManifest.status !== "active")) ||
+        getPostHumanAttestedV1Manifest().status !== "active")) ||
     (event.eventKind === "revoked" &&
       (event.manifestStatus !== "revoked" ||
-        currentManifest.status !== "revoked" ||
+        getPostHumanAttestedV1Manifest().status !== "revoked" ||
         !event.reason?.trim())) ||
     (previous &&
       (event.eventAt < previous.eventAt ||
@@ -273,13 +166,13 @@ export function recordInitialPostHumanAttestationIfMissing(
     throw new Error("Cannot attest a revoked Post manifest.");
   if (latestPostHumanAttestationEvent(db)) return;
   recordEvent(db, {
-    attestationId: currentManifest.attestationId,
-    evidenceVersion: currentManifest.evidenceVersion,
+    attestationId: getPostHumanAttestedV1Manifest().attestationId,
+    evidenceVersion: getPostHumanAttestedV1Manifest().evidenceVersion,
     eventKind: "attested",
     manifestStatus: "active",
     eventAt: observedAt,
     reason: "user-confirmed-post-observed-human-attested-2026-08-24",
-    manifestFingerprint: fingerprint(currentManifest),
+    manifestFingerprint: fingerprint(),
     sequence: 1,
   });
 }
@@ -292,15 +185,15 @@ export function revokePostHumanAttestedV1(
   if (!validEventAt(at) || !reason.trim())
     throw new Error("Post attestation revocation requires time and reason.");
   const latest = db ? latestPostHumanAttestationEvent(db) : null;
+  const currentManifest = getPostHumanAttestedV1Manifest();
   if (currentManifest.status === "revoked") return currentManifest;
-  const revoked = deepFreeze({
+  const revoked = freezePostHumanAttestationManifest({
     ...currentManifest,
     status: "revoked" as const,
     revokedAt: at,
     revocationReason: reason.trim(),
   });
-  currentManifest = revoked;
-  VALIDATED_MANIFESTS.add(revoked);
+  replacePostHumanAttestedV1Manifest(revoked);
   if (db)
     recordEvent(db, {
       attestationId: revoked.attestationId,
@@ -323,16 +216,16 @@ export function restorePostHumanAttestedV1(
   if (!validEventAt(at) || !reason.trim())
     throw new Error("Post attestation restoration requires time and reason.");
   const latest = db ? latestPostHumanAttestationEvent(db) : null;
+  const currentManifest = getPostHumanAttestedV1Manifest();
   if (currentManifest.status === "active" && latest?.eventKind !== "revoked")
     return currentManifest;
-  const restored = deepFreeze({
+  const restored = freezePostHumanAttestationManifest({
     ...currentManifest,
     status: "active" as const,
     revokedAt: null,
     revocationReason: null,
   });
-  currentManifest = restored;
-  VALIDATED_MANIFESTS.add(restored);
+  replacePostHumanAttestedV1Manifest(restored);
   if (db)
     recordEvent(db, {
       attestationId: restored.attestationId,
