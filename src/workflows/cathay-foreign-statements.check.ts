@@ -1,36 +1,20 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { mock } from "node:test";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Worker } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
-import { fileURLToPath } from "node:url";
 import {
   admitForeignCurrencyDepositCapture,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import { openCanonicalDatabaseHandle } from "../ledger/canonical/canonical-database.ts";
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,
 } from "./cathay-current-deposit-balances.ts";
-
-const foreignWorkflowSource = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "cathay-foreign-statements.ts"),
-  "utf8",
-);
-assert.match(
-  foreignWorkflowSource,
-  /executeCanonicalFinancialCommitRun[\s\S]*?commitForeignCurrencyDepositCaptureInTransaction/u,
-);
-assert.doesNotMatch(
-  foreignWorkflowSource,
-  /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
-);
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -51,8 +35,6 @@ mock.timers.enable({
 
 const {
   buildCathayForeignCurrencyCaptureInput,
-  captureCathayCurrentForeignDepositBalances,
-  commitCathayForeignCanonicalCaptures,
   commitCathayForeignAndCurrentCanonicalCaptures,
   createCathayForeignCanonicalCaptureCollector,
   deriveCathayForeignAccountNumberEvidence,
@@ -211,44 +193,7 @@ const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
     `{"success":true,"systemTime":"2026-08-24T20:00:00.0000000+08:00","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${syntheticCathayForeignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00}]}]}}`,
   observedAt: "2026-08-24T20:00:05.000+08:00",
 });
-const freshForeignLedgerDirectory = await mkdtemp(
-  join(tmpdir(), "cathay-foreign-current-fresh-133-"),
-);
-try {
-  const lifecycle: string[] = ["foreign-commit-start"];
-  const [foreignCommit] = await commitCathayForeignCanonicalCaptures(
-    freshForeignLedgerDirectory,
-    [freshForeignCapture],
-  );
-  lifecycle.push("foreign-commit-complete");
-  assert.equal(foreignCommit?.transactionCount, 1);
-  const currentCommit = await captureCathayCurrentForeignDepositBalances(
-    {} as never,
-    [freshForeignCapture],
-    freshForeignLedgerDirectory,
-    {
-      readCurrentDepositBalances: async () => {
-        assert.equal(lifecycle.at(-1), "foreign-commit-complete");
-        lifecycle.push("current-read");
-        return freshForeignRows;
-      },
-    },
-  );
-  lifecycle.push("current-commit");
-  assert.deepEqual(lifecycle, [
-    "foreign-commit-start",
-    "foreign-commit-complete",
-    "current-read",
-    "current-commit",
-  ]);
-  assert.equal(currentCommit[0]?.revisionCount, 1);
-  assert.equal(currentCommit[0]?.observationCount, 1);
-} finally {
-  await rm(freshForeignLedgerDirectory, { recursive: true, force: true });
-}
-
 const pgliteDir = await mkdtemp(join(tmpdir(), "cathay-foreign-pglite-"));
-const noSqliteDir = await mkdtemp(join(tmpdir(), "cathay-foreign-no-sqlite-"));
 const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
   execArgv: ["--experimental-strip-types"],
   workerData: { dataDir: pgliteDir },
@@ -268,11 +213,10 @@ try {
   Object.assign(process.env, pgliteServer.env);
   await commitCathayForeignAndCurrentCanonicalCaptures(
     {} as never,
-    noSqliteDir,
+    undefined,
     [freshForeignCapture],
     { requireComplete: true, readCurrentDepositBalances: async () => freshForeignRows },
   );
-  assert.deepEqual(await readdir(noSqliteDir), []);
 } finally {
   for (const [key, value] of [
     ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", oldEnv.required],
@@ -284,7 +228,6 @@ try {
   }
   await pgliteServer.close();
   await pgliteOwner.close();
-  await rm(noSqliteDir, { recursive: true, force: true });
 }
 const pgliteDb = await PGlite.create(pgliteDir);
 try {
@@ -397,6 +340,8 @@ const emptyCathayCapture = buildCathayForeignCurrencyCaptureInput(
   "cathay-foreign-check-empty-observation",
   "provider-explicit-no-data",
 );
+assert.equal(emptyCathayCapture.zeroResultAuthority, "provider-explicit-no-data");
+assert.equal(emptyCathayCapture.records.length, 0);
 assert.throws(
   () =>
     buildCathayForeignCurrencyCaptureInput(
@@ -409,25 +354,4 @@ assert.throws(
     ),
   /no-data|empty|terminal/i,
 );
-const cathayEmptyDirectory = await mkdtemp(join(tmpdir(), "cathay-foreign-empty-133-"));
-try {
-  const [result] = await commitCathayForeignCanonicalCaptures(
-    cathayEmptyDirectory,
-    [emptyCathayCapture],
-  );
-  assert.equal(result?.transactionCount, 0);
-  const store = openCanonicalDatabaseHandle(cathayEmptyDirectory);
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  store.close();
-} finally {
-  await rm(cathayEmptyDirectory, { recursive: true, force: true });
-}
-
 mock.timers.reset();
