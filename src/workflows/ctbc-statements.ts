@@ -9,7 +9,7 @@ import {
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -26,25 +26,12 @@ import {
   deriveCtbcDomesticDepositAccountNumberEvidence,
   type CtbcDomesticDepositCaptureEvidence,
   type CtbcDomesticDepositValidatedEvidence,
-} from "../ledger/canonical/ctbc-domestic-deposit.ts";
-import {
-  commitCanonicalFinancialDepositCaptureBatchInTransaction,
-} from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import {
-  commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction,
-} from "../ledger/canonical/bank-transaction-kind-enrichment.ts";
+} from "../ledger/canonical/ctbc-domestic-deposit-admission.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
-  ensureCtbcHumanAttestationEvents,
   getCtbcHumanAttestedV1Manifest,
-  recordInitialCtbcHumanAttestationIfMissing,
-} from "../ledger/canonical/ctbc-human-attestation.ts";
-import {
-  CanonicalFinancialCommitItemError,
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/ctbc-human-attestation-contract.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   ctbcResponseDiagnosticDirectoryFromEnvironment,
   writeCtbcResponseDiagnostic,
@@ -56,14 +43,15 @@ import {
 } from "./ctbc-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -1381,6 +1369,22 @@ export async function runCtbcStatements(
       client.close();
     }
   }
+  const [
+    { commitCanonicalFinancialDepositCaptureBatchInTransaction },
+    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+    { CanonicalFinancialCommitItemError, executeCanonicalFinancialCommitRun },
+    {
+      ensureCtbcHumanAttestationEvents,
+      recordInitialCtbcHumanAttestationIfMissing,
+    },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
+    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/ctbc-human-attestation.ts"),
+  ]);
   const financialCaptures: ExistingCtbcFinancialCapture[] = [];
   const executionItems: CanonicalFinancialCommitItem<unknown>[] = captureEntries.map(
     ({ capture, captureId }) => ({

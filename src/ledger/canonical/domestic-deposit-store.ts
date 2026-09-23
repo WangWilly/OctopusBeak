@@ -1,3 +1,5 @@
+import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
+export { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import { DatabaseSync } from "node:sqlite";
 import type { ValidatedCanonicalDatabase } from "./canonical-database.ts";
 import { createHash } from "node:crypto";
@@ -332,21 +334,6 @@ function opaqueToken(...parts: string[]): string {
   return `sha256:${digest}`;
 }
 
-/**
- * Preserve source transaction text without inventing a description. Empty
- * parts are omitted, surrounding whitespace is trimmed, and an identical
- * description/note is emitted only once.
- */
-export function combineDomesticDepositDescription(
-  description: unknown,
-  note: unknown,
-): string | null {
-  const parts = [description, note]
-    .map((value) => String(value ?? "").trim())
-    .filter((value) => value.length > 0);
-  const uniqueParts = [...new Set(parts)];
-  return uniqueParts.length > 0 ? uniqueParts.join(" · ") : null;
-}
 
 function ensureOpen(store: DomesticDepositStore): void {
   // DatabaseSync throws a useful closed-handle error; this explicit guard keeps
