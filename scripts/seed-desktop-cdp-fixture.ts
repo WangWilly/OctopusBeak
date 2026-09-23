@@ -2,7 +2,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { initializeCanonicalRuntime } from "../electron/canonical-reset.ts";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteOperationalBaseline, createPgliteOperationalStore } from "../src/ledger/pglite/operational.ts";
+import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
@@ -11,7 +13,6 @@ import {
   AUTOMATION_CREDENTIAL_GROUPS,
   automationCredentialKeyIsSecret,
 } from "../src/lib/automation/server/tasks.ts";
-import { seedMockLedger } from "../src/ledger/seed-mock-ledger-db.ts";
 
 export const desktopCdpFixtureCredentialGroupIds = [
   "fubon",
@@ -81,24 +82,61 @@ function assertDisposableFixtureRoot(userData: string) {
 /**
  * Prepare a disposable user-data root before Electron starts.
  *
- * Canonical reset must complete before the mock legacy operational ledger is
- * written. This preserves the fixture's task history while ensuring the app
- * still opens a canonical database during startup.
+ * The operational task history lives in the same PGlite directory the app
+ * will reopen at startup.
  */
-export function seedDesktopCdpFixture(
+export async function seedDesktopCdpFixture(
   userData: string,
   referenceDate = new Date(),
 ) {
   const root = assertDisposableFixtureRoot(userData);
   mkdirSync(root, { recursive: true });
-  initializeCanonicalRuntime({ userData: root });
   writeAutomationSettingsFile(join(root, "settings.json"), desktopCdpFixtureSettings);
   writeAutomationCredentialsFile(
     join(root, "credentials.json"),
     desktopCdpFixtureCredentials,
     null,
   );
-  return seedMockLedger(join(root, "data", "ledger"), referenceDate);
+  const dataDir = join(root, "data", "pglite");
+  mkdirSync(join(root, "data"), { recursive: true });
+  const database = await PGlite.create({ dataDir });
+  try {
+    const store = new PGliteStore(database);
+    await applyPgliteOperationalBaseline(store);
+    const automation = createPgliteOperationalStore(store);
+    const day = referenceDate.toISOString().slice(0, 10);
+    await automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      script: "run:fubon-all-statements",
+      kind: "crawler",
+      status: "completed",
+      attempt: 1,
+      maxAttempts: 2,
+      startedAt: `${day}T08:00:00.000Z`,
+      finishedAt: `${day}T08:02:00.000Z`,
+      exitCode: 0,
+      logPath: "data/automation/logs/mock-fubon-all-statements.log",
+      logTail: "automation-progress: 100",
+    });
+    const error = "Mock fixture: E.SUN sign-in failed after the source was selected.";
+    await automation.createTaskRun({
+      taskId: "esun-credit-card-statements",
+      script: "run:esun-credit-card-statements",
+      kind: "crawler",
+      status: "failed",
+      attempt: 1,
+      maxAttempts: 2,
+      startedAt: `${day}T09:00:00.000Z`,
+      finishedAt: `${day}T09:02:00.000Z`,
+      exitCode: 1,
+      errorMessage: error,
+      logPath: "data/automation/logs/mock-esun-credit-card-statements.log",
+      logTail: `automation-progress: 42\n${error}`,
+    });
+  } finally {
+    await database.close();
+  }
+  return dataDir;
 }
 
 /** Remove only the named disposable fixture root. */
@@ -111,13 +149,13 @@ export function removeDesktopCdpFixture(userData: string) {
   });
 }
 
-function main() {
+async function main() {
   const userData = process.argv[2];
   if (!userData) throw new Error("Usage: seed-desktop-cdp-fixture <user-data-root>");
   removeDesktopCdpFixture(userData);
-  console.log(`Desktop CDP fixture written to ${seedDesktopCdpFixture(userData)}`);
+  console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData)}`);
 }
 
 const isCliEntry = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isCliEntry) main();
+if (isCliEntry) await main();
