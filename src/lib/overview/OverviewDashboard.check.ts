@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { resolveOverviewDetails } from "../shared-shell/progressive-dashboard-data.ts";
+import { resolveOverviewChart, resolveOverviewDetails } from "../shared-shell/progressive-dashboard-data.ts";
 import type { OverviewPageDto } from "./types.ts";
 
 const source = readFileSync(new URL("./OverviewDashboard.svelte", import.meta.url), "utf8");
@@ -61,9 +61,36 @@ test("overview exposes canonical current and honest history states", () => {
   assert.match(source, /currentPartial\(gapCounts\.currentValue, gapCounts\.sourceNotCollected\)/);
   assert.match(source, /sourceGapCounts\(overview\.sourceGaps\)/);
   assert.match(source, /class="projection-gap-list"[\s\S]*safeSourceGapLabel\(gap\)/);
-  assert.match(source, /chartData\.historyAvailability === "unavailable"/);
-  assert.match(source, /listData\.historyAvailability === "unavailable"/);
+  assert.match(source, /chartData\.historyAvailability !== "available" \|\| chartHistory\.length === 0/);
+  assert.match(source, /listData\.historyAvailability !== "available" \|\| listData\.dailyHistory\.length === 0/);
   assert.match(source, /data-overview-state="history-unavailable"/);
+
+  const history = [{
+    date: "2026-09-22",
+    netAssets: [{ currency: "USD", value: 10 }],
+    dailyChange: [],
+    assets: [{ currency: "USD", value: 10 }],
+    liabilities: [],
+    accountChanges: ["Synthetic Bank"],
+    positionCount: 0,
+  }];
+  const available = {
+    availability: "available",
+    coverage: "complete",
+    historyAvailability: "available",
+    sourceGaps: [],
+    importedAt: null,
+    summary: [],
+    dailyHistory: history,
+    accounts: [],
+    sankey: null,
+    sankeyExchangeRates: [],
+    sankeyLatestExchangeRateDate: null,
+    exchangeRates: [],
+    latestExchangeRateDate: null,
+  } as OverviewPageDto;
+  assert.equal(resolveOverviewChart(available).historyAvailability, "available");
+  assert.deepEqual(resolveOverviewChart(available).dailyHistory, history);
 });
 
 test("overview does not render balance-basis notices", () => {

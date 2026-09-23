@@ -41,7 +41,7 @@ export type OverviewPageDto = {
   availability: "empty" | "awaiting" | "available" | "unavailable";
   /** Whether all displayed totals have a typed current value. */
   coverage: "complete" | "partial" | "unavailable";
-  historyAvailability: "unavailable";
+  historyAvailability: "available" | "unavailable";
   sourceGaps: OverviewSourceGapDto[];
   importedAt: string | null;
   summary: SummaryMetricDto[];

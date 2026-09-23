@@ -16,6 +16,8 @@ import {
   selectPGliteOverviewAssets,
   selectPGliteOverviewLiabilities,
 } from "./overview.ts";
+import { readPGliteDailyHistory } from "./daily-history.ts";
+import { exchangeRateRequestFromOverview } from "../exchange-rate-requirements.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY,
@@ -49,11 +51,19 @@ const accountNumber = {
 
 function depositRequest(
   captureId: string,
-  options: { includeStatementEvidence?: boolean; includeConversionEvidence?: boolean } = {},
+  options: {
+    includeStatementEvidence?: boolean;
+    includeConversionEvidence?: boolean;
+    accountNo?: string;
+    sourceAccountKey?: string;
+  } = {},
 ): PGliteCanonicalDepositCommitRequest {
   const occurrenceKey = token(`${captureId}:occurrence`);
+  const accountNo = options.accountNo ?? accountNumber.value;
+  const sourceAccountKey = options.sourceAccountKey ?? accountNo;
+  const accountNumberEvidence = { ...accountNumber, value: accountNo };
   const balanceAfter = options.includeConversionEvidence ? { coefficient: "95", scale: 0 } : null;
-  const compactJson = JSON.stringify({ amount: { coefficient: "100", scale: 0 }, accountNumber: accountNumber.value, balanceAfter });
+  const compactJson = JSON.stringify({ amount: { coefficient: "100", scale: 0 }, accountNumber: accountNo, balanceAfter });
   return {
     capture: {
       captureId,
@@ -66,9 +76,9 @@ function depositRequest(
         stream: "domestic-deposit",
         recordKind: "synthetic-deposit",
         subjectDigest: token("subject"),
-        accountNo: accountNumber.value,
-        sourceAccountKey: accountNumber.value,
-        accountNumber,
+        accountNo,
+        sourceAccountKey,
+        accountNumber: accountNumberEvidence,
         accountType: "depository",
         currency: "TWD",
       },
@@ -179,8 +189,13 @@ function balanceRequest(
   captureId: string,
   effectiveAt: string,
   coefficient: string,
+  options: { currency?: string; accountCurrency?: string; sourceAccountKey?: string; accountNo?: string } = {},
 ): PGliteCanonicalBalanceCaptureRequest {
   const occurrenceKey = token(`${captureId}:occurrence`);
+  const date = effectiveAt.slice(0, 10);
+  const currency = options.currency ?? "TWD";
+  const sourceAccountKey = options.sourceAccountKey ?? accountNumber.value;
+  const accountNo = options.accountNo ?? sourceAccountKey;
   return {
     capture: {
       captureId,
@@ -195,14 +210,14 @@ function balanceRequest(
       observedAt: "2026-09-22T00:01:00.000Z",
       accountNumber: null,
       scope: {
-        startDate: "2026-09-22",
-        endDate: "2026-09-22",
+        startDate: date,
+        endDate: date,
         dateFormat: "YYYY-MM-DD",
         kind: "point-in-time",
         completeness: "single-page",
         ruleVersion: "synthetic-v8",
-        sourceAccountKey: accountNumber.value,
-        accountNo: accountNumber.value,
+        sourceAccountKey,
+        accountNo,
       },
       pages: [{
         pageOrdinal: 0,
@@ -220,15 +235,15 @@ function balanceRequest(
       }],
     },
     account: {
-      sourceAccountKey: accountNumber.value,
+      sourceAccountKey,
       accountType: "depository",
-      currency: "TWD",
+      currency: options.accountCurrency ?? "TWD",
     },
     observations: [{
       observationKey: token("ledger-observation"),
       balanceKind: "ledger",
       balance: { coefficient, scale: 0 },
-      currency: "TWD",
+      currency,
       effectiveAt,
       effectiveTimeBasis: "provider-system-time",
       effectiveTimeRuleVersion: "synthetic-v8",
@@ -396,16 +411,81 @@ test("PGlite deposit and balance commands feed current and historical overview a
       { clock: () => 200 },
     );
     assert.equal(later.revisionCount, 1);
+    await commitPGliteCanonicalBalanceCapture(
+      store,
+      balanceRequest("balance-4", "2026-09-25T04:00:00.000Z", "1300"),
+      { clock: () => 200 },
+    );
+    await commitPGliteCanonicalDepositCapture(
+      store,
+      depositRequest("deposit-second-account", {
+        accountNo: "654321",
+        sourceAccountKey: "654321",
+      }),
+      { clock: () => 200 },
+    );
+    await commitPGliteCanonicalBalanceCapture(
+      store,
+      balanceRequest("balance-second-account", "2026-09-24T06:00:00.000Z", "500", {
+        sourceAccountKey: "654321",
+        accountNo: "654321",
+      }),
+      { clock: () => 200 },
+    );
+    await commitPGliteCanonicalBalanceCapture(
+      store,
+      balanceRequest("balance-usd", "2026-09-22T06:00:00.000Z", "425", {
+        currency: "USD",
+      }),
+      { clock: () => 200 },
+    );
 
     const overview = createPGliteCanonicalOverviewQuery(store);
     const current = await overview.current();
     assert.equal(current.projection.availability, "available");
-    assert.equal(current.projection.accounts.length, 1);
-    assert.deepEqual(current.projection.accounts[0]?.amounts[0]?.exact, { coefficient: "1100", scale: 0 });
-    assert.equal(current.projection.transactions.length, 1);
-    assert.equal(current.projection.accounts[0]?.accountNo, accountNumber.value);
+    assert.equal(current.projection.accounts.length, 2);
+    assert.deepEqual(
+      current.projection.accounts.find((account) => account.amounts[0]?.currency === "TWD")?.amounts[0]?.exact,
+      { coefficient: "1300", scale: 0 },
+    );
+    assert.equal(current.projection.transactions.length, 2);
+    assert.ok(current.projection.accounts.some((account) => account.accountNo === accountNumber.value));
     const historical = await overview.historical({ knowledgeAt: firstBalance.commitSequence });
-    assert.deepEqual(historical.projection.accounts[0]?.amounts[0]?.exact, { coefficient: "1000", scale: 0 });
+    assert.deepEqual(
+      historical.projection.accounts.find((account) => account.accountNo === accountNumber.value)?.amounts[0]?.exact,
+      { coefficient: "1000", scale: 0 },
+    );
+
+    const dailyHistory = await readPGliteDailyHistory(
+      store,
+      current.projection.knowledgePoint,
+      current.projection.accounts,
+    );
+    assert.deepEqual(dailyHistory.map((row) => row.date), ["2026-09-22", "2026-09-24", "2026-09-25"]);
+    assert.deepEqual(dailyHistory[0]?.assets.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "1100", scale: 0 } },
+      { currency: "USD", exact: { coefficient: "425", scale: 0 } },
+    ]);
+    assert.deepEqual(dailyHistory[1]?.assets.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "1600", scale: 0 } },
+      { currency: "USD", exact: { coefficient: "425", scale: 0 } },
+    ]);
+    assert.deepEqual(dailyHistory[1]?.dailyChange.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "500", scale: 0 } },
+    ]);
+    assert.deepEqual(dailyHistory[2]?.assets.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "1800", scale: 0 } },
+      { currency: "USD", exact: { coefficient: "425", scale: 0 } },
+    ]);
+    assert.deepEqual(dailyHistory[2]?.dailyChange.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "200", scale: 0 } },
+    ]);
+    assert.equal(dailyHistory[0]?.accountChanges.length, 1);
+    assert.equal(dailyHistory[1]?.accountChanges.length, 1);
+    assert.deepEqual(exchangeRateRequestFromOverview({ dailyHistory }), {
+      requiredFrom: "2026-09-22",
+      currencies: ["USD"],
+    });
 
     await assert.rejects(
       commitPGliteCanonicalBalanceCapture(
@@ -417,7 +497,7 @@ test("PGlite deposit and balance commands feed current and historical overview a
     );
     assert.deepEqual(
       (await store.query<{ count: number | string }>("SELECT COUNT(*) AS count FROM source_captures")).rows,
-      [{ count: 4 }],
+      [{ count: 8 }],
     );
   } finally {
     await store.close();
@@ -547,6 +627,13 @@ test("overview preserves investment holdings, transactions, margin lineage, and 
     assert.equal(projection.transactions[0]?.direction, "outflow");
     assert.equal(projection.transactions[0]?.description, "Acme buy");
     assert.equal(projection.sourceGaps.length, 0);
+    const dailyHistory = await readPGliteDailyHistory(store, projection.knowledgePoint, projection.accounts);
+    assert.deepEqual(dailyHistory.map((row) => row.date), ["2026-09-22"]);
+    assert.deepEqual(dailyHistory[0]?.assets.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "12500", scale: 0 } },
+    ]);
+    assert.deepEqual(dailyHistory[0]?.liabilities, []);
+    assert.equal(dailyHistory[0]?.positionCount, 1);
     const historical = await createPGliteCanonicalOverviewQuery(store).historical({
       knowledgeAt: 1,
       financialAt: "2026-09-22",
