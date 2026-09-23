@@ -35,6 +35,9 @@ import {
   type CanonicalEnrichmentFieldResult,
   type CanonicalTransactionTagView,
 } from "./canonical-enrichment.ts";
+import { CANONICAL_SPENDING_INCLUSION_POLICY } from "./spending-inclusion-policy.ts";
+
+export { CANONICAL_SPENDING_INCLUSION_POLICY };
 
 const MAX_EXACT_SCALE = 1_000;
 const UUID_OR_HEX =
@@ -897,19 +900,6 @@ export type CanonicalSpendingQueryRequest = Readonly<{
   financialAt?: string;
   knowledgeAt?: number;
 }>;
-
-/**
- * The bounded spending seam reports gross posted outflow only.  The policy is
- * versioned here so callers can persist or display the scope alongside the
- * returned totals without mistaking it for a net financial statement.
- */
-export const CANONICAL_SPENDING_INCLUSION_POLICY = Object.freeze({
-  id: "gross-posted-outflow",
-  version: "v1",
-  name: "Gross posted outflow",
-  description:
-    "Active, normal, posted outflow transactions with supported inclusion semantics; totals remain per currency.",
-} as const);
 
 export type CanonicalSpendingExactTotal = Readonly<{
   currency: string;
