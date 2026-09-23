@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -406,7 +406,6 @@ assert.equal(
 assert.equal(observedTimeout, 5_000);
 
 const pgliteDir = await mkdtemp(join(tmpdir(), "hncb-pglite-workflow-"));
-const noSqliteDir = await mkdtemp(join(tmpdir(), "hncb-pglite-no-sqlite-"));
 const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
   execArgv: ["--experimental-strip-types"],
   workerData: { dataDir: pgliteDir },
@@ -429,9 +428,8 @@ try {
     startDate: "2026/08/01",
     endDate: "2026/08/20",
     accountFilters: [],
-    outputDir: noSqliteDir,
+    outputDir: pgliteDir,
   }, {
-    canonicalLedgerDir: noSqliteDir,
     readAccountOptions: async () => [account],
     queryAccount: async () => ({} as Frame),
     downloadStatement: async () => ({
@@ -461,7 +459,6 @@ try {
     readCurrentDepositBalances: async () => [],
   });
   assert.equal(output.status, "financial-admitted");
-  assert.deepEqual(await readdir(noSqliteDir), []);
 } finally {
   for (const [key, value] of [
     ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorPgliteEnv.required],
@@ -473,7 +470,6 @@ try {
   }
   await pgliteServer.close();
   await pgliteOwner.close();
-  await rm(noSqliteDir, { recursive: true, force: true });
 }
 const pgliteDb = await PGlite.create(pgliteDir);
 try {
