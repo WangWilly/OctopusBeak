@@ -94,7 +94,12 @@ Acceptance on the 2026-09-23 development machine covered the complete unit,
 browser, Electron/CDP, build, and package-lock checks. The isolated 100,000
 transaction / 10,001 invoice / 10,000 existing-link benchmark covered all
 90,000 eligible candidates across 900 pages. Its cold/warm worker ranking
-was 513/316 ms and confirmation was 31/26 ms. The compact live-page UI
-benchmark recorded 586 ms to open Pairing, 116 ms to confirm, and 61/28 ms
-to show feedback, with a 70 ms maximum renderer long task. These figures are
-local acceptance evidence for ADR 0028, not a cross-machine guarantee.
+was 513/316 ms and confirmation was 31/26 ms. The compact live-page browser
+benchmark recorded 586 ms to open Pairing and 116 ms to confirm. The
+production Electron preload/IPC/worker benchmark on the same fixture recorded
+591 ms to open and 107 ms to confirm, with 1/2 ms feedback and a 118 ms
+maximum renderer long task. Navigation and refresh feedback measured 10/1 ms;
+their full operations measured 969/1,721 ms. The shell appeared after
+1,728 ms and the overview data was ready after 23,422 ms on this fixture.
+These figures are local acceptance evidence for ADR 0028, not a cross-machine
+guarantee.
