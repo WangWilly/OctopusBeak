@@ -124,8 +124,8 @@ function rows<T extends Row>(result: { rows: readonly T[] }): readonly T[] {
 }
 
 /**
- * The canonical SQL text is shared with the SQLite implementation and uses
- * positional `?` parameters.  PGlite speaks PostgreSQL, so translate those
+ * The shared query helpers use positional `?` parameters. PGlite speaks
+ * PostgreSQL, so translate those
  * placeholders at this boundary while preserving the caller's parameter
  * order.  Spending queries intentionally do not contain literal question
  * marks in SQL strings.
@@ -361,7 +361,7 @@ async function transactionRows(
     predicates.push("source_assertion.assertion_id IS NOT NULL");
     // PostgreSQL cannot infer the type of a bare `$n IS NULL` parameter.
     // Keep the nullable financial cutoff while giving PGlite an explicit
-    // text type (the SQLite source accepted the uncast form).
+    // text type.
     predicates.push("(CAST(? AS TEXT) IS NULL OR revision.effective_on <= ?)");
     params.push(financialAt, financialAt);
   }
@@ -1742,7 +1742,7 @@ function matchingTransaction(transaction: CanonicalSpendingTransaction): Spendin
 /**
  * Opening Spending must not write a similarity candidate, but it still needs
  * to show deterministic possible duplicates. Keep those hints ephemeral just
- * like the SQLite page path does; only a command materializes a candidate.
+ * until a command materializes a candidate.
  */
 function withEphemeralCandidates(
   report: PurchaseReport,
