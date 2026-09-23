@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { applyPgliteBaseline } from "./baseline.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
+import { commitPGliteCanonicalFinancialCapture } from "./canonical-source-store.ts";
 import {
   commitPGliteCanonicalLoanCapture,
   type PGliteCanonicalLoanCommitRequest,
@@ -11,13 +13,14 @@ import { PGliteStore } from "./transaction.ts";
 import {
   resolvePGliteCanonicalLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentRelations,
+  queryPGliteCurrentLoanRepaymentSettlementGroups,
 } from "./relations.ts";
 
 const token = (value: string): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 
-function loanRequest(captureId: string, amount = "1000"): PGliteCanonicalLoanCommitRequest {
-  const sourceRecordKey = token("loan-payment");
+function loanRequest(captureId: string, amount = "1000", fixtureKey = "primary"): PGliteCanonicalLoanCommitRequest {
+  const sourceRecordKey = token(fixtureKey === "primary" ? "loan-payment" : `${fixtureKey}:loan-payment`);
   const accountKey = token("loan-account");
   const balanceEvidence = {
     kind: "source-reported-balance" as const,
@@ -87,7 +90,7 @@ function loanRequest(captureId: string, amount = "1000"): PGliteCanonicalLoanCom
       }],
       counterpartTransactions: [],
       balanceObservations: [{
-        observationKey: token("loan-balance"),
+        observationKey: token(fixtureKey === "primary" ? "loan-balance" : `${fixtureKey}:loan-balance`),
         sourceRecordKey,
         balanceKind: "loan_outstanding",
         balance: { coefficient: amount, scale: 0 },
@@ -111,6 +114,42 @@ function loanRequest(captureId: string, amount = "1000"): PGliteCanonicalLoanCom
       }],
       relations: [],
       relationCoverage: "not-asserted",
+    },
+  };
+}
+
+function loanRequestWithRepaymentDeposit(captureId: string, fixtureKey: string): PGliteCanonicalLoanCommitRequest {
+  const base = loanRequest(captureId, "1000", fixtureKey);
+  const sourceRecordKey = token(`${fixtureKey}:counterpart-source`);
+  const relationId = token(`${fixtureKey}:counterpart-relation`);
+  const contractVersion = "loan/counterpart/v1.fubon";
+  return {
+    ...base,
+    capture: {
+      ...base.capture,
+      counterpartTransactions: [{
+        captureId: `${fixtureKey}-counterpart-capture`,
+        sourceRecordKey,
+        occurrenceIndex: 1,
+        sourceConnectionKey: base.capture.identity.sourceConnectionKey,
+        identityEpochKey: base.capture.identity.identityEpochKey,
+        accountKey: token(`${fixtureKey}:repayment-account`),
+        subjectDigest: token(`${fixtureKey}:counterpart-subject`),
+        accountNo: token(`${fixtureKey}:counterpart-number`),
+        accountType: "depository" as const,
+        stream: "domestic-deposit" as const,
+        recordKind: "fubon-loan-counterpart-deposit",
+        authorityRoute: "fubon/loan/counterpart-deposit-v1",
+        contractVersion,
+        effectiveOn: "2026-09-21",
+        sourceTime: { localTime: "12:00:00", precision: "second" as const, timeOrigin: "source_reported" as const },
+        postingStatus: "posted" as const,
+        direction: "outflow" as const,
+        amount: { coefficient: "1000", scale: 0 },
+        currency: "TWD" as const,
+        description: "repayment booking",
+        sourceEvidence: { kind: "source-linked-counterpart" as const, sourceRecordKey, relationId, contractVersion },
+      }],
     },
   };
 }
@@ -183,6 +222,216 @@ test("PGlite relation command admits scoped repayment evidence and deduplicates 
       counterpartyEvidence: [{ ...evidence, identityEpochKey: "wrong-epoch" }],
     }), /source scope/u);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_counterparty_account_evidence")).rows[0]?.count, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+test("PGlite loan settlement groups keep member history and roll back cancelled replacement", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = loanRequestWithRepaymentDeposit("loan-group-capture-1", "loan-group-first");
+    const second = loanRequest("loan-group-capture-2", "1000", "loan-group-second");
+    await commitPGliteCanonicalLoanCapture(store, first, { clock: () => 100 });
+    await commitPGliteCanonicalLoanCapture(store, second, { clock: () => 101 });
+
+    const deposit = first.capture.counterpartTransactions[0]!;
+    const repaymentAccountValue = "123456789012";
+    const commonEvidence = {
+      sourceConnectionKey: first.capture.identity.sourceConnectionKey,
+      accountValue: repaymentAccountValue,
+      role: "beneficiary" as const,
+      purpose: "loan_repayment",
+      contractVersion: "loan/canonical/v2.fubon",
+    };
+    const relationRequest = {
+      sourceConnectionKey: first.capture.identity.sourceConnectionKey,
+      observedAt: "2026-09-22T01:00:00.000Z",
+      counterpartyEvidence: [
+        {
+          ...commonEvidence,
+          captureId: deposit.captureId,
+          sourceRecordKey: deposit.sourceRecordKey,
+          identityEpochKey: deposit.identityEpochKey,
+          evidenceKind: "transaction-counterparty-account" as const,
+        },
+        {
+          ...commonEvidence,
+          captureId: first.capture.captureId,
+          sourceRecordKey: first.capture.records[0]!.sourceRecordKey,
+          identityEpochKey: first.capture.identity.identityEpochKey,
+          accountKey: first.capture.identity.accountKey,
+          evidenceKind: "repayment-mandate" as const,
+        },
+      ],
+    };
+    const firstResolution = await resolvePGliteCanonicalLoanRepaymentRelations(store, relationRequest, { clock: () => 102 });
+    assert.equal(firstResolution.settlementGroupIds.length, 1, JSON.stringify(firstResolution));
+    const firstGroupId = firstResolution.settlementGroupIds[0]!;
+    const firstGroups = await queryPGliteCurrentLoanRepaymentSettlementGroups(store, {
+      sourceConnectionKey: relationRequest.sourceConnectionKey,
+    });
+    assert.equal(firstGroups.length, 1);
+    assert.equal(firstGroups[0]?.settlementGroupId, firstGroupId);
+    const firstMembers = firstGroups[0]?.members as readonly Readonly<{ memberKind: string }>[] | undefined;
+    assert.equal(firstMembers?.length, 3);
+    assert.deepEqual(new Set(firstMembers?.map((member) => member.memberKind)), new Set(["deposit_outflow", "loan_payment"]));
+
+    const third = loanRequest("loan-group-capture-3", "1000", "loan-group-third");
+    await commitPGliteCanonicalLoanCapture(store, third, { clock: () => 103 });
+    const cancelled = new AbortController();
+    await assert.rejects(
+      resolvePGliteCanonicalLoanRepaymentRelations(store, relationRequest, {
+        clock: () => 104,
+        signal: cancelled.signal,
+        projection: async () => {
+          cancelled.abort();
+        },
+      }),
+      /cancel/iu,
+    );
+    assert.deepEqual(
+      (await queryPGliteCurrentLoanRepaymentSettlementGroups(store, {
+        sourceConnectionKey: relationRequest.sourceConnectionKey,
+      })).map((group) => group.settlementGroupId),
+      [firstGroupId],
+      "the cancelled group replacement and withdrawal must roll back together",
+    );
+    assert.deepEqual((await store.query<{ event_kind: string }>(
+      "SELECT event_kind FROM loan_repayment_relation_events ORDER BY event_id",
+    )).rows.map((row) => row.event_kind), ["observed"]);
+
+    const replacement = await resolvePGliteCanonicalLoanRepaymentRelations(store, relationRequest, { clock: () => 105 });
+    assert.equal(replacement.outcome, "changed");
+    assert.equal(replacement.settlementGroupIds.length, 1);
+    assert.notEqual(replacement.settlementGroupIds[0], firstGroupId);
+    const current = await queryPGliteCurrentLoanRepaymentSettlementGroups(store, {
+      sourceConnectionKey: relationRequest.sourceConnectionKey,
+    });
+    assert.equal(current.length, 1);
+    assert.equal(current[0]?.settlementGroupId, replacement.settlementGroupIds[0]);
+    const currentMembers = current[0]?.members as readonly Readonly<{ memberKind: string }>[] | undefined;
+    assert.equal(currentMembers?.length, 4);
+    const lifecycle = await store.query<{
+      event_kind: string;
+      settlement_group_id: Uint8Array;
+      commit_sequence: number | string;
+    }>(
+      `SELECT event.event_kind, event.settlement_group_id, event_commit.commit_sequence
+         FROM loan_repayment_relation_events event
+         JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+        ORDER BY event_commit.commit_sequence, encode(event.event_id, 'hex')`,
+    );
+    const eventsByGroup = new Map<string, string[]>();
+    for (const event of lifecycle.rows) {
+      const groupId = Buffer.from(event.settlement_group_id).toString("hex");
+      const events = eventsByGroup.get(groupId) ?? [];
+      events.push(event.event_kind);
+      eventsByGroup.set(groupId, events);
+    }
+    assert.deepEqual(eventsByGroup.get(firstGroupId.replaceAll("-", "")), ["observed", "withdrawn"]);
+    assert.deepEqual(eventsByGroup.get(replacement.settlementGroupIds[0]?.replaceAll("-", "")), ["observed"]);
+    assert.deepEqual((await store.query<{ settlement_group_id: Uint8Array }>(
+      "SELECT settlement_group_id FROM current_loan_repayment_settlement_groups",
+    )).rows.map((row) => Buffer.from(row.settlement_group_id).toString("hex")), [replacement.settlementGroupIds[0]?.replaceAll("-", "")]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("default PGlite enrichment records superseded and withdrawn assertion transitions", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const request = (captureLabel: string, description: string) =>
+      buildCathayDomesticFinancialRequestsForPGlite({
+        sourceConnectionId: "pglite-transition-cathay-connection",
+        identityEpoch: "pglite-transition-cathay-epoch",
+        authorityRoute: "cathay/domestic-deposit/v1",
+        stream: "domestic-deposit",
+        observedAt: `2026-09-22T01:00:${captureLabel === "first" ? "00" : captureLabel === "second" ? "01" : "02"}.000Z`,
+        scopes: [{
+          accountNo: "pglite-transition-account",
+          accountNumber: {
+            value: "987654",
+            kind: "depository-account",
+            evidenceVersion: "cathay/domestic-deposit/v1",
+            sourceField: "accountNo",
+          },
+          currency: "TWD",
+          startDate: "2026-09-22",
+          endDate: "2026-09-22",
+          contractFingerprint: "cathay/domestic-deposit/v1",
+          preflightFingerprint: "cathay/domestic-deposit/v1",
+          pages: [{
+            pageOrdinal: 0,
+            rowCount: 1,
+            responseDigest: token(`${captureLabel}:response`),
+          }],
+          rows: [{
+            sequence: "transition-row-1",
+            accountDate: "2026-09-22",
+            transactionDateTime: "2026-09-22T09:00:00",
+            description,
+            utcInstantUtcUs: Date.parse("2026-09-22T01:00:00Z") * 1_000,
+            amount: { coefficient: 1_000n, scale: 0 },
+            direction: "outflow",
+            balance: { coefficient: 9_000n, scale: 0 },
+            payload: JSON.stringify({ captureLabel, description, sequence: "transition-row-1" }),
+          }],
+        }],
+      })[0]!;
+
+    const first = await commitPGliteCanonicalFinancialCapture(store, request("first", "transfer"));
+    assert.equal(first.transactions.length, 1);
+    const second = await commitPGliteCanonicalFinancialCapture(store, request("second", "deposit"));
+    assert.equal(second.transactions.length, 1);
+    const third = await commitPGliteCanonicalFinancialCapture(store, request("third", "opaque provider note"));
+    assert.equal(third.transactions.length, 1);
+
+    const transitions = await store.query<{
+      event_kind: string;
+      assertion_id: Uint8Array;
+      transition_commit_id: Uint8Array;
+      run_commit_id: Uint8Array;
+      output_state: string;
+      output_assertion_id: Uint8Array | null;
+    }>(
+      `SELECT transition.event_kind, transition.assertion_id,
+              transition.commit_id AS transition_commit_id,
+              run.commit_id AS run_commit_id,
+              output.output_state, output.assertion_id AS output_assertion_id
+         FROM assertion_transitions transition
+         JOIN enrichment_runs run ON run.run_id = transition.enrichment_run_id
+         JOIN enrichment_run_outputs output
+           ON output.run_id = run.run_id
+          AND output.transaction_id = transition.transaction_id
+          AND output.field_name = transition.field_name
+        WHERE transition.enrichment_run_id IS NOT NULL
+          AND transition.event_kind IN ('observed', 'superseded', 'withdrawn')
+        ORDER BY (SELECT commit_sequence FROM canonical_commits WHERE commit_id = transition.commit_id),
+                 transition.event_kind`,
+    );
+    assert.deepEqual(transitions.rows.map((row) => row.event_kind), ["observed", "observed", "superseded", "withdrawn"]);
+    const observed = transitions.rows[0]!;
+    const replacementObserved = transitions.rows[1]!;
+    const superseded = transitions.rows[2]!;
+    const withdrawn = transitions.rows[3]!;
+    assert.equal(observed.output_state, "supported");
+    assert.deepEqual(observed.output_assertion_id, observed.assertion_id);
+    assert.equal(replacementObserved.output_state, "supported");
+    assert.deepEqual(replacementObserved.output_assertion_id, replacementObserved.assertion_id);
+    assert.equal(superseded.output_state, "supported");
+    assert.deepEqual(superseded.assertion_id, observed.assertion_id);
+    assert.deepEqual(superseded.output_assertion_id, replacementObserved.assertion_id);
+    assert.deepEqual(withdrawn.assertion_id, replacementObserved.assertion_id);
+    assert.equal(withdrawn.output_state, "unsupported");
+    assert.equal(withdrawn.output_assertion_id, null);
+    for (const transition of transitions.rows)
+      assert.deepEqual(transition.transition_commit_id, transition.run_commit_id);
   } finally {
     await store.close();
   }
