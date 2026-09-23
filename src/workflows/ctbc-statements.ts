@@ -13,7 +13,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -28,10 +27,8 @@ import {
   type CtbcDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/ctbc-domestic-deposit-admission.ts";
 import {
-  CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
   getCtbcHumanAttestedV1Manifest,
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
-import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   ctbcResponseDiagnosticDirectoryFromEnvironment,
   writeCtbcResponseDiagnostic,
@@ -50,8 +47,6 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -239,8 +234,6 @@ export type CtbcStatementsRunDependencies = {
     page: Page,
     input: z.infer<typeof inputSchema>,
   ) => Promise<CtbcCollectedStatements>;
-  /** Directory containing the shared canonical.sqlite source store. */
-  canonicalLedgerDir?: string;
   observedAt?: string;
   /** Injected in checks; production passively reads the authenticated summary POST. */
   readCurrentDepositBalances?: typeof readCtbcCurrentDepositBalances;
@@ -1288,11 +1281,6 @@ export async function runCtbcStatements(
     captures.push(admission.capture);
   }
 
-  const canonicalLedgerDir =
-    overrides.canonicalLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
   const captureEntries = captures.map((capture, index) => ({
     capture,
     captureId: `ctbc-${observedAt}-${index}`,
@@ -1300,184 +1288,73 @@ export async function runCtbcStatements(
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
   const manifest = getCtbcHumanAttestedV1Manifest();
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const financialCaptures: ExistingCtbcFinancialCapture[] = [];
-      const items = captureEntries.map(({ capture, captureId }) => {
-        const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
-        if (capture.responses.every((response) => response.rows.length === 0))
-          return {
-            provider: "ctbc", product: "domestic-deposit", itemKey: captureId,
-            command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
-          } as const;
-        const admission = admitCtbcDomesticDepositFinancialCapture({
-          capture, captureId: `ctbc-financial-${captureId}`, humanAttestation: manifest,
-        });
-        if (admission.status !== "admitted" || !admission.capture)
-          throw new Error(`CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`);
-        financialCaptures.push(admission.capture);
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
+    const financialCaptures: ExistingCtbcFinancialCapture[] = [];
+    const items = captureEntries.map(({ capture, captureId }) => {
+      const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
+      if (capture.responses.every((response) => response.rows.length === 0))
         return {
           provider: "ctbc", product: "domestic-deposit", itemKey: captureId,
+          command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
+        } as const;
+      const admission = admitCtbcDomesticDepositFinancialCapture({
+        capture, captureId: `ctbc-financial-${captureId}`, humanAttestation: manifest,
+      });
+      if (admission.status !== "admitted" || !admission.capture)
+        throw new Error(`CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`);
+      financialCaptures.push(admission.capture);
+      return {
+        provider: "ctbc", product: "domestic-deposit", itemKey: captureId,
+        command: {
+          kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+          request: { steps: [
+            { kind: "source", request: source },
+            { kind: "deposit", request: { capture: admission.capture } },
+          ] },
+        },
+      } as const;
+    });
+    const committed = await executePGliteWorkflowRun({
+      client: client.workflow, items, provider: "ctbc", product: "financial",
+    });
+    if (committed.status !== "completed")
+      throw new Error(`CTBC PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
+    if (financialCaptures.length > 0) {
+      const currentRows = await readCurrent(page, { observedAt: ctbcObservedAt() });
+      const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+      const balances = currentRows.map((row) => {
+        const matching = existing.get(
+          `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+        );
+        if (!matching)
+          throw new Error("CTBC current deposit snapshot contains an account without an existing admitted identity.");
+        return {
+          provider: "ctbc", product: "current-balance",
+          itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
           command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: [
-              { kind: "source", request: source },
-              { kind: "deposit", request: { capture: admission.capture } },
-            ] },
+            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
+              buildCtbcCurrentDepositBalanceCapture(row, matching),
+            )),
           },
         } as const;
       });
-      const committed = await executePGliteWorkflowRun({
-        client: client.workflow, items, provider: "ctbc", product: "financial",
+      const balanceResult = await executePGliteWorkflowRun({
+        client: client.workflow, items: balances, provider: "ctbc", product: "current-balance",
       });
-      if (committed.status !== "completed")
-        throw new Error(`CTBC PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      if (financialCaptures.length > 0) {
-        const currentRows = await readCurrent(page, { observedAt: ctbcObservedAt() });
-        const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
-        const balances = currentRows.map((row) => {
-          const matching = existing.get(
-            `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-          );
-          if (!matching)
-            throw new Error("CTBC current deposit snapshot contains an account without an existing admitted identity.");
-          return {
-            provider: "ctbc", product: "current-balance",
-            itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-            command: {
-              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-              request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
-                buildCtbcCurrentDepositBalanceCapture(row, matching),
-              )),
-            },
-          } as const;
-        });
-        const balanceResult = await executePGliteWorkflowRun({
-          client: client.workflow, items: balances, provider: "ctbc", product: "current-balance",
-        });
-        if (balanceResult.status !== "completed")
-          throw new Error(`CTBC PGlite balance commit ${balanceResult.status}: ${balanceResult.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-      }
-      return {
-        ...collected.output,
-        sourceCaptureCount: captures.length,
-        status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
-      };
-    } finally {
-      client.close();
+      if (balanceResult.status !== "completed")
+        throw new Error(`CTBC PGlite balance commit ${balanceResult.status}: ${balanceResult.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
     }
+    return {
+      ...collected.output,
+      sourceCaptureCount: captures.length,
+      status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
+    };
+  } finally {
+    client.close();
   }
-  const [
-    { commitCanonicalFinancialDepositCaptureBatchInTransaction },
-    { commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction },
-    { commitCurrentDepositBalanceCaptureInTransaction },
-    { CanonicalFinancialCommitItemError, executeCanonicalFinancialCommitRun },
-    {
-      ensureCtbcHumanAttestationEvents,
-      recordInitialCtbcHumanAttestationIfMissing,
-    },
-  ] = await Promise.all([
-    import("../ledger/canonical/canonical-financial-deposit-writer.ts"),
-    import("../ledger/canonical/bank-transaction-kind-enrichment.ts"),
-    import("../ledger/canonical/current-deposit-balance-writer.ts"),
-    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-    import("../ledger/canonical/ctbc-human-attestation.ts"),
-  ]);
-  const financialCaptures: ExistingCtbcFinancialCapture[] = [];
-  const executionItems: CanonicalFinancialCommitItem<unknown>[] = captureEntries.map(
-    ({ capture, captureId }) => ({
-      provider: "ctbc",
-      product: "domestic-deposit",
-      itemKey: captureId,
-      commit: (transaction) => {
-        transaction.admission.admit(
-          createCtbcDomesticDepositSourceEvidence(capture, captureId),
-        );
-        // An empty, terminal provider response is still a valid Source
-        // Capture, but it has no financial rows to admit. Preserve the
-        // source-only result without manufacturing an empty financial scope.
-        if (capture.responses.every((response) => response.rows.length === 0))
-          return captureId;
-        ensureCtbcHumanAttestationEvents(transaction.database);
-        recordInitialCtbcHumanAttestationIfMissing(
-          transaction.database,
-          capture.observedAt,
-        );
-        const admission = admitCtbcDomesticDepositFinancialCapture({
-          capture,
-          captureId: `ctbc-financial-${captureId}`,
-          humanAttestation: manifest,
-        });
-        if (admission.status !== "admitted" || !admission.capture)
-          throw new CanonicalFinancialCommitItemError(
-            `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-          );
-        const result = commitCanonicalFinancialDepositCaptureBatchInTransaction(
-          transaction.writer,
-          [admission.capture],
-          transaction.admission,
-          (db, results) =>
-            commitCanonicalBankTransactionKindEnrichmentForCapturesInTransaction(
-              db,
-              results.map((entry) => entry.captureId),
-            ),
-        );
-        financialCaptures.push(admission.capture);
-        return result;
-      },
-    }),
-  );
-  const currentBalanceItems = async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
-    if (financialCaptures.length === 0) return;
-    // The balance POST is deliberately collected after ordinary statement
-    // items have committed, while the execution seam still owns the handle.
-    const currentRows = await readCurrent(page, {
-      observedAt: ctbcObservedAt(),
-    });
-    const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
-    for (const row of currentRows) {
-      const matching = existing.get(
-        `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-      );
-      if (!matching)
-        throw new Error(
-          "CTBC current deposit snapshot contains an account without an existing admitted identity.",
-        );
-      const balanceCapture = buildCtbcCurrentDepositBalanceCapture(row, matching);
-      yield {
-        provider: "ctbc",
-        product: "current-balance",
-        itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-        commit: (transaction) =>
-          commitCurrentDepositBalanceCaptureInTransaction(
-            transaction.writer,
-            admitCurrentDepositBalanceCapture(balanceCapture),
-            transaction.admission,
-          ),
-      };
-    }
-  };
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir,
-    items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
-      yield* executionItems;
-      yield* currentBalanceItems();
-    })(),
-    provider: "ctbc",
-    product: "financial",
-  });
-  if (executionResult.status !== "completed")
-    throw new Error(
-      `CTBC canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
-    );
-
-  return {
-    ...collected.output,
-    sourceCaptureCount: captures.length,
-    status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
-  };
 }
 
 export default workflow("ctbcStatements", {
@@ -1503,13 +1380,7 @@ export default workflow("ctbcStatements", {
     });
 
     emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    const result = await runCtbcStatements(page, input, {
-      canonicalLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
-        ? process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-          process.env.LEDGER_DIR ??
-          DEFAULT_LEDGER_DIR
-        : DEFAULT_LEDGER_DIR,
-    });
+    const result = await runCtbcStatements(page, input);
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   },
