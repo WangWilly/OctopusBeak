@@ -1,25 +1,27 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
+import {
+  PGLITE_CHILD_RPC_ENDPOINT_ENV,
+  PGLITE_CHILD_RPC_TOKEN_ENV,
+  requirePGliteChildRpcClientFromEnv,
+  type PGliteChildRpcClient,
+} from "../../electron/pglite-child-rpc-client.ts";
+import { createMaicoinCliPGliteWorkerClient } from "./pglite/maicoin-cli-worker.ts";
 import { executePGliteWorkflowRun } from "./pglite/workflow-run.ts";
 import type {
   PGliteMaicoinSnapshot,
   PGliteMaicoinStatementRow,
 } from "./pglite/maicoin-operational.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+  type PGliteWorkflowClient,
 } from "./pglite/workflow-client.ts";
-import type { LedgerDatabase } from "./db/client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import type { InvestmentValidatedCapture } from "./canonical/investment-financial.ts";
-import type { CanonicalFinancialCommitItem } from "./canonical/canonical-financial-commit-execution.ts";
-import type { CanonicalFinancialDepositCommitResult } from "./canonical/canonical-financial-deposit-writer.ts";
 import {
   buildMaicoinInvestmentCaptures,
   parseMaicoinTickerQuote,
@@ -34,6 +36,21 @@ import {
 } from "./canonical/maicoin-crypto-adapters.ts";
 
 const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
+
+type MaicoinPGliteClient = Pick<
+  PGliteChildRpcClient,
+  "ready" | "operationalProvider" | "workflow"
+> & {
+  close(): void | Promise<unknown>;
+};
+
+function createMaicoinPGliteClient(dataDir: string): MaicoinPGliteClient {
+  if (process.env[PGLITE_CHILD_RPC_ENDPOINT_ENV] !== undefined
+    || process.env[PGLITE_CHILD_RPC_TOKEN_ENV] !== undefined) {
+    return requirePGliteChildRpcClientFromEnv();
+  }
+  return createMaicoinCliPGliteWorkerClient(dataDir);
+}
 
 const API_BASE_URL = "https://max-api.maicoin.com";
 const DEFAULT_STATEMENT_LIMIT = 1000;
@@ -191,7 +208,7 @@ function usage() {
   npm run run:sync-maicoin -- --statement-json data/ledger/maicoin-statement.json
 
 Options:
-  --ledger-dir <dir>       SQLite ledger directory. Default: ${DEFAULT_LEDGER_DIR}
+  --ledger-dir <dir>       PGlite worker data directory. Default: ${DEFAULT_LEDGER_DIR}
   --wallet-types <list>    Comma list: spot,m. Default: spot,m
   --statement-json <file>  Export full statement rows as JSON
   --limit <n>              Statement page size per endpoint. Max/default: ${DEFAULT_STATEMENT_LIMIT}
@@ -782,165 +799,6 @@ function buildSnapshots(
   return snapshots;
 }
 
-function insertSyncRun(db: LedgerDatabase, params: CliParams, syncRunId: string, startedAt: string) {
-  db.prepare(`
-    INSERT INTO maicoin_sync_runs (
-      sync_run_id,
-      started_at,
-      sub_account,
-      wallet_types_json,
-      statement_enabled,
-      statement_limit,
-      record_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    syncRunId,
-    startedAt,
-    params.subAccount,
-    JSON.stringify(params.walletTypes),
-    1,
-    params.statementLimit,
-    JSON.stringify({ status: "started", params }),
-  );
-}
-
-function finishSyncRun(db: LedgerDatabase, syncRunId: string, record: Record<string, unknown>) {
-  db.prepare(`
-    UPDATE maicoin_sync_runs
-    SET finished_at = ?, record_json = ?
-    WHERE sync_run_id = ?
-  `).run(new Date().toISOString(), JSON.stringify(record), syncRunId);
-}
-
-function insertSnapshots(
-  db: LedgerDatabase,
-  syncRunId: string,
-  capturedAt: string,
-  subAccount: string,
-  snapshots: AccountSnapshot[],
-) {
-  const insert = db.prepare(`
-    INSERT INTO maicoin_account_snapshots (
-      snapshot_id,
-      sync_run_id,
-      captured_at,
-      sub_account,
-      wallet_type,
-      currency,
-      balance,
-      locked,
-      staked,
-      principal,
-      interest,
-      total_quantity,
-      price_market,
-      price_currency,
-      price,
-      value_twd,
-      price_at,
-      raw_account_json,
-      raw_price_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const snapshot of snapshots) {
-    insert.run(
-      randomUUID(),
-      syncRunId,
-      capturedAt,
-      subAccount,
-      snapshot.walletType,
-      snapshot.account.currency.toLowerCase(),
-      amount(snapshot.account.balance),
-      amount(snapshot.account.locked),
-      numeric(snapshot.account.staked),
-      numeric(snapshot.account.principal),
-      numeric(snapshot.account.interest),
-      snapshot.totalQuantity,
-      snapshot.price.market,
-      snapshot.price.currency,
-      snapshot.price.price,
-      snapshot.valueTwd,
-      snapshot.price.at,
-      JSON.stringify(snapshot.account),
-      snapshot.price.raw === null ? null : JSON.stringify(snapshot.price.raw),
-    );
-  }
-}
-
-function insertStatementRows(
-  db: LedgerDatabase,
-  syncRunId: string,
-  capturedAt: string,
-  statement: StatementBatch[],
-  statementValues: StatementValueMap = new Map(),
-) {
-  const insert = db.prepare(`
-    INSERT INTO maicoin_statement_rows (
-      statement_id,
-      sync_run_id,
-      captured_at,
-      endpoint,
-      wallet_type,
-      row_type,
-      external_id,
-      occurred_at,
-      currency,
-      amount,
-      fee,
-      fee_currency,
-      market,
-      side,
-      price,
-      value_twd,
-      raw_payload_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(statement_id) DO UPDATE SET
-      sync_run_id = excluded.sync_run_id,
-      captured_at = excluded.captured_at,
-      occurred_at = excluded.occurred_at,
-      currency = excluded.currency,
-      amount = excluded.amount,
-      fee = excluded.fee,
-      fee_currency = excluded.fee_currency,
-      market = excluded.market,
-      side = excluded.side,
-      price = excluded.price,
-      value_twd = excluded.value_twd,
-      raw_payload_json = excluded.raw_payload_json,
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  for (const batch of statement) {
-    for (const row of batch.rows) {
-      const externalId = statementExternalId(row);
-      const statementId = statementIdFor(batch, row);
-      insert.run(
-        statementId,
-        syncRunId,
-        capturedAt,
-        batch.endpoint,
-        batch.walletType,
-        batch.rowType,
-        externalId,
-        isoFromTimestamp(row.created_at),
-        stringValue(row.currency),
-        numeric(row.amount ?? row.volume ?? row.funds),
-        numeric(row.fee),
-        stringValue(row.fee_currency),
-        stringValue(row.market),
-        stringValue(row.side),
-        numeric(row.price),
-        statementValues.get(statementId) ?? null,
-        JSON.stringify(row),
-      );
-    }
-  }
-}
-
 function pgliteSnapshotRows(
   syncRunId: string,
   capturedAt: string,
@@ -1034,85 +892,37 @@ async function writeStatementJson(filePath: string, statement: StatementBatch[])
 export async function commitMaicoinCanonicalInvestmentCaptures(
   ledgerDir: string,
   input: MaicoinInvestmentCaptureBuildInput,
+  workflowClient?: PGliteWorkflowClient,
 ) {
   const captures = buildMaicoinInvestmentCaptures(input);
-  if (pgliteWorkflowEnabled(process.env)) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const result = await executePGliteWorkflowRun({
-        client: client.workflow,
-        provider: "maicoin",
-        product: "investment",
-        items: captures.map((capture) => ({
-          provider: "maicoin",
-          product: "investment",
-          itemKey: capture.captureId,
-          command: { kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND, request: { capture } },
-          relationCommands: () => [{
-            kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-            request: {
-              sourceConnectionKey: capture.identity.sourceConnectionKey,
-              observedAt: capture.observedAt,
-            },
-          }],
-        })),
-      });
-      if (result.status !== "completed")
-        throw new Error(`Maicoin PGlite canonical persistence ${result.status}: ${result.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
-      return result.items.flatMap((item) => item.status === "committed" ? [item.value] : []);
-    } finally {
-      client.close();
-    }
-  }
-  const [
-    { admitCanonicalInvestmentCapture },
-    { commitCanonicalFinancialAdmissionInTransaction },
-    { executeCanonicalFinancialCommitRun },
-    { runCanonicalInvestmentRelationFollowThrough },
-  ] = await Promise.all([
-    import("./canonical/investment-financial.ts"),
-    import("./canonical/canonical-financial-admission.ts"),
-    import("./canonical/canonical-financial-commit-execution.ts"),
-    import("./canonical/canonical-relation-followthrough.ts"),
-  ]);
-  const admittedCaptures = captures.map(
-    (capture): InvestmentValidatedCapture => admitCanonicalInvestmentCapture(capture),
-  );
-  const items: CanonicalFinancialCommitItem<CanonicalFinancialDepositCommitResult[]>[] =
-    admittedCaptures.map((capture) => ({
+  const ownedClient = workflowClient ? undefined : createMaicoinPGliteClient(ledgerDir);
+  const client = workflowClient ?? ownedClient!.workflow;
+  try {
+    await ownedClient?.ready;
+    const result = await executePGliteWorkflowRun({
+      client,
       provider: "maicoin",
       product: "investment",
-      itemKey: capture.captureId,
-      commit: ({ writer, admission }) =>
-        commitCanonicalFinancialAdmissionInTransaction(
-          writer,
-          { kind: "investment", captures: [capture] },
-          admission,
-        ),
-      resolveRelations: async ({ writer }) => {
-        await runCanonicalInvestmentRelationFollowThrough(
-          writer,
-          undefined,
-          "maicoin-investment-relation-resolution-failed",
-        );
-      },
-    }));
-  const executionResult = await executeCanonicalFinancialCommitRun({
-    canonicalLedgerDir: ledgerDir,
-    items,
-    provider: "maicoin",
-    product: "investment",
-  });
-  if (executionResult.status !== "completed")
-    throw new Error(
-      `Maicoin canonical persistence ${executionResult.status}: ${executionResult.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`,
-    );
-  return executionResult.items.flatMap((item) =>
-    item.status === "committed" ? item.value : [],
-  );
+      items: captures.map((capture) => ({
+        provider: "maicoin",
+        product: "investment",
+        itemKey: capture.captureId,
+        command: { kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND, request: { capture } },
+        relationCommands: () => [{
+          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+          request: {
+            sourceConnectionKey: capture.identity.sourceConnectionKey,
+            observedAt: capture.observedAt,
+          },
+        }],
+      })),
+    });
+    if (result.status !== "completed")
+      throw new Error(`MaiCoin PGlite canonical persistence ${result.status}: ${result.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+    return result.items.flatMap((item) => item.status === "committed" ? [item.value] : []);
+  } finally {
+    await ownedClient?.close();
+  }
 }
 
 export async function syncMaicoin(params: CliParams) {
@@ -1121,24 +931,17 @@ export async function syncMaicoin(params: CliParams) {
   const client = new MaxClient(credentials);
   const syncRunId = randomUUID();
   const startedAt = new Date().toISOString();
-  const pglite = pgliteWorkflowEnabled(process.env)
-    ? requirePGliteChildRpcClientFromEnv()
-    : null;
-  const db = pglite
-    ? null
-    : (await import("./db/client.ts")).openLedgerDatabase(params.ledgerDir);
+  const pglite = createMaicoinPGliteClient(params.ledgerDir);
   let runStarted = false;
   try {
-    if (pglite) {
-      await pglite.ready;
-      await pglite.operationalProvider.maicoin.startRun({
-        syncRunId, startedAt,
-        subAccount: params.subAccount,
-        walletTypes: params.walletTypes,
-        statementLimit: params.statementLimit,
-        record: { status: "started", params },
-      });
-    } else if (db) insertSyncRun(db, params, syncRunId, startedAt);
+    await pglite.ready;
+    await pglite.operationalProvider.maicoin.startRun({
+      syncRunId, startedAt,
+      subAccount: params.subAccount,
+      walletTypes: params.walletTypes,
+      statementLimit: params.statementLimit,
+      record: { status: "started", params },
+    });
     runStarted = true;
     const walletSelection = await fetchWalletTypes(
       client,
@@ -1180,26 +983,15 @@ export async function syncMaicoin(params: CliParams) {
         statementBatches: statement,
         valuationQuotes,
       },
+      pglite.workflow,
     );
 
-    if (pglite) {
-      for (const chunk of maicoinRpcChunks(pgliteSnapshotRows(
-        syncRunId, capturedAt, credentials.subAccount, snapshots,
-      ))) await pglite.operationalProvider.maicoin.appendSnapshots(chunk);
-      for (const chunk of maicoinRpcChunks(pgliteStatementRows(
-        syncRunId, capturedAt, statement, statementValues,
-      ))) await pglite.operationalProvider.maicoin.appendStatementRows(chunk);
-    } else if (db) {
-      db.exec("BEGIN");
-      try {
-        insertSnapshots(db, syncRunId, capturedAt, credentials.subAccount, snapshots);
-        insertStatementRows(db, syncRunId, capturedAt, statement, statementValues);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    }
+    for (const chunk of maicoinRpcChunks(pgliteSnapshotRows(
+      syncRunId, capturedAt, credentials.subAccount, snapshots,
+    ))) await pglite.operationalProvider.maicoin.appendSnapshots(chunk);
+    for (const chunk of maicoinRpcChunks(pgliteStatementRows(
+      syncRunId, capturedAt, statement, statementValues,
+    ))) await pglite.operationalProvider.maicoin.appendStatementRows(chunk);
 
     const result = {
       status: "completed",
@@ -1217,10 +1009,9 @@ export async function syncMaicoin(params: CliParams) {
         .map((snapshot) => `${snapshot.walletType}:${snapshot.account.currency.toLowerCase()}`),
       totalValueTwd: snapshots.reduce((sum, snapshot) => sum + (snapshot.valueTwd ?? 0), 0),
     };
-    if (pglite) await pglite.operationalProvider.maicoin.finishRun({
+    await pglite.operationalProvider.maicoin.finishRun({
       syncRunId, finishedAt: new Date().toISOString(), record: result,
     });
-    else if (db) finishSyncRun(db, syncRunId, result);
     emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
     return result;
   } catch (error) {
@@ -1230,14 +1021,12 @@ export async function syncMaicoin(params: CliParams) {
       errorName: error instanceof Error ? error.name : "Error",
       errorMessage: error instanceof Error ? error.message : String(error),
     };
-    if (pglite && runStarted) await pglite.operationalProvider.maicoin.finishRun({
+    if (runStarted) await pglite.operationalProvider.maicoin.finishRun({
       syncRunId, finishedAt: new Date().toISOString(), record: failedRecord,
     }).catch(() => undefined);
-    else if (db && runStarted) finishSyncRun(db, syncRunId, failedRecord);
     throw error;
   } finally {
-    pglite?.close();
-    db?.close();
+    await pglite.close();
   }
 }
 
@@ -1283,16 +1072,46 @@ async function selfTest() {
   assert.equal(priceForCurrency("twd", tickers).price, 1);
   assert.equal(priceForCurrency("btc", tickers).price, 1_550_000);
 
-  const ledgerDir = await mkdtemp(join(tmpdir(), "maicoin-ledger-"));
-  const db = (await import("./db/client.ts")).openLedgerDatabase(ledgerDir);
-  const tables = new Set(
-    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
-      name: string;
-    }>).map((row) => row.name),
-  );
-  assert.equal(tables.has("maicoin_account_snapshots"), true);
-  assert.equal(tables.has("maicoin_statement_rows"), true);
-  db.close();
+  const dataDir = await mkdtemp(join(tmpdir(), "maicoin-pglite-self-test-"));
+  const worker = createMaicoinCliPGliteWorkerClient(dataDir);
+  try {
+    await worker.ready;
+    const syncRunId = randomUUID();
+    const startedAt = new Date().toISOString();
+    await worker.operationalProvider.maicoin.startRun({
+      syncRunId,
+      startedAt,
+      subAccount: "self-test",
+      walletTypes: ["spot"],
+      statementLimit: DEFAULT_STATEMENT_LIMIT,
+      record: { status: "started", selfTest: true },
+    });
+    const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
+      dataDir,
+      {
+        captureId: syncRunId,
+        providerEmail: "self-test@example.test",
+        subAccount: "self-test",
+        accountBatches: [
+          {
+            walletType: "spot",
+            providerDate: parseMaicoinProviderDate("Wed, 02 Sep 2026 04:05:06 GMT"),
+            accounts: [],
+          },
+        ],
+      },
+      worker.workflow,
+    );
+    await worker.operationalProvider.maicoin.finishRun({
+      syncRunId,
+      finishedAt: new Date().toISOString(),
+      record: { status: "completed", selfTest: true },
+    });
+    assert.equal(canonicalResults.length, 1);
+  } finally {
+    await worker.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 }
 
 async function main() {

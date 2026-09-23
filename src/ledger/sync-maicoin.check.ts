@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,20 +16,6 @@ import {
   parseMaicoinProviderDate,
   type MaicoinProviderDate,
 } from "./canonical/maicoin-crypto-adapters.ts";
-import {
-  createCanonicalInvestmentStore,
-  queryCanonicalInvestmentCurrent,
-} from "./canonical/investment-financial.ts";
-
-const syncSource = await readFile(
-  new URL("./sync-maicoin.ts", import.meta.url),
-  "utf8",
-);
-assert.match(syncSource, /executeCanonicalFinancialCommitRun/);
-assert.match(syncSource, /commitCanonicalFinancialAdmissionInTransaction/);
-assert.match(syncSource, /runCanonicalInvestmentRelationFollowThrough/);
-assert.doesNotMatch(syncSource, /createCanonicalInvestmentStore/);
-assert.doesNotMatch(syncSource, /commitCanonicalInvestmentCaptureBatch/);
 
 const credentials: MaxCredentials = {
   accessKey: "access-key",
@@ -99,7 +85,6 @@ test("MAX canonical handoff rejects missing or invalid provider Date without par
     ["invalid", "not-a-date"],
   ] as const) {
     const directory = await mkdtemp(join(tmpdir(), `maicoin-date-${label}-`));
-    const path = join(directory, "canonical.sqlite");
     try {
       await assert.rejects(
         () =>
@@ -130,17 +115,7 @@ test("MAX canonical handoff rejects missing or invalid provider Date without par
           ? /missing.*required.*HTTP Date header/i
           : /HTTP Date header.*invalid/i,
       );
-      const store = createCanonicalInvestmentStore(directory);
-      try {
-        const current = queryCanonicalInvestmentCurrent(
-          store,
-          deriveMaicoinSourceConnectionKey("owner@example.test", "main"),
-        );
-        assert.equal(current.accounts.length, 0);
-        assert.equal(current.holdings.length, 0);
-      } finally {
-        store.close();
-      }
+      assert.deepEqual(await readdir(directory), []);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -167,26 +142,18 @@ test("MAX source identity comes from provider email and not an API key", () => {
 
 test("MAX canonical handoff commits all wallet captures as one batch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "maicoin-canonical-sync-"));
-  const path = join(directory, "canonical.sqlite");
-  const result = await commitMaicoinCanonicalInvestmentCaptures(directory, {
-    captureId: "sync-run-1",
-    providerEmail: "owner@example.test",
-    subAccount: "main",
-    accountBatches: [
-      { walletType: "spot", providerDate, accounts: [] },
-      { walletType: "m", providerDate, accounts: [] },
-    ],
-  });
-  assert.equal(result.length, 2);
-  const store = createCanonicalInvestmentStore(directory);
   try {
-    const current = queryCanonicalInvestmentCurrent(
-      store,
-      deriveMaicoinSourceConnectionKey("owner@example.test", "main"),
-    );
-    assert.equal(current.accounts.length, 2);
-    assert.equal(current.holdings.length, 0);
+    const result = await commitMaicoinCanonicalInvestmentCaptures(directory, {
+      captureId: "sync-run-1",
+      providerEmail: "owner@example.test",
+      subAccount: "main",
+      accountBatches: [
+        { walletType: "spot", providerDate, accounts: [] },
+        { walletType: "m", providerDate, accounts: [] },
+      ],
+    });
+    assert.equal(result.length, 2);
   } finally {
-    store.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
