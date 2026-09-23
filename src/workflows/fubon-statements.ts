@@ -8,7 +8,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  pgliteWorkflowEnabled,
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
@@ -51,13 +50,8 @@ import {
   type FubonDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import type {
-  resolveLoanRepaymentRelations,
   TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations.ts";
-import type {
-  CanonicalFinancialCommitItem,
-  CanonicalFinancialCommitTransaction,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
@@ -78,8 +72,6 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-
-const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -358,13 +350,10 @@ export type FubonStatementsRunDependencies = Partial<{
   writeDepositStatementFiles: (
     statements: FubonParsedDepositStatement[],
   ) => Promise<FubonStatementsOutput["downloads"][number]>;
-  /** Directory containing the shared canonical.sqlite ledger. */
-  canonicalLedgerDir: string;
   /** Stable login-derived Source Connection identity shared with loan runs. */
   sourceConnectionKey: string;
   /** Raw, non-secret stable login scope used by the canonical adapter. */
   sourceConnectionScope: string;
-  resolveLoanRepaymentRelations: typeof resolveLoanRepaymentRelations;
   /** Injected in checks; production reads the authenticated current-balance page. */
   readCurrentDepositBalances: typeof readFubonCurrentDepositBalances;
 }>;
@@ -3161,8 +3150,6 @@ export async function runFubonStatements(
     overrides.writeDepositStatementFiles ?? writeDepositStatementFiles;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
-  const canonicalLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const resolveRelations = overrides.resolveLoanRepaymentRelations;
   const stableSourceConnectionKey = sourceConnectionKey;
   const stableSourceIdentity = {
     sourceConnectionScope,
@@ -3175,14 +3162,6 @@ export async function runFubonStatements(
       | FubonDomesticDepositValidatedEvidence
       | FubonDomesticDepositSourceOnlyEvidence;
     captureId: string;
-  }> = [];
-  const financialInputs: Array<{
-    capture: FubonDomesticDepositValidatedEvidence;
-    captureId: string;
-    semantics: ReturnType<typeof buildFubonHumanAttestedFinancialSemantics>;
-    humanAttestation: typeof FUBON_HUMAN_ATTESTED_V1_MANIFEST;
-    sourceConnectionScope: string;
-    sourceConnectionKey: string;
   }> = [];
   const relationInputs: Array<{
     captureId: string;
@@ -3314,7 +3293,6 @@ export async function runFubonStatements(
           throw new Error(
             "Fubon domestic deposit admission lost its canonical capture.",
           );
-        financialInputs.push(financialInput);
         financialCaptures.push(financialCapture);
         financialDepositCaptures.push(financialCapture);
         relationInputs.push({
@@ -3369,139 +3347,50 @@ export async function runFubonStatements(
       });
     }
 
-    if (pgliteWorkflowEnabled(process.env)) {
-      const client = requirePGliteChildRpcClientFromEnv();
-      try {
-        await client.ready;
-        const items: PGliteWorkflowRunItem[] = [];
-        for (const entry of sourceOnlyEntries) items.push({
-          provider: "fubon", product: "domestic-deposit", itemKey: entry.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-            request: createFubonDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
-          },
-        });
-        for (const capture of financialDepositCaptures) {
-          const relation = relationInputs.find((item) => item.captureId === capture.captureId);
-          items.push({
-            provider: "fubon", product: "domestic-deposit", itemKey: capture.captureId,
-            command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
-            ...(relation ? {
-              relationCommands: () => [{
-                kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-                request: {
-                  sourceConnectionKey: stableSourceConnectionKey,
-                  integrationNamespace: "fubon",
-                  observedAt: capture.observedAt,
-                  counterpartyEvidence: relation.evidence,
-                },
-              }],
-            } : {}),
-          });
-        }
-        for (const capture of currentBalanceCaptures) items.push({
-          provider: "fubon", product: "current-balance",
-          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(capture),
-          },
-        });
-        const executionResult = await executePGliteWorkflowRun({
-          client: client.workflow, items, provider: "fubon", product: "financial",
-        });
-        if (executionResult.status !== "completed")
-          throw new Error(`Fubon PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
-      } finally {
-        client.close();
-      }
-    } else {
-    const [
-      { executeCanonicalFinancialCommitRun },
-      { commitCanonicalFubonDomesticDepositCaptureBatchInTransaction },
-      {
-        persistCounterpartyAccountEvidence,
-        resolveLoanRepaymentRelations: resolveDefaultLoanRepaymentRelations,
-      },
-      { resolveLoanRelationsAfterCapture },
-      { commitCurrentDepositBalanceCaptureInTransaction },
-    ] = await Promise.all([
-      import("../ledger/canonical/canonical-financial-commit-execution.ts"),
-      import("../ledger/canonical/fubon-domestic-deposit.ts"),
-      import("../ledger/canonical/loan-repayment-relations.ts"),
-      import("./safe-loan-relation-resolution.ts"),
-      import("../ledger/canonical/current-deposit-balance-writer.ts"),
-    ]);
-    const legacyResolveRelations =
-      resolveRelations ?? resolveDefaultLoanRepaymentRelations;
-    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-    for (const entry of sourceOnlyEntries) {
-      executionItems.push({
-        provider: "fubon",
-        product: "domestic-deposit",
-        itemKey: entry.captureId,
-        commit: ({ admission }) => {
-          admission.admit(
-            createFubonDomesticDepositSourceEvidence(
-              entry.capture,
-              entry.captureId,
-              stableSourceIdentity,
-            ),
-          );
-          return entry.captureId;
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const items: PGliteWorkflowRunItem[] = [];
+      for (const entry of sourceOnlyEntries) items.push({
+        provider: "fubon", product: "domestic-deposit", itemKey: entry.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+          request: createFubonDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
         },
       });
-    }
-    for (const financialInput of financialInputs) {
-      const relation = relationInputs.find(
-        (candidate) => candidate.captureId === financialInput.captureId,
-      );
-      executionItems.push({
-        provider: "fubon",
-        product: "domestic-deposit",
-        itemKey: financialInput.captureId,
-        commit: ({ writer, admission }) =>
-          commitCanonicalFubonDomesticDepositCaptureBatchInTransaction(
-            writer,
-            [financialInput],
-            admission,
-          )[0]!,
-        ...(relation
-          ? {
-              resolveRelations: async ({ writer }) => {
-                for (const item of relation.evidence)
-                  await persistCounterpartyAccountEvidence(writer, item);
-                await resolveLoanRelationsAfterCapture(writer, legacyResolveRelations, {
-                  sourceConnectionKey: stableSourceConnectionKey,
-                  integrationNamespace: "fubon",
-                  observedAt: financialInput.capture.observedAt,
-                  failureEvent: "fubon-deposit-relation-resolution-failed",
-                });
+      for (const capture of financialDepositCaptures) {
+        const relation = relationInputs.find((item) => item.captureId === capture.captureId);
+        items.push({
+          provider: "fubon", product: "domestic-deposit", itemKey: capture.captureId,
+          command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
+          ...(relation ? {
+            relationCommands: () => [{
+              kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+              request: {
+                sourceConnectionKey: stableSourceConnectionKey,
+                integrationNamespace: "fubon",
+                observedAt: capture.observedAt,
+                counterpartyEvidence: relation.evidence,
               },
-            }
-          : {}),
+            }],
+          } : {}),
+        });
+      }
+      for (const capture of currentBalanceCaptures) items.push({
+        provider: "fubon", product: "current-balance",
+        itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
       });
-    }
-    const currentBalanceItems = currentBalanceCaptures.map((capture) => ({
-      provider: "fubon",
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-      commit: ({ writer, admission }: CanonicalFinancialCommitTransaction) =>
-        commitCurrentDepositBalanceCaptureInTransaction(writer, capture, admission),
-    }));
-    const executionResult = await executeCanonicalFinancialCommitRun({
-      canonicalLedgerDir,
-      items: (async function* (): AsyncIterable<CanonicalFinancialCommitItem<unknown>> {
-        yield* executionItems;
-        yield* currentBalanceItems;
-      })(),
-      provider: "fubon",
-      product: "financial",
-    });
-    if (executionResult.status !== "completed")
-      throw new Error(
-        `Fubon canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-      );
+      const executionResult = await executePGliteWorkflowRun({
+        client: client.workflow, items, provider: "fubon", product: "financial",
+      });
+      if (executionResult.status !== "completed")
+        throw new Error(`Fubon PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
+    } finally {
+      client.close();
     }
 
     const downloads: FubonStatementsOutput["downloads"] = [];
@@ -3543,12 +3432,7 @@ export default workflow("fubonStatements", {
     }
 
     await signInFubon(page, session, input.credentials);
-    const configuredCanonicalLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR ??
-      process.env.LEDGER_DIR ??
-      DEFAULT_LEDGER_DIR;
     return await runFubonStatements(page, input, {
-      canonicalLedgerDir: configuredCanonicalLedgerDir,
       sourceConnectionScope,
       sourceConnectionKey: deriveFubonSourceConnectionKey(input.credentials)!,
     });
