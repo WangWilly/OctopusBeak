@@ -271,7 +271,6 @@ export async function runFubonAllStatements(
         run: () =>
           runSectionOutOfForeground(page, "statements", () =>
             runFubonStatements(page, input.statements, {
-              canonicalLedgerDir,
               sourceConnectionScope,
               sourceConnectionKey,
             }),

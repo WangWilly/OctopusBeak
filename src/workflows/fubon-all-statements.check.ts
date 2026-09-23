@@ -94,7 +94,6 @@ const statements = {
 };
 const creditCards = { files: ["credit-card.csv"] };
 const loans = { files: ["loan.csv"] };
-let observedCanonicalDir: string | undefined;
 let observedDepositSourceConnectionKey: string | undefined;
 let observedLoanSourceConnectionKey: string | undefined;
 let observedDepositSourceConnectionScope: string | undefined;
@@ -144,13 +143,11 @@ try {
         actualPage: unknown,
         _input: unknown,
         options?: {
-          canonicalLedgerDir?: string;
           sourceConnectionKey?: string;
           sourceConnectionScope?: string;
         },
       ) => {
         assert.equal(actualPage, page);
-        observedCanonicalDir = options?.canonicalLedgerDir;
         observedDepositSourceConnectionKey = options?.sourceConnectionKey;
         observedDepositSourceConnectionScope = options?.sourceConnectionScope;
         calls.push("deposit");
@@ -202,8 +199,7 @@ try {
   else process.env[managedSecretKey] = previousManagedSecret;
 }
 
-assert.equal(observedCanonicalDir, "/tmp/fubon-all-statements-canonical-check");
-assert.equal(observedLoanCanonicalDir, observedCanonicalDir);
+assert.equal(observedLoanCanonicalDir, "/tmp/fubon-all-statements-canonical-check");
 assert.equal(
   observedDepositSourceConnectionKey,
   observedLoanSourceConnectionKey,
@@ -352,7 +348,7 @@ for (const selection of ["", "deposit,unknown"]) {
   delete process.env[ledgerDirKey];
   const selectedCalls: string[] = [];
   let sourceOnlyOptions:
-    | { canonicalLedgerDir?: string }
+    | { sourceConnectionKey?: string; sourceConnectionScope?: string }
     | undefined;
   try {
     await runFubonAllStatements(
@@ -382,7 +378,6 @@ for (const selection of ["", "deposit,unknown"]) {
           _page: unknown,
           _input: unknown,
           options?: {
-            canonicalLedgerDir?: string;
             sourceConnectionKey?: string;
             sourceConnectionScope?: string;
           },
@@ -411,7 +406,6 @@ for (const selection of ["", "deposit,unknown"]) {
     else process.env[ledgerDirKey] = previousLedgerDir;
   }
   assert.deepEqual(sourceOnlyOptions, {
-    canonicalLedgerDir: DEFAULT_LEDGER_DIR,
     sourceConnectionScope: fubonStableLoginScope({
       fubon_user_id: "source-only-id",
       fubon_account: "source-only-account",
