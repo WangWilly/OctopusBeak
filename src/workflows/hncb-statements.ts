@@ -11,7 +11,7 @@ import {
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -26,18 +26,13 @@ import {
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
   createHncbDomesticDepositSourceEvidence,
-  commitCanonicalHncbDomesticDepositCaptureBatchInTransaction,
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-  getHncbHumanAttestedV1Manifest,
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
-} from "../ledger/canonical/hncb-domestic-deposit.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
+import { getHncbHumanAttestedV1Manifest } from "../ledger/canonical/hncb-human-attestation-contract.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -53,14 +48,15 @@ import {
 } from "./hncb-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -1410,6 +1406,16 @@ export async function runHncbStatements(
         client.close();
       }
     }
+
+    const [
+      { executeCanonicalFinancialCommitRun },
+      { commitCanonicalHncbDomesticDepositCaptureBatchInTransaction },
+      { commitCurrentDepositBalanceCaptureInTransaction },
+    ] = await Promise.all([
+      import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+      import("../ledger/canonical/hncb-domestic-deposit.ts"),
+      import("../ledger/canonical/current-deposit-balance-writer.ts"),
+    ]);
 
     const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
     for (const entry of sourceOnlyEntries) {
