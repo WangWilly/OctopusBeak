@@ -51,7 +51,7 @@ import {
 } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import type {
   TransactionCounterpartyAccountEvidenceInput,
-} from "../ledger/canonical/loan-repayment-relations-contract.ts";
+} from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
