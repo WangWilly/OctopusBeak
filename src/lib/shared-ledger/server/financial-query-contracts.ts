@@ -184,5 +184,3 @@ export interface FinancialQueryBoundary {
   spendingHistorical(request: HistoricalSpendingQueryRequest): Promise<HistoricalSpendingQueryResult>;
   spendingLineage(request: LineageFinancialQueryRequest & { product: "spending" }): Promise<LineageSpendingQueryResult>;
 }
-
-export type CanonicalFinancialQueryBoundary = import("../../../ledger/canonical/cathay-domestic-deposit.ts").CathayCanonicalFinancialQuery;
