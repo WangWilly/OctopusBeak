@@ -1005,11 +1005,13 @@ export function createPGliteFinancialLiveViews(
             : []),
         ];
         const stop = async () => {
+          if (stopped) return;
           stopped = true;
           stopPageActionListener();
-          entries.delete(key);
-          const dependencies = await Promise.all(dependencyQueries);
-          await Promise.all(dependencies.map((dependency) => dependency.unsubscribe()));
+          if (entries.get(key) === entry) entries.delete(key);
+          const dependencies = await Promise.allSettled(dependencyQueries);
+          await Promise.allSettled(dependencies.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value.unsubscribe()] : []));
         };
         entry = { stop, listeners };
         entries.set(key, entry);
@@ -1022,9 +1024,15 @@ export function createPGliteFinancialLiveViews(
           error: (error: unknown) => onError?.(error),
         };
         entry.listeners.add(listener);
-        await Promise.all(dependencyQueries);
-        initialReady = true;
-        await recompute();
+        try {
+          await Promise.all(dependencyQueries);
+          initialReady = true;
+          await recompute();
+        } catch (error) {
+          for (const observer of listeners) observer.error(error);
+          await stop();
+          throw error;
+        }
         if (!delivered && entry.lastValue !== undefined && !stopped) onRows([entry.lastValue]);
         return async () => {
           if (!entry) return;
