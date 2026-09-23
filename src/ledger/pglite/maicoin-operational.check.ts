@@ -60,6 +60,22 @@ test("MaiCoin sync snapshots and history use the worker owned PGlite port", asyn
     assert.equal((await store.query<{ count: number }>(
       "SELECT COUNT(*)::int AS count FROM pglite_operational_migrations",
     )).rows[0]?.count, 1);
+    const recorded = (await store.query<{ schema_signature: string }>(
+      "SELECT schema_signature FROM pglite_operational_migrations",
+    )).rows[0]!.schema_signature;
+    await store.query(
+      "UPDATE pglite_operational_migrations SET schema_signature=$1",
+      [recorded.split(":")[0]],
+    );
+    await applyPgliteMaicoinOperationalSchema(store);
+    assert.equal((await store.query<{ schema_signature: string }>(
+      "SELECT schema_signature FROM pglite_operational_migrations",
+    )).rows[0]?.schema_signature, recorded);
+    await store.exec("ALTER TABLE maicoin_account_snapshots DROP COLUMN raw_price_json");
+    await assert.rejects(
+      applyPgliteMaicoinOperationalSchema(store),
+      /migration catalog has changed/u,
+    );
     await store.exec("DROP INDEX idx_maicoin_statement_rows_time");
     await assert.rejects(
       applyPgliteMaicoinOperationalSchema(store),

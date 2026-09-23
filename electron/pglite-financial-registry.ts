@@ -466,21 +466,40 @@ function exactAmountToDto(amount: CanonicalOverviewAmount): CurrencyAmountDto {
   };
 }
 
+function addExactAmounts(
+  left: AggregatedAmount["exact"],
+  right: AggregatedAmount["exact"],
+): AggregatedAmount["exact"] {
+  const scale = Math.max(left.scale, right.scale);
+  return {
+    coefficient: (
+      BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale)
+      + BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
+    ).toString(),
+    scale,
+  };
+}
+
+function accumulateAmount(
+  target: Map<string, AggregatedAmount>,
+  currency: string,
+  exact: AggregatedAmount["exact"],
+  traces: readonly Trace[],
+): void {
+  const current = target.get(currency);
+  if (!current) target.set(currency, { exact: { ...exact }, traces: [...traces] });
+  else {
+    current.exact = addExactAmounts(current.exact, exact);
+    current.traces.push(...traces);
+  }
+}
+
 function aggregateAmounts(accounts: readonly AccountRowDto[]): Map<string, AggregatedAmount> {
   const result = new Map<string, AggregatedAmount>();
   for (const account of accounts) {
     for (const amount of account.amountLines) {
       if (!amount.exact) continue;
-      const current = result.get(amount.currency);
-      if (!current) result.set(amount.currency, { exact: { ...amount.exact }, traces: [...(amount.traces ?? [])] });
-      else {
-        const scale = Math.max(current.exact.scale, amount.exact.scale);
-        current.exact = {
-          coefficient: (BigInt(current.exact.coefficient) * 10n ** BigInt(scale - current.exact.scale) + BigInt(amount.exact.coefficient) * 10n ** BigInt(scale - amount.exact.scale)).toString(),
-          scale,
-        };
-        current.traces.push(...(amount.traces ?? []));
-      }
+      accumulateAmount(result, amount.currency, amount.exact, amount.traces ?? []);
     }
   }
   return result;
@@ -504,16 +523,7 @@ function addSigned(
     const signed = sign === 1
       ? value.exact
       : { coefficient: (-BigInt(value.exact.coefficient)).toString(), scale: value.exact.scale };
-    const current = target.get(currency);
-    if (!current) target.set(currency, { exact: signed, traces: [...value.traces] });
-    else {
-      const scale = Math.max(current.exact.scale, signed.scale);
-      current.exact = {
-        coefficient: (BigInt(current.exact.coefficient) * 10n ** BigInt(scale - current.exact.scale) + BigInt(signed.coefficient) * 10n ** BigInt(scale - signed.scale)).toString(),
-        scale,
-      };
-      current.traces.push(...value.traces);
-    }
+    accumulateAmount(target, currency, signed, value.traces);
   }
 }
 

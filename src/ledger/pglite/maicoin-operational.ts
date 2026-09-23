@@ -110,6 +110,12 @@ const MAICOIN_MIGRATION_ID = "maicoin-operational-v1";
 const MAICOIN_MIGRATION_SIGNATURE = createHash("sha256")
   .update(PGLITE_MAICOIN_OPERATIONAL_SQL)
   .digest("hex");
+// Catalog signature from a clean application of the reviewed v1 migration.
+const MAICOIN_CATALOG_SIGNATURE = [
+  "09467d1324338a5aff29b279a4351f3e",
+  "3a5a5247a3b3df4ed19a9e333c16d09a",
+].join("");
+const MAICOIN_RECORDED_SIGNATURE = `${MAICOIN_MIGRATION_SIGNATURE}:${MAICOIN_CATALOG_SIGNATURE}`;
 const MAICOIN_TABLES = ["maicoin_sync_runs", "maicoin_account_snapshots", "maicoin_statement_rows"];
 const MAICOIN_INDEXES = [
   "idx_maicoin_account_snapshots_run",
@@ -118,22 +124,46 @@ const MAICOIN_INDEXES = [
   "idx_maicoin_statement_rows_time",
 ];
 
-async function assertMaicoinMigrationObjects(transaction: PGliteTransaction): Promise<void> {
-  const [tables, indexes] = await Promise.all([
+async function maicoinCatalogSignature(transaction: PGliteTransaction): Promise<string> {
+  const [tables, columns, indexes, constraints] = await Promise.all([
     transaction.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
         WHERE table_schema = current_schema() AND table_name = ANY($1::text[])`,
       [MAICOIN_TABLES],
     ),
-    transaction.query<{ relname: string }>(
-      `SELECT relname FROM pg_class WHERE relkind = 'i'
-        AND relnamespace = current_schema()::regnamespace
-        AND relname = ANY($1::text[])`,
-      [MAICOIN_INDEXES],
+    transaction.query<{
+      table_name: string; ordinal_position: number; column_name: string;
+      data_type: string; is_nullable: string; column_default: string | null;
+    }>(
+      `SELECT table_name, ordinal_position, column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = ANY($1::text[])
+        ORDER BY table_name, ordinal_position`,
+      [MAICOIN_TABLES],
+    ),
+    transaction.query<{ tablename: string; indexname: string; indexdef: string }>(
+      `SELECT tablename, indexname, indexdef FROM pg_indexes
+        WHERE schemaname = current_schema() AND tablename = ANY($1::text[])
+        ORDER BY tablename, indexname`,
+      [MAICOIN_TABLES],
+    ),
+    transaction.query<{ table_name: string; constraint_name: string; definition: string }>(
+      `SELECT relation.relname AS table_name, constraint_row.conname AS constraint_name,
+              pg_get_constraintdef(constraint_row.oid) AS definition
+        FROM pg_constraint constraint_row
+        JOIN pg_class relation ON relation.oid = constraint_row.conrelid
+        WHERE relation.relnamespace = current_schema()::regnamespace
+          AND relation.relname = ANY($1::text[])
+        ORDER BY relation.relname, constraint_row.conname`,
+      [MAICOIN_TABLES],
     ),
   ]);
-  if (tables.rows.length !== MAICOIN_TABLES.length || indexes.rows.length !== MAICOIN_INDEXES.length)
+  if (tables.rows.length !== MAICOIN_TABLES.length
+    || MAICOIN_INDEXES.some((name) => !indexes.rows.some((row) => row.indexname === name)))
     throw new Error("MaiCoin operational migration object inventory is incomplete.");
+  return createHash("sha256")
+    .update(JSON.stringify({ columns: columns.rows, indexes: indexes.rows, constraints: constraints.rows }))
+    .digest("hex");
 }
 
 /** A reviewed one-time migration, applied atomically after the operational baseline. */
@@ -149,9 +179,16 @@ export async function applyPgliteMaicoinOperationalSchema(store: PGliteStore): P
       [MAICOIN_MIGRATION_ID],
     );
     if (installed.rows[0]) {
-      if (installed.rows[0].schema_signature !== MAICOIN_MIGRATION_SIGNATURE)
+      if (installed.rows[0].schema_signature !== MAICOIN_RECORDED_SIGNATURE
+        && installed.rows[0].schema_signature !== MAICOIN_MIGRATION_SIGNATURE)
         throw new Error("MaiCoin operational migration signature has changed.");
-      await assertMaicoinMigrationObjects(transaction);
+      if (await maicoinCatalogSignature(transaction) !== MAICOIN_CATALOG_SIGNATURE)
+        throw new Error("MaiCoin operational migration catalog has changed.");
+      if (installed.rows[0].schema_signature === MAICOIN_MIGRATION_SIGNATURE)
+        await transaction.query(
+          "UPDATE pglite_operational_migrations SET schema_signature=$2 WHERE migration_key=$1",
+          [MAICOIN_MIGRATION_ID, MAICOIN_RECORDED_SIGNATURE],
+        );
       return;
     }
     const prior = await transaction.query<{ table_name: string }>(
@@ -162,10 +199,12 @@ export async function applyPgliteMaicoinOperationalSchema(store: PGliteStore): P
     if (prior.rows.length > 0)
       throw new Error("MaiCoin operational tables exist without a migration record.");
     await transaction.exec(PGLITE_MAICOIN_OPERATIONAL_SQL);
-    await assertMaicoinMigrationObjects(transaction);
+    const catalogSignature = await maicoinCatalogSignature(transaction);
+    if (catalogSignature !== MAICOIN_CATALOG_SIGNATURE)
+      throw new Error("MaiCoin operational migration catalog does not match its reviewed schema.");
     await transaction.query(
       "INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)",
-      [MAICOIN_MIGRATION_ID, MAICOIN_MIGRATION_SIGNATURE],
+      [MAICOIN_MIGRATION_ID, MAICOIN_RECORDED_SIGNATURE],
     );
   });
 }
