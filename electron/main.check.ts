@@ -10,7 +10,7 @@ assert.match(
 assert.match(source, /initializeCanonicalRuntimeBeforeWindow\(userData\)/);
 assert.match(
   source,
-  /if \(!pgliteOperationalRuntime\)\s*\{\s*initializeCanonicalRuntimeBeforeWindow\(userData\);/u,
+  /if \(!pgliteOperationalRuntime\)\s*\{\s*await initializeCanonicalRuntimeBeforeWindow\(userData\);/u,
   "the enabled PGlite startup path must not initialize canonical.sqlite",
 );
 assert.match(source, /recoverAbandonedAutomationSessions\(ledgerDir\)/);
