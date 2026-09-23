@@ -937,7 +937,7 @@ async function refreshCurrentEnrichment(
                  scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
                  commit_id, event_kind
                ) VALUES (?, ?, ?, 'kind', NULL, NULL, NULL, ?, NULL, NULL, ?, 'withdrawn')`,
-              [uuidBytes(), previousAssertion, transactionId, previousRun.enrichment_run_id, projectionContext.commitId],
+              [uuidBytes(), previousAssertion, transactionId, runId, projectionContext.commitId],
             );
           }
         }
@@ -1003,7 +1003,7 @@ async function refreshCurrentEnrichment(
                scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
                commit_id, event_kind
              ) VALUES (?, ?, ?, 'kind', NULL, NULL, NULL, ?, NULL, NULL, ?, 'superseded')`,
-            [uuidBytes(), previousAssertion, transactionId, previousRun.enrichment_run_id, projectionContext.commitId],
+            [uuidBytes(), previousAssertion, transactionId, runId, projectionContext.commitId],
           );
         }
       }

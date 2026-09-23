@@ -1313,11 +1313,11 @@ async function investmentRelationAlreadyCurrent(
   const existing = await first<Row>(transaction, "SELECT relation_id FROM investment_funding_relations WHERE relation_key = ?", [identity.relationKey]);
   if (!existing) return false;
   const relationId = bytes(existing.relation_id, "Investment relation");
-  const latest = await first<Row>(transaction, `SELECT event_kind, reason FROM investment_funding_relation_events WHERE relation_id = ? ORDER BY recorded_at_utc_us DESC, encode(event_id, 'hex') DESC LIMIT 1`, [relationId]);
+  const latest = await first<Row>(transaction, `SELECT event.event_kind, event.reason FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
   if (latest?.event_kind !== "observed" || latest.reason !== identity.reason) return false;
   const competitors = await query<Row>(transaction, "SELECT relation_id FROM investment_funding_relations WHERE investment_account_id = ? AND settlement_group_key = ? AND relation_id <> ?", [rows[0]!.investmentAccountId, settlementGroupKey, relationId]);
   for (const competitor of competitors) {
-    const event = await first<Row>(transaction, `SELECT event_kind FROM investment_funding_relation_events WHERE relation_id = ? ORDER BY recorded_at_utc_us DESC, encode(event_id, 'hex') DESC LIMIT 1`, [competitor.relation_id]);
+    const event = await first<Row>(transaction, `SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [competitor.relation_id]);
     if (event?.event_kind === "observed") return false;
   }
   return true;
@@ -1342,7 +1342,7 @@ async function persistInvestmentRelation(
     for (const row of rows)
       await query(transaction, `INSERT INTO investment_funding_relation_members(relation_id, investment_transaction_id, investment_source_record_id, action, coefficient, scale, currency) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, [relationId, row.transactionId, row.sourceRecordId, row.action, row.cashCoefficient, row.cashScale, row.cashCurrency]);
   }
-  const latest = await first<Row>(transaction, `SELECT event_kind, reason FROM investment_funding_relation_events WHERE relation_id = ? ORDER BY recorded_at_utc_us DESC, encode(event_id, 'hex') DESC LIMIT 1`, [relationId]);
+  const latest = await first<Row>(transaction, `SELECT event.event_kind, event.reason FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
   if (String(latest?.event_kind ?? "") !== "observed" || String(latest?.reason ?? "") !== reason)
     await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'observed', ?, ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), relationId, reason, commitId, Date.now() * 1_000]);
   return { relationId, relationKey };
@@ -1361,7 +1361,7 @@ async function withdrawInvestmentRelations(
   for (const row of rows) {
     const relationId = bytes(row.relation_id, "Investment relation");
     if (replacementRelationId && hex(relationId) === hex(replacementRelationId)) continue;
-    const latest = await first<Row>(transaction, `SELECT event_kind FROM investment_funding_relation_events WHERE relation_id = ? ORDER BY recorded_at_utc_us DESC, encode(event_id, 'hex') DESC LIMIT 1`, [relationId]);
+    const latest = await first<Row>(transaction, `SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
     if (latest?.event_kind !== "observed") continue;
     await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'withdrawn', 'complete-resolution-no-longer-supported', ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), relationId, commitId, Date.now() * 1_000]);
     count += 1;
@@ -1441,7 +1441,7 @@ async function resolveInvestmentRelationsInTransaction(
       reasons.add(candidates.length === 0 ? "no-complete-funding-candidate" : "ambiguous-funding-candidate");
       if (settlementEffectiveOn && firstRow.complete) {
         const groupKey = `${hex(firstRow.investmentAccountId)}:${settlementEffectiveOn}`;
-        const prior = await query<Row>(transaction, `SELECT relation.relation_id FROM investment_funding_relations relation WHERE relation.investment_account_id = ? AND relation.settlement_group_key = ? AND (SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.recorded_at_utc_us DESC, encode(event.event_id, 'hex') DESC LIMIT 1) = 'observed'`, [firstRow.investmentAccountId, groupKey]);
+        const prior = await query<Row>(transaction, `SELECT relation.relation_id FROM investment_funding_relations relation WHERE relation.investment_account_id = ? AND relation.settlement_group_key = ? AND (SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1) = 'observed'`, [firstRow.investmentAccountId, groupKey]);
         if (prior.length > 0) {
           if (!commit) commit = await relationCommit(transaction, "canonical/investment-funding-relation-resolution-v1", options);
           const closed = await withdrawInvestmentRelations(transaction, firstRow.investmentAccountId, groupKey, commit.id);
@@ -1595,7 +1595,7 @@ export async function queryPGliteCurrentInvestmentFundingRelations(
        JOIN investment_accounts account ON account.account_id = relation.investment_account_id
        JOIN source_connections connection ON connection.source_connection_id = account.source_connection_id
       WHERE ($1::text IS NULL OR connection.source_connection_key = $2)
-        AND COALESCE((SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.recorded_at_utc_us DESC, encode(event.event_id, 'hex') DESC LIMIT 1), 'withdrawn') = 'observed'
+        AND COALESCE((SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1), 'withdrawn') = 'observed'
       GROUP BY relation.relation_id
       ORDER BY relation.relation_key`,
     [sourceConnectionKey ?? null, sourceConnectionKey ?? null],

@@ -97,8 +97,16 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
   };
 }
 
-function fundingDepositRequest(captureId: string): PGliteCanonicalFinancialCommitRequest {
-  const occurrenceKey = token(`${captureId}:record`);
+function fundingDepositRequest(
+  captureId: string,
+  options: Readonly<{
+    recordKey?: string;
+    sourceSequence?: string;
+    administrativeState?: "active" | "deleted" | "purged";
+  }> = {},
+): PGliteCanonicalFinancialCommitRequest {
+  const recordKey = options.recordKey ?? captureId;
+  const occurrenceKey = token(`${recordKey}:record`);
   return {
     capture: {
       captureId,
@@ -114,12 +122,12 @@ function fundingDepositRequest(captureId: string): PGliteCanonicalFinancialCommi
       accountNumber: { value: "123456", kind: "depository-account", evidenceVersion: "synthetic-v1", sourceField: "accountNumber" },
       scope: { startDate: "20260922", endDate: "20260922", kind: "point-in-time", completeness: "single-page", ruleVersion: "synthetic-v8", sourceAccountKey: "funding-account" },
       pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { pageCount: 1 } }],
-      records: [{ occurrenceKey, collisionKey: token(`${captureId}:collision`), providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { amount: { coefficient: "10000", scale: 0 } } }],
+      records: [{ occurrenceKey, collisionKey: token(`${recordKey}:collision`), providerKey: token(`${recordKey}:provider`), contentHash: token(`${recordKey}:content`), compact: { amount: { coefficient: "10000", scale: 0 } } }],
     },
     account: { sourceAccountKey: "funding-account", accountNo: "123456", accountType: "depository", currency: "TWD" },
     transactions: [{
       sourceOccurrenceKey: occurrenceKey,
-      sourceSequence: captureId,
+      sourceSequence: options.sourceSequence ?? captureId,
       amount: { coefficient: "10000", scale: 0 },
       currency: "TWD",
       direction: "outflow",
@@ -129,7 +137,7 @@ function fundingDepositRequest(captureId: string): PGliteCanonicalFinancialCommi
       postingRuleVersion: "synthetic-v1",
       description: "funding transfer",
       economicStatus: "normal",
-      administrativeState: "active",
+      administrativeState: options.administrativeState ?? "active",
       semanticRuleVersion: "synthetic-v1",
       effectiveOn: "2026-09-22",
       transactionDateTimeLocal: "2026-09-22T00:00:00+08:00",
@@ -196,6 +204,134 @@ test("source-linked investment funding resolves exactly one retained bank fact",
     assert.ok(ambiguous.reasons.includes("ambiguous-funding-candidate"));
     assert.deepEqual(await queryPGliteCurrentInvestmentFundingRelations(store), []);
   } finally {
+    await store.close();
+  }
+});
+
+test("investment funding relation reopens after ambiguity clears and cancellation rolls back", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  const originalDateNow = Date.now;
+  const withEventTime = async <T>(milliseconds: number, run: () => Promise<T>): Promise<T> => {
+    Date.now = () => milliseconds;
+    try {
+      return await run();
+    } finally {
+      Date.now = originalDateNow;
+    }
+  };
+  try {
+    await applyPgliteBaseline(database);
+    const firstFunding = await commitPGliteCanonicalFinancialCapture(
+      store,
+      fundingDepositRequest("funding-reopen-first", {
+        recordKey: "funding-reopen-first",
+        sourceSequence: "funding-reopen-first",
+      }),
+      { clock: () => 100 },
+    );
+    const base = investmentRequest("investment-reopen");
+    const sourceTransaction = base.capture.transactions[0]!;
+    await commitPGliteCanonicalInvestmentCapture(store, {
+      ...base,
+      capture: {
+        ...base.capture,
+        transactions: [{
+          ...sourceTransaction,
+          fundingEvidence: {
+            kind: "source-linked-account",
+            sourceRecordKey: sourceTransaction.sourceRecordKey,
+            fundingAccountKey: token("funding-reopen-account"),
+            fundingAccountNumber: "123456",
+            sourceLinkageKey: token("funding-reopen-linkage"),
+            settlementGroupKey: token("funding-reopen-group"),
+            settlementEffectiveOn: "2026-09-22",
+            settlementModel: "single-transaction",
+            contractVersion: base.capture.contractVersion,
+          },
+        }],
+      },
+    }, { clock: () => 101 });
+    const request = {
+      sourceConnectionKey: token("investment-connection"),
+      observedAt: "2026-09-22T02:00:00.000Z",
+    };
+    await withEventTime(5_000, async () => {
+      const first = await resolvePGliteCanonicalInvestmentFundingRelations(store, request, { clock: () => 102 });
+      assert.equal(first.resolved, 1);
+    });
+    assert.equal((await queryPGliteCurrentInvestmentFundingRelations(store)).length, 1);
+
+    const secondFunding = await commitPGliteCanonicalFinancialCapture(
+      store,
+      fundingDepositRequest("funding-reopen-ambiguous", {
+        recordKey: "funding-reopen-ambiguous",
+        sourceSequence: "funding-reopen-ambiguous",
+      }),
+      { clock: () => 103 },
+    );
+    assert.notEqual(secondFunding.transactions[0]?.transactionId, firstFunding.transactions[0]?.transactionId);
+
+    const cancelled = new AbortController();
+    await withEventTime(900, async () => {
+      await assert.rejects(
+        resolvePGliteCanonicalInvestmentFundingRelations(store, request, {
+          clock: () => 104,
+          signal: cancelled.signal,
+          projection: async () => {
+            cancelled.abort();
+          },
+        }),
+        /cancel/iu,
+      );
+    });
+    assert.equal((await queryPGliteCurrentInvestmentFundingRelations(store)).length, 1);
+    assert.deepEqual((await store.query<{ event_kind: string }>(
+      "SELECT event_kind FROM investment_funding_relation_events ORDER BY event_id",
+    )).rows.map((row) => row.event_kind), ["observed"]);
+
+    await withEventTime(1_000, async () => {
+      const ambiguous = await resolvePGliteCanonicalInvestmentFundingRelations(store, request, { clock: () => 105 });
+      assert.equal(ambiguous.noAdmission, 1);
+      assert.ok(ambiguous.reasons.includes("ambiguous-funding-candidate"));
+    });
+    assert.deepEqual(await queryPGliteCurrentInvestmentFundingRelations(store), []);
+
+    const withdrawnFunding = await commitPGliteCanonicalFinancialCapture(
+      store,
+      fundingDepositRequest("funding-reopen-ambiguous-withdrawn", {
+        recordKey: "funding-reopen-ambiguous",
+        sourceSequence: "funding-reopen-ambiguous",
+        administrativeState: "deleted",
+      }),
+      { clock: () => 106 },
+    );
+    assert.equal(
+      withdrawnFunding.transactions[0]?.transactionId,
+      secondFunding.transactions[0]?.transactionId,
+      "the complete source revision withdraws the ambiguous bank candidate in place",
+    );
+    await withEventTime(1_500, async () => {
+      const reopened = await resolvePGliteCanonicalInvestmentFundingRelations(store, request, { clock: () => 107 });
+      assert.equal(reopened.resolved, 1, "a later commit must reopen the previously withdrawn relation");
+    });
+
+    const events = await store.query<{ event_kind: string; recorded_at_utc_us: number | string; commit_sequence: number | string }>(
+      `SELECT event.event_kind, event.recorded_at_utc_us, event_commit.commit_sequence
+         FROM investment_funding_relation_events event
+         JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+        ORDER BY event_commit.commit_sequence, encode(event.event_id, 'hex')`,
+    );
+    assert.deepEqual(events.rows.map((row) => row.event_kind), ["observed", "withdrawn", "observed"]);
+    assert.deepEqual(events.rows.map((row) => Number(row.recorded_at_utc_us)), [5_000_000, 1_000_000, 1_500_000]);
+    const reopenedCurrent = await queryPGliteCurrentInvestmentFundingRelations(store);
+    assert.equal(reopenedCurrent.length, 1);
+    assert.equal(reopenedCurrent[0]?.fundingTransactionId, firstFunding.transactions[0]?.transactionId);
+    assert.equal(reopenedCurrent[0]?.coefficient, "10000");
+    assert.equal(reopenedCurrent[0]?.direction, "outflow");
+    assert.equal(reopenedCurrent[0]?.investmentTransactionCount, 1);
+  } finally {
+    Date.now = originalDateNow;
     await store.close();
   }
 });

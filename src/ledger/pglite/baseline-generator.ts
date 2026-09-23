@@ -471,6 +471,72 @@ CREATE TRIGGER ${quotedIdentifier(trigger.name)}
 `;
 }
 
+// The SQLite trigger establishes assertion identity, while PGlite's derived
+// enrichment spine also records the current run which supersedes or withdraws
+// an older assertion. Its output belongs to the new run, so the generic
+// translated predicate (which requires output.assertion_id to equal the old
+// assertion) cannot validate those two lifecycle events.
+const PGLITE_ASSERTION_TRANSITION_INSERT_GUARD = String.raw`
+CREATE OR REPLACE FUNCTION "pglite_guard_trg_assertion_transitions_integrity_insert"()
+RETURNS trigger LANGUAGE plpgsql AS $pglite$
+BEGIN
+  IF (NOT EXISTS (
+    SELECT 1 FROM assertions assertion
+    WHERE assertion.assertion_id = NEW.assertion_id
+      AND assertion.transaction_id = NEW.transaction_id
+      AND assertion.field_name = NEW.field_name
+      AND (
+        assertion.origin = 'source'
+        OR (assertion.origin = 'user' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+            AND NEW.run_id IS NULL AND NEW.enrichment_run_id IS NULL AND NEW.coordinate_id IS NULL
+            AND NEW.user_id = assertion.producer_id)
+        OR (assertion.origin = 'derived' AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL
+            AND NEW.enrichment_run_id IS NULL AND NEW.user_id IS NULL AND EXISTS (
+          SELECT 1 FROM derived_import_runs run
+          JOIN derived_scope_coordinates coordinate ON coordinate.coordinate_id = NEW.coordinate_id
+          JOIN source_authority_routes registered ON registered.authority_route = run.authority_route
+          WHERE run.run_id = NEW.run_id AND coordinate.run_id = run.run_id
+            AND coordinate.transaction_id = assertion.transaction_id AND coordinate.field_name = assertion.field_name
+            AND coordinate.producer_id = assertion.producer_id AND coordinate.rule_lineage = assertion.rule_lineage
+            AND run.authority_route = 'cathay/domestic-deposit/v1' AND run.stream = 'domestic-deposit'
+            AND run.producer_id = assertion.producer_id AND run.origin = 'derived/cathay/domestic-deposit/v1'
+            AND run.rule_lineage = assertion.rule_lineage AND run.status = 'complete'
+            AND registered.integration_namespace = 'cathay' AND registered.stream = 'domestic-deposit'
+            AND registered.contract_version = 'v1'
+        ))
+        OR (assertion.field_name IN ('kind','category','counterparty_role','counterparty_display')
+            AND NEW.capture_id IS NULL AND NEW.scope_id IS NULL AND NEW.run_id IS NULL
+            AND NEW.coordinate_id IS NULL AND NEW.user_id IS NULL AND NEW.enrichment_run_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM enrichment_runs run
+              JOIN enrichment_run_outputs output ON output.run_id = run.run_id
+              WHERE run.run_id = NEW.enrichment_run_id AND run.status = 'complete'
+                AND run.commit_id = NEW.commit_id AND output.commit_id = NEW.commit_id
+                AND output.transaction_id = assertion.transaction_id
+                AND output.field_name = assertion.field_name
+                AND (
+                  ((NEW.event_kind = 'observed' OR NEW.event_kind = 'restored')
+                    AND output.output_state = 'supported'
+                    AND output.assertion_id = assertion.assertion_id)
+                  OR (NEW.event_kind = 'superseded' AND assertion.origin = 'derived'
+                    AND output.output_state = 'supported'
+                    AND output.assertion_id IS NOT NULL
+                    AND output.assertion_id <> assertion.assertion_id)
+                  OR (NEW.event_kind = 'withdrawn' AND assertion.origin = 'derived'
+                    AND output.output_state = 'unsupported'
+                    AND output.assertion_id IS NULL)
+                )
+            ))
+      )
+  )) THEN
+    RAISE EXCEPTION '%', 'assertion transition coordinate mismatch';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$pglite$;
+`;
+
 function metadataSql(objects: readonly SqliteSchemaObject[]): string {
   const triggers = objects.filter((object) => object.type === "trigger");
   const rows = [
@@ -571,6 +637,7 @@ export function createPgliteBaselineSql(): string {
   for (const seed of baselineSeedRows) sqlParts.push(seedSql(seed));
   for (const foreignKey of baselineForeignKeys) sqlParts.push(foreignKeySql(foreignKey));
   for (const trigger of triggers) sqlParts.push(triggerSql(parseTrigger(trigger)));
+  sqlParts.push(PGLITE_ASSERTION_TRANSITION_INSERT_GUARD);
   // The historical canonical schema contained only E.SUN's attestation table.
   // Replace that disposable shape with the reviewed provider-specific event
   // spines before any worker admission can write them.
