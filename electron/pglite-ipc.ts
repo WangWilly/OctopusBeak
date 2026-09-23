@@ -107,12 +107,7 @@ function validateUnsubscribeRequest(value: unknown): DataViewUnsubscribeRequest 
   };
 }
 
-/**
- * Opt-in main-process bridge for the named PGlite view worker.
- *
- * The caller owns the feature gate. This function never runs as part of the
- * existing SQLite registration unless a caller passes an explicit dataDir.
- */
+/** Main-process bridge for the named PGlite view worker. */
 export function registerPGliteViewIpc(
   options: PGliteViewIpcOptions,
   bridge: IpcMainBridge,

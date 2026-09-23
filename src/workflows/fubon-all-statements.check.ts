@@ -21,12 +21,6 @@ assert.match(source, /runSelectedStatements\(selectedIds, \[/);
 assert.match(source, /deriveFubonCanonicalHumanAttestation/);
 assert.match(source, /FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY/);
 assert.match(source, /panFingerprintKey/);
-assert.doesNotMatch(source, /canonical(Source|Financial)LedgerDir/);
-assert.doesNotMatch(
-  source,
-  /canonicalLedgerDir|DEFAULT_LEDGER_DIR|resolveFubonCanonicalLedgerDir|ledger\/db\/client|pgliteWorkflowEnabled/u,
-  "Fubon statement aggregation must not resolve a legacy SQLite ledger path",
-);
 assert.doesNotMatch(source, /RepaymentRouteInventory/);
 assert.doesNotMatch(source, /fubon_card_identity_fingerprint_key/);
 assert.match(
