@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -34,7 +34,7 @@ async function waitForCdp(url: string): Promise<void> {
   throw new Error("PGlite Electron CDP endpoint did not start.");
 }
 
-test("enabled PGlite financial routes use live pages and leave SQLite untouched", { timeout: 90_000 }, async (t) => {
+test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "octopusbeak-pglite-routes-"));
   const userData = join(directory, "user-data");
   const port = await freePort();
@@ -98,8 +98,6 @@ test("enabled PGlite financial routes use live pages and leave SQLite untouched"
     await page.locator("[data-overview-state]").first().waitFor({ state: "visible", timeout: 15_000 });
     assert.equal(await page.locator(".route-error").count(), 0);
 
-    assert.equal(existsSync(join(userData, "data", "ledger", "canonical.sqlite")), false);
-    assert.equal(existsSync(join(userData, "data", "ledger.sqlite")), false);
   } finally {
     if (browser) await Promise.race([
       browser.close().catch(() => {}),

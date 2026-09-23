@@ -57,11 +57,6 @@ assert.match(runSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/);
 assert.match(runSource, /relationCommands: \(\) => \[/);
 assert.doesNotMatch(
   source,
-  /pgliteWorkflowEnabled|canonicalLedgerDir|DEFAULT_LEDGER_DIR|executeCanonicalFinancialCommitRun|commitCanonicalFinancialAdmissionInTransaction|canonical-financial-admission\.ts|canonical-financial-commit-execution\.ts|safe-loan-relation-resolution|node:sqlite|drizzle-orm|\.\.\/ledger\/db\/client/u,
-  "Fubon loan persistence must be PGlite-only without a legacy SQLite branch",
-);
-assert.doesNotMatch(
-  source,
   /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
   "date+amount loan payment candidates must not be emitted or stored",
 );

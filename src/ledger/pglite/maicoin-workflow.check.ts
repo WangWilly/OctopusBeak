@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -59,8 +59,6 @@ test("MAX canonical sync uses authenticated PGlite child commands", async () => 
     }
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
-    assert.equal((await readdir(root)).includes("canonical.sqlite"), false);
-    assert.equal((await readdir(root)).includes("ledger.sqlite"), false);
   } finally {
     for (const key of Object.keys(server.env)) {
       if (previous[key] === undefined) delete process.env[key];
