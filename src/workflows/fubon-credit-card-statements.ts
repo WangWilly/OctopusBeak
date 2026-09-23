@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   fubonCreditCardCommandRequest,
@@ -19,13 +19,14 @@ import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   admitFubonCreditCardCapture,
   buildFubonCreditCardStatementEvidenceKey,
-  commitFubonCreditCardCaptureInTransaction,
   fubonCanonicalSpineCapture,
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
   resolveFubonCreditCardIdentity,
-  type FubonCreditCardCaptureInput,
-  type FubonCreditCardGrid,
-  type FubonCreditCardValidatedCapture,
+} from "../ledger/canonical/fubon-credit-card-admission.ts";
+import type {
+  FubonCreditCardCaptureInput,
+  FubonCreditCardGrid,
+  FubonCreditCardValidatedCapture,
 } from "../ledger/canonical/fubon-credit-card.ts";
 import {
   fubonCreditCardPanFingerprint,
@@ -35,17 +36,12 @@ import {
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCaptureInTransaction,
   creditCardCurrentBalanceSourceRecord,
   creditCardCurrentUsedAmountFromLimitAndAvailable,
   type CreditCardCurrentBalanceObservationInput,
   type CreditCardExactAmount,
-} from "../ledger/canonical/credit-card-current-balance-writer.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -54,6 +50,7 @@ import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 // completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
 
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 
@@ -2748,47 +2745,56 @@ export async function runFubonCreditCardStatements(
         client.close();
       }
     } else {
-    const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
-    for (const canonicalCapture of canonicalCaptures) {
-      executionItems.push({
+      const [
+        { executeCanonicalFinancialCommitRun },
+        { commitFubonCreditCardCaptureInTransaction },
+        { commitCreditCardCurrentBalanceCaptureInTransaction },
+      ] = await Promise.all([
+        import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+        import("../ledger/canonical/fubon-credit-card.ts"),
+        import("../ledger/canonical/credit-card-current-balance-writer.ts"),
+      ]);
+      const executionItems: CanonicalFinancialCommitItem<unknown>[] = [];
+      for (const canonicalCapture of canonicalCaptures) {
+        executionItems.push({
+          provider: "fubon",
+          product: "credit-card",
+          itemKey: canonicalCapture.captureId,
+          commit: ({ writer, admission }) =>
+            commitFubonCreditCardCaptureInTransaction(
+              writer,
+              canonicalCapture,
+              admission,
+            ),
+        });
+      }
+      if (currentUsedCredit) {
+        const balanceCapture = fubonCreditCurrentSnapshotCapture(
+          canonicalCaptures[0]!,
+          currentUsedCredit,
+        );
+        executionItems.push({
+          provider: "fubon",
+          product: "current-balance",
+          itemKey: balanceCapture.captureId,
+          commit: ({ writer, admission }) =>
+            commitCreditCardCurrentBalanceCaptureInTransaction(
+              writer,
+              balanceCapture,
+              admission,
+            ),
+        });
+      }
+      const executionResult = await executeCanonicalFinancialCommitRun({
+        canonicalLedgerDir,
+        items: executionItems,
         provider: "fubon",
         product: "credit-card",
-        itemKey: canonicalCapture.captureId,
-        commit: ({ writer, admission }) =>
-          commitFubonCreditCardCaptureInTransaction(
-            writer,
-            canonicalCapture,
-            admission,
-          ),
       });
-    }
-    if (currentUsedCredit) {
-      const balanceCapture = fubonCreditCurrentSnapshotCapture(
-        canonicalCaptures[0]!,
-        currentUsedCredit,
-      );
-      executionItems.push({
-        provider: "fubon",
-        product: "current-balance",
-        itemKey: balanceCapture.captureId,
-        commit: ({ writer, admission }) =>
-          commitCreditCardCurrentBalanceCaptureInTransaction(
-            writer,
-            balanceCapture,
-            admission,
-          ),
-      });
-    }
-    const executionResult = await executeCanonicalFinancialCommitRun({
-      canonicalLedgerDir,
-      items: executionItems,
-      provider: "fubon",
-      product: "credit-card",
-    });
-    if (executionResult.status !== "completed")
-      throw new Error(
-        `Fubon credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
-      );
+      if (executionResult.status !== "completed")
+        throw new Error(
+          `Fubon credit-card canonical commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ")}`,
+        );
     }
     canonicalAdmission = "admitted";
   }
