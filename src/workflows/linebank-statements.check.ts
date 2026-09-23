@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
@@ -255,30 +253,6 @@ const observedEmptyRoleCapture = await linebankHumanAttestedCapture({
     : [],
 });
 assert.equal(observedEmptyRoleCapture?.canonicalAdmission, "admitted");
-const canonicalDirectory = await mkdtemp(
-  join(tmpdir(), "linebank-workflow-canonical-check-"),
-);
-try {
-  const {
-    commitCanonicalLineBankFinancialCaptureBatch,
-    createDomesticDepositStore,
-    queryCurrent,
-  } = await import("../ledger/canonical/domestic-deposit-store.ts");
-  const store = createDomesticDepositStore(canonicalDirectory);
-  try {
-    const committed = await commitCanonicalLineBankFinancialCaptureBatch(
-      store,
-      [canonicalCapture!],
-    );
-    assert.equal(committed.length, 1);
-    assert.equal(committed[0]?.transactionCount, 2);
-    assert.equal(queryCurrent(store).transactions.length, 2);
-  } finally {
-    store.close();
-  }
-} finally {
-  await rm(canonicalDirectory, { recursive: true, force: true });
-}
 assert.equal(
   await linebankHumanAttestedCapture({
     account: LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,

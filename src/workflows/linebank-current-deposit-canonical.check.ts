@@ -1,26 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import test from "node:test";
 
 import {
   buildLinebankCurrentDepositBalanceCapture,
   buildLinebankCurrentDepositBalanceCaptures,
   LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
 } from "./linebank-current-deposit-canonical.ts";
-import { linebankHumanAttestedCapture } from "./linebank-statements.ts";
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  commitCanonicalLineBankFinancialCaptureBatch,
-  createDomesticDepositStore,
-} from "../ledger/canonical/domestic-deposit-store.ts";
-import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 
 const routeRegistration = canonicalSourceRouteRegistration(
@@ -94,86 +84,5 @@ assert.throws(
   () => buildLinebankCurrentDepositBalanceCaptures([row], []),
   /no admitted financial identity/u,
 );
-
-test("fresh canonical store registers and commits the LINE current balance after financial identity admission", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "linebank-current-balance-route-"));
-  const account = {
-    ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.account,
-    acctNbr: "012345678901",
-    arrId: "arr-main",
-    currCd: "TWD",
-  };
-  const template = LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!;
-  const pages = [{
-    ...template,
-    pageNbr: 1,
-    pageCnt: 1000,
-    responseCode: "200" as const,
-    source: {
-      ...template.source,
-      acctNbr: account.acctNbr,
-      arrId: account.arrId,
-      opnDtm: 1700000000000,
-      jntAcctMbrTpCd: "personal-main-account",
-      jntMbrListCnt: 0,
-      totJntAcctMbrCnt: 0,
-      isSecuAcctBndg: false,
-    },
-    rows: template.rows.map((sourceRow, index) => ({
-      ...sourceRow,
-      txSeqNbr: String(index + 1),
-      crrnDpstNthCnt: index + 1,
-      txDt: index === 0 ? "20260101" : "20260102",
-      txTm: index === 0 ? "010203" : "020304",
-      txDtm: index === 0 ? 1767200523000 : 1767290584000,
-      dpstWdrwDsCd: "1" as const,
-      txAmt: index === 0 ? "1000" : "2000",
-      afTxBal: index === 0 ? "10000" : "12000",
-      cncdTxYn: "N",
-      cnclTxYn: "N",
-    })),
-  }];
-  const financialCapture = await linebankHumanAttestedCapture({
-    account,
-    dateRange: { startDate: "20260101", endDate: "20260102" },
-    pages,
-    captureId: "linebank-current-balance-route-financial",
-    observedAt: "2026-09-09T10:05:00.000Z",
-  });
-  assert.ok(financialCapture, "the fixture must admit a personal-main financial identity");
-
-  const store = createDomesticDepositStore(directory);
-  try {
-    await commitCanonicalLineBankFinancialCaptureBatch(store, [financialCapture]);
-    const currentRows = parseLinebankCurrentDepositBalanceSnapshot({
-      response,
-      rawBody: rawBody.replace("012345678901", account.acctNbr).replace("arr-main", account.arrId),
-      observedAt: "2026-09-09T10:05:09+08:00",
-    });
-    const currentCapture = buildLinebankCurrentDepositBalanceCapture(currentRows[0]!, {
-      accountKey: financialCapture.accountKey,
-      sourceConnection: financialCapture.sourceConnection,
-      identityEpoch: financialCapture.identityEpoch,
-      observedAt: financialCapture.observedAt,
-    });
-    const result = await import("../ledger/canonical/current-deposit-balance-writer.ts").then(
-      ({ admitCurrentDepositBalanceCapture: admit, commitCurrentDepositBalanceCapture: commit }) =>
-        commit(store.sourceStore, admit(currentCapture)),
-    );
-    assert.equal(result.observationCount, 1);
-    assert.equal(result.revisionCount, 1);
-    const persistedRoute = store.db.prepare(
-      "SELECT integration_namespace, stream, contract_version FROM source_authority_routes WHERE authority_route = ?",
-    ).get(LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE) as Record<string, unknown> | undefined;
-    assert.deepEqual({ ...persistedRoute }, {
-      integration_namespace: "linebank",
-      stream: "domestic-deposit",
-      contract_version: "linebank/current-deposit-balance-v1",
-    });
-  } finally {
-    store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
 
 console.log("linebank-current-deposit-canonical.check passed");
