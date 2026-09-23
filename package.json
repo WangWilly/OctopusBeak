@@ -40,6 +40,7 @@
     "check:pairing-performance": "node --no-warnings --experimental-strip-types scripts/check-pairing-performance.ts",
     "check:pglite-spending-performance": "node --no-warnings --experimental-strip-types src/ledger/pglite/spending-performance.ts",
     "check:pairing-ui-performance": "node --no-warnings --experimental-strip-types scripts/check-pairing-ui-performance.mjs",
+    "check:pglite-pairing-ui-performance": "node --no-warnings --experimental-strip-types scripts/check-pglite-pairing-ui-performance.mjs",
     "check:runtime-interaction-performance": "node --expose-gc --no-warnings --experimental-strip-types scripts/check-runtime-interaction-performance.mjs",
     "check:welcome-assets": "node --test scripts/welcome-assets.check.mjs",
     "generate:welcome-assets": "node scripts/welcome-assets.mjs",
