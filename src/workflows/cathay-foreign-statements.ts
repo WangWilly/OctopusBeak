@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -18,15 +18,11 @@ import {
   createCathaySession,
   signInCathay,
 } from "./cathay-statements.js";
-import {
-  admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureInTransaction,
-  type ForeignCurrencyDepositCaptureInput,
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import type {
+  ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit.ts";
-import {
-  executeCanonicalFinancialCommitRun,
-  type CanonicalFinancialCommitItem,
-} from "../ledger/canonical/canonical-financial-commit-execution.ts";
+import type { CanonicalFinancialCommitItem } from "../ledger/canonical/canonical-financial-commit-execution.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
@@ -36,15 +32,12 @@ import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositBalanceCommitResult,
 } from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCaptureInTransaction,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import type { CanonicalFinancialDepositCommitResult } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
+const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 function configuredCathayCanonicalLedgerDir(): string {
   return (
@@ -569,12 +562,16 @@ function cathayForeignCommitItems(
     provider: "cathay",
     product: "foreign-currency-deposit",
     itemKey: capture.accountNo,
-    commit: ({ writer, admission }) =>
-      commitForeignCurrencyDepositCaptureInTransaction(
+    commit: async ({ writer, admission }) => {
+      const { commitForeignCurrencyDepositCaptureInTransaction } = await import(
+        "../ledger/canonical/foreign-currency-deposit.ts"
+      );
+      return commitForeignCurrencyDepositCaptureInTransaction(
         writer,
         capture,
         admission,
-      ),
+      );
+    },
     ...(onCommitted
       ? {
           // Run only after the item transaction has committed, so current
@@ -627,6 +624,9 @@ export async function commitCathayForeignCanonicalCaptures(
   captures: readonly ForeignCurrencyDepositCaptureInput[],
 ): Promise<readonly CanonicalFinancialDepositCommitResult[]> {
   if (!canonicalLedgerDir || captures.length === 0) return [];
+  const { executeCanonicalFinancialCommitRun } = await import(
+    "../ledger/canonical/canonical-financial-commit-execution.ts"
+  );
   const items = cathayForeignCommitItems(captures);
   const result = await executeCanonicalFinancialCommitRun<CathayForeignCommitValue>({
     canonicalLedgerDir,
@@ -649,6 +649,13 @@ async function commitCathayCurrentForeignDepositBalancesThroughExecution(
   canonicalLedgerDir: string,
   captures: readonly CurrentDepositBalanceCaptureInput[],
 ): Promise<readonly CurrentDepositBalanceCommitResult[]> {
+  const [
+    { executeCanonicalFinancialCommitRun },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+  ]);
   const result = await executeCanonicalFinancialCommitRun({
     canonicalLedgerDir,
     items: captures.map((capture) => ({
@@ -803,6 +810,15 @@ export async function commitCathayForeignAndCurrentCanonicalCaptures(
     }
   }
   if (!canonicalLedgerDir) return;
+  const [
+    { executeCanonicalFinancialCommitRun },
+    { commitForeignCurrencyDepositCaptureInTransaction },
+    { commitCurrentDepositBalanceCaptureInTransaction },
+  ] = await Promise.all([
+    import("../ledger/canonical/canonical-financial-commit-execution.ts"),
+    import("../ledger/canonical/foreign-currency-deposit.ts"),
+    import("../ledger/canonical/current-deposit-balance-writer.ts"),
+  ]);
   const committedForeignCaptures: ForeignCurrencyDepositCaptureInput[] = [];
   const items = async function* (): AsyncGenerator<
     CanonicalFinancialCommitItem<CathayCanonicalCommitValue>
