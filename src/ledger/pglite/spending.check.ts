@@ -6,13 +6,17 @@ import { PGliteStore } from "./transaction.ts";
 import {
   createPGliteSpendingQuery,
   queryCurrentSpending,
+  queryCurrentSpendingRecordPage,
+  queryCurrentSpendingSummary,
   queryHistoricalSpending,
   querySpendingRecognition,
   rankPGliteSpendingPaymentCandidates,
   resolvePGliteSpendingCandidate,
 } from "./spending-query.ts";
+import type { PurchaseReport } from "../canonical/spending-purchase-report.ts";
 import {
   commitPGliteSpendingRefundRevision,
+  applyPGliteSpendingPageAction,
   confirmPGliteSpendingCandidate,
   denyPGliteSpendingCandidate,
   recordPGliteSpendingMatchCandidate,
@@ -21,15 +25,37 @@ import {
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
-} from "../canonical/einvoice.ts";
+} from "../canonical/einvoice-contract.ts";
 import { applySpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
-import { spendingPairingReportContext } from "../../lib/spending/model.ts";
+import {
+  applySpendingSummaryDelta,
+  spendingPairingReportContext,
+} from "../../lib/spending/model.ts";
 
 const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
 
 function textId(value: Uint8Array): string {
   const hex = Buffer.from(value).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function assertCompactActionSummaryParity(
+  fixture: Fixture,
+  input: Parameters<typeof applyPGliteSpendingPageAction>[1],
+) {
+  const before = await queryCurrentSpendingSummary(fixture.store);
+  const result = await applyPGliteSpendingPageAction(fixture.store, input);
+  const after = await queryCurrentSpendingSummary(fixture.store);
+  const patched = applySpendingSummaryDelta(
+    before.purchaseReport,
+    result.baseKnowledgeAt,
+    result.knowledgeAt,
+    result.summaryDelta,
+  );
+  assert.equal(result.baseKnowledgeAt, before.knowledgeAt);
+  assert.equal(result.knowledgeAt, after.knowledgeAt);
+  assert.deepEqual(normalizedCompactSummary(patched), normalizedCompactSummary(after.purchaseReport));
+  return { before, result, after };
 }
 
 type Fixture = Readonly<{
@@ -41,7 +67,13 @@ type Fixture = Readonly<{
   transactionTwo: string;
 }>;
 
-async function setupFixture(): Promise<Fixture> {
+async function setupFixture(options: Readonly<{
+  invoiceOneAmount?: string;
+  invoiceOneScale?: number;
+  invoiceOneDate?: string;
+  transactionOneDate?: string;
+  transactionOneScale?: number;
+}> = {}): Promise<Fixture> {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   await applyPgliteBaseline(database);
@@ -103,7 +135,7 @@ async function setupFixture(): Promise<Fixture> {
     scope_start, scope_end, completeness, completeness_basis,
     completeness_rule_version, commit_id
   ) VALUES ($1, $2, $3, $4, 'fixture/source/v1', $5, $6, NULL,
-            '2026-09-01', '2026-09-01', '2026-09-02', 'complete-range',
+            '2026-09-01', '2026-09-01', '2026-11-01', 'complete-range',
             'fixture', 'fixture/source/v1', $7)`;
   await store.query(captureSql, [bankCapture, "fixture-bank", sourceConnection, epoch, "deposit", "bank-transaction", sourceCommit]);
   await store.query(captureSql, [invoiceCaptureOne, "fixture-invoice-1", sourceConnection, epoch, "personal-invoices", "personal-invoice", sourceCommit]);
@@ -139,13 +171,14 @@ async function setupFixture(): Promise<Fixture> {
     effective_on, transaction_date_time_local, time_zone, time_precision,
     time_origin, effective_time_basis, effective_time_rule_version,
     utc_instant_utc_us
-  ) VALUES ($1, $2, $3, $4, $5, 1, $6, 2, 'TWD', 'outflow', 'posted',
+  ) VALUES ($1, $2, $3, $4, $5, 1, $6, $11, 'TWD', 'outflow', 'posted',
             'synthetic-test', 'synthetic-test', 'synthetic-test', $7, 'normal',
-            'active', 'synthetic-test', '2026-09-01', '2026-09-01T12:00:00',
+            'active', 'synthetic-test', $9, $10,
             'Asia/Taipei', 'second', 'source_reported', 'accounting',
             'synthetic-test', $8)`;
-  await store.query(revisionSql, [transactionRevisionOne, transactionOne, bankRecordOne, bankCapture, sourceCommit, "1234", "Seed purchase 1", 0]);
-  await store.query(revisionSql, [transactionRevisionTwo, transactionTwo, bankRecordTwo, bankCapture, sourceCommit, "2345", "Seed purchase 2", 1]);
+  const transactionOneDate = options.transactionOneDate ?? "2026-09-01";
+  await store.query(revisionSql, [transactionRevisionOne, transactionOne, bankRecordOne, bankCapture, sourceCommit, "1234", "Seed purchase 1", 0, transactionOneDate, `${transactionOneDate}T12:00:00`, options.transactionOneScale ?? 2]);
+  await store.query(revisionSql, [transactionRevisionTwo, transactionTwo, bankRecordTwo, bankCapture, sourceCommit, "2345", "Seed purchase 2", 1, "2026-09-01", "2026-09-01T12:00:00", 2]);
   await store.query(
     `INSERT INTO assertions(
        assertion_id, transaction_id, field_name, target_kind, origin,
@@ -200,11 +233,12 @@ async function setupFixture(): Promise<Fixture> {
     provenance_kind, provenance_reference, provenance_source_field,
     revocation_reason, fact_fingerprint
   ) VALUES ($1, $2, $3, $4, $5, $6, 1, 'issued', 'active', $7, NULL,
-            '12345678', $8, $9, 2, 'TWD', $10, '2026-09-01', 'date',
+            '12345678', $8, $9, $15, 'TWD', $10, '2026-09-01', 'date',
             'Asia/Taipei', 'source-reported', 'fixture/source/v1', $11,
             'fixture', $12, NULL, NULL, $13)`;
-  await store.query(invoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1"]);
-  await store.query(invoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2"]);
+  const datedInvoiceRevisionSql = invoiceRevisionSql.replace("'2026-09-01', 'date'", "$14, 'date'");
+  await store.query(datedInvoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", options.invoiceOneAmount ?? "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1", options.invoiceOneDate ?? "2026-09-01", options.invoiceOneScale ?? 2]);
+  await store.query(datedInvoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2", "2026-09-01", 2]);
 
   return {
     database,
@@ -213,6 +247,128 @@ async function setupFixture(): Promise<Fixture> {
     invoiceTwo: textId(invoiceTwo),
     transactionOne: textId(transactionOne),
     transactionTwo: textId(transactionTwo),
+  };
+}
+
+function reportSummary(report: PurchaseReport) {
+  type RecordRow = PurchaseReport["records"][number];
+  const totals = (records: PurchaseReport["records"]) => {
+    const amounts = new Map<string, { coefficient: bigint; scale: number; count: number }>();
+    for (const record of records) {
+      if (!record.amount) continue;
+      const previous = amounts.get(record.amount.currency);
+      if (!previous) {
+        amounts.set(record.amount.currency, {
+          coefficient: BigInt(record.amount.coefficient), scale: record.amount.scale, count: 1,
+        });
+        continue;
+      }
+      const scale = Math.max(previous.scale, record.amount.scale);
+      amounts.set(record.amount.currency, {
+        coefficient: previous.coefficient * 10n ** BigInt(scale - previous.scale)
+          + BigInt(record.amount.coefficient) * 10n ** BigInt(scale - record.amount.scale),
+        scale,
+        count: previous.count + 1,
+      });
+    }
+    return [...amounts].sort(([left], [right]) => left.localeCompare(right)).map(([currency, value]) => ({
+      currency, coefficient: value.coefficient.toString(), scale: value.scale, count: value.count,
+    }));
+  };
+  const months = new Map<string, RecordRow[]>();
+  const days = new Map<string, RecordRow[]>();
+  for (const record of report.records) {
+    const month = record.occurrence.value.slice(0, 7);
+    const day = record.occurrence.value.slice(0, 10);
+    (months.get(month) ?? months.set(month, []).get(month)!).push(record);
+    (days.get(day) ?? days.set(day, []).get(day)!).push(record);
+  }
+  const monthTotals = [...months].sort(([left], [right]) => left.localeCompare(right)).map(([month, records]) => ({
+    month,
+    recordCount: records.length,
+    activeDayCount: new Set(records.map((record) => record.occurrence.value.slice(0, 10))).size,
+    pendingCandidateCount: report.candidates.filter((candidate) => candidate.status === "candidate"
+      && records.some((record) => record.candidateIds.includes(candidate.candidateId))).length,
+    totalsByCurrency: totals(records),
+  }));
+  const dayTotals = [...days].sort(([left], [right]) => left.localeCompare(right)).map(([date, records]) => ({
+    month: date.slice(0, 7), date, recordCount: records.length, totalsByCurrency: totals(records),
+  }));
+  const totalsByCurrency = totals(report.records);
+  return {
+    recordCount: report.records.length,
+    candidateCount: report.candidates.length,
+    pendingCandidateCount: report.candidates.filter((candidate) => candidate.status === "candidate").length,
+    currencies: totalsByCurrency.map((amount) => amount.currency),
+    totalsByCurrency,
+    monthTotals,
+    dayTotals,
+  };
+}
+
+function normalizedSummaryMoney(rows: readonly { currency: string; coefficient: string; scale: number; count: number }[]) {
+  return rows.map((row) => {
+    let coefficient = BigInt(row.coefficient);
+    let scale = row.scale;
+    while (scale > 0 && coefficient % 10n === 0n) {
+      coefficient /= 10n;
+      scale -= 1;
+    }
+    return { ...row, coefficient: coefficient.toString(), scale };
+  });
+}
+
+async function assertSummaryMatches(query: ReturnType<typeof createPGliteSpendingQuery>, report: PurchaseReport) {
+  const summary = await query.summary({ knowledgeAt: report.knowledgeAt });
+  assert.equal(summary.knowledgeAt, report.knowledgeAt);
+  assert.equal(summary.purchaseReport.candidateState, "unloaded");
+  assert.equal(summary.purchaseReport.candidateCount, null);
+  assert.equal(summary.purchaseReport.pendingCandidateCount, null);
+  const expected = reportSummary(report);
+  assert.deepEqual({
+    recordCount: summary.purchaseReport.recordCount,
+    currencies: summary.purchaseReport.currencies,
+    totalsByCurrency: normalizedSummaryMoney(summary.purchaseReport.totalsByCurrency),
+    monthTotals: summary.purchaseReport.monthTotals.map(({ pendingCandidateCount: _pending, totalsByCurrency, ...month }) => ({
+      ...month,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
+    dayTotals: summary.purchaseReport.dayTotals.map(({ totalsByCurrency, ...day }) => ({
+      ...day,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
+  }, {
+    recordCount: expected.recordCount,
+    currencies: expected.currencies,
+    totalsByCurrency: normalizedSummaryMoney(expected.totalsByCurrency),
+    monthTotals: expected.monthTotals.map(({ pendingCandidateCount: _pending, totalsByCurrency, ...month }) => ({
+      ...month,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
+    dayTotals: expected.dayTotals.map(({ totalsByCurrency, ...day }) => ({
+      ...day,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
+  });
+  return summary;
+}
+
+function normalizedCompactSummary(summary: import("../../lib/spending/model.ts").SpendingPurchaseReportSummaryDto) {
+  return {
+    recordCount: summary.recordCount,
+    candidateCount: summary.candidateCount,
+    pendingCandidateCount: summary.pendingCandidateCount,
+    candidateState: summary.candidateState,
+    currencies: summary.currencies,
+    totalsByCurrency: normalizedSummaryMoney(summary.totalsByCurrency),
+    monthTotals: summary.monthTotals.map(({ totalsByCurrency, ...month }) => ({
+      ...month,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
+    dayTotals: summary.dayTotals.map(({ totalsByCurrency, ...day }) => ({
+      ...day,
+      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
+    })),
   };
 }
 
@@ -225,7 +381,39 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     assert.deepEqual(arrayRows.rows, [[7, "ok"]]);
     assert.deepEqual((await fixture.store.query<{ one: number }>("SELECT 7 AS one")).rows, [{ one: 7 }]);
     const before = await query.current();
+    await assertSummaryMatches(query, before.purchaseReport);
     assert.equal(before.purchaseReport.knowledgeAt, 1);
+    const expectedMonthRecords = before.purchaseReport.records
+      .filter((record) => record.occurrence.value.startsWith("2026-09-"))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+    const firstRecordPage = await fixture.store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, {
+      knowledgeAt: before.purchaseReport.knowledgeAt,
+      month: "2026-09",
+      limit: 2,
+    }));
+    assert.deepEqual(firstRecordPage.records.map((record) => record.purchaseId), expectedMonthRecords.slice(0, 2).map((record) => record.purchaseId));
+    assert.ok(firstRecordPage.nextCursor);
+    const secondRecordPage = await fixture.store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, {
+      knowledgeAt: before.purchaseReport.knowledgeAt,
+      month: "2026-09",
+      cursor: firstRecordPage.nextCursor,
+      limit: 2,
+    }));
+    assert.deepEqual(secondRecordPage.records.map((record) => record.purchaseId), expectedMonthRecords.slice(2, 4).map((record) => record.purchaseId));
+    const firstCandidatePage = await query.candidatePage({ knowledgeAt: 1, month: "2026-09", limit: 1 });
+    assert.equal(firstCandidatePage.totalCandidateCount, 2);
+    assert.equal(firstCandidatePage.items.length, 1);
+    assert.ok(firstCandidatePage.nextOffset !== null);
+    assert.ok(firstCandidatePage.items[0]?.invoiceRecord?.candidateIds.includes(firstCandidatePage.items[0]!.candidate.candidateId));
+    const secondCandidatePage = await query.candidatePage({ knowledgeAt: 1, month: "2026-09", offset: firstCandidatePage.nextOffset!, limit: 1 });
+    assert.equal(secondCandidatePage.items.length, 1);
+    assert.notEqual(firstCandidatePage.items[0]?.candidate.candidateId, secondCandidatePage.items[0]?.candidate.candidateId);
+    await assert.rejects(query.candidatePage({ knowledgeAt: 0, month: "2026-09" }), /data version is stale/u);
+    await assert.rejects(fixture.store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, {
+      knowledgeAt: 0,
+      month: "2026-09",
+    })), /data version is stale/u);
     assert.deepEqual(before.purchaseReport.records.map((record) => record.basis), ["invoice", "invoice", "bank-transaction", "bank-transaction"]);
     assert.equal(before.purchaseReport.candidates.length, 2);
     assert.deepEqual(before.purchaseReport.totalsByCurrency, [{ currency: "TWD", coefficient: "7158", scale: 2, count: 4 }]);
@@ -276,6 +464,10 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     );
 
     const afterConfirm = await query.current();
+    const summaryAfterConfirm = await assertSummaryMatches(query, afterConfirm.purchaseReport);
+    assert.deepEqual(summaryAfterConfirm.purchaseReport.totalsByCurrency, [
+      { currency: "TWD", coefficient: "5924", scale: 2, count: 3 },
+    ]);
     assert.deepEqual(applySpendingPurchaseReportPatch(before.purchaseReport, confirmed.patch), afterConfirm.purchaseReport);
     assert.deepEqual(afterConfirm.purchaseReport.records.map((record) => record.basis), ["invoice", "linked", "bank-transaction"]);
     assert.deepEqual(afterConfirm.purchaseReport.totalsByCurrency, [{ currency: "TWD", coefficient: "5924", scale: 2, count: 3 }]);
@@ -284,6 +476,7 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     const denied = await denyPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: candidateTwo.candidateId });
     assert.ok(denied.patch.knowledgeAt > confirmed.patch.knowledgeAt);
     const afterDeny = await query.current();
+    await assertSummaryMatches(query, afterDeny.purchaseReport);
     assert.deepEqual(applySpendingPurchaseReportPatch(afterConfirm.purchaseReport, denied.patch), afterDeny.purchaseReport);
     assert.equal((await query.recognition()).denied.length, 1);
 
@@ -291,6 +484,7 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     const revoked = await revokePGliteSpendingLink(fixture.store, { invoiceId: fixture.invoiceOne, transactionId: fixture.transactionOne });
     assert.ok(revoked.patch.recordOperations.some((operation) => operation.kind === "upsert"));
     const afterRevoke = await query.current();
+    await assertSummaryMatches(query, afterRevoke.purchaseReport);
     assert.deepEqual(applySpendingPurchaseReportPatch(beforeRevoke.purchaseReport, revoked.patch), afterRevoke.purchaseReport);
     assert.equal(afterRevoke.purchaseReport.records.some((record) => record.basis === "linked"), false);
     assert.equal(afterRevoke.purchaseReport.records.filter((record) => record.basis === "invoice").length, 2);
@@ -313,6 +507,11 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     }));
     assert.equal(refund.amount?.coefficient, "-100");
     assert.equal((await query.recognition()).refunds.length, 1);
+    const afterRefund = await query.current();
+    const summaryAfterRefund = await assertSummaryMatches(query, afterRefund.purchaseReport);
+    assert.deepEqual(summaryAfterRefund.purchaseReport.totalsByCurrency, [
+      { currency: "TWD", coefficient: "4713", scale: 2, count: 4 },
+    ]);
     const refundLineage = await query.lineage({ subject: { kind: "refund", id: "fixture-refund" } });
     assert.equal(refundLineage.lineage[0]?.refunds.length, 1);
 
@@ -334,6 +533,71 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     const afterRollback = await query.recognition();
     assert.deepEqual(afterRollback, beforeRollback);
     assert.equal(Number((await fixture.store.query<{ count: string | number }>("SELECT COUNT(*) AS count FROM spending_match_candidates WHERE candidate_key = 'fixture-rollback-candidate'")).rows[0]?.count), 0);
+  } finally {
+    await fixture.store.close();
+  }
+});
+
+test("PGlite Spending summary uses linked payment money instead of the invoice amount", async () => {
+  const fixture = await setupFixture({ invoiceOneAmount: "1134" });
+  try {
+    const query = createPGliteSpendingQuery(fixture.store);
+    const before = await query.current();
+    assert.equal(before.purchaseReport.totalsByCurrency[0]?.coefficient, "7058");
+    await assertSummaryMatches(query, before.purchaseReport);
+
+    await confirmPGliteSpendingCandidate(fixture.store, {
+      kind: "direct",
+      invoiceIdentityId: fixture.invoiceOne,
+      transactionIdentityId: fixture.transactionOne,
+      dataVersion: before.purchaseReport.knowledgeAt,
+    });
+    const after = await query.current();
+    const summary = await assertSummaryMatches(query, after.purchaseReport);
+    assert.deepEqual(summary.purchaseReport.totalsByCurrency, [
+      { currency: "TWD", coefficient: "5924", scale: 2, count: 3 },
+    ]);
+  } finally {
+    await fixture.store.close();
+  }
+});
+
+test("PGlite month candidate pages include invoice-or-payment month and reject an open Pairing version after confirmation", async () => {
+  const fixture = await setupFixture({ invoiceOneDate: "2026-09-30", transactionOneDate: "2026-10-02" });
+  try {
+    const query = createPGliteSpendingQuery(fixture.store);
+    const before = await query.current();
+    const crossMonthCandidate = before.purchaseReport.candidates.find((candidate) =>
+      candidate.invoiceId === fixture.invoiceOne && candidate.transactionId === fixture.transactionOne);
+    assert.ok(crossMonthCandidate);
+
+    const september = await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-09", limit: 20 });
+    const october = await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10", limit: 20 });
+    assert.equal(september.totalCandidateCount, 2);
+    assert.equal(october.totalCandidateCount, 1);
+    const septemberPair = september.items.find((item) => item.candidate.candidateId === crossMonthCandidate.candidateId);
+    const octoberPair = october.items.find((item) => item.candidate.candidateId === crossMonthCandidate.candidateId);
+    assert.ok(septemberPair, "a September invoice keeps the pair in September's pending list");
+    assert.ok(octoberPair, "an October payment keeps the pair in October's pending list");
+    assert.equal(septemberPair.invoiceRecord?.occurrence.value, "2026-09-30");
+    assert.equal(septemberPair.paymentRecord?.occurrence.value, "2026-10-02");
+    assert.equal(octoberPair.invoiceRecord?.occurrence.value, "2026-09-30");
+    assert.equal(octoberPair.paymentRecord?.occurrence.value, "2026-10-02");
+
+    const modalPage = await fixture.store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, {
+      invoiceIdentityId: fixture.invoiceOne,
+      dataVersion: before.purchaseReport.knowledgeAt,
+      limit: 1,
+    }));
+    assert.equal(modalPage.totalCandidateCount, 2, "the invoice modal keeps global transaction coverage across both months");
+    assert.equal(modalPage.candidates[0]?.transactionId, fixture.transactionOne);
+    await confirmPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: crossMonthCandidate.candidateId });
+    await assert.rejects(fixture.store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, {
+      invoiceIdentityId: fixture.invoiceOne,
+      dataVersion: before.purchaseReport.knowledgeAt,
+      limit: 1,
+    })), /data version is stale/u, "an open Pairing page must be invalidated by a newer commit");
+    await assert.rejects(query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10" }), /data version is stale/u);
   } finally {
     await fixture.store.close();
   }
@@ -435,6 +699,109 @@ test("PGlite direct targeted patch preserves a durable candidate's decided row",
     });
     const after = await query.current();
     assert.deepEqual(applySpendingPurchaseReportPatch(before.purchaseReport, result.patch), after.purchaseReport);
+  } finally {
+    await fixture.store.close();
+  }
+});
+
+test("PGlite compact candidate confirmation delta matches exact summary across months and stale versions reject", async () => {
+  const fixture = await setupFixture({
+    invoiceOneAmount: "12340",
+    invoiceOneScale: 3,
+    invoiceOneDate: "2026-09-30",
+    transactionOneDate: "2026-10-02",
+    transactionOneScale: 2,
+  });
+  try {
+    const query = createPGliteSpendingQuery(fixture.store);
+    const current = await query.current();
+    const candidate = current.purchaseReport.candidates.find((entry) =>
+      entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne);
+    assert.ok(candidate);
+    const input = {
+      action: "confirm" as const,
+      kind: "candidate" as const,
+      candidateId: candidate.candidateId,
+      invoiceIdentityId: fixture.invoiceOne,
+      transactionIdentityId: fixture.transactionOne,
+      dataVersion: current.purchaseReport.knowledgeAt,
+    };
+    const { before, result, after } = await assertCompactActionSummaryParity(fixture, input);
+    assert.equal(before.purchaseReport.monthTotals.some((month) => month.month === "2026-10"), true);
+    assert.equal(after.purchaseReport.monthTotals.some((month) => month.month === "2026-10"), false);
+    assert.equal(after.purchaseReport.recordCount, before.purchaseReport.recordCount - 1);
+    assert.deepEqual(result.summaryDelta.before.map((line) => line.date).sort(), ["2026-09-30", "2026-10-02"]);
+    assert.deepEqual(result.summaryDelta.after.map((line) => line.date), ["2026-09-30"]);
+    const linked = result.affectedRecords.find((record) => record.basis === "linked");
+    assert.ok(linked);
+    assert.equal(linked.occurrence.value, "2026-09-30");
+    assert.deepEqual(linked.amount, { coefficient: "1234", scale: 2, currency: "TWD" });
+    assert.equal(result.summaryDelta.after[0]?.amount?.coefficient, "1234");
+    await assert.rejects(applyPGliteSpendingPageAction(fixture.store, input), /data version is stale/u);
+  } finally {
+    await fixture.store.close();
+  }
+});
+
+test("PGlite compact direct confirm and revoke deltas preserve exact amounts and day counts", async () => {
+  const fixture = await setupFixture({
+    invoiceOneAmount: "100001",
+    invoiceOneScale: 3,
+    invoiceOneDate: "2026-09-30",
+    transactionOneDate: "2026-10-02",
+    transactionOneScale: 2,
+  });
+  try {
+    const query = createPGliteSpendingQuery(fixture.store);
+    const current = await query.current();
+    const confirm = await assertCompactActionSummaryParity(fixture, {
+      action: "confirm",
+      kind: "direct",
+      invoiceIdentityId: fixture.invoiceOne,
+      transactionIdentityId: fixture.transactionOne,
+      dataVersion: current.purchaseReport.knowledgeAt,
+    });
+    const linked = confirm.result.affectedRecords.find((record) => record.basis === "linked");
+    assert.ok(linked);
+    assert.deepEqual(linked.amount, { coefficient: "1234", scale: 2, currency: "TWD" });
+    assert.equal(confirm.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-02"), false);
+
+    const revoke = await assertCompactActionSummaryParity(fixture, {
+      action: "revoke",
+      kind: "revoke",
+      invoiceIdentityId: fixture.invoiceOne,
+      transactionIdentityId: fixture.transactionOne,
+      dataVersion: confirm.after.knowledgeAt,
+    });
+    assert.equal(revoke.result.summaryDelta.before.length, 1);
+    assert.equal(revoke.result.summaryDelta.after.length, 2);
+    assert.equal(revoke.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-02"), true);
+    assert.equal(revoke.after.purchaseReport.dayTotals.find((day) => day.date === "2026-10-02")?.recordCount, 1);
+  } finally {
+    await fixture.store.close();
+  }
+});
+
+test("PGlite compact candidate denial advances version without changing exact summary", async () => {
+  const fixture = await setupFixture();
+  try {
+    const query = createPGliteSpendingQuery(fixture.store);
+    const current = await query.current();
+    const candidate = current.purchaseReport.candidates.find((entry) =>
+      entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne);
+    assert.ok(candidate);
+    const { before, result, after } = await assertCompactActionSummaryParity(fixture, {
+      action: "deny",
+      kind: "candidate",
+      candidateId: candidate.candidateId,
+      invoiceIdentityId: fixture.invoiceOne,
+      transactionIdentityId: fixture.transactionOne,
+      dataVersion: current.purchaseReport.knowledgeAt,
+    });
+    assert.ok(result.knowledgeAt > result.baseKnowledgeAt);
+    assert.deepEqual(result.summaryDelta, { before: [], after: [] });
+    assert.deepEqual(normalizedCompactSummary(before.purchaseReport), normalizedCompactSummary(after.purchaseReport));
+    assert.equal(result.affectedRecords.some((record) => record.basis === "linked"), false);
   } finally {
     await fixture.store.close();
   }

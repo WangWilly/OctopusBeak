@@ -90,6 +90,11 @@ import type { AutomationPersistenceProvider } from "../src/lib/automation/server
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { PGliteFinancialPageClient } from "./pglite-financial-registry.ts";
+import type {
+  SpendingCandidatePageRequest,
+  SpendingPageActionRequest,
+  SpendingRecordPageRequest,
+} from "../src/lib/spending/model.ts";
 import { projectFinancialBlock } from "./financial-page-block-loader.ts";
 
 export function registerOctopusBeakIpc({
@@ -174,7 +179,8 @@ export function registerOctopusBeakIpc({
       ? updateHumanAssistanceCompletionForTask(taskId, status, operationalProvider)
       : Promise.resolve(updateHumanAssistanceCompletionForTask(taskId, status));
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
-    for (const window of BrowserWindow.getAllWindows()) {
+    const windows = BrowserWindow.getAllWindows();
+    for (const window of windows) {
       if (!window.isDestroyed()) window.webContents.send("data:invalidated", event);
     }
   });
@@ -186,6 +192,7 @@ export function registerOctopusBeakIpc({
   const financialPages = pgliteFinancial ?? createFinancialPageWorkerClient(
     new Worker(join(__dirname, "financial-page-worker.cjs")),
   );
+  const spendingCandidatePageControllers = new Map<string, AbortController>();
   const ownsFinancialPages = !pgliteFinancial;
   const sharedPgliteWorker = pgliteOperational?.worker;
   const pgliteViewRegistration: PGliteViewIpcRegistration | null = pgliteViews?.enabled
@@ -299,6 +306,36 @@ export function registerOctopusBeakIpc({
         () => financialPages.loadBlock("spending", block, options),
       ),
   );
+  ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
+    if (!pgliteFinancial) throw new Error("Versioned Spending pages are unavailable on the legacy financial provider.");
+    return pgliteFinancial.loadSpendingRecordPage(request);
+  });
+  ipcMain.handle("spending:candidate-page", async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
+    if (!pgliteFinancial) throw new Error("Versioned Spending pages are unavailable on the legacy financial provider.");
+    if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
+      throw new TypeError("Spending candidate page request id is invalid.");
+    if (spendingCandidatePageControllers.has(requestId))
+      throw new Error("Spending candidate page request id is already active.");
+    const controller = new AbortController();
+    spendingCandidatePageControllers.set(requestId, controller);
+    try {
+      return await pgliteFinancial.loadSpendingCandidatePage(request, { signal: controller.signal });
+    } finally {
+      if (spendingCandidatePageControllers.get(requestId) === controller)
+        spendingCandidatePageControllers.delete(requestId);
+    }
+  });
+  ipcMain.handle("spending:candidate-page-cancel", (_event, requestId: string) => {
+    if (typeof requestId !== "string") return false;
+    const controller = spendingCandidatePageControllers.get(requestId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  });
+  ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
+    if (!pgliteFinancial) throw new Error("Compact Spending actions are unavailable on the legacy financial provider.");
+    return pgliteFinancial.applySpendingPageAction(request);
+  });
   ipcMain.handle("spending:pairing-candidates", (_event, input) =>
     financialPages.rankPairingCandidates(input),
   );

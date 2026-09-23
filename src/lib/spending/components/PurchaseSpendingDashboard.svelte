@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
@@ -9,20 +10,43 @@
   import { resolveSpendingPurchaseReport } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
-    type SpendingPurchaseReportView as PurchaseReport,
+    type SpendingPurchaseReportView,
   } from "../purchase-matching.ts";
-  import { spendingPairingReportContext, type SpendingPageDto, type SpendingPairingCandidateView } from "../model.ts";
+  import {
+    reconcileSpendingPageActionSummary,
+    spendingPairingReportContext,
+    type SpendingCandidatePageDto,
+    type SpendingPageDto,
+    type SpendingPageActionResult,
+    type SpendingPairingCandidateView,
+    type SpendingPurchaseReportSummaryDto,
+    type SpendingRecordPageDto,
+    preserveSpendingMonthSelection,
+  } from "../model.ts";
   import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
+
+  type PurchaseReport = SpendingPurchaseReportView & Readonly<{ summary?: SpendingPurchaseReportSummaryDto }>;
 
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 
-  function blockState(key: string): BlockState<DashboardBlockPayload> {
+  function blockState(key: "summary" | "chart" | "list" | "details"): BlockState<DashboardBlockPayload> {
+    if (report.summary) {
+      const data = {
+        canonical: fallbackCanonical,
+        purchaseReport: report as unknown as SpendingPageDto["purchaseReport"],
+        invoices: [],
+      };
+      return {
+        status: "ready",
+        data: { route: "spending", block: key, data } as DashboardBlockPayload,
+      };
+    }
     return blocks[key] ?? { status: "loading" };
   }
 
@@ -36,6 +60,7 @@
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
   let selectedMonth: string | null = null;
+  let chartReady = false;
   let busyAction: string | null = null;
   let actionError = "";
   let pairingFeedback = "";
@@ -47,7 +72,22 @@
   let chartMode: "day" | "month" = "day";
   let selectedCurrency = "";
   let selectedDay: string | null = null;
-  let showAllCandidates = false;
+  let monthCandidateCount: number | null = null;
+  let monthCandidateLoading = false;
+  let recordPageLoading = false;
+  let recordPageNextCursor: string | null = null;
+  let recordPageRecords: readonly PurchaseRecord[] = [];
+  let candidatePageItems: SpendingCandidatePageDto["items"] = [];
+  let candidatePageNextOffset: number | null = null;
+  let candidatePageMonthKey = "";
+  let candidatePageRequestId: string | null = null;
+  let candidatePageTimer: ReturnType<typeof setTimeout> | null = null;
+  let monthDataRequestToken = 0;
+  let candidatePageRequestToken = 0;
+  let requestedMonthDataKey = "";
+  let loadedMonthDataKey = "";
+  let pageError = "";
+  let nextCandidateRequestId = 1;
   let pairingCandidates: readonly SpendingPairingCandidateView[] | null = null;
   let validatedSelectedCandidate: SpendingPairingCandidateView | null = null;
   let pairingDataVersion: number | null = null;
@@ -56,16 +96,30 @@
   let pairingCandidatesLoading = false;
   let pairingRequestToken = 0;
   let pairingPrewarmVersion: number | null = null;
-  const initialPairingCandidateCount = 1;
+  const initialPairingCandidateCount = 50;
   const reportDerivedCache = new WeakMap<object, {
-    months: string[];
-    availableCurrencies: string[];
-    monthTotals: ReturnType<typeof totalsByMonth>;
+    months: readonly string[];
+    availableCurrencies: readonly string[];
+    monthTotals: ReturnType<typeof totalsByMonthFor>;
     pendingCandidates: PurchaseReport["candidates"];
     candidateRecordsByKey: Map<string, PurchaseRecord>;
   }>();
   const reportRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
   const reportVisibleRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
+
+  onMount(() => {
+    let firstFrame = 0;
+    let chartFrame = 0;
+    firstFrame = requestAnimationFrame(() => {
+      chartFrame = requestAnimationFrame(() => {
+        chartReady = true;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(chartFrame);
+    };
+  });
 
   function recordsForMonth(sourceReport: PurchaseReport, month: string | null) {
     const key = month ?? "*";
@@ -101,7 +155,7 @@
     const derived = {
       months: monthsForReport(sourceReport),
       availableCurrencies: currenciesForReport(sourceReport),
-      monthTotals: totalsByMonth(sourceReport.records),
+      monthTotals: totalsByMonthFor(sourceReport),
       pendingCandidates: sourceReport.candidates.filter((candidate) => candidate.status === "candidate"),
       candidateRecordsByKey: candidateRecordsByKeyFor(sourceReport),
     };
@@ -110,10 +164,31 @@
   }
 
   $: if (previousReport !== purchaseReport) {
+    const sameVersionUpdate = Boolean(previousReport && report.summary && purchaseReport.summary
+      && report.knowledgeAt === purchaseReport.knowledgeAt);
+    const selection = preserveSpendingMonthSelection(
+      previousReport?.summary,
+      purchaseReport.summary,
+      selectedMonth,
+      selectedDay,
+    );
     previousReport = purchaseReport;
-    report = purchaseReport;
-    selectedMonth = null;
+    selectedMonth = selection.selectedMonth;
+    selectedDay = selection.selectedDay;
     actionError = "";
+    if (sameVersionUpdate) {
+      // The compact action result already advanced this version locally. The
+      // same-version live publication confirms its summary without discarding
+      // the immediately patched affected row or launching a duplicate page.
+      report = Object.freeze({
+        ...purchaseReport,
+        records: report.records,
+        candidates: report.candidates,
+      });
+    } else {
+      report = purchaseReport;
+      resetMonthPageState();
+    }
   }
   $: if (pairingInvoice?.invoice && pairingDataVersion !== report.knowledgeAt) {
     const currentInvoice = report.records.find((record) =>
@@ -143,6 +218,11 @@
   $: reportDerived = reportDerivedFor(report);
   $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
+  $: if (report.summary && activeMonth) {
+    const key = `${report.knowledgeAt}:${activeMonth}:${selectedDay ?? ""}`;
+    if (key !== requestedMonthDataKey && key !== loadedMonthDataKey)
+      void loadMonthData(report.knowledgeAt, activeMonth, key);
+  }
   $: monthRecords = recordsForMonth(report, activeMonth);
   $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
   $: availableCurrencies = reportDerived.availableCurrencies;
@@ -153,8 +233,8 @@
     const transaction = candidateRecordsByKey.get(`${candidate.candidateId}:transaction`);
     return activeMonth === null || invoice?.occurrence.value.startsWith(`${activeMonth}-`) || transaction?.occurrence.value.startsWith(`${activeMonth}-`);
   });
-  $: visibleCandidates = showAllCandidates ? pendingCandidates : monthCandidates;
-  $: candidateKey = visibleCandidates.map((candidate) => `${candidate.candidateId}:${candidate.status}`).join("\u0001");
+  $: visibleCandidates = monthCandidates;
+  $: candidateKey = `${report.knowledgeAt}:${activeMonth ?? ""}:${monthCandidateCount ?? "unloaded"}`;
   $: if (candidateKey !== previousCandidateKey) {
     previousCandidateKey = candidateKey;
     candidateVisibleCount = Math.min(10, visibleCandidates.length);
@@ -169,14 +249,293 @@
   $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId)
     ?? (validatedSelectedCandidate?.transactionId === selectedPaymentId ? validatedSelectedCandidate : null);
   $: monthTotals = reportDerived.monthTotals;
-  $: visibleTotals = totalsByCurrency(monthRecords);
+  $: visibleTotals = totalsForPeriod(report, activeMonth, selectedDay);
   $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
-  $: spendingDayCount = new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
+  $: monthSummary = report.summary?.monthTotals.find((summary) => summary.month === activeMonth) ?? null;
+  $: periodRecordCount = report.summary
+    ? selectedDay
+      ? report.summary.dayTotals.find((summary) => summary.date === selectedDay)?.recordCount ?? 0
+      : monthSummary?.recordCount ?? 0
+    : visibleRecords.length;
+  $: spendingDayCount = selectedDay
+    ? 1
+    : monthSummary?.activeDayCount ?? new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
   $: recordGroups = groupRecordsByDate(visibleRecords);
   $: chartData = chartMode === "day"
-    ? dailyChartData(monthRecords, activeMonth, selectedCurrency)
+    ? dailyChartDataFor(report, monthRecords, activeMonth, selectedCurrency)
     : monthlyChartData(monthTotals, selectedCurrency);
   $: candidateRecordsByKey = reportDerived.candidateRecordsByKey;
+
+  function cancelPendingCandidatePage(): Promise<void> {
+    const pendingTimer = candidatePageTimer;
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    candidatePageTimer = null;
+    candidatePageRequestToken += 1;
+    monthCandidateLoading = false;
+    const requestId = candidatePageRequestId;
+    candidatePageRequestId = null;
+    if (requestId && typeof window !== "undefined") {
+      return window.octopusBeak.spending.cancelCandidatePage(requestId).then(() => undefined, () => undefined);
+    }
+    return Promise.resolve();
+  }
+
+  function resetMonthPageState() {
+    monthDataRequestToken += 1;
+    void cancelPendingCandidatePage();
+    requestedMonthDataKey = "";
+    loadedMonthDataKey = "";
+    candidatePageMonthKey = "";
+    recordPageLoading = false;
+    recordPageNextCursor = null;
+    recordPageRecords = [];
+    candidatePageItems = [];
+    candidatePageNextOffset = null;
+    monthCandidateCount = null;
+    pageError = "";
+  }
+
+  function publishMonthPageRecords() {
+    if (!report.summary) return;
+    const byId = new Map<string, PurchaseRecord>();
+    for (const record of [...recordPageRecords, ...candidatePageItems.flatMap((item) => [item.invoiceRecord, item.paymentRecord].filter((value): value is PurchaseRecord => value !== null))]) {
+      const prior = byId.get(record.purchaseId);
+      if (!prior) {
+        byId.set(record.purchaseId, record);
+        continue;
+      }
+      byId.set(record.purchaseId, Object.freeze({
+        ...prior,
+        candidateIds: Object.freeze([...new Set([...prior.candidateIds, ...record.candidateIds])]),
+        possibleDuplicate: prior.possibleDuplicate || record.possibleDuplicate,
+      }));
+    }
+    const records = [...byId.values()].sort((left, right) =>
+      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+    const candidates = candidatePageItems.map((item) => item.candidate);
+    const summary = Object.freeze({
+      ...report.summary,
+      monthTotals: Object.freeze(report.summary.monthTotals.map((month) => month.month === activeMonth && monthCandidateCount !== null
+        ? Object.freeze({ ...month, pendingCandidateCount: monthCandidateCount })
+        : month)),
+    });
+    report = Object.freeze({
+      ...report,
+      records: Object.freeze(records),
+      candidates: Object.freeze(candidates),
+      summary,
+    });
+  }
+
+  async function loadMonthData(knowledgeAt: number, month: string, key: string) {
+    if (requestedMonthDataKey === key || loadedMonthDataKey === key) return;
+    requestedMonthDataKey = key;
+    const requestToken = ++monthDataRequestToken;
+    const candidateKeyForMonth = `${knowledgeAt}:${month}`;
+    if (candidatePageMonthKey !== candidateKeyForMonth) {
+      await cancelPendingCandidatePage();
+      if (requestToken !== monthDataRequestToken) return;
+      candidatePageMonthKey = candidateKeyForMonth;
+      candidatePageItems = [];
+      candidatePageNextOffset = null;
+      monthCandidateCount = null;
+      publishMonthPageRecords();
+    }
+    recordPageLoading = true;
+    pageError = "";
+    recordPageRecords = [];
+    recordPageNextCursor = null;
+    publishMonthPageRecords();
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = page.records;
+      recordPageNextCursor = page.nextCursor;
+      loadedMonthDataKey = key;
+      publishMonthPageRecords();
+      scheduleCandidatePageLoad(knowledgeAt, month, candidateKeyForMonth);
+    } catch (error) {
+      if (requestToken === monthDataRequestToken) {
+        pageError = error instanceof Error ? error.message : String(error);
+        requestedMonthDataKey = "";
+      }
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
+
+  function scheduleCandidatePageLoad(knowledgeAt: number, month: string, key: string) {
+    if (pairingInvoice || monthCandidateCount !== null || candidatePageTimer !== null || candidatePageRequestId !== null) return;
+    candidatePageTimer = setTimeout(() => {
+      candidatePageTimer = null;
+      void fetchCandidatePage(knowledgeAt, month, key, 0);
+    }, 1_200);
+  }
+
+  async function fetchCandidatePage(knowledgeAt: number, month: string, key: string, offset: number) {
+    if (pairingInvoice || candidatePageMonthKey !== key || report.knowledgeAt !== knowledgeAt) return;
+    const requestToken = ++candidatePageRequestToken;
+    const requestId = `spending-candidates-${nextCandidateRequestId++}`;
+    candidatePageRequestId = requestId;
+    monthCandidateLoading = true;
+    try {
+      const page: SpendingCandidatePageDto = await window.octopusBeak.spending.loadCandidatePage({
+        knowledgeAt,
+        month,
+        offset,
+        limit: 50,
+      }, requestId);
+      if (requestToken !== candidatePageRequestToken || pairingInvoice || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      candidatePageItems = offset === 0 ? page.items : Object.freeze([...candidatePageItems, ...page.items]);
+      candidatePageNextOffset = page.nextOffset;
+      monthCandidateCount = page.totalCandidateCount;
+      publishMonthPageRecords();
+    } catch (error) {
+      if (requestToken === candidatePageRequestToken) {
+        pageError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      if (candidatePageRequestId === requestId) candidatePageRequestId = null;
+      if (requestToken === candidatePageRequestToken) monthCandidateLoading = false;
+    }
+  }
+
+  async function loadMoreRecords() {
+    if (!recordPageNextCursor || !activeMonth || !report.summary || recordPageLoading) return;
+    const knowledgeAt = report.knowledgeAt;
+    const month = activeMonth;
+    const requestToken = monthDataRequestToken;
+    recordPageLoading = true;
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
+        cursor: recordPageNextCursor,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = Object.freeze([...recordPageRecords, ...page.records]);
+      recordPageNextCursor = page.nextCursor;
+      publishMonthPageRecords();
+    } catch (error) {
+      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
+        pageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
+
+  async function showMoreCandidates() {
+    const nextCount = candidateVisibleCount + 10;
+    if (nextCount > visibleCandidates.length && candidatePageNextOffset !== null && activeMonth && report.summary) {
+      await fetchCandidatePage(report.knowledgeAt, activeMonth, candidatePageMonthKey, candidatePageNextOffset);
+    }
+    candidateVisibleCount = Math.min(nextCount, monthCandidateCount ?? visibleCandidates.length);
+  }
+
+  function acceptCompactPageAction(result: SpendingPageActionResult) {
+    if (!report.summary) {
+      if (report.knowledgeAt >= result.knowledgeAt) return;
+      throw new Error("Spending changed while applying the pairing result. Reload the selected month.");
+    }
+    const reconciliation = reconcileSpendingPageActionSummary(report.summary, report.knowledgeAt, result);
+    if (reconciliation.state === "newer-live-version") return;
+    const liveAlreadyPublishedAction = reconciliation.state === "already-current";
+    const month = activeMonth;
+    const day = selectedDay && month && selectedDay.startsWith(`${month}-`) ? selectedDay : null;
+    const summary = reconciliation.summary;
+    const matchesPair = (record: PurchaseRecord) =>
+      record.invoice?.invoiceId === result.invoiceIdentityId ||
+      record.transaction?.transactionId === result.transactionIdentityId;
+    const matchesView = (record: PurchaseRecord) =>
+      (month === null || record.occurrence.value.startsWith(`${month}-`))
+      && (day === null || record.occurrence.value.startsWith(day));
+    const nextRecords = Object.freeze([
+      ...recordPageRecords.filter((record) => !matchesPair(record)),
+      ...result.affectedRecords.filter((record) => matchesView(record as PurchaseRecord)),
+    ].sort((left, right) =>
+      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
+    const nextReport = Object.freeze({
+      ...report,
+      knowledgeAt: result.knowledgeAt,
+      totalsByCurrency: summary.totalsByCurrency,
+      summary,
+      records: nextRecords,
+      candidates: Object.freeze([]),
+    }) as PurchaseReport;
+    const monthKey = month ? `${result.knowledgeAt}:${month}:${day ?? ""}` : "";
+    const currentPageRequestPending = liveAlreadyPublishedAction
+      && requestedMonthDataKey === monthKey
+      && loadedMonthDataKey !== monthKey;
+    if (!liveAlreadyPublishedAction) monthDataRequestToken += 1;
+    const requestToken = monthDataRequestToken;
+    void cancelPendingCandidatePage();
+    candidatePageItems = [];
+    candidatePageNextOffset = null;
+    candidatePageMonthKey = month ? `${result.knowledgeAt}:${month}` : "";
+    monthCandidateCount = null;
+    recordPageRecords = nextRecords;
+    recordPageNextCursor = null;
+    if (!liveAlreadyPublishedAction) {
+      recordPageLoading = Boolean(month);
+      requestedMonthDataKey = monthKey;
+      loadedMonthDataKey = "";
+    }
+    pageError = "";
+    report = nextReport;
+    selectedMonth = month;
+    fallbackCanonical = Object.freeze({
+      ...fallbackCanonical,
+      availability: summary.recordCount > 0 ? "available" : "empty",
+      knowledgePoint: result.knowledgeAt,
+      totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
+        currency: amount.currency,
+        value: exactToNumber(amount),
+        exact: { coefficient: amount.coefficient, scale: amount.scale },
+      })),
+      totalStatus: "complete",
+    });
+    if (month && liveAlreadyPublishedAction && !currentPageRequestPending) {
+      recordPageLoading = true;
+      void refreshRecordsAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+    } else if (month && !liveAlreadyPublishedAction) {
+      void refreshRecordsAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+    }
+  }
+
+  async function refreshRecordsAfterAction(
+    knowledgeAt: number,
+    month: string,
+    day: string | null,
+    key: string,
+    requestToken: number,
+  ) {
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = page.records;
+      recordPageNextCursor = page.nextCursor;
+      loadedMonthDataKey = key;
+      publishMonthPageRecords();
+      scheduleCandidatePageLoad(knowledgeAt, month, `${knowledgeAt}:${month}`);
+    } catch (error) {
+      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
+        pageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
 
   function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
     return {
@@ -259,7 +618,8 @@
   }
 
   function monthsForReport(sourceReport: PurchaseReport) {
-    return [...new Set(sourceReport.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+    return sourceReport.summary?.monthTotals.map((month) => month.month)
+      ?? [...new Set(sourceReport.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
   }
 
   function activeMonthForReport(sourceReport: PurchaseReport, preferred: string | null) {
@@ -270,7 +630,6 @@
   function purchaseListView(
     sourceReport: PurchaseReport,
     preferredMonth: string | null,
-    showAll: boolean,
     visibleCount: number,
   ) {
     const active = activeMonthForReport(sourceReport, preferredMonth);
@@ -283,7 +642,7 @@
         || invoice?.occurrence.value.startsWith(`${active}-`)
         || transaction?.occurrence.value.startsWith(`${active}-`);
     });
-    const visible = showAll ? pending : month;
+    const visible = month;
     return {
       pending,
       month,
@@ -301,12 +660,53 @@
   ) {
     const active = activeMonthForReport(sourceReport, preferredMonth);
     return mode === "day"
-      ? dailyChartData(sourceReport.records, active, currency)
-      : monthlyChartData(totalsByMonth(sourceReport.records), currency);
+      ? dailyChartDataFor(sourceReport, sourceReport.records, active, currency)
+      : monthlyChartData(totalsByMonthFor(sourceReport), currency);
   }
 
   function currenciesForReport(sourceReport: PurchaseReport) {
-    return [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+    return sourceReport.summary?.currencies
+      ?? [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+  }
+
+  function totalsByMonthFor(sourceReport: PurchaseReport) {
+    return sourceReport.summary
+      ? sourceReport.summary.monthTotals.flatMap((month) => month.totalsByCurrency.map((amount) => ({ month: month.month, amount })))
+      : totalsByMonth(sourceReport.records);
+  }
+
+  function totalsForPeriod(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+    if (sourceReport.summary) {
+      if (day) return sourceReport.summary.dayTotals.find((row) => row.date === day)?.totalsByCurrency ?? [];
+      return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
+    }
+    return totalsByCurrency(day
+      ? sourceReport.records.filter((record) => record.occurrence.value.startsWith(day))
+      : sourceReport.records.filter((record) => month === null || record.occurrence.value.startsWith(`${month}-`)));
+  }
+
+  function dailyChartDataFor(
+    sourceReport: PurchaseReport,
+    records: readonly PurchaseRecord[],
+    month: string | null,
+    currency: string,
+  ) {
+    if (sourceReport.summary && month) {
+      const [year, monthNumber] = month.split("-").map(Number);
+      if (!year || !monthNumber) return [];
+      const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+      const totals = new Map(sourceReport.summary.dayTotals
+        .filter((row) => row.month === month)
+        .flatMap((row) => row.totalsByCurrency
+          .filter((amount) => amount.currency === currency)
+          .map((amount) => [row.date, exactToNumber(amount)] as const)));
+      return Array.from({ length: days }, (_, index) => {
+        const date = `${month}-${String(index + 1).padStart(2, "0")}`;
+        const value = totals.get(date) ?? 0;
+        return { key: date, label: `${monthNumber}/${index + 1}`, value, tone: value < 0 ? "refund" as const : "spend" as const };
+      });
+    }
+    return dailyChartData(records, month, currency);
   }
 
   function totalsByMonth(records: readonly PurchaseRecord[]) {
@@ -405,7 +805,6 @@
   function chooseMonth(month: string) {
     selectedMonth = month;
     selectedDay = null;
-    showAllCandidates = false;
   }
 
   function selectChartPeriod(key: string) {
@@ -438,8 +837,24 @@
     actionError = "";
     try {
       const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
-      const invoiceRecord = candidate ? candidateRecord(candidate.candidateId, "invoice") : null;
-      const paymentRecord = candidate ? candidateRecord(candidate.candidateId, "transaction") : null;
+      const recordsByKey = candidateRecordsByKeyFor(report);
+      const invoiceRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null : null;
+      const paymentRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null : null;
+      if (report.summary) {
+        if (!candidate || !invoiceRecord?.invoice || !paymentRecord?.transaction)
+          throw new Error($t.purchaseSpending.pairingSelectionUnavailable);
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: action === "confirmCandidate" ? "confirm" : "deny",
+          kind: "candidate",
+          candidateId,
+          invoiceIdentityId: invoiceRecord.invoice.invoiceId,
+          transactionIdentityId: paymentRecord.transaction.transactionId,
+          dataVersion: report.knowledgeAt,
+        });
+        acceptCompactPageAction(result);
+        selectedMonth = activeMonth;
+        return;
+      }
       const context = candidate && invoiceRecord && paymentRecord
         ? spendingPairingReportContext(report, invoiceRecord, paymentRecord, candidateId) : null;
       const request = candidate && context ? {
@@ -476,10 +891,13 @@
     pairingCandidatesLoading = true;
     const requestToken = ++pairingRequestToken;
     actionError = "";
-    void loadPairingCandidates(record, requestToken);
+    void cancelPendingCandidatePage().then(() => {
+      if (requestToken === pairingRequestToken && pairingInvoice?.invoice?.invoiceId === record.invoice?.invoiceId)
+        void loadPairingCandidates(record, requestToken);
+    });
   }
 
-  function closePairing() {
+  function closePairing(reloadMonthCandidates = true) {
     pairingRequestToken += 1;
     pairingInvoice = null;
     pairingDataVersion = null;
@@ -490,6 +908,8 @@
     pairingCandidateTotal = 0;
     pairingNextOffset = null;
     pairingCandidatesLoading = false;
+    if (reloadMonthCandidates && report.summary && activeMonth)
+      scheduleCandidatePageLoad(report.knowledgeAt, activeMonth, candidatePageMonthKey);
   }
 
   async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
@@ -572,8 +992,20 @@
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
     if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading) return;
     busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-    actionError = "";
+      actionError = "";
     try {
+      if (report.summary) {
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: "confirm",
+          kind: "direct",
+          invoiceIdentityId,
+          transactionIdentityId: selectedPaymentId,
+          dataVersion: report.knowledgeAt,
+        });
+        closePairing(false);
+        acceptCompactPageAction(result);
+        return;
+      }
       const paymentRecord = report.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === selectedPaymentId);
       const pairCandidate = report.candidates.find((candidate) =>
         candidateRecord(candidate.candidateId, "invoice")?.invoice?.invoiceId === invoiceIdentityId &&
@@ -602,6 +1034,18 @@
     busyAction = action;
     actionError = "";
     try {
+      if (report.summary) {
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: "revoke",
+          kind: "revoke",
+          invoiceIdentityId: record.link.invoiceId,
+          transactionIdentityId: record.link.transactionId,
+          dataVersion: report.knowledgeAt,
+        });
+        acceptCompactPageAction(result);
+        selectedMonth = activeMonth;
+        return;
+      }
       const next = await window.octopusBeak.spending.revokeLink({
         invoiceId: record.link.invoiceId,
         transactionId: record.link.transactionId,
@@ -629,7 +1073,7 @@
   title={$t.spending.title}
   sideLabel={$t.purchaseSpending.monthlyTotal}
   sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "--"}
-  sideSub={report.totalStatus === "includes-pending-confirmation"
+  sideSub={(report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : report.totalStatus === "includes-pending-confirmation")
     ? $t.purchaseSpending.includesPending
     : $t.purchaseSpending.purchaseBasisTotal}
 >
@@ -639,15 +1083,23 @@
         <h2>{$t.purchaseSpending.basisTitle}</h2>
         <p>{$t.purchaseSpending.basisDescription}</p>
       </div>
-      <span class="purchase-total-status" data-total-status={report.totalStatus}>
-        {report.totalStatus === "includes-pending-confirmation"
-          ? $t.purchaseSpending.pendingCountWarning(pendingCandidates.length)
-          : $t.purchaseSpending.allSourcesConfirmed}
+      <span class="purchase-total-status" data-total-status={report.summary
+        ? monthCandidateCount === null ? "month-pending-unloaded" : monthCandidateCount > 0 ? "includes-pending-confirmation" : "month-clear"
+        : report.totalStatus}>
+        {report.summary
+          ? monthCandidateCount === null
+            ? $t.purchaseSpending.preparingCandidates
+            : monthCandidateCount > 0
+              ? $t.purchaseSpending.pendingCountWarning(monthCandidateCount)
+              : $t.purchaseSpending.noPendingMatches
+          : report.totalStatus === "includes-pending-confirmation"
+            ? $t.purchaseSpending.pendingCountWarning(pendingCandidates.length)
+            : $t.purchaseSpending.allSourcesConfirmed}
       </span>
     </section>
 
-    {#if actionError}
-      <section class="card purchase-action-error" role="alert">{actionError}</section>
+    {#if actionError || pageError}
+      <section class="card purchase-action-error" role="alert">{actionError || pageError}</section>
     {/if}
 
     <div class="purchase-analysis-grid">
@@ -674,9 +1126,9 @@
           <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
         </div>
         <dl class="summary-facts">
-          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd>{monthRecords.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd>{monthSummary?.recordCount ?? monthRecords.length}</dd></div>
           <div><dt>{$t.purchaseSpending.activeDays}</dt><dd>{spendingDayCount}</dd></div>
-          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd>{monthCandidates.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd>{monthCandidateCount ?? monthSummary?.pendingCandidateCount ?? "—"}</dd></div>
         </dl>
         {#if availableCurrencies.length > 1}
           <div class="currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
@@ -685,7 +1137,7 @@
             {/each}
           </div>
         {/if}
-        {#if (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
+        {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
           <p class="pending-total-note" data-pending-total>{$t.purchaseSpending.pendingTotalNote}</p>
         {/if}
       </section>
@@ -707,12 +1159,16 @@
             <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$t.purchaseSpending.monthly}</button>
           </div>
         </div>
-        <PurchaseActivityBarChart
-          data={blockChartData}
-          selectedKey={chartMode === "day" ? selectedDay : activeMonth}
-          label={chartMode === "day" ? $t.purchaseSpending.dailyAmount : $t.purchaseSpending.monthlyAmount}
-          onSelect={selectChartPeriod}
-        />
+        {#if chartReady}
+          <PurchaseActivityBarChart
+            data={blockChartData}
+            selectedKey={chartMode === "day" ? selectedDay : activeMonth}
+            label={chartMode === "day" ? $t.purchaseSpending.dailyAmount : $t.purchaseSpending.monthlyAmount}
+            onSelect={selectChartPeriod}
+          />
+        {:else}
+          <div class="purchase-chart-pending" aria-hidden="true"></div>
+        {/if}
         <label class="chart-period-picker">
           <span>{chartMode === "day" ? $t.purchaseSpending.chooseDay : $t.purchaseSpending.chooseMonth}</span>
           <select
@@ -734,22 +1190,23 @@
     </div>
 
     <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
-    {@const listReport = resolveSpendingPurchaseReport(report, spendingBlockData("list", data))}
-    {@const listView = purchaseListView(listReport, activeMonth, showAllCandidates, candidateVisibleCount)}
-    {#if listView.pending.length > 0}
+    {@const listReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("list", data))}
+    {@const listView = purchaseListView(listReport, activeMonth, candidateVisibleCount)}
+    {#if listView.pending.length > 0 || report.summary && (monthCandidateCount === null || monthCandidateLoading)}
       <section class="card purchase-candidates-card" data-candidates>
         <div class="section-heading">
           <div><h2>{$t.purchaseSpending.pendingMatches}</h2><p>{$t.purchaseSpending.pendingMatchesDescription}</p></div>
           <div class="candidate-scope">
-            <span>{$t.purchaseSpending.itemsCount(listView.visible.length)}</span>
-            {#if listView.pending.length !== listView.month.length}
-              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? $t.purchaseSpending.thisMonth : $t.purchaseSpending.viewAllCount(listView.pending.length)}</button>
+            {#if report.summary && monthCandidateCount === null}
+              <span role="status">{$t.purchaseSpending.preparingCandidates}</span>
+            {:else}
+              <span>{$t.purchaseSpending.itemsCount(report.summary ? monthCandidateCount ?? 0 : listView.visible.length)}</span>
             {/if}
           </div>
         </div>
         <div class="candidate-list">
           {#if listView.visible.length === 0}
-            <p class="candidate-empty">{$t.purchaseSpending.noPendingMatches}</p>
+            <p class="candidate-empty" role={monthCandidateLoading ? "status" : undefined}>{monthCandidateLoading ? $t.purchaseSpending.preparingCandidates : $t.purchaseSpending.noPendingMatches}</p>
           {/if}
           {#each listView.rows as candidate (candidate.candidateId)}
             {@const invoiceRecord = listView.recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null}
@@ -772,8 +1229,8 @@
               </div>
             </article>
           {/each}
-          {#if listView.visible.length > candidateVisibleCount}
-            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$t.purchaseSpending.showMore}</button>
+          {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > candidateVisibleCount : listView.visible.length > candidateVisibleCount}
+            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => report.summary ? void showMoreCandidates() : candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$t.purchaseSpending.showMore}</button>
           {/if}
         </div>
       </section>
@@ -781,7 +1238,7 @@
     </ProgressiveBlock>
 
     <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
-    {@const detailsReport = resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
+    {@const detailsReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
     {@const detailsActiveMonth = activeMonthForReport(detailsReport, activeMonth)}
     {@const detailsMonthRecords = detailsReport.records.filter((record) => detailsActiveMonth === null || record.occurrence.value.startsWith(`${detailsActiveMonth}-`))}
     {@const detailsVisibleRecords = detailsMonthRecords
@@ -791,7 +1248,7 @@
     {@const detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords)}
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
-        <div><h2>{$t.purchaseSpending.purchases}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : $t.purchaseSpending.allRecords} · {$t.purchaseSpending.recordsCount(detailsVisibleRecords.length)}</p></div>
+        <div><h2>{$t.purchaseSpending.purchases}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : $t.purchaseSpending.allRecords} · {$t.purchaseSpending.recordsCount(periodRecordCount)}</p></div>
         {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$t.purchaseSpending.showFullMonth}</button>{/if}
       </div>
       <div class="purchase-record-list">
@@ -835,6 +1292,11 @@
           </section>
         {:else}<div class="purchase-empty"><strong>{$t.purchaseSpending.noPurchases}</strong><span>{$t.purchaseSpending.chooseOtherPeriod}</span></div>{/each}
       </div>
+      {#if recordPageNextCursor}
+        <button type="button" class="button secondary" disabled={recordPageLoading} data-load-more-records onclick={() => void loadMoreRecords()}>
+          {recordPageLoading ? $t.common.loading : $t.purchaseSpending.showMore}
+        </button>
+      {/if}
     </section>
     </ProgressiveBlock>
 
@@ -843,7 +1305,7 @@
         <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title" aria-busy={busyAction !== null}>
           <div class="panel-title">
             <div><p class="eyebrow">{$t.purchaseSpending.manualMatch}</p><h2 id="pairing-title">{$t.purchaseSpending.choosePayment}</h2></div>
-            <button type="button" class="button secondary" onclick={closePairing}>{$t.common.close}</button>
+            <button type="button" class="button secondary" onclick={() => closePairing()}>{$t.common.close}</button>
           </div>
           <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
           {#if pairingFeedback}<p class="panel-meta pairing-feedback" role="status">{pairingFeedback}</p>{/if}
@@ -851,7 +1313,7 @@
             <strong>{recordLabel(pairingInvoice)}</strong>
             <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
           </div>
-          <fieldset class="payment-options">
+          <fieldset class="payment-options" data-total-candidate-count={pairingCandidateTotal} data-loaded-candidate-count={pairingCandidates?.length ?? 0}>
             <legend>{$t.purchaseSpending.eligiblePayments}</legend>
             {#if pairingCandidatesLoading}
               <span class="panel-meta pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.preparingCandidates}</span>
@@ -925,6 +1387,7 @@
   .currency-switch button[aria-pressed="true"], .chart-mode-switch button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 2px 8px rgb(15 23 42 / 0.08); }
   .pending-total-note, .purchase-canonical-note { margin: var(--space-4) 0 0; color: var(--muted); font-size: 12px; }
   .chart-heading { margin-bottom: var(--space-3); }
+  .purchase-chart-pending { min-height: 280px; }
   .chart-period-picker { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); color: var(--muted); font-size: 11px; }
   .chart-period-picker select { min-height: 32px; max-width: 210px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
   .chart-hint { margin: var(--space-2) 0 0; color: var(--muted); font-size: 11px; text-align: center; }

@@ -3,6 +3,7 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import {
   cachedPGliteSpendingSnapshot,
   queryCurrentSpending,
+  queryCurrentSpendingActionRecords,
   queryPGliteSpendingRecognitionPair,
   queryPGliteSpendingDirectPair,
   querySpendingRecognition,
@@ -23,12 +24,15 @@ import type {
 } from "../canonical/spending-recognition.ts";
 import {
   evaluateSpendingMatchCandidates,
-} from "../canonical/spending-purchase-report.ts";
+} from "../canonical/spending-purchase-report-core.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
   SpendingLinkActionInput,
   SpendingPurchaseActionResult,
+  SpendingPageActionRequest,
+  SpendingPageActionResult,
+  SpendingSummaryDeltaLine,
 } from "../../lib/spending/model.ts";
 import { createSpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import type { SpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
@@ -657,6 +661,147 @@ async function candidateAction(
   });
 }
 
+/**
+ * Apply a visible month-page decision without rebuilding the 100k-row report.
+ * Pair facts, candidate identity, and the data version are all revalidated in
+ * the write transaction. The returned compact page is captured at the commit
+ * version; the renderer then reloads only its visible month records.
+ */
+export async function applyPGliteSpendingPageAction(
+  writer: PGliteSpendingWriter,
+  input: SpendingPageActionRequest,
+): Promise<SpendingPageActionResult> {
+  const result = await writer.transaction(async (transaction) => {
+    const current = await latest(transaction);
+    if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
+      throw new Error("Spending action data version is stale; reload Spending before pairing.");
+
+    let summaryBefore: readonly SpendingSummaryDeltaLine[] = Object.freeze([]);
+    if (input.kind === "revoke") {
+      const beforeRecords = await queryCurrentSpendingActionRecords(transaction, {
+        knowledgeAt: current,
+        invoiceIdentityId: input.invoiceIdentityId,
+        transactionIdentityId: input.transactionIdentityId,
+      });
+      const linkedRecord = beforeRecords.find((record) => record.basis === "linked");
+      if (!linkedRecord) throw new Error("Spending revoke selection is stale or no longer linked.");
+      summaryBefore = Object.freeze([summaryLineFromRecord(linkedRecord)]);
+      await revokePGliteSpendingDedupLink(transaction, {
+        invoiceId: input.invoiceIdentityId,
+        transactionId: input.transactionIdentityId,
+        decisionKey: `spending/user/revoke/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+        origin: { kind: "user", userId: LOCAL_USER_ID },
+        evidenceKnowledgeSequence: current,
+        evidence: { reason: "user-revoked-link" },
+      });
+    } else if (input.kind === "direct") {
+      const { invoice, payment } = await queryPGliteSpendingDirectPair(
+        transaction,
+        input.invoiceIdentityId,
+        input.transactionIdentityId,
+        current,
+      );
+      summaryBefore = Object.freeze([
+        summaryLine(invoice.revision.occurrence.value, invoice.revision.total),
+        summaryLine(payment.effectiveOn, payment.amount),
+      ]);
+      await confirmPGliteSpendingDedupLink(transaction, {
+        invoiceIdentityId: input.invoiceIdentityId,
+        transactionIdentityId: input.transactionIdentityId,
+        decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+        userId: LOCAL_USER_ID,
+        evidenceKnowledgeSequence: current,
+        evidence: {
+          decisionOrigin: "explicit-user-selection",
+          invoice: { identityId: invoice.invoiceId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
+          payment: { identityId: payment.transactionId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
+        },
+      });
+    } else {
+      const resolved = await resolvePGliteSpendingCandidate(transaction, input.candidateId, {
+        invoiceId: input.invoiceIdentityId,
+        transactionId: input.transactionIdentityId,
+      });
+      if (input.action === "confirm") {
+        const { invoice, payment } = await queryPGliteSpendingDirectPair(
+          transaction,
+          input.invoiceIdentityId,
+          input.transactionIdentityId,
+          current,
+        );
+        summaryBefore = Object.freeze([
+          summaryLine(invoice.revision.occurrence.value, invoice.revision.total),
+          summaryLine(payment.effectiveOn, payment.amount),
+        ]);
+      }
+      const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
+        invoiceId: resolved.candidate.invoiceId,
+        transactionId: resolved.candidate.transactionId,
+        candidateKey: resolved.candidate.candidateKey,
+        algorithm: resolved.candidate.algorithm,
+        algorithmVersion: resolved.candidate.algorithmVersion,
+        similarityEvidence: resolved.candidate.similarityEvidence,
+      });
+      const decision: SpendingDecisionInput = {
+        invoiceId: resolved.candidate.invoiceId,
+        transactionId: resolved.candidate.transactionId,
+        decisionKey: `spending/user/${input.action}/${resolved.candidate.candidateKey}`,
+        origin: { kind: "user", userId: LOCAL_USER_ID },
+        evidenceKnowledgeSequence: Math.max(current, materialized.commitSequence),
+        evidence: {
+          candidateKey: resolved.candidate.candidateKey,
+          algorithm: resolved.candidate.algorithm,
+          algorithmVersion: resolved.candidate.algorithmVersion,
+          similarityEvidence: resolved.candidate.similarityEvidence,
+          decisionOrigin: "local-user",
+        },
+      };
+      if (input.action === "confirm") await confirmPGliteSpendingDedupLink(transaction, decision);
+      else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
+    }
+
+    const knowledgeAt = await latest(transaction);
+    const affectedRecords = await queryCurrentSpendingActionRecords(transaction, {
+      knowledgeAt,
+      invoiceIdentityId: input.invoiceIdentityId,
+      transactionIdentityId: input.transactionIdentityId,
+    });
+    const summaryAfter = input.action === "deny"
+      ? Object.freeze([])
+      : Object.freeze(affectedRecords.map(summaryLineFromRecord));
+    if (input.action === "confirm" && !affectedRecords.some((record) => record.basis === "linked"))
+      throw new Error("Spending confirmation did not produce its linked record.");
+    if (input.action === "revoke" && affectedRecords.some((record) => record.basis === "linked"))
+      throw new Error("Spending revoke did not restore standalone records.");
+    return Object.freeze({
+      action: input.action,
+      kind: input.kind,
+      baseKnowledgeAt: current,
+      knowledgeAt,
+      invoiceIdentityId: input.invoiceIdentityId,
+      transactionIdentityId: input.transactionIdentityId,
+      summaryDelta: Object.freeze({ before: summaryBefore, after: summaryAfter }),
+      affectedRecords,
+    });
+  });
+  return result;
+}
+
+function summaryLine(
+  date: string,
+  amount: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
+): SpendingSummaryDeltaLine {
+  return Object.freeze({ date: date.slice(0, 10), amount });
+}
+
+function summaryLineFromRecord(
+  record: SpendingPageActionResult["affectedRecords"][number],
+): SpendingSummaryDeltaLine {
+  return summaryLine(record.occurrence.value, record.amount
+    ? { currency: record.amount.currency, coefficient: record.amount.coefficient, scale: record.amount.scale }
+    : null);
+}
+
 export function confirmPGliteSpendingCandidate(writer: PGliteSpendingWriter, input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult> {
   if (input.kind === "candidate") return candidateAction(writer, input, "confirmed");
   return writer.transaction(async (transaction) => {
@@ -758,6 +903,7 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     confirmCandidate: (input: SpendingConfirmActionInput) => confirmPGliteSpendingCandidate(writer, input),
     denyCandidate: (input: SpendingCandidateActionInput) => denyPGliteSpendingCandidate(writer, input),
     revokeLink: (input: SpendingLinkActionInput) => revokePGliteSpendingLink(writer, input),
+    pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
   });
 }
 

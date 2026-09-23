@@ -13,7 +13,355 @@ export type { SpendingPurchaseActionResult } from "./purchase-report-patch.ts";
  * canonical typed report instead of flattening exact money or source evidence
  * into presentation-only numbers.
  */
-export type SpendingPurchaseReportDto = PurchaseReport;
+export type SpendingPurchaseReportSummaryDto = Readonly<{
+  recordCount: number;
+  /** Counts are null until the version-bound candidate view is loaded. */
+  candidateCount: number | null;
+  pendingCandidateCount: number | null;
+  candidateState: "unloaded" | "ready";
+  currencies: readonly string[];
+  totalsByCurrency: readonly Readonly<{
+    currency: string;
+    coefficient: string;
+    scale: number;
+    count: number;
+  }> [];
+  monthTotals: readonly Readonly<{
+    month: string;
+    recordCount: number;
+    activeDayCount: number;
+    pendingCandidateCount: number | null;
+    totalsByCurrency: readonly Readonly<{
+      currency: string;
+      coefficient: string;
+      scale: number;
+      count: number;
+    }> [];
+  }> [];
+  dayTotals: readonly Readonly<{
+    month: string;
+    date: string;
+    recordCount: number;
+    totalsByCurrency: readonly Readonly<{
+      currency: string;
+      coefficient: string;
+      scale: number;
+      count: number;
+    }> [];
+  }> [];
+}>;
+
+export type SpendingPurchaseReportDto = PurchaseReport & Readonly<{
+  /** Present on the compact active-page response; omitted by legacy full reads. */
+  summary?: SpendingPurchaseReportSummaryDto;
+}>;
+
+/** Compact current-page envelope. Its knowledge point is shared by every
+ * record and candidate page requested from this summary. */
+export type SpendingSummaryDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  availability: "empty" | "available";
+  inclusionPolicy: Readonly<{ id: "gross-posted-outflow"; version: "v1"; name: "Gross posted outflow" }>;
+  purchaseReport: SpendingPurchaseReportSummaryDto & Readonly<{
+    kind: "current";
+    financialAt: null;
+    status: "ok";
+    totalStatus: "complete" | "includes-pending-confirmation";
+  }>;
+  }>;
+
+/** Preserve a user's month/day selection when a compact summary version changes. */
+export function preserveSpendingMonthSelection(
+  previousSummary: Pick<SpendingPurchaseReportSummaryDto, "monthTotals"> | undefined,
+  nextSummary: Pick<SpendingPurchaseReportSummaryDto, "monthTotals"> | undefined,
+  selectedMonth: string | null,
+  selectedDay: string | null,
+): Readonly<{ selectedMonth: string | null; selectedDay: string | null }> {
+  if (!previousSummary || !nextSummary) return { selectedMonth: null, selectedDay: null };
+
+  if (selectedMonth !== null) {
+    if (!nextSummary.monthTotals.some((month) => month.month === selectedMonth))
+      return { selectedMonth: null, selectedDay: null };
+    return {
+      selectedMonth,
+      selectedDay: selectedDay?.startsWith(`${selectedMonth}-`) ? selectedDay : null,
+    };
+  }
+
+  const nextActiveMonth = nextSummary.monthTotals.at(-1)?.month ?? null;
+  return {
+    selectedMonth: null,
+    selectedDay: selectedDay && nextActiveMonth && selectedDay.startsWith(`${nextActiveMonth}-`)
+      ? selectedDay
+      : null,
+  };
+}
+
+export type SpendingRecordPageRequest = Readonly<{
+  knowledgeAt: number;
+  month?: string | null;
+  day?: string | null;
+  cursor?: string | null;
+  limit?: number;
+}>;
+
+export type SpendingRecordPageDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  month: string | null;
+  day: string | null;
+  records: readonly SpendingPurchaseReportView["records"][number][];
+  nextCursor: string | null;
+}>;
+
+export type SpendingCandidatePageRequest = Readonly<{
+  knowledgeAt: number;
+  /** The selected calendar month; dashboard pairing pages are month-scoped. */
+  month: string;
+  offset?: number;
+  limit?: number;
+}>;
+
+export type SpendingCandidatePageItem = Readonly<{
+  candidate: SpendingPurchaseReportView["candidates"][number];
+  invoiceRecord: SpendingPurchaseReportView["records"][number] | null;
+  paymentRecord: SpendingPurchaseReportView["records"][number] | null;
+}>;
+
+export type SpendingCandidatePageDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  month: string;
+  items: readonly SpendingCandidatePageItem[];
+  /** Candidate count for this month only. */
+  totalCandidateCount: number;
+  nextOffset: number | null;
+}>;
+
+/** Worker-validated action from a compact, version-bound Spending page. */
+export type SpendingPageActionRequest = Readonly<{
+  action: "confirm" | "deny";
+  kind: "candidate";
+  candidateId: string;
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  dataVersion: number;
+}> | Readonly<{
+  action: "confirm";
+  kind: "direct";
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  dataVersion: number;
+}> | Readonly<{
+  action: "revoke";
+  kind: "revoke";
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  dataVersion: number;
+}>;
+
+export type SpendingPageActionResult = Readonly<{
+  action: SpendingPageActionRequest["action"];
+  kind: SpendingPageActionRequest["kind"];
+  /** The compact summary version the action validated before writing. */
+  baseKnowledgeAt: number;
+  /** The exact version containing this action's committed change. */
+  knowledgeAt: number;
+  invoiceIdentityId: string;
+  transactionIdentityId: string;
+  /** Purchase rows before/after the action; their amounts use exact decimals. */
+  summaryDelta: Readonly<{
+    before: readonly SpendingSummaryDeltaLine[];
+    after: readonly SpendingSummaryDeltaLine[];
+  }>;
+  /** Only rows that contain either member of the acted pair. */
+  affectedRecords: readonly PurchaseReport["records"][number][];
+}>;
+
+export type SpendingSummaryDeltaLine = Readonly<{
+  date: string;
+  amount: Readonly<{ currency: string; coefficient: string; scale: number }> | null;
+}>;
+
+const SPENDING_SUMMARY_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+
+function summaryPowerOfTen(scale: number): bigint {
+  if (!Number.isSafeInteger(scale) || scale < 0 || scale > 1000)
+    throw new TypeError("Spending summary scale is invalid.");
+  return 10n ** BigInt(scale);
+}
+
+function summaryMoneyAtScale(
+  rows: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[],
+  targetScale: number,
+  deltas: readonly Readonly<{ amount: SpendingSummaryDeltaLine["amount"]; direction: 1 | -1 }>[],
+) {
+  const values = new Map<string, { coefficient: bigint; count: number }>();
+  const add = (currency: string, coefficient: string, scale: number, count: number, direction: 1 | -1) => {
+    if (!currency || !/^-?\d+$/u.test(coefficient) || !Number.isSafeInteger(count) || count < 0)
+      throw new TypeError("Spending summary amount is invalid.");
+    const aligned = BigInt(coefficient) * summaryPowerOfTen(targetScale - scale);
+    const current = values.get(currency) ?? { coefficient: 0n, count: 0 };
+    current.coefficient += BigInt(direction) * aligned;
+    current.count += direction * count;
+    if (current.count < 0) throw new Error("Spending summary delta removed a missing amount.");
+    values.set(currency, current);
+  };
+
+  for (const row of rows) add(row.currency, row.coefficient, row.scale, row.count, 1);
+  for (const delta of deltas) {
+    if (!delta.amount) continue;
+    add(delta.amount.currency, delta.amount.coefficient, delta.amount.scale, 1, delta.direction);
+  }
+  for (const [currency, value] of values) {
+    if (value.count === 0 && value.coefficient !== 0n)
+      throw new Error(`Spending summary delta left a non-zero ${currency} amount without records.`);
+  }
+  return Object.freeze([...values.entries()]
+    .filter(([, value]) => value.count > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, value]) => {
+      return Object.freeze({ currency, coefficient: value.coefficient.toString(), scale: targetScale, count: value.count });
+    }));
+}
+
+/** Apply a worker-validated pair action to a matching compact summary. */
+export function applySpendingSummaryDelta(
+  summary: SpendingPurchaseReportSummaryDto,
+  baseKnowledgeAt: number,
+  knowledgeAt: number,
+  delta: SpendingPageActionResult["summaryDelta"],
+): SpendingPurchaseReportSummaryDto {
+  if (!Number.isSafeInteger(baseKnowledgeAt) || !Number.isSafeInteger(knowledgeAt) || knowledgeAt < baseKnowledgeAt)
+    throw new TypeError("Spending summary delta version is invalid.");
+  if (delta.before.some((line) => !SPENDING_SUMMARY_DATE.test(line.date)) ||
+      delta.after.some((line) => !SPENDING_SUMMARY_DATE.test(line.date)))
+    throw new TypeError("Spending summary delta date is invalid.");
+
+  const deltaAmounts = [...delta.before, ...delta.after]
+    .flatMap((line) => line.amount ? [line.amount.scale] : []);
+  const existingScales = [
+    ...summary.totalsByCurrency,
+    ...summary.monthTotals.flatMap((month) => month.totalsByCurrency),
+    ...summary.dayTotals.flatMap((day) => day.totalsByCurrency),
+  ].map((amount) => amount.scale);
+  const scale = Math.max(0, ...existingScales, ...deltaAmounts);
+  const allMoneyDeltas = [
+    ...delta.before.map((line) => ({ amount: line.amount, direction: -1 as const })),
+    ...delta.after.map((line) => ({ amount: line.amount, direction: 1 as const })),
+  ];
+  const totalsByCurrency = summaryMoneyAtScale(summary.totalsByCurrency, scale, allMoneyDeltas);
+
+  const rowDeltaByDate = new Map<string, number>();
+  const moneyDeltaByDate = new Map<string, typeof allMoneyDeltas>();
+  const addRows = (lines: readonly SpendingSummaryDeltaLine[], direction: 1 | -1) => {
+    for (const line of lines) {
+      rowDeltaByDate.set(line.date, (rowDeltaByDate.get(line.date) ?? 0) + direction);
+      const existing = moneyDeltaByDate.get(line.date) ?? [];
+      existing.push({ amount: line.amount, direction });
+      moneyDeltaByDate.set(line.date, existing);
+    }
+  };
+  addRows(delta.before, -1);
+  addRows(delta.after, 1);
+
+  const dayByDate = new Map(summary.dayTotals.map((day) => [day.date, day]));
+  const touchedDates = new Set([...rowDeltaByDate.keys()]);
+  for (const date of touchedDates) {
+    const prior = dayByDate.get(date);
+    const rowCount = (prior?.recordCount ?? 0) + (rowDeltaByDate.get(date) ?? 0);
+    if (rowCount < 0) throw new Error("Spending summary delta removed a missing date.");
+    if (rowCount === 0) {
+      dayByDate.delete(date);
+      continue;
+    }
+    dayByDate.set(date, Object.freeze({
+      month: date.slice(0, 7),
+      date,
+      recordCount: rowCount,
+      totalsByCurrency: summaryMoneyAtScale(
+        prior?.totalsByCurrency ?? [],
+        scale,
+        moneyDeltaByDate.get(date) ?? [],
+      ),
+    }));
+  }
+  const dayTotals = Object.freeze([...dayByDate.values()].sort((left, right) => left.date.localeCompare(right.date)));
+
+  const rowDeltaByMonth = new Map<string, number>();
+  const moneyDeltaByMonth = new Map<string, typeof allMoneyDeltas>();
+  const addMonths = (lines: readonly SpendingSummaryDeltaLine[], direction: 1 | -1) => {
+    for (const line of lines) {
+      const month = line.date.slice(0, 7);
+      rowDeltaByMonth.set(month, (rowDeltaByMonth.get(month) ?? 0) + direction);
+      const existing = moneyDeltaByMonth.get(month) ?? [];
+      existing.push({ amount: line.amount, direction });
+      moneyDeltaByMonth.set(month, existing);
+    }
+  };
+  addMonths(delta.before, -1);
+  addMonths(delta.after, 1);
+  const oldMonths = new Map(summary.monthTotals.map((month) => [month.month, month]));
+  const months = new Set([...oldMonths.keys(), ...rowDeltaByMonth.keys()]);
+  const monthTotals = Object.freeze([...months].sort().flatMap((month) => {
+    const prior = oldMonths.get(month);
+    const recordCount = (prior?.recordCount ?? 0) + (rowDeltaByMonth.get(month) ?? 0);
+    if (recordCount < 0) throw new Error("Spending summary delta removed a missing month.");
+    if (recordCount === 0) return [];
+    return [Object.freeze({
+      month,
+      recordCount,
+      activeDayCount: dayTotals.filter((day) => day.month === month).length,
+      pendingCandidateCount: null,
+      totalsByCurrency: summaryMoneyAtScale(
+        prior?.totalsByCurrency ?? [],
+        scale,
+        moneyDeltaByMonth.get(month) ?? [],
+      ),
+    })];
+  }));
+  const recordCount = summary.recordCount + delta.after.length - delta.before.length;
+  if (recordCount < 0) throw new Error("Spending summary delta removed missing records.");
+  return Object.freeze({
+    ...summary,
+    recordCount,
+    candidateCount: null,
+    pendingCandidateCount: null,
+    candidateState: "unloaded",
+    currencies: Object.freeze(totalsByCurrency.map((amount) => amount.currency)),
+    totalsByCurrency,
+    monthTotals,
+    dayTotals,
+  });
+}
+
+/**
+ * Reconcile the action result with a live summary that may arrive first.
+ * The live row is already authoritative at the action version, so only its
+ * affected records should be merged; a newer live version wins outright.
+ */
+export function reconcileSpendingPageActionSummary(
+  summary: SpendingPurchaseReportSummaryDto,
+  currentKnowledgeAt: number,
+  result: SpendingPageActionResult,
+): Readonly<{
+  state: "apply-delta" | "already-current" | "newer-live-version";
+  summary: SpendingPurchaseReportSummaryDto;
+}> {
+  if (!Number.isSafeInteger(currentKnowledgeAt) || currentKnowledgeAt < 0)
+    throw new TypeError("Spending summary version is invalid.");
+  if (currentKnowledgeAt > result.knowledgeAt)
+    return Object.freeze({ state: "newer-live-version", summary });
+  if (currentKnowledgeAt === result.knowledgeAt)
+    return Object.freeze({ state: "already-current", summary });
+  if (currentKnowledgeAt !== result.baseKnowledgeAt)
+    throw new Error("Spending summary does not match the action result base version.");
+  return Object.freeze({
+    state: "apply-delta",
+    summary: applySpendingSummaryDelta(summary, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta),
+  });
+}
 
 export type SpendingCandidateActionInput = Readonly<{
   kind: "candidate";

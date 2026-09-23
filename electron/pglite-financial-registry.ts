@@ -3,8 +3,19 @@ import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import { buildCanonicalOverviewSankeyGraph } from "../src/lib/overview/server/overview-sankey.ts";
-import type { SpendingPageDto } from "../src/lib/spending/model.ts";
-import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import {
+  applySpendingSummaryDelta,
+  type SpendingCandidatePageDto,
+  type SpendingCandidatePageRequest,
+  type SpendingPageDto,
+  type SpendingPageActionRequest,
+  type SpendingPageActionResult,
+  type SpendingRecordPageDto,
+  type SpendingRecordPageRequest,
+} from "../src/lib/spending/model.ts";
+import type {
+  SpendingLoadInput,
+} from "../src/lib/spending/server/store.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -22,8 +33,8 @@ import type {
 } from "../src/ledger/canonical/canonical-overview-query.ts";
 import {
   exactAmountToNumber,
-  type CanonicalOverviewCurrentQueryResult,
-} from "../src/ledger/canonical/canonical-overview-query.ts";
+} from "../src/ledger/pglite/overview-amount.ts";
+import type { CanonicalOverviewCurrentQueryResult } from "../src/ledger/canonical/canonical-overview-query.ts";
 import {
   createPGliteCanonicalOverviewQuery,
   selectPGliteOverviewAssets,
@@ -119,6 +130,11 @@ import {
 export * from "./pglite-financial-rpc-client.ts";
 
 type RpcPort = PGliteFinancialRpcPort;
+type PGliteFinancialPageActionEvents = Readonly<{
+  isSpendingPageActionInFlight?(): boolean;
+  onSpendingPageActionSettled?(listener: (result: SpendingPageActionResult | null) => void): () => void;
+}>;
+type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Required<PGliteFinancialPageActionEvents>;
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
 
@@ -127,6 +143,9 @@ export type PGliteFinancialPageClient = Readonly<{
   load(page: "assets", options?: { expectedVersion?: number }): Promise<AssetsPageDto>;
   load(page: "liabilities", options?: { expectedVersion?: number }): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput, options?: { expectedVersion?: number }): Promise<SpendingPageDto>;
+  loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingRecordPageDto>;
+  loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingCandidatePageDto>;
+  applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
   loadBlock(
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
     block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey,
@@ -515,10 +534,13 @@ async function readExchangeRatesOnReader(
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   exchangeRates: ExchangeRatePersistencePort,
-): PGliteFinancialRegistry {
+): PGliteFinancialRegistryWithPageActionEvents {
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
+  let spendingPageActionCount = 0;
+  let latestSettledPageAction: SpendingPageActionResult | null = null;
+  const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
   return Object.freeze({
     async overviewCurrent(expectedSources = []) {
       // Keep the canonical projection and the rate rows in one repeatable
@@ -553,8 +575,20 @@ export function createPGliteFinancialRegistry(
         return mapCanonicalProduct(selectPGliteOverviewLiabilities(result.projection), "liabilities");
       });
     },
-    spendingCurrent(input = {}) {
-      return spending.page(input);
+    async spendingCurrent(input = {}) {
+      const tagged = input as SpendingLoadInput & Readonly<{
+        __spendingRead?: "record-page" | "candidate-page";
+        request?: SpendingRecordPageRequest | SpendingCandidatePageRequest;
+      }>;
+      if (tagged.__spendingRead === "record-page") {
+        const result = await spending.recordPage(tagged.request as SpendingRecordPageRequest);
+        return result as unknown as SpendingPageDto;
+      }
+      if (tagged.__spendingRead === "candidate-page") {
+        const result = await spending.candidatePage(tagged.request as SpendingCandidatePageRequest);
+        return result as unknown as SpendingPageDto;
+      }
+      return spending.summaryPage(input);
     },
     async spendingVersion() {
       const result = await store.query<{ value: number | string }>(
@@ -565,7 +599,38 @@ export function createPGliteFinancialRegistry(
     spendingPairing(input) {
       return spending.pairingCandidates(input);
     },
+    isSpendingPageActionInFlight() {
+      return spendingPageActionCount > 0;
+    },
+    onSpendingPageActionSettled(listener) {
+      pageActionListeners.add(listener);
+      return () => pageActionListeners.delete(listener);
+    },
     confirmCandidate(input) {
+      const tagged = input as SpendingConfirmActionInput & Readonly<{
+        __spendingPageAction?: SpendingPageActionRequest;
+      }>;
+      if (tagged.__spendingPageAction) {
+        if (spendingPageActionCount === 0) latestSettledPageAction = null;
+        spendingPageActionCount += 1;
+        return commands.pageAction(tagged.__spendingPageAction).then((result) => {
+          if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
+            latestSettledPageAction = result;
+          return result as unknown as SpendingPurchaseActionResult;
+        }).finally(() => {
+          spendingPageActionCount -= 1;
+          if (spendingPageActionCount !== 0) return;
+          const publication = latestSettledPageAction;
+          latestSettledPageAction = null;
+          for (const listener of pageActionListeners) {
+            try {
+              listener(publication);
+            } catch {
+              // A live view cannot change the action result or other listeners.
+            }
+          }
+        });
+      }
       return commands.confirmCandidate(input);
     },
     denyCandidate(input) {
@@ -667,16 +732,23 @@ export function createPGliteFinancialRpcServer(
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const work = sequence.then(() => invoke(registry, operation, value.args, controller.signal)).then(
-      (result) => post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result }),
-      (error) => post(
-        port,
-        genericFailure(
-          value.id,
-          controller.signal.aborted ? "cancelled" : "operation-failed",
-          controller.signal.aborted ? undefined : failureCategory(error),
-        ),
-      ),
+    const work = sequence.then(() => {
+      if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+      return invoke(registry, operation, value.args, controller.signal);
+    }).then(
+      (result) => {
+        post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });
+      },
+      (error) => {
+        post(
+          port,
+          genericFailure(
+            value.id,
+            controller.signal.aborted ? "cancelled" : "operation-failed",
+            controller.signal.aborted ? undefined : failureCategory(error),
+          ),
+        );
+      },
     ).then(() => undefined);
     sequence = work.catch(() => undefined);
     active.add(work);
@@ -714,6 +786,15 @@ export function createPGliteFinancialPageClient(
       if (pageName === "assets") return rpc.registry.assetsCurrent(sources);
       if (pageName === "liabilities") return rpc.registry.liabilitiesCurrent(sources);
       return rpc.registry.spendingCurrent(inputOrOptions as SpendingLoadInput | undefined);
+    },
+    loadSpendingRecordPage(request: SpendingRecordPageRequest) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingRecordPageDto>;
+    },
+    loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options: { signal?: AbortSignal } = {}) {
+      return rpc.request("financial.spending.current", [{ __spendingRead: "candidate-page", request }], options) as Promise<SpendingCandidatePageDto>;
+    },
+    applySpendingPageAction(request: SpendingPageActionRequest) {
+      return rpc.request("financial.spending.confirmCandidate", [{ __spendingPageAction: request }]) as Promise<SpendingPageActionResult>;
     },
     async loadBlock(pageName: "overview" | "assets" | "liabilities" | "spending" | "automation", block: import("../src/lib/shared-shell/block-load-state.ts").DashboardBlockKey, options?: { expectedVersion?: number }, automationCredentialState?: import("../src/lib/desktop/api.ts").AutomationCredentialStateDto, automationRuntimeState?: import("../src/lib/desktop/api.ts").AutomationRuntimeSnapshot) {
       void options;
@@ -753,7 +834,7 @@ export type PGliteFinancialLiveView =
  */
 export function createPGliteFinancialLiveViews(
   db: PGliteWithLive,
-  registry: PGliteFinancialRegistry,
+  registry: PGliteFinancialRegistry & PGliteFinancialPageActionEvents,
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
 ) {
   const entries = new Map<string, {
@@ -778,6 +859,7 @@ export function createPGliteFinancialLiveViews(
         let queued = false;
         let initialReady = false;
         let stopped = false;
+        let stopPageActionListener = () => {};
         const recompute = async () => {
           if (stopped) return;
           if (running) {
@@ -796,7 +878,7 @@ export function createPGliteFinancialLiveViews(
                   ? await registry.assetsCurrent(sources)
                   : view === "financial.liabilities.current"
                     ? await registry.liabilitiesCurrent(sources)
-                    : await registry.spendingCurrent(params as SpendingLoadInput);
+                  : await registry.spendingCurrent(params as SpendingLoadInput);
               if (stopped) return;
               entry!.lastValue = value;
               for (const listener of listeners) {
@@ -819,10 +901,80 @@ export function createPGliteFinancialLiveViews(
         };
         const trigger = () => {
           if (!initialReady) return;
+          if (view === "financial.spending.current" && registry.isSpendingPageActionInFlight?.()) {
+            return;
+          }
           void recompute().catch((error) => {
             for (const listener of listeners) listener.error(error);
           });
         };
+        if (view === "financial.spending.current" && registry.onSpendingPageActionSettled) {
+          stopPageActionListener = registry.onSpendingPageActionSettled((result) => {
+            void (async () => {
+              let actionResultPublished = false;
+              if (result) {
+                const previous = entry?.lastValue as SpendingPageDto | undefined;
+                const previousVersion = previous?.purchaseReport.knowledgeAt;
+                if (previous?.purchaseReport.summary && previousVersion === result.baseKnowledgeAt) {
+                  try {
+                    const summary = applySpendingSummaryDelta(
+                      previous.purchaseReport.summary,
+                      result.baseKnowledgeAt,
+                      result.knowledgeAt,
+                      result.summaryDelta,
+                    );
+                    const purchaseReport = Object.freeze({
+                      ...previous.purchaseReport,
+                      knowledgeAt: result.knowledgeAt,
+                      totalsByCurrency: summary.totalsByCurrency,
+                      summary,
+                    });
+                    const patched: SpendingPageDto = Object.freeze({
+                      ...previous,
+                      canonical: Object.freeze({
+                        ...previous.canonical,
+                        availability: summary.recordCount > 0 ? "available" : "empty",
+                        knowledgePoint: result.knowledgeAt,
+                        totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
+                          currency: amount.currency,
+                          value: Number(amount.coefficient) / 10 ** amount.scale,
+                          exact: { coefficient: amount.coefficient, scale: amount.scale },
+                        })),
+                        totalStatus: "complete",
+                      }),
+                      purchaseReport,
+                    });
+                    entry!.lastValue = patched;
+                    for (const listener of listeners) {
+                      try {
+                        listener.value(patched);
+                      } catch {
+                        // One renderer observer cannot stop the shared publication.
+                      }
+                    }
+                    actionResultPublished = true;
+                  } catch {
+                    // The version check below schedules an authoritative refresh if this delta no longer applies.
+                  }
+                } else if (previousVersion === result.knowledgeAt) {
+                  actionResultPublished = true;
+                }
+              }
+
+              const currentVersion = await registry.spendingVersion();
+              const published = entry?.lastValue as SpendingPageDto | undefined;
+              const publishedVersion = published?.purchaseReport.knowledgeAt ?? -1;
+              const actionVersion = result?.knowledgeAt ?? -1;
+              if (currentVersion > publishedVersion || (result && !actionResultPublished && currentVersion >= actionVersion)) {
+                if (!stopped) void recompute().catch((error) => {
+                  for (const listener of listeners) listener.error(error);
+                });
+              }
+            })().catch((error) => {
+              for (const listener of listeners) listener.error(error);
+            });
+          });
+        }
         // Financial pages depend on every canonical commit because source
         // admissions, e-invoice/card commits, and projection rebuilds can
         // change the knowledge point even when a current projection marker
@@ -839,6 +991,7 @@ export function createPGliteFinancialLiveViews(
         ];
         const stop = async () => {
           stopped = true;
+          stopPageActionListener();
           entries.delete(key);
           const dependencies = await Promise.all(dependencyQueries);
           await Promise.all(dependencies.map((dependency) => dependency.unsubscribe()));
