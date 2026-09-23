@@ -3,7 +3,7 @@ import type { AssetsPageDto } from "../../assets/types.ts";
 import type { LiabilitiesPageDto } from "../../liabilities/types.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
 import type { SpendingPageDto } from "../../spending/model.ts";
-import type { SpendingLoadInput } from "../../spending/server/store.ts";
+import type { SpendingLoadInput } from "../../spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../../../ledger/canonical/canonical-overview-query.ts";
 import {
   createViewStores,

@@ -1,9 +1,9 @@
-import {
-  exactAmountToNumber,
-  type CanonicalOverviewAccount,
-  type CanonicalOverviewAmount,
-  type CanonicalOverviewPosition,
-  type CanonicalOverviewProjection,
+import { exactAmountToNumber } from "../../../ledger/pglite/overview-amount.ts";
+import type {
+  CanonicalOverviewAccount,
+  CanonicalOverviewAmount,
+  CanonicalOverviewPosition,
+  CanonicalOverviewProjection,
 } from "../../../ledger/canonical/canonical-overview-query.ts";
 import type {
   AccountRowDto,

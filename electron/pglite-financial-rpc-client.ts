@@ -10,7 +10,7 @@ import type {
   SpendingPurchaseActionResult,
   SpendingPageDto,
 } from "../src/lib/spending/model.ts";
-import type { SpendingLoadInput } from "../src/lib/spending/server/store.ts";
+import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
 import type {
   PGliteCanonicalFinancialCommitBatchRequest,

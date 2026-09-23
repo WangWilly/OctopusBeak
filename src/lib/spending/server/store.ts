@@ -25,6 +25,8 @@ import {
   type SpendingRecognitionSnapshot,
 } from "../../../ledger/canonical/spending-recognition.ts";
 import type { SpendingCategory } from "../categories.ts";
+import type { SpendingLoadInput, SpendingOverrideUpdate } from "../contracts.ts";
+export type { SpendingLoadInput, SpendingOverrideUpdate } from "../contracts.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
@@ -74,21 +76,6 @@ import {
   TRANSACTION_TAXONOMY_PACKAGE_V1,
 } from "../../../ledger/canonical/transaction-taxonomy.ts";
 import type { SpendingInvoiceDto, SpendingItemDto } from "../model.ts";
-
-export type SpendingOverrideUpdate =
-  | { statementRowId: string; state: null }
-  | {
-    statementRowId: string;
-    state: SpendingState;
-    category: SpendingCategory | null;
-    automaticState: SpendingState;
-    automaticReason: SpendingReason | null;
-  };
-
-export type SpendingLoadInput = {
-  selectedMonth?: string;
-  selectedCategory?: SpendingCategory | string;
-};
 
 const LOCAL_SPENDING_USER_ID = "local-user";
 const fullProjectionDiagnostics = channel("octopus-beak.spending.full-projection");

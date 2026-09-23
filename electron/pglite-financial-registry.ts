@@ -15,7 +15,7 @@ import {
 } from "../src/lib/spending/model.ts";
 import type {
   SpendingLoadInput,
-} from "../src/lib/spending/server/store.ts";
+} from "../src/lib/spending/contracts.ts";
 import type {
   SpendingCandidateActionInput,
   SpendingConfirmActionInput,
