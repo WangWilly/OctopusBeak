@@ -3,7 +3,7 @@ import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
   CanonicalFinancialDepositValidatedCapture,
-} from "../canonical/canonical-financial-deposit-writer.ts";
+} from "../canonical/canonical-financial-deposit-admission.ts";
 import type {
   SinopacSourceRow,
   SinopacStatementValidatedCapture,

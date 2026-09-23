@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { CanonicalFinancialDepositCapture } from "../canonical/canonical-financial-deposit-writer.ts";
-import type { CanonicalCreditCardPersistenceCapture } from "../canonical/canonical-credit-card-persistence.ts";
-import type { FubonCreditCardValidatedCapture } from "../canonical/fubon-credit-card.ts";
+import type { CanonicalFinancialDepositCapture } from "../canonical/canonical-financial-deposit-admission.ts";
+import type { CanonicalCreditCardPersistenceCapture } from "../canonical/canonical-credit-card-contracts.ts";
+import type { FubonCreditCardValidatedCapture } from "../canonical/fubon-credit-card-admission.ts";
 import {
   sourceEvidenceFromCreditCardCurrentBalanceCapture,
   type CreditCardCurrentBalanceValidatedCapture,

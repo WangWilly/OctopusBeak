@@ -6,7 +6,7 @@ import type {
 import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
-} from "../canonical/canonical-financial-deposit-writer.ts";
+} from "../canonical/canonical-financial-deposit-admission.ts";
 
 export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
   "sinopac/domestic-deposit/human-attested-v1" as const;
