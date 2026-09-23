@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
-import {
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   buildCtbcCurrentDepositBalanceCapture,
@@ -98,87 +95,7 @@ assert.deepEqual(absent, {
   status: "absent",
 });
 
-const sourceOnlyDir = await mkdtemp(join(tmpdir(), "ctbc-source-only-"));
-try {
-  const sourceOnly = await runCtbcStatements(
-    {} as never,
-    { telemetry: false },
-    {
-      canonicalLedgerDir: sourceOnlyDir,
-      observedAt: "2026-08-24T12:34:56+08:00",
-      readCurrentDepositBalances: async () => [],
-      collectStatements: async () => ({
-        output: { count: 1, rowCount: 1, downloads: [] },
-        captures: [
-          {
-            accountId: "PRIVATE-CTBC-ACCOUNT",
-            queryPeriods: ["2026/08/01~2026/08/31"],
-            expectedRangeCount: 1,
-            responses: [
-              {
-                rangeOrdinal: 0,
-                startDate: "2026/08/01",
-                endDate: "2026/08/31",
-                code: "0000",
-                nextKey: null,
-                terminal: true,
-                responseShape: {
-                  hasRsData: true,
-                  rsDataKind: "object",
-                  hasDetailList: true,
-                  detailListIsArray: true,
-                  detailListRowCount: 1,
-                  nextKeyPresent: false,
-                },
-                rows: ctbcDetailRowsToStatementRows(
-                  {
-                    accountId: "PRIVATE-CTBC-ACCOUNT",
-                    label: "PRIVATE-CTBC-LABEL",
-                  },
-                  [
-                    {
-                      actDtFull: "2026/08/03",
-                      trnDtFull: "2026/08/02",
-                      actDtTm: "2026-08-03-09.08.07.000000",
-                      memo1: "PRIVATE-CTBC-MEMO",
-                      dbAmtDisplay: "0",
-                      crAmtDisplay: "1,234",
-                      balanceAmt: "5,678",
-                    },
-                  ],
-                ),
-              },
-            ],
-          },
-        ],
-      }),
-    },
-  );
-  assert.equal(sourceOnly.status, "financial-admitted");
-  assert.equal(sourceOnly.sourceCaptureCount, 1);
-  const verify = createCanonicalSourceStore(sourceOnlyDir);
-  const sourceCount = verify.db
-    .prepare("SELECT COUNT(*) AS count FROM source_records")
-    .get() as { count: number };
-  const financialCount = verify.db
-    .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-    .get() as { count: number };
-  const payloads = verify.db
-    .prepare("SELECT payload_json FROM source_records")
-    .all() as Array<{ payload_json: string }>;
-  verify.close();
-  assert.equal(sourceCount.count, 2);
-  assert.equal(financialCount.count, 1);
-  assert.doesNotMatch(
-    JSON.stringify(payloads),
-    /PRIVATE-CTBC|1,234|5,678|2026\/08\/0[23]/,
-  );
-} finally {
-  await rm(sourceOnlyDir, { recursive: true, force: true });
-}
-
 const enabledDir = await mkdtemp(join(tmpdir(), "ctbc-pglite-workflow-"));
-const enabledLegacyDir = await mkdtemp(join(tmpdir(), "ctbc-pglite-no-sqlite-"));
 const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
   execArgv: ["--experimental-strip-types"],
   workerData: { dataDir: enabledDir },
@@ -199,7 +116,6 @@ try {
   await enabledServer.ready;
   Object.assign(process.env, enabledServer.env);
   const output = await runCtbcStatements({} as never, { telemetry: false }, {
-    canonicalLedgerDir: enabledLegacyDir,
     observedAt: "2026-08-24T12:34:56+08:00",
     readCurrentDepositBalances: async () => [],
     collectStatements: async () => ({
@@ -240,7 +156,37 @@ try {
     }),
   });
   assert.equal(output.status, "financial-admitted");
-  assert.deepEqual(await readdir(enabledLegacyDir), []);
+  const sourceOnly = await runCtbcStatements({} as never, { telemetry: false }, {
+    observedAt: "2026-08-29T21:23:06+08:00",
+    readCurrentDepositBalances: async () => [],
+    collectStatements: async () => ({
+      output: { count: 1, rowCount: 0, downloads: [] },
+      captures: [{
+        accountId: "PRIVATE-CTBC-ACCOUNT",
+        queryPeriods: ["2026/03/01~2026/03/31"],
+        expectedRangeCount: 1,
+        responses: [{
+          rangeOrdinal: 0,
+          startDate: "2026/03/01",
+          endDate: "2026/03/31",
+          code: "0000",
+          nextKey: null,
+          terminal: true,
+          rows: [],
+          responseShape: {
+            hasRsData: true,
+            rsDataKind: "object",
+            hasDetailList: true,
+            detailListIsArray: true,
+            detailListRowCount: 0,
+            nextKeyPresent: false,
+          },
+        }],
+      }],
+    }),
+  });
+  assert.equal(sourceOnly.status, "source-only");
+  assert.equal(sourceOnly.sourceCaptureCount, 1);
 } finally {
   for (const [key, value] of [
     ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
@@ -252,63 +198,14 @@ try {
   }
   await enabledServer.close();
   await enabledOwner.close();
-  await rm(enabledLegacyDir, { recursive: true, force: true });
 }
 const enabledDb = await PGlite.create(enabledDir);
 try {
   assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
-  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 2);
+  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 3);
 } finally {
   await enabledDb.close();
   await rm(enabledDir, { recursive: true, force: true });
-}
-
-const successfulEmptyDir = await mkdtemp(
-  join(tmpdir(), "ctbc-successful-empty-"),
-);
-try {
-  const successfulEmpty = await runCtbcStatements(
-    {} as never,
-    { telemetry: false },
-    {
-      canonicalLedgerDir: successfulEmptyDir,
-      observedAt: "2026-08-29T21:23:06+08:00",
-      readCurrentDepositBalances: async () => [],
-      collectStatements: async () => ({
-        output: { count: 1, rowCount: 0, downloads: [] },
-        captures: [
-          {
-            accountId: "PRIVATE-CTBC-ACCOUNT",
-            queryPeriods: ["2026/03/01~2026/03/31"],
-            expectedRangeCount: 1,
-            responses: [
-              {
-                rangeOrdinal: 0,
-                startDate: "2026/03/01",
-                endDate: "2026/03/31",
-                code: "0000",
-                nextKey: null,
-                terminal: true,
-                rows: [],
-                responseShape: {
-                  hasRsData: true,
-                  rsDataKind: "object",
-                  hasDetailList: true,
-                  detailListIsArray: true,
-                  detailListRowCount: 0,
-                  nextKeyPresent: false,
-                },
-              } as never,
-            ],
-          },
-        ],
-      }),
-    },
-  );
-  assert.equal(successfulEmpty.status, "source-only");
-  assert.equal(successfulEmpty.sourceCaptureCount, 1);
-} finally {
-  await rm(successfulEmptyDir, { recursive: true, force: true });
 }
 
 const rows = ctbcDetailRowsToStatementRows(
