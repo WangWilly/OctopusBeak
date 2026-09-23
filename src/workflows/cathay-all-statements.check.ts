@@ -19,7 +19,7 @@ assert.match(
   source,
   /statementTypes: z\.array\(statementTypeSchema\)\.min\(1\)\.optional\(\)/,
 );
-assert.match(source, /canonicalLedgerDir/);
+assert.doesNotMatch(source, /canonicalLedgerDir/);
 assert.doesNotMatch(source, /canonical(Source|Financial)LedgerDir/);
 assert.match(
   authSource,
@@ -245,9 +245,6 @@ assert.deepEqual(allProductsOutput.downloads, [
   { type: "foreign", ...foreignDownload },
 ]);
 
-const canonicalLedgerKey = "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
-const previousCanonicalLedgerDirectory = process.env[canonicalLedgerKey];
-process.env[canonicalLedgerKey] = "pglite-test-ledger";
 const foreignCanonicalAccount = {
   account: "CATHAY-FOREIGN-ALL-133",
   currencyList: [{ currencyCode: "USD" }],
@@ -268,12 +265,10 @@ const foreignCanonicalStatement = {
 };
 let foreignCanonicalAttempts = 0;
 const pgliteCommitCalls: Array<Readonly<{
-  ledgerDir: string | undefined;
   captureCount: number;
   requireComplete: boolean | undefined;
 }>> = [];
 let foreignCanonicalOutput: Awaited<ReturnType<typeof runCathayAllStatements>>;
-try {
   foreignCanonicalOutput = await runCathayAllStatements(
     { page: { on: () => undefined }, session: "cathay-session" },
     {
@@ -322,26 +317,18 @@ try {
       },
       commitCathayForeignAndCurrentCanonicalCaptures: async (
         _page: unknown,
-        ledgerDir: string | undefined,
         captures: readonly unknown[],
         options?: { requireComplete?: boolean },
       ) => {
         pgliteCommitCalls.push({
-          ledgerDir,
           captureCount: captures.length,
           requireComplete: options?.requireComplete,
         });
       },
     },
   );
-} finally {
-  if (previousCanonicalLedgerDirectory === undefined)
-    delete process.env[canonicalLedgerKey];
-  else process.env[canonicalLedgerKey] = previousCanonicalLedgerDirectory;
-}
 assert.equal(foreignCanonicalAttempts, 2);
 assert.deepEqual(pgliteCommitCalls, [{
-  ledgerDir: "pglite-test-ledger",
   captureCount: 1,
   requireComplete: true,
 }]);
@@ -383,7 +370,6 @@ const canonicalCommitFailureOutput = await runCathayAllStatements(
     },
     commitCathayForeignAndCurrentCanonicalCaptures: async (
       _page: unknown,
-      _ledgerDir: string | undefined,
       captures: readonly unknown[],
       options?: { requireComplete?: boolean },
     ) => {

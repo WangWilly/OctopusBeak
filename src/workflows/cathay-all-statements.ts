@@ -91,14 +91,6 @@ const outputSchema = z.object({
 
 const inputSchema = createInputSchema();
 
-function resolveCathayCanonicalLedgerDir(): string | undefined {
-  const configured =
-    process.env.OCTOPUSBEAK_CANONICAL_LEDGER_DIR?.trim() ||
-    process.env.LEDGER_DIR?.trim();
-  if (configured && /[\u0000-\u001f\u007f]/u.test(configured))
-    throw new Error("Invalid Cathay canonical ledger directory.");
-  return configured || undefined;
-}
 const cathayAllStatementsDependencies = {
   signInCathay,
   createCathaySession,
@@ -139,7 +131,6 @@ export async function runCathayAllStatements(
   if (!selectedIds.length)
     throw new Error("Select at least one Cathay statement type.");
   requirePGliteWorkflowEnabled(process.env);
-  const canonicalLedgerDir = resolveCathayCanonicalLedgerDir();
   emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
 
   page.on("dialog", async (dialog) => {
@@ -177,7 +168,6 @@ export async function runCathayAllStatements(
               {
                 telemetry: input.telemetry,
                 captureCurrentBalances: true,
-                canonicalLedgerDir,
               },
             ),
         });
@@ -216,7 +206,6 @@ export async function runCathayAllStatements(
         });
         await commitCathayForeignAndCurrentCanonicalCaptures(
           page,
-          canonicalLedgerDir,
           canonicalCollector.captures,
           { requireComplete: true },
         );

@@ -249,8 +249,6 @@ export async function publishCathayStatementScopeRepairStage(
 }
 
 export type CathayDomesticWorkflowOptions = {
-  /** Application-owned canonical store path; defaults to the existing LEDGER_DIR convention. */
-  canonicalLedgerDir?: string;
   /** Sanitized operational source scope, never a credential or user identity. */
   sourceConnectionId?: string;
   identityEpoch?: string;
