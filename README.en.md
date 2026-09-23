@@ -131,13 +131,13 @@ npm run run:sync-maicoin
 | Path | Purpose |
 | --- | --- |
 | `src/workflows/` | Libretto browser workflows |
-| `src/ledger/` | Importers, parsers, migrations, and overview data models |
+| `src/ledger/` | Source parsing, PGlite storage, and financial queries |
 | `src/lib/overview/`, `src/lib/assets/`, `src/lib/liabilities/` | Financial overview UI |
 | `src/lib/spending/` | E-Invoice and spending UI |
 | `src/lib/automation/` | Automation UI and server helpers |
 | `electron/` | Electron main process and runtime helpers |
 | `downloads/` | Local statement exports |
-| `data/ledger/` | Local SQLite ledger |
+| `data/pglite/` | Local PGlite data |
 | `~/Library/Application Support/OctopusBeak/` | Packaged app runtime data |
 
 Before committing changes, run:

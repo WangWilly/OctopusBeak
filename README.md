@@ -131,13 +131,13 @@ npm run run:sync-maicoin
 | 路徑 | 用途 |
 | --- | --- |
 | `src/workflows/` | Libretto 瀏覽器工作流程 |
-| `src/ledger/` | 匯入器、解析器、資料庫遷移與總覽資料模型 |
+| `src/ledger/` | 來源解析、PGlite 儲存與財務查詢 |
 | `src/lib/overview/`、`src/lib/assets/`、`src/lib/liabilities/` | 財務總覽介面 |
 | `src/lib/spending/` | 電子發票與消費介面 |
 | `src/lib/automation/` | 自動化介面與伺服器端輔助程式 |
 | `electron/` | Electron 主程序與執行環境輔助程式 |
 | `downloads/` | 本機對帳單輸出 |
-| `data/ledger/` | 本機 SQLite 帳本 |
+| `data/pglite/` | 本機 PGlite 資料 |
 | `~/Library/Application Support/OctopusBeak/` | 安裝版的執行資料 |
 
 提交變更前請執行：
