@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
 import {
   desktopCdpFixtureSettings,
   desktopCdpFixtureCredentialGroupIds,
@@ -13,20 +14,15 @@ import {
   AUTOMATION_CREDENTIAL_GROUPS,
   automationCredentialKeyIsSecret,
 } from "../src/lib/automation/server/tasks.ts";
-import { openLedgerDatabase } from "../src/ledger/db/client.ts";
 
-assert.throws(
-  () => seedDesktopCdpFixture(process.cwd()),
+await assert.rejects(
+  seedDesktopCdpFixture(process.cwd()),
   /temporary directory/,
 );
 
 const root = await mkdtemp(join(tmpdir(), "octopusbeak-desktop-cdp-fixture-"));
 try {
-  seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"));
-
-  const marker = JSON.parse(await readFile(join(root, ".libretto", "canonical-reset.json"), "utf8"));
-  assert.equal(marker.status, "completed");
-  assert.equal(marker.userData, root);
+  await seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"));
 
   const settings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
   assert.deepEqual(settings, desktopCdpFixtureSettings);
@@ -43,13 +39,13 @@ try {
     assert.match(credentials[key], /^fixture-cdp-/);
   }
 
-  const db = openLedgerDatabase(join(root, "data", "ledger"), { readOnly: true });
-  const rows = db.prepare(`
+  const db = await PGlite.create({ dataDir: join(root, "data", "pglite") });
+  const rows = (await db.query(`
     SELECT task_id, status, error_message, log_tail
     FROM automation_task_runs
     ORDER BY task_id
-  `).all().map((row) => ({ ...row }));
-  db.close();
+  `)).rows.map((row) => ({ ...row }));
+  await db.close();
   assert.deepEqual(rows, [
     {
       task_id: "esun-credit-card-statements",

@@ -139,7 +139,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
   let browser: Browser | null = null;
   let exited: Promise<{ status: number | null; signal: NodeJS.Signals | null }> | null = null;
   try {
-    seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
+    await seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
     const cdpPort = await reserveCdpPort();
     const cdpUrl = `http://127.0.0.1:${cdpPort}`;
     const electronPath = createRequire(import.meta.url)("electron") as string;
@@ -382,7 +382,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
   let browser: Browser | null = null;
   let exited: Promise<{ status: number | null; signal: NodeJS.Signals | null }> | null = null;
   try {
-    seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
+    await seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
     const cdpPort = await reserveCdpPort();
     const cdpUrl = `http://127.0.0.1:${cdpPort}`;
     const electronPath = createRequire(import.meta.url)("electron") as string;
@@ -565,7 +565,7 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
   let browser: Browser | null = null;
   let exited: Promise<{ status: number | null; signal: NodeJS.Signals | null }> | null = null;
   try {
-    seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
+    await seedDesktopCdpFixture(userData, new Date("2026-09-14T04:00:00.000Z"));
     const cdpPort = await reserveCdpPort();
     const cdpUrl = `http://127.0.0.1:${cdpPort}`;
     const electronPath = createRequire(import.meta.url)("electron") as string;
