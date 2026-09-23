@@ -1,13 +1,26 @@
 import { pathToFileURL } from "node:url";
 import {
+  PGLITE_CHILD_RPC_ENDPOINT_ENV,
+  PGLITE_CHILD_RPC_TOKEN_ENV,
+  requirePGliteChildRpcClientFromEnv,
+} from "../../electron/pglite-child-rpc-client.ts";
+import {
   appendExchangeRateAuditRecord,
   type ExchangeRateAuditRecord,
 } from "./exchange-rate-audit-log.ts";
-import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
+import {
+  exchangeRateRequestFromOverview,
+  type ExchangeRateRequest,
+} from "./exchange-rate-requirements.ts";
 import {
   syncExchangeRates,
+  type ExchangeRatePersistencePort,
   type ExchangeRateSyncResult,
 } from "./exchange-rates.ts";
+import {
+  createExchangeRateCliPGliteWorkerClient,
+  type ExchangeRateCliPGliteWorkerClient,
+} from "./pglite/exchange-rate-cli-worker.ts";
 import {
   emitAutomationProgress,
   type AutomationProgressEvent,
@@ -15,7 +28,27 @@ import {
 
 const AUDIT_LOG_PATH = "data/automation/logs/exchange-rates.log";
 const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
-const PGLITE_WORKFLOW_REQUIRED_ENV = "OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED";
+
+type ExchangeRateCliPGliteProvider = Readonly<{
+  ready: Promise<void>;
+  exchangeRates: ExchangeRatePersistencePort;
+  overviewCurrent(): ReturnType<ExchangeRateCliPGliteWorkerClient["overviewCurrent"]>;
+  close(): void | Promise<unknown>;
+}>;
+
+function createCliPGliteProvider(ledgerDir: string): ExchangeRateCliPGliteProvider {
+  if (process.env[PGLITE_CHILD_RPC_ENDPOINT_ENV] !== undefined
+    || process.env[PGLITE_CHILD_RPC_TOKEN_ENV] !== undefined) {
+    const client = requirePGliteChildRpcClientFromEnv();
+    return {
+      ready: client.ready,
+      exchangeRates: client.operationalProvider.exchangeRates,
+      overviewCurrent: () => client.financial.overviewCurrent(),
+      close: () => client.close(),
+    };
+  }
+  return createExchangeRateCliPGliteWorkerClient(ledgerDir);
+}
 
 type CommandOptions = {
   argv?: string[];
@@ -59,6 +92,13 @@ export async function runExchangeRateSyncCommand(
   const startedAtUtc = now().toISOString();
   let scheduled: string | null = null;
   let request: ExchangeRateRequest = { requiredFrom: null, currencies: [] };
+  let pglite: ExchangeRateCliPGliteProvider | undefined;
+
+  const closePGlite = async () => {
+    const owned = pglite;
+    pglite = undefined;
+    await owned?.close();
+  };
 
   const audit = (record: ExchangeRateAuditRecord) => {
     try {
@@ -71,21 +111,19 @@ export async function runExchangeRateSyncCommand(
   try {
     emitProgress({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
     scheduled = scheduledAtUtc(options.argv ?? []);
-    const pgliteRequired = process.env[PGLITE_WORKFLOW_REQUIRED_ENV] === "1";
-    if (pgliteRequired && (!options.loadRequest || !options.sync)) {
-      throw new Error(
-        "PGlite-required exchange-rate sync needs worker-owned request and persistence callbacks.",
-      );
-    }
     const ledgerDir = options.ledgerDir ?? DEFAULT_LEDGER_DIR;
+    if (!options.loadRequest || !options.sync) {
+      pglite = createCliPGliteProvider(ledgerDir);
+      await pglite.ready;
+    }
     request = options.loadRequest
       ? await options.loadRequest(ledgerDir)
-      : await (await import("./exchange-rate-requirements.ts"))
-        .loadExchangeRateRequest(ledgerDir);
+      : exchangeRateRequestFromOverview(await pglite!.overviewCurrent());
     emitProgress({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
     const result = options.sync
       ? await options.sync(ledgerDir, request)
-      : await syncExchangeRates(ledgerDir, request);
+      : await syncExchangeRates(pglite!.exchangeRates, request);
+    await closePGlite();
     emitProgress({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
     audit({
       scheduledAtUtc: scheduled,
@@ -98,6 +136,7 @@ export async function runExchangeRateSyncCommand(
     });
     return result;
   } catch (error) {
+    await closePGlite().catch(() => undefined);
     audit({
       scheduledAtUtc: scheduled,
       startedAtUtc,

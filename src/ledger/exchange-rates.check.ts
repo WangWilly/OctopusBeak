@@ -1,17 +1,32 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openLedgerDatabase } from "./db/client.ts";
+import test from "node:test";
 import {
   readExchangeRates,
   requiredExchangeRateCurrencies,
   syncExchangeRates,
+  type ExchangeRatePersistencePort,
+  type ExchangeRateRecord,
 } from "./exchange-rates.ts";
 import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
 
-const ledgerDir = await mkdtemp(join(tmpdir(), "exchange-rates-"));
+function memoryPersistence(initial: ExchangeRateRecord[] = []) {
+  const rates = new Map(initial.map((row) => [`${row.rateDate}/${row.currency}`, { ...row }]));
+  const persistence: ExchangeRatePersistencePort = {
+    async readExchangeRates(currencies) {
+      return [...rates.values()]
+        .filter((row) => currencies === undefined || currencies.includes(row.currency))
+        .sort((left, right) => left.currency.localeCompare(right.currency)
+          || left.rateDate.localeCompare(right.rateDate))
+        .map((row) => ({ ...row }));
+    },
+    async upsertExchangeRates(rows) {
+      for (const row of rows) rates.set(`${row.rateDate}/${row.currency}`, { ...row });
+    },
+  };
+  return persistence;
+}
+
 const history: DailyHistoryRowDto[] = [{
   date: "2026-07-12",
   netAssets: [
@@ -25,14 +40,16 @@ const history: DailyHistoryRowDto[] = [{
   positionCount: 2,
 }];
 
-try {
+test("required exchange-rate currencies include every non-TWD amount line", () => {
   assert.deepEqual(requiredExchangeRateCurrencies(history), ["JPY", "USD"]);
+});
 
+test("synchronization validates and upserts the requested Frankfurter rates", async () => {
+  const persistence = memoryPersistence();
   const request: ExchangeRateRequest = {
     requiredFrom: "2026-01-03",
     currencies: ["USD"],
   };
-
   const validFetch: typeof fetch = async (input) => {
     assert.equal(new URL(input.toString()).searchParams.get("from"), "2025-12-27");
     return new Response(JSON.stringify([
@@ -42,14 +59,12 @@ try {
     ]), { status: 200, headers: { "content-type": "application/json" } });
   };
 
-  const result = await syncExchangeRates(ledgerDir, request, {
+  const result = await syncExchangeRates(persistence, request, {
     fetchImpl: validFetch,
     now: () => new Date("2026-07-12T12:00:00.000Z"),
   });
   assert.equal(result.written, 2);
-
-  const db = openLedgerDatabase(ledgerDir);
-  const rates = readExchangeRates(db);
+  const rates = await readExchangeRates(persistence);
   assert.deepEqual(rates, [
     {
       rateDate: "2026-01-03",
@@ -67,21 +82,20 @@ try {
     },
   ]);
   assert.equal(rates.some((rate) => rate.currency === "EUR"), false);
-  db.close();
 
   let fetchCalls = 0;
   const unexpectedFetch: typeof fetch = async () => {
     fetchCalls += 1;
     throw new Error("fetch should not be called");
   };
-  assert.equal((await syncExchangeRates(ledgerDir, {
+  assert.equal((await syncExchangeRates(persistence, {
     requiredFrom: null,
     currencies: [],
   }, {
     fetchImpl: unexpectedFetch,
     now: () => new Date("2026-07-12T18:00:00.000Z"),
   })).written, 0);
-  assert.equal((await syncExchangeRates(ledgerDir, request, {
+  assert.equal((await syncExchangeRates(persistence, request, {
     fetchImpl: unexpectedFetch,
     now: () => new Date("2026-07-12T18:00:00.000Z"),
   })).written, 0);
@@ -93,15 +107,12 @@ try {
       headers: { "content-type": "application/json" },
     });
     await assert.rejects(
-      syncExchangeRates(ledgerDir, request, {
+      syncExchangeRates(persistence, request, {
         fetchImpl: invalidFetch,
         now: () => new Date("2026-07-13T18:00:00.000Z"),
       }),
     );
-
-    const unchangedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    assert.deepEqual(readExchangeRates(unchangedDb), rates);
-    unchangedDb.close();
+    assert.deepEqual(await readExchangeRates(persistence), rates);
   }
 
   await assertRejectedWithoutChangingCache([
@@ -115,7 +126,7 @@ try {
   ]);
   await assertRejectedWithoutChangingCache([]);
 
-  const missingRange = await syncExchangeRates(ledgerDir, {
+  const missingRange = await syncExchangeRates(persistence, {
     requiredFrom: "2026-07-14",
     currencies: ["USD"],
   }, {
@@ -128,26 +139,20 @@ try {
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
   assert.equal(missingRange.from, "2026-07-13");
+});
 
-  const unequalCacheDb = openLedgerDatabase(ledgerDir);
-  unequalCacheDb.prepare(`
-    INSERT INTO exchange_rates
-      (rate_date, currency, twd_per_unit, source, fetched_at)
-    VALUES (?, 'JPY', 0.22, 'frankfurter-v2', ?)
-  `).run("2026-01-03", "2026-07-12T12:00:00.000Z");
-  unequalCacheDb.prepare(`
-    INSERT INTO exchange_rates
-      (rate_date, currency, twd_per_unit, source, fetched_at)
-    VALUES (?, 'JPY', 0.22, 'frankfurter-v2', ?)
-  `).run("2026-07-08", "2026-07-12T12:00:00.000Z");
-  assert.deepEqual(
-    readExchangeRates(unequalCacheDb, ["JPY"]).map((rate) => rate.currency),
-    ["JPY", "JPY"],
-  );
-  assert.deepEqual(readExchangeRates(unequalCacheDb, []), []);
-  unequalCacheDb.close();
+test("unequal currency cache coverage resumes at the earliest missing date", async () => {
+  const fetchedAt = "2026-07-12T12:00:00.000Z";
+  const persistence = memoryPersistence([
+    { rateDate: "2026-01-03", currency: "USD", twdPerUnit: 32, source: "frankfurter-v2", fetchedAt },
+    { rateDate: "2026-07-12", currency: "USD", twdPerUnit: 32, source: "frankfurter-v2", fetchedAt },
+    { rateDate: "2026-01-03", currency: "JPY", twdPerUnit: 0.22, source: "frankfurter-v2", fetchedAt },
+    { rateDate: "2026-07-08", currency: "JPY", twdPerUnit: 0.22, source: "frankfurter-v2", fetchedAt },
+  ]);
+  assert.deepEqual((await readExchangeRates(persistence, ["JPY"])).map((rate) => rate.currency), ["JPY", "JPY"]);
+  assert.deepEqual(await readExchangeRates(persistence, []), []);
 
-  const unequalCache = await syncExchangeRates(ledgerDir, {
+  const result = await syncExchangeRates(persistence, {
     requiredFrom: "2026-07-11",
     currencies: ["USD", "JPY"],
   }, {
@@ -160,7 +165,5 @@ try {
     },
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
-  assert.equal(unequalCache.from, "2026-07-09");
-} finally {
-  await rm(ledgerDir, { recursive: true, force: true });
-}
+  assert.equal(result.from, "2026-07-09");
+});

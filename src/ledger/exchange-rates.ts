@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { LedgerDatabase } from "./db/client.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
 import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 
@@ -54,32 +53,8 @@ export function requiredExchangeRateCurrencies(history: readonly DailyHistoryRow
 export function readExchangeRates(
   persistence: ExchangeRatePersistencePort,
   currencies?: string[],
-): Promise<ExchangeRateRecord[]>;
-export function readExchangeRates(
-  db: LedgerDatabase,
-  currencies?: string[],
-): ExchangeRateRecord[];
-export function readExchangeRates(
-  databaseOrPersistence: LedgerDatabase | ExchangeRatePersistencePort,
-  currencies?: string[],
-): ExchangeRateRecord[] | Promise<ExchangeRateRecord[]> {
-  if ("readExchangeRates" in databaseOrPersistence) {
-    return databaseOrPersistence.readExchangeRates(currencies);
-  }
-  const db = databaseOrPersistence;
-  if (currencies?.length === 0) return [];
-  const placeholders = currencies?.map(() => "?").join(", ");
-  return (db.prepare(`
-    SELECT
-      rate_date AS rateDate,
-      currency,
-      twd_per_unit AS twdPerUnit,
-      source,
-      fetched_at AS fetchedAt
-    FROM exchange_rates
-    ${placeholders ? `WHERE currency IN (${placeholders})` : ""}
-    ORDER BY currency, rate_date
-  `).all(...(currencies ?? [])) as ExchangeRateRecord[]).map((row) => ({ ...row }));
+): Promise<ExchangeRateRecord[]> {
+  return persistence.readExchangeRates(currencies);
 }
 
 function synchronizationStart(
@@ -104,121 +79,15 @@ function synchronizationStart(
   }).sort()[0] ?? null;
 }
 
-function upsertExchangeRates(db: LedgerDatabase, rows: ExchangeRateRecord[]) {
-  const statement = db.prepare(`
-    INSERT INTO exchange_rates
-      (rate_date, currency, twd_per_unit, source, fetched_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(rate_date, currency) DO UPDATE SET
-      twd_per_unit = excluded.twd_per_unit,
-      source = excluded.source,
-      fetched_at = excluded.fetched_at
-  `);
-  db.exec("BEGIN");
-  try {
-    for (const row of rows) {
-      statement.run(
-        row.rateDate,
-        row.currency,
-        row.twdPerUnit,
-        row.source,
-        row.fetchedAt,
-      );
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
 export function syncExchangeRates(
   persistence: ExchangeRatePersistencePort,
   request: ExchangeRateRequest,
-  options?: SyncOptions,
-): Promise<ExchangeRateSyncResult>;
-export function syncExchangeRates(
-  ledgerDir: string,
-  request: ExchangeRateRequest,
-  options?: SyncOptions,
-): Promise<ExchangeRateSyncResult>;
-export async function syncExchangeRates(
-  ledgerDirOrPersistence: string | ExchangeRatePersistencePort,
-  request: ExchangeRateRequest,
   options: SyncOptions = {},
 ): Promise<ExchangeRateSyncResult> {
-  if (typeof ledgerDirOrPersistence !== "string") {
-    return syncExchangeRatesWithPersistence(ledgerDirOrPersistence, request, options);
-  }
-  const ledgerDir = ledgerDirOrPersistence;
-  const now = (options.now ?? (() => new Date()))();
-  const to = now.toISOString().slice(0, 10);
-  const currencies = [...new Set(request.currencies)]
-    .filter((currency) => currency !== "TWD" && currency !== "UNKNOWN")
-    .sort();
-  if (currencies.length === 0 || !request.requiredFrom) {
-    return { requestedCurrencies: currencies, from: null, to, written: 0 };
-  }
-
-  const { openLedgerDatabase } = await import("./db/client.ts");
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const from = synchronizationStart(
-      request.requiredFrom,
-      to,
-      currencies,
-      readExchangeRates(db, currencies),
-    );
-    if (!from || from > to) {
-      return { requestedCurrencies: currencies, from, to, written: 0 };
-    }
-    const url = new URL(API_URL);
-    url.searchParams.set("base", "TWD");
-    url.searchParams.set("quotes", currencies.join(","));
-    url.searchParams.set("from", from);
-    url.searchParams.set("to", to);
-    const response = await (options.fetchImpl ?? fetch)(url, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      throw new Error(`Frankfurter request failed: ${response.status}`);
-    }
-    const parsed = apiResponseSchema.parse(await response.json())
-      .filter((row) => currencies.includes(row.quote));
-    if (parsed.some((row) => row.date < from || row.date > to)) {
-      throw new Error(`Frankfurter response date outside ${from}..${to}`);
-    }
-    for (const currency of currencies) {
-      if (!parsed.some((row) => row.quote === currency)) {
-        throw new Error(`Frankfurter response missing ${currency}`);
-      }
-    }
-    const fetchedAt = now.toISOString();
-    const rows = parsed.map((row): ExchangeRateRecord => {
-      const twdPerUnit = 1 / row.rate;
-      if (!Number.isFinite(twdPerUnit) || twdPerUnit <= 0) {
-        throw new Error(`Frankfurter response has invalid inverse rate for ${row.quote}`);
-      }
-      return {
-        rateDate: row.date,
-        currency: row.quote,
-        twdPerUnit,
-        source: SOURCE,
-        fetchedAt,
-      };
-    });
-    upsertExchangeRates(db, rows);
-    return { requestedCurrencies: currencies, from, to, written: rows.length };
-  } finally {
-    db.close();
-  }
+  return syncExchangeRatesWithPersistence(persistence, request, options);
 }
 
-/**
- * Async counterpart used after the worker owns operational persistence.
- * Network validation and coverage rules are shared with the SQLite command;
- * only the injected read/upsert capability changes.
- */
+/** Run exchange-rate synchronization against the injected persistence port. */
 export async function syncExchangeRatesWithPersistence(
   persistence: ExchangeRatePersistencePort,
   request: ExchangeRateRequest,
