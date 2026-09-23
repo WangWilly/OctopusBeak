@@ -7,7 +7,7 @@ import type {
   LoanEventKind,
   LoanExactAmount,
   LoanSourceId,
-} from "./loan-financial.ts";
+} from "./loan-financial-contracts.ts";
 
 export const LOAN_CANONICAL_CONTRACT_VERSION = "loan/canonical/v1" as const;
 /**

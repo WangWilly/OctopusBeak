@@ -9,7 +9,6 @@ import {
   type FinancialDepositAmount,
   type FinancialDepositSourceTime,
 } from "./canonical-financial-deposit-admission.ts";
-import type { CanonicalFinancialDepositWriterStore } from "./canonical-financial-deposit-writer.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
 import {
   validateCanonicalSourceAccountNumber,
@@ -152,7 +151,6 @@ export type ForeignCurrencyDepositCaptureInput = {
 export type ForeignCurrencyDepositAdmittedCapture =
   CanonicalFinancialDepositValidatedCapture;
 
-export type ForeignCurrencyDepositCommitStore = CanonicalFinancialDepositWriterStore;
 
 export type ForeignCurrencyConversionQuery = {
   originalAmount: FinancialDepositAmount | null;

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { CanonicalSourceStore } from "./canonical-source-store.ts";
 import {
   stableCanonicalSourceJson,
   type CanonicalSourcePage,
@@ -23,11 +22,6 @@ export type CreditCardCurrentBalanceIdentity = Readonly<{
   /** Existing issuer-aggregate account key. Never a PAN or card mask. */
   sourceAccountKey: string;
 }>;
-
-export type CreditCardCurrentBalanceWriterStore = Pick<
-  CanonicalSourceStore,
-  "db" | "commitClock" | "withWriter"
->;
 
 export type CreditCardCurrentBalanceTimeEvidence = Readonly<{
   effectiveAt: string;
