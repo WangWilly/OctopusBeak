@@ -53,8 +53,8 @@ import {
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import type {
   LoanRepaymentRelationResolutionResult,
-  TransactionCounterpartyAccountEvidenceInput,
 } from "../ledger/canonical/loan-repayment-relations-contract.ts";
+import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import {
   writeYuantaOccurrenceDiagnosticCandidate,
   yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
