@@ -56,11 +56,37 @@ test("MaiCoin sync snapshots and history use the worker owned PGlite port", asyn
     assert.deepEqual(JSON.parse(run.rows[0]!.record_json), { status: "completed" });
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_account_snapshots")).rows[0]?.count, 1);
     assert.equal((await store.query<{ value_twd: number }>("SELECT value_twd FROM maicoin_statement_rows WHERE statement_id=$1", ["synthetic-statement"])).rows[0]?.value_twd, 120);
+    await applyPgliteMaicoinOperationalSchema(store);
+    assert.equal((await store.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM pglite_operational_migrations",
+    )).rows[0]?.count, 1);
+    await store.exec("DROP INDEX idx_maicoin_statement_rows_time");
+    await assert.rejects(
+      applyPgliteMaicoinOperationalSchema(store),
+      /object inventory is incomplete/u,
+    );
   } finally {
     client.close();
     await server.close();
     channel.port1.close();
     channel.port2.close();
+    await store.close();
+  }
+});
+
+test("MaiCoin migration rejects unrecorded partial schema without writing metadata", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await store.exec("CREATE TABLE maicoin_sync_runs(sync_run_id TEXT PRIMARY KEY)");
+    await assert.rejects(
+      applyPgliteMaicoinOperationalSchema(store),
+      /tables exist without a migration record/u,
+    );
+    const metadata = await store.query<{ exists: boolean }>(
+      "SELECT to_regclass('pglite_operational_migrations') IS NOT NULL AS exists",
+    );
+    assert.equal(metadata.rows[0]?.exists, false);
+  } finally {
     await store.close();
   }
 });
