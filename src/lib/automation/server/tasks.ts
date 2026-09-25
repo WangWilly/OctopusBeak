@@ -1011,15 +1011,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "cathay-all-statements",
     label: "Cathay all statements",
-    script: "run:cathay-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/cathay-all-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    script: "workflow:cathay-all-statements",
+    command: [],
+    workflowId: "cathay-all-statements",
     kind: "crawler",
     credentialGroupId: "cathay",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[4].credentialKeys,

@@ -6,12 +6,34 @@ import { postDomesticDepositWorkflow } from "../post-workflow.ts";
 import { sinopacStatementsWorkflow } from "../sinopac-workflow.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
+import type {
+  CathayAllProviderWorkflowInput,
+  CathayAllProviderWorkflowOutput,
+} from "../../../workflows/cathay-all-statements.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   startUrl?: string;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
 }>;
+
+const cathayAllStatementsWorkflow: WorkflowDefinition<
+  unknown,
+  CathayAllProviderWorkflowOutput
+> = {
+  id: "cathay-all-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const [provider, otpHost] = await Promise.all([
+      import("../cathay-all-workflow.ts"),
+      import("./cathay-otp-port.ts"),
+    ]);
+    const definition = provider.createCathayAllStatementsWorkflow(
+      otpHost.createCathayGmailOtpPort(),
+    );
+    return await definition.run(context, input as CathayAllProviderWorkflowInput);
+  },
+};
 
 /** One registration catalog for workflows activated on the App executor. */
 export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
@@ -90,6 +112,24 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           sinopac_account: environment.LIBRETTO_CLOUD_SINOPAC_ACCOUNT ?? "",
           sinopac_password: environment.LIBRETTO_CLOUD_SINOPAC_PASSWORD ?? "",
         },
+      };
+    },
+  },
+  {
+    definition: cathayAllStatementsWorkflow,
+    startUrl: "https://www.cathaybk.com.tw/MyBank/",
+    inputFromEnvironment(environment) {
+      const configuredTypes = environment.LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES;
+      const statementTypes = configuredTypes === undefined
+        ? undefined
+        : configuredTypes.split(",").map((type) => type.trim()).filter(Boolean);
+      return {
+        credentials: {
+          cathay_user_id: environment.LIBRETTO_CLOUD_CATHAY_USER_ID ?? "",
+          cathay_account: environment.LIBRETTO_CLOUD_CATHAY_ACCOUNT ?? "",
+          cathay_password: environment.LIBRETTO_CLOUD_CATHAY_PASSWORD ?? "",
+        },
+        ...(statementTypes === undefined ? {} : { statementTypes }),
       };
     },
   },
