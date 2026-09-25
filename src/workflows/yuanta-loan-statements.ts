@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
@@ -156,6 +157,7 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
   traverseLoanStatementPages: (
     page: Page,
     accountLabel: string,
+    options?: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }>,
   ) => Promise<ReturnType<typeof assembleYuantaLoanStatement>>;
   writeLoanStatementsFile: typeof writeLoanStatementsFile;
   /**
@@ -173,6 +175,16 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
     | Promise<readonly YuantaCounterpartyAccountEvidence[]>;
   /** Optional provider-explicit transaction links supplied by a live adapter. */
   explicitRelationLinks: readonly PGliteCanonicalExplicitLoanRelationLink[];
+  collectOnly: true;
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+}>;
+
+export type YuantaLoanWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
 }>;
 
 const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
@@ -359,7 +371,8 @@ function logYuantaLoanPaginationObservation(observation: {
   explicitNoNext?: boolean;
   terminal?: boolean;
   evidence?: YuantaLoanPaginationSignal["evidence"];
-}): void {
+}, silent = false): void {
+  if (silent) return;
   console.log("yuanta-loan-pagination-observation", {
     ruleVersion: YUANTA_LOAN_TERMINAL_RULE_VERSION,
     ...observation,
@@ -442,11 +455,12 @@ export function parseYuantaLoanPaginationSignal(
     providerResultTable?: boolean;
     tableCount?: number;
     headerCellCount?: number;
+    silent?: boolean;
   },
 ): YuantaLoanPaginationSignal {
   const providerMarkup = yuantaLoanResultMarkup(html);
   if (!providerMarkup) {
-    logYuantaLoanPaginationObservation({ resultContext: false });
+    logYuantaLoanPaginationObservation({ resultContext: false }, structural?.silent);
     return {
       nextPageTarget: null,
       terminal: false,
@@ -496,7 +510,7 @@ export function parseYuantaLoanPaginationSignal(
       ...observationBase,
       terminal: false,
       evidence: nextPageTarget ? "next-page" : null,
-    });
+    }, structural?.silent);
     return {
       nextPageTarget,
       terminal: false,
@@ -533,7 +547,7 @@ export function parseYuantaLoanPaginationSignal(
       ...observationBase,
       terminal: true,
       evidence: "terminal-no-next",
-    });
+    }, structural?.silent);
     return {
       nextPageTarget: null,
       terminal: true,
@@ -545,7 +559,7 @@ export function parseYuantaLoanPaginationSignal(
     ...observationBase,
     terminal: false,
     evidence: null,
-  });
+  }, structural?.silent);
 
   return {
     nextPageTarget: null,
@@ -1050,6 +1064,7 @@ async function parseLoanStatementRows(
   page: Page,
   accountLabel: string,
   pageOrdinal: number,
+  options: Readonly<{ sourceText?: SourceTextPort; silent?: boolean }> = {},
 ): Promise<{
   rows: StatementRow[];
   pageOrdinal: number;
@@ -1082,6 +1097,7 @@ async function parseLoanStatementRows(
 
   const parsedRows = parseYuantaLoanStatementRows(accountLabel, sourceRows);
   const renderedHtml = await scope.locator("body").innerHTML().catch(() => "");
+  options.sourceText?.assertIntact(renderedHtml);
   return {
     rows: parsedRows,
     pageOrdinal,
@@ -1092,6 +1108,7 @@ async function parseLoanStatementRows(
         providerResultTable: tableCount > 0,
         tableCount,
         headerCellCount,
+        silent: options.silent,
       },
     ),
   };
@@ -1215,17 +1232,20 @@ function materializeYuantaLoanCounterpartyEvidence(
 async function traverseYuantaLoanStatementPages(
   page: Page,
   accountLabel: string,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
 ): Promise<ReturnType<typeof assembleYuantaLoanStatement>> {
   const pages: ParsedYuantaLoanPage[] = [];
   const fingerprints = new Set<string>();
 
   while (true) {
+    options.signal?.throwIfAborted();
     if (pages.length >= YUANTA_LOAN_MAX_PAGES)
       throw new Error("Yuanta loan pagination exceeded the safe page limit.");
     const parsed = await parseLoanStatementRows(
       page,
       accountLabel,
       pages.length,
+      options,
     );
     const fingerprint = JSON.stringify({
       rows: parsed.rows.map((row) => [
@@ -1251,17 +1271,31 @@ async function traverseYuantaLoanStatementPages(
       );
     await nextControl.click({ force: true });
     await settleAfterNavigation(page);
+    options.signal?.throwIfAborted();
     await findScopeWithSelector(page, "#resultdiv");
   }
 
   return assembleYuantaLoanStatement(pages);
 }
 
+export function runYuantaLoanStatements(
+  page: Page,
+  input: WorkflowInput,
+  overrides: YuantaLoanStatementsRunDependencies & Readonly<{
+    collectOnly: true;
+    deferredCommitItems: PGliteWorkflowRunItem[];
+  }>,
+): Promise<YuantaLoanWorkflowCollection>;
+export function runYuantaLoanStatements(
+  page: Page,
+  input: WorkflowInput,
+  overrides?: YuantaLoanStatementsRunDependencies,
+): Promise<Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">>;
 export async function runYuantaLoanStatements(
   page: Page,
   input: WorkflowInput,
   overrides: YuantaLoanStatementsRunDependencies = {},
-): Promise<Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">> {
+): Promise<YuantaLoanWorkflowCollection | Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">> {
   const openStatementPage =
     overrides.openLoanStatementPage ?? openLoanStatementPage;
   const readAccounts =
@@ -1283,15 +1317,21 @@ export async function runYuantaLoanStatements(
   );
   const rows: StatementRow[] = [];
   const sourceTables: SourceTable[] = [];
+  const collectedItems: PGliteWorkflowRunItem[] = [];
   const nextTimestamp = createTimestampGenerator();
   const dateRange = describeDateRange(input);
   const canonicalRange = canonicalLoanDateRange(input);
 
-  const items = async function* (): AsyncIterable<PGliteWorkflowRunItem> {
-    for (const account of accounts) {
+  for (const account of accounts) {
+      overrides.signal?.throwIfAborted();
       const maskedAccount = maskAccountLabel(account.label);
       await queryAccount(page, input, account);
-      const parsed = await traversePages(page, maskedAccount);
+      overrides.signal?.throwIfAborted();
+      const parsed = await traversePages(page, maskedAccount, {
+        ...(overrides.sourceText ? { sourceText: overrides.sourceText } : {}),
+        ...(overrides.signal ? { signal: overrides.signal } : {}),
+        ...(overrides.collectOnly ? { silent: true } : {}),
+      });
       if (
         !parsed.completeness ||
         parsed.pages.length !== parsed.completeness.pageCount
@@ -1301,6 +1341,7 @@ export async function runYuantaLoanStatements(
         );
       }
       const accountRows = parsed.rows;
+      overrides.sourceText?.assertIntact(JSON.stringify({ account: account.label, rows: accountRows }));
       rows.push(...accountRows);
       sourceTables.push({
         account: maskedAccount,
@@ -1350,7 +1391,8 @@ export async function runYuantaLoanStatements(
             accountRows,
           )
         : [yuantaLoanSelectorAccountEvidence(account)];
-      yield {
+      overrides.signal?.throwIfAborted();
+      collectedItems.push({
         provider: "yuanta",
         product: "loan",
         itemKey: capture.captureId,
@@ -1373,23 +1415,34 @@ export async function runYuantaLoanStatements(
           relationResolution =
             value as PGliteCanonicalLoanRelationResolutionResult;
         },
-      };
-    }
-  };
-  const executionResult = await (async () => {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      return await executePGliteWorkflowRun({
-        client: client.workflow,
-        items: items(),
-        provider: "yuanta",
-        product: "loan",
       });
-    } finally {
-      client.close();
-    }
-  })();
+  }
+
+  overrides.signal?.throwIfAborted();
+  if (overrides.collectOnly) {
+    if (!overrides.deferredCommitItems)
+      throw new Error("Yuanta loan collection requires a deferred commit sink.");
+    overrides.deferredCommitItems.push(...collectedItems);
+    return {
+      sourceCount: accounts.length,
+      rowCount: rows.length,
+      itemCount: collectedItems.length,
+    };
+  }
+
+  const client = requirePGliteChildRpcClientFromEnv();
+  let executionResult;
+  try {
+    await client.ready;
+    executionResult = await executePGliteWorkflowRun({
+      client: client.workflow,
+      items: collectedItems,
+      provider: "yuanta",
+      product: "loan",
+    });
+  } finally {
+    client.close();
+  }
 
   if (executionResult.status !== "completed")
     throw new Error(

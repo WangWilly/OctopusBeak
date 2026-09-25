@@ -4,6 +4,10 @@ import {
   type LibrettoWorkflowContext,
 } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContractInput,
+} from "../lib/automation/human-assistance.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -420,10 +424,12 @@ async function waitForSignedInState(
   page: Page,
   getLastDialogState: () => YuantaBankDialogState | null,
   replaceActiveSession: boolean,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const deadline = Date.now() + 120_000;
   let replacedActiveSession = false;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (await isYuantaSignedIn(page)) return replacedActiveSession;
 
     const loginFrame = page.frame({ name: "main" });
@@ -465,6 +471,7 @@ async function waitForSignedInState(
 
     await page.waitForTimeout(500);
   }
+  signal?.throwIfAborted();
 
   const dialogState = getLastDialogState();
   throw new Error(
@@ -561,6 +568,87 @@ export async function authenticateYuantaBank(
     usedProfile: usedExistingSession,
     replacedActiveSession,
   };
+}
+
+function withYuantaAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Workflow cancelled."));
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Workflow cancelled."));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+  });
+}
+
+/** Yuanta authentication through the App-owned browser and human-assistance ports. */
+export async function authenticateYuantaBankWithAssistance(
+  page: Page,
+  credentials: YuantaCredentials,
+  replaceActiveSession: boolean,
+  options: Readonly<{
+    signal: AbortSignal;
+    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
+    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+  }>,
+): Promise<Readonly<{ usedExistingSession: boolean; replacedActiveSession: boolean }>> {
+  const { signal, request } = options;
+  signal.throwIfAborted();
+  if (await withYuantaAbort(isYuantaSignedIn(page), signal))
+    return { usedExistingSession: true, replacedActiveSession: false };
+
+  let lastBankDialogState: YuantaBankDialogState | null = null;
+  let replacedActiveSession = false;
+  const event = options.event ?? (() => Promise.resolve());
+  const acceptBankDialog = async (dialog: Dialog) => {
+    lastBankDialogState = yuantaBankDialogState(dialog);
+    await dialog.accept();
+  };
+  page.on("dialog", acceptBankDialog);
+  try {
+    signal.throwIfAborted();
+    await withYuantaAbort(fillLoginForm(page, credentials), signal);
+    let loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
+    await withYuantaAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
+    const contract = await withYuantaAbort(
+      emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame), (value) => value),
+      signal,
+    );
+    signal.throwIfAborted();
+    await event("human-assistance-requested");
+    const assistanceStatus = await withYuantaAbort(request(contract, signal), signal);
+    signal.throwIfAborted();
+    if (assistanceStatus !== "entered" && assistanceStatus !== "verified") {
+      await event("human-assistance-failed");
+      throw new Error("Yuanta Bank CAPTCHA assistance did not complete.");
+    }
+    await event("human-assistance-completed");
+
+    // Navigation may recreate the login frame while Assist is open. Rebind
+    // before inspecting the answer or submitting.
+    loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
+    if (!(await withYuantaAbort(loginFrame.locator("#gcode").inputValue(), signal)).trim())
+      throw new Error("Yuanta Bank CAPTCHA is empty. Enter it before resuming.");
+    const loginButtonVisible = await withYuantaAbort(
+      loginFrame.locator('a[href="javascript:doPreLogin();"]').isVisible().catch(() => false),
+      signal,
+    );
+    if (loginButtonVisible) {
+      await withYuantaAbort(submitLogin(page, credentials), signal);
+    }
+    replacedActiveSession = await withYuantaAbort(
+      waitForSignedInState(page, () => lastBankDialogState, replaceActiveSession, signal),
+      signal,
+    );
+    return { usedExistingSession: false, replacedActiveSession };
+  } finally {
+    page.off("dialog", acceptBankDialog);
+  }
 }
 
 export { currentCidFromFrameUrls, waitForMainFrame };

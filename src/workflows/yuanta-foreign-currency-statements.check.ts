@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,6 +9,8 @@ import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 const syntheticYuantaForeignAccountNumber = ["0012", "3456", "7890"].join("");
 
@@ -40,6 +42,8 @@ const {
   waitForYuantaForeignCurrencyResultTransition,
   selectYuantaForeignCurrencyAccount,
   isYuantaForeignCurrencyCsvControl,
+  runYuantaForeignCurrencyStatements,
+  yuantaForeignCurrencyStatementsInputSchema,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
@@ -1359,7 +1363,7 @@ const yuantaMultipleRowsFromOneAccount =
     ],
     {
       dateRange: "three_months",
-      customDateRange: fixedForeignDateRange,
+      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
       accountFilters: [],
       currencyFilters: [],
       channelType: "all",
@@ -1672,6 +1676,85 @@ assert.throws(
     ),
   /source currency/i,
 );
+
+const typedForeignTemp = await mkdtemp(join(tmpdir(), "yuanta-foreign-typed-"));
+const typedForeignOriginalCwd = process.cwd();
+process.chdir(typedForeignTemp);
+try {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  const result = await runYuantaForeignCurrencyStatements(
+    {} as never,
+    yuantaForeignCurrencyStatementsInputSchema.parse({
+      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+    }),
+    { yuanta_user_id: "synthetic-yuanta-login" },
+    {
+      openPage: async () => undefined,
+      readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
+      selectAccount: async () => undefined,
+      readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
+      queryAccountCurrency: async () => undefined,
+      downloadRows: async () => ({
+        filename: "synthetic.csv",
+        rows: [{
+          accountLabel: "外幣綜合存款",
+          accountValue: "00123456789012",
+          queryCurrencyLabel: "全部幣別",
+          queryCurrencyValue: "ALL",
+          values: ["1", "20260823", "20260823", "09:10", "USD", "外幣存入", "", "10.00", "110.00", "交易資訊", "31.50"],
+          sortTime: null,
+        }],
+      }),
+      readCurrentBalances: async () => [],
+      now: () => "2026-08-24T12:00:00+08:00",
+      signal: new AbortController().signal,
+      sourceText: strictSourceText,
+      collectOnly: true,
+      deferredCommitItems: deferred,
+    } as never,
+  );
+  assert.deepEqual(result, { sourceCount: 1, rowCount: 1, itemCount: 1 });
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.product, "foreign-currency-deposit");
+
+  const rejectedItems: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(
+    runYuantaForeignCurrencyStatements(
+      {} as never,
+      yuantaForeignCurrencyStatementsInputSchema.parse({
+        customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+      }),
+      { yuanta_user_id: "synthetic-yuanta-login" },
+      {
+        openPage: async () => undefined,
+        readAccounts: async () => [{ value: "00123456789012", label: "外幣綜合存款" }],
+        selectAccount: async () => undefined,
+        readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
+        queryAccountCurrency: async () => undefined,
+        downloadRows: async () => ({
+          filename: "synthetic.csv",
+          rows: [{
+            accountLabel: "外幣綜合存款", accountValue: "00123456789012",
+            queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
+            values: ["1", "20260823", "20260823", "09:10", "USD", "bad\uFFFDsource", "", "10.00", "110.00", "交易資訊", "31.50"], sortTime: null,
+          }],
+        }),
+        readCurrentBalances: async () => [],
+        now: () => "2026-08-24T12:00:00+08:00",
+        signal: new AbortController().signal,
+        sourceText: strictSourceText,
+        collectOnly: true,
+        deferredCommitItems: rejectedItems,
+      } as never,
+    ),
+    /replacement-character/u,
+  );
+  assert.deepEqual(rejectedItems, []);
+  assert.deepEqual(await readdir(typedForeignTemp), []);
+} finally {
+  process.chdir(typedForeignOriginalCwd);
+  await rm(typedForeignTemp, { recursive: true, force: true });
+}
 
 const enabledPgliteDir = await mkdtemp(join(tmpdir(), "yuanta-foreign-pglite-"));
 const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {

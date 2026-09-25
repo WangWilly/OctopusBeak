@@ -8,7 +8,7 @@ import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
+import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -103,7 +103,7 @@ const customDateRangeSchema = z.object({
   endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
 });
 
-const inputSchema = z.object({
+export const yuantaForeignCurrencyStatementsInputSchema = z.object({
   dateRange: quickDateRangeSchema.default("three_months"),
   customDateRange: customDateRangeSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
@@ -111,6 +111,7 @@ const inputSchema = z.object({
   channelType: channelTypeSchema.default("all"),
   replaceActiveSession: z.boolean().default(true),
 });
+const inputSchema = yuantaForeignCurrencyStatementsInputSchema;
 
 const tableFileSchema = z.object({
   baseName: z.string(),
@@ -138,7 +139,8 @@ const outputSchema = z.object({
   files: z.array(tableFileSchema),
 });
 
-type WorkflowInput = z.infer<typeof inputSchema>;
+export type YuantaForeignCurrencyWorkflowInput = z.infer<typeof inputSchema>;
+type WorkflowInput = YuantaForeignCurrencyWorkflowInput;
 type TableFile = z.infer<typeof tableFileSchema>;
 
 type SourceDownloadMetadata = {
@@ -1545,7 +1547,9 @@ async function hasVisibleYuantaForeignCurrencyTimestampResult(
 
 function logYuantaForeignCurrencyResultObservation(
   observations: readonly YuantaForeignResultObservation[],
+  silent = false,
 ): void {
+  if (silent) return;
   const serializedObservation = JSON.stringify({
     ruleVersion: YUANTA_FOREIGN_RESULT_RULE_VERSION,
     framesExamined: observations.length,
@@ -1699,11 +1703,13 @@ async function refreshYuantaForeignCurrencyCsvControl(
 export async function findYuantaForeignCurrencyCsvDownloadControl(
   page: Page,
   timeoutMs = 60_000,
+  options: Readonly<{ silent?: boolean; signal?: AbortSignal }> = {},
 ): Promise<YuantaForeignCurrencyCsvControlTarget> {
   const deadline = Date.now() + timeoutMs;
   let lastObservations: YuantaForeignResultObservation[] = [];
 
   while (Date.now() < deadline) {
+    options.signal?.throwIfAborted();
     const observations: YuantaForeignResultObservation[] = [];
     let providerError = false;
     let providerNoData = false;
@@ -1817,14 +1823,14 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
 
     lastObservations = observations;
     if (providerNoData) {
-      logYuantaForeignCurrencyResultObservation(observations);
+      logYuantaForeignCurrencyResultObservation(observations, options.silent);
       return {
         kind: "empty",
         reason: "provider-explicit-no-data",
       };
     }
     if (!readyResultFound && providerError) {
-      logYuantaForeignCurrencyResultObservation(observations);
+      logYuantaForeignCurrencyResultObservation(observations, options.silent);
       throw new Error(
         "YuanTa foreign-currency provider returned an explicit result error.",
       );
@@ -1835,7 +1841,7 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
       await page.waitForTimeout(Math.min(250, remainingMs));
   }
 
-  logYuantaForeignCurrencyResultObservation(lastObservations);
+  logYuantaForeignCurrencyResultObservation(lastObservations, options.silent);
   if (
     lastObservations.some(
       (observation) =>
@@ -2746,6 +2752,7 @@ async function downloadTransactionRows(
   currencyLabel: string,
   currencyValue: string,
   requery: () => Promise<void>,
+  sourceText: SourceTextPort = strictSourceText,
 ): Promise<{ filename: string | null; rows: ForeignCurrencyTransactionRow[] }> {
   const download = await clickYuantaForeignCurrencyCsvDownloadControl(
     page,
@@ -2758,7 +2765,8 @@ async function downloadTransactionRows(
   }
 
   const filename = download.suggestedFilename();
-  const content = await readBig5DownloadAsUtf8(download);
+  const content = await readBig5DownloadAsUtf8(download, sourceText);
+  sourceText.assertIntact(content);
   return {
     filename,
     rows: transactionRowsFromDownloadedCsv(
@@ -2768,6 +2776,263 @@ async function downloadTransactionRows(
       currencyLabel,
       currencyValue,
     ),
+  };
+}
+
+/** Fetch the provider's verified export link into memory; App runs disable browser downloads. */
+async function downloadTransactionRowsInMemory(
+  page: Page,
+  accountLabel: string,
+  accountValue: string,
+  currencyLabel: string,
+  currencyValue: string,
+  requery: () => Promise<void>,
+  sourceText: SourceTextPort = strictSourceText,
+  signal?: AbortSignal,
+): Promise<{ filename: string | null; rows: ForeignCurrencyTransactionRow[] }> {
+  let target: YuantaForeignCurrencyCsvControlTarget;
+  try {
+    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+      silent: true,
+      signal,
+    });
+  } catch (error) {
+    if (!(error instanceof YuantaForeignCurrencyPendingResultError)) throw error;
+    signal?.throwIfAborted();
+    await requery();
+    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+      silent: true,
+      signal,
+    });
+  }
+  if (target.kind === "empty") return { filename: null, rows: [] };
+  signal?.throwIfAborted();
+  const control = await target.refresh();
+  if (!control)
+    throw new Error("Yuanta foreign-currency export control changed before in-memory retrieval.");
+
+  const response = await control.evaluate(
+    async (element, expectedOrigin) => {
+      const href = element.getAttribute("href")?.trim();
+      if (!href || href.toLowerCase().startsWith("javascript:"))
+        throw new Error("Yuanta foreign-currency export has no fetchable same-origin URL.");
+      const url = new URL(href, element.ownerDocument.baseURI);
+      if (url.origin !== expectedOrigin)
+        throw new Error("Yuanta foreign-currency export left the bank origin.");
+      const result = await fetch(url, {
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "follow",
+      });
+      if (new URL(result.url).origin !== expectedOrigin)
+        throw new Error("Yuanta foreign-currency export redirected outside the bank origin.");
+      if (!result.ok)
+        throw new Error("Yuanta foreign-currency export request failed.");
+      const bytes = new Uint8Array(await result.arrayBuffer());
+      if (bytes.byteLength > 25 * 1024 * 1024)
+        throw new Error("Yuanta foreign-currency export exceeded the in-memory size limit.");
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return {
+        status: result.status,
+        contentType: result.headers.get("content-type") ?? "",
+        base64: btoa(binary),
+      };
+    },
+    new URL(YUANTA_ENTRY_URL).origin,
+  );
+  signal?.throwIfAborted();
+  if (response.status !== 200)
+    throw new Error("Yuanta foreign-currency export returned an unexpected status.");
+  const content = sourceText.decode(Buffer.from(response.base64, "base64"), "big5");
+  sourceText.assertIntact(content);
+  const rows = transactionRowsFromDownloadedCsv(
+    content,
+    accountLabel,
+    accountValue,
+    currencyLabel,
+    currencyValue,
+  );
+  return { filename: null, rows };
+}
+
+export type YuantaForeignCurrencyWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+}>;
+
+export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
+  openPage?: typeof openForeignCurrencyDetailsPage;
+  readAccounts?: typeof readYuantaForeignCurrencyAccountOptions;
+  selectAccount?: typeof selectAccount;
+  readCurrencies?: typeof readYuantaForeignCurrencyOptions;
+  queryAccountCurrency?: typeof queryAccountCurrency;
+  downloadRows?: typeof downloadTransactionRowsInMemory;
+  readCurrentBalances?: typeof readYuantaCurrentDepositBalances;
+  now?: () => string;
+  signal?: AbortSignal;
+  sourceText?: SourceTextPort;
+  collectOnly?: true;
+  deferredCommitItems?: PGliteWorkflowRunItem[];
+}>;
+
+/** Collect every selected FX account/currency source and build canonical items without committing or writing files. */
+export async function runYuantaForeignCurrencyStatements(
+  page: Page,
+  input: WorkflowInput,
+  credentials: YuantaCredentials,
+  overrides: YuantaForeignCurrencyWorkflowDependencies & Readonly<{
+    collectOnly: true;
+    deferredCommitItems: PGliteWorkflowRunItem[];
+  }>,
+): Promise<YuantaForeignCurrencyWorkflowCollection> {
+  const signal = overrides.signal;
+  const sourceText = overrides.sourceText ?? strictSourceText;
+  const checkCancelled = () => signal?.throwIfAborted();
+  const openPage = overrides.openPage ?? openForeignCurrencyDetailsPage;
+  const readAccounts = overrides.readAccounts ?? readYuantaForeignCurrencyAccountOptions;
+  const select = overrides.selectAccount ?? selectAccount;
+  const readCurrencies = overrides.readCurrencies ?? readYuantaForeignCurrencyOptions;
+  const query = overrides.queryAccountCurrency ?? queryAccountCurrency;
+  const downloadRows = overrides.downloadRows ?? downloadTransactionRowsInMemory;
+  const readBalances = overrides.readCurrentBalances ?? readYuantaCurrentDepositBalances;
+  const now = overrides.now ?? (() => new Date().toISOString());
+
+  checkCancelled();
+  await openPage(page);
+  const accounts = await readAccounts(page, input.accountFilters);
+  const rows: ForeignCurrencyTransactionRow[] = [];
+  const sourceDownloads: SourceDownloadMetadata[] = [];
+
+  for (const account of accounts) {
+    checkCancelled();
+    await select(page, account);
+    const currencies = await readCurrencies(page, input.currencyFilters);
+    for (const currency of currencies) {
+      checkCancelled();
+      const maskedAccount = maskAccountLabel(account.label);
+      await query(page, input, account, currency);
+      checkCancelled();
+      const download = await downloadRows(
+        page,
+        maskedAccount,
+        account.value,
+        currency.label,
+        currency.value,
+        () => query(page, input, account, currency),
+        sourceText,
+        signal,
+      );
+      sourceText.assertIntact(JSON.stringify(download));
+      rows.push(...download.rows);
+      sourceDownloads.push({
+        accountValue: account.value,
+        account: maskedAccount,
+        currency: currency.label,
+        filename: download.filename,
+        rowCount: download.rows.length,
+      });
+    }
+  }
+
+  checkCancelled();
+  const captureOccurrenceId = randomUUID();
+  const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
+  for (const row of rows) {
+    sourceText.assertIntact(JSON.stringify(row));
+    const accountRows = grouped.get(row.accountValue) ?? [];
+    accountRows.push(row);
+    grouped.set(row.accountValue, accountRows);
+  }
+  const captures = accounts.map((account) => {
+    const accountRows = grouped.get(account.value) ?? [];
+    const accountDownloads = sourceDownloads.filter(
+      (download) => download.accountValue === account.value,
+    );
+    const zeroResultAuthority = accountRows.length === 0 &&
+      accountDownloads.length > 0 &&
+      accountDownloads.every((download) => download.rowCount === 0)
+      ? "provider-explicit-no-data" as const
+      : undefined;
+    return buildYuantaForeignCurrencyCaptureInput(
+      accountRows,
+      input,
+      account.value,
+      now(),
+      captureOccurrenceId,
+      zeroResultAuthority,
+      credentials.yuanta_user_id ?? "",
+    );
+  });
+  const admitted = captures.map((capture) => admitForeignCurrencyDepositCapture(capture));
+  const statementItems: PGliteWorkflowRunItem[] = admitted.map((capture) => ({
+    provider: "yuanta",
+    product: "foreign-currency-deposit",
+    itemKey: capture.identity.accountNo,
+    command: {
+      kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+      request: { capture },
+    },
+    relationCommands: () => [{
+      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+      request: {
+        sourceConnectionKey: capture.identity.sourceConnectionKey,
+        observedAt: capture.observedAt,
+      },
+    }],
+  }));
+
+  // Current balances are source inputs too. Read, decode, and admit all of them
+  // before the parent opens the one Canonical Financial Commit boundary.
+  const balanceItems: PGliteWorkflowRunItem[] = [];
+  if (admitted.length > 0) {
+    const authorityCapture = admitted[0]!;
+    const authority = {
+      sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
+      identityEpochKey: authorityCapture.identity.identityEpochKey,
+      authorityClass: "existing-financial-admission" as const,
+    };
+    const currentRows = await readBalances(page, "foreign", {
+      observedAt: now(),
+      financialAuthority: authority,
+    });
+    sourceText.assertIntact(JSON.stringify(currentRows));
+    const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(admitted);
+    for (const unadjustedRow of currentRows) {
+      checkCancelled();
+      const row = { ...unadjustedRow, observedAt: now() };
+      const matching = existingBySourceAccount.get(row.sourceAccountKey);
+      if (!matching)
+        throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
+      const capture = admitCurrentDepositBalanceCapture(
+        buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
+      );
+      const item: PGliteWorkflowRunItem = {
+        provider: "yuanta",
+        product: "current-deposit-balance",
+        itemKey: capture.identity.sourceAccountKey,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
+      };
+      sourceText.assertIntact(JSON.stringify(item.command));
+      balanceItems.push(item);
+    }
+  }
+  const items = [...statementItems, ...balanceItems];
+  for (const item of items) {
+    checkCancelled();
+    sourceText.assertIntact(JSON.stringify(item.command));
+  }
+  overrides.deferredCommitItems.push(...items);
+  return {
+    sourceCount: sourceDownloads.length,
+    rowCount: rows.length,
+    itemCount: items.length,
   };
 }
 

@@ -16,6 +16,8 @@ import {
   YUANTA_LOAN_PAGINATION_FIXTURES_V2,
 } from "./yuanta-loan-statements.fixtures.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -248,6 +250,87 @@ test("Yuanta loan workflow commits through the authenticated PGlite child", asyn
     await worker.close();
     await rm(runDir, { recursive: true, force: true });
   }
+});
+
+test("Yuanta loan typed collection admits complete source without writing or committing", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  const testLoanAccount = "1234".repeat(3) + "12";
+  const account = { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount };
+  const controller = new AbortController();
+  const collection = await runYuantaLoanStatements(
+    {} as never,
+    {
+      dateRange: "one_year",
+      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+      loanAccountFilters: [],
+      replaceActiveSession: true,
+    },
+    {
+      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      sourceConnectionKey: deriveSourceConnectionIdentityKey(
+        "yuanta",
+        "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      ),
+      observedAt: () => "2026-02-01T00:00:00.000Z",
+      openLoanStatementPage: async () => undefined,
+      readLoanAccountOptions: async () => [account],
+      queryLoanAccount: async () => undefined,
+      traverseLoanStatementPages: async (_page, _label, options) => {
+        assert.equal(options?.silent, true);
+        return {
+          rows: [{
+            accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
+            paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+            transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
+            overpayment: "0.00", sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
+          }],
+          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+        };
+      },
+      writeLoanStatementsFile: (async () => { throw new Error("typed loan collection attempted a file write"); }) as never,
+      collectOnly: true,
+      deferredCommitItems: deferred,
+      sourceText: strictSourceText,
+      signal: controller.signal,
+    },
+  );
+  assert.deepEqual(collection, { sourceCount: 1, rowCount: 1, itemCount: 1 });
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.product, "loan");
+});
+
+test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(
+    runYuantaLoanStatements(
+      {} as never,
+      { dateRange: "one_year", loanAccountFilters: [], replaceActiveSession: true },
+      {
+        sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+        sourceConnectionKey: deriveSourceConnectionIdentityKey(
+          "yuanta",
+          "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+        ),
+        openLoanStatementPage: async () => undefined,
+        readLoanAccountOptions: async () => [
+          { label: "房屋貸款 - 12345678901234", value: "12345678901234" },
+        ],
+        queryLoanAccount: async () => undefined,
+        traverseLoanStatementPages: async () => ({
+          rows: [],
+          completeness: null,
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
+        }),
+        collectOnly: true,
+        deferredCommitItems: deferred,
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
+      },
+    ),
+    /explicit complete terminal page evidence/u,
+  );
+  assert.deepEqual(deferred, []);
 });
 
 test("builds and validates a canonical Yuanta loan capture from source rows", () => {
