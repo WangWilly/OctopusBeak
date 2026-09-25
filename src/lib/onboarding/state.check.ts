@@ -69,6 +69,8 @@ const task = (
   logTail: "",
   errorMessage: null,
   logPath: null,
+  eventDisplayMode: "legacy",
+  events: [],
   progressPercent: null,
   progressText: "",
   statementFailures: [],

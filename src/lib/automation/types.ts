@@ -1,4 +1,5 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
+import type { WorkflowRunEvent } from "./workflow-executor.ts";
 
 /**
  * A task owns the complete source operation. A crawler or sync task is only
@@ -163,6 +164,9 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   logTail: string;
   errorMessage: string | null;
   logPath: string | null;
+  /** Structured event detail is the primary view for typed workflow runs. */
+  eventDisplayMode: "structured" | "legacy";
+  events: readonly WorkflowRunEvent[];
   progressPercent: number | null;
   progressText: string;
   statementFailures: readonly { typeId: string; error?: string }[];

@@ -59,6 +59,10 @@ assert.match(
   /shouldDispatchViewerClickBeforeType\(modes\) && !await sendViewerInput\(/,
 );
 assert.match(source, /class="inline-task-log"/);
+assert.match(
+  source,
+  /\$: if \(\(automation\.active[\s\S]*?pollTimer = setInterval\(\(\) => \{\s*void reload\(\);\s*\}, 2_000\)/,
+);
 assert.doesNotMatch(source, /activeLogsOpen/);
 assert.doesNotMatch(source, /openActiveLogs/);
 assert.doesNotMatch(source, /aria-labelledby="active-logs-title"/);
@@ -84,8 +88,22 @@ assert.match(source, /class="active-task-jump"/);
 assert.match(source, /class:failed=\{task\.status === "failed"\}/);
 assert.match(
   source,
-  /aria-label=\{`\$\{\$t\.automation\.logs\} · \$\{taskLabel\(task, \$t\)\}`\}/,
+  /aria-label=\{`\$\{\$t\.automation\.runDetails\} · \$\{taskLabel\(task, \$t\)\}`\}/,
 );
+const structuredEventListStart = source.indexOf('<ol class="workflow-event-list"');
+const legacyLogStart = source.indexOf('<p class="mono inline-log-path">', structuredEventListStart);
+assert.ok(structuredEventListStart >= 0 && legacyLogStart > structuredEventListStart);
+const structuredEventDetailSource = source.slice(structuredEventListStart, legacyLogStart);
+assert.match(source, /task\.eventDisplayMode === "structured"/);
+assert.match(structuredEventDetailSource, /\{#each task\.events as event, index/);
+assert.match(structuredEventDetailSource, /\$t\.automation\.workflowStages\[event\.stage\]/);
+assert.match(structuredEventDetailSource, /\{event\.code\}/);
+assert.match(structuredEventDetailSource, /formatTime\(event\.occurredAt\)/);
+assert.match(structuredEventDetailSource, /workflowEventCounts\(event\.completed, event\.total\)/);
+assert.doesNotMatch(structuredEventDetailSource, /task\.(?:logPath|logTail|errorMessage)/);
+const legacyLogDetailSource = source.slice(legacyLogStart, source.indexOf("</pre>", legacyLogStart));
+assert.match(legacyLogDetailSource, /task\.logPath/);
+assert.match(legacyLogDetailSource, /task\.logTail/);
 assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
 assert.match(source, /onclick=\{\(\) => handleActiveTaskClick\(task\)\}/);
 assert.match(

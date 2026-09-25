@@ -51,6 +51,114 @@ assert.equal(Object.hasOwn(model, "runHistory"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
 assert.equal(model.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
 
+const typedTask = AUTOMATION_TASKS.find((task) => task.workflowId);
+assert.ok(typedTask, "at least one task should expose the typed workflow contract");
+const typedRunId = "typed-run";
+const typedRowModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: typedRunId,
+      taskId: typedTask.id,
+      script: typedTask.script,
+      events: [
+        {
+          runId: typedRunId,
+          stage: "authentication",
+          code: "authentication-completed",
+          occurredAt: "2026-06-30T01:00:01.000Z",
+        },
+        {
+          runId: typedRunId,
+          stage: "collection",
+          code: "source-collected",
+          occurredAt: "2026-06-30T01:00:02.000Z",
+          completed: 2,
+          total: 2,
+          accountNumber: "must-not-cross-renderer-boundary",
+        } as AutomationTaskRun["events"][number],
+      ],
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+const typedRow = typedRowModel.tasks.find((task) => task.id === typedTask.id);
+assert.equal(typedRow?.eventDisplayMode, "structured");
+assert.deepEqual(typedRow?.events, [
+  {
+    runId: typedRunId,
+    stage: "authentication",
+    code: "authentication-completed",
+    occurredAt: "2026-06-30T01:00:01.000Z",
+  },
+  {
+    runId: typedRunId,
+    stage: "collection",
+    code: "source-collected",
+    occurredAt: "2026-06-30T01:00:02.000Z",
+    completed: 2,
+    total: 2,
+  },
+]);
+assert.equal(typedRow?.events[0]?.code, "authentication-completed");
+assert.equal(typedRow?.events[1]?.code, "source-collected");
+assert.equal(
+  Object.hasOwn(typedRow?.events[1] ?? {}, "accountNumber"),
+  false,
+  "only the typed event fields may cross into the renderer model",
+);
+const typedNoRecentEvents = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: "typed-run-after-retention",
+      taskId: typedTask.id,
+      script: typedTask.script,
+      logPath: "",
+      logTail: "",
+      events: [],
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+const typedNoRecentEventsRow = typedNoRecentEvents.tasks.find(
+  (task) => task.id === typedTask.id,
+);
+assert.equal(typedNoRecentEventsRow?.eventDisplayMode, "structured");
+assert.deepEqual(typedNoRecentEventsRow?.events, []);
+const boundedEventsModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: "typed-run-bounded",
+      taskId: typedTask.id,
+      script: typedTask.script,
+      events: Array.from({ length: 205 }, (_, index) => ({
+        runId: "typed-run-bounded",
+        stage: "collection" as const,
+        code: `source-${index}`,
+        occurredAt: `2026-06-30T01:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      })),
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+const boundedEventsRow = boundedEventsModel.tasks.find(
+  (task) => task.id === typedTask.id,
+);
+assert.equal(boundedEventsRow?.events.length, 200);
+assert.equal(boundedEventsRow?.events[0]?.code, "source-5");
+assert.equal(boundedEventsRow?.events.at(-1)?.code, "source-204");
+
 for (const credentialState of ["loading", "missing", "read_failed"] as const) {
   const blockedModel = buildAutomationPageModel({
     tasks: AUTOMATION_TASKS,
@@ -134,23 +242,27 @@ assert.equal(activeFubonRow?.progressPercent, null);
 assert.equal(activeFubonRow?.progressText, "Running attempt 1/2");
 assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
+const legacyWaitingTask = AUTOMATION_TASKS.find((task) => !task.workflowId);
+assert.ok(legacyWaitingTask, "a legacy task is needed to cover Libretto session extraction");
 const waitingModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {
-    "fubon-all-statements": {
+    [legacyWaitingTask.id]: {
       ...completedRun,
       taskRunId: "run-waiting",
+      taskId: legacyWaitingTask.id,
+      script: legacyWaitingTask.script,
       status: "waiting_for_human",
       finishedAt: null,
       logTail: 'Resume requested for session "ses-help".',
     },
   },
-  todayRunTaskIds: ["fubon-all-statements"],
+  todayRunTaskIds: [legacyWaitingTask.id],
   credentials: {},
   active: true,
   businessDate: "2026-06-30",
 });
-const waitingRow = waitingModel.tasks.find((task) => task.id === "fubon-all-statements");
+const waitingRow = waitingModel.tasks.find((task) => task.id === legacyWaitingTask.id);
 assert.equal(waitingRow?.status, "waiting_for_human");
 assert.equal(waitingRow?.primaryAction, "Cancel");
 assert.equal(waitingRow?.humanSession, "ses-help");

@@ -1,6 +1,7 @@
 import type { AutomationTask } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import type { AutomationTaskStatus } from "../types.ts";
+import type { WorkflowRunEvent, WorkflowStage } from "../workflow-executor.ts";
 import type {
   AutomationPageModel,
   AutomationTaskPrerequisiteNotice,
@@ -11,6 +12,51 @@ import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
 import { resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
 import { primaryActionForAutomationTask } from "../primary-action.ts";
+
+const workflowStages = new Set<WorkflowStage>([
+  "preparation",
+  "authentication",
+  "collection",
+  "decoding",
+  "validation",
+  "commit",
+  "finalization",
+]);
+const MAX_WORKFLOW_EVENTS = 200;
+const SAFE_WORKFLOW_EVENT_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
+
+/** Project persisted values onto the renderer-safe event contract. */
+function pageWorkflowEvents(
+  value: unknown,
+  runId: string | undefined,
+): readonly WorkflowRunEvent[] {
+  if (!Array.isArray(value) || !runId) return [];
+  return value.flatMap((candidate): WorkflowRunEvent[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const event = candidate as Record<string, unknown>;
+    if (
+      event.runId !== runId
+      || typeof event.stage !== "string"
+      || !workflowStages.has(event.stage as WorkflowStage)
+      || typeof event.code !== "string"
+      || !SAFE_WORKFLOW_EVENT_CODE.test(event.code)
+      || typeof event.occurredAt !== "string"
+      || !Number.isFinite(Date.parse(event.occurredAt))
+      || (event.completed !== undefined
+        && (!Number.isSafeInteger(event.completed) || (event.completed as number) < 0))
+      || (event.total !== undefined
+        && (!Number.isSafeInteger(event.total) || (event.total as number) < 0))
+    ) return [];
+    return [{
+      runId,
+      stage: event.stage as WorkflowStage,
+      code: event.code,
+      occurredAt: event.occurredAt,
+      ...(event.completed === undefined ? {} : { completed: event.completed as number }),
+      ...(event.total === undefined ? {} : { total: event.total as number }),
+    }];
+  }).slice(-MAX_WORKFLOW_EVENTS);
+}
 
 function rowStatus(
   task: AutomationTask,
@@ -74,6 +120,7 @@ export function buildAutomationPageModel(input: {
     const progressPercent = runtime?.progress.percent ?? run?.progress?.percent ?? null;
     const attempt = runtime?.attempt ?? run?.attempt ?? 0;
     const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
+    const events = pageWorkflowEvents(run?.events, run?.taskRunId);
     const statementFailures = parseStatementRunSummary(run?.logTail ?? "")?.results
       .filter((result) => result.status === "failed")
       .map(({ typeId, error }) => ({ typeId, ...(error ? { error } : {}) })) ?? [];
@@ -95,6 +142,8 @@ export function buildAutomationPageModel(input: {
       logTail: runtime?.logTail ?? run?.logTail ?? "",
       errorMessage: runtime?.errorMessage ?? run?.errorMessage ?? null,
       logPath: run?.logPath ?? null,
+      eventDisplayMode: task.workflowId || events.length > 0 ? "structured" : "legacy",
+      events,
       progressPercent,
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       statementFailures,
