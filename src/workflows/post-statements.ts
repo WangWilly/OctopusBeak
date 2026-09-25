@@ -10,6 +10,19 @@ import {
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import {
+  SourceTextIntegrityError,
+  strictSourceText,
+  type SourceTextPort,
+} from "../lib/automation/source-text.ts";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContractInput,
+} from "../lib/automation/human-assistance.ts";
+import type {
+  WorkflowContext,
+  WorkflowFinancialCommitPort,
+} from "../lib/automation/workflow-executor.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
@@ -36,7 +49,15 @@ import {
   buildPostCurrentDepositBalanceCapture,
   indexPostCurrentDepositFinancialCaptures,
   readPostCurrentDepositBalances,
+  parsePostCurrentDepositBalanceSnapshot,
+  POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+  POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  POST_CURRENT_DEPOSIT_BALANCE_HOST,
+  POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
+  POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
+  POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
   type ExistingPostCurrentDepositFinancialCapture,
+  type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
 import {
   emitHumanAssistanceStage,
@@ -64,6 +85,14 @@ const inputSchema = z.object({
     .regex(/^\d{4}$/)
     .optional(),
   telemetry: z.boolean().default(false),
+});
+
+const typedWorkflowInputSchema = z.object({
+  credentials: z.object({
+    post_user_id: z.string().trim().min(1),
+    post_account: z.string().trim().min(1),
+    post_password: z.string().trim().min(1),
+  }),
 });
 
 const statementFileSchema = z.object({
@@ -131,7 +160,7 @@ export type PostStatementRow = {
   directionFlag: "inflow" | "outflow" | "unknown";
 };
 
-type PostQueriedStatement = {
+export type PostQueriedStatement = {
   accountId: string;
   queryPeriods: string[];
   queryRange: { startDate: string; endDate: string };
@@ -141,15 +170,41 @@ type PostQueriedStatement = {
   rows: PostStatementRow[];
 };
 
+export type PostStatementResponseMetadata = Readonly<{
+  url: string;
+  status: number;
+  method: string;
+  contentType: string;
+  requestPostData?: string | null;
+}>;
+
+export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
+export type PostWorkflowOutput = Readonly<{
+  accountCount: number;
+  rowCount: number;
+  status: "source-only" | "financial-admitted";
+}>;
+
 type PostCollectedStatement = PostQueriedStatement & {
   download: StatementDownload;
 };
 
 export type PostStatementsRunDependencies = {
+  inMemory?: boolean;
+  text?: SourceTextPort;
+  signal?: AbortSignal;
+  event?: WorkflowContext["event"];
+  financialCommit?: WorkflowFinancialCommitPort;
   collectStatements?: (
     page: Page,
     telemetry: boolean,
   ) => Promise<PostCollectedStatement[]>;
+  collectSourceStatements?: (
+    page: Page,
+    text: SourceTextPort,
+    signal?: AbortSignal,
+    event?: WorkflowContext["event"],
+  ) => Promise<PostQueriedStatement[]>;
   readCurrentDepositBalances?: typeof readPostCurrentDepositBalances;
   observedAt?: string;
 };
@@ -331,6 +386,8 @@ const POST_LOGIN_WAIT_TIMEOUT_MS = 300_000;
 type PostLoginAttemptDependencies = {
   submit: () => Promise<void>;
   waitForSuccess: (signal: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
+  onDialog?: (type: string) => void | Promise<void>;
 };
 
 const postLoginDialogError = () =>
@@ -350,10 +407,12 @@ const postLoginDialogError = () =>
  */
 export async function runPostLoginAttempt(
   page: Page,
-  { submit, waitForSuccess }: PostLoginAttemptDependencies,
+  { submit, waitForSuccess, signal, onDialog }: PostLoginAttemptDependencies,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const probeAbortController = new AbortController();
   let rejectDialog!: (error: Error) => void;
+  let abortListener: (() => void) | undefined;
   const dialogDetected = new Promise<never>((_resolve, reject) => {
     rejectDialog = reject;
   });
@@ -364,7 +423,11 @@ export async function runPostLoginAttempt(
     } catch {
       // Keep dialog cleanup fail-closed if the browser closes it concurrently.
     }
-    console.warn("ipost-login-dialog", { type });
+    if (onDialog) {
+      void Promise.resolve(onDialog(type)).catch(() => undefined);
+    } else {
+      console.warn("ipost-login-dialog", { type });
+    }
     void dialog.dismiss().then(
       () => {
         probeAbortController.abort();
@@ -379,21 +442,50 @@ export async function runPostLoginAttempt(
 
   page.on("dialog", dialogHandler);
   try {
-    const successProbe = waitForSuccess(probeAbortController.signal);
+    const successSignal = signal
+      ? AbortSignal.any([probeAbortController.signal, signal])
+      : probeAbortController.signal;
+    const successProbe = waitForSuccess(successSignal);
     void successProbe.catch(() => undefined);
+    const cancellation = signal
+      ? new Promise<never>((_resolve, reject) => {
+          abortListener = () => {
+            probeAbortController.abort();
+            reject(
+              signal.reason instanceof Error
+                ? signal.reason
+                : new Error("Post login was cancelled."),
+            );
+          };
+          signal.addEventListener("abort", abortListener, { once: true });
+          if (signal.aborted) abortListener();
+        })
+      : undefined;
     const loginOutcome = (async () => {
       await submit();
       await successProbe;
     })();
-    await Promise.race([loginOutcome, dialogDetected]);
+    await Promise.race(
+      cancellation
+        ? [loginOutcome, dialogDetected, cancellation]
+        : [loginOutcome, dialogDetected],
+    );
   } finally {
+    if (signal && abortListener)
+      signal.removeEventListener("abort", abortListener);
     probeAbortController.abort();
     page.off("dialog", dialogHandler);
   }
 }
 
-export async function submitPostLoginAndWait(page: Page): Promise<void> {
+export async function submitPostLoginAndWait(
+  page: Page,
+  signal?: AbortSignal,
+  onDialog?: (type: string) => void | Promise<void>,
+): Promise<void> {
   await runPostLoginAttempt(page, {
+    ...(signal ? { signal } : {}),
+    ...(onDialog ? { onDialog } : {}),
     submit: async () => {
       await postIdLoginButton(page).click();
     },
@@ -462,23 +554,31 @@ export function postCaptchaAssistanceStage(
   };
 }
 
-export async function dismissPostNoticeIfPresent(page: Page): Promise<boolean> {
+export async function dismissPostNoticeIfPresent(
+  page: Page,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
   const closeButtons = page
     .locator('button.css_btn_class[ng-click="closeBox()"]:visible')
     .filter({ hasText: /^\s*關閉\s*$/ });
   const closeButton = closeButtons.first();
-  if (!(await closeButton.isVisible({ timeout: 2_000 }).catch(() => false))) {
+  if (!(await waitForSignal(
+    closeButton.isVisible({ timeout: 2_000 }).catch(() => false),
+    signal,
+  ))) {
     return false;
   }
 
   try {
-    await closeButton.click({ timeout: 2_000 });
+    await waitForSignal(closeButton.click({ timeout: 2_000 }), signal);
   } catch (error) {
+    signal?.throwIfAborted();
     const remainingVisibleButtons = await closeButtons.count().catch(() => 1);
     if (remainingVisibleButtons > 0) throw error;
     return false;
   }
-  await page.waitForTimeout(250);
+  await waitForSignal(page.waitForTimeout(250), signal);
   return true;
 }
 
@@ -588,6 +688,94 @@ async function signInPost(
   }
 }
 
+export async function requestPostCaptchaAssistance(
+  stage: WorkflowHumanAssistanceStage,
+  request: (
+    contract: HumanAssistanceContractInput,
+    signal: AbortSignal,
+  ) => Promise<HumanAssistanceCompletionStatus>,
+  signal: AbortSignal,
+): Promise<HumanAssistanceCompletionStatus> {
+  signal.throwIfAborted();
+  const contract = await emitHumanAssistanceStage(stage, (value) => value);
+  const status = await request(contract, signal);
+  signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified")
+    throw new Error(`iPost human assistance ended with status ${status}.`);
+  return status;
+}
+
+async function signInPostWithAssistance(
+  page: Page,
+  credentials: PostCredentials,
+  requestHumanAssistance: (
+    contract: HumanAssistanceContractInput,
+    signal: AbortSignal,
+  ) => Promise<HumanAssistanceCompletionStatus>,
+  signal: AbortSignal,
+  onDialog?: (type: string) => void | Promise<void>,
+): Promise<void> {
+  const { cifId, userCode, password } = postLoginFieldValues(credentials);
+  signal.throwIfAborted();
+  if (!postLoginEntryUrl(page.url()))
+    await waitForSignal(
+      page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
+      signal,
+    );
+  await waitForSignal(
+    page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }),
+    signal,
+  );
+  await dismissPostNoticeIfPresent(page, signal);
+  await waitForSignal(page.locator("#cifID").fill(cifId), signal);
+  await waitForSignal(page.locator("#userID_1_Input").fill(userCode), signal);
+  await waitForSignal(page.locator("#userPWD_1_Input").fill(password), signal);
+  await dismissPostNoticeIfPresent(page, signal);
+  const captchaInput = page.locator('input[name="captcha"]:visible').first();
+  await waitForSignal(captchaInput.focus(), signal);
+  const assistanceUrl = page.url();
+  const assistedCaptchaElement = await waitForSignal(
+    captchaInput.elementHandle(),
+    signal,
+  );
+  if (!assistedCaptchaElement)
+    throw new Error("iPost CAPTCHA input is unavailable for assistance.");
+
+  try {
+    await requestPostCaptchaAssistance(
+      postCaptchaAssistanceStage(page),
+      requestHumanAssistance,
+      signal,
+    );
+    signal.throwIfAborted();
+    if (await isSignedIn(page)) return;
+    const currentCaptchaInput = page.locator('input[name="captcha"]').first();
+    const sameCaptchaElement = await waitForSignal(
+      currentCaptchaInput
+        .evaluate(
+          (current, assisted) => current === assisted,
+          assistedCaptchaElement,
+        )
+        .catch(() => false),
+      signal,
+    );
+    if (!postCaptchaGenerationUnchanged(assistanceUrl, page.url(), sameCaptchaElement))
+      throw new Error(
+        "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
+      );
+    const currentCaptchaValue = await waitForSignal(
+      currentCaptchaInput.inputValue(),
+      signal,
+    );
+    if (!currentCaptchaValue.trim())
+      throw new Error("iPost CAPTCHA is empty. Enter it in the browser before resuming.");
+    await submitPostLoginAndWait(page, signal, onDialog);
+    signal.throwIfAborted();
+  } finally {
+    await assistedCaptchaElement.dispose().catch(() => undefined);
+  }
+}
+
 export function postLoginEntryUrl(href: string): boolean {
   try {
     const current = new URL(href);
@@ -608,63 +796,220 @@ export function postCaptchaGenerationUnchanged(
   return beforeUrl === afterUrl && sameElement;
 }
 
-async function openDetailPage(page: Page, index: number): Promise<void> {
-  await page.goto(INDEX_URL, { waitUntil: "domcontentloaded" });
-  await visibleDetailLinks(page)
-    .first()
-    .waitFor({ state: "visible", timeout: 60_000 });
-  await visibleDetailLinks(page).nth(index).click();
-  await sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000 });
-}
-
-function normalizeItems(
-  items: PostRawStatementRow[] | PostRawStatementRow | undefined,
-) {
-  if (!items) return [];
-  return Array.isArray(items) ? items : [items];
-}
-
-async function queryCurrentStatement(page: Page) {
-  if (!(await sixMonthDateInput(page).isChecked())) {
-    await sixMonthDateLabel(page).click();
-  }
-  const responsePromise = page.waitForResponse(
-    isEsoafResponse("EB100200", "inquire"),
-    { timeout: 60_000 },
+async function openDetailPageWithSignal(
+  page: Page,
+  index: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  await waitForSignal(page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }), signal);
+  await waitForSignal(
+    visibleDetailLinks(page)
+      .first()
+      .waitFor({ state: "visible", timeout: 60_000 }),
+    signal,
   );
-  await page
-    .locator("a.css_btn_class:visible")
-    .filter({ hasText: "查詢" })
-    .first()
-    .click();
-  const response = await responsePromise;
-  const requestBody = JSON.parse(response.request().postData() ?? "{}") as {
-    body?: { _USER_ID?: string; DATE?: string; END_DATE?: string };
-  };
-  const responseBody =
-    (await response.json()) as EsoafEnvelope<PostDetailResponseBody>[];
-  const accountId = cleanText(requestBody.body?._USER_ID);
-  const items = responseBody[0]?.body?.host_rs_1?.ITEM;
-  const rows = normalizeItems(items);
-  const startDate = postProviderDate(requestBody.body?.DATE);
-  const endDate = postProviderDate(requestBody.body?.END_DATE);
+  await waitForSignal(visibleDetailLinks(page).nth(index).click(), signal);
+  await waitForSignal(
+    sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000 }),
+    signal,
+  );
+}
+
+function requireCompletePostStatementRows(
+  items: unknown,
+): PostRawStatementRow[] {
+  const sourceRows = items === undefined
+    ? []
+    : Array.isArray(items)
+      ? items
+      : [items];
+  return sourceRows.map((value) => {
+    if (!isRecord(value))
+      throw new Error("Post statement response contains a malformed transaction row.");
+    for (const field of ["PRS_DATE", "TX_TIME", "TX_AMT", "BAL_AMT", "DR_FLG"] as const) {
+      if (typeof value[field] !== "string" || cleanText(value[field]) === "")
+        throw new Error("Post statement response contains an incomplete transaction row.");
+    }
+    if (value.DR_FLG !== "+" && value.DR_FLG !== "-")
+      throw new Error("Post statement response contains an unsupported transaction direction.");
+    for (const field of ["MEM", "ENGLISH_MEMO", "ADDITIONAL_MEMO_2", "ATTACH_COMMENT"] as const) {
+      if (value[field] !== undefined && value[field] !== null && typeof value[field] !== "string")
+        throw new Error("Post statement response contains a malformed transaction field.");
+    }
+    return value as PostRawStatementRow;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function waitForSignal<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return await operation;
+  signal.throwIfAborted();
+  let abortListener: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abortListener = () => reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Post workflow was cancelled."),
+    );
+    signal.addEventListener("abort", abortListener, { once: true });
+    if (signal.aborted) abortListener();
+  });
+  void operation.catch(() => undefined);
+  try {
+    return await Promise.race([operation, cancelled]);
+  } finally {
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+export function parsePostStatementResponse(input: Readonly<{
+  bytes: Uint8Array;
+  response: PostStatementResponseMetadata;
+  text?: SourceTextPort;
+}>): PostQueriedStatement {
+  let responseUrl: URL;
+  try {
+    responseUrl = new URL(input.response.url);
+  } catch {
+    throw new Error("Post statement response URL is invalid.");
+  }
+  if (
+    responseUrl.protocol !== "https:" ||
+    responseUrl.hostname !== "ipost.post.gov.tw" ||
+    responseUrl.pathname !== DISPATCHER_PATH ||
+    responseUrl.search !== "" ||
+    responseUrl.hash !== "" ||
+    responseUrl.port !== "" ||
+    responseUrl.username !== "" ||
+    responseUrl.password !== ""
+  )
+    throw new Error("Post statement response endpoint is unexpected.");
+  if (input.response.method.toUpperCase() !== "POST")
+    throw new Error("Post statement response method is not POST.");
+  if (input.response.status !== 200)
+    throw new Error("Post statement response was not terminal.");
+  const contentType = input.response.contentType.trim();
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (mediaType !== "application/json")
+    throw new Error("Post statement response content type is not JSON.");
+  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
+    contentType,
+  )?.[1]?.toLowerCase();
+  if (charset && charset !== "utf-8" && charset !== "utf8")
+    throw new Error("Post statement response charset is not UTF-8.");
+
+  const text = input.text ?? strictSourceText;
+  const decoded = text.decode(input.bytes, "utf-8");
+  text.assertIntact(decoded);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded);
+  } catch {
+    throw new Error("Post statement response is not valid JSON.");
+  }
+  if (!Array.isArray(payload) || payload.length !== 2)
+    throw new Error("Post statement response is incomplete.");
+  const [screen, endBracket] = payload;
+  if (
+    !isRecord(screen) || !isRecord(screen.header) || !isRecord(screen.body) ||
+    screen.header.EndBracket !== false || screen.header.OutputType !== "Screen" ||
+    !isRecord(endBracket) || !isRecord(endBracket.header) ||
+    !isRecord(endBracket.body) || endBracket.header.EndBracket !== false ||
+    endBracket.header.OutputType !== "EndBracket" ||
+    endBracket.body.result !== "success"
+  )
+    throw new Error("Post statement response is incomplete or nonterminal.");
+
+  let request: unknown;
+  try {
+    request = JSON.parse(input.response.requestPostData ?? "");
+  } catch {
+    throw new Error("Post statement request metadata is invalid.");
+  }
+  if (
+    !isRecord(request) || !isRecord(request.header) || !isRecord(request.body) ||
+    request.header.TxnCode !== "EB100200" ||
+    request.header.BizCode !== "inquire" ||
+    typeof request.body._USER_ID !== "string" ||
+    typeof request.body.DATE !== "string" ||
+    typeof request.body.END_DATE !== "string"
+  )
+    throw new Error("Post statement request metadata is incomplete.");
+
+  const hostRows = screen.body.host_rs_1;
+  const items = isRecord(hostRows)
+    ? hostRows.ITEM
+    : undefined;
+  const startDate = postProviderDate(request.body.DATE);
+  const endDate = postProviderDate(request.body.END_DATE);
+  const accountId = cleanText(request.body._USER_ID);
   return {
     accountId,
     queryPeriods: [`${startDate}~${endDate}`],
     queryRange: { startDate, endDate },
-    httpStatus: response.status(),
-    requestDateShapes: {
-      start: postProviderDateShape(requestBody.body?.DATE),
-      end: postProviderDateShape(requestBody.body?.END_DATE),
-    },
+    httpStatus: input.response.status,
     itemShape:
       items === undefined
         ? "absent"
         : Array.isArray(items)
           ? "array"
           : "single",
-    rows: postRowsToStatementRows(accountId, rows),
-  } satisfies PostQueriedStatement;
+    requestDateShapes: {
+      start: postProviderDateShape(request.body.DATE),
+      end: postProviderDateShape(request.body.END_DATE),
+    },
+    rows: postRowsToStatementRows(
+      accountId,
+      requireCompletePostStatementRows(items),
+    ),
+  };
+}
+
+async function queryCurrentStatement(
+  page: Page,
+  text: SourceTextPort = strictSourceText,
+  signal?: AbortSignal,
+) {
+  if (!(await waitForSignal(sixMonthDateInput(page).isChecked(), signal))) {
+    await waitForSignal(sixMonthDateLabel(page).click(), signal);
+  }
+  const responsePromise = page.waitForResponse(
+    isEsoafResponse("EB100200", "inquire"),
+    { timeout: 60_000 },
+  );
+  void responsePromise.catch(() => undefined);
+  signal?.throwIfAborted();
+  await waitForSignal(
+    page
+      .locator("a.css_btn_class:visible")
+      .filter({ hasText: "查詢" })
+      .first()
+      .click(),
+    signal,
+  );
+  const response = await waitForSignal(responsePromise, signal);
+  signal?.throwIfAborted();
+  const [body, headers] = await Promise.all([
+    waitForSignal(response.body(), signal),
+    response.allHeaders(),
+  ]);
+  return parsePostStatementResponse({
+    bytes: body,
+    response: {
+      url: response.url(),
+      status: response.status(),
+      method: response.request().method(),
+      contentType: headers["content-type"] ?? "",
+      requestPostData: response.request().postData(),
+    },
+    text,
+  });
 }
 
 async function writeStatementFile(
@@ -718,16 +1063,9 @@ async function collectPostStatements(
   page: Page,
   telemetry: boolean,
 ): Promise<PostCollectedStatement[]> {
-  await page.goto(INDEX_URL, { waitUntil: "domcontentloaded" });
-  await visibleDetailLinks(page)
-    .first()
-    .waitFor({ state: "visible", timeout: 60_000 });
-  const accountCount = await visibleDetailLinks(page).count();
+  const queried = await collectPostStatementSources(page);
   const statements: PostCollectedStatement[] = [];
-
-  for (let index = 0; index < accountCount; index += 1) {
-    await openDetailPage(page, index);
-    const statement = await queryCurrentStatement(page);
+  for (const statement of queried) {
     const download = await writeStatementFile(
       statement.accountId,
       statement.queryPeriods,
@@ -744,9 +1082,9 @@ async function collectPostStatements(
           return counts;
         },
         { inflow: 0, outflow: 0, unknown: 0 },
-      );
+    );
     console.log("post-domestic-deposit-telemetry", {
-      accountCount,
+      accountCount: statements.length,
       rowCount: statements.reduce(
         (sum, statement) => sum + statement.rows.length,
         0,
@@ -777,6 +1115,164 @@ async function collectPostStatements(
     });
   }
   return statements;
+}
+
+async function collectPostStatementSources(
+  page: Page,
+  text: SourceTextPort = strictSourceText,
+  signal?: AbortSignal,
+  event?: WorkflowContext["event"],
+): Promise<PostQueriedStatement[]> {
+  signal?.throwIfAborted();
+  await waitForSignal(
+    page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }),
+    signal,
+  );
+  await waitForSignal(
+    visibleDetailLinks(page)
+      .first()
+      .waitFor({ state: "visible", timeout: 60_000 }),
+    signal,
+  );
+  const accountCount = await waitForSignal(visibleDetailLinks(page).count(), signal);
+  if (accountCount === 0)
+    throw new Error("No Post accounts are visible in the authenticated session.");
+  await event?.("collection", "collection-started", {
+    completed: 0,
+    total: accountCount,
+  });
+
+  const statements: PostQueriedStatement[] = [];
+  for (let index = 0; index < accountCount; index += 1) {
+    signal?.throwIfAborted();
+    await openDetailPageWithSignal(page, index, signal);
+    await event?.("decoding", "source-decoding-started", {
+      completed: index,
+      total: accountCount,
+    });
+    let statement: PostQueriedStatement;
+    try {
+      statement = await queryCurrentStatement(page, text, signal);
+    } catch (error) {
+      await event?.(
+        error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+        error instanceof SourceTextIntegrityError
+          ? "source-decode-rejected"
+          : "source-response-rejected",
+        { completed: index, total: accountCount },
+      );
+      throw error;
+    }
+    signal?.throwIfAborted();
+    await event?.("decoding", "source-decoding-completed", {
+      completed: index + 1,
+      total: accountCount,
+    });
+    statements.push(statement);
+    await event?.("collection", "account-source-collected", {
+      completed: index + 1,
+      total: accountCount,
+    });
+  }
+  return statements;
+}
+
+function isPostOverviewResponse(response: Response): boolean {
+  const request = response.request();
+  if (request.method() !== "POST") return false;
+  let url: URL;
+  let body: unknown;
+  try {
+    url = new URL(response.url());
+    body = JSON.parse(request.postData() ?? "");
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    url.hostname === POST_CURRENT_DEPOSIT_BALANCE_HOST &&
+    url.pathname === POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
+    url.search === "" &&
+    url.hash === "" &&
+    url.port === "" &&
+    isRecord(body) &&
+    isRecord(body.header) &&
+    body.header.TxnCode === POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE &&
+    body.header.BizCode === POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE &&
+    isRecord(body.body) &&
+    body.body.pageCount === POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT
+  );
+}
+
+async function readPostCurrentDepositBalancesWithText(
+  page: Page,
+  text: SourceTextPort,
+  signal: AbortSignal,
+  input: Readonly<{ observedAt?: string; timeoutMs?: number }> = {},
+) {
+  const timeoutMs = input.timeoutMs ?? 60_000;
+  signal.throwIfAborted();
+  const pageUrl = new URL(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
+  let currentUrl: URL | undefined;
+  try {
+    currentUrl = new URL(page.url());
+  } catch {
+    // Navigate to the known authenticated landing page below.
+  }
+  if (
+    currentUrl?.origin !== pageUrl.origin ||
+    currentUrl.pathname !== pageUrl.pathname
+  ) {
+    await waitForSignal(
+      page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: timeoutMs,
+      }),
+      signal,
+    );
+  }
+  signal.throwIfAborted();
+  const overview = page.getByText("資產總覽", { exact: true }).first();
+  await waitForSignal(
+    overview.waitFor({ state: "visible", timeout: timeoutMs }),
+    signal,
+  );
+  const responsePromise = page.waitForResponse(isPostOverviewResponse, {
+    timeout: timeoutMs,
+  });
+  void responsePromise.catch(() => undefined);
+  signal.throwIfAborted();
+  await waitForSignal(overview.click(), signal);
+  const response = await waitForSignal(responsePromise, signal);
+  const [body, headers] = await Promise.all([
+    waitForSignal(response.body(), signal),
+    response.allHeaders(),
+  ]);
+  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
+    headers["content-type"] ?? "",
+  )?.[1]?.toLowerCase();
+  if (charset && charset !== "utf-8" && charset !== "utf8")
+    throw new Error("Post current deposit response charset is not UTF-8.");
+  const decoded = text.decode(body, "utf-8");
+  text.assertIntact(decoded);
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded);
+  } catch {
+    throw new Error("Post current deposit response is not valid JSON.");
+  }
+  const metadata: PostCurrentDepositResponseMetadata = {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers,
+    requestPostData: response.request().postData(),
+  };
+  return parsePostCurrentDepositBalanceSnapshot({
+    payload,
+    response: metadata,
+    observedAt: input.observedAt,
+  });
 }
 
 function postObservedAt(date = new Date()): string {
@@ -846,13 +1342,28 @@ export async function runPostStatements(
   telemetry: boolean,
   overrides: PostStatementsRunDependencies = {},
 ): Promise<PostStatementOutput> {
-  const collect = overrides.collectStatements ?? collectPostStatements;
-  const statements = await collect(page, telemetry);
+  const inMemory = overrides.inMemory === true;
+  const text = overrides.text ?? strictSourceText;
+  if (inMemory && !overrides.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  overrides.signal?.throwIfAborted();
+  const statements: PostQueriedStatement[] = inMemory
+    ? await (overrides.collectSourceStatements ?? collectPostStatementSources)(
+        page,
+        text,
+        overrides.signal,
+        overrides.event,
+      )
+    : await (overrides.collectStatements ?? collectPostStatements)(page, telemetry);
+  const downloads: StatementDownload[] = inMemory
+    ? []
+    : (statements as PostCollectedStatement[]).map((statement) => statement.download);
   if (statements.length === 0)
     throw new Error("No Post accounts reached a terminal source result.");
   const observedAt = overrides.observedAt ?? postObservedAt();
   const captures: PostDomesticDepositValidatedEvidence[] = [];
-  for (const statement of statements) {
+  for (const [index, statement] of statements.entries()) {
+    overrides.signal?.throwIfAborted();
     const admission = admitPostDomesticDepositCaptureEvidence(
       buildPostDomesticDepositCapture(statement, observedAt),
     );
@@ -861,6 +1372,10 @@ export async function runPostStatements(
         `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
       );
     captures.push(admission.capture);
+    await overrides.event?.("validation", "source-validation-completed", {
+      completed: index + 1,
+      total: statements.length,
+    });
   }
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readPostCurrentDepositBalances;
@@ -906,7 +1421,15 @@ export async function runPostStatements(
   // row still commits only after its statement identity item has committed.
   const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
   if (financialCaptures.length > 0) {
-    const currentRows = await readCurrent(page, {});
+    await overrides.event?.("collection", "current-balance-collection-started");
+    let currentRows: Awaited<ReturnType<typeof readCurrent>>;
+    try {
+      currentRows = await readCurrent(page, { observedAt });
+    } catch (error) {
+      await overrides.event?.("validation", "current-balance-rejected");
+      throw error;
+    }
+    overrides.signal?.throwIfAborted();
     indexPostCurrentDepositFinancialCaptures(financialCaptures);
     for (const row of currentRows) {
       const matching = financialCaptures.find((candidate) => {
@@ -926,12 +1449,14 @@ export async function runPostStatements(
         ),
       );
     }
+    await overrides.event?.("validation", "current-balance-validation-completed", {
+      completed: currentBalanceCaptures.length,
+      total: currentRows.length,
+    });
   }
 
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const items = [
+  overrides.signal?.throwIfAborted();
+  const items = [
       ...sourceOnlyEntries.map((entry) => ({
         provider: "post", product: "domestic-deposit", itemKey: entry.captureId,
         command: {
@@ -954,13 +1479,42 @@ export async function runPostStatements(
           request: currentDepositBalanceCommandRequest(capture),
         },
       } as const)),
-    ];
+  ];
+  await overrides.event?.("commit", "canonical-commit-started", {
+    completed: 0,
+    total: items.length,
+  });
+  if (overrides.financialCommit) {
+    const committed = await overrides.financialCommit.execute(items, {
+      provider: "post",
+      product: "financial",
+      ...(overrides.signal ? { signal: overrides.signal } : {}),
+    });
+    if (committed.status !== "completed")
+      throw new Error(
+        `Post Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
+      );
+    await overrides.event?.("commit", "canonical-commit-completed", {
+      completed: committed.committedCount,
+      total: items.length,
+    });
+    return {
+      count: statements.length,
+      rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
+      downloads,
+      sourceCaptureCount: captures.length,
+      status,
+    };
+  }
+
+  const client = requirePGliteChildRpcClientFromEnv();
+  try {
+    await client.ready;
     const committed = await executePGliteWorkflowRun({
       client: client.workflow, items, provider: "post", product: "financial",
     });
     if (committed.status !== "completed")
       throw new Error(`Post PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-    const downloads = statements.map((statement) => statement.download);
     return {
       count: downloads.length,
       rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
@@ -972,6 +1526,79 @@ export async function runPostStatements(
     client.close();
   }
 
+}
+
+export async function runPostProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+  overrides: Readonly<Pick<
+    PostStatementsRunDependencies,
+    "collectSourceStatements" | "readCurrentDepositBalances"
+  >> = {},
+): Promise<PostWorkflowOutput> {
+  const parsed = typedWorkflowInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
+  if (!context.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  context.signal.throwIfAborted();
+  await context.event("authentication", "authentication-started");
+
+  return await context.browser.withPage(async (page) => {
+    await waitForSignal(
+      page.goto(HOME_URL, { waitUntil: "domcontentloaded" }),
+      context.signal,
+    );
+    const usedExistingSession = await isSignedIn(page);
+    if (!usedExistingSession) {
+      await signInPostWithAssistance(
+        page,
+        parsed.data.credentials,
+        async (contract, signal) => {
+          await context.event("authentication", "human-assistance-requested");
+          const status = await context.humanAssistance.request(contract, signal);
+          await context.event(
+            "authentication",
+            status === "entered" || status === "verified"
+              ? "human-assistance-completed"
+              : "human-assistance-failed",
+          );
+          return status;
+        },
+        context.signal,
+        () => {
+          void context.event("authentication", "login-dialog-interrupted");
+        },
+      );
+    }
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+
+    const result = await runPostStatements(page, false, {
+      inMemory: true,
+      text: context.text,
+      signal: context.signal,
+      event: context.event,
+      financialCommit: context.financialCommit,
+      observedAt: postObservedAt(new Date(context.now())),
+      ...(overrides.collectSourceStatements
+        ? { collectSourceStatements: overrides.collectSourceStatements }
+        : {}),
+      readCurrentDepositBalances: overrides.readCurrentDepositBalances ?? ((candidatePage, input) =>
+        readPostCurrentDepositBalancesWithText(
+          candidatePage,
+          context.text,
+          context.signal,
+          input,
+        )),
+    });
+    context.signal.throwIfAborted();
+    return {
+      accountCount: result.count,
+      rowCount: result.rowCount,
+      status: result.status,
+    };
+  });
 }
 
 export default workflow("postStatements", {
