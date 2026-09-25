@@ -49,7 +49,7 @@
 1. 開啟 OctopusBeak，在歡迎畫面選擇語言與是否開始設定。
 2. 選擇一個資料來源，填入登入資料和要收集的對帳單類型。
 3. 執行資料收集。若網站要求 CAPTCHA 或 OTP，依畫面完成驗證。
-4. 收集完成後執行匯入。
+4. App 驗證來源完整性後，直接將可接受的資料寫入本機資料庫。
 5. 回到總覽查看結果。
 
 程式會記住初始設定的進度。中途關閉也沒關係，下次開啟可以接著做；日後也能從設定重新開始。
@@ -71,11 +71,11 @@
 | 電子發票（E-Invoice） | 發票與消費品項 |
 | MAX / MaiCoin | 加密資產餘額與交易紀錄 |
 
-SinoPac 外幣對帳單會收集並保存為可追溯的來源證據，外幣列則依 human-attested identity contract 升格為 canonical Financial Transaction。外幣 canonical 交易目前在 SinoPac、元大、國泰世華與 LINE Bank 的 advertised readiness 中提供。
+SinoPac 外幣資料會保留為可追溯的帳務來源記錄，符合 human-attested identity contract 的列會升格為 canonical Financial Transaction。外幣 canonical 交易目前在 SinoPac、元大、國泰世華與 LINE Bank 的 advertised readiness 中提供。
 
 ## 資料留在你的裝置
 
-下載的對帳單、帳本、自動化設定與執行紀錄都存放在本機。登入資料也只存在你的 Mac，並由 Electron `safeStorage` 加密；如果系統無法安全加密，OctopusBeak 會停止啟動，不會把密碼寫成明文。
+帳務資料、自動化設定與執行摘要都存放在本機資料庫。App 在記憶體中處理來源內容，不另外保存來源下載檔、產生的 CSV／JSON 或原始日誌；結構化執行事件保留 30 天。登入資料也只存在你的 Mac，並由 Electron `safeStorage` 加密；如果系統無法安全加密，OctopusBeak 會停止啟動，不會把密碼寫成明文。
 
 CAPTCHA、OTP、工作階段 Cookie 與其他驗證資訊不會交給模型處理。需要人工驗證時，由你在視窗完成。
 
@@ -86,7 +86,6 @@ CAPTCHA、OTP、工作階段 Cookie 與其他驗證資訊不會交給模型處�
 
 ```bash
 npm install
-npm run libretto:setup
 npm run typecheck
 npm run desktop:dev
 ```
@@ -107,21 +106,17 @@ open out/OctopusBeak-darwin-arm64/OctopusBeak.app
 <details>
 <summary>CLI 與本機帳本</summary>
 
-桌面程式已包含 Libretto，一般使用者不需要安裝 CLI。開發工作流程時，可直接執行 npm scripts：
+正式工作流程由桌面 App 啟動。開發 typed workflow 時，使用專案 CLI 與測試 fixture：
 
 ```bash
-npm run run:fubon-all-statements
-npx libretto resume --session <session-name>
-npm run libretto:close-all
+npm run workflow:dev -- help
+npm run workflow:dev -- list
+npm run workflow:dev -- fixture
 ```
 
-工作流程會將 CSV 與同名 JSON metadata 寫到 `downloads/<workflow-name>/`，財務資料則由桌面程式的 PGlite worker 儲存在 `data/pglite/`。
+新增與測試 workflow 的步驟請參閱[開發指引](docs/agents/workflow-development.md)。正式的銀行、發票與同步工作請從桌面 App 的自動化介面執行。
 
-直接執行 MAX / MaiCoin 同步時，需先設定 `MAX_ACCESS_KEY`、`MAX_SECRET_KEY` 與 `MAX_SUB_ACCOUNT`，再執行：
-
-```bash
-npm run run:sync-maicoin
-```
+金融資料由桌面程式的 PGlite worker 儲存在 `data/pglite/`。
 
 </details>
 
@@ -130,13 +125,12 @@ npm run run:sync-maicoin
 
 | 路徑 | 用途 |
 | --- | --- |
-| `src/workflows/` | Libretto 瀏覽器工作流程 |
+| `src/workflows/` | 正逐一遷移至 App typed runtime 的既有工作流程模組 |
 | `src/ledger/` | 來源解析、PGlite 儲存與財務查詢 |
 | `src/lib/overview/`、`src/lib/assets/`、`src/lib/liabilities/` | 財務總覽介面 |
 | `src/lib/spending/` | 電子發票與消費介面 |
 | `src/lib/automation/` | 自動化介面與伺服器端輔助程式 |
 | `electron/` | Electron 主程序與執行環境輔助程式 |
-| `downloads/` | 本機對帳單輸出 |
 | `data/pglite/` | 本機 PGlite 資料 |
 | `~/Library/Application Support/OctopusBeak/` | 安裝版的執行資料 |
 
