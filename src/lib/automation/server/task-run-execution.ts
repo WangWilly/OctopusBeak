@@ -62,12 +62,20 @@ import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
 import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
 import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
+import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
+import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
+import {
+  PGLITE_CHILD_RPC_ENDPOINT_ENV,
+  PGLITE_CHILD_RPC_TOKEN_ENV,
+  createPGliteChildRpcClient,
+} from "../../../../electron/pglite-child-rpc-client.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
   sinopacHostDialogOwner,
 } from "../sinopac-captcha.ts";
 
 const activeTaskChildren = new Map<string, ChildProcess>();
+const activeWorkflowControllers = new Map<string, AbortController>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
@@ -194,8 +202,8 @@ async function createAutomationTaskRunExecution(
     session,
     options.resumeSession ? undefined : options.hostOwnedDialogProvider,
   );
-  const command = task.id === "exchange-rates"
-    ? { command: "", args: [], display: "workflow:exchange-rates", env }
+  const command = task.id === "exchange-rates" || task.id === "sync-maicoin"
+    ? { command: "", args: [], display: `workflow:${task.id}`, env }
     : resolveTaskCommand(
       task,
       {
@@ -643,6 +651,14 @@ export async function runAutomationTaskExecution(
   if (options.isCancellationRequested?.()) {
     return { status: "cancelled" as const };
   }
+  const maicoinLaunchEnv = task.id === "sync-maicoin"
+    ? options.launchEnv ?? automationProcessEnv()
+    : undefined;
+  if (maicoinLaunchEnv
+    && (!maicoinLaunchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim()
+      || !maicoinLaunchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim())) {
+    throw new Error("PGlite workflow transport is unavailable.");
+  }
   if (task.id === "exchange-rates" && !options.runExchangeRateSync) {
     throw new Error("PGlite exchange-rate synchronization is unavailable.");
   }
@@ -801,6 +817,117 @@ export async function runAutomationTaskExecution(
       owner: execution.owner,
     };
   }
+  if (task.id === "sync-maicoin") {
+    let result: AutomationTaskProcessResult;
+    const env = maicoinLaunchEnv!;
+    const controller = new AbortController();
+    const cancellationPoll = setInterval(() => {
+      if (options.isCancellationRequested?.() && !controller.signal.aborted) {
+        controller.abort(new Error("Automation task cancelled."));
+      }
+    }, 50);
+    cancellationPoll.unref();
+    activeWorkflowControllers.set(task.id, controller);
+    let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
+    try {
+      const client = createPGliteChildRpcClient({ environment: env });
+      childRpc = client;
+      await client.ready;
+      if (options.isCancellationRequested?.()) {
+        controller.abort(new Error("Automation task cancelled."));
+      }
+      const executor = createWorkflowExecutor([createMaicoinWorkflow()], {
+        browser: { withPage: async () => { throw new Error("MaiCoin does not use a browser."); } },
+        text: strictSourceText,
+        humanAssistance: { request: async () => { throw new Error("MaiCoin does not use human assistance."); } },
+        financialCommit: createWorkflowFinancialCommitPort(client.workflow),
+        maicoinPersistence: client.operationalProvider.maicoin,
+        events: {
+          async append(event) {
+            await persistence.appendRunEvent(event);
+            await execution.onRuntimeUpdate?.(event.runId);
+          },
+        },
+        now: () => new Date().toISOString(),
+        onEventFailure: () => console.error("workflow-event-persistence-failed"),
+      });
+      await executor.run(task.id, execution.run.taskRunId, {
+        credentials: {
+          accessKey: env.MAX_ACCESS_KEY ?? "",
+          secretKey: env.MAX_SECRET_KEY ?? "",
+          subAccount: env.MAX_SUB_ACCOUNT?.trim() || "main",
+          ...(env.MAX_PROVIDER_EMAIL?.trim()
+            ? { providerEmail: env.MAX_PROVIDER_EMAIL.trim() }
+            : {}),
+        },
+      }, controller.signal);
+      result = {
+        exitCode: 0,
+        signal: null,
+        error: null,
+        logTail: "",
+        resumeFailure: null,
+        statementSummary: null,
+        outputPersistenceWarnings: [],
+        externalPrerequisiteIds: [],
+      };
+    } catch (error) {
+      const cancelled = controller.signal.aborted || options.isCancellationRequested?.() === true;
+      const normalizedError = cancelled
+        ? new Error("Automation task cancelled.")
+        : error instanceof Error && error.name === "MaicoinWorkflowError"
+          ? error
+          : new Error("MaiCoin workflow failed.");
+      result = {
+        exitCode: cancelled ? null : 1,
+        signal: cancelled ? "SIGTERM" : null,
+        error: normalizedError,
+        logTail: "",
+        resumeFailure: null,
+        statementSummary: null,
+        outputPersistenceWarnings: [],
+        externalPrerequisiteIds: [],
+      };
+    } finally {
+      clearInterval(cancellationPoll);
+      activeWorkflowControllers.delete(task.id);
+      childRpc?.close();
+    }
+    const provider = { automation: persistence };
+    if (options.deferFinalization) {
+      return {
+        status: automationTaskProcessStatus(task.kind, result, {
+          attempt: execution.run.attempt,
+          maxAttempts: options.maxAttempts ?? execution.run.attempt,
+          forceTerminated: options.isForceTerminationRequested?.() === true,
+        }),
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
+    const finalized = await finalizeAutomationTaskRun(
+      {
+        provider,
+        taskId: task.id,
+        taskKind: task.kind,
+        taskRunId: execution.run.taskRunId,
+        logPath: execution.logPath,
+        forceTerminated: options.isForceTerminationRequested?.() === true,
+      },
+      result,
+    );
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      result,
+    };
+  }
   try {
     const result = await executeAutomationTaskProcess(
       execution,
@@ -914,6 +1041,10 @@ export async function terminateAutomationTaskProcessTree(
   signal: NodeJS.Signals = "SIGKILL",
   timeoutMs = 2_000,
 ) {
+  const workflowController = activeWorkflowControllers.get(taskId);
+  if (workflowController && !workflowController.signal.aborted) {
+    workflowController.abort(new Error("Automation task cancelled."));
+  }
   const child = activeTaskChildren.get(taskId);
   if (!child) return;
   signalAutomationChildTree(child, signal);
@@ -931,6 +1062,9 @@ export async function terminateAutomationTaskProcessTree(
 }
 
 export function terminateAutomationTaskProcesses() {
+  for (const controller of activeWorkflowControllers.values()) {
+    if (!controller.signal.aborted) controller.abort(new Error("App is shutting down."));
+  }
   for (const child of activeTaskChildren.values()) {
     signalAutomationChildTree(child, "SIGTERM");
   }
