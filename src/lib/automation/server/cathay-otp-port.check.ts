@@ -76,6 +76,46 @@ test("App OTP adapter consumes a prepared boundary once", async () => {
   assert.equal(retrievalCount, 1);
 });
 
+test("App OTP adapter passes cancellation to retrieval and never replays or returns a late OTP", async () => {
+  const controller = new AbortController();
+  const boundaryId = "7d3e1a6b-abc1-4c34-8def-0987654321ab";
+  let receivedSignal: AbortSignal | undefined;
+  let releaseRetrieve!: (value: { status: "found"; otp: string }) => void;
+  const otp = createCathayGmailOtpPort(operations({
+    async prepareRetrieval() { return { status: "prepared", boundaryId }; },
+    async retrieve(_id, signal) {
+      receivedSignal = signal;
+      return await new Promise<{ status: "found"; otp: string }>((resolve) => { releaseRetrieve = resolve; });
+    },
+  }), { signal: controller.signal });
+
+  const boundary = await otp.prepareRetrieval();
+  assert.deepEqual(boundary, { status: "prepared", boundaryId });
+  const retrieval = otp.retrieve(boundaryId);
+  assert.equal(receivedSignal, controller.signal);
+  controller.abort();
+  releaseRetrieve({ status: "found", otp: "ABCD-123456" });
+  assert.deepEqual(await retrieval, { status: "fallback", reason: "gmail-request-failed" });
+  assert.deepEqual(await otp.retrieve(boundaryId), { status: "fallback", reason: "protocol-error" });
+});
+
+test("App OTP adapter consumes a boundary without starting retrieval when already cancelled", async () => {
+  const controller = new AbortController();
+  let retrievalCount = 0;
+  const otp = createCathayGmailOtpPort(operations({
+    async retrieve() {
+      retrievalCount += 1;
+      return { status: "found", otp: "ABCD-123456" };
+    },
+  }), { signal: controller.signal });
+  const boundary = await otp.prepareRetrieval();
+  if (boundary.status !== "prepared") assert.fail("expected prepared boundary");
+  controller.abort();
+  assert.deepEqual(await otp.retrieve(boundary.boundaryId), { status: "fallback", reason: "gmail-request-failed" });
+  assert.deepEqual(await otp.retrieve(boundary.boundaryId), { status: "fallback", reason: "protocol-error" });
+  assert.equal(retrievalCount, 0);
+});
+
 test("App OTP adapter rejects invalid boundary identifiers and malformed OTP values", async () => {
   const otp = createCathayGmailOtpPort(operations({
     async prepareRetrieval() { return { status: "prepared", boundaryId: "not-a-boundary" }; },
