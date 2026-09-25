@@ -194,7 +194,7 @@ export function cathayStatementScopeRepairStage(
 export async function publishCathayStatementScopeRepairStage(
   page: Page,
   type: CathayStatementScopeRepairType,
-  publish?: HumanAssistanceContractPublisher,
+  publish: HumanAssistanceContractPublisher,
 ) {
   return emitHumanAssistanceStage(
     cathayStatementScopeRepairStage(page, type),
