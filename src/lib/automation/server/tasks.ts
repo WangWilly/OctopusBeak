@@ -1058,6 +1058,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "exchange-rates",
     label: "Exchange rates",
+    workflowId: "exchange-rates",
     kind: "sync",
     credentialKeys: [],
     dependencies: [],
@@ -1066,6 +1067,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sync-maicoin",
     label: "MaiCoin sync",
+    workflowId: "sync-maicoin",
     kind: "sync",
     credentialGroupId: "maicoin",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[11].credentialKeys,

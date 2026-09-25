@@ -14,6 +14,7 @@ import {
   type AppWorkflowWorkerOutboundFrame,
 } from "./app-workflow-worker-protocol.ts";
 import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
+import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
 const start = {
   protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -73,6 +74,42 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     () => parseAppWorkflowWorkerStart({ ...start, input: { credential: "x".repeat(2_000_000) } }),
     /protocol rejected/u,
   );
+  const { browserConnection: _browserConnection, ...nonBrowserStart } = start;
+  assert.equal(parseAppWorkflowWorkerStart({
+    ...nonBrowserStart,
+    workflowId: "exchange-rates",
+    input: null,
+  }).workflowId, "exchange-rates");
+  assert.throws(() => parseAppWorkflowWorkerStart({
+    ...start,
+    workflowId: "exchange-rates",
+    input: null,
+    browserConnection: start.browserConnection,
+  }), /protocol rejected/u);
+  assert.throws(() => parseAppWorkflowWorkerStart({
+    ...nonBrowserStart,
+    workflowId: "sync-maicoin",
+    input: null,
+    pgliteRpc: undefined,
+  }), /protocol rejected/u);
+  assert.equal(parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: 2,
+    kind: "exchange-rate-progress",
+    eventId: "progress-1",
+    phaseCode: "complete",
+    completed: 3,
+    total: 3,
+    percent: 100,
+  }).kind, "exchange-rate-progress");
+  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: 2,
+    kind: "exchange-rate-progress",
+    eventId: "progress-2",
+    phaseCode: "private-value",
+    completed: 1,
+    total: 3,
+    percent: 33,
+  }), /protocol rejected/u);
   const otpRequest = {
     protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
     kind: "cathay-gmail-otp-request",
@@ -107,6 +144,69 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     }),
     /protocol rejected/u,
   );
+});
+
+test("nonbrowser exchange-rate worker derives its request through authenticated typed RPC", async () => {
+  let readCalls = 0;
+  const server = createPGliteChildRpcServer({
+    provider: {
+      operational: {
+        exchangeRates: {
+          async readExchangeRates() { readCalls += 1; return []; },
+          async upsertExchangeRates() { throw new Error("No rates should be written without currencies."); },
+        },
+      },
+      financial: {
+        async overviewCurrent() { return { dailyHistory: [] }; },
+      },
+    } as never,
+  });
+  let worker: Worker | undefined;
+  const phases: string[] = [];
+  const codes: string[] = [];
+  try {
+    await server.ready;
+    worker = new Worker(join(process.cwd(), "build-electron", "app-workflow-worker.cjs"), {
+      workerData: {
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        workflowId: "exchange-rates",
+        taskRunId: "exchange-worker-run",
+        input: null,
+        pgliteRpc: {
+          endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+          token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+        },
+      },
+    });
+    const activeWorker = worker;
+    const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Exchange-rate worker did not complete.")), 10_000);
+      activeWorker.on("error", (error) => { clearTimeout(timeout); reject(error); });
+      activeWorker.on("message", (value: unknown) => {
+        const frame = parseAppWorkflowWorkerOutboundFrame(value);
+        if (frame.kind === "event" || frame.kind === "exchange-rate-progress") {
+          if (frame.kind === "event") codes.push(frame.event.code);
+          else phases.push(frame.phaseCode);
+          activeWorker.postMessage({
+            protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+            kind: "event-ack",
+            eventId: frame.eventId,
+            ok: true,
+          });
+        } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
+          clearTimeout(timeout);
+          resolve(frame);
+        }
+      });
+    });
+    assert.equal((await terminal).kind, "completed");
+    assert.deepEqual(phases, ["load-request", "sync", "complete"]);
+    assert.deepEqual(codes.slice(-1), ["run-completed"]);
+    assert.equal(readCalls, 0, "a zero-currency overview needs no exchange-rate database read");
+  } finally {
+    if (worker) await worker.terminate();
+    await server.close();
+  }
 });
 
 test("Electron build emits the worker as an internal managed entry", () => {

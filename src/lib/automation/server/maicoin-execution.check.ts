@@ -3,6 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { MessageChannel } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 import { createPGliteFinancialRegistry } from "../../../../electron/pglite-financial-registry.ts";
@@ -11,6 +12,8 @@ import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maic
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
+import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 
 function maxResponse(body: unknown, date?: string) {
@@ -20,7 +23,7 @@ function maxResponse(body: unknown, date?: string) {
   });
 }
 
-test("App task execution runs MaiCoin in process without writing run artifacts", async () => {
+test("MaiCoin worker uses injected financial commit and operational RPC without writing run artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-app-execution-"));
   const previousDirectory = process.cwd();
   const database = await PGlite.create(join(root, "pglite"));
@@ -33,6 +36,7 @@ test("App task execution runs MaiCoin in process without writing run artifacts",
     provider: { operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates) },
   });
   const previousFetch = globalThis.fetch;
+  const channel = new MessageChannel();
   try {
     await server.ready;
     globalThis.fetch = (async (input) => {
@@ -59,31 +63,50 @@ test("App task execution runs MaiCoin in process without writing run artifacts",
       async () => undefined,
     ), /PGlite workflow transport is unavailable/u);
     assert.equal((await operational.automation.latestTaskRuns())[task.id], undefined);
-    const result = await runAutomationTaskExecution(
-      task,
-      operational.automation,
-      {
-        launchEnv: {
-          ...server.env,
-          ["MAX" + "_ACCESS_KEY"]: "test-access",
-          ["MAX" + "_SECRET_KEY"]: "test-secret",
-          MAX_SUB_ACCOUNT: "main",
+    const observedCodes: string[] = [];
+    const terminal = new Promise<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>>((resolve) => {
+      channel.port2.on("message", (value: unknown) => {
+        const frame = parseAppWorkflowWorkerOutboundFrame(value);
+        if (frame.kind === "event") {
+          observedCodes.push(frame.event.code);
+          channel.port2.postMessage({
+            protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+            kind: "event-ack",
+            eventId: frame.eventId,
+            ok: true,
+          });
+        } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolve(frame);
+      });
+    });
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: {
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        workflowId: "sync-maicoin",
+        taskRunId: "maicoin-worker-run",
+        input: {
+          credentials: {
+            accessKey: "test-access",
+            secretKey: "test-secret",
+            subAccount: "main",
+          },
+        },
+        pgliteRpc: {
+          endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+          token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
         },
       },
-      async () => undefined,
-    );
-    assert.equal(result.status, "completed");
-    const run = (await operational.automation.latestTaskRuns())["sync-maicoin"];
-    assert.ok(run);
-    assert.deepEqual(run.events.map((event) => event.code).slice(-1), ["run-completed"]);
-    assert.equal(Object.hasOwn(run, "logPath"), false);
-    assert.equal(Object.hasOwn(run, "logTail"), false);
+    });
+    assert.equal((await terminal).kind, "completed");
+    assert.deepEqual(observedCodes.slice(-1), ["run-completed"]);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
     assert.deepEqual(await readdir(root), ["pglite"], "only the test database remains under its temp root");
   } finally {
     process.chdir(previousDirectory);
     globalThis.fetch = previousFetch;
+    channel.port1.close();
+    channel.port2.close();
     await server.close();
     await store.close();
     await rm(root, { recursive: true, force: true });

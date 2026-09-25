@@ -56,10 +56,16 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   runId: string;
   workflowId: string;
   input: unknown;
-  browserConnection: AppWorkflowWorkerStart["browserConnection"];
+  browserConnection?: AppWorkflowWorkerStart["browserConnection"];
   pgliteRpc?: AppWorkflowWorkerStart["pgliteRpc"];
   signal: AbortSignal;
   appendEvent(event: WorkflowRunEvent, signal: AbortSignal): Promise<void>;
+  appendExchangeRateProgress?(progress: Readonly<{
+    phaseCode: "load-request" | "sync" | "complete";
+    completed: number;
+    total: number;
+    percent: number;
+  }>, signal: AbortSignal): Promise<void>;
   requestHumanAssistance(
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
@@ -193,7 +199,7 @@ export async function runSupervisedAppWorkflow(
       workflowId: options.workflowId,
       taskRunId: options.runId,
       input: options.input,
-      browserConnection: options.browserConnection,
+      ...(options.browserConnection ? { browserConnection: options.browserConnection } : {}),
       ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}),
     });
   } catch {
@@ -248,6 +254,7 @@ export async function runSupervisedAppWorkflow(
   const cathayOtpConsumedBoundaryIds = new Set<string>();
   const streamDrains: Array<{ stream: WorkerDataStream; listener: (chunk: unknown) => void }> = [];
   let appendEvent = options.appendEvent;
+  let appendExchangeRateProgress = options.appendExchangeRateProgress;
   let requestHumanAssistance = options.requestHumanAssistance;
 
   return await new Promise<AppWorkflowWorkerOutcome>((resolve) => {
@@ -267,6 +274,7 @@ export async function runSupervisedAppWorkflow(
       for (const { stream, listener } of streamDrains) stream.off("data", listener);
       streamDrains.length = 0;
       appendEvent = undefined as unknown as typeof appendEvent;
+      appendExchangeRateProgress = undefined;
       requestHumanAssistance = undefined as unknown as typeof requestHumanAssistance;
       cathayGmailOtpPort = undefined;
       cathayOtpRequestIds.clear();
@@ -340,6 +348,32 @@ export async function runSupervisedAppWorkflow(
         protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
         kind: "event-ack",
         eventId,
+        ok,
+        ...(!ok ? { code: "event-persistence-failed" as const } : {}),
+      });
+    };
+    const finishExchangeRateProgress = async (
+      frame: Extract<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>, { kind: "exchange-rate-progress" }>,
+    ) => {
+      let ok = false;
+      try {
+        if (!appendExchangeRateProgress) throw new Error("progress-port-unavailable");
+        await abortable(Promise.resolve().then(() => appendExchangeRateProgress!({
+          phaseCode: frame.phaseCode,
+          completed: frame.completed,
+          total: frame.total,
+          percent: frame.percent,
+        }, signal)), signal);
+        ok = true;
+      } catch {
+        ok = false;
+      }
+      eventInFlight = false;
+      if (settled || pendingOutcome || signal.aborted) return;
+      send({
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        kind: "event-ack",
+        eventId: frame.eventId,
         ok,
         ...(!ok ? { code: "event-persistence-failed" as const } : {}),
       });
@@ -429,6 +463,23 @@ export async function runSupervisedAppWorkflow(
         eventIds.add(frame.eventId);
         eventInFlight = true;
         void finishEvent(frame.eventId, frame.event);
+        return;
+      }
+      if (frame.kind === "exchange-rate-progress") {
+        if (
+          options.workflowId !== "exchange-rates"
+          || !appendExchangeRateProgress
+          || eventInFlight
+          || eventCount >= MAX_EVENTS_PER_RUN
+          || eventIds.has(frame.eventId)
+        ) {
+          protocolFailure();
+          return;
+        }
+        eventCount += 1;
+        eventIds.add(frame.eventId);
+        eventInFlight = true;
+        void finishExchangeRateProgress(frame);
         return;
       }
       if (frame.kind === "human-assistance-request") {

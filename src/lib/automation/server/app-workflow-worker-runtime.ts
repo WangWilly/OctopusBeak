@@ -34,6 +34,7 @@ import {
 } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
 import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rpc-client.ts";
+import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
@@ -77,6 +78,7 @@ function throwOnProtocolFailure() {
 function appBrowserPort(start: AppWorkflowWorkerStart): WorkflowBrowserPort {
   return {
     async withPage(run) {
+      if (!start.browserConnection) throw new AppWorkflowWorkerProtocolError();
       return await withAppWorkflowBrowserPage(start.browserConnection, run);
     },
   };
@@ -173,7 +175,7 @@ export async function runAppWorkflowWorker(
   options.port.on("message", onMessage);
 
   const request = <T extends Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" | "human-assistance-response" }>>(
-    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "human-assistance-request" }>,
+    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "human-assistance-request" | "exchange-rate-progress" }>,
     pending: Map<string, (response: AppWorkflowWorkerInboundFrame) => void>,
     id: string,
   ): Promise<T> => new Promise<T>((resolve, reject) => {
@@ -280,41 +282,79 @@ export async function runAppWorkflowWorker(
   };
 
   let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
+  let progressQueue = Promise.resolve();
+  let acknowledgedEventQueue = Promise.resolve();
+  const sendAcknowledgedEvent = (
+    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "exchange-rate-progress" }>,
+  ) => {
+    const result = acknowledgedEventQueue.then(async () => {
+      const ack = await request<Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" }>>(
+        frame, pendingEvents, frame.eventId,
+      );
+      if (!ack.ok) throw new Error("event-persistence-failed");
+    });
+    acknowledgedEventQueue = result.catch(() => undefined);
+    return result;
+  };
   try {
-    const definitionDependencies: AppWorkflowRegistryDependencies = start.workflowId === "cathay-all-statements"
-      ? { cathayGmailOtpPort }
-      : {};
-    const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
-    if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
-    if (definition.requiresMaicoinPersistence) throw new Error("worker-start-failed");
-
-    let financialCommit = options.financialCommit;
-    if (definition.requiresFinancialCommit && !financialCommit) {
-      if (!start.pgliteRpc) throw new Error("worker-start-failed");
+    if (start.pgliteRpc && (start.workflowId === "exchange-rates" || start.workflowId === "sync-maicoin")) {
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
         token: start.pgliteRpc.token,
       });
       await abortable(childRpc.ready, controller.signal);
+    }
+    const definitionDependencies: AppWorkflowRegistryDependencies = {
+      ...(start.workflowId === "cathay-all-statements" ? { cathayGmailOtpPort } : {}),
+      ...(start.workflowId === "exchange-rates" && childRpc ? {
+        exchangeRateSyncService: createExchangeRateSyncService({
+          exchangeRates: childRpc.operationalProvider.exchangeRates,
+          financial: childRpc.financial,
+        }),
+        exchangeRateProgress: (event) => {
+          progressQueue = progressQueue.then(async () => {
+            const eventId = randomUUID();
+            await sendAcknowledgedEvent({
+              protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+              kind: "exchange-rate-progress",
+              eventId,
+              phaseCode: event.phaseCode as "load-request" | "sync" | "complete",
+              completed: event.completed ?? 0,
+              total: event.total ?? 3,
+              percent: event.percent ?? 0,
+            });
+          });
+          void progressQueue.catch(() => undefined);
+        },
+      } : {}),
+    };
+    const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
+    if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
+    let financialCommit = options.financialCommit;
+    if (definition.requiresFinancialCommit && !financialCommit) {
+      if (!childRpc && start.pgliteRpc) {
+        childRpc = createPGliteChildRpcClient({
+          endpoint: start.pgliteRpc.endpoint,
+          token: start.pgliteRpc.token,
+        });
+        await abortable(childRpc.ready, controller.signal);
+      }
+      if (!childRpc) throw new Error("worker-start-failed");
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
+    if (definition.requiresMaicoinPersistence && !childRpc) throw new Error("worker-start-failed");
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
       async append(event) {
         if (events.length >= 512) events.shift();
         events.push(event);
         const eventId = randomUUID();
-        const ack = await request(
-          {
-            protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-            kind: "event",
-            eventId,
-            event,
-          },
-          pendingEvents,
+        await sendAcknowledgedEvent({
+          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+          kind: "event",
           eventId,
-        );
-        if (ack.kind !== "event-ack" || !ack.ok) throw new Error("event-persistence-failed");
+          event,
+        });
       },
     };
     const humanAssistance: WorkflowExecutorPorts["humanAssistance"] = {
@@ -342,6 +382,7 @@ export async function runAppWorkflowWorker(
       text: strictSourceText,
       humanAssistance,
       ...(financialCommit ? { financialCommit } : {}),
+      ...(definition.requiresMaicoinPersistence ? { maicoinPersistence: childRpc!.operationalProvider.maicoin } : {}),
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
       onEventFailure: () => undefined,
@@ -353,6 +394,7 @@ export async function runAppWorkflowWorker(
       start.input,
       controller.signal,
     );
+    await progressQueue;
     terminal = true;
     try {
       send({

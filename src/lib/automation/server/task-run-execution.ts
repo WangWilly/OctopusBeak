@@ -10,9 +10,6 @@ import {
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 import type { AutomationTaskProgress } from "../types.ts";
-import {
-  type AutomationProgressEvent,
-} from "../progress.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
 import type {
@@ -25,9 +22,6 @@ import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
-import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
-import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
-import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
   appWorkflowBrowserConnectionForSession,
@@ -55,9 +49,6 @@ import {
 
 const activeWorkflowControllers = new Map<string, AbortController>();
 const activeWorkflowRunIds = new Map<string, string>();
-const activeExchangeRateWorkCompletions = new Map<string, Promise<void>>();
-const appShutdownRunIds = new Set<string>();
-const appShutdownTransitions = new Map<string, Promise<void>>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
@@ -75,12 +66,6 @@ export type AutomationTaskExecutionOptions = {
   isCancellationRequested?: () => boolean;
   isForceTerminationRequested?: () => boolean;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
-  /** Worker-owned exchange-rate sync; absence fails closed. */
-  runExchangeRateSync?: (options: {
-    signal: AbortSignal;
-    scheduledAtUtc?: string;
-    emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
-  }) => Promise<unknown>;
   /** App composition may replace a typed workflow capability at its port seam. */
   workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
@@ -378,24 +363,25 @@ async function executeSupervisedAppWorkflow(
     }
 
     const input = workflowInputForTask(workflowId, launchEnv);
-    const pgliteRpc = definition.requiresFinancialCommit
+    const nonbrowser = workflowId === "exchange-rates" || workflowId === "sync-maicoin";
+    const pgliteRpc = (definition.requiresFinancialCommit || workflowId === "exchange-rates")
       ? pgliteRpcForWorker(launchEnv)
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const startUrl = workflowStartUrlForTask(workflowId);
-    const browser = options.workflowBrowserPortFactory?.({
+    const browser = nonbrowser ? undefined : options.workflowBrowserPortFactory?.({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
       startUrl,
-    }) ?? createAppWorkflowBrowserPort({
+    }) ?? (nonbrowser ? undefined : createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
       startUrl,
-    });
+    }));
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: execution.run.taskRunId,
       persistence: execution.persistence,
@@ -406,18 +392,13 @@ async function executeSupervisedAppWorkflow(
       { automation: execution.persistence },
     );
 
-    const outcome = await browser.withPage(async () => {
+    const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
       controller.signal.throwIfAborted();
-      const browserConnection = (options.appWorkflowBrowserConnectionForRun
-        ?? appWorkflowBrowserConnectionForSession)(execution.run.taskRunId);
-      if (!browserConnection) {
-        throw new Error("The App browser worker connection is unavailable for this active run.");
-      }
       return await runSupervisedAppWorkflow({
         runId: execution.run.taskRunId,
         workflowId,
         input,
-        browserConnection,
+        ...(browserConnection ? { browserConnection } : {}),
         ...(pgliteRpc ? { pgliteRpc } : {}),
         signal: controller.signal,
         appendEvent: async (event) => {
@@ -433,6 +414,19 @@ async function executeSupervisedAppWorkflow(
             // turn an ACKed database write into a worker failure.
           }
         },
+        ...(workflowId === "exchange-rates" ? {
+          appendExchangeRateProgress: async (progress: Readonly<{
+            phaseCode: "load-request" | "sync" | "complete";
+            completed: number;
+            total: number;
+            percent: number;
+          }>) => {
+            await execution.persistence.updateTaskRun(execution.run.taskRunId, {
+              progress: { ...progress, attempt: execution.run.attempt },
+            });
+            await execution.onRuntimeUpdate?.(execution.run.taskRunId);
+          },
+        } : {}),
         requestHumanAssistance: (contract, signal) =>
           humanAssistance.request(contract, signal),
         ...(options.createCathayGmailOtpPort
@@ -445,7 +439,17 @@ async function executeSupervisedAppWorkflow(
           ? { workerFactory: options.appWorkflowWorkerFactory }
           : {}),
       });
-    });
+    };
+    const outcome = browser
+      ? await browser.withPage(async () => {
+        const browserConnection = (options.appWorkflowBrowserConnectionForRun
+          ?? appWorkflowBrowserConnectionForSession)(execution.run.taskRunId);
+        if (!browserConnection) {
+          throw new Error("The App browser worker connection is unavailable for this active run.");
+        }
+        return await runWorker(browserConnection);
+      })
+      : await runWorker();
 
     let eventsForExecution = observedEvents;
     try {
@@ -584,23 +588,16 @@ export async function runAutomationTaskExecution(
   if (options.isCancellationRequested?.()) {
     return { status: "cancelled" as const };
   }
-  if (
-    !task.workflowId &&
-    task.id !== "exchange-rates" &&
-    task.id !== "sync-maicoin"
-  ) {
+  if (!task.workflowId) {
     throw new Error("App workflow definition is unavailable.");
   }
-  const maicoinLaunchEnv = task.id === "sync-maicoin"
+  const nonbrowserLaunchEnv = task.id === "sync-maicoin" || task.id === "exchange-rates"
     ? options.launchEnv ?? automationProcessEnv()
     : undefined;
-  if (maicoinLaunchEnv
-    && (!maicoinLaunchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim()
-      || !maicoinLaunchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim())) {
+  if (nonbrowserLaunchEnv
+    && (!nonbrowserLaunchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim()
+      || !nonbrowserLaunchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim())) {
     throw new Error("PGlite workflow transport is unavailable.");
-  }
-  if (task.id === "exchange-rates" && !options.runExchangeRateSync) {
-    throw new Error("PGlite exchange-rate synchronization is unavailable.");
   }
   const execution = await createAutomationTaskRunExecution(
     task,
@@ -673,231 +670,6 @@ export async function runAutomationTaskExecution(
       result,
     };
   }
-  if (task.id === "exchange-rates") {
-    let result: AutomationTaskExecutionResult;
-    const controller = new AbortController();
-    const cancellationPoll = setInterval(() => {
-      if (options.isCancellationRequested?.() && !controller.signal.aborted) {
-        controller.abort(new Error("Automation task cancelled."));
-      }
-    }, 50);
-    cancellationPoll.unref();
-    activeWorkflowControllers.set(task.id, controller);
-    activeWorkflowRunIds.set(task.id, execution.run.taskRunId);
-    let settleSync!: () => void;
-    const syncSettled = new Promise<void>((resolve) => { settleSync = resolve; });
-    activeExchangeRateWorkCompletions.set(task.id, syncSettled);
-    let progressQueue = Promise.resolve();
-    const emitProgress = (event: Omit<AutomationProgressEvent, "type">) => {
-      progressQueue = progressQueue.then(async () => {
-        await persistence.updateTaskRun(execution.run.taskRunId, {
-          progress: {
-            phaseCode: event.phaseCode,
-            completed: event.completed,
-            total: event.total,
-            percent: event.percent,
-            attempt: execution.run.attempt,
-            ...(event.params ? { params: event.params } : {}),
-          },
-        });
-        await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-      });
-    };
-    try {
-      const runExchangeRateSync = options.runExchangeRateSync;
-      if (!runExchangeRateSync) {
-        throw new Error("PGlite exchange-rate synchronization is unavailable.");
-      }
-      const executor = createWorkflowExecutor([createExchangeRateWorkflow(
-        runExchangeRateSync,
-        {
-          scheduledAtUtc: options.scheduledAtUtc,
-          emitProgress,
-        },
-      )], {
-        browser: { withPage: async () => { throw new Error("Exchange rates do not use a browser."); } },
-        text: strictSourceText,
-        humanAssistance: { request: async () => { throw new Error("Exchange rates do not use human assistance."); } },
-        events: createOperationalWorkflowEventPort(persistence),
-        now: () => new Date().toISOString(),
-        onEventFailure: () => console.error("workflow-event-persistence-failed"),
-      });
-      await executor.run(
-        "exchange-rates",
-        execution.run.taskRunId,
-        undefined,
-        controller.signal,
-      );
-      await progressQueue;
-      result = {
-        exitCode: 0,
-        signal: null,
-        error: null,
-        statementSummary: null,
-        outputPersistenceWarnings: [],
-        externalPrerequisiteIds: [],
-      };
-    } catch (error) {
-      const cancelled = controller.signal.aborted
-        || options.isCancellationRequested?.() === true;
-      result = {
-        exitCode: cancelled ? null : 1,
-        signal: cancelled ? "SIGTERM" : null,
-        error: cancelled
-          ? new Error("Automation task cancelled.")
-          : new Error("Exchange-rate workflow failed."),
-        statementSummary: null,
-        outputPersistenceWarnings: [],
-        externalPrerequisiteIds: [],
-      };
-    } finally {
-      await progressQueue.catch(() => undefined);
-      clearInterval(cancellationPoll);
-      settleSync();
-      if (activeExchangeRateWorkCompletions.get(task.id) === syncSettled) {
-        activeExchangeRateWorkCompletions.delete(task.id);
-      }
-      activeWorkflowControllers.delete(task.id);
-      activeWorkflowRunIds.delete(task.id);
-    }
-    if (appShutdownRunIds.has(execution.run.taskRunId)) {
-      await appShutdownTransitions.get(execution.run.taskRunId);
-      appShutdownRunIds.delete(execution.run.taskRunId);
-      appShutdownTransitions.delete(execution.run.taskRunId);
-      return {
-        status: "interrupted" as const,
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        result,
-      };
-    }
-    const provider = { automation: persistence };
-    if (options.deferFinalization) {
-      return {
-        status: automationTaskExecutionStatus(result, {
-          forceTerminated: options.isForceTerminationRequested?.() === true,
-        }),
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        result,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(
-      {
-        provider,
-        taskId: task.id,
-        taskKind: task.kind,
-        taskRunId: execution.run.taskRunId,
-        forceTerminated: options.isForceTerminationRequested?.() === true,
-      },
-      result,
-    );
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-    };
-  }
-  if (task.id === "sync-maicoin") {
-    let result: AutomationTaskExecutionResult;
-    const env = maicoinLaunchEnv!;
-    const controller = new AbortController();
-    const cancellationPoll = setInterval(() => {
-      if (options.isCancellationRequested?.() && !controller.signal.aborted) {
-        controller.abort(new Error("Automation task cancelled."));
-      }
-    }, 50);
-    cancellationPoll.unref();
-    activeWorkflowControllers.set(task.id, controller);
-    let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
-    try {
-      const client = createPGliteChildRpcClient({ environment: env });
-      childRpc = client;
-      await client.ready;
-      if (options.isCancellationRequested?.()) {
-        controller.abort(new Error("Automation task cancelled."));
-      }
-      const executor = createWorkflowExecutor([createMaicoinWorkflow()], {
-        browser: { withPage: async () => { throw new Error("MaiCoin does not use a browser."); } },
-        text: strictSourceText,
-        humanAssistance: { request: async () => { throw new Error("MaiCoin does not use human assistance."); } },
-        financialCommit: createWorkflowFinancialCommitPort(client.workflow),
-        maicoinPersistence: client.operationalProvider.maicoin,
-        events: {
-          async append(event) {
-            await persistence.appendRunEvent(event);
-            await execution.onRuntimeUpdate?.(event.runId);
-          },
-        },
-        now: () => new Date().toISOString(),
-        onEventFailure: () => console.error("workflow-event-persistence-failed"),
-      });
-      await executor.run(task.id, execution.run.taskRunId, {
-        credentials: {
-          accessKey: env.MAX_ACCESS_KEY ?? "",
-          secretKey: env.MAX_SECRET_KEY ?? "",
-          subAccount: env.MAX_SUB_ACCOUNT?.trim() || "main",
-          ...(env.MAX_PROVIDER_EMAIL?.trim()
-            ? { providerEmail: env.MAX_PROVIDER_EMAIL.trim() }
-            : {}),
-        },
-      }, controller.signal);
-      result = {
-        exitCode: 0,
-        signal: null,
-        error: null,
-        statementSummary: null,
-        outputPersistenceWarnings: [],
-        externalPrerequisiteIds: [],
-      };
-    } catch (error) {
-      const cancelled = controller.signal.aborted || options.isCancellationRequested?.() === true;
-      const normalizedError = cancelled
-        ? new Error("Automation task cancelled.")
-        : error instanceof Error && error.name === "MaicoinWorkflowError"
-          ? error
-          : new Error("MaiCoin workflow failed.");
-      result = {
-        exitCode: cancelled ? null : 1,
-        signal: cancelled ? "SIGTERM" : null,
-        error: normalizedError,
-        statementSummary: null,
-        outputPersistenceWarnings: [],
-        externalPrerequisiteIds: [],
-      };
-    } finally {
-      clearInterval(cancellationPoll);
-      activeWorkflowControllers.delete(task.id);
-      childRpc?.close();
-    }
-    const provider = { automation: persistence };
-    if (options.deferFinalization) {
-      return {
-        status: automationTaskExecutionStatus(result, {
-          forceTerminated: options.isForceTerminationRequested?.() === true,
-        }),
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        result,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(
-      {
-        provider,
-        taskId: task.id,
-        taskKind: task.kind,
-        taskRunId: execution.run.taskRunId,
-        forceTerminated: options.isForceTerminationRequested?.() === true,
-      },
-      result,
-    );
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-      result,
-    };
-  }
   throw new Error("App workflow definition is unavailable.");
 }
 
@@ -926,33 +698,6 @@ export async function interruptActiveAppWorkflows(
 ) {
   for (const [taskId, taskRunId] of activeWorkflowRunIds) {
     const controller = activeWorkflowControllers.get(taskId);
-    if (taskId === "exchange-rates") {
-      appShutdownRunIds.add(taskRunId);
-      const completion = activeExchangeRateWorkCompletions.get(taskId);
-      const transition = Promise.resolve().then(async () => {
-        await completion;
-        const current = await persistence.taskRunById(taskRunId);
-        if (!current || !["preparing", "queued", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
-          return;
-        }
-        await persistence.transitionTaskRunToTerminal(taskRunId, {
-          status: "interrupted",
-          finishedAt: new Date().toISOString(),
-          exitCode: null,
-          signal: null,
-          appWorkflowOutcome: current.appWorkflowOutcome ?? {
-            errorCode: "cancelled",
-            summary: null,
-          },
-        });
-      });
-      appShutdownTransitions.set(taskRunId, transition);
-      if (controller && !controller.signal.aborted) {
-        controller.abort(new Error("App is shutting down."));
-      }
-      await transition;
-      continue;
-    }
     if (controller && !controller.signal.aborted) {
       controller.abort(new Error("App is shutting down."));
     }

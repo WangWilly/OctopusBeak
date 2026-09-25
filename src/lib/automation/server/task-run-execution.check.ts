@@ -186,184 +186,102 @@ test("resuming a missing App run fails closed without invoking a workflow", asyn
   assert.equal(workflowCalls, 0);
 });
 
-test("exchange-rate dispatch remains typed and stores no file metadata", async () => {
-  const task = taskById("exchange-rates");
-  assert.ok(task);
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    const result = await runAutomationTaskExecution(
-      task,
-      provider.automation,
-      {
-        runExchangeRateSync: async ({ emitProgress }) => {
-          emitProgress?.({
-            phaseCode: "collection",
-            completed: 1,
-            total: 1,
-            percent: 100,
-          });
-          return { status: "completed" };
+class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
+  readonly stdout = null;
+  readonly stderr = null;
+  readonly start: AppWorkflowWorkerStart;
+  readonly exchange: boolean;
+  constructor(start: AppWorkflowWorkerStart) {
+    super();
+    this.start = start;
+    this.exchange = start.workflowId === "exchange-rates";
+    setImmediate(() => {
+      this.emit("online");
+      this.emit("message", {
+        protocolVersion: 2,
+        kind: "event",
+        eventId: "run-started-id",
+        event: {
+          runId: start.taskRunId,
+          stage: "preparation",
+          code: "run-started",
+          occurredAt: "2026-09-26T00:00:00.000Z",
         },
-      },
-      async (id) => { taskRunId = id; },
-    );
-
-    assert.equal(result.status, "completed");
-    const run = await provider.automation.taskRunById(taskRunId);
-    assert.equal(run?.status, "completed");
-    assert.equal(run && "logPath" in run, false);
-    assert.equal(run && "logTail" in run, false);
-    assert.equal(run && "script" in run, false);
-    assert.ok(run?.events.some((event) => event.code === "progress-update"));
-  } finally {
-    await store.close();
+      });
+    });
   }
-});
-
-test("normal cancellation aborts exchange-rate sync and finalizes after it settles", async () => {
-  const task = taskById("exchange-rates");
-  assert.ok(task);
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    let cancellationRequested = false;
-    let syncSettled = false;
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const execution = runAutomationTaskExecution(
-      task,
-      provider.automation,
-      {
-        isCancellationRequested: () => cancellationRequested,
-        runExchangeRateSync: async ({ signal }) => {
-          markStarted();
-          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
-          await new Promise<void>((resolve, reject) => {
-            signal.addEventListener("abort", () => {
-              setTimeout(() => {
-                syncSettled = true;
-                resolve();
-              }, 30);
-            }, { once: true });
-            if (signal.aborted) reject(signal.reason);
-          });
-          return { status: "completed" };
-        },
-      },
-      async (id) => { taskRunId = id; },
-    );
-
-    await started;
-    cancellationRequested = true;
-    const result = await execution;
-    assert.equal(syncSettled, true);
-    assert.equal(result.status, "cancelled");
-    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "cancelled");
-  } finally {
-    await store.close();
+  postMessage(frame: AppWorkflowWorkerInboundFrame) {
+    if (frame.kind === "event-ack" && frame.eventId === "run-started-id") {
+      if (this.exchange) {
+        setImmediate(() => this.emit("message", {
+          protocolVersion: 2,
+          kind: "exchange-rate-progress",
+          eventId: "progress-id",
+          phaseCode: "complete",
+          completed: 3,
+          total: 3,
+          percent: 100,
+        }));
+      } else this.complete();
+    } else if (frame.kind === "event-ack" && frame.eventId === "progress-id") {
+      this.complete();
+    } else if (frame.kind === "cancel") {
+      setImmediate(() => {
+        this.emit("message", { protocolVersion: 2, kind: "cancelled", taskRunId: this.start.taskRunId });
+        this.emit("exit", 0);
+      });
+    }
   }
-});
-
-test("App shutdown hook aborts active typed exchange-rate work", async () => {
-  const task = taskById("exchange-rates");
-  assert.ok(task);
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    let syncSettled = false;
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const execution = runAutomationTaskExecution(
-      task,
-      provider.automation,
-      {
-        runExchangeRateSync: async ({ signal }) => {
-          markStarted();
-          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
-          await new Promise<void>((resolve, reject) => {
-            signal.addEventListener("abort", () => {
-              setTimeout(() => {
-                syncSettled = true;
-                resolve();
-              }, 30);
-            }, { once: true });
-            if (signal.aborted) reject(signal.reason);
-          });
-          return { status: "completed" };
-        },
-      },
-      async (id) => { taskRunId = id; },
-    );
-
-    await started;
-    abortActiveAppWorkflowExecutions();
-    const result = await execution;
-    assert.equal(syncSettled, true);
-    assert.equal(result.status, "cancelled");
-    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "cancelled");
-  } finally {
-    await store.close();
+  private complete() {
+    setImmediate(() => {
+      this.emit("message", {
+        protocolVersion: 2,
+        kind: "completed",
+        taskRunId: this.start.taskRunId,
+        summary: null,
+      });
+      this.emit("exit", 0);
+    });
   }
-});
+  terminate() { setImmediate(() => this.emit("exit", 1)); return Promise.resolve(1); }
+}
 
-test("App shutdown waits for exchange-rate sync to settle before interruption", async () => {
-  const task = taskById("exchange-rates");
-  assert.ok(task);
-  const database = await PGlite.create();
-  const store = new PGliteStore(database);
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    let taskRunId = "";
-    let syncSettled = false;
-    let markStarted!: () => void;
-    let markAborted!: () => void;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
-    const execution = runAutomationTaskExecution(
-      task,
-      provider.automation,
-      {
-        runExchangeRateSync: async ({ signal }) => {
-          markStarted();
-          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
-          await new Promise<void>((resolve, reject) => {
-            signal.addEventListener("abort", () => {
-              markAborted();
-              setTimeout(() => {
-                syncSettled = true;
-                resolve();
-              }, 30);
-            }, { once: true });
-            if (signal.aborted) reject(signal.reason);
-          });
-          return { status: "completed" };
+test("exchange-rate and MaiCoin dispatch through supervised workers without a browser", async () => {
+  for (const taskId of ["exchange-rates", "sync-maicoin"] as const) {
+    const task = taskById(taskId);
+    assert.ok(task);
+    const database = await PGlite.create();
+    const store = new PGliteStore(database);
+    try {
+      await applyPgliteOperationalBaseline(store);
+      const provider = createPgliteOperationalProvider(store);
+      let start: AppWorkflowWorkerStart | undefined;
+      let taskRunId = "";
+      const result = await runAutomationTaskExecution(task, provider.automation, {
+        launchEnv: {
+          [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "/tmp/worker-test.sock",
+          [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
         },
-      },
-      async (id) => { taskRunId = id; },
-    );
-
-    await started;
-    const shutdown = interruptActiveAppWorkflows(provider.automation);
-    await aborted;
-    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
-    await shutdown;
-    const result = await execution;
-    assert.equal(syncSettled, true);
-    assert.equal(result.status, "interrupted");
-    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "interrupted");
-  } finally {
-    await store.close();
+        workflowBrowserPortFactory: () => { throw new Error("Nonbrowser task opened a browser."); },
+        appWorkflowWorkerFactory: (_path, options) => {
+          start = options.workerData as AppWorkflowWorkerStart;
+          return new NonBrowserFakeWorker(start);
+        },
+      }, async (id) => { taskRunId = id; });
+      assert.equal(result.status, "completed");
+      assert.ok(start);
+      assert.equal(start.workflowId, taskId);
+      assert.equal(start.browserConnection, undefined);
+      assert.equal(start.pgliteRpc?.endpoint, "/tmp/worker-test.sock");
+      const run = await provider.automation.taskRunById(taskRunId);
+      assert.equal(run?.status, "completed");
+      assert.ok(run?.events.some((event) => event.code === "run-started"));
+      if (taskId === "exchange-rates") {
+        assert.equal(run?.progress?.phaseCode, "complete");
+        assert.equal(run?.progress?.percent, 100);
+      }
+      assert.equal(run && "logPath" in run, false);
+    } finally { await store.close(); }
   }
 });
 
@@ -439,6 +357,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.equal(startData.input && typeof startData.input, "object");
       assert.equal(startData.pgliteRpc?.endpoint, launchEnv[PGLITE_CHILD_RPC_ENDPOINT_ENV]);
       assert.equal(startData.pgliteRpc?.token, launchEnv[PGLITE_CHILD_RPC_TOKEN_ENV]);
+      assert.ok(startData.browserConnection);
       assert.match(startData.browserConnection.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/u);
       assert.ok(startData.browserConnection.targetId.length > 0);
       assert.equal(taskRunId, startData.taskRunId);

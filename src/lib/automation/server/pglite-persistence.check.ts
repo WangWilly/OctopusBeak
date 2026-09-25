@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import type { WorkerOptions } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import {
   applyPgliteOperationalBaseline,
@@ -20,12 +22,61 @@ import { finalizePersistedActiveRuns, finalizeTaskRunTransition } from "./task-r
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
+import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
   humanAssistanceContractForTask,
   humanSessionForTask,
   updateHumanAssistanceCompletionForTask,
   updateHumanAssistanceContractForTask,
 } from "./human-session.ts";
+
+class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
+  readonly stdout = null;
+  readonly stderr = null;
+  readonly start: AppWorkflowWorkerStart;
+  constructor(start: AppWorkflowWorkerStart) {
+    super();
+    this.start = start;
+    setImmediate(() => {
+      this.emit("online");
+      this.emit("message", {
+        protocolVersion: 2,
+        kind: "event",
+        eventId: "pglite-exchange-start",
+        event: {
+          runId: start.taskRunId,
+          stage: "preparation",
+          code: "run-started",
+          occurredAt: "2026-09-26T00:00:00.000Z",
+        },
+      });
+    });
+  }
+  postMessage(frame: AppWorkflowWorkerInboundFrame) {
+    if (frame.kind === "event-ack" && frame.eventId === "pglite-exchange-start") {
+      setImmediate(() => {
+        this.emit("message", {
+          protocolVersion: 2,
+          kind: "event",
+          eventId: "pglite-exchange-complete",
+          event: {
+            runId: this.start.taskRunId,
+            stage: "finalization",
+            code: "run-completed",
+            occurredAt: "2026-09-26T00:00:01.000Z",
+          },
+        });
+      });
+    } else if (frame.kind === "event-ack" && frame.eventId === "pglite-exchange-complete") {
+      setImmediate(() => {
+        this.emit("message", { protocolVersion: 2, kind: "completed", taskRunId: this.start.taskRunId, summary: null });
+        this.emit("exit", 0);
+      });
+    }
+  }
+  terminate() { setImmediate(() => this.emit("exit", 1)); return Promise.resolve(1); }
+}
 
 const database = await PGlite.create();
 const store = new PGliteStore(database);
@@ -66,7 +117,7 @@ try {
       env: {
         [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
         OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
-        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "pglite-persistence-check-token",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "p".repeat(32),
     },
   },
   exchangeRates: {
@@ -190,7 +241,7 @@ try {
   await finalizePersistedActiveRuns(provider, "App closed");
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
-  let exchangeSyncCalled = 0;
+  let exchangeWorkerStarts = 0;
   const exchangeExecution = async (
     task: Parameters<typeof runAutomationTaskExecution>[0],
     persistence: Parameters<typeof runAutomationTaskExecution>[1],
@@ -201,7 +252,14 @@ try {
     persistence,
     {
       ...options,
-      runExchangeRateSync: async () => { exchangeSyncCalled += 1; },
+      appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
+        const start = workerOptions.workerData as AppWorkflowWorkerStart;
+        exchangeWorkerStarts += 1;
+        assert.equal(start.workflowId, "exchange-rates");
+        assert.equal(start.browserConnection, undefined);
+        assert.ok(start.pgliteRpc);
+        return new ExchangeRateWorkerFixture(start);
+      },
     },
     onRunCreated,
   );
@@ -209,7 +267,7 @@ try {
     runExecution: exchangeExecution,
   });
   assert.equal(exchangeExecutionResult.status, "completed");
-  assert.equal(exchangeSyncCalled, 1, "PGlite exchange sync must stay in the injected worker path");
+  assert.equal(exchangeWorkerStarts, 1, "the App runner must dispatch exchange sync through a supervised worker");
   assert.deepEqual(
     (await provider.automation.latestTaskRuns())["exchange-rates"]?.events.map((event) => event.code),
     ["run-started", "run-completed"],

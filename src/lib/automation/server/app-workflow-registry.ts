@@ -5,6 +5,9 @@ import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
 import { linebankStatementsWorkflow } from "../linebank-workflow.ts";
 import { postDomesticDepositWorkflow } from "../post-workflow.ts";
 import { sinopacStatementsWorkflow } from "../sinopac-workflow.ts";
+import { createExchangeRateWorkflow, type ExchangeRateSyncService } from "../exchange-rate-workflow.ts";
+import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
+import type { AutomationProgressEvent } from "../progress.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import type {
@@ -38,6 +41,8 @@ type AppWorkflowRegistration = Readonly<{
 
 export type AppWorkflowRegistryDependencies = Readonly<{
   cathayGmailOtpPort?: CathayGmailOtpPort;
+  exchangeRateSyncService?: ExchangeRateSyncService;
+  exchangeRateProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 }>;
 
 const unavailableCathayOtpPort: CathayGmailOtpPort = {
@@ -108,6 +113,34 @@ const yuantaTradeStatementsWorkflow: WorkflowDefinition<
 
 /** One registration catalog for workflows activated on the App executor. */
 export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
+  {
+    definition: createExchangeRateWorkflow(
+      async () => { throw new Error("Exchange-rate service is unavailable."); },
+      { emitProgress: () => undefined },
+    ),
+    definitionForDependencies(dependencies) {
+      return createExchangeRateWorkflow(
+        dependencies.exchangeRateSyncService ?? (async () => { throw new Error("Exchange-rate service is unavailable."); }),
+        { emitProgress: dependencies.exchangeRateProgress ?? (() => undefined) },
+      );
+    },
+    inputFromEnvironment() { return null; },
+  },
+  {
+    definition: createMaicoinWorkflow(),
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          accessKey: environment.MAX_ACCESS_KEY ?? "",
+          secretKey: environment.MAX_SECRET_KEY ?? "",
+          subAccount: environment.MAX_SUB_ACCOUNT?.trim() || "main",
+          ...(environment.MAX_PROVIDER_EMAIL?.trim()
+            ? { providerEmail: environment.MAX_PROVIDER_EMAIL.trim() }
+            : {}),
+        },
+      };
+    },
+  },
   {
     definition: fubonAllStatementsWorkflow,
     startUrl: "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",

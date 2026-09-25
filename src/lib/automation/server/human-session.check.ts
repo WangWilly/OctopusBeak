@@ -21,10 +21,12 @@ test("typed human assistance requires a persisted App run ID", () => {
 });
 
 test("nonbrowser jobs cannot open a human viewer", () => {
-  assert.throws(
-    () => humanSessionFromRun({ status: "waiting_for_human", taskRunId: "exchange-run" }, "exchange-rates"),
-    /requires an App browser workflow/u,
-  );
+  for (const taskId of ["exchange-rates", "sync-maicoin"]) {
+    assert.throws(
+      () => humanSessionFromRun({ status: "waiting_for_human", taskRunId: "sync-run" }, taskId),
+      /requires an App browser workflow/u,
+    );
+  }
 });
 
 test("non-waiting runs cannot open the human viewer", () => {
