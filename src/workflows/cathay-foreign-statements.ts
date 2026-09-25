@@ -1,24 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
-  requirePGliteWorkflowEnabled,
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
-import {
-  type CathayCredentials,
   type CathayStrictSourceOptions,
   type CathaySession,
-  createCathaySession,
   fetchCathayApiSourceText,
-  signInCathay,
 } from "./cathay-statements.js";
 import {
   admitForeignCurrencyDepositCapture,
@@ -43,56 +29,7 @@ const dateRangeSchema = z.enum([
   "one_year",
 ]);
 
-const inputSchema = z.object({
-  dateRange: dateRangeSchema.default("one_year"),
-  accountFilters: z.array(z.string()).default([]),
-  currencyFilters: z.array(z.string()).default([]),
-  trustDevice: z.boolean().default(false),
-});
-
-const outputSchema = z.object({
-  dateRange: dateRangeSchema,
-  count: z.number().int().nonnegative(),
-  downloads: z.array(
-    z.object({
-      accountId: z.string(),
-      account: z.string(),
-      currencies: z.array(z.string()),
-      queryPeriods: z.array(z.string()),
-      branchName: z.string(),
-      baseName: z.string(),
-      csvFilename: z.string(),
-      csvPath: z.string(),
-      csvBytes: z.number().int().nonnegative(),
-      jsonFilename: z.string(),
-      jsonPath: z.string(),
-      jsonBytes: z.number().int().nonnegative(),
-      rowCount: z.number().int().nonnegative(),
-    }),
-  ),
-});
-
-type Input = z.infer<typeof inputSchema> & {
-  credentials: CathayCredentials;
-};
-
 export type CathayForeignDateRange = z.infer<typeof dateRangeSchema>;
-
-export type CathayForeignStatementDownload = {
-  accountId: string;
-  account: string;
-  currencies: string[];
-  queryPeriods: string[];
-  branchName: string;
-  baseName: string;
-  csvFilename: string;
-  csvPath: string;
-  csvBytes: number;
-  jsonFilename: string;
-  jsonPath: string;
-  jsonBytes: number;
-  rowCount: number;
-};
 
 type CathayApiResponse<T> = {
   content?: Partial<T> & {
@@ -176,18 +113,6 @@ export type CathayForeignStatementObserver = (
   statement: CathayForeignTransferResult,
 ) => void;
 
-const statementHeaders = [
-  "帳務日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-];
-
-let lastTimestamp = 0;
-
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/\u00a0/g, " ")
@@ -230,24 +155,6 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function formatNullableAmount(
   value: number | string | null | undefined,
 ): string {
@@ -264,22 +171,6 @@ function normalizeDate(value: string | null | undefined): string {
   if (date) return `${date[1]}/${date[2]}/${date[3]}`;
 
   return text;
-}
-
-function statementRowSortKey(row: string[]): string {
-  return cleanText(row[1]) || cleanText(row[0]);
-}
-
-function compareStatementRowsByTransactionTimeDesc(
-  left: string[],
-  right: string[],
-): number {
-  return statementRowSortKey(right).localeCompare(statementRowSortKey(left));
-}
-
-function queryPeriodForDateRange(dateRange: CathayForeignDateRange): string {
-  const bounds = dateRangeBounds(dateRange);
-  return `${normalizeDate(bounds.startDate)}~${normalizeDate(bounds.endDate)}`;
 }
 
 function foreignAmountColumns(
@@ -658,90 +549,6 @@ export async function collectCathayCurrentForeignDepositBalanceCaptures(
 /** Execute foreign statements and current balances through one child RPC
  * client. Only foreign captures that committed may feed current-balance items.
  */
-export async function commitCathayForeignAndCurrentCanonicalCaptures(
-  page: Page,
-  captures: readonly ForeignCurrencyDepositCaptureInput[],
-  options: {
-    requireComplete?: boolean;
-    readCurrentDepositBalances?: CathayCurrentForeignDepositBalanceCaptureOptions["readCurrentDepositBalances"];
-  } = {},
-): Promise<void> {
-  requirePGliteWorkflowEnabled(process.env);
-  if (captures.length === 0) return;
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const financial = await executePGliteWorkflowRun({
-      client: client.workflow,
-      provider: "cathay",
-      product: "foreign-currency-deposit",
-      items: captures.map(
-        (capture) =>
-          ({
-            provider: "cathay",
-            product: "foreign-currency-deposit",
-            itemKey: capture.accountNo,
-            command: {
-              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-              request: { capture: admitForeignCurrencyDepositCapture(capture) },
-            },
-          }) as const,
-      ),
-    });
-    if (
-      options.requireComplete
-        ? financial.status !== "completed"
-        : financial.status === "failed" || financial.status === "cancelled"
-    )
-      throw new Error(
-        `Cathay foreign PGlite persistence ${financial.status}: ${financial.diagnostics
-          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-          .join(", ")}`,
-      );
-    const committedCaptures = captures.filter(
-      (_, index) => financial.items[index]?.status === "committed",
-    );
-    if (committedCaptures.length === 0) return;
-    const currentCaptures =
-      await collectCathayCurrentForeignDepositBalanceCaptures(
-        page,
-        committedCaptures,
-        options,
-      );
-    const balances = await executePGliteWorkflowRun({
-      client: client.workflow,
-      provider: "cathay",
-      product: "current-deposit-balance",
-      items: currentCaptures.map(
-        (capture) =>
-          ({
-            provider: "cathay",
-            product: "current-deposit-balance",
-            itemKey: capture.identity.sourceAccountKey,
-            command: {
-              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-              request: currentDepositBalanceCommandRequest(
-                admitCurrentDepositBalanceCapture(capture),
-              ),
-            },
-          }) as const,
-      ),
-    });
-    if (
-      options.requireComplete
-        ? balances.status !== "completed"
-        : balances.status === "failed" || balances.status === "cancelled"
-    )
-      throw new Error(
-        `Cathay foreign PGlite balance persistence ${balances.status}: ${balances.diagnostics
-          .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-          .join(", ")}`,
-      );
-  } finally {
-    client.close();
-  }
-}
-
 class CathayForeignApiClient {
   private readonly page: Page;
   private readonly strictSource?: CathayStrictSourceOptions;
@@ -1001,173 +808,3 @@ export async function collectCathayForeignFinancialCaptures(
     ],
   };
 }
-
-async function writeForeignStatementFiles(
-  account: CathayForeignAccount,
-  currency: string,
-  dateRange: CathayForeignDateRange,
-  statement: CathayForeignTransferResult,
-): Promise<CathayForeignStatementDownload> {
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    "cathay-foreign-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const currencyCode = cleanText(statement.currencyCode ?? currency);
-  const accountId = `${digitsOnly(account.account)}-${currencyCode}`;
-  const accountName = foreignAccountLabel(account);
-  const queryPeriods = [queryPeriodForDateRange(dateRange)];
-  const rows = (statement.transferInfos ?? [])
-    .map((info) => {
-      const [withdrawal, deposit] = foreignAmountColumns(
-        info.debitCreditType,
-        info.amount,
-      );
-      return [
-        normalizeDate(info.transferDate ?? info.txntDate),
-        cleanText(info.txntDate ?? info.transferDate),
-        foreignSummary(info),
-        withdrawal,
-        deposit,
-        formatNullableAmount(info.balance),
-        foreignNote(info),
-      ];
-    })
-    .sort(compareStatementRowsByTransactionTimeDesc);
-  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, rowsToCsv([statementHeaders, ...rows]), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: accountName,
-        查詢期間: queryPeriods,
-        分行名稱: cleanText(account.demandType),
-        幣別: currencyCode,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-
-  return {
-    accountId,
-    account: accountName,
-    currencies: [currencyCode],
-    queryPeriods,
-    branchName: cleanText(account.demandType),
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-export async function downloadCathayForeignStatements(
-  page: Page,
-  dateRange: CathayForeignDateRange,
-  accountFilters: string[],
-  currencyFilters: string[],
-  cathaySession?: CathaySession,
-  onStatement?: CathayForeignStatementObserver,
-): Promise<CathayForeignStatementDownload[]> {
-  await openForeignStatementsPage(page);
-
-  const apiClient = new CathayForeignApiClient(page);
-  const session = cathaySession ?? (await createCathaySession(page));
-  const accounts = await apiClient.fetchForeignAccounts(
-    session,
-    accountFilters,
-    currencyFilters,
-  );
-
-  const downloads: CathayForeignStatementDownload[] = [];
-  for (const account of accounts) {
-    const currencies = (account.currencyList ?? [])
-      .map(currencyCodeOf)
-      .filter((currency): currency is string => Boolean(currency));
-    const statements = await apiClient.fetchTransferDetails(
-      session,
-      account,
-      dateRange,
-    );
-    const statementsByCurrency = new Map(
-      statements.map((statement) => [
-        cleanText(statement.currencyCode),
-        statement,
-      ]),
-    );
-
-    for (const currency of currencies) {
-      const statement = statementsByCurrency.get(cleanText(currency)) ?? {
-        currencyCode: currency,
-        transferInfos: [],
-      };
-      onStatement?.(account, currency, statement);
-      downloads.push(
-        await writeForeignStatementFiles(
-          account,
-          currency,
-          dateRange,
-          statement,
-        ),
-      );
-    }
-  }
-
-  return downloads;
-}
-
-export default workflow("cathayForeignStatements", {
-  credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page } = ctx;
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await signInCathay(ctx, input.credentials, input.trustDevice);
-    const canonicalCollector = createCathayForeignCanonicalCaptureCollector(
-      input.dateRange,
-    );
-    const downloads = await downloadCathayForeignStatements(
-      page,
-      input.dateRange,
-      input.accountFilters,
-      input.currencyFilters,
-      undefined,
-      canonicalCollector.onStatement,
-    );
-
-    await commitCathayForeignAndCurrentCanonicalCaptures(
-      page,
-      canonicalCollector.captures,
-    );
-
-    return {
-      dateRange: input.dateRange,
-      count: downloads.length,
-      downloads,
-    };
-  },
-});

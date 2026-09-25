@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { mock } from "node:test";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { Worker } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
@@ -35,7 +28,6 @@ mock.timers.enable({
 
 const {
   buildCathayForeignCurrencyCaptureInput,
-  commitCathayForeignAndCurrentCanonicalCaptures,
   createCathayForeignCanonicalCaptureCollector,
   deriveCathayForeignAccountNumberEvidence,
   parseCathayApiJson,
@@ -161,26 +153,6 @@ assert.equal(deriveCathayForeignAccountNumberEvidence("****7890"), null);
 collector.reset();
 assert.equal(collector.captures.length, 0);
 
-const freshForeignCapture = buildCathayForeignCurrencyCaptureInput(
-  { account: syntheticCathayForeignAccountNumber },
-  "USD",
-  "one_week",
-  {
-    currencyCode: "USD",
-    transferInfos: [
-      {
-        sequenceNumber: "1",
-        transferDate: "2026-08-23",
-        debitCreditType: "C",
-        amount: "10.00",
-        balance: "110.00",
-        exRate: "31.50",
-      },
-    ],
-  },
-  "2026-08-24T20:00:00.000+08:00",
-  "cathay-foreign-check-fresh-account",
-);
 const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "foreign",
   response: {
@@ -193,49 +165,8 @@ const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
     `{"success":true,"systemTime":"2026-08-24T20:00:00.0000000+08:00","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${syntheticCathayForeignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00}]}]}}`,
   observedAt: "2026-08-24T20:00:05.000+08:00",
 });
-const pgliteDir = await mkdtemp(join(tmpdir(), "cathay-foreign-pglite-"));
-const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-  execArgv: ["--experimental-strip-types"],
-  workerData: { dataDir: pgliteDir },
-});
-const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
-const pgliteServer = createPGliteChildRpcServer({ provider: {
-  operational: pgliteOwner.operationalProvider,
-  financial: pgliteOwner.financial.registry,
-} });
-const oldEnv = {
-  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
-  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-};
-try {
-  await pgliteServer.ready;
-  Object.assign(process.env, pgliteServer.env);
-  await commitCathayForeignAndCurrentCanonicalCaptures(
-    {} as never,
-    [freshForeignCapture],
-    { requireComplete: true, readCurrentDepositBalances: async () => freshForeignRows },
-  );
-} finally {
-  for (const [key, value] of [
-    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", oldEnv.required],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", oldEnv.endpoint],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", oldEnv.token],
-  ] as const) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteServer.close();
-  await pgliteOwner.close();
-}
-const pgliteDb = await PGlite.create(pgliteDir);
-try {
-  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
-  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM balance_observation_revisions")).rows[0]?.count, 1);
-} finally {
-  await pgliteDb.close();
-  await rm(pgliteDir, { recursive: true, force: true });
-}
+assert.equal(freshForeignRows.length, 1);
+assert.equal(freshForeignRows[0]!.sourceAccountKey, syntheticCathayForeignAccountNumber);
 
 for (const missingOccurrence of [undefined, "   "] as const) {
   assert.throws(
