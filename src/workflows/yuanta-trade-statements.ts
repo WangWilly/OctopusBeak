@@ -6,7 +6,7 @@ import {
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Locator, Page } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
@@ -45,6 +45,10 @@ import {
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { HumanAssistanceContractInput } from "../lib/automation/human-assistance.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -127,6 +131,112 @@ export function yuantaTradeAudioAssistanceStage(
   };
 }
 
+export function yuantaTradeCaptchaCheckboxAssistanceStage(
+  authPage: Page,
+): WorkflowHumanAssistanceStage {
+  return {
+    stageId: "yuanta-trade-captcha-checkbox",
+    title: "Complete the YuanTa Trade CAPTCHA checkbox",
+    challengeKind: "checkbox",
+    targets: [{
+      id: "captcha-checkbox",
+      label: "CAPTCHA checkbox",
+      semanticId: "yuanta-trade.login.captcha-checkbox",
+      modes: ["click"],
+      locator: yuantaTradeCaptchaCheckbox(authPage),
+    }],
+    contextRegions: [{
+      id: "captcha-control",
+      label: "CAPTCHA control",
+      semanticId: "yuanta-trade.login.captcha-control",
+    }],
+    completion: { mode: "independent", targetIds: ["captcha-checkbox"] },
+    focus: {
+      targetId: "captcha-checkbox",
+      contextRegionIds: ["captcha-control"],
+      initialZoom: 1.15,
+    },
+  };
+}
+
+export async function yuantaTradeImageAssistanceStage(
+  authPage: Page,
+): Promise<WorkflowHumanAssistanceStage> {
+  const modal = yuantaTradeCaptchaModal(authPage);
+  const images = yuantaTradeCaptchaImages(modal);
+  const imageCount = Math.min(await images.count(), 12);
+  if (imageCount === 0) {
+    throw new Error("YuanTa Trade image challenge is unavailable.");
+  }
+  const targets = Array.from({ length: imageCount }, (_, index) => ({
+    id: `challenge-image-${index + 1}`,
+    label: `Challenge image ${index + 1}`,
+    semanticId: "yuanta-trade.login.challenge-control",
+    modes: ["click"] as const,
+    locator: images.nth(index),
+  }));
+  targets.push({
+    id: "challenge-submit",
+    label: "Verify challenge",
+    semanticId: "yuanta-trade.login.challenge-submit",
+    modes: ["click"],
+    locator: yuantaTradeCaptchaSubmit(modal),
+  });
+  return {
+    stageId: "yuanta-trade-challenge",
+    title: "Select the requested YuanTa Trade challenge images",
+    challengeKind: "image-selection",
+    targets,
+    contextRegions: [{
+      id: "image-challenge",
+      label: "Image challenge",
+      semanticId: "yuanta-trade.login.challenge-region",
+      locator: modal,
+    }],
+    challengeImageRegion: {
+      id: "challenge-image-grid",
+      label: "YuanTa Trade image challenge",
+      semanticId: "yuanta-trade.login.challenge-image",
+      locator: images.first(),
+    },
+    completion: { mode: "inline", targetIds: ["challenge-submit"] },
+    focus: {
+      targetId: targets[0]!.id,
+      contextRegionIds: ["image-challenge"],
+      initialZoom: 1.15,
+    },
+  };
+}
+
+export async function requestYuantaTradeAssistance(
+  context: WorkflowContext,
+  stage: WorkflowHumanAssistanceStage,
+): Promise<"entered" | "verified"> {
+  context.signal.throwIfAborted();
+  let contract: HumanAssistanceContractInput;
+  try {
+    contract = await emitHumanAssistanceStage(stage, () => undefined);
+  } catch (error) {
+    await context.event("authentication", "human-assistance-failed");
+    throw error;
+  }
+  await context.event("authentication", "human-assistance-requested");
+  let status: Awaited<ReturnType<WorkflowContext["humanAssistance"]["request"]>>;
+  try {
+    status = await context.humanAssistance.request(contract, context.signal);
+  } catch (error) {
+    await context.event("authentication", "human-assistance-failed");
+    throw error;
+  }
+  context.signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified") {
+    await context.event("authentication", "human-assistance-failed");
+    throw new Error(`YuanTa Trade human assistance ended with status ${status}.`);
+  }
+  await context.event("authentication", "human-assistance-completed");
+  return status;
+}
+
 type YuantaTradeCredentials = {
   yuanta_trade_user_id?: string;
   yuanta_trade_password?: string;
@@ -173,6 +283,15 @@ const inputSchema = z.object({
   outputDir: z.string().default("downloads/yuanta-trade-statements"),
 });
 
+const typedInputSchema = inputSchema.omit({ outputDir: true }).extend({
+  credentials: z.object({
+    yuanta_trade_user_id: z.string().trim().min(1),
+    yuanta_trade_password: z.string().trim().min(1),
+    yuanta_trade_ca_path: z.string().trim().min(1),
+    yuanta_trade_ca_password: z.string().trim().min(1),
+  }),
+});
+
 const generatedTableFileSchema = z.object({
   tableName: z.enum(["trade-transactions", "holdings", "asset-summaries"]),
   csvFilename: z.string(),
@@ -209,10 +328,24 @@ const outputSchema = z.object({
 });
 
 type WorkflowInput = z.infer<typeof inputSchema>;
+type YuantaTradeProviderInput = z.infer<typeof typedInputSchema>;
 type HoldingType = z.infer<typeof holdingTypeSchema>;
 type TradeType = z.infer<typeof tradeTypeSchema>;
 type FileMetadata = z.infer<typeof generatedTableFileSchema>;
 type CsvRow = Record<string, string>;
+
+export type YuantaTradeProviderWorkflowOutput = Readonly<{
+  usedExistingSession: boolean;
+  dateRange: Readonly<{ startDate: string; endDate: string }>;
+  holdingPageCount: number;
+  holdingGridCount: number;
+  holdingRowCount: number;
+  tradePageCount: number;
+  tradeGridCount: number;
+  tradeRowCount: number;
+  canonicalAdmission: "admitted";
+  canonicalCaptureCount: number;
+}>;
 
 type GridColumn = {
   field: string;
@@ -248,6 +381,8 @@ type ReportPage = {
   summaryRows: AssetSummaryRow[];
   grids: CapturedGrid[];
 };
+
+export type YuantaTradeReportPage = ReportPage;
 
 const tradeTransactionHeaders = [
   "trade_date",
@@ -942,8 +1077,103 @@ async function captureReport(
   return parseReportPage(await page.content(), page.url(), reportType);
 }
 
+function responseCharset(headers: Record<string, string>, bytes: Uint8Array): string {
+  const contentType = headers["content-type"] ?? headers["Content-Type"] ?? "";
+  const headerCharset = contentType.match(/\bcharset\s*=\s*["']?([^\s;"']+)/i)?.[1];
+  if (headerCharset) return headerCharset;
+
+  // Charset declarations are ASCII, so inspecting a small byte prefix does
+  // not decode or normalize the provider's financial payload.
+  const asciiPrefix = Buffer.from(bytes.subarray(0, 4096)).toString("latin1");
+  const metaCharset = asciiPrefix.match(
+    /<meta\b[^>]*\bcharset\s*=\s*["']?([^\s;"'/>]+)/i,
+  )?.[1];
+  if (metaCharset) return metaCharset;
+  throw new Error("Yuanta Trade source response did not declare a text encoding.");
+}
+
+/** Decode the original report response bytes through the injected strict text port. */
+export async function decodeYuantaTradeReportResponse(
+  response: Response,
+  text: SourceTextPort,
+  reportType: string,
+): Promise<ReportPage> {
+  const expectedUrl = new URL(
+    `/NexusWebTrade/AssetReport/${reportType}`,
+    YUANTA_TRADE_LOGIN_URL,
+  );
+  let actualUrl: URL;
+  try {
+    actualUrl = new URL(response.url());
+  } catch {
+    throw new Error("Yuanta Trade report response URL is invalid.");
+  }
+  if (
+    response.status() < 200 ||
+    response.status() >= 300 ||
+    response.request().method().toUpperCase() !== "POST" ||
+    actualUrl.origin !== expectedUrl.origin ||
+    actualUrl.pathname !== expectedUrl.pathname
+  ) {
+    throw new Error("Yuanta Trade report response did not match the requested source.");
+  }
+
+  const headers = response.headers();
+  const contentType = headers["content-type"] ?? headers["Content-Type"] ?? "";
+  if (!/^text\/html\b/i.test(contentType)) {
+    throw new Error("Yuanta Trade report response was not HTML.");
+  }
+  const bytes = await response.body();
+  const html = text.decode(bytes, responseCharset(headers, bytes));
+  text.assertIntact(html);
+  return parseReportPage(html, response.url(), reportType);
+}
+
+async function captureTypedReport(
+  page: Page,
+  reportType: string,
+  params: Record<string, string | number>,
+  context: WorkflowContext,
+): Promise<ReportPage> {
+  context.signal.throwIfAborted();
+  const navigation = page.waitForNavigation({
+    waitUntil: "domcontentloaded",
+    timeout: 60_000,
+  });
+  await page.evaluate(
+    ({ reportType, params }) => {
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = reportType;
+      for (const [key, value] of Object.entries(params)) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = String(value);
+        form.appendChild(input);
+      }
+      document.body.appendChild(form);
+      window.setTimeout(() => form.submit(), 0);
+    },
+    { reportType, params },
+  );
+  const response = await navigation;
+  context.signal.throwIfAborted();
+  if (!response) {
+    throw new Error("Yuanta Trade report navigation returned no source response.");
+  }
+  const captured = await decodeYuantaTradeReportResponse(
+    response,
+    context.text,
+    reportType,
+  );
+  await acceptDisclaimerIfPresent(page);
+  await page.locator("#btnLogout").waitFor({ timeout: 60_000 });
+  return captured;
+}
+
 function tradeParams(
-  input: WorkflowInput,
+  input: Pick<WorkflowInput, "accountIndex">,
   tradeType: TradeType,
   dateRange: { startDate: string; endDate: string },
 ): Record<string, string | number> {
@@ -990,6 +1220,35 @@ export function isCompleteHoldingCapture(
     const hasParsedReportStructure =
       page.grids.length > 0 || page.summaryRows.length > 0;
     return routeName === reportType && hasParsedReportStructure;
+  });
+}
+
+export function isCompleteTradeCapture(
+  pages: readonly ReportPage[],
+  requestedTypes: readonly string[],
+  dateRange: Readonly<{ startDate: string; endDate: string }>,
+): boolean {
+  if (requestedTypes.length === 0 || pages.length !== requestedTypes.length) {
+    return false;
+  }
+  const pagesByType = new Map(pages.map((page) => [page.reportType, page]));
+  return requestedTypes.every((reportType) => {
+    const page = pagesByType.get(reportType);
+    if (
+      !page ||
+      page.currentTradeType !== reportType ||
+      page.queryDateType !== "6" ||
+      page.startDate !== dateRange.startDate ||
+      page.endDate !== dateRange.endDate ||
+      page.grids.length === 0
+    ) return false;
+    let routeName = "";
+    try {
+      routeName = new URL(page.url).pathname.split("/").filter(Boolean).at(-1) ?? "";
+    } catch {
+      return false;
+    }
+    return routeName === reportType;
   });
 }
 
@@ -1462,18 +1721,11 @@ export function assertYuantaTradeCanonicalOccurrenceIdentities(
     );
   return identities;
 }
-async function commitYuantaTradeCanonicalIfComplete(
+export function buildYuantaTradeCanonicalCaptures(
   credentials: YuantaTradeCredentials,
   holdingRows: CsvRow[],
   tradeRows: CsvRow[],
-  complete: boolean,
-): Promise<void> {
-  if (!complete) {
-    console.warn("yuanta-trade-canonical-not-admitted", {
-      reason: "holding-capture-incomplete",
-    });
-    return;
-  }
+): InvestmentValidatedCapture[] {
   const accountNumbers = [
     ...new Set(
       [...holdingRows, ...tradeRows]
@@ -1577,6 +1829,26 @@ async function commitYuantaTradeCanonicalIfComplete(
     });
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
+  return captures;
+}
+
+async function commitYuantaTradeCanonicalIfComplete(
+  credentials: YuantaTradeCredentials,
+  holdingRows: CsvRow[],
+  tradeRows: CsvRow[],
+  complete: boolean,
+): Promise<void> {
+  if (!complete) {
+    console.warn("yuanta-trade-canonical-not-admitted", {
+      reason: "holding-capture-incomplete",
+    });
+    return;
+  }
+  const captures = buildYuantaTradeCanonicalCaptures(
+    credentials,
+    holdingRows,
+    tradeRows,
+  );
   if (captures.length === 0) return;
   const client = requirePGliteChildRpcClientFromEnv();
   try {
@@ -1607,6 +1879,357 @@ async function commitYuantaTradeCanonicalIfComplete(
   } finally {
     client.close();
   }
+}
+
+export async function assertYuantaTradeServiSignAvailable(
+  page: Page,
+  context: WorkflowContext,
+): Promise<void> {
+  if (!(await isYuantaSecurityComponentMissing(page))) return;
+  await context.event("authentication", "servisign-unavailable");
+  throw new Error(
+    "The YuanTa security component is unavailable. Install or update it, then run the task again.",
+  );
+}
+
+async function completeTypedCertificateIfPresent(
+  page: Page,
+  credentials: YuantaTradeCredentials,
+  context: WorkflowContext,
+): Promise<void> {
+  const selectFileButton = page.locator("#btnPfxFile");
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    context.signal.throwIfAborted();
+    if (await page.locator("#btnLogout, #checkDisclaimer").first().isVisible().catch(() => false)) {
+      return;
+    }
+    await assertYuantaTradeServiSignAvailable(page, context);
+    if (await selectFileButton.isVisible().catch(() => false)) break;
+    await page.waitForTimeout(500);
+  }
+
+  if (!(await selectFileButton.isVisible().catch(() => false))) {
+    await assertYuantaTradeServiSignAvailable(page, context);
+    throw new Error("Timed out waiting for the YuanTa certificate form.");
+  }
+
+  await page.locator("#jpki_PfxFile").fill(
+    requireCredential(credentials, "yuanta_trade_ca_path"),
+  );
+  const passwordField = page.locator("#jpki_PfxFilePwd");
+  if (!(await passwordField.isVisible({ timeout: 5_000 }).catch(() => false))) {
+    const stage: WorkflowHumanAssistanceStage = {
+      stageId: "yuanta-trade-certificate-selection",
+      title: "Select the YuanTa Trade certificate",
+      targets: [{
+        id: "certificate-picker",
+        label: "Certificate file selection",
+        semanticId: "yuanta-trade.login.certificate-picker",
+        modes: ["click"],
+        locator: selectFileButton,
+      }],
+      contextRegions: [{
+        id: "certificate-form",
+        label: "Certificate sign-in form",
+        semanticId: "yuanta-trade.login.certificate-form",
+      }],
+      completion: { mode: "inline", targetIds: ["certificate-picker"] },
+      focus: {
+        targetId: "certificate-picker",
+        contextRegionIds: ["certificate-form"],
+      },
+    };
+    await requestYuantaTradeAssistance(context, stage);
+    await passwordField.waitFor({ state: "visible", timeout: 60_000 });
+  }
+  await passwordField.fill(
+    requireCredential(credentials, "yuanta_trade_ca_password"),
+  );
+  await page.locator("#btnGo").click();
+  await settleAfterNavigation(page);
+}
+
+async function submitTypedLoginIfReady(page: Page): Promise<void> {
+  const loginButton = page.locator("#loginBtn");
+  if (!(await loginButton.isVisible({ timeout: 2_000 }).catch(() => false))) return;
+
+  const checkbox = page.locator("#chbYCaptchaV2");
+  if (await checkbox.isVisible({ timeout: 1_000 }).catch(() => false)) {
+    const checked = await checkbox.isChecked().catch(() => false);
+    if (!checked) {
+      throw new Error("YuanTa Trade CAPTCHA checkbox was not completed.");
+    }
+  }
+  if (await yuantaTradeCaptchaModal(page).isVisible().catch(() => false)) {
+    throw new Error("YuanTa Trade image challenge was not completed.");
+  }
+  await loginButton.click();
+  await settleAfterNavigation(page);
+}
+
+async function authenticateYuantaTradePage(
+  page: Page,
+  credentials: YuantaTradeCredentials,
+  context: WorkflowContext,
+): Promise<boolean> {
+  await grantYuantaBrowserPermissions(page);
+  if (await isSignedIn(page)) return true;
+
+  await fillTradeLoginForm(page, credentials);
+  const canSwitchCaptcha = await page.evaluate(() =>
+    typeof (window as unknown as { switchCaptchaType?: unknown }).switchCaptchaType === "function",
+  ).catch(() => false);
+  if (canSwitchCaptcha) {
+    await page.evaluate(() => (
+      window as unknown as { switchCaptchaType: (type: string) => void }
+    ).switchCaptchaType("A"));
+  }
+  const audioInput = page.locator("#verificationCode");
+  if (await audioInput.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await requestYuantaTradeAssistance(
+      context,
+      yuantaTradeAudioAssistanceStage(page),
+    );
+    if (!(await audioInput.inputValue()).trim()) {
+      throw new Error("YuanTa Trade audio verification code was not entered.");
+    }
+  }
+
+  const checkbox = page.locator("#chbYCaptchaV2");
+  if (
+    await checkbox.isVisible({ timeout: 2_000 }).catch(() => false) &&
+    !(await checkbox.isChecked().catch(() => false))
+  ) {
+    await requestYuantaTradeAssistance(
+      context,
+      yuantaTradeCaptchaCheckboxAssistanceStage(page),
+    );
+  }
+  const modal = yuantaTradeCaptchaModal(page);
+  if (await modal.isVisible().catch(() => false)) {
+    await requestYuantaTradeAssistance(
+      context,
+      await yuantaTradeImageAssistanceStage(page),
+    );
+    if (await modal.isVisible().catch(() => false)) {
+      throw new Error("YuanTa Trade image challenge was not completed.");
+    }
+  }
+
+  await assertYuantaTradeServiSignAvailable(page, context);
+  await submitTypedLoginIfReady(page);
+  await completeTypedCertificateIfPresent(page, credentials, context);
+  await dismissPasswordChangeReminderIfPresent(page);
+  await dismissPersonalMessageIfPresent(page);
+  await acceptDisclaimerIfPresent(page);
+  await page.locator("#btnLogout").waitFor({ timeout: 120_000 });
+  return false;
+}
+
+export type YuantaTradeWorkflowDependencies = Readonly<{
+  authenticate?: (
+    page: Page,
+    credentials: YuantaTradeCredentials,
+    context: WorkflowContext,
+  ) => Promise<boolean>;
+  captureReport?: (
+    page: Page,
+    reportType: string,
+    params: Record<string, string | number>,
+    context: WorkflowContext,
+  ) => Promise<YuantaTradeReportPage>;
+}>;
+
+/** App-owned Yuanta Trade path: complete in-memory collection and admission precede one injected commit request. */
+export async function runYuantaTradeProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+  dependencies: YuantaTradeWorkflowDependencies = {},
+): Promise<YuantaTradeProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    throw new Error("YuanTa Trade workflow credentials or selection are invalid.");
+  }
+  if (!context.financialCommit) {
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  }
+  const financialCommit = context.financialCommit;
+  const input = parsed.data;
+  if (!input.includeHoldings || !input.includeTrades) {
+    throw new Error("YuanTa Trade canonical collection requires holdings and trades.");
+  }
+  if (
+    new Set(input.holdingTypes).size !== input.holdingTypes.length ||
+    new Set(input.tradeTypes).size !== input.tradeTypes.length
+  ) {
+    throw new Error("YuanTa Trade source selection contains duplicate report types.");
+  }
+
+  context.signal.throwIfAborted();
+  const now = new Date(context.now());
+  const dateRange = {
+    startDate: input.startDate ?? formatDate(defaultStartDate(now)),
+    endDate: input.endDate ?? formatDate(now),
+  };
+  const authenticate = dependencies.authenticate ?? authenticateYuantaTradePage;
+  const readReport = dependencies.captureReport ?? captureTypedReport;
+
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    page.on("dialog", (dialog) => {
+      void dialog.accept().catch(() => undefined);
+    });
+    await context.event("authentication", "authentication-started");
+    let usedExistingSession: boolean;
+    try {
+      usedExistingSession = await authenticate(page, input.credentials, context);
+    } catch (error) {
+      await context.event("authentication", "authentication-failed");
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+
+    const requestedHoldingTypes = input.holdingTypes as HoldingType[];
+    const requestedTradeTypes = input.tradeTypes as TradeType[];
+    const requests = [
+      ...requestedHoldingTypes.map((type) => ({
+        reportType: type,
+        params: { index: input.accountIndex },
+        category: "holding" as const,
+      })),
+      ...requestedTradeTypes.map((type) => ({
+        reportType: type,
+        params: tradeParams(input, type, dateRange),
+        category: "trade" as const,
+      })),
+    ];
+    await context.event("collection", "collection-started", {
+      completed: 0,
+      total: requests.length,
+    });
+    await context.event("decoding", "source-decoding-started");
+    const holdings: ReportPage[] = [];
+    const trades: ReportPage[] = [];
+    try {
+      for (const [index, request] of requests.entries()) {
+        context.signal.throwIfAborted();
+        const reportPage = await readReport(
+          page,
+          request.reportType,
+          request.params,
+          context,
+        );
+        (request.category === "holding" ? holdings : trades).push(reportPage);
+        await context.event("collection", "report-collected", {
+          completed: index + 1,
+          total: requests.length,
+        });
+      }
+    } catch (error) {
+      await context.event("collection", "source-collection-failed");
+      await context.event("decoding", "source-decoding-failed");
+      throw error;
+    }
+    await context.event("decoding", "source-decoding-completed");
+    context.signal.throwIfAborted();
+
+    const completeHoldings = isCompleteHoldingCapture(
+      holdings,
+      requestedHoldingTypes,
+    );
+    const completeTrades = isCompleteTradeCapture(
+      trades,
+      requestedTradeTypes,
+      dateRange,
+    );
+    if (!completeHoldings || !completeTrades) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: holdings.length + trades.length,
+        total: requests.length,
+      });
+      throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
+    }
+
+    await context.event("validation", "source-validation-started", {
+      completed: requests.length,
+      total: requests.length,
+    });
+    const tradeRows = normalizeTradeRows(trades, dateRange);
+    const holdingRows = normalizeHoldingRows(holdings, dateRange);
+    let captures: InvestmentValidatedCapture[];
+    try {
+      captures = buildYuantaTradeCanonicalCaptures(
+        input.credentials,
+        holdingRows,
+        tradeRows,
+      );
+      if (captures.length === 0) {
+        throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
+      }
+    } catch (error) {
+      await context.event("validation", "source-validation-rejected");
+      throw error;
+    }
+    await context.event("validation", "source-validation-completed", {
+      completed: captures.length,
+      total: captures.length,
+    });
+    context.signal.throwIfAborted();
+
+    const items: PGliteWorkflowRunItem[] = captures.map((capture) => ({
+      provider: "yuanta-trade",
+      product: "investment",
+      itemKey: capture.captureId,
+      command: {
+        kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+        request: { capture },
+      },
+      relationCommands: () => [{
+        kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+        request: {
+          sourceConnectionKey: capture.identity.sourceConnectionKey,
+          observedAt: capture.observedAt,
+        },
+      }],
+    }));
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: items.length,
+    });
+    const result = await financialCommit.execute(items, {
+      provider: "yuanta-trade",
+      product: "investment",
+      signal: context.signal,
+    });
+    if (
+      result.status !== "completed" ||
+      result.items.length !== items.length ||
+      result.items.some((item) => item.status !== "committed")
+    ) {
+      const codes = result.diagnostics
+        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+        .join(", ");
+      throw new Error(`YuanTa Trade Canonical Financial Commit failed: ${codes || result.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: items.length,
+      total: items.length,
+    });
+    return {
+      usedExistingSession,
+      dateRange,
+      holdingPageCount: holdings.length,
+      holdingGridCount: gridCount(holdings),
+      holdingRowCount: holdingRows.length,
+      tradePageCount: trades.length,
+      tradeGridCount: gridCount(trades),
+      tradeRowCount: tradeRows.length,
+      canonicalAdmission: "admitted",
+      canonicalCaptureCount: captures.length,
+    };
+  });
 }
 
 export default workflow("yuantaTradeStatements", {
