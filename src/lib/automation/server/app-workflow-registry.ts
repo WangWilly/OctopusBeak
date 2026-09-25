@@ -261,24 +261,24 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
 export const APP_WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] =
   APP_WORKFLOW_CATALOG.map(({ definition }) => definition);
 
+function workflowRegistration(workflowId: string | undefined) {
+  if (!workflowId) return undefined;
+  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
+}
+
 export function workflowDefinitionForTask(workflowId: string | undefined) {
-  if (!workflowId) return null;
-  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)?.definition ?? null;
+  return workflowRegistration(workflowId)?.definition ?? null;
 }
 
 export function workflowInputForTask(
   workflowId: string | undefined,
   environment: NodeJS.ProcessEnv,
 ) {
-  if (!workflowId) return undefined;
-  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)
-    ?.inputFromEnvironment(environment);
+  return workflowRegistration(workflowId)?.inputFromEnvironment(environment);
 }
 
 export function workflowStartUrlForTask(workflowId: string | undefined) {
-  if (!workflowId) return undefined;
-  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)
-    ?.startUrl;
+  return workflowRegistration(workflowId)?.startUrl;
 }
 
 /** Register any task-scoped App assistance route for the lifetime of one run. */
@@ -286,9 +286,6 @@ export async function registerWorkflowHumanAssistanceForTask(
   workflowId: string | undefined,
   provider: AutomationPersistenceProvider,
 ) {
-  if (!workflowId) return () => {};
-  const registration = APP_WORKFLOW_CATALOG.find(
-    ({ definition }) => definition.id === workflowId,
-  );
+  const registration = workflowRegistration(workflowId);
   return await registration?.registerHumanAssistance?.(provider) ?? (() => {});
 }
