@@ -37,9 +37,6 @@ export const VERIFICATION_CHALLENGE_KINDS = [
   "checkbox",
 ] as const;
 
-export const HUMAN_ASSISTANCE_HOST_FD_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_FD";
-export const HUMAN_ASSISTANCE_HOST_PATH_ENV = "OCTOPUSBEAK_HUMAN_ASSISTANCE_PATH";
-
 export type VerificationInteractionMode = typeof HUMAN_VERIFICATION_INTERACTION_MODES[number];
 export type HumanAssistanceCompletionStatus = typeof HUMAN_ASSISTANCE_COMPLETION_STATUSES[number];
 export type VerificationChallengeKind = typeof VERIFICATION_CHALLENGE_KINDS[number];
@@ -585,45 +582,6 @@ export function createHumanAssistanceContract(
       ? {}
       : { expectedAnswerLength: input.expectedAnswerLength }),
     ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
-  };
-}
-
-export function humanAssistanceContractFrame(input: HumanAssistanceContractInput): string {
-  createHumanAssistanceContract(input, 1);
-  return `${JSON.stringify(input)}\n`;
-}
-
-export function parseHumanAssistanceContractFrame(frame: string): HumanAssistanceContractInput | null {
-  try {
-    const value = JSON.parse(frame) as HumanAssistanceContractInput;
-    createHumanAssistanceContract(value, 1);
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-export function createHumanAssistanceContractFrameParser(
-  onContract: (contract: HumanAssistanceContractInput) => void,
-) {
-  let pending = "";
-  const decoder = new TextDecoder();
-  return {
-    push(chunk: string | Uint8Array) {
-      pending += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
-      const lines = pending.split(/\r?\n/);
-      pending = lines.pop() ?? "";
-      for (const line of lines) {
-        const contract = parseHumanAssistanceContractFrame(line);
-        if (contract) onContract(contract);
-      }
-    },
-    flush() {
-      pending += decoder.decode();
-      const contract = parseHumanAssistanceContractFrame(pending);
-      pending = "";
-      if (contract) onContract(contract);
-    },
   };
 }
 

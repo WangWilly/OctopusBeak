@@ -10,7 +10,6 @@ import type {
 } from "../human-assistance.ts";
 import type { VerificationSolver, VerificationSolverResult } from "./verification-solver.ts";
 import { preprocessCaptchaImage } from "./captcha-preprocess.ts";
-import { openCaptchaDebugSession } from "./captcha-debug.ts";
 
 export type TextRecognitionEngine = {
   recognize(
@@ -197,11 +196,9 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
         tessedit_char_whitelist: tesseractWhitelist(charset ?? "alphanumeric"),
         tessedit_pageseg_mode: tesseractPageSegmentationMode(ocrPageSegmentationMode),
       });
-      const debug = openCaptchaDebugSession();
-      debug?.writeImage("raw", image);
       const processed = preprocessCaptchaImage(
         image,
-        debug ? (step, buffer) => debug.writeImage(step, buffer) : undefined,
+        undefined,
         {
           imagePreprocessing,
           removeInterferenceLines: imagePreprocessing?.includes(
@@ -217,7 +214,6 @@ export const tesseractTextRecognitionEngine: TextRecognitionEngine = {
       const text = result.data.text ?? "";
       const confidence =
         (meanSymbolConfidence(result.data) ?? result.data.confidence ?? 0) / 100;
-      debug?.writeResult(text, confidence);
       return { text, confidence };
     });
   },

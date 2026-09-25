@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createHumanAssistanceContractFrameParser,
-  humanAssistanceContractFrame,
+  createHumanAssistanceContract,
+  parseHumanAssistanceContract,
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 
@@ -24,34 +24,12 @@ const contract: HumanAssistanceContractInput = {
   focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"] },
 };
 
-test("human assistance frames stay structured and stream safely across UTF-8 boundaries", () => {
-  const frame = humanAssistanceContractFrame({
+test("human assistance contracts round-trip in operational run metadata", () => {
+  const contractRecord = createHumanAssistanceContract({
     ...contract,
     completion: { ...contract.completion, status: "entered" },
-  });
-  const parsed: HumanAssistanceContractInput[] = [];
-  const parser = createHumanAssistanceContractFrameParser((value) => parsed.push(value));
-  parser.push(frame);
-  parser.flush();
-  assert.equal(frame.includes("captcha-answer"), false);
-  assert.deepEqual(parsed, [{
-    ...contract,
-    completion: { ...contract.completion, status: "entered" },
-  }]);
-
-  const unicodeContract = { ...contract, title: "完成驗證" };
-  const unicodeFrame = humanAssistanceContractFrame(unicodeContract);
-  const bytes = new TextEncoder().encode(unicodeFrame);
-  const split = new TextEncoder().encode(
-    unicodeFrame.slice(0, unicodeFrame.indexOf("完")),
-  ).length;
-  const streamed: HumanAssistanceContractInput[] = [];
-  const streamedParser = createHumanAssistanceContractFrameParser((value) => streamed.push(value));
-  streamedParser.push(bytes.subarray(0, split + 1));
-  streamedParser.push(bytes.subarray(split + 1));
-  streamedParser.flush();
-  assert.deepEqual(streamed, [unicodeContract]);
-
-  parser.push('{"captchaAnswer":"raw-secret"}\n');
-  assert.equal(parsed.length, 1);
+  }, 7);
+  const serializedRecord = JSON.stringify({ humanAssistanceContract: contractRecord });
+  assert.deepEqual(parseHumanAssistanceContract(serializedRecord), contractRecord);
+  assert.equal(parseHumanAssistanceContract("{malformed"), null);
 });
