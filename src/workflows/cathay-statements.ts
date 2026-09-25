@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import type {
@@ -15,21 +12,7 @@ import {
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import {
-  ensureCathayGmailOtpAccess,
-  gmailOtpFallbackReason,
-  prepareCathayGmailOtpRetrieval,
-  retrieveCathayGmailOtp,
-} from "./gmail-otp.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
-import {
-  requirePGliteWorkflowEnabled,
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
@@ -37,16 +20,7 @@ import {
   type CathayStagedCapturePage,
 } from "../ledger/pglite/cathay-domestic-admission.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
-import {
-  buildCathayDomesticFinancialRequestsForPGlite,
-  cathayOpaqueIdentity,
-} from "../ledger/pglite/cathay-domestic-adapter.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
-import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
-import {
-  buildCathayCurrentDepositBalanceCaptures,
-  cathayCurrentSubjectDigest,
-} from "./cathay-current-deposit-canonical.ts";
+import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 
 const DOMESTIC_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
@@ -90,37 +64,6 @@ const dateRangeSchema = z.enum([
   "one_year",
 ]);
 
-const inputSchema = z.object({
-  dateRange: dateRangeSchema.default("one_year"),
-  accountFilters: z.array(z.string()).default([]),
-  trustDevice: z.boolean().default(false),
-});
-
-const outputSchema = z.object({
-  dateRange: dateRangeSchema,
-  count: z.number().int().nonnegative(),
-  downloads: z.array(
-    z.object({
-      accountId: z.string(),
-      account: z.string(),
-      queryPeriods: z.array(z.string()),
-      branchName: z.string(),
-      baseName: z.string(),
-      csvFilename: z.string(),
-      csvPath: z.string(),
-      csvBytes: z.number().int().nonnegative(),
-      jsonFilename: z.string(),
-      jsonPath: z.string(),
-      jsonBytes: z.number().int().nonnegative(),
-      rowCount: z.number().int().nonnegative(),
-    }),
-  ),
-});
-
-type Input = z.infer<typeof inputSchema> & {
-  credentials: CathayCredentials;
-};
-
 type LocatorBox = {
   x: number;
   y: number;
@@ -162,21 +105,6 @@ export async function waitForStableLocatorBox(
 }
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
-
-export type CathayStatementDownload = {
-  accountId: string;
-  account: string;
-  queryPeriods: string[];
-  branchName: string;
-  baseName: string;
-  csvFilename: string;
-  csvPath: string;
-  csvBytes: number;
-  jsonFilename: string;
-  jsonPath: string;
-  jsonBytes: number;
-  rowCount: number;
-};
 
 export type CathayDomesticStatementsClient = {
   fetchDomesticAccounts(
@@ -273,28 +201,6 @@ export async function publishCathayStatementScopeRepairStage(
     publish,
   );
 }
-
-export type CathayDomesticWorkflowOptions = {
-  /** Sanitized operational source scope, never a credential or user identity. */
-  sourceConnectionId?: string;
-  identityEpoch?: string;
-  scope?: { startDate: string; endDate: string };
-  syncState?: { cursor?: string | null };
-  observedAt?: string;
-  /** Capture the provider current-state domestic balance after account admission. */
-  captureCurrentBalances?: boolean;
-  /** Focused-check seam for the authenticated current-state reader. */
-  readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
-  /** Opt-in privacy-safe row date-shape diagnostics; never emits row values. */
-  telemetry?: boolean;
-  /** UI preparation seam; production selects every returned account and period. */
-  prepareStatementQuery?: CathayDomesticQueryPreparation;
-  writeStatementFiles?: (
-    account: CathayAccount,
-    dateRange: CathayDateRange,
-    statement: CathayTransferResult,
-  ) => Promise<CathayStatementDownload>;
-};
 
 export type CathaySession = {
   jwtToken: string;
@@ -737,27 +643,13 @@ export function classifyCathayDateScopeMismatch(
   };
 }
 
-const statementHeaders = [
-  "帳務日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-];
-
-let lastTimestamp = 0;
-
 function requireCredential(
   credentials: CathayCredentials,
   name: keyof CathayCredentials,
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
+    throw new Error(`Cathay credential ${name} is missing.`);
   }
   return value;
 }
@@ -784,74 +676,6 @@ function maskAccountLabel(value: string): string {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function formatNullableAmount(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
-
-function normalizeDate(value: string | null | undefined): string {
-  const text = cleanText(value);
-  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (compact) return `${compact[1]}/${compact[2]}/${compact[3]}`;
-
-  const date = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
-  if (date) return `${date[1]}/${date[2]}/${date[3]}`;
-
-  return text;
-}
-
-function statementRowSortKey(row: string[]): string {
-  return cleanText(row[1]) || cleanText(row[0]);
-}
-
-function compareStatementRowsByTransactionTimeDesc(
-  left: string[],
-  right: string[],
-): number {
-  return statementRowSortKey(right).localeCompare(statementRowSortKey(left));
-}
-
-function queryPeriodForStatement(
-  dateRange: CathayDateRange,
-  statement: CathayTransferResult,
-): string {
-  if (statement.startDate && statement.endDate) {
-    return `${normalizeDate(statement.startDate)}~${normalizeDate(statement.endDate)}`;
-  }
-
-  const bounds = dateRangeBounds(dateRange);
-  return `${normalizeDate(bounds.startDate)}~${normalizeDate(bounds.endDate)}`;
-}
-
-function noteForDomesticDetail(detail: CathayTransferDetail): string {
-  return [
-    detail.specialMemo,
-    detail.memo,
-    [detail.expendBankId, detail.expendAcctNo].filter(Boolean).join(" "),
-  ]
-    .map((value) => cleanText(value))
-    .filter(Boolean)
-    .join(" ");
 }
 
 function matchesAccountFilter(
@@ -954,212 +778,22 @@ async function fillLoginForm(
   await page.locator("button.js-login").click();
 }
 
-type CathayGmailOtpOutcome = {
-  kind?: unknown;
-  status?: unknown;
-  reason?: unknown;
-  otp?: unknown;
-  code?: unknown;
-  answer?: unknown;
-};
-
-type CathayGmailOtpFallbackStage = "access" | "retrieval" | "workflow";
-
-function reportCathayGmailOtpFallback(
-  stage: CathayGmailOtpFallbackStage,
-  outcome: unknown,
-) {
-  const reason = gmailOtpFallbackReason(outcome) ?? "protocol-error";
-  console.warn(`cathay-gmail-otp-fallback: stage=${stage} reason=${reason}`);
-}
-
-function gmailOtpOutcomeKind(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const outcome = value as CathayGmailOtpOutcome;
-  const kind = outcome.kind ?? outcome.status;
-  return typeof kind === "string" ? kind : null;
-}
-
-function gmailOtpAccessIsReady(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const outcome = value as CathayGmailOtpOutcome & { ready?: unknown };
-  return gmailOtpOutcomeKind(outcome) === "ready" || outcome.ready === true;
-}
-
 export function cathayEmailOtpSubmissionValue(value: unknown): string | null {
-  if (gmailOtpOutcomeKind(value) !== "found") return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const outcome = value as CathayGmailOtpOutcome;
+  const outcome = value as {
+    kind?: unknown;
+    status?: unknown;
+    otp?: unknown;
+    code?: unknown;
+    answer?: unknown;
+  };
+  const kind = outcome.kind ?? outcome.status;
+  if (kind !== "found") return null;
   const candidate = outcome.otp ?? outcome.code ?? outcome.answer;
   if (typeof candidate !== "string") return null;
   const normalized = candidate.trim();
   const match = /^[A-Z]{4}-(\d{6})$/.exec(normalized);
   return match?.[1] ?? null;
-}
-
-async function pauseForManualCathayEmailOtp(
-  page: Page,
-  session: string,
-  otpField: Locator,
-  submitOnResume = true,
-): Promise<void> {
-  await otpField.scrollIntoViewIfNeeded();
-  await otpField.focus();
-  await waitForStableLocatorBox(page, otpField);
-  await emitHumanAssistanceStage({
-    stageId: "cathay-login-email-otp",
-    title: "Enter the Cathay Email OTP",
-    targets: [
-      {
-        id: "otp-input",
-        label: "Email OTP input",
-        semanticId: "cathay.login.email-otp-input",
-        modes: ["click", "type"],
-        locator: otpField,
-      },
-    ],
-    contextRegions: [
-      {
-        id: "otp-challenge",
-        label: "Email OTP instructions",
-        semanticId: "cathay.login.email-otp-challenge",
-      },
-    ],
-    completion: { mode: "inline", targetIds: ["otp-input"] },
-    focus: {
-      targetId: "otp-input",
-      contextRegionIds: ["otp-challenge"],
-      initialZoom: 1.15,
-    },
-  });
-  console.log(
-    "manual-otp-required: enter the Cathay Email OTP in the browser, then run `npx libretto resume --session " +
-      session +
-      "`.",
-  );
-  await pause(session);
-  if (!submitOnResume || !(await otpField.isVisible().catch(() => false)))
-    return;
-  if (!(await otpField.inputValue()).trim()) {
-    throw new Error(
-      "Cathay Email OTP is empty. Enter it in the browser before resuming.",
-    );
-  }
-  await page.locator("#btnConfirm").click();
-}
-
-export type CathayEmailOtpAutomation = {
-  /** Optional seams keep the login policy testable without a live Gmail bridge. */
-  ensureAccess?: () => Promise<unknown>;
-  prepareRetrieval?: () => Promise<unknown>;
-  retrieve?: (boundaryId: string) => Promise<unknown>;
-};
-
-export async function completeEmailOtpIfNeeded(
-  page: Page,
-  session: string,
-  automation: CathayEmailOtpAutomation = {},
-): Promise<void> {
-  const emailVerificationLink = page
-    .locator("a")
-    .filter({ hasText: "Email驗證" });
-  const otpField = page.locator("#OtpMailPassword");
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await isSignedIn(page)) return;
-    if (await otpField.isVisible().catch(() => false)) {
-      break;
-    }
-    if (
-      await emailVerificationLink
-        .first()
-        .isVisible()
-        .catch(() => false)
-    ) {
-      break;
-    }
-    await page.waitForTimeout(500);
-  }
-
-  if (
-    !(await emailVerificationLink
-      .first()
-      .isVisible()
-      .catch(() => false))
-  ) {
-    if (await otpField.isVisible().catch(() => false)) {
-      await pauseForManualCathayEmailOtp(page, session, otpField);
-      return;
-    }
-
-    throw new Error(
-      `Cathay sign-in did not reach Email OTP or signed-in state. Current URL: ${page.url()}`,
-    );
-  }
-
-  await emailVerificationLink.first().click();
-
-  const sendEmailOtp = page.locator("#js-otp-email-send");
-  const ensureAccess = automation.ensureAccess ?? ensureCathayGmailOtpAccess;
-  const prepareRetrieval =
-    automation.prepareRetrieval ?? prepareCathayGmailOtpRetrieval;
-  const retrieve = automation.retrieve ?? retrieveCathayGmailOtp;
-  let sendClicked = false;
-  let submitAttempted = false;
-  const clickSendOnce = async () => {
-    if (sendClicked) return;
-    // Mark before dispatch so an exception with an uncertain browser outcome
-    // can never cause a second OTP request.
-    sendClicked = true;
-    await sendEmailOtp.click();
-  };
-  if (await sendEmailOtp.isVisible().catch(() => false)) {
-    try {
-      const access = await ensureAccess();
-      if (gmailOtpAccessIsReady(access)) {
-        const boundary = await prepareRetrieval();
-        const boundaryId =
-          boundary &&
-          typeof boundary === "object" &&
-          (boundary as { status?: unknown }).status === "prepared" &&
-          typeof (boundary as { boundaryId?: unknown }).boundaryId === "string"
-            ? (boundary as { boundaryId: string }).boundaryId
-            : null;
-        if (boundaryId) {
-          await clickSendOnce();
-          const result = await retrieve(boundaryId);
-          const otp = cathayEmailOtpSubmissionValue(result);
-          if (otp) {
-            await otpField.waitFor({ state: "visible", timeout: 30_000 });
-            await otpField.fill(otp);
-            submitAttempted = true;
-            await page.locator("#btnConfirm").click();
-            return;
-          }
-          reportCathayGmailOtpFallback("retrieval", result);
-        } else {
-          reportCathayGmailOtpFallback("retrieval", boundary);
-        }
-      } else {
-        reportCathayGmailOtpFallback("access", access);
-        await clickSendOnce();
-      }
-    } catch {
-      reportCathayGmailOtpFallback("workflow", null);
-      // Retrieval, OAuth, fill, or submit uncertainty falls through to the
-      // existing human-assistance contract without another send attempt.
-    }
-    if (!sendClicked) {
-      try {
-        await clickSendOnce();
-      } catch {
-        // The existing wait/manual path below reports the unavailable target.
-      }
-    }
-  }
-
-  await otpField.waitFor({ state: "visible", timeout: 30_000 });
-  await pauseForManualCathayEmailOtp(page, session, otpField, !submitAttempted);
 }
 
 async function waitForSignedInState(page: Page): Promise<void> {
@@ -1232,22 +866,6 @@ async function dismissPostLoginPrompts(
       .waitFor({ state: "hidden", timeout: 15_000 })
       .catch(() => undefined);
   }
-}
-
-export async function signInCathay(
-  ctx: LibrettoWorkflowContext,
-  credentials: CathayCredentials,
-  trustDevice: boolean,
-): Promise<{ usedExistingSession: boolean }> {
-  const { page, session } = ctx;
-  if (await isSignedIn(page)) return { usedExistingSession: true };
-
-  await fillLoginForm(page, credentials);
-  await completeEmailOtpIfNeeded(page, session);
-  await waitForSignedInState(page);
-  await dismissPostLoginPrompts(page, trustDevice);
-
-  return { usedExistingSession: false };
 }
 
 export type CathayAppLoginDependencies = Readonly<{
@@ -1822,27 +1440,13 @@ export async function prepareCathayDomesticStatementQuery(
   await page.keyboard.press("Escape");
   const dateOptions = await openCathayQueryOptions(page, dateCombo);
   await page.keyboard.press("Escape");
-  let plan: CathayDomesticQueryPlan;
-  try {
-    plan = resolveCathayDomesticQueryPlan(
-      accounts,
-      accountOptions.texts,
-      dateOptions.texts,
-      dateRange,
-      requireCompleteAccountScope,
-    );
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      /Cathay domestic account (?:scope|option)/i.test(error.message)
-    ) {
-      console.warn(
-        "cathay-domestic-account-scope-telemetry",
-        classifyCathayDomesticAccountScope(accounts, accountOptions.texts),
-      );
-    }
-    throw error;
-  }
+  const plan = resolveCathayDomesticQueryPlan(
+    accounts,
+    accountOptions.texts,
+    dateOptions.texts,
+    dateRange,
+    requireCompleteAccountScope,
+  );
 
   const queryButton = page.getByRole("button", { name: "查詢", exact: true });
   if ((await queryButton.count()) !== 1) {
@@ -2449,298 +2053,3 @@ export async function collectCathayDomesticFinancialRequests(
     ),
   };
 }
-
-async function writeStatementFiles(
-  account: CathayAccount,
-  dateRange: CathayDateRange,
-  statement: CathayTransferResult,
-): Promise<CathayStatementDownload> {
-  const downloadsDir = join(process.cwd(), "downloads", "cathay-statements");
-  await mkdir(downloadsDir, { recursive: true });
-
-  const accountId = digitsOnly(statement.accountNumber ?? account.accountNo);
-  const accountName = accountLabel(account);
-  const queryPeriods = [queryPeriodForStatement(dateRange, statement)];
-  const rows = (statement.details ?? [])
-    .map((detail) => [
-      normalizeDate(detail.accountDate),
-      cleanText(detail.txnDateTime),
-      cleanText(detail.description),
-      formatNullableAmount(detail.expendAmt),
-      formatNullableAmount(detail.incomeAmt),
-      formatNullableAmount(detail.balance),
-      noteForDomesticDetail(detail),
-    ])
-    .sort(compareStatementRowsByTransactionTimeDesc);
-  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, rowsToCsv([statementHeaders, ...rows]), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: accountName,
-        查詢期間: queryPeriods,
-        分行名稱: cleanText(account.branchName),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-
-  return {
-    accountId,
-    account: accountName,
-    queryPeriods,
-    branchName: cleanText(account.branchName),
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-export async function downloadCathayStatements(
-  page: Page,
-  dateRange: CathayDateRange,
-  accountFilters: string[],
-  cathaySession?: CathaySession,
-  options: CathayDomesticWorkflowOptions = {},
-  client: CathayDomesticStatementsClient = new CathayApiClient(page),
-): Promise<CathayStatementDownload[]> {
-  const session =
-    cathaySession ?? (await new CathayApiClient(page).createSession());
-  const accounts = await client.fetchDomesticAccounts(session, accountFilters);
-
-  await openDomesticStatementsPage(page);
-  await (options.prepareStatementQuery ?? prepareCathayDomesticStatementQuery)(
-    page,
-    accounts,
-    dateRange,
-    accountFilters.length === 0,
-  );
-
-  const sourceConnectionId =
-    options.sourceConnectionId ??
-    process.env.CATHAY_SOURCE_CONNECTION_REF ??
-    "cathay-default-source";
-  const identityEpoch =
-    options.identityEpoch ??
-    process.env.CATHAY_IDENTITY_EPOCH ??
-    "cathay-domestic-deposit-v1";
-  const bounds = dateRangeBounds(dateRange);
-  const scope = {
-    startDate: options.scope?.startDate ?? bounds.startDate,
-    endDate: options.scope?.endDate ?? bounds.endDate,
-  };
-  const writeFiles = options.writeStatementFiles ?? writeStatementFiles;
-  const observedAt = options.observedAt ?? new Date().toISOString();
-  const stagedPages: CathayStagedCapturePage[] = [];
-  const stagedStatements: Array<{
-    account: CathayAccount;
-    statement: CathayTransferResult;
-  }> = [];
-  for (const account of accounts) {
-    const rawResponse = await client.fetchTransferDetailsRaw(
-      session,
-      account.accountNo,
-      dateRange,
-    );
-    const statement = parseCathayTransferResponse(
-      rawResponse,
-      account.accountNo,
-    );
-    const accountNumber = deriveCathayDomesticDepositAccountNumberEvidence(
-      statement.accountNumber,
-    );
-    stagedStatements.push({ account, statement });
-    stagedPages.push({
-      accountNo: account.accountNo,
-      ...(accountNumber ? { accountNumber } : {}),
-      currency: (account.currency ?? "TWD") as "TWD",
-      scope,
-      pageOrdinal: 0,
-      requestPageToken: null,
-      nextPageToken: null,
-      rawResponse,
-      contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-      preflightFingerprint: "cathay/domestic-deposit/collection-v1",
-      absenceAuthority: "comparable-complete-range",
-    });
-  }
-
-  if (stagedPages.length === 0) return [];
-  if (options.telemetry) {
-    console.warn(
-      "cathay-domestic-row-date-shape-telemetry",
-      classifyCathayRowDateShapes(
-        stagedStatements.map(({ statement }) => statement),
-      ),
-    );
-  }
-  const syncInput = {
-    sourceConnectionId,
-    identityEpoch,
-    authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-    stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
-    syncState: options.syncState ?? { cursor: null },
-    observedAt,
-    pages: stagedPages,
-  };
-  let validatedSync: ReturnType<
-    typeof validateCathayDomesticDepositSyncInputForPGlite
-  >;
-  try {
-    // Validate before opening the execution run so provider scope errors keep
-    // their established diagnostics; the transaction adapter validates again
-    // at the canonical persistence seam.
-    validatedSync = validateCathayDomesticDepositSyncInputForPGlite(syncInput);
-  } catch (error) {
-    if (isCathayDateScopeValidationError(error)) {
-      console.warn(
-        "cathay-domestic-date-scope-telemetry",
-        classifyCathayDateScopeMismatch(
-          scope,
-          stagedStatements.map(({ statement }) => statement),
-        ),
-      );
-    }
-    throw error;
-  }
-  requirePGliteWorkflowEnabled(process.env);
-  const pgliteClient = requirePGliteChildRpcClientFromEnv();
-  try {
-    await pgliteClient.ready;
-    const requests =
-      buildCathayDomesticFinancialRequestsForPGlite(validatedSync);
-    const financial = await executePGliteWorkflowRun({
-      client: pgliteClient.workflow,
-      provider: "cathay",
-      product: "domestic-deposit",
-      items: [
-        {
-          provider: "cathay",
-          product: "domestic-deposit",
-          itemKey: `domestic-deposit:${sourceConnectionId}:${identityEpoch}`,
-          command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: {
-              steps: requests.map((request) => ({
-                kind: "financial" as const,
-                request,
-              })),
-            },
-          },
-        },
-      ],
-    });
-    if (financial.status !== "completed")
-      throw new Error(
-        `Cathay PGlite domestic persistence ${financial.status}: ${financial.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
-      );
-    if (options.captureCurrentBalances) {
-      const currentRows = await (
-        options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
-      )(page, "domestic", {});
-      const admittedAccountKeys = new Set(
-        stagedPages.map((entry) => entry.accountNo),
-      );
-      const selectedRows = currentRows.filter((row) =>
-        admittedAccountKeys.has(row.sourceAccountKey),
-      );
-      if (
-        selectedRows.length === 0 ||
-        [...admittedAccountKeys].some(
-          (key) => !selectedRows.some((row) => row.sourceAccountKey === key),
-        )
-      )
-        throw new Error(
-          "Cathay current domestic balance response omitted an admitted account.",
-        );
-      const observedAtForBalances = selectedRows[0]!.observedAt;
-      const opaqueConnection = cathayOpaqueIdentity(sourceConnectionId);
-      const opaqueEpoch = cathayOpaqueIdentity(identityEpoch);
-      const balanceCaptures = buildCathayCurrentDepositBalanceCaptures(
-        selectedRows,
-        {
-          sourceConnectionKey: opaqueConnection,
-          identityEpochKey: opaqueEpoch,
-          subjectDigest: cathayCurrentSubjectDigest(
-            opaqueConnection,
-            opaqueEpoch,
-          ),
-          observedAt: observedAtForBalances,
-          scopeDate: observedAtForBalances.slice(0, 10),
-        },
-      );
-      const balances = await executePGliteWorkflowRun({
-        client: pgliteClient.workflow,
-        provider: "cathay",
-        product: "current-balance",
-        items: balanceCaptures.map((capture, index) => ({
-          provider: "cathay",
-          product: "current-balance",
-          itemKey: `current-balance:${capture.identity.sourceAccountKey}:${index}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(
-              admitCurrentDepositBalanceCapture(capture),
-            ),
-          },
-        })),
-      });
-      if (balances.status !== "completed")
-        throw new Error(
-          `Cathay PGlite domestic balance persistence ${balances.status}: ${balances.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
-        );
-    }
-  } finally {
-    pgliteClient.close();
-  }
-  const downloads: CathayStatementDownload[] = [];
-  for (const { account, statement } of stagedStatements)
-    downloads.push(await writeFiles(account, dateRange, statement));
-  return downloads;
-}
-
-export default workflow("cathayStatements", {
-  credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page } = ctx;
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await signInCathay(ctx, input.credentials, input.trustDevice);
-    const downloads = await downloadCathayStatements(
-      page,
-      input.dateRange,
-      input.accountFilters,
-      undefined,
-      { captureCurrentBalances: true },
-    );
-
-    return {
-      dateRange: input.dateRange,
-      count: downloads.length,
-      downloads,
-    };
-  },
-});

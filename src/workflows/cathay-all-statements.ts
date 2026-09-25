@@ -1,5 +1,3 @@
-import { workflow, type LibrettoWorkflowContext } from "libretto";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { z } from "zod";
 import type { Page, Response } from "playwright";
 import {
@@ -7,7 +5,6 @@ import {
   selectStatementTypes,
 } from "../lib/automation/statement-selection.js";
 import {
-  type CathayCredentials,
   type CathayGmailOtpPort,
   type CathayStrictSourceOptions,
   type CathaySession,
@@ -17,21 +14,13 @@ import {
   signInCathayForApp,
   collectCathayDomesticFinancialRequests,
   type CathayDomesticFinancialCollection,
-  createCathaySession,
-  downloadCathayStatements,
-  signInCathay,
 } from "./cathay-statements.js";
 import {
-  commitCathayForeignAndCurrentCanonicalCaptures,
-  createCathayForeignCanonicalCaptureCollector,
-  downloadCathayForeignStatements,
   collectCathayForeignFinancialCaptures,
   collectCathayCurrentForeignDepositBalanceCaptures,
   type CathayForeignFinancialCollection,
   type CathayForeignDateRange,
 } from "./cathay-foreign-statements.js";
-import { retryableStage } from "./retryable-stage.js";
-import { runSelectedStatements } from "./run-selected-statements.js";
 import {
   buildCathayCurrentDepositBalanceCaptures,
   cathayCurrentSubjectDigest,
@@ -44,17 +33,13 @@ import {
   parseCathayCurrentDepositBalanceSnapshot,
   readCathayCurrentDepositBalances,
 } from "./cathay-current-deposit-balances.js";
-import {
-  cathayOpaqueIdentity,
-  buildCathayDomesticFinancialRequestsForPGlite,
-} from "../ledger/pglite/cathay-domestic-adapter.js";
+import { cathayOpaqueIdentity } from "../ledger/pglite/cathay-domestic-adapter.js";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.js";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.js";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.js";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-  requirePGliteWorkflowEnabled,
 } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
@@ -65,8 +50,6 @@ const statementTypeSchema = z
   .transform((type) =>
     type === "foreign" ? ("foreign_currency" as const) : type,
   );
-const outputStatementTypeSchema = z.enum(["domestic", "foreign"]);
-
 const dateRangeSchema = z.enum([
   "one_week",
   "one_month",
@@ -74,225 +57,6 @@ const dateRangeSchema = z.enum([
   "six_months",
   "one_year",
 ]);
-
-function createInputSchema() {
-  return z.object({
-    statementTypes: z.array(statementTypeSchema).min(1).optional(),
-    dateRange: dateRangeSchema.default("one_year"),
-    accountFilters: z.array(z.string()).default([]),
-    domesticAccountFilters: z.array(z.string()).optional(),
-    foreignAccountFilters: z.array(z.string()).optional(),
-    currencyFilters: z.array(z.string()).default([]),
-    trustDevice: z.boolean().default(false),
-    telemetry: z.boolean().default(false),
-  });
-}
-
-const domesticDownloadSchema = z.object({
-  type: z.literal("domestic"),
-  accountId: z.string(),
-  account: z.string(),
-  queryPeriods: z.array(z.string()),
-  branchName: z.string(),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const foreignDownloadSchema = z.object({
-  type: z.literal("foreign"),
-  accountId: z.string(),
-  account: z.string(),
-  currencies: z.array(z.string()),
-  queryPeriods: z.array(z.string()),
-  branchName: z.string(),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: dateRangeSchema,
-  statementTypes: z.array(outputStatementTypeSchema),
-  usedExistingSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  downloads: z.array(z.union([domesticDownloadSchema, foreignDownloadSchema])),
-});
-
-const inputSchema = createInputSchema();
-
-const cathayAllStatementsDependencies = {
-  signInCathay,
-  createCathaySession,
-  retryableStage,
-  downloadCathayStatements,
-  downloadCathayForeignStatements,
-  commitCathayForeignAndCurrentCanonicalCaptures,
-};
-
-export async function runCathayAllStatements(
-  ctx: LibrettoWorkflowContext,
-  rawInput: unknown,
-  overrides: Partial<typeof cathayAllStatementsDependencies> = {},
-) {
-  const {
-    signInCathay,
-    createCathaySession,
-    retryableStage,
-    downloadCathayStatements,
-    downloadCathayForeignStatements,
-    commitCathayForeignAndCurrentCanonicalCaptures,
-  } = { ...cathayAllStatementsDependencies, ...overrides };
-  const input = rawInput as z.infer<typeof inputSchema> & {
-    credentials: CathayCredentials;
-  };
-  const { page } = ctx;
-  const requestedIds = new Set(
-    input.statementTypes ??
-      selectStatementTypes(
-        BANK_STATEMENT_CAPABILITIES.cathay,
-        process.env,
-        "strict",
-      ).selectedIds,
-  );
-  const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
-    .map((type) => type.id)
-    .filter((typeId) => requestedIds.has(typeId));
-  if (!selectedIds.length)
-    throw new Error("Select at least one Cathay statement type.");
-  requirePGliteWorkflowEnabled(process.env);
-  emitAutomationProgress({
-    phaseCode: "workflow",
-    completed: 0,
-    total: 100,
-    percent: 0,
-  });
-
-  page.on("dialog", async (dialog) => {
-    console.warn("bank-dialog", { type: dialog.type() });
-    await dialog.accept();
-  });
-
-  const authResult = await signInCathay(
-    ctx,
-    input.credentials,
-    input.trustDevice,
-  );
-  let cathaySession = await createCathaySession(page);
-  emitAutomationProgress({
-    phaseCode: "workflow",
-    completed: 25,
-    total: 100,
-    percent: 25,
-  });
-
-  const run = await runSelectedStatements(selectedIds, [
-    {
-      typeId: "domestic",
-      run: async () => {
-        console.log("combined-workflow-section-start", {
-          section: "domestic",
-        });
-        const downloads = await retryableStage({
-          name: "cathay-domestic-statements",
-          session: ctx.session,
-          reset: async () => {
-            cathaySession = await createCathaySession(page);
-          },
-          run: async () =>
-            downloadCathayStatements(
-              page,
-              input.dateRange,
-              input.domesticAccountFilters ?? input.accountFilters,
-              cathaySession,
-              {
-                telemetry: input.telemetry,
-                captureCurrentBalances: true,
-              },
-            ),
-        });
-        return downloads.map((download) => ({
-          type: "domestic" as const,
-          ...download,
-        }));
-      },
-      fileCount: (output) => (output as unknown[]).length,
-    },
-    {
-      typeId: "foreign_currency",
-      run: async () => {
-        console.log("combined-workflow-section-start", {
-          section: "foreign",
-        });
-        const canonicalCollector = createCathayForeignCanonicalCaptureCollector(
-          input.dateRange,
-        );
-        const downloads = await retryableStage({
-          name: "cathay-foreign-statements",
-          session: ctx.session,
-          reset: async () => {
-            cathaySession = await createCathaySession(page);
-          },
-          run: async () => {
-            canonicalCollector.reset();
-            return downloadCathayForeignStatements(
-              page,
-              input.dateRange,
-              input.foreignAccountFilters ?? input.accountFilters,
-              input.currencyFilters,
-              cathaySession,
-              canonicalCollector.onStatement,
-            );
-          },
-        });
-        await commitCathayForeignAndCurrentCanonicalCaptures(
-          page,
-          canonicalCollector.captures,
-          { requireComplete: true },
-        );
-        return downloads.map((download) => ({
-          type: "foreign" as const,
-          ...download,
-        }));
-      },
-      fileCount: (output) => (output as unknown[]).length,
-    },
-  ]);
-  const downloads = [
-    ...((run.outputs.domestic as
-      z.infer<typeof domesticDownloadSchema>[] | undefined) ?? []),
-    ...((run.outputs.foreign_currency as
-      z.infer<typeof foreignDownloadSchema>[] | undefined) ?? []),
-  ];
-  const statementTypes: Array<z.infer<typeof outputStatementTypeSchema>> =
-    selectedIds.map((typeId) =>
-      typeId === "foreign_currency" ? "foreign" : "domestic",
-    );
-  emitAutomationProgress({
-    phaseCode: "workflow",
-    completed: 100,
-    total: 100,
-    percent: 100,
-  });
-
-  return {
-    dateRange: input.dateRange,
-    statementTypes,
-    usedExistingSession: authResult.usedExistingSession,
-    count: downloads.length,
-    downloads,
-  };
-}
 
 const typedCathayInputSchema = z.object({
   credentials: z.object({
@@ -788,16 +552,3 @@ export async function runCathayAllProviderWorkflow(
     };
   });
 }
-
-export function createCathayAllStatementsWorkflow(
-  workflowName = "cathayAllStatements",
-) {
-  return workflow(workflowName, {
-    credentials: ["cathay_user_id", "cathay_account", "cathay_password"],
-    input: inputSchema,
-    output: outputSchema,
-    handler: runCathayAllStatements,
-  });
-}
-
-export default createCathayAllStatementsWorkflow();
