@@ -1,12 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -18,8 +14,6 @@ import {
   activateControlWithoutPointer,
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
-import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
-// completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
 import { fetchFormPostbackHtml, replaceDocumentHtml } from "./form-postback.ts";
 import {
   admitFubonDomesticDepositCaptureEvidence,
@@ -43,7 +37,6 @@ import {
   FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V2,
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
   isFubonHumanAttestedV1Active,
-  isAdmittedFubonDomesticDepositCaptureEvidence,
   isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   type FubonDomesticDepositSourceOnlyEvidence,
@@ -55,10 +48,6 @@ import type {
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import {
-  deriveFubonSourceConnectionKey,
-  fubonStableLoginScope,
-} from "./fubon-source-connection.ts";
 import {
   readFubonCurrentDepositBalances,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -199,103 +188,6 @@ export const fubonDepositTelemetryOutputSchema = z.object({
   ]),
 });
 
-export const fubonStatementsOutputSchema = z.object({
-  dateRanges: z.array(fubonStatementDateRangeSchema),
-  downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]),
-  count: z.number().int().nonnegative(),
-  admissions: z.array(
-    z.object({
-      accountId: z.string(),
-      accountValueDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-      status: z.enum(["financial-admitted", "source-only"]),
-      reason: z.string().nullable(),
-    }),
-  ),
-  downloads: z.array(
-    z.object({
-      accountId: z.string(),
-      account: z.string(),
-      queryPeriods: z.array(z.string()),
-      branchName: z.string(),
-      baseName: z.string(),
-      csvFilename: z.string(),
-      csvPath: z.string(),
-      csvBytes: z.number().int().nonnegative(),
-      jsonFilename: z.string(),
-      jsonPath: z.string(),
-      jsonBytes: z.number().int().nonnegative(),
-      rowCount: z.number().int().nonnegative(),
-    }),
-  ),
-  evidence: z.array(
-    z.object({
-      evidenceVersion: z.literal(FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION),
-      source: z.literal("fubon"),
-      observedAt: z.string(),
-      account: z.object({
-        valueDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-        label: z.string(),
-        branchName: z.string(),
-      }),
-      queryRange: z.object({ startDate: z.string(), endDate: z.string() }),
-      providerRouteEvidence: z
-        .object({
-          endpointPath: z.string(),
-          contract: z.string(),
-          currency: z.enum(["TWD", "FX", "unknown"]),
-        })
-        .optional(),
-      pages: z.array(
-        z.object({
-          pageOrdinal: z.number().int().nonnegative(),
-          responseSequence: z.number().int().positive(),
-          terminal: z.boolean(),
-          nextPage: z.string().nullable(),
-          pageFieldName: z.string().nullable(),
-          paginationEvidence: z
-            .enum(["next-page", "terminal-no-next"])
-            .optional(),
-          paginationAmbiguous: z.boolean().optional(),
-          paginationAmbiguityReason: z
-            .enum([
-              "result-context-missing",
-              "malformed-result-action",
-              "forward-control-unrecognized",
-              "forward-target-untraversable",
-              "current-page-unresolved",
-              "terminal-proof-missing",
-            ])
-            .optional(),
-          queryRange: z.object({
-            startDate: z.string(),
-            endDate: z.string(),
-          }),
-          selectedAccount: z.object({
-            valueDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-            label: z.string(),
-            branchName: z.string(),
-          }),
-          providerPageSize: z.number().int().positive().optional(),
-          providerTotalCount: z.number().int().nonnegative().optional(),
-          rows: z.array(
-            z.object({
-              rowOrdinal: z.number().int().nonnegative(),
-              cells: z.array(z.string()).length(7),
-            }),
-          ),
-          zeroObservation: z.enum(["empty-page", "non-empty-page"]),
-        }),
-      ),
-      zeroObservation: z.enum(["empty-range", "non-empty-range"]),
-      provenance: z.object({
-        source: z.literal("fubon-ebank-domestic-deposit-form-postback"),
-        responseBodyRetained: z.literal(false),
-        semantics: z.literal("unresolved"),
-      }),
-    }),
-  ),
-});
-
 export type FubonCredentials = {
   fubon_user_id?: string;
   fubon_account?: string;
@@ -303,17 +195,12 @@ export type FubonCredentials = {
 };
 
 export type FubonStatementsInput = z.infer<typeof fubonStatementsInputSchema>;
-export type FubonStatementsOutput = z.infer<typeof fubonStatementsOutputSchema>;
 export type FubonDepositTelemetryInput = z.infer<
   typeof fubonDepositTelemetryInputSchema
 >;
 export type FubonDepositTelemetryOutput = z.infer<
   typeof fubonDepositTelemetryOutputSchema
 >;
-
-type Input = FubonStatementsInput & {
-  credentials: FubonCredentials;
-};
 
 export type FubonParsedDepositStatement = {
   account: string;
@@ -331,37 +218,31 @@ export type FubonParsedDepositStatement = {
   accountOption: FubonDepositAccountOptionEvidence;
 };
 
-export type FubonStatementsRunDependencies = Partial<{
-  openTransactionDetailForAccountIndex: (
-    page: Page,
-    accountIndex: number,
-  ) => Promise<string>;
-  readDepositAccountOptions: (
-    page: Page,
-  ) => Promise<FubonDepositAccountOption[]>;
-  selectDepositAccount: (
-    page: Page,
-    account: FubonDepositAccountOption,
-  ) => Promise<void>;
-  fetchDepositStatement: (
-    page: Page,
-    dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
-    account: FubonDepositAccountOption,
-  ) => Promise<FubonParsedDepositStatement>;
-  writeDepositStatementFiles: (
-    statements: FubonParsedDepositStatement[],
-  ) => Promise<FubonStatementsOutput["downloads"][number]>;
+export type FubonStatementsRunDependencies = Readonly<{
   /** Stable login-derived Source Connection identity shared with loan runs. */
   sourceConnectionKey: string;
   /** Raw, non-secret stable login scope used by the canonical adapter. */
   sourceConnectionScope: string;
-  /** Injected in checks; production reads the authenticated current-balance page. */
-  readCurrentDepositBalances: typeof readFubonCurrentDepositBalances;
-  /** Internal App-owned collection mode: validate and return items without persistence or files. */
   deferredCommitItems: PGliteWorkflowRunItem[];
-  collectOnly: true;
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  openTransactionDetailForAccountIndex?: (
+    page: Page,
+    accountIndex: number,
+  ) => Promise<string>;
+  readDepositAccountOptions?: (
+    page: Page,
+  ) => Promise<FubonDepositAccountOption[]>;
+  selectDepositAccount?: (
+    page: Page,
+    account: FubonDepositAccountOption,
+  ) => Promise<void>;
+  fetchDepositStatement?: (
+    page: Page,
+    dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
+    account: FubonDepositAccountOption,
+  ) => Promise<FubonParsedDepositStatement>;
+  readCurrentDepositBalances?: typeof readFubonCurrentDepositBalances;
 }>;
 
 export type FubonDepositWorkflowCollection = Readonly<{
@@ -840,52 +721,6 @@ export function buildFubonLoanPaymentAccountEvidence(
   return evidence;
 }
 
-export type FubonDepositStatementOutputEvidence = {
-  evidenceVersion: typeof FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
-  source: "fubon";
-  observedAt: string;
-  account: {
-    valueDigest: `sha256:${string}`;
-    label: string;
-    branchName: string;
-  };
-  queryRange: { startDate: string; endDate: string };
-  providerRouteEvidence?: {
-    endpointPath: string;
-    contract: string;
-    currency: "TWD" | "FX" | "unknown";
-  };
-  pages: Array<{
-    pageOrdinal: number;
-    responseSequence: number;
-    terminal: boolean;
-    nextPage: string | null;
-    pageFieldName: string | null;
-    paginationEvidence?: "next-page" | "terminal-no-next";
-    paginationAmbiguous?: true;
-    paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
-    queryRange: { startDate: string; endDate: string };
-    selectedAccount: {
-      valueDigest: `sha256:${string}`;
-      label: string;
-      branchName: string;
-    };
-    providerPageSize?: number;
-    providerTotalCount?: number;
-    rows: Array<{
-      rowOrdinal: number;
-      cells: string[];
-    }>;
-    zeroObservation: "empty-page" | "non-empty-page";
-  }>;
-  zeroObservation: "empty-range" | "non-empty-range";
-  provenance: {
-    source: "fubon-ebank-domestic-deposit-form-postback";
-    responseBodyRetained: false;
-    semantics: "unresolved";
-  };
-};
-
 function digestEvidenceValue(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 }
@@ -1020,67 +855,6 @@ export function inspectFubonDepositResponseMetadata(
     pagination: [...pagination.entries()]
       .map(([name, value]) => ({ name, value }))
       .sort((left, right) => left.name.localeCompare(right.name)),
-  };
-}
-
-export function redactFubonDepositStatementEvidence(
-  evidence:
-    | FubonDomesticDepositValidatedEvidence
-    | FubonDomesticDepositSourceOnlyEvidence,
-): FubonDepositStatementOutputEvidence {
-  if (
-    !isAdmittedFubonDomesticDepositCaptureEvidence(evidence) &&
-    !isSourceOnlyFubonDomesticDepositCaptureEvidence(evidence)
-  ) {
-    throw new Error(
-      "Fubon deposit evidence must cross structural admission before redaction.",
-    );
-  }
-  const redactAccount = (account: FubonDepositAccountOptionEvidence) => ({
-    valueDigest: digestEvidenceValue(account.value),
-    label: maskAccount(account.label),
-    branchName: account.branchName,
-  });
-  return {
-    evidenceVersion: evidence.evidenceVersion,
-    source: evidence.source,
-    observedAt: evidence.observedAt,
-    account: redactAccount(evidence.account),
-    queryRange: { ...evidence.queryRange },
-    ...(evidence.providerRouteEvidence
-      ? { providerRouteEvidence: { ...evidence.providerRouteEvidence } }
-      : {}),
-    pages: evidence.pages.map((page) => ({
-      pageOrdinal: page.pageOrdinal,
-      responseSequence: page.responseSequence,
-      terminal: page.terminal,
-      nextPage: page.nextPage,
-      pageFieldName: page.pageFieldName,
-      ...(page.paginationEvidence !== undefined
-        ? { paginationEvidence: page.paginationEvidence }
-        : {}),
-      ...(page.paginationAmbiguous === true
-        ? { paginationAmbiguous: true as const }
-        : {}),
-      ...(page.paginationAmbiguityReason !== undefined
-        ? { paginationAmbiguityReason: page.paginationAmbiguityReason }
-        : {}),
-      queryRange: { ...page.queryRange },
-      selectedAccount: redactAccount(page.selectedAccount),
-      rows: page.rows.map((row) => ({
-        rowOrdinal: row.rowOrdinal,
-        cells: [...row.cells],
-      })),
-      ...(page.providerPageSize !== undefined
-        ? { providerPageSize: page.providerPageSize }
-        : {}),
-      ...(page.providerTotalCount !== undefined
-        ? { providerTotalCount: page.providerTotalCount }
-        : {}),
-      zeroObservation: page.zeroObservation,
-    })),
-    zeroObservation: evidence.zeroObservation,
-    provenance: { ...evidence.provenance },
   };
 }
 
@@ -1229,19 +1003,6 @@ const depositHeaders = [
   "附註",
 ];
 
-function requireCredential(
-  credentials: FubonCredentials,
-  name: keyof FubonCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -1255,8 +1016,8 @@ function maskAccount(account: string): string {
   return `${"*".repeat(Math.max(4, digits.length - 4))}${digits.slice(-4)}`;
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
+function safeAccountKeyFallback(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -2077,14 +1838,6 @@ function depositDateRangeFields(
   };
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function branchNameFromAccount(account: string): string {
   return cleanText(account.match(/\(([^()]+)\)\s*$/)?.[1]);
 }
@@ -2095,23 +1848,8 @@ function accountIdFor(account: string, fallback: string): string {
   return (
     digitsOnly(accountPrefix) ||
     digitsOnly(fallbackPrefix) ||
-    safeFilename(fallback)
+    safeAccountKeyFallback(fallback)
   );
-}
-
-function uniqueValues(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.length > 0))];
-}
-
-function depositRowSortKey(row: string[]): string {
-  return cleanText(row[1]) || cleanText(row[0]);
-}
-
-function compareDepositRowsByTransactionTimeDesc(
-  left: string[],
-  right: string[],
-): number {
-  return depositRowSortKey(right).localeCompare(depositRowSortKey(left));
 }
 
 async function waitForFrame(
@@ -2126,10 +1864,6 @@ async function waitForFrame(
     await page.waitForTimeout(250);
   }
   throw new Error(`Timed out waiting for frame "${name}".`);
-}
-
-async function openLoginForm(page: Page) {
-  await openFubonLoginForm(page);
 }
 
 function depositRows(scope: BrowserScope): Locator {
@@ -3068,97 +2802,11 @@ export async function captureFubonDepositTelemetry(
   }
 }
 
-async function writeDepositStatementFiles(
-  statements: FubonParsedDepositStatement[],
-): Promise<FubonStatementsOutput["downloads"][number]> {
-  const first = statements[0];
-  if (!first) throw new Error("Cannot write an empty deposit statement file.");
-
-  const downloadsDir = join(process.cwd(), "downloads", "fubon-statements");
-  await mkdir(downloadsDir, { recursive: true });
-
-  const account = first.account;
-  const accountId = first.accountId;
-  const publicAccount = maskAccount(account);
-  const publicAccountId = maskAccount(accountId);
-  const queryPeriods = uniqueValues(
-    statements.map((statement) => statement.queryPeriod),
-  );
-  const branchName = first.branchName;
-  const rows = statements
-    .flatMap((statement) => statement.rows)
-    .sort(compareDepositRowsByTransactionTimeDesc);
-  const baseName = `${safeFilename(publicAccountId)}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, rowsToCsv([depositHeaders, ...rows]), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: publicAccount,
-        查詢期間: queryPeriods,
-        分行名稱: branchName,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-
-  return {
-    accountId: publicAccountId,
-    account: publicAccount,
-    queryPeriods,
-    branchName,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-export async function signInFubon(
-  page: Page,
-  session: string,
-  credentials: FubonCredentials,
-): Promise<void> {
-  const values = {
-    userId: requireCredential(credentials, "fubon_user_id"),
-    account: requireCredential(credentials, "fubon_account"),
-    password: requireCredential(credentials, "fubon_password"),
-  };
-  await openLoginForm(page);
-  await completeFubonHumanLogin(page, session, values);
-}
-
-export function runFubonStatements(
-  page: Page,
-  input: FubonStatementsInput,
-  overrides: FubonStatementsRunDependencies & {
-    collectOnly: true;
-    deferredCommitItems: PGliteWorkflowRunItem[];
-  },
-): Promise<FubonDepositWorkflowCollection>;
-export function runFubonStatements(
-  page: Page,
-  input: FubonStatementsInput,
-  overrides?: FubonStatementsRunDependencies,
-): Promise<FubonStatementsOutput>;
 export async function runFubonStatements(
   page: Page,
   input: FubonStatementsInput,
-  overrides: FubonStatementsRunDependencies = {},
-): Promise<FubonStatementsOutput | FubonDepositWorkflowCollection> {
+  overrides: FubonStatementsRunDependencies,
+): Promise<FubonDepositWorkflowCollection> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
       'fubon-statements normalized output currently supports downloadFormat="EXCEL" only.',
@@ -3177,8 +2825,6 @@ export async function runFubonStatements(
     overrides.fetchDepositStatement ??
     ((currentPage, dateRange, account) =>
       fetchDepositStatement(currentPage, dateRange, account, overrides.sourceText));
-  const writeStatement =
-    overrides.writeDepositStatementFiles ?? writeDepositStatementFiles;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readFubonCurrentDepositBalances;
   const stableSourceConnectionKey = sourceConnectionKey;
@@ -3204,14 +2850,8 @@ export async function runFubonStatements(
   {
     await openTransactionDetail(page, 0);
     const accounts = await readAccounts(page);
-    const preparedAccounts: Array<{
-      statements: FubonParsedDepositStatement[];
-      evidence: Array<
-        | FubonDomesticDepositValidatedEvidence
-        | FubonDomesticDepositSourceOnlyEvidence
-      >;
-      admission: FubonStatementsOutput["admissions"][number];
-    }> = [];
+    let sourceCount = 0;
+    let rowCount = 0;
 
     for (const account of accounts) {
       overrides.signal?.throwIfAborted();
@@ -3221,7 +2861,7 @@ export async function runFubonStatements(
       for (const dateRange of input.dateRanges) {
         overrides.signal?.throwIfAborted();
         const statement = await fetchStatement(page, dateRange, account);
-        overrides.sourceText?.assertIntact(JSON.stringify(statement));
+        overrides.sourceText.assertIntact(JSON.stringify(statement));
         accountStatements.push(statement);
       }
       if (accountStatements.length === 0) {
@@ -3229,6 +2869,8 @@ export async function runFubonStatements(
           "Fubon deposit evidence admission blocked: no query pages.",
         );
       }
+      sourceCount += accountStatements.length;
+      rowCount += accountStatements.reduce((count, statement) => count + statement.rows.length, 0);
 
       const admittedEvidence = buildFubonDepositStatementEvidence(
         accountStatements,
@@ -3248,16 +2890,10 @@ export async function runFubonStatements(
         }
         return admission.capture;
       });
-      const admissionReasons = new Set<string>();
-      let admissionStatus: FubonStatementsOutput["admissions"][number]["status"] =
-        "source-only";
-      if (!isFubonHumanAttestedV1Active())
-        admissionReasons.add("human-attestation-revoked");
       for (const [index, capture] of admittedEvidence.entries()) {
         const accountDigest = digestEvidenceValue(account.value).slice(7, 19);
         const sourceCaptureId = `fubon-source-${nextTimestamp()}-${accountDigest}-${index}`;
         if (isSourceOnlyFubonDomesticDepositCaptureEvidence(capture)) {
-          admissionReasons.add("incomplete-scope");
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
@@ -3312,9 +2948,6 @@ export async function runFubonStatements(
               `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
             );
           }
-          admissionStatus = "source-only";
-          for (const diagnostic of financialAdmission.diagnostics)
-            admissionReasons.add(diagnostic);
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
@@ -3322,7 +2955,6 @@ export async function runFubonStatements(
           sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
           continue;
         }
-        admissionStatus = "financial-admitted";
         const financialCapture = financialAdmission.capture;
         if (!financialCapture)
           throw new Error(
@@ -3339,17 +2971,6 @@ export async function runFubonStatements(
           ),
         });
       }
-      preparedAccounts.push({
-        statements: accountStatements,
-        evidence: admittedEvidence,
-        admission: {
-          accountId: maskAccount(account.label),
-          accountValueDigest: digestEvidenceValue(account.value),
-          status: admissionStatus,
-          reason:
-            admissionReasons.size > 0 ? [...admissionReasons].join(",") : null,
-        },
-      });
     }
 
     // Read and validate the point-in-time page before opening the financial
@@ -3365,7 +2986,7 @@ export async function runFubonStatements(
           authorityClass: "existing-financial-admission",
         },
       });
-      overrides.sourceText?.assertIntact(JSON.stringify(currentRows));
+      overrides.sourceText.assertIntact(JSON.stringify(currentRows));
       const currentObservedAt = new Date().toISOString();
       const existingByAccountNumber = indexFubonCurrentDepositFinancialCaptures(
         financialCaptures,
@@ -3383,7 +3004,7 @@ export async function runFubonStatements(
       });
     }
 
-    overrides.signal?.throwIfAborted();
+    overrides.signal.throwIfAborted();
     const items: PGliteWorkflowRunItem[] = [];
     for (const entry of sourceOnlyEntries) items.push({
         provider: "fubon", product: "domestic-deposit", itemKey: entry.captureId,
@@ -3420,74 +3041,13 @@ export async function runFubonStatements(
     });
 
     for (const item of items)
-      overrides.sourceText?.assertIntact(JSON.stringify(item.command));
-    if (overrides.deferredCommitItems) {
-      overrides.deferredCommitItems.push(...items);
-    } else {
-      const client = requirePGliteChildRpcClientFromEnv();
-      try {
-        await client.ready;
-      const executionResult = await executePGliteWorkflowRun({
-        client: client.workflow, items, provider: "fubon", product: "financial",
-      });
-      if (executionResult.status !== "completed")
-        throw new Error(`Fubon PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
-      } finally {
-        client.close();
-      }
-    }
-
-    if (overrides.collectOnly) {
-      return {
-        sourceCount: preparedAccounts.reduce((count, account) => count + account.statements.length, 0),
-        rowCount: preparedAccounts.reduce((count, account) => count + account.statements.reduce((rows, statement) => rows + statement.rows.length, 0), 0),
-        itemCount: items.length,
-        financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
-      };
-    }
-
-    const downloads: FubonStatementsOutput["downloads"] = [];
-    const evidence: FubonDepositStatementOutputEvidence[] = [];
-    const admissions: FubonStatementsOutput["admissions"] = [];
-    for (const prepared of preparedAccounts) {
-      evidence.push(
-        ...prepared.evidence.map(redactFubonDepositStatementEvidence),
-      );
-      // writeDepositStatementFiles is the one public-artifact redaction
-      // boundary. Its return value is already masked; do not mask it again.
-      downloads.push(await writeStatement(prepared.statements));
-      admissions.push(prepared.admission);
-    }
-
+      overrides.sourceText.assertIntact(JSON.stringify(item.command));
+    overrides.deferredCommitItems.push(...items);
     return {
-      dateRanges: input.dateRanges,
-      downloadFormat: input.downloadFormat,
-      count: downloads.length,
-      admissions,
-      downloads,
-      evidence,
+      sourceCount,
+      rowCount,
+      itemCount: items.length,
+      financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
     };
   }
 }
-
-export default workflow("fubonStatements", {
-  credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
-  input: fubonStatementsInputSchema,
-  output: fubonStatementsOutputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page, session } = ctx;
-    const sourceConnectionScope = fubonStableLoginScope(input.credentials);
-    if (!sourceConnectionScope) {
-      throw new Error(
-        "Missing stable Fubon login identity for Source Connection.",
-      );
-    }
-
-    await signInFubon(page, session, input.credentials);
-    return await runFubonStatements(page, input, {
-      sourceConnectionScope,
-      sourceConnectionKey: deriveFubonSourceConnectionKey(input.credentials)!,
-    });
-  },
-});

@@ -1,4 +1,3 @@
-import { pause } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceCompletionStatus,
@@ -96,7 +95,7 @@ export type FubonLoginDocumentOptions = Readonly<{
   confirmationMs?: number;
 }>;
 
-/** Non-sensitive evidence captured before the browser is paused for CAPTCHA. */
+/** Non-sensitive evidence captured before the App requests CAPTCHA assistance. */
 export type FubonLoginAssistanceSnapshot = Readonly<{
   frameName: string;
   frameIdentity: string;
@@ -1190,54 +1189,6 @@ export function fubonCaptchaAssistanceStage(
   };
 }
 
-async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
-  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
-  const frame = await waitForLoginFrame(
-    page,
-    FUBON_LOGIN_FRAME_NAME,
-    deadline,
-    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-  );
-  await frame.locator("#m1_userCaptcha").focus();
-  await emitHumanAssistanceStage(fubonCaptchaAssistanceStage(frame));
-}
-
-async function emitFubonOtpAssistance(page: Page): Promise<void> {
-  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
-  const frame = await waitForLoginFrame(
-    page,
-    FUBON_LOGIN_FRAME_NAME,
-    deadline,
-    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-  );
-  await emitHumanAssistanceStage({
-    stageId: "fubon-login-otp",
-    title: "Enter the Fubon OTP",
-    targets: [
-      {
-        id: "otp-input",
-        label: "OTP input",
-        semanticId: "fubon.login.otp-input",
-        modes: ["click", "type"],
-        locator: frame.locator("#m1_inputOTP"),
-      },
-    ],
-    contextRegions: [
-      {
-        id: "otp-challenge",
-        label: "OTP instructions",
-        semanticId: "fubon.login.otp-challenge",
-      },
-    ],
-    completion: { mode: "inline", targetIds: ["otp-input"] },
-    focus: {
-      targetId: "otp-input",
-      contextRegionIds: ["otp-challenge"],
-      initialZoom: 1.15,
-    },
-  });
-}
-
 async function currentOtpChallengeVisible(
   page: Page,
   timeoutMs = 3_000,
@@ -1260,107 +1211,6 @@ async function currentOtpChallengeVisible(
     }
   }
   return false;
-}
-
-/** Shared human-authentication transaction for every Fubon product workflow. */
-async function completeFubonHumanLoginAttempt(
-  page: Page,
-  session: string,
-  values: FubonLoginCredentialValues,
-): Promise<void> {
-  const dialogs = captureFubonLoginDialogs(page);
-  try {
-    let outcomeWindowStarted = false;
-    let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
-    const submit = await runFubonCaptchaAcquisition({
-      prepare: async () => {
-        await prepareFubonLoginDocument(page);
-        await fillFubonLoginCredentials(page, values);
-        assistanceBefore = await readFubonLoginGeneration(page);
-        if (!assistanceBefore) {
-          throw new Error(
-            "Fubon login frame disappeared while preparing assistance.",
-          );
-        }
-        return assistanceBefore;
-      },
-      assistAndPause: async () => {
-        if (!outcomeWindowStarted) {
-          dialogs.beginOutcomeWindow();
-          outcomeWindowStarted = true;
-        }
-        await emitFubonCaptchaAssistance(page);
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            session +
-            "`.",
-        );
-        await pause(session);
-      },
-      submit: async () => {
-        if (
-          dialogs.messages.length > 0 ||
-          dialogs.terminalReason !== undefined
-        ) {
-          await waitForFubonPostLoginOutcome(page, {
-            dialogChannel: dialogs,
-          });
-        }
-        const result = await submitFubonCaptchaFromCurrentFrame(page, values, {
-          before: assistanceBefore,
-        });
-        if (result.status === "reacquire-human-assistance") {
-          console.log("fubon-login-human-reacquire", {
-            stage: "captcha",
-            reason: result.reason,
-          });
-        }
-        return result;
-      },
-    });
-
-    if (submit.status === "submit-outcome-uncertain") {
-      throw new FubonSubmitOutcomeUncertainError(submit.reason);
-    }
-    if (submit.status !== "submitted") {
-      throw new Error(
-        `Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`,
-      );
-    }
-
-    if (await currentOtpChallengeVisible(page)) {
-      for (;;) {
-        const otpBefore = await readFubonLoginGeneration(page);
-        await emitFubonOtpAssistance(page);
-        console.log(
-          "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
-            session +
-            "`.",
-        );
-        await pause(session);
-        const otp = await inspectFubonOtpFromCurrentFrame(page, {
-          before: otpBefore,
-        });
-        if (otp.status === "ready" || otp.status === "no-challenge") break;
-        console.log("fubon-login-human-reacquire", {
-          stage: "otp",
-          reason: otp.reason,
-        });
-      }
-    }
-
-    await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs });
-  } finally {
-    dialogs.dispose();
-  }
-}
-
-export async function completeFubonHumanLogin(
-  page: Page,
-  session: string,
-  values: FubonLoginCredentialValues,
-): Promise<void> {
-  await completeFubonHumanLoginAttempt(page, session, values);
 }
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

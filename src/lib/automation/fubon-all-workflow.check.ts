@@ -26,13 +26,18 @@ const [depositSource, cardSource, loanSource] = await Promise.all([
   readFile(new URL("../../workflows/fubon-credit-card-statements.ts", import.meta.url), "utf8"),
   readFile(new URL("../../workflows/fubon-loan-statements.ts", import.meta.url), "utf8"),
 ]);
-const depositRun = depositSource.slice(depositSource.indexOf("export function runFubonStatements"));
-const cardRun = cardSource.slice(cardSource.indexOf("export function runFubonCreditCardStatements"));
-const loanRun = loanSource.slice(loanSource.indexOf("export function runFubonLoanStatements"));
-assert.ok(depositRun.indexOf("if (overrides.collectOnly)") < depositRun.indexOf("writeStatement(prepared.statements)"));
-assert.ok(cardRun.indexOf("if (overrides.deferredCommitItems)") < cardRun.indexOf("writeCsvWithMetadata("));
-assert.ok(loanRun.indexOf("if (overrides.deferredCommitItems)") < loanRun.indexOf("requirePGliteChildRpcClientFromEnv()"));
-assert.match(loanSource, /if \(options\.collectOnly\) return \{ parsed \}/u);
+const depositRun = depositSource.slice(depositSource.indexOf("export async function runFubonStatements"));
+const cardRun = cardSource.slice(cardSource.indexOf("export async function runFubonCreditCardStatements"));
+const loanRun = loanSource.slice(loanSource.indexOf("export async function runFubonLoanStatements"));
+for (const [name, source, run] of [
+  ["deposit", depositSource, depositRun],
+  ["card", cardSource, cardRun],
+  ["loan", loanSource, loanRun],
+] as const) {
+  assert.doesNotMatch(source, /from ["']node:fs|writeFile\(|mkdir\(/u, `${name} provider must not write source or output files`);
+  assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u, `${name} provider must not commit outside the App port`);
+  assert.match(run, /deferredCommitItems\.push/u, `${name} provider must return prepared items to the injected App commit`);
+}
 
 const temp = await mkdtemp(join(tmpdir(), "fubon-typed-workflow-"));
 const originalCwd = process.cwd();

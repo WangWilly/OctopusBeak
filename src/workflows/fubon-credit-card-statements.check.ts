@@ -41,7 +41,7 @@ const { deriveFubonSourceConnectionKey } = await import(
   "./fubon-source-connection.ts"
 );
 
-test("typed Fubon card collection returns before its CSV/JSON writers", async () => {
+test("typed Fubon card collection emits items without writing files", async () => {
   const temp = await mkdtemp(join(tmpdir(), "fubon-card-typed-no-files-"));
   const originalCwd = process.cwd();
   process.chdir(temp);
@@ -51,14 +51,13 @@ test("typed Fubon card collection returns before its CSV/JSON writers", async ()
       {} as Page,
       fubonCreditCardStatementsInputSchema.parse({}),
       {
-        collectOnly: true,
         deferredCommitItems,
+        signal: new AbortController().signal,
         observedAt: () => "2026-09-25T00:00:00.000Z",
         sourceText: strictSourceText,
         readSourceSnapshot: async () => ({
           statementRows: [],
           statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
-          paymentStatuses: [],
           summaries: [],
           gridStates: Array.from({ length: 7 }, () => ({
             currentPage: "1",
@@ -106,28 +105,21 @@ const runtimeStaticImports = staticModuleHeader.replace(
   /import type[\s\S]*?from ["'][^"']+["'];/gu,
   "",
 );
-assert.match(runtimeStaticImports, /pglite-child-rpc-client\.ts/);
+assert.doesNotMatch(runtimeStaticImports, /pglite-child-rpc-client\.ts/);
 assert.match(runtimeStaticImports, /fubon-credit-card-admission\.ts/);
 assert.match(runtimeStaticImports, /credit-card-current-balance-admission\.ts/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );
-const loginEntry = source.slice(
-  source.indexOf("async function openCreditCardLoginForm"),
-  source.indexOf("async function openStatementDetailsPage"),
-);
-assert.match(loginEntry, /openFubonLoginForm\(page\)/);
+assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin|workflow\(/u);
 assert.match(source, /findStatementDetailsScope/);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);
 assert.match(source, /isFubonCreditCardStatementUnavailableText/);
 assert.match(runSource, /iterateFubonStatementPeriodProbes/);
 assert.match(runSource, /capture\.snapshotMode === "full"/);
-assert.match(runSource, /available downloads were saved/);
-assert.doesNotMatch(
-  loginEntry,
-  /#menu_CCC|menu_CCC02|task_CCCQU002|landingFrame\.goto|txnFrame\.goto/,
-);
+assert.match(runSource, /deferredCommitItems\.push\(\.\.\.items\)/u);
+assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 
 const summaryRows = [
   ["115/06/21", "網路繳款"],
@@ -1613,6 +1605,6 @@ assert.throws(
   "distinct PANs sharing one safe first-six+last-four projection must fail closed",
 );
 
-assert.match(source, /executePGliteWorkflowRun/);
+assert.doesNotMatch(source, /executePGliteWorkflowRun|requirePGliteChildRpcClientFromEnv/u);
 assert.match(source, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
 assert.doesNotMatch(source, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/);

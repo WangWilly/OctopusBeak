@@ -1,6 +1,4 @@
 import { createHmac } from "node:crypto";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -13,29 +11,23 @@ import {
 } from "../lib/automation/statement-selection.js";
 import {
   activateControlWithoutPointer,
-  keepBrowserWindowOutOfForeground,
 } from "./browser-interaction.ts";
 import {
   fubonCreditCardStatementsInputSchema,
-  fubonCreditCardStatementsOutputSchema,
   runFubonCreditCardStatements,
   type FubonCreditCardWorkflowCollection,
 } from "./fubon-credit-card-statements.ts";
 import {
   fubonLoanStatementsInputSchema,
-  fubonLoanStatementsOutputSchema,
   runFubonLoanStatements,
   type FubonLoanWorkflowCollection,
 } from "./fubon-loan-statements.ts";
 import {
   type FubonCredentials,
   fubonStatementsInputSchema,
-  fubonStatementsOutputSchema,
   runFubonStatements,
   type FubonDepositWorkflowCollection,
-  signInFubon,
 } from "./fubon-statements.ts";
-import { runSelectedStatements } from "./run-selected-statements.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { completeFubonHumanLoginWithAssistance, openFubonLoginForm } from "./fubon-auth.ts";
 import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
@@ -45,33 +37,6 @@ import {
 } from "./fubon-source-connection.ts";
 
 export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
-
-const inputSchema = z.object({
-  statements: fubonStatementsInputSchema.default(() =>
-    fubonStatementsInputSchema.parse({}),
-  ),
-  creditCards: fubonCreditCardStatementsInputSchema.default(() =>
-    fubonCreditCardStatementsInputSchema.parse({}),
-  ),
-  loans: fubonLoanStatementsInputSchema.default(() =>
-    fubonLoanStatementsInputSchema.parse({}),
-  ),
-});
-
-const outputSchema = z.object({
-  statements: fubonStatementsOutputSchema.optional(),
-  creditCards: fubonCreditCardStatementsOutputSchema.optional(),
-  loans: fubonLoanStatementsOutputSchema.optional(),
-  componentResults: z.array(
-    z.object({
-      typeId: z.string(),
-      status: z.enum(["success", "failed", "skipped"]),
-      skipReason: z.enum(["absent", "not_selected"]).optional(),
-      fileCount: z.number().int().nonnegative().optional(),
-      error: z.string().optional(),
-    }),
-  ),
-});
 
 const appInputSchema = z.object({
   credentials: z.object({
@@ -83,10 +48,6 @@ const appInputSchema = z.object({
   creditCards: fubonCreditCardStatementsInputSchema.default(() => fubonCreditCardStatementsInputSchema.parse({})),
   loans: fubonLoanStatementsInputSchema.default(() => fubonLoanStatementsInputSchema.parse({})),
 });
-
-type Input = z.infer<typeof inputSchema> & {
-  credentials: FubonCredentials;
-};
 
 const FUBON_CREDIT_CARD_IDENTITY_EPOCH =
   "fubon-credit-card-human-attested-v2" as const;
@@ -190,134 +151,6 @@ async function signOutFubon(page: Page): Promise<void> {
     .catch(() => undefined);
 }
 
-async function runSectionOutOfForeground<T>(
-  page: Page,
-  section: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  console.log("combined-workflow-section-start", { section });
-  await keepBrowserWindowOutOfForeground(page);
-
-  const keepOutOfForeground = setInterval(() => {
-    void keepBrowserWindowOutOfForeground(page).catch(() => undefined);
-  }, 1_000);
-  try {
-    return await run();
-  } finally {
-    clearInterval(keepOutOfForeground);
-    await keepBrowserWindowOutOfForeground(page).catch(() => undefined);
-  }
-}
-
-const fubonAllStatementsDependencies = {
-  signInFubon,
-  keepBrowserWindowOutOfForeground,
-  startFubonSessionKeepAlive,
-  runSectionOutOfForeground,
-  runFubonStatements,
-  runFubonCreditCardStatements,
-  runFubonLoanStatements,
-  signOutFubon,
-};
-
-export async function runFubonAllStatements(
-  ctx: LibrettoWorkflowContext,
-  rawInput: unknown,
-  overrides: Partial<typeof fubonAllStatementsDependencies> = {},
-) {
-  const {
-    signInFubon,
-    keepBrowserWindowOutOfForeground,
-    startFubonSessionKeepAlive,
-    runSectionOutOfForeground,
-    runFubonStatements,
-    runFubonCreditCardStatements,
-    runFubonLoanStatements,
-    signOutFubon,
-  } = { ...fubonAllStatementsDependencies, ...overrides };
-  const input = rawInput as Input;
-  const { page, session } = ctx;
-  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
-  // Fubon exposes product availability at runtime. Persisted Settings selections
-  // are intentionally ignored; always probe every currently supported component
-  // in registry order and let explicit provider absence become skipped_absent.
-  const selectedIds = allSupportedStatementTypeIds(
-    BANK_STATEMENT_CAPABILITIES.fubon,
-  );
-  const sourceConnectionScope = fubonStableLoginScope(input.credentials);
-  const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
-  if (!sourceConnectionScope || !sourceConnectionKey)
-    throw new Error(
-      "Fubon all-statements requires a stable login identity for its Source Connection.",
-    );
-  const managedSecret = optionalFubonManagedSecret();
-  const canonicalHumanAttestation = managedSecret
-    ? deriveFubonCanonicalHumanAttestation(input.credentials, managedSecret)
-    : undefined;
-  const creditCardInput = canonicalHumanAttestation
-    ? { ...input.creditCards, canonicalHumanAttestation }
-    : { ...input.creditCards, canonicalHumanAttestation: undefined };
-
-  await signInFubon(page, session, input.credentials);
-  await keepBrowserWindowOutOfForeground(page);
-  emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
-
-  const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
-  try {
-    const run = await runSelectedStatements(selectedIds, [
-      {
-        typeId: "deposit",
-        run: () =>
-          runSectionOutOfForeground(page, "statements", () =>
-            runFubonStatements(page, input.statements, {
-              sourceConnectionScope,
-              sourceConnectionKey,
-            }),
-          ),
-      },
-      {
-        typeId: "credit_card",
-        run: () =>
-          runSectionOutOfForeground(page, "creditCards", () =>
-            runFubonCreditCardStatements(page, creditCardInput, {
-              ...(managedSecret
-                ? { panFingerprintKey: { secret: managedSecret } }
-                : {}),
-            }),
-          ),
-      },
-      {
-        typeId: "loan",
-        run: () =>
-          runSectionOutOfForeground(page, "loans", () =>
-            runFubonLoanStatements(page, input.loans, {
-              sourceConnectionScope,
-              sourceConnectionKey,
-            }),
-          ),
-      },
-    ]);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-
-    return {
-      statements: run.outputs.deposit as
-        z.infer<typeof fubonStatementsOutputSchema> | undefined,
-      creditCards: run.outputs.credit_card as
-        z.infer<typeof fubonCreditCardStatementsOutputSchema> | undefined,
-      loans: run.outputs.loan as
-        z.infer<typeof fubonLoanStatementsOutputSchema> | undefined,
-      componentResults: run.results,
-    };
-  } finally {
-    stopSessionKeepAlive();
-    await signOutFubon(page).catch((error: unknown) => {
-      console.warn("fubon-logout-failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-}
-
 export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
 export type FubonAllWorkflowOutput = Readonly<{
   sourceCaptureCount: number;
@@ -402,7 +235,6 @@ async function collectFubonDepositForApp(
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
     deferredCommitItems: items,
-    collectOnly: true,
     sourceText: context.text,
     signal: context.signal,
   });
@@ -422,7 +254,6 @@ async function collectFubonCreditCardForApp(
   return await runFubonCreditCardStatements(page, creditCardInput, {
     ...(identity.managedSecret ? { panFingerprintKey: { secret: identity.managedSecret } } : {}),
     deferredCommitItems: items,
-    collectOnly: true,
     sourceText: context.text,
     signal: context.signal,
     observedAt: context.now,
@@ -440,7 +271,6 @@ async function collectFubonLoanForApp(
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
     deferredCommitItems: items,
-    collectOnly: true,
     sourceText: context.text,
     signal: context.signal,
     observedAt: context.now,
@@ -603,10 +433,3 @@ export async function runFubonAllStatementsWorkflow(
     }
   });
 }
-
-export default workflow("fubonAllStatements", {
-  credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: runFubonAllStatements,
-});
