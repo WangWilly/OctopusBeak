@@ -52,6 +52,22 @@ test("the worker exposes operational start/read/write/failure through one provid
       (await runtime.provider.automation.taskRunById(created.taskRunId))?.status,
       "running",
     );
+    const typedRun = await runtime.provider.automation.createTaskRun({
+      taskId: "esun-credit-card-statements",
+      script: "workflow:esun-credit-card-statements",
+      kind: "crawler",
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-22T00:01:00.000Z",
+      // Typed App runs do not create an external log file.
+      logPath: "",
+    });
+    assert.ok(typedRun.taskRunId);
+    assert.equal(
+      (await runtime.provider.automation.taskRunById(typedRun.taskRunId))?.logPath,
+      "",
+    );
     await runtime.provider.automation.updateTaskRun(created.taskRunId, {
       logTail: "updated-progress",
     });
@@ -94,6 +110,32 @@ test("the worker exposes operational start/read/write/failure through one provid
       rawClient.request("SELECT 1" as PGliteOperationalOperation, []),
       /Invalid PGlite operational request/u,
       "the wire rejects arbitrary SQL names",
+    );
+    const typedRunRequest = {
+      taskId: "esun-credit-card-statements",
+      script: "workflow:esun-credit-card-statements",
+      kind: "crawler",
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-22T00:02:00.000Z",
+    };
+    await assert.rejects(
+      rawClient.request("automation.createTaskRun" as PGliteOperationalOperation, [{
+        ...typedRunRequest,
+        logPath: "../outside.log",
+      }]),
+      /Invalid PGlite operational request/u,
+      "the wire rejects path traversal even for a typed run",
+    );
+    await assert.rejects(
+      rawClient.request("automation.createTaskRun" as PGliteOperationalOperation, [{
+        ...typedRunRequest,
+        taskId: "",
+        logPath: "",
+      }]),
+      /Invalid PGlite operational request/u,
+      "allowing an empty log path must not relax required task identity fields",
     );
     assert.equal(
       (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,

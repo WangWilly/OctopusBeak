@@ -157,11 +157,19 @@ function stringFields(value: unknown, fields: readonly string[]): value is Recor
   return plainRecord(value) && fields.every((field) => stringValue(value[field]));
 }
 
+function validAutomationLogPath(value: unknown): value is string {
+  if (value === "") return true;
+  return typeof value === "string"
+    && value.length <= 10_000
+    && /^data\/automation\/logs\/[A-Za-z0-9][A-Za-z0-9._-]*\.log$/u.test(value);
+}
+
 function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
   switch (operation) {
     case "automation.createTaskRun":
       return args.length === 1
-        && stringFields(args[0], ["taskId", "script", "kind", "status", "startedAt", "logPath"])
+        && stringFields(args[0], ["taskId", "script", "kind", "status", "startedAt"])
+        && validAutomationLogPath((args[0] as Record<string, unknown>).logPath)
         && finiteNumber((args[0] as Record<string, unknown>).attempt)
         && finiteNumber((args[0] as Record<string, unknown>).maxAttempts);
     case "automation.updateTaskRun":
