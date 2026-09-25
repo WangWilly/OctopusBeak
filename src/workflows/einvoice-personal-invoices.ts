@@ -8,6 +8,8 @@ import {
 import type { Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import { createWorkflowFinancialCommitPort } from "../lib/automation/workflow-financial-commit.ts";
+import type { WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -26,7 +28,6 @@ import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-
 import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import type { PGliteCanonicalEInvoiceCommitResult } from "../ledger/pglite/einvoice.ts";
 
 const LOGIN_URL = "https://www.einvoice.nat.gov.tw/accounts/login";
@@ -970,21 +971,24 @@ export function buildCanonicalEInvoiceCapture(
 
 export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
+  injectedCommit?: WorkflowFinancialCommitPort,
 ) {
-  const client = requirePGliteChildRpcClientFromEnv();
+  const client = injectedCommit ? null : requirePGliteChildRpcClientFromEnv();
   try {
-    await client.ready;
-    const result = await executePGliteWorkflowRun({
-      client: client.workflow,
-      items: [{
-        provider: "einvoice",
-        product: "personal-invoice",
-        itemKey: capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-          request: capture,
-        },
-      }],
+    if (client) await client.ready;
+    const financialCommit = injectedCommit ?? (
+      client ? createWorkflowFinancialCommitPort(client.workflow) : null
+    );
+    if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
+    const result = await financialCommit.execute([{
+      provider: "einvoice",
+      product: "personal-invoice",
+      itemKey: capture.captureId,
+      command: {
+        kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
+        request: capture,
+      },
+    }], {
       provider: "einvoice",
       product: "personal-invoice",
     });
@@ -995,7 +999,7 @@ export async function commitCanonicalCapture(
         .join(", ")}`);
     return committed.value as PGliteCanonicalEInvoiceCommitResult;
   } finally {
-    client.close();
+    client?.close();
   }
 }
 

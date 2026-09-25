@@ -21,6 +21,7 @@ import {
   type AutomationPersistenceProvider,
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
+import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
 import { sanitizeAutomationLogTail } from "../../lib/automation/server/log-sanitizer.ts";
 import type {
   ExchangeRatePersistencePort,
@@ -128,6 +129,33 @@ function recordTerminationMode(recordJson: string): "forced" | undefined {
   }
 }
 
+const MAX_RUN_EVENTS = 200;
+const RUN_EVENT_STAGES = new Set([
+  "preparation", "authentication", "collection", "decoding",
+  "validation", "commit", "finalization",
+]);
+
+function recordEvents(recordJson: string): readonly WorkflowRunEvent[] {
+  try {
+    const value = JSON.parse(recordJson) as { events?: unknown };
+    return Array.isArray(value.events) ? value.events as WorkflowRunEvent[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function assertRunEvent(event: WorkflowRunEvent): void {
+  if (
+    !event || typeof event.runId !== "string" || event.runId.length === 0
+    || !RUN_EVENT_STAGES.has(event.stage)
+    || typeof event.code !== "string" || !/^[a-z][a-z0-9-]{0,63}$/u.test(event.code)
+    || typeof event.occurredAt !== "string"
+    || Number.isNaN(Date.parse(event.occurredAt))
+    || (event.completed !== undefined && (!Number.isSafeInteger(event.completed) || event.completed < 0))
+    || (event.total !== undefined && (!Number.isSafeInteger(event.total) || event.total < 0))
+  ) throw new Error("Invalid automation run event.");
+}
+
 function rowToTaskRun(row: Row): AutomationTaskRun {
   const recordJson = String(row.record_json);
   return {
@@ -145,6 +173,7 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     errorMessage: nullableString(row.error_message),
     logPath: String(row.log_path),
     logTail: sanitizeAutomationLogTail(String(row.log_tail)),
+    events: recordEvents(recordJson),
     recordJson,
     progress: recordProgress(recordJson),
     terminationMode: recordTerminationMode(recordJson),
@@ -343,6 +372,7 @@ export class PGliteOperationalStore
       ...input,
       errorMessage,
       logTail,
+      events: [],
       humanAssistanceContract: input.humanAssistanceContract ?? null,
     };
     await this.#database.transaction(async (transaction) => {
@@ -387,6 +417,43 @@ export class PGliteOperationalStore
         throw new Error(`Terminal automation task run is immutable: ${taskRunId}`);
       }
       await writeTaskRun(transaction, taskRunId, { ...current, ...update });
+    });
+  }
+
+  async appendRunEvent(event: WorkflowRunEvent): Promise<void> {
+    assertRunEvent(event);
+    await this.#database.transaction(async (transaction) => {
+      const run = await taskRunByIdFrom(transaction, event.runId);
+      if (!run) throw new Error(`Missing automation task run: ${event.runId}`);
+      const cutoff = Date.parse(event.occurredAt) - 30 * 24 * 60 * 60 * 1_000;
+      const events = [...run.events.filter((previous) =>
+        Date.parse(previous.occurredAt) >= cutoff), event].slice(-MAX_RUN_EVENTS);
+      await transaction.query(
+        "UPDATE automation_task_runs SET record_json = $1 WHERE task_run_id = $2",
+        [taskRunRecordJson({ ...run, events }), run.taskRunId],
+      );
+    });
+  }
+
+  async pruneRunEvents(cutoffUtc: string): Promise<number> {
+    const cutoff = Date.parse(cutoffUtc);
+    if (!Number.isFinite(cutoff)) throw new Error("Invalid automation event cutoff.");
+    return this.#database.transaction(async (transaction) => {
+      const result = await transaction.query<Row>(
+        "SELECT * FROM automation_task_runs WHERE record_json LIKE '%\"events\"%'",
+      );
+      let removed = 0;
+      for (const row of result.rows) {
+        const run = rowToTaskRun(row);
+        const events = run.events.filter((event) => Date.parse(event.occurredAt) >= cutoff);
+        if (events.length === run.events.length) continue;
+        removed += run.events.length - events.length;
+        await transaction.query(
+          "UPDATE automation_task_runs SET record_json = $1 WHERE task_run_id = $2",
+          [taskRunRecordJson({ ...run, events }), run.taskRunId],
+        );
+      }
+      return removed;
     });
   }
 

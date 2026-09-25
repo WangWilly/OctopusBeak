@@ -23,7 +23,9 @@ import {
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
 import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
+import { createWorkflowFinancialCommitPort } from "../lib/automation/workflow-financial-commit.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "einvoice-personal-invoices.ts"),
@@ -32,7 +34,7 @@ const workflowSource = readFileSync(
 assert.doesNotMatch(workflowSource, /writeInvoicesFile|purchased_invoice|rowsToCsv|csvPath/u);
 assert.match(workflowSource, /const commit = await commitCanonicalCapture/u);
 assert.match(workflowSource, /startUrl: LOGIN_URL/u);
-assert.match(workflowSource, /executePGliteWorkflowRun/u);
+assert.match(workflowSource, /financialCommit\.execute/u);
 assert.doesNotMatch(workflowSource, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/u);
 assert.doesNotMatch(
   workflowSource,
@@ -516,7 +518,13 @@ try {
     "einvoice-workflow-renewed-row-token",
     "2026-09-10T05:00:15Z",
   );
-  const repeated = await commitCanonicalCapture(renewedRowTokenCapture);
+  const injectedClient = requirePGliteChildRpcClientFromEnv();
+  await injectedClient.ready;
+  const repeated = await commitCanonicalCapture(
+    renewedRowTokenCapture,
+    createWorkflowFinancialCommitPort(injectedClient.workflow),
+  );
+  injectedClient.close();
   assert.equal(repeated.insertedRevisionCount, 0);
   assert.equal(repeated.observedDuplicateCount, 1);
 

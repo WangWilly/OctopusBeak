@@ -24,12 +24,7 @@ assert.ok(task);
 assert.equal(task.kind, "sync");
 assert.equal(task.credentialGroupId, undefined);
 assert.deepEqual(task.credentialKeys, []);
-assert.deepEqual(task.command, [
-  "node",
-  "--no-warnings",
-  "--experimental-strip-types",
-  "src/ledger/sync-exchange-rates.ts",
-]);
+assert.deepEqual(task.command, []);
 const yuantaAllStatements = taskById("yuanta-all-statements");
 assert.ok(yuantaAllStatements);
 assert.equal(yuantaAllStatements.id, "yuanta-all-statements");

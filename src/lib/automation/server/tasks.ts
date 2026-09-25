@@ -1132,12 +1132,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     id: "exchange-rates",
     label: "Exchange rates",
     script: "run:exchange-rates",
-    command: [
-      "node",
-      "--no-warnings",
-      "--experimental-strip-types",
-      "src/ledger/sync-exchange-rates.ts",
-    ],
+    command: [],
     kind: "sync",
     credentialKeys: [],
     dependencies: [],

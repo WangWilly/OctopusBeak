@@ -12,7 +12,6 @@ import { resolvePatchCommand } from "./desktop-command.ts";
 import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,
-  scheduleAutomationTaskRunTimeout,
 } from "./task-run-finalization.ts";
 import {
   accumulateAutomationOutput,
@@ -52,16 +51,11 @@ export {
   terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
 import {
-  automationSessionOwnerForRun,
-  isLiveOwnedAutomationSession,
   relinquishAutomationSessionForTask,
-  type LiveAutomationSessionDependencies,
 } from "./automation-session-disposition.ts";
 import {
-  claimAutomationSessionForCleanup,
   closeLibrettoSession,
   finalizeAllOwnedAutomationSessions,
-  WAITING_SESSION_TIMEOUT_MS,
 } from "./session-lifecycle.ts";
 import {
   isActiveTaskRunStatus,
@@ -630,58 +624,14 @@ export async function forceTerminateAutomationTask(
   return forceTerminateAutomationTaskWithPersistence(taskId, provider);
 }
 
-export type AbandonedAutomationRecoveryDependencies =
-  LiveAutomationSessionDependencies & {
-    finalizeRunWithPersistence?: (
-      provider: AutomationPersistenceProvider,
-      run: AutomationTaskRun,
-      reason: string,
-      status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
-    ) => Promise<void>;
-    claimSession?: typeof claimAutomationSessionForCleanup;
-    scheduleWaitingTimeoutWithPersistence?: typeof scheduleAutomationTaskRunTimeout;
-    now?: () => number;
-  };
-
-function waitingSessionExpired(
-  run: Pick<AutomationTaskRun, "startedAt">,
-  now: () => number,
-) {
-  const startedAt = Date.parse(run.startedAt);
-  if (!Number.isFinite(startedAt)) return true;
-  try {
-    const age = now() - startedAt;
-    return age < 0 || age >= WAITING_SESSION_TIMEOUT_MS;
-  } catch {
-    return true;
-  }
-}
-
-async function preserveWaitingHumanSessionWithPersistence(
-  provider: AutomationPersistenceProvider,
-  run: AutomationTaskRun,
-  dependencies: AbandonedAutomationRecoveryDependencies,
-) {
-  if (!run.humanAssistanceContract) return false;
-  if (waitingSessionExpired(run, dependencies.now ?? (() => Date.now()))) return false;
-  const owner = automationSessionOwnerForRun(run);
-  if (!owner || owner.pid === null) return false;
-  if (!(await isLiveOwnedAutomationSession(owner, dependencies))) return false;
-  const claimSession = dependencies.claimSession ?? claimAutomationSessionForCleanup;
-  try {
-    if (!claimSession(owner)) return false;
-    (dependencies.scheduleWaitingTimeoutWithPersistence
-      ?? scheduleAutomationTaskRunTimeout)({
-      provider,
-      taskId: run.taskId,
-      taskRunId: run.taskRunId,
-      logPath: run.logPath,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
+export type AbandonedAutomationRecoveryDependencies = {
+  finalizeRunWithPersistence?: (
+    provider: AutomationPersistenceProvider,
+    run: AutomationTaskRun,
+    reason: string,
+    status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
+  ) => Promise<void>;
+};
 
 export async function recoverAbandonedAutomationSessions(
   provider: AutomationPersistenceProvider,
@@ -690,10 +640,6 @@ export async function recoverAbandonedAutomationSessions(
   const errors: unknown[] = [];
   for (const run of await provider.automation.activeTaskRuns()) {
     try {
-      if (
-        run.status === "waiting_for_human"
-        && await preserveWaitingHumanSessionWithPersistence(provider, run, dependencies)
-      ) continue;
       await (dependencies.finalizeRunWithPersistence ?? finalizePersistedRun)(
         provider,
         run,

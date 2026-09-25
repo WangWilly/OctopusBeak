@@ -761,7 +761,15 @@ _Avoid_: Session close (which names only the graceful close operation).
 A reusable scheduled unit that can be started manually, in a batch, or as a resume.
 
 **Automation task run**:
-One persisted execution attempt of an automation task, including its output, status, and any retained session. A run waiting for human input remains that run; resuming creates a new run for the subsequent outcome.
+One persisted execution attempt of an automation task, including its status, bounded operational events, and any retained session. A run waiting for human input remains that run; resuming creates a new run for the subsequent outcome.
+
+**Automation run event**:
+A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
+_Avoid_: Log file, raw stdout, source record, financial fact
+
+**Workflow executor**:
+The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
+_Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its result, and relinquishing or retaining its automation session.
