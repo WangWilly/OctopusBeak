@@ -44,6 +44,37 @@ test("required exchange-rate currencies include every non-TWD amount line", () =
   assert.deepEqual(requiredExchangeRateCurrencies(history), ["JPY", "USD"]);
 });
 
+test("aborting the sync signal cancels its in-flight fetch before writing rates", async () => {
+  const persistence = memoryPersistence();
+  const controller = new AbortController();
+  const inFlight = syncExchangeRates(persistence, {
+    requiredFrom: "2026-01-03",
+    currencies: ["USD"],
+  }, {
+    signal: controller.signal,
+    fetchImpl: async (_input, init) => {
+      controller.abort(new Error("exchange sync cancelled"));
+      await new Promise<void>((resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        setTimeout(resolve, 20);
+      });
+      return new Response(JSON.stringify([
+        { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.03125 },
+      ]), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+  });
+
+  await assert.rejects(inFlight, /exchange sync cancelled/u);
+  assert.equal(controller.signal.aborted, true);
+  assert.deepEqual(await readExchangeRates(persistence), []);
+});
+
 test("synchronization validates and upserts the requested Frankfurter rates", async () => {
   const persistence = memoryPersistence();
   const request: ExchangeRateRequest = {

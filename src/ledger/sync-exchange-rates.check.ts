@@ -72,6 +72,21 @@ test("sync failure is rethrown without creating an audit file", async () => {
   });
 });
 
+test("command forwards its AbortSignal to injected sync work", async () => {
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | undefined;
+  const { options } = harness({
+    signal: controller.signal,
+    sync: async (_ledgerDir: string, _request: typeof request, syncOptions?: { signal?: AbortSignal }) => {
+      receivedSignal = syncOptions?.signal;
+      return result;
+    },
+  });
+
+  await runExchangeRateSyncCommand(options);
+  assert.equal(receivedSignal, controller.signal);
+});
+
 test("request-load failure is rethrown without creating an audit file", async () => {
   await withTemporaryWorkingDirectory(async (root) => {
     const failure = new Error("overview unavailable");

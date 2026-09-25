@@ -2,6 +2,7 @@ import type { AutomationProgressEvent } from "./progress.ts";
 import type { WorkflowDefinition } from "./workflow-executor.ts";
 
 export type ExchangeRateSyncService = (options: {
+  signal: AbortSignal;
   scheduledAtUtc?: string;
   emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 }) => Promise<unknown>;
@@ -21,6 +22,7 @@ export function createExchangeRateWorkflow(
       let eventQueue = Promise.resolve();
       try {
         await service({
+          signal: context.signal,
           scheduledAtUtc: options.scheduledAtUtc,
           emitProgress: (event) => {
             options.emitProgress(event);
