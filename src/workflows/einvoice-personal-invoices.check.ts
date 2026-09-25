@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Worker } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
 import { chromium } from "playwright";
 import type { Page } from "playwright";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
@@ -13,7 +9,6 @@ import {
   buildCanonicalEInvoiceCapture,
   canonicalOccurrence,
   closeInvoiceDetailModal,
-  commitCanonicalCapture,
   einvoiceCaptchaAssistanceStage,
   mapCanonicalEInvoiceRecord,
   retryEinvoiceLoginNavigation,
@@ -22,24 +17,17 @@ import {
   waitForEinvoiceLoginOutcome,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
-import { createWorkflowFinancialCommitPort } from "../lib/automation/workflow-financial-commit.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "einvoice-personal-invoices.ts"),
   "utf8",
 );
-assert.doesNotMatch(workflowSource, /writeInvoicesFile|purchased_invoice|rowsToCsv|csvPath/u);
-assert.match(workflowSource, /const commit = await commitCanonicalCapture/u);
-assert.match(workflowSource, /startUrl: LOGIN_URL/u);
+assert.doesNotMatch(workflowSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(/u);
+assert.doesNotMatch(workflowSource, /librettoAuthenticate|\bpause\(|npx libretto|emitAutomationProgress/u);
+assert.doesNotMatch(workflowSource, /requirePGliteChildRpcClientFromEnv|pglite-child-rpc-client|createPGliteChildRpc/u);
+assert.doesNotMatch(workflowSource, /node:fs|writeFile|appendFile|createWriteStream|process\.env|console\.(?:log|error)|logPath/u);
+assert.match(workflowSource, /runEinvoiceProviderWorkflow/u);
 assert.match(workflowSource, /financialCommit\.execute/u);
-assert.doesNotMatch(workflowSource, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/u);
-assert.doesNotMatch(
-  workflowSource,
-  /createCanonicalSourceStore|canonicalDatabaseWriterKey|openCanonicalDatabaseHandle|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
-);
 
 let redirectAttempts = 0;
 assert.equal(await retryEinvoiceLoginNavigation(async () => {
@@ -485,72 +473,3 @@ const firstCapture = captureInput(
 assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
 assert.match(firstCapture.subjectDigest, /^sha256:/u);
 assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
-
-const pgliteDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-pglite-"));
-const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-  execArgv: ["--experimental-strip-types"],
-  workerData: { dataDir: pgliteDir },
-});
-const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
-const pgliteChildServer = createPGliteChildRpcServer({
-  provider: {
-    operational: pgliteOwner.operationalProvider,
-    financial: pgliteOwner.financial.registry,
-  },
-});
-const previousPgliteEnv = {
-  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-};
-try {
-  await pgliteChildServer.ready;
-  Object.assign(process.env, pgliteChildServer.env);
-  const committed = await commitCanonicalCapture(firstCapture);
-  assert.equal(committed.status, "committed");
-  assert.equal(committed.invoiceCount, 1);
-  assert.equal(committed.itemCount, 1);
-
-  const renewedRowTokenCapture = captureInput(
-    [{ ...completeRecord, entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-a-renewed",
-    } }],
-    "einvoice-workflow-renewed-row-token",
-    "2026-09-10T05:00:15Z",
-  );
-  const injectedClient = requirePGliteChildRpcClientFromEnv();
-  await injectedClient.ready;
-  const repeated = await commitCanonicalCapture(
-    renewedRowTokenCapture,
-    createWorkflowFinancialCommitPort(injectedClient.workflow),
-  );
-  injectedClient.close();
-  assert.equal(repeated.insertedRevisionCount, 0);
-  assert.equal(repeated.observedDuplicateCount, 1);
-
-  const empty = await commitCanonicalCapture(
-    captureInput([], "einvoice-workflow-empty", "2026-09-10T05:03:00Z"),
-  );
-  assert.equal(empty.invoiceCount, 0);
-  assert.equal(empty.itemCount, 0);
-} finally {
-  for (const [key, value] of [
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", previousPgliteEnv.endpoint],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", previousPgliteEnv.token],
-  ] as const) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteChildServer.close();
-  await pgliteOwner.close();
-}
-const reopenedPglite = await PGlite.create(pgliteDir);
-try {
-  const invoices = await reopenedPglite.query<{ count: number }>(
-    "SELECT COUNT(*)::int AS count FROM einvoice_invoices",
-  );
-  assert.equal(invoices.rows[0]?.count, 1);
-} finally {
-  await reopenedPglite.close();
-  await rm(pgliteDir, { recursive: true, force: true });
-}
