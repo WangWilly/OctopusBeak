@@ -14,8 +14,10 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import {
   type CathayCredentials,
+  type CathayStrictSourceOptions,
   type CathaySession,
   createCathaySession,
+  fetchCathayApiSourceText,
   signInCathay,
 } from "./cathay-statements.js";
 import {
@@ -23,9 +25,7 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
-import {
-  buildCathayCurrentDepositBalanceCaptures,
-} from "./cathay-current-deposit-canonical.ts";
+import { buildCathayCurrentDepositBalanceCaptures } from "./cathay-current-deposit-canonical.ts";
 import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
@@ -134,7 +134,7 @@ type CathayForeignCurrency = {
   currencyName?: string;
 };
 
-type CathayForeignAccount = {
+export type CathayForeignAccount = {
   account: string;
   currencyList?: CathayForeignCurrency[];
   nickName?: string | null;
@@ -163,7 +163,7 @@ type CathayForeignTransferInfo = {
   exRate?: string;
 };
 
-type CathayForeignTransferResult = {
+export type CathayForeignTransferResult = {
   currencyCode?: string;
   transferInfos?: CathayForeignTransferInfo[];
   /** Set only when the successful provider response explicitly covers this currency. */
@@ -189,7 +189,10 @@ const statementHeaders = [
 let lastTimestamp = 0;
 
 function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return (value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function toAsciiDigits(value: string): string {
@@ -245,7 +248,9 @@ function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
-function formatNullableAmount(value: number | string | null | undefined): string {
+function formatNullableAmount(
+  value: number | string | null | undefined,
+): string {
   if (value === null || value === undefined) return "";
   return String(value);
 }
@@ -307,10 +312,7 @@ function foreignSummary(info: CathayForeignTransferInfo): string {
 }
 
 function foreignNote(info: CathayForeignTransferInfo): string {
-  return [
-    info.memo,
-    info.exRate ? `匯率 ${cleanText(info.exRate)}` : "",
-  ]
+  return [info.memo, info.exRate ? `匯率 ${cleanText(info.exRate)}` : ""]
     .map((value) => cleanText(value))
     .filter(Boolean)
     .join(" ");
@@ -410,11 +412,16 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function exactCathayAmount(value: number | string | null | undefined, label: string): string {
+function exactCathayAmount(
+  value: number | string | null | undefined,
+  label: string,
+): string {
   if (value === null || value === undefined || String(value).trim() === "")
     throw new Error(`Cathay foreign row is missing ${label}.`);
   if (typeof value === "number")
-    throw new Error(`Cathay foreign ${label} must remain an exact decimal string.`);
+    throw new Error(
+      `Cathay foreign ${label} must remain an exact decimal string.`,
+    );
   const source = String(value);
   if (!/^(?:0|[1-9]\d*|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/u.test(source))
     throw new Error(`Cathay foreign ${label} is not an exact decimal.`);
@@ -439,11 +446,21 @@ function cathaySequence(value: number | string | undefined): string {
 
 function cathayDirection(value: string | undefined): "inflow" | "outflow" {
   const type = cleanText(value).toUpperCase();
-  if (type === "D" || type.includes("DEBIT") || /支出|扣|提出|轉出|匯出|買/.test(type))
+  if (
+    type === "D" ||
+    type.includes("DEBIT") ||
+    /支出|扣|提出|轉出|匯出|買/.test(type)
+  )
     return "outflow";
-  if (type === "C" || type.includes("CREDIT") || /存入|收入|轉入|匯入|賣/.test(type))
+  if (
+    type === "C" ||
+    type.includes("CREDIT") ||
+    /存入|收入|轉入|匯入|賣/.test(type)
+  )
     return "inflow";
-  throw new Error("Cathay foreign row lacks an explicit debit/credit direction.");
+  throw new Error(
+    "Cathay foreign row lacks an explicit debit/credit direction.",
+  );
 }
 
 /** Convert one provider response into the shared exact canonical capture seam. */
@@ -460,7 +477,9 @@ export function buildCathayForeignCurrencyCaptureInput(
   const baseCaptureOccurrenceId = captureOccurrenceId.trim();
   if (!baseCaptureOccurrenceId)
     throw new Error("Cathay foreign capture occurrence identity is required.");
-  const currencyCode = cleanText(statement.currencyCode ?? currency).toUpperCase();
+  const currencyCode = cleanText(
+    statement.currencyCode ?? currency,
+  ).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currencyCode))
     throw new Error("Cathay foreign statement lacks a source currency.");
   const resolvedZeroResultAuthority =
@@ -490,7 +509,9 @@ export function buildCathayForeignCurrencyCaptureInput(
       const sequence = cathaySequence(info.sequenceNumber);
       const amount = exactCathayAmount(info.amount, "amount");
       const balanceAfter = exactCathayAmount(info.balance, "balance");
-      const observedDate = normalizeDate(info.transferDate ?? info.txntDate).replaceAll("/", "-");
+      const observedDate = normalizeDate(
+        info.transferDate ?? info.txntDate,
+      ).replaceAll("/", "-");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDate))
         throw new Error("Cathay foreign row lacks a source transaction date.");
       const reportedRateText = cleanText(info.exRate);
@@ -512,7 +533,10 @@ export function buildCathayForeignCurrencyCaptureInput(
             }
           : null,
         description: foreignSummary(info) || null,
-        sourcePayload: { memo: info.memo ?? "", exchangeRate: info.exRate ?? "" },
+        sourcePayload: {
+          memo: info.memo ?? "",
+          exchangeRate: info.exRate ?? "",
+        },
       };
     }),
   };
@@ -535,7 +559,8 @@ export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
  * completed attempt is committed by the workflow that owns the retry. */
 export function createCathayForeignCanonicalCaptureCollector(
   dateRange: CathayForeignDateRange,
-  captureOccurrenceId = randomUUID(),
+  captureOccurrenceId: string = randomUUID(),
+  observedAt: () => string = () => new Date().toISOString(),
 ): CathayForeignCanonicalCaptureCollector {
   const captures: ForeignCurrencyDepositCaptureInput[] = [];
   return {
@@ -555,7 +580,7 @@ export function createCathayForeignCanonicalCaptureCollector(
             currency,
             dateRange,
             statement,
-            new Date().toISOString(),
+            observedAt(),
             captureOccurrenceId,
             statement.zeroResultAuthority,
           ),
@@ -565,7 +590,7 @@ export function createCathayForeignCanonicalCaptureCollector(
   };
 }
 
-async function collectCathayCurrentForeignDepositBalanceCaptures(
+export async function collectCathayCurrentForeignDepositBalanceCaptures(
   page: Page,
   accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
   options: Pick<
@@ -650,15 +675,18 @@ export async function commitCathayForeignAndCurrentCanonicalCaptures(
       client: client.workflow,
       provider: "cathay",
       product: "foreign-currency-deposit",
-      items: captures.map((capture) => ({
-        provider: "cathay",
-        product: "foreign-currency-deposit",
-        itemKey: capture.accountNo,
-        command: {
-          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-          request: { capture: admitForeignCurrencyDepositCapture(capture) },
-        },
-      } as const)),
+      items: captures.map(
+        (capture) =>
+          ({
+            provider: "cathay",
+            product: "foreign-currency-deposit",
+            itemKey: capture.accountNo,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: admitForeignCurrencyDepositCapture(capture) },
+            },
+          }) as const,
+      ),
     });
     if (
       options.requireComplete
@@ -684,17 +712,20 @@ export async function commitCathayForeignAndCurrentCanonicalCaptures(
       client: client.workflow,
       provider: "cathay",
       product: "current-deposit-balance",
-      items: currentCaptures.map((capture) => ({
-        provider: "cathay",
-        product: "current-deposit-balance",
-        itemKey: capture.identity.sourceAccountKey,
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(
-            admitCurrentDepositBalanceCapture(capture),
-          ),
-        },
-      } as const)),
+      items: currentCaptures.map(
+        (capture) =>
+          ({
+            provider: "cathay",
+            product: "current-deposit-balance",
+            itemKey: capture.identity.sourceAccountKey,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(
+                admitCurrentDepositBalanceCapture(capture),
+              ),
+            },
+          }) as const,
+      ),
     });
     if (
       options.requireComplete
@@ -713,9 +744,11 @@ export async function commitCathayForeignAndCurrentCanonicalCaptures(
 
 class CathayForeignApiClient {
   private readonly page: Page;
+  private readonly strictSource?: CathayStrictSourceOptions;
 
-  constructor(page: Page) {
+  constructor(page: Page, strictSource?: CathayStrictSourceOptions) {
     this.page = page;
+    this.strictSource = strictSource;
   }
 
   async fetchForeignAccounts(
@@ -766,7 +799,9 @@ class CathayForeignApiClient {
       .map(currencyCodeOf)
       .filter((currency): currency is string => Boolean(currency));
     if (currencyList.length === 0) {
-      throw new Error(`No currencies selected for ${maskAccountLabel(account.account)}.`);
+      throw new Error(
+        `No currencies selected for ${maskAccountLabel(account.account)}.`,
+      );
     }
 
     const response = await this.apiPost<CathayForeignTransferResult>(
@@ -797,23 +832,31 @@ class CathayForeignApiClient {
     session: Pick<CathaySession, "jwtToken">,
     body: unknown,
   ): Promise<CathayApiResponse<T>> {
-    const responseText = (await this.page.evaluate(
-      async ({ path, token, body }) => {
-        const response = await fetch(path, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
+    const responseText = this.strictSource
+      ? await fetchCathayApiSourceText(
+          this.page,
+          path,
+          session.jwtToken,
+          body,
+          this.strictSource,
+        )
+      : ((await this.page.evaluate(
+          async ({ path, token, body }) => {
+            const response = await fetch(path, {
+              method: "POST",
+              credentials: "same-origin",
+              headers: {
+                Accept: "application/json, text/plain, */*",
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(body),
+            });
+            if (!response.ok) throw new Error(`${response.status} for ${path}`);
+            return await response.text();
           },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) throw new Error(`${response.status} for ${path}`);
-        return await response.text();
-      },
-      { path, token: session.jwtToken, body },
-    )) as string;
+          { path, token: session.jwtToken, body },
+        )) as string);
     const result = parseCathayApiJson<CathayApiResponse<T>>(responseText);
 
     if (!result.success) {
@@ -824,6 +867,139 @@ class CathayForeignApiClient {
 
     return result;
   }
+}
+
+export type CathayForeignStatementsClient = Readonly<{
+  fetchForeignAccounts(
+    session: CathaySession,
+    accountFilters: string[],
+    currencyFilters: string[],
+  ): Promise<CathayForeignAccount[]>;
+  fetchTransferDetails(
+    session: CathaySession,
+    account: CathayForeignAccount,
+    dateRange: CathayForeignDateRange,
+  ): Promise<CathayForeignTransferResult[]>;
+}>;
+
+export type CathayForeignFinancialCollection = Readonly<{
+  captures: readonly ForeignCurrencyDepositCaptureInput[];
+  selectedStatementCount: number;
+  rowCount: number;
+  accountKeys: readonly string[];
+}>;
+
+/** Collect and admit all selected foreign account/currency responses in
+ * memory. The returned captures are not committed and no files are written. */
+export async function collectCathayForeignFinancialCaptures(
+  page: Page,
+  dateRange: CathayForeignDateRange,
+  accountFilters: string[],
+  currencyFilters: string[],
+  cathaySession: CathaySession,
+  options: Readonly<{
+    source?: CathayStrictSourceOptions;
+    observedAt?: () => string;
+    captureOccurrenceId?: string;
+    client?: CathayForeignStatementsClient;
+    preparePage?: (page: Page) => Promise<void>;
+  }>,
+): Promise<CathayForeignFinancialCollection> {
+  options.source?.signal?.throwIfAborted();
+  await (options.preparePage ?? openForeignStatementsPage)(page);
+  const apiClient =
+    options.client ?? new CathayForeignApiClient(page, options.source);
+  const accounts = await apiClient.fetchForeignAccounts(
+    cathaySession,
+    accountFilters,
+    currencyFilters,
+  );
+  const collector = createCathayForeignCanonicalCaptureCollector(
+    dateRange,
+    options.captureOccurrenceId,
+    options.observedAt,
+  );
+  let selectedStatementCount = 0;
+  let rowCount = 0;
+  for (const account of accounts) {
+    options.source?.signal?.throwIfAborted();
+    const currencies = (account.currencyList ?? [])
+      .map(currencyCodeOf)
+      .filter((currency): currency is string => Boolean(currency));
+    if (currencies.length === 0) {
+      throw new Error(
+        "Cathay foreign account source omitted selected currencies.",
+      );
+    }
+    const statements = await apiClient.fetchTransferDetails(
+      cathaySession,
+      account,
+      dateRange,
+    );
+    const statementsByCurrency = new Map<string, CathayForeignTransferResult>();
+    for (const statement of statements) {
+      const currency = cleanText(statement.currencyCode);
+      if (!currency || statementsByCurrency.has(currency)) {
+        throw new Error(
+          "Cathay foreign source has a missing or duplicate currency response.",
+        );
+      }
+      statementsByCurrency.set(currency, statement);
+    }
+    if (
+      statementsByCurrency.size !== currencies.length ||
+      currencies.some(
+        (currency) => !statementsByCurrency.has(cleanText(currency)),
+      )
+    ) {
+      throw new Error(
+        "Cathay foreign source omitted a selected account/currency response.",
+      );
+    }
+    for (const currency of currencies) {
+      options.source?.signal?.throwIfAborted();
+      const statement = statementsByCurrency.get(cleanText(currency));
+      if (!statement) {
+        throw new Error(
+          "Cathay foreign selected account/currency response is incomplete.",
+        );
+      }
+      if (
+        (statement.transferInfos?.length ?? 0) === 0 &&
+        statement.zeroResultAuthority !== "provider-explicit-no-data"
+      ) {
+        throw new Error(
+          "Cathay foreign empty source lacks explicit no-data authority.",
+        );
+      }
+      collector.onStatement(account, currency, statement);
+      selectedStatementCount += 1;
+      rowCount += statement.transferInfos?.length ?? 0;
+    }
+  }
+  if (
+    selectedStatementCount === 0 ||
+    collector.captures.length !== selectedStatementCount
+  ) {
+    throw new Error("Cathay foreign selected source set is incomplete.");
+  }
+  collector.captures.forEach((capture) => {
+    try {
+      admitForeignCurrencyDepositCapture(capture);
+    } catch {
+      throw new Error(
+        "Cathay foreign source admission rejected a selected account/currency.",
+      );
+    }
+  });
+  return {
+    captures: collector.captures,
+    selectedStatementCount,
+    rowCount,
+    accountKeys: [
+      ...new Set(collector.captures.map((capture) => capture.accountNo)),
+    ],
+  };
 }
 
 async function writeForeignStatementFiles(
@@ -931,18 +1107,25 @@ export async function downloadCathayForeignStatements(
       dateRange,
     );
     const statementsByCurrency = new Map(
-      statements.map((statement) => [cleanText(statement.currencyCode), statement]),
+      statements.map((statement) => [
+        cleanText(statement.currencyCode),
+        statement,
+      ]),
     );
 
     for (const currency of currencies) {
-      const statement =
-        statementsByCurrency.get(cleanText(currency)) ?? {
-          currencyCode: currency,
-          transferInfos: [],
-        };
+      const statement = statementsByCurrency.get(cleanText(currency)) ?? {
+        currencyCode: currency,
+        transferInfos: [],
+      };
       onStatement?.(account, currency, statement);
       downloads.push(
-        await writeForeignStatementFiles(account, currency, dateRange, statement),
+        await writeForeignStatementFiles(
+          account,
+          currency,
+          dateRange,
+          statement,
+        ),
       );
     }
   }
