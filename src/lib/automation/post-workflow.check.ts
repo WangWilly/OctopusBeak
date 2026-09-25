@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,33 @@ import {
 } from "../../workflows/post-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
+
+const providerSource = readFileSync(
+  new URL("../../workflows/post-statements.ts", import.meta.url),
+  "utf8",
+);
+assert.doesNotMatch(
+  providerSource,
+  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|\bpause\(/u,
+  "Post production must use the App-owned typed workflow only",
+);
+assert.doesNotMatch(
+  providerSource,
+  /node:fs\/promises|writeStatementFile|outputDir|downloads\/post-statements|csvFilename|jsonFilename|postStatementRowsToCsv/u,
+  "Post production must not create statement files",
+);
+assert.doesNotMatch(
+  providerSource,
+  /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u,
+  "Post must commit through the injected Canonical Financial Commit port",
+);
+assert.doesNotMatch(
+  providerSource,
+  /console\./u,
+  "Post production must report progress through structured events",
+);
+assert.match(providerSource, /runPostProviderWorkflow/u);
+assert.match(providerSource, /financialCommit\.execute\(/u);
 
 const accountId = ["0311", "5240", "5293", "95"].join("");
 const requestPostData = JSON.stringify({

@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   SourceTextIntegrityError,
   strictSourceText,
@@ -23,9 +14,7 @@ import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -68,25 +57,6 @@ const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
 const DISPATCHER_PATH = "/pst/EsoafDispatcher";
 
-const statementHeaders = [
-  "帳務日期",
-  "交易日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-];
-
-const inputSchema = z.object({
-  captchaCode: z
-    .string()
-    .regex(/^\d{4}$/)
-    .optional(),
-  telemetry: z.boolean().default(false),
-});
-
 const typedWorkflowInputSchema = z.object({
   credentials: z.object({
     post_user_id: z.string().trim().min(1),
@@ -95,50 +65,10 @@ const typedWorkflowInputSchema = z.object({
   }),
 });
 
-const statementFileSchema = z.object({
-  account: z.string(),
-  accountId: z.string(),
-  queryPeriods: z.array(z.string()),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  count: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-  downloads: z.array(statementFileSchema),
-  sourceCaptureCount: z.number().int().nonnegative(),
-  status: z.enum(["source-only", "financial-admitted"]),
-});
-
 export type PostCredentials = {
   post_user_id?: string;
   post_account?: string;
   post_password?: string;
-};
-
-type Input = z.infer<typeof inputSchema> & {
-  credentials: PostCredentials;
-};
-
-type PostStatementOutput = z.infer<typeof outputSchema>;
-type StatementDownload = PostStatementOutput["downloads"][number];
-
-type EsoafEnvelope<T> = {
-  header?: Record<string, unknown>;
-  body?: T;
-};
-
-type PostDetailResponseBody = {
-  host_rs_1?: {
-    ITEM?: PostRawStatementRow[] | PostRawStatementRow;
-  };
 };
 
 export type PostRawStatementRow = {
@@ -166,7 +96,6 @@ export type PostQueriedStatement = {
   queryRange: { startDate: string; endDate: string };
   httpStatus: number;
   itemShape: "array" | "single" | "absent";
-  requestDateShapes?: { start: string; end: string };
   rows: PostStatementRow[];
 };
 
@@ -185,20 +114,11 @@ export type PostWorkflowOutput = Readonly<{
   status: "source-only" | "financial-admitted";
 }>;
 
-type PostCollectedStatement = PostQueriedStatement & {
-  download: StatementDownload;
-};
-
 export type PostStatementsRunDependencies = {
-  inMemory?: boolean;
   text?: SourceTextPort;
   signal?: AbortSignal;
   event?: WorkflowContext["event"];
-  financialCommit?: WorkflowFinancialCommitPort;
-  collectStatements?: (
-    page: Page,
-    telemetry: boolean,
-  ) => Promise<PostCollectedStatement[]>;
+  financialCommit: WorkflowFinancialCommitPort;
   collectSourceStatements?: (
     page: Page,
     text: SourceTextPort,
@@ -209,17 +129,13 @@ export type PostStatementsRunDependencies = {
   observedAt?: string;
 };
 
-let lastTimestamp = 0;
-
 function requireCredential(
   credentials: PostCredentials,
   name: keyof PostCredentials,
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
+    throw new Error(`Missing credential ${name}. Configure it in the App credential settings.`);
   }
   return value;
 }
@@ -229,24 +145,6 @@ function cleanText(value: string | null | undefined): string {
     .replace(/[\u00a0\u3000]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 export function postProviderDateShape(value: string | undefined): string {
@@ -325,15 +223,6 @@ export function postRowsToStatementRows(
       ],
     };
   });
-}
-
-export function postStatementRowsToCsv(rows: PostStatementRow[]): string {
-  return rowsToCsv([
-    statementHeaders,
-    ...[...rows]
-      .sort((left, right) => right.sortKey.localeCompare(left.sortKey))
-      .map((row) => row.values),
-  ]);
 }
 
 function isEsoafResponse(txnCode: string, bizCode: string) {
@@ -425,8 +314,6 @@ export async function runPostLoginAttempt(
     }
     if (onDialog) {
       void Promise.resolve(onDialog(type)).catch(() => undefined);
-    } else {
-      console.warn("ipost-login-dialog", { type });
     }
     void dialog.dismiss().then(
       () => {
@@ -498,10 +385,6 @@ export async function submitPostLoginAndWait(
           signal,
         }),
   });
-}
-
-export function postManualAuthMessage(session: string): string {
-  return `manual-auth-required: enter the iPost CAPTCHA in the browser, then run \`npx libretto resume --session ${session}\`.`;
 }
 
 export function postCaptchaAssistanceStage(
@@ -588,104 +471,6 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .first()
     .isVisible()
     .catch(() => false);
-}
-
-export async function withPostAssistanceDeadline<T>(
-  label: string,
-  operation: Promise<T>,
-  timeoutMs = 30_000,
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          reject(
-            new Error(
-              `iPost browser stopped responding during ${label}; start a fresh CAPTCHA assistance session.`,
-            ),
-          );
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-async function signInPost(
-  ctx: LibrettoWorkflowContext,
-  credentials: PostCredentials,
-  captchaCode: string | undefined,
-): Promise<void> {
-  const { page, session } = ctx;
-  const { cifId, userCode, password } = postLoginFieldValues(credentials);
-
-  if (!postLoginEntryUrl(page.url()))
-    await page.goto(HOME_URL, { waitUntil: "domcontentloaded" });
-  await page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 });
-  await dismissPostNoticeIfPresent(page);
-  await page.locator("#cifID").fill(cifId);
-  await page.locator("#userID_1_Input").fill(userCode);
-  await page.locator("#userPWD_1_Input").fill(password);
-  await dismissPostNoticeIfPresent(page);
-  const captchaInput = page.locator('input[name="captcha"]:visible').first();
-  await captchaInput.focus();
-
-  if (captchaCode) {
-    await captchaInput.fill(captchaCode);
-    await submitPostLoginAndWait(page);
-  } else {
-    const assistanceUrl = page.url();
-    const assistedCaptchaElement = await captchaInput.elementHandle();
-    if (!assistedCaptchaElement)
-      throw new Error("iPost CAPTCHA input is unavailable for assistance.");
-    await emitHumanAssistanceStage(postCaptchaAssistanceStage(page));
-    console.log(postManualAuthMessage(session));
-    await pause(session);
-    if (
-      await withPostAssistanceDeadline(
-        "the signed-in state probe",
-        isSignedIn(page),
-      )
-    ) {
-      await assistedCaptchaElement.dispose();
-      return;
-    }
-    const currentCaptchaInput = page.locator('input[name="captcha"]').first();
-    const sameCaptchaElement = await withPostAssistanceDeadline(
-      "the CAPTCHA generation probe",
-      currentCaptchaInput
-        .evaluate(
-          (current, assisted) => current === assisted,
-          assistedCaptchaElement,
-        )
-        .catch(() => false),
-    );
-    await assistedCaptchaElement.dispose();
-    if (
-      !postCaptchaGenerationUnchanged(
-        assistanceUrl,
-        page.url(),
-        sameCaptchaElement,
-      )
-    ) {
-      throw new Error(
-        "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
-      );
-    }
-    const currentCaptchaValue = await withPostAssistanceDeadline(
-      "the CAPTCHA completion probe",
-      currentCaptchaInput.inputValue(),
-    );
-    if (!currentCaptchaValue.trim()) {
-      throw new Error(
-        "iPost CAPTCHA is empty. Enter it in the browser before resuming.",
-      );
-    }
-    await submitPostLoginAndWait(page);
-  }
 }
 
 export async function requestPostCaptchaAssistance(
@@ -960,10 +745,6 @@ export function parsePostStatementResponse(input: Readonly<{
         : Array.isArray(items)
           ? "array"
           : "single",
-    requestDateShapes: {
-      start: postProviderDateShape(request.body.DATE),
-      end: postProviderDateShape(request.body.END_DATE),
-    },
     rows: postRowsToStatementRows(
       accountId,
       requireCompletePostStatementRows(items),
@@ -1010,111 +791,6 @@ async function queryCurrentStatement(
     },
     text,
   });
-}
-
-async function writeStatementFile(
-  accountId: string,
-  queryPeriods: string[],
-  rows: PostStatementRow[],
-): Promise<StatementDownload> {
-  const downloadsDir = join(process.cwd(), "downloads", "post-statements");
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${safeFilename(accountId)}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const account = `${accountId} 郵局`;
-
-  await writeFile(csvPath, postStatementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: account,
-        查詢期間: queryPeriods,
-        分行名稱: "",
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    account,
-    accountId,
-    queryPeriods,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-async function collectPostStatements(
-  page: Page,
-  telemetry: boolean,
-): Promise<PostCollectedStatement[]> {
-  const queried = await collectPostStatementSources(page);
-  const statements: PostCollectedStatement[] = [];
-  for (const statement of queried) {
-    const download = await writeStatementFile(
-      statement.accountId,
-      statement.queryPeriods,
-      statement.rows,
-    );
-    statements.push({ ...statement, download });
-  }
-  if (telemetry) {
-    const directionCounts = statements
-      .flatMap((statement) => statement.rows)
-      .reduce(
-        (counts, row) => {
-          counts[row.directionFlag] += 1;
-          return counts;
-        },
-        { inflow: 0, outflow: 0, unknown: 0 },
-    );
-    console.log("post-domestic-deposit-telemetry", {
-      accountCount: statements.length,
-      rowCount: statements.reduce(
-        (sum, statement) => sum + statement.rows.length,
-        0,
-      ),
-      itemShapes: statements.reduce<Record<string, number>>(
-        (counts, statement) => {
-          counts[statement.itemShape] = (counts[statement.itemShape] ?? 0) + 1;
-          return counts;
-        },
-        {},
-      ),
-      directionCounts,
-      queryRangeShapes: statements.map((statement) => ({
-        start: /^\d{4}\/\d{2}\/\d{2}$/.test(statement.queryRange.startDate)
-          ? "slash-date"
-          : "other",
-        end: /^\d{4}\/\d{2}\/\d{2}$/.test(statement.queryRange.endDate)
-          ? "slash-date"
-          : "other",
-      })),
-      requestDateShapes: statements.map(
-        (statement) =>
-          statement.requestDateShapes ?? {
-            start: "not-observed",
-            end: "not-observed",
-          },
-      ),
-    });
-  }
-  return statements;
 }
 
 async function collectPostStatementSources(
@@ -1337,27 +1013,15 @@ function postCaptureId(observedAt: string, index: number): string {
     .slice(0, 24)}-${Date.now()}-${index}`;
 }
 
-export async function runPostStatements(
+async function runPostStatements(
   page: Page,
-  telemetry: boolean,
-  overrides: PostStatementsRunDependencies = {},
-): Promise<PostStatementOutput> {
-  const inMemory = overrides.inMemory === true;
+  overrides: PostStatementsRunDependencies,
+): Promise<PostWorkflowOutput> {
   const text = overrides.text ?? strictSourceText;
-  if (inMemory && !overrides.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
   overrides.signal?.throwIfAborted();
-  const statements: PostQueriedStatement[] = inMemory
-    ? await (overrides.collectSourceStatements ?? collectPostStatementSources)(
-        page,
-        text,
-        overrides.signal,
-        overrides.event,
-      )
-    : await (overrides.collectStatements ?? collectPostStatements)(page, telemetry);
-  const downloads: StatementDownload[] = inMemory
-    ? []
-    : (statements as PostCollectedStatement[]).map((statement) => statement.download);
+  const statements = await (
+    overrides.collectSourceStatements ?? collectPostStatementSources
+  )(page, text, overrides.signal, overrides.event);
   if (statements.length === 0)
     throw new Error("No Post accounts reached a terminal source result.");
   const observedAt = overrides.observedAt ?? postObservedAt();
@@ -1414,7 +1078,7 @@ export async function runPostStatements(
     });
     financialCaptures.push({ identity: admission.capture.identity });
   }
-  let status: PostStatementOutput["status"] = "source-only";
+  let status: PostWorkflowOutput["status"] = "source-only";
   if (financialInputs.length > 0) status = "financial-admitted";
 
   // The overview response is staged before opening the execution run. Each
@@ -1484,48 +1148,24 @@ export async function runPostStatements(
     completed: 0,
     total: items.length,
   });
-  if (overrides.financialCommit) {
-    const committed = await overrides.financialCommit.execute(items, {
-      provider: "post",
-      product: "financial",
-      ...(overrides.signal ? { signal: overrides.signal } : {}),
-    });
-    if (committed.status !== "completed")
-      throw new Error(
-        `Post Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
-      );
-    await overrides.event?.("commit", "canonical-commit-completed", {
-      completed: committed.committedCount,
-      total: items.length,
-    });
-    return {
-      count: statements.length,
-      rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
-      downloads,
-      sourceCaptureCount: captures.length,
-      status,
-    };
-  }
-
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const committed = await executePGliteWorkflowRun({
-      client: client.workflow, items, provider: "post", product: "financial",
-    });
-    if (committed.status !== "completed")
-      throw new Error(`Post PGlite commit ${committed.status}: ${committed.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-    return {
-      count: downloads.length,
-      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-      downloads,
-      sourceCaptureCount: captures.length,
-      status,
-    };
-  } finally {
-    client.close();
-  }
-
+  const committed = await overrides.financialCommit.execute(items, {
+    provider: "post",
+    product: "financial",
+    ...(overrides.signal ? { signal: overrides.signal } : {}),
+  });
+  if (committed.status !== "completed")
+    throw new Error(
+      `Post Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
+    );
+  await overrides.event?.("commit", "canonical-commit-completed", {
+    completed: committed.committedCount,
+    total: items.length,
+  });
+  return {
+    accountCount: statements.length,
+    rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
+    status,
+  };
 }
 
 export async function runPostProviderWorkflow(
@@ -1541,6 +1181,7 @@ export async function runPostProviderWorkflow(
     throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
   if (!context.financialCommit)
     throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("authentication", "authentication-started");
 
@@ -1574,12 +1215,11 @@ export async function runPostProviderWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "authentication-completed");
 
-    const result = await runPostStatements(page, false, {
-      inMemory: true,
+    const result = await runPostStatements(page, {
       text: context.text,
       signal: context.signal,
       event: context.event,
-      financialCommit: context.financialCommit,
+      financialCommit,
       observedAt: postObservedAt(new Date(context.now())),
       ...(overrides.collectSourceStatements
         ? { collectSourceStatements: overrides.collectSourceStatements }
@@ -1593,34 +1233,6 @@ export async function runPostProviderWorkflow(
         )),
     });
     context.signal.throwIfAborted();
-    return {
-      accountCount: result.count,
-      rowCount: result.rowCount,
-      status: result.status,
-    };
+    return result;
   });
 }
-
-export default workflow("postStatements", {
-  startUrl: HOME_URL,
-  credentials: ["post_user_id", "post_account", "post_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page } = ctx;
-
-    await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await isSignedIn(page),
-      signIn: async () => {
-        await signInPost(ctx, input.credentials, input.captchaCode);
-      },
-    });
-
-    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    const result = await runPostStatements(page, input.telemetry);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-    return result;
-  },
-});

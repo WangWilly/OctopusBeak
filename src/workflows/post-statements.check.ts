@@ -1,12 +1,5 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Worker } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { chromium } from "playwright";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
@@ -17,15 +10,11 @@ import {
   postDetailLinkSelector,
   postLoginEntryUrl,
   postLoginFieldValues,
-  postManualAuthMessage,
   postProviderDate,
   postProviderDateShape,
   postRowsToStatementRows,
-  postStatementRowsToCsv,
   runPostLoginAttempt,
-  runPostStatements,
   submitPostLoginAndWait,
-  withPostAssistanceDeadline,
 } from "./post-statements.ts";
 import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
 
@@ -112,11 +101,6 @@ function visibilityRacingNoticePage(page: import("playwright").Page) {
   assert.equal(await dismissPostNoticeIfPresent(absent.page as never), false);
   assert.equal(absent.clicks(), 0);
 }
-
-assert.equal(
-  postManualAuthMessage("ses-1p4q"),
-  "manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-1p4q`.",
-);
 
 assert.deepEqual(
   postLoginFieldValues({
@@ -378,23 +362,6 @@ try {
   await browser.close();
 }
 
-assert.equal(
-  await withPostAssistanceDeadline(
-    "the signed-in state probe",
-    Promise.resolve("ready"),
-    10,
-  ),
-  "ready",
-);
-await assert.rejects(
-  withPostAssistanceDeadline(
-    "the signed-in state probe",
-    new Promise<never>(() => undefined),
-    5,
-  ),
-  /iPost browser stopped responding during the signed-in state probe; start a fresh CAPTCHA assistance session\./,
-);
-
 const rows = postRowsToStatementRows("123456", [
   {
     PRS_DATE: "1150704",
@@ -421,11 +388,6 @@ assert.deepEqual(
       "備註",
     ],
   ],
-);
-
-assert.equal(
-  postStatementRowsToCsv(rows),
-  "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註\n2026/07/04,2026/07/04,09:15:02,薪資,,123.45,1000.00,備註\n",
 );
 
 const builtCapture = buildPostDomesticDepositCapture(
@@ -496,70 +458,3 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
   observedAt: "2026-08-24T10:12:13+08:00",
 });
 assert.equal(postCurrentBalanceRow.length, 1);
-
-const enabledDir = await mkdtemp(join(tmpdir(), "post-pglite-workflow-"));
-const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-  execArgv: ["--experimental-strip-types"],
-  workerData: { dataDir: enabledDir },
-});
-const enabledOwner = createPGliteViewWorkerClient(enabledWorker);
-const enabledServer = createPGliteChildRpcServer({
-  provider: {
-    operational: enabledOwner.operationalProvider,
-    financial: enabledOwner.financial.registry,
-  },
-});
-const priorEnabledEnv = {
-  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
-  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-};
-try {
-  await enabledServer.ready;
-  Object.assign(process.env, enabledServer.env);
-  const output = await runPostStatements({} as never, false, {
-    observedAt: "2026-08-24T10:12:13+08:00",
-    readCurrentDepositBalances: async () => postCurrentBalanceRow,
-    collectStatements: async () => [{
-      accountId: syntheticPostAccountNumber,
-      queryPeriods: ["2026/02/01~2026/08/24"],
-      queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-      httpStatus: 200,
-      itemShape: "array",
-      rows,
-      download: {
-        account: `${syntheticPostAccountNumber} 郵局`,
-        accountId: syntheticPostAccountNumber,
-        queryPeriods: ["2026/02/01~2026/08/24"],
-        baseName: "private-financial",
-        csvFilename: "private-financial.csv",
-        csvPath: "/private/private-financial.csv",
-        csvBytes: 1,
-        jsonFilename: "private-financial.json",
-        jsonPath: "/private/private-financial.json",
-        jsonBytes: 1,
-        rowCount: 1,
-      },
-    }],
-  });
-  assert.equal(output.status, "financial-admitted");
-} finally {
-  for (const [key, value] of [
-    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorEnabledEnv.endpoint],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorEnabledEnv.token],
-  ] as const) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await enabledServer.close();
-  await enabledOwner.close();
-}
-const enabledDb = await PGlite.create(enabledDir);
-try {
-  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
-  assert.equal((await enabledDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM balance_observation_revisions")).rows[0]?.count, 1);
-} finally {
-  await enabledDb.close();
-  await rm(enabledDir, { recursive: true, force: true });
-}
