@@ -89,7 +89,6 @@ Run code checks before packaging:
 
 ```bash
 npm run typecheck
-npm run check:libretto-patch
 node electron/runtime.check.cjs
 node --no-warnings --experimental-strip-types src/lib/automation/server/desktop-command.check.ts
 node --no-warnings --experimental-strip-types src/lib/automation/server/runner.check.ts

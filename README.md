@@ -139,7 +139,6 @@ npm run workflow:dev -- fixture
 ```bash
 npm run typecheck
 npm run build
-npm run check:libretto-patch
 npm run privacy-check
 npm run secrets-check
 ```
