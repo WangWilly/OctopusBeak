@@ -49,6 +49,24 @@ assert.throws(
   /App workflow tasks do not have a Libretto command/u,
 );
 
+const yuantaTrade = taskById("yuanta-trade-statements");
+assert.ok(yuantaTrade);
+assert.equal(yuantaTrade.script, "workflow:yuanta-trade-statements");
+assert.equal(yuantaTrade.workflowId, "yuanta-trade-statements");
+assert.deepEqual(yuantaTrade.command, []);
+assert.throws(
+  () => resolveTaskCommand(yuantaTrade, {}, env),
+  /App workflow tasks do not have a Libretto command/u,
+);
+assert.throws(
+  () => resolveTaskCommand(yuantaTrade, { session: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
+);
+assert.throws(
+  () => resolveTaskCommand(yuantaTrade, { resumeSession: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
+);
+
 const cathay = taskById("cathay-all-statements");
 assert.ok(cathay);
 assert.equal(cathay.script, "workflow:cathay-all-statements");

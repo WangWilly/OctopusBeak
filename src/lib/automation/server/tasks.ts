@@ -984,13 +984,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-trade-statements",
     label: "Yuanta trade statements",
-    script: "run:yuanta-trade-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/yuanta-trade-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:yuanta-trade-statements",
+    command: [],
+    workflowId: "yuanta-trade-statements",
     kind: "crawler",
     credentialGroupId: "yuanta-trade",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[3].credentialKeys,

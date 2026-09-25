@@ -18,11 +18,19 @@ import type {
   CathayAllProviderWorkflowInput,
   CathayAllProviderWorkflowOutput,
 } from "../../../workflows/cathay-all-statements.ts";
+import {
+  YUANTA_TRADE_LOGIN_URL,
+  type YuantaTradeProviderWorkflowOutput,
+} from "../../../workflows/yuanta-trade-statements.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   startUrl?: string;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
+  registerHumanAssistance?: (
+    provider: AutomationPersistenceProvider,
+  ) => Promise<() => void> | (() => void);
 }>;
 
 const cathayAllStatementsWorkflow: WorkflowDefinition<
@@ -66,6 +74,20 @@ const yuantaAllStatementsWorkflow: WorkflowDefinition<
   async run(context, input) {
     const { yuantaAllStatementsWorkflow: definition } = await import(
       "../yuanta-all-workflow.ts"
+    );
+    return await definition.run(context, input);
+  },
+};
+
+const yuantaTradeStatementsWorkflow: WorkflowDefinition<
+  unknown,
+  YuantaTradeProviderWorkflowOutput
+> = {
+  id: "yuanta-trade-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const { yuantaTradeStatementsWorkflow: definition } = await import(
+      "../yuanta-trade-workflow.ts"
     );
     return await definition.run(context, input);
   },
@@ -121,6 +143,31 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           yuanta_password: environment.LIBRETTO_CLOUD_YUANTA_PASSWORD ?? "",
         },
       };
+    },
+  },
+  {
+    definition: yuantaTradeStatementsWorkflow,
+    startUrl: YUANTA_TRADE_LOGIN_URL,
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          yuanta_trade_user_id: environment.LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID ?? "",
+          yuanta_trade_password: environment.LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD ?? "",
+          yuanta_trade_ca_path: environment.LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH ?? "",
+          yuanta_trade_ca_password: environment.LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD ?? "",
+        },
+      };
+    },
+    async registerHumanAssistance(provider) {
+      const [{ registerYuantaTradeAppAssistanceHandler }, { readAutomationSettings }] =
+        await Promise.all([
+          import("./yuanta-trade-assistance.ts"),
+          import("./settings.ts"),
+        ]);
+      return registerYuantaTradeAppAssistanceHandler({
+        provider,
+        settings: readAutomationSettings(),
+      });
     },
   },
   {
@@ -218,4 +265,16 @@ export function workflowStartUrlForTask(workflowId: string | undefined) {
   if (!workflowId) return undefined;
   return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)
     ?.startUrl;
+}
+
+/** Register any task-scoped App assistance route for the lifetime of one run. */
+export async function registerWorkflowHumanAssistanceForTask(
+  workflowId: string | undefined,
+  provider: AutomationPersistenceProvider,
+) {
+  if (!workflowId) return () => {};
+  const registration = APP_WORKFLOW_CATALOG.find(
+    ({ definition }) => definition.id === workflowId,
+  );
+  return await registration?.registerHumanAssistance?.(provider) ?? (() => {});
 }

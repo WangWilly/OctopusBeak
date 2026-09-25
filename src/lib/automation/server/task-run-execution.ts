@@ -79,6 +79,7 @@ import {
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
+  registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
@@ -160,6 +161,7 @@ async function executeAppWorkflow(
   activeWorkflowRunIds.set(execution.task.id, execution.run.taskRunId);
 
   let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
+  let unregisterHumanAssistance: (() => void) | undefined;
   let result: AutomationTaskProcessResult;
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
@@ -211,6 +213,10 @@ async function executeAppWorkflow(
         ?? (() => console.error("workflow-event-persistence-failed")),
     };
     const executor = createWorkflowExecutor([definition], ports);
+    unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
+      execution.task.workflowId,
+      { automation: execution.persistence },
+    );
     const workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
@@ -259,6 +265,7 @@ async function executeAppWorkflow(
       externalPrerequisiteIds: [],
     };
   } finally {
+    unregisterHumanAssistance?.();
     clearInterval(cancellationPoll);
     activeWorkflowControllers.delete(execution.task.id);
     activeWorkflowRunIds.delete(execution.task.id);
