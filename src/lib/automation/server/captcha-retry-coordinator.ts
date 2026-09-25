@@ -400,6 +400,15 @@ export async function runCaptchaRetryCampaign(
       });
     }
 
+    // Cancellation or CAPTCHA routing must not replace an uncertain financial
+    // commit with a cancelled outcome or admit another execution of the run.
+    if (processResultOf(execution)?.appWorkflowOutcome?.errorCode === "commit-outcome-unknown") {
+      if (taskRunId !== undefined) {
+        await finalizeCaptchaRetryExecution(provider, taskRunId, execution);
+      }
+      return { status: "failed" as const };
+    }
+
     if (routed.routing?.kind === "failed") {
       if (taskRunId !== undefined) {
         await finalizeCaptchaRetryExecution(

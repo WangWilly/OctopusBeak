@@ -20,6 +20,7 @@ import type {
   WorkflowExecutorPorts,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
+import type { TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
@@ -28,8 +29,16 @@ import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
 import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
 import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
-import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
+import {
+  appWorkflowBrowserConnectionForSession,
+  createAppWorkflowBrowserPort,
+  type AppWorkflowBrowserConnection,
+} from "./app-browser-host.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import {
+  runSupervisedAppWorkflow,
+  type RunSupervisedAppWorkflowOptions,
+} from "./app-workflow-worker-supervisor.ts";
 import {
   workflowDefinitionForTask,
   workflowInputForTask,
@@ -76,6 +85,12 @@ export type AutomationTaskExecutionOptions = {
   workflowPorts?: Partial<WorkflowExecutorPorts>;
   /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
   createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
+  /** Test seam for the supervised App workflow worker. Production uses Worker. */
+  appWorkflowWorkerFactory?: RunSupervisedAppWorkflowOptions["workerFactory"];
+  /** Test seam for proving that the worker receives the active host descriptor. */
+  appWorkflowBrowserConnectionForRun?: (
+    taskRunId: string,
+  ) => AppWorkflowBrowserConnection | null;
   workflowBrowserPortFactory?: (input: {
     taskId: string;
     taskRunId: string;
@@ -86,6 +101,18 @@ export type AutomationTaskExecutionOptions = {
 };
 
 async function executeAppWorkflow(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+): Promise<AutomationTaskExecutionResult> {
+  // Provider fixtures still inject executor ports to exercise each workflow
+  // without a worker. Production supplies none and always uses the supervisor.
+  if (options.workflowPorts !== undefined) {
+    return await executeInlineAppWorkflow(execution, options);
+  }
+  return await executeSupervisedAppWorkflow(execution, options);
+}
+
+async function executeInlineAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
@@ -225,6 +252,266 @@ async function executeAppWorkflow(
     childRpc?.close();
   }
   return result;
+}
+
+const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
+  "cancelled",
+  "source-integrity-failed",
+  "source-validation-failed",
+  "canonical-commit-failed",
+  "commit-outcome-unknown",
+  "workflow-failed",
+]);
+
+function typedWorkerFailureCode(code: string): TypedWorkflowErrorCode | null {
+  return TYPED_WORKFLOW_ERROR_CODES.has(code as TypedWorkflowErrorCode)
+    ? code as TypedWorkflowErrorCode
+    : null;
+}
+
+function pgliteRpcForWorker(environment: NodeJS.ProcessEnv) {
+  const endpoint = environment[PGLITE_CHILD_RPC_ENDPOINT_ENV]?.trim();
+  const token = environment[PGLITE_CHILD_RPC_TOKEN_ENV]?.trim();
+  if (!endpoint || !token) {
+    throw new Error("PGlite workflow transport is unavailable.");
+  }
+  return { endpoint, token };
+}
+
+function sanitizedWorkerResult(
+  outcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>>,
+  errorCode: TypedWorkflowErrorCode,
+): AutomationTaskExecutionResult {
+  if (outcome.status === "completed" && errorCode === "cancelled") {
+    return {
+      exitCode: null,
+      signal: "SIGTERM",
+      error: new Error("Automation task cancelled."),
+      statementSummary: null,
+      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  }
+  if (outcome.status === "completed") {
+    return {
+      exitCode: 0,
+      signal: null,
+      error: null,
+      statementSummary: null,
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: outcome.summary,
+      },
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  }
+
+  if (errorCode === "cancelled") {
+    return {
+      exitCode: null,
+      signal: "SIGTERM",
+      error: new Error("Automation task cancelled."),
+      statementSummary: null,
+      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  }
+
+  return {
+    // An ambiguous commit must remain a failure through finalization. Marking
+    // it cancelled would hide the uncertain financial outcome from the App.
+    exitCode: 1,
+    signal: null,
+    error: new Error(`App workflow failed (${errorCode}).`),
+    statementSummary: null,
+    appWorkflowOutcome: { errorCode, summary: null },
+    outputPersistenceWarnings: [],
+    externalPrerequisiteIds: [],
+  };
+}
+
+async function executeSupervisedAppWorkflow(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+): Promise<AutomationTaskExecutionResult> {
+  const workflowId = execution.task.workflowId;
+  const definition = workflowDefinitionForTask(workflowId);
+  if (!definition || !workflowId || definition.id !== workflowId) {
+    return sanitizedWorkerResult({
+      status: "failed",
+      errorCode: "worker-start-failed",
+      summary: null,
+      failureKind: "worker-start",
+    }, "workflow-failed");
+  }
+
+  const controller = new AbortController();
+  const cancellationPoll = setInterval(() => {
+    if (
+      (options.isCancellationRequested?.() || options.isForceTerminationRequested?.())
+      && !controller.signal.aborted
+    ) {
+      controller.abort(new Error("Automation task cancelled."));
+    }
+  }, 50);
+  cancellationPoll.unref();
+  activeWorkflowControllers.set(execution.task.id, controller);
+  activeWorkflowRunIds.set(execution.task.id, execution.run.taskRunId);
+
+  let unregisterHumanAssistance: (() => void) | undefined;
+  let result: AutomationTaskExecutionResult;
+  const observedEvents: WorkflowRunEvent[] = [];
+  let priorEventCount: number | null = null;
+  try {
+    const launchEnv = options.launchEnv ?? automationProcessEnv();
+    if (options.isCancellationRequested?.() || options.isForceTerminationRequested?.()) {
+      controller.abort(new Error("Automation task cancelled."));
+    }
+    try {
+      const existing = await execution.persistence.taskRunById(execution.run.taskRunId);
+      priorEventCount = existing?.events.length ?? null;
+    } catch {
+      // Worker events are also observed in memory before persistence is ACKed.
+    }
+
+    const input = workflowInputForTask(workflowId, launchEnv);
+    const pgliteRpc = definition.requiresFinancialCommit
+      ? pgliteRpcForWorker(launchEnv)
+      : undefined;
+    const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
+    const startUrl = workflowStartUrlForTask(workflowId);
+    const browser = options.workflowBrowserPortFactory?.({
+      taskId: execution.task.id,
+      taskRunId: execution.run.taskRunId,
+      signal: controller.signal,
+      userDataDirectory,
+      startUrl,
+    }) ?? createAppWorkflowBrowserPort({
+      taskId: execution.task.id,
+      taskRunId: execution.run.taskRunId,
+      signal: controller.signal,
+      userDataDirectory,
+      startUrl,
+    });
+    const humanAssistance = createAppWorkflowHumanAssistancePort({
+      taskRunId: execution.run.taskRunId,
+      persistence: execution.persistence,
+      onRuntimeUpdate: execution.onRuntimeUpdate,
+    });
+    unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
+      workflowId,
+      { automation: execution.persistence },
+    );
+
+    const outcome = await browser.withPage(async () => {
+      controller.signal.throwIfAborted();
+      const browserConnection = (options.appWorkflowBrowserConnectionForRun
+        ?? appWorkflowBrowserConnectionForSession)(execution.run.taskRunId);
+      if (!browserConnection) {
+        throw new Error("The App browser worker connection is unavailable for this active run.");
+      }
+      return await runSupervisedAppWorkflow({
+        runId: execution.run.taskRunId,
+        workflowId,
+        input,
+        browserConnection,
+        ...(pgliteRpc ? { pgliteRpc } : {}),
+        signal: controller.signal,
+        appendEvent: async (event) => {
+          // The supervisor ACKs only after this callback completes. Record the
+          // attempted event first so commit ambiguity remains detectable even
+          // if persistence fails and the worker later crashes.
+          observedEvents.push(event);
+          await execution.persistence.appendRunEvent(event);
+          try {
+            await execution.onRuntimeUpdate?.(event.runId);
+          } catch {
+            // Runtime refresh is secondary to the persisted event and must not
+            // turn an ACKed database write into a worker failure.
+          }
+        },
+        requestHumanAssistance: (contract, signal) =>
+          humanAssistance.request(contract, signal),
+        ...(options.createCathayGmailOtpPort
+          ? {
+              createCathayGmailOtpPort: (signal) =>
+                options.createCathayGmailOtpPort!(undefined, { signal }),
+            }
+          : {}),
+        ...(options.appWorkflowWorkerFactory
+          ? { workerFactory: options.appWorkflowWorkerFactory }
+          : {}),
+      });
+    });
+
+    let eventsForExecution = observedEvents;
+    try {
+      const persisted = await execution.persistence.taskRunById(execution.run.taskRunId);
+      if (persisted) {
+        eventsForExecution = priorEventCount === null
+          ? [...observedEvents]
+          : [...persisted.events.slice(priorEventCount), ...observedEvents];
+      }
+    } catch {
+      // Each worker action is ordered behind a main-thread event ACK, so the
+      // observed event list remains an authoritative boundary on commit entry.
+    }
+
+    if (outcome.status === "completed") {
+      result = sanitizedWorkerResult(outcome, "workflow-failed");
+    } else {
+      const explicitCode = outcome.status === "failed"
+        ? typedWorkerFailureCode(outcome.errorCode)
+        : null;
+      const errorCode = explicitCode && explicitCode !== "workflow-failed"
+        ? explicitCode
+        : classifyTypedWorkflowFailure(
+            new Error("App workflow worker failed."),
+            eventsForExecution,
+            outcome.status === "cancelled",
+          );
+      result = sanitizedWorkerResult(outcome, errorCode);
+    }
+  } catch {
+    const cancelled = controller.signal.aborted
+      || options.isCancellationRequested?.() === true
+      || options.isForceTerminationRequested?.() === true;
+    let eventsForExecution: readonly WorkflowRunEvent[] = observedEvents;
+    try {
+      const persisted = await execution.persistence.taskRunById(execution.run.taskRunId);
+      if (persisted) {
+        eventsForExecution = [
+          ...(priorEventCount === null ? [] : persisted.events.slice(priorEventCount)),
+          ...observedEvents,
+        ];
+      }
+    } catch {
+      // Do not include provider error text in the task outcome.
+    }
+    const errorCode = classifyTypedWorkflowFailure(
+      new Error("App workflow worker failed."),
+      eventsForExecution,
+      cancelled,
+    );
+    result = sanitizedWorkerResult(
+      cancelled ? { status: "cancelled", errorCode: "cancelled", summary: null } : {
+        status: "failed",
+        errorCode: "workflow-failed",
+        summary: null,
+        failureKind: "worker-crash",
+      },
+      errorCode,
+    );
+  } finally {
+    unregisterHumanAssistance?.();
+    clearInterval(cancellationPoll);
+    activeWorkflowControllers.delete(execution.task.id);
+    activeWorkflowRunIds.delete(execution.task.id);
+  }
+  return result!;
 }
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
