@@ -577,7 +577,7 @@ export async function automationResumeHumanAssistance(
   if (!task) throw new Error("Unknown automation task: " + taskId);
   if (!task.workflowId) {
     throw new Error(
-      "This saved browser session cannot be continued. Start a new run from the source.",
+      "This task does not use an App browser workflow. Start a new run from the source.",
     );
   }
   const model = await loadAutomationDesktopModel(provider);

@@ -38,14 +38,11 @@ test("the worker exposes operational start/read/write/failure through one provid
     assert.equal(runtime.provider.pgliteWorkflow.required, true);
     const created = await runtime.provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T00:00:00.000Z",
-      logPath: "data/automation/logs/operational-rpc.log",
-      logTail: "safe-progress",
     });
     assert.ok(created.taskRunId);
     assert.equal(
@@ -54,26 +51,26 @@ test("the worker exposes operational start/read/write/failure through one provid
     );
     const typedRun = await runtime.provider.automation.createTaskRun({
       taskId: "esun-credit-card-statements",
-      script: "workflow:esun-credit-card-statements",
       kind: "crawler",
       status: "preparing",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T00:01:00.000Z",
-      // Typed App runs do not create an external log file.
-      logPath: "",
     });
     assert.ok(typedRun.taskRunId);
     assert.equal(
-      (await runtime.provider.automation.taskRunById(typedRun.taskRunId))?.logPath,
-      "",
+      (await runtime.provider.automation.taskRunById(typedRun.taskRunId))?.taskId,
+      "esun-credit-card-statements",
     );
     await runtime.provider.automation.updateTaskRun(created.taskRunId, {
-      logTail: "updated-progress",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { rowCount: 7 } },
+      },
     });
     assert.equal(
-      (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,
-      "updated-progress",
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.appWorkflowOutcome?.summary?.counts.rowCount,
+      7,
     );
     await runtime.provider.automation.appendRunEvent({
       runId: created.taskRunId,
@@ -103,7 +100,9 @@ test("the worker exposes operational start/read/write/failure through one provid
     }]);
 
     await assert.rejects(
-      runtime.provider.automation.updateTaskRun("missing-run", { logTail: "x" }),
+      runtime.provider.automation.updateTaskRun("missing-run", {
+        appWorkflowOutcome: { errorCode: null, summary: null },
+      }),
       /PGlite operational operation failed/u,
     );
     await assert.rejects(
@@ -113,7 +112,6 @@ test("the worker exposes operational start/read/write/failure through one provid
     );
     const typedRunRequest = {
       taskId: "esun-credit-card-statements",
-      script: "workflow:esun-credit-card-statements",
       kind: "crawler",
       status: "preparing",
       attempt: 1,
@@ -123,23 +121,33 @@ test("the worker exposes operational start/read/write/failure through one provid
     await assert.rejects(
       rawClient.request("automation.createTaskRun" as PGliteOperationalOperation, [{
         ...typedRunRequest,
+        script: "workflow:legacy",
+        errorMessage: "unsafe raw error",
+        logTail: "secret=must-not-cross-rpc",
         logPath: "../outside.log",
       }]),
       /Invalid PGlite operational request/u,
-      "the wire rejects path traversal even for a typed run",
+      "the wire rejects all retired script and diagnostic fields",
+    );
+    await assert.rejects(
+      rawClient.request("automation.updateTaskRun" as PGliteOperationalOperation, [
+        created.taskRunId,
+        { logTail: "secret=must-not-cross-rpc", errorMessage: "unsafe raw error" },
+      ]),
+      /Invalid PGlite operational request/u,
+      "the wire rejects retired fields on updates as well as creates",
     );
     await assert.rejects(
       rawClient.request("automation.createTaskRun" as PGliteOperationalOperation, [{
         ...typedRunRequest,
         taskId: "",
-        logPath: "",
       }]),
       /Invalid PGlite operational request/u,
-      "allowing an empty log path must not relax required task identity fields",
+      "the wire still requires task identity fields",
     );
     assert.equal(
-      (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,
-      "updated-progress",
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.appWorkflowOutcome?.summary?.counts.rowCount,
+      7,
       "the provider remains usable after an operation failure",
     );
   } finally {
@@ -159,7 +167,7 @@ test("the operational runtime requires its PGlite data directory", () => {
 test("Electron main starts the required PGlite provider without SQLite startup", async () => {
   const source = await readFile(new URL("./main.ts", import.meta.url), "utf8");
   assert.match(source, /createPGliteOperationalRuntime\(/u);
-  assert.match(source, /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)/u);
+  assert.match(source, /recoverInterruptedAutomationRuns\(operationalRuntime\.provider\)/u);
   assert.doesNotMatch(source, /initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/u);
 });
 

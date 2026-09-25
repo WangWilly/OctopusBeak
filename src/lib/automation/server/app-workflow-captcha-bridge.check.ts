@@ -58,13 +58,11 @@ test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries r
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
-      script: "workflow:sinopac-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const settings: AutomationSettingsFile = {
       LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
@@ -127,7 +125,6 @@ test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries r
           exitCode: rejected ? 1 : 0,
           signal: null,
           error: rejected ? new Error("App workflow failed (workflow-failed).") : null,
-          logTail: "",
           resumeFailure: null,
           statementSummary: null,
           outputPersistenceWarnings: [],
@@ -159,8 +156,8 @@ test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries r
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "completed");
     assert.equal(finalRun?.attempt, 2);
-    assert.equal(finalRun?.logPath, "");
-    assert.equal(finalRun?.logTail, "");
+    assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
     assert.ok(finalRun?.events.some((event) => event.code === "captcha-rejected"));
     assert.ok(finalRun?.events.some((event) => event.code === "authentication-completed"));
     assert.deepEqual(await readdir(artifactRoot), [], "typed retry writes no CLI log, assistance JSONL, source, or output files");
@@ -178,13 +175,11 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
-      script: "workflow:sinopac-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const settings: AutomationSettingsFile = {
       LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "human",
@@ -217,7 +212,6 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
               exitCode: null,
               signal: "SIGTERM",
               error: new Error("Automation task cancelled."),
-              logTail: "",
               resumeFailure: null,
               statementSummary: null,
               outputPersistenceWarnings: [],
@@ -234,8 +228,8 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     assert.deepEqual(await campaign, { status: "failed" });
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "cancelled");
-    assert.equal(finalRun?.logPath, "");
-    assert.equal(finalRun?.logTail, "");
+    assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
   } finally {
     await store.close();
   }

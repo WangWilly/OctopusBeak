@@ -46,8 +46,8 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
   const task = taskById("fubon-all-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "fubon-all-statements");
-  assert.equal(task.script, "workflow:fubon-all-statements");
-  assert.deepEqual(task.command, [], "App workflow dispatch must not resolve a Libretto command");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "fubon-all-statements");
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
@@ -83,13 +83,11 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
-      script: task.script,
       kind: task.kind,
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const result = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: created.taskRunId,
@@ -105,8 +103,8 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no source or log files");
   } finally {
     process.chdir(previousDirectory);

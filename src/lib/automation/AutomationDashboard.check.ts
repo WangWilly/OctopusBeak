@@ -215,6 +215,9 @@ assert.match(source, /class="card workflow-card"/);
 assert.match(source, /class="sync-sheet"/);
 assert.doesNotMatch(source, /\$t\.automation\.commandId/);
 assert.doesNotMatch(source, /class="task-command"/);
+assert.doesNotMatch(source, /(?:task|run)\.script/);
+assert.doesNotMatch(source, /run\.errorMessage/);
+assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
 assert.match(
   source,
   /<colgroup>[\s\S]*width: 32%[\s\S]*width: 14%[\s\S]*width: 22%[\s\S]*width: 12%[\s\S]*width: 20%[\s\S]*<\/colgroup>/,
@@ -282,11 +285,8 @@ assert.match(
 );
 assert.match(source, /class="modal-body history-layout"/);
 assert.match(source, /class="history-filters"/);
-assert.match(source, /class="history-error-detail"/);
-assert.match(
-  source,
-  /\.history-table \.task-name span\s*\{[\s\S]*display: block/,
-);
+assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /<code>\{run\.appWorkflowOutcome\.errorCode\}<\/code>/);
 assert.match(source, /historySearch/);
 assert.match(source, /historyFilter/);
 assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, automation\.tasks\)/);
@@ -321,12 +321,12 @@ assert.strictEqual(syncedTasks, fallbackAutomation.tasks);
 
 const currentTaskIds = new Set(["source-task"]);
 const historyRowsForCheck = [
-  { taskId: "source-task", script: "run:source-task" },
-  { taskId: "retired-source", script: "run:retired-source" },
+  { taskId: "source-task" },
+  { taskId: "retired-source" },
 ];
 assert.deepEqual(
   historyRowsForCheck.filter((run) => currentTaskIds.has(run.taskId)),
-  [{ taskId: "source-task", script: "run:source-task" }],
+  [{ taskId: "source-task" }],
 );
 
 assert.match(source, /statementSelectionDrafts/);

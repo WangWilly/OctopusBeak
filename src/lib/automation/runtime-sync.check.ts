@@ -13,7 +13,6 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
   return {
     id: "exchange-rates",
     label: "Exchange rates",
-    script: "run:exchange-rates",
     kind: "sync",
     credentialKeys: [],
     dependencies: [],

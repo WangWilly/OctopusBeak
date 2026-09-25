@@ -10,13 +10,16 @@ import {
 
 assert.deepEqual(
   AUTOMATION_TASKS.filter((task) =>
-    [task.id, task.label, task.script, ...task.command].some((value) =>
-      /diagnostic/iu.test(value),
-    ),
+    [task.id, task.label].some((value) => /diagnostic/iu.test(value)),
   ).map((task) => task.id),
   [],
   "production automation tasks must not expose development diagnostics",
 );
+for (const task of AUTOMATION_TASKS) {
+  assert.equal(Object.hasOwn(task, "script"), false, `${task.id} must not expose a command script`);
+  assert.equal(Object.hasOwn(task, "command"), false, `${task.id} must not expose a command array`);
+  if (task.workflowId) assert.equal(task.workflowId, task.id, `${task.id} uses its stable workflow identity`);
+}
 
 const task = taskById("exchange-rates");
 
@@ -24,32 +27,24 @@ assert.ok(task);
 assert.equal(task.kind, "sync");
 assert.equal(task.credentialGroupId, undefined);
 assert.deepEqual(task.credentialKeys, []);
-assert.deepEqual(task.command, []);
 const maicoinTask = taskById("sync-maicoin");
 assert.ok(maicoinTask);
 assert.equal(maicoinTask.kind, "sync");
 assert.equal(maicoinTask.credentialGroupId, "maicoin");
-assert.deepEqual(maicoinTask.command, []);
 const yuantaAllStatements = taskById("yuanta-all-statements");
 assert.ok(yuantaAllStatements);
 assert.equal(yuantaAllStatements.id, "yuanta-all-statements");
-assert.equal(yuantaAllStatements.script, "workflow:yuanta-all-statements");
 assert.equal(yuantaAllStatements.workflowId, "yuanta-all-statements");
-assert.deepEqual(yuantaAllStatements.command, []);
 const yuantaTradeStatements = taskById("yuanta-trade-statements");
 assert.ok(yuantaTradeStatements);
-assert.equal(yuantaTradeStatements.script, "workflow:yuanta-trade-statements");
 assert.equal(yuantaTradeStatements.workflowId, "yuanta-trade-statements");
-assert.deepEqual(yuantaTradeStatements.command, []);
 assert.deepEqual(yuantaTradeStatements.externalPrerequisites?.map(({ id }) => id), [
   "yuanta-servisign",
 ]);
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");
-assert.equal(cathayAllStatements.script, "workflow:cathay-all-statements");
 assert.equal(cathayAllStatements.workflowId, "cathay-all-statements");
-assert.deepEqual(cathayAllStatements.command, []);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "yuanta")
     ?.statementTypes,
@@ -64,21 +59,15 @@ assert.deepEqual(
 const hncbStatements = taskById("hncb-statements");
 assert.ok(hncbStatements);
 assert.equal(hncbStatements.id, "hncb-statements");
-assert.equal(hncbStatements.script, "workflow:hncb-statements");
 assert.equal(hncbStatements.workflowId, "hncb-statements");
-assert.deepEqual(hncbStatements.command, []);
 const ctbcStatements = taskById("ctbc-statements");
 assert.ok(ctbcStatements);
 assert.equal(ctbcStatements.id, "ctbc-statements");
-assert.equal(ctbcStatements.script, "workflow:ctbc-statements");
 assert.equal(ctbcStatements.workflowId, "ctbc-statements");
-assert.deepEqual(ctbcStatements.command, []);
 const postStatements = taskById("post-statements");
 assert.ok(postStatements);
 assert.equal(postStatements.id, "post-statements");
-assert.equal(postStatements.script, "workflow:post-statements");
 assert.equal(postStatements.workflowId, "post-statements");
-assert.deepEqual(postStatements.command, []);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "sinopac")
     ?.statementTypes,
@@ -93,9 +82,7 @@ const fubonGroup = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fu
 assert.ok(fubonGroup);
 const fubonTask = taskById("fubon-all-statements");
 assert.ok(fubonTask);
-assert.equal(fubonTask.script, "workflow:fubon-all-statements");
 assert.equal(fubonTask.workflowId, "fubon-all-statements");
-assert.deepEqual(fubonTask.command, []);
 assert.equal(
   fubonGroup.credentialFields.some((field) =>
     field.key.includes("IDENTITY_FINGERPRINT"),

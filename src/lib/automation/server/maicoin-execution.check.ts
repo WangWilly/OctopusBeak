@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,8 +20,9 @@ function maxResponse(body: unknown, date?: string) {
   });
 }
 
-test("App task execution runs MaiCoin in process and leaves no run log file", async () => {
+test("App task execution runs MaiCoin in process without writing run artifacts", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-app-execution-"));
+  const previousDirectory = process.cwd();
   const database = await PGlite.create(join(root, "pglite"));
   const store = new PGliteStore(database);
   await applyPgliteBaseline(database);
@@ -51,7 +51,7 @@ test("App task execution runs MaiCoin in process and leaves no run log file", as
 
     const task = taskById("sync-maicoin");
     assert.ok(task);
-    assert.deepEqual(task.command, []);
+    assert.equal(Object.hasOwn(task, "command"), false);
     await assert.rejects(() => runAutomationTaskExecution(
       task,
       operational.automation,
@@ -76,10 +76,13 @@ test("App task execution runs MaiCoin in process and leaves no run log file", as
     const run = (await operational.automation.latestTaskRuns())["sync-maicoin"];
     assert.ok(run);
     assert.deepEqual(run.events.map((event) => event.code).slice(-1), ["run-completed"]);
-    await assert.rejects(access(run.logPath));
+    assert.equal(Object.hasOwn(run, "logPath"), false);
+    assert.equal(Object.hasOwn(run, "logTail"), false);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]?.count, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM maicoin_sync_runs")).rows[0]?.count, 1);
+    assert.deepEqual(await readdir(root), ["pglite"], "only the test database remains under its temp root");
   } finally {
+    process.chdir(previousDirectory);
     globalThis.fetch = previousFetch;
     await server.close();
     await store.close();

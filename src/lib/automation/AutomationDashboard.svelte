@@ -101,7 +101,6 @@
   let historyRows: AutomationTaskHistoryRow[] = [];
   let historySearch = "";
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
-  let expandedHistoryRunId: string | null = null;
   let humanTask: AutomationTaskRow | null = null;
   let assistInteracted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -236,7 +235,7 @@
   $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
-      && (!term || `${taskIdLabel(run.taskId, $t)} ${run.script}`.toLowerCase().includes(term));
+      && (!term || taskIdLabel(run.taskId, $t).toLowerCase().includes(term));
   });
   $: historyCounts = catalogHistoryRows.reduce(
     (counts, run) => {
@@ -957,7 +956,6 @@
     historyLoading = true;
     historySearch = "";
     historyFilter = "all";
-    expandedHistoryRunId = null;
     try {
       actionError = "";
       historyRows = await window.octopusBeak.automation.runHistory();
@@ -1815,7 +1813,6 @@
           {#each syncTasks as task}
             <li>
               <span>{taskLabel(task, $t)}</span>
-              <code>{task.script}</code>
             </li>
           {/each}
         </ul>
@@ -2158,19 +2155,16 @@
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong><span>{run.script}</span></div></td>
+                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>
                   <td class="history-error">
-                    {#if run.errorMessage}
-                      <button type="button" onclick={() => (expandedHistoryRunId = expandedHistoryRunId === run.taskRunId ? null : run.taskRunId)}>{run.errorMessage}</button>
+                    {#if run.appWorkflowOutcome?.errorCode}
+                      <code>{run.appWorkflowOutcome.errorCode}</code>
                     {:else}--{/if}
                   </td>
                 </tr>
-                {#if run.errorMessage && expandedHistoryRunId === run.taskRunId}
-                  <tr class="history-error-detail"><td colspan="5"><strong>{$t.automation.historyError}</strong><code>{run.errorMessage}</code></td></tr>
-                {/if}
               {/each}
             </tbody>
           </table>
@@ -3050,11 +3044,6 @@
     border-bottom: 0;
   }
 
-  .sync-task-list code {
-    color: var(--muted);
-    font-size: 12px;
-  }
-
   .sync-modal-actions {
     position: sticky;
     bottom: 0;
@@ -3174,61 +3163,10 @@
     vertical-align: middle;
   }
 
-  .history-table .task-name span {
-    display: block;
-    margin-top: 4px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    overflow-wrap: anywhere;
-  }
-
   .history-error {
     max-width: 0;
     color: var(--muted);
     font-size: 12px;
-  }
-
-  .history-error button {
-    width: 100%;
-    overflow: hidden;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .history-error-detail td {
-    padding: 0 var(--space-4) var(--space-4);
-    border-top: 0;
-  }
-
-  .history-error-detail td > strong,
-  .history-error-detail code {
-    display: block;
-    padding: var(--space-3) var(--space-4);
-    color: var(--danger);
-    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
-  }
-
-  .history-error-detail td > strong {
-    padding-bottom: 0;
-    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
-    border-bottom: 0;
-    border-radius: var(--radius) var(--radius) 0 0;
-    font-size: 12px;
-  }
-
-  .history-error-detail code {
-    padding-top: var(--space-2);
-    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
-    border-top: 0;
-    border-radius: 0 0 var(--radius) var(--radius);
-    white-space: pre-wrap;
   }
 
   .spinner {

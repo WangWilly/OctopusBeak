@@ -48,7 +48,6 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "d3-force": "^3.0.0",
-    "libretto": "^0.6.45",
     "mpg123-decoder": "^1.0.3",
     "onnxruntime-node": "^1.27.0",
     "parse5": "^8.0.1",

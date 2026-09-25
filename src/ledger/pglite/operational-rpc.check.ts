@@ -22,14 +22,12 @@ test("operational RPC persists typed outcomes and exact schedule occurrence mark
     await applyPgliteOperationalBaseline(store);
     const created = await client.provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: `run:exchange-rates --scheduled-at-utc ${occurrence}`,
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-25T03:00:01.000Z",
       scheduledAtUtc: occurrence,
-      logPath: "rpc/no-log",
     });
     await client.provider.automation.transitionTaskRunToTerminal(created.taskRunId, {
       status: "completed",
@@ -48,6 +46,25 @@ test("operational RPC persists typed outcomes and exact schedule occurrence mark
       errorCode: null,
       summary: { status: "completed", counts: { rowCount: 8 } },
     });
+    assert.equal(Object.hasOwn(stored ?? {}, "script"), false);
+    assert.equal(Object.hasOwn(stored ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(stored ?? {}, "logTail"), false);
+    assert.equal(Object.hasOwn(stored ?? {}, "errorMessage"), false);
+    const history = await client.provider.automation.recentTaskRuns();
+    assert.deepEqual(history[0]?.appWorkflowOutcome, stored?.appWorkflowOutcome);
+    assert.equal(Object.hasOwn(history[0] ?? {}, "errorMessage"), false);
+    await assert.rejects(
+      client.provider.automation.createTaskRun({
+        taskId: "exchange-rates",
+        kind: "sync",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: "2026-09-25T03:00:03.000Z",
+        script: "run:exchange-rates",
+      } as never),
+      /Invalid PGlite operational request/u,
+    );
   } finally {
     client.close();
     await server.close();

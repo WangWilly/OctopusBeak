@@ -4,10 +4,10 @@ import { app, BrowserWindow, dialog } from "electron";
 import {
   activeAutomationTaskIds,
   hydrateAutomationRuntimeState,
-  recoverAbandonedAutomationSessions,
-  shutdownAutomationSessions,
+  recoverInterruptedAutomationRuns,
+  shutdownAppAutomationWorkflows,
   startAutomationTask,
-  terminateAutomationTaskProcesses,
+  abortActiveAppWorkflowExecutions,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
@@ -78,7 +78,7 @@ function handleAutomationRuntimeFatal(details: {
   if (automationRuntimeFatalHandled) return;
   automationRuntimeFatalHandled = true;
   console.error("automation-runtime-fatal", details);
-  terminateAutomationTaskProcesses();
+  abortActiveAppWorkflowExecutions();
   // A fatal invariant must retain exit status 1 without waiting for normal
   // before-quit cleanup or a CDP connection to finish closing.
   app.removeListener("before-quit", handleBeforeQuit);
@@ -107,7 +107,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
       if (!pgliteOperationalRuntime) {
         throw new Error("PGlite automation provider is unavailable during shutdown.");
       }
-      await shutdownAutomationSessions(pgliteOperationalRuntime.provider);
+      await shutdownAppAutomationWorkflows(pgliteOperationalRuntime.provider);
     }
     await pgliteOperationalRuntime?.close();
   },
@@ -238,7 +238,7 @@ async function start() {
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
   const automationRuntimeReady = new Promise<void>((resolve, reject) => {
     setImmediate(() => {
-      recoverAbandonedAutomationSessions(operationalRuntime.provider)
+      recoverInterruptedAutomationRuns(operationalRuntime.provider)
         .then(() => hydrateAutomationRuntimeState(operationalRuntime.provider))
         .then(() => {
           // This is an isolated Electron regression seam. It is only active

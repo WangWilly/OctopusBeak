@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS pglite_operational_baseline_metadata (
 CREATE TABLE IF NOT EXISTS automation_task_runs (
   task_run_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
-  script TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('crawler', 'sync')),
   status TEXT NOT NULL CHECK (status IN (
     'queued', 'preparing', 'running', 'waiting_for_human',
@@ -33,9 +32,6 @@ CREATE TABLE IF NOT EXISTS automation_task_runs (
   finished_at TEXT,
   exit_code INTEGER,
   signal TEXT,
-  error_message TEXT,
-  log_path TEXT NOT NULL,
-  log_tail TEXT NOT NULL,
   record_json TEXT NOT NULL
 );
 
@@ -84,16 +80,12 @@ BEGIN
   IF OLD.status IN ('completed', 'partial', 'failed', 'cancelled', 'interrupted') THEN
     IF NEW.task_run_id IS DISTINCT FROM OLD.task_run_id
       OR NEW.task_id IS DISTINCT FROM OLD.task_id
-      OR NEW.script IS DISTINCT FROM OLD.script
       OR NEW.kind IS DISTINCT FROM OLD.kind
       OR NEW.status IS DISTINCT FROM OLD.status
       OR NEW.started_at IS DISTINCT FROM OLD.started_at
       OR NEW.finished_at IS DISTINCT FROM OLD.finished_at
       OR NEW.exit_code IS DISTINCT FROM OLD.exit_code
       OR NEW.signal IS DISTINCT FROM OLD.signal
-      OR NEW.error_message IS DISTINCT FROM OLD.error_message
-      OR NEW.log_path IS DISTINCT FROM OLD.log_path
-      OR NEW.log_tail IS DISTINCT FROM OLD.log_tail
     THEN
       RAISE EXCEPTION 'Terminal automation task run is immutable: %', OLD.task_run_id;
     END IF;
@@ -112,6 +104,6 @@ EXECUTE FUNCTION pglite_guard_terminal_automation_task_run();
 INSERT INTO pglite_operational_baseline_metadata(
   singleton_id, baseline_version, table_count, index_count, trigger_count
 )
-VALUES (1, 1, 3, 5, 1)
+VALUES (1, 2, 3, 5, 1)
 ON CONFLICT (singleton_id) DO NOTHING;
 `;

@@ -157,25 +157,34 @@ function stringFields(value: unknown, fields: readonly string[]): value is Recor
   return plainRecord(value) && fields.every((field) => stringValue(value[field]));
 }
 
-function validAutomationLogPath(value: unknown): value is string {
-  if (value === "") return true;
-  return typeof value === "string"
-    && value.length <= 10_000
-    && /^data\/automation\/logs\/[A-Za-z0-9][A-Za-z0-9._-]*\.log$/u.test(value);
+function hasOnlyFields(value: unknown, allowedFields: readonly string[]): value is Record<string, unknown> {
+  return plainRecord(value)
+    && Object.keys(value).every((field) => allowedFields.includes(field));
 }
+
+const CREATE_TASK_RUN_FIELDS = [
+  "taskId", "kind", "status", "attempt", "maxAttempts", "startedAt",
+  "finishedAt", "exitCode", "signal", "progress", "humanAssistanceContract",
+  "scheduledAtUtc",
+] as const;
+const TASK_RUN_UPDATE_FIELDS = [
+  "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
+  "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
+] as const;
 
 function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
   switch (operation) {
     case "automation.createTaskRun":
       return args.length === 1
-        && stringFields(args[0], ["taskId", "script", "kind", "status", "startedAt"])
-        && validAutomationLogPath((args[0] as Record<string, unknown>).logPath)
+        && hasOnlyFields(args[0], CREATE_TASK_RUN_FIELDS)
+        && stringFields(args[0], ["taskId", "kind", "status", "startedAt"])
         && finiteNumber((args[0] as Record<string, unknown>).attempt)
         && finiteNumber((args[0] as Record<string, unknown>).maxAttempts);
     case "automation.updateTaskRun":
+      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS);
     case "automation.transitionTaskRunToActive":
     case "automation.transitionTaskRunToTerminal":
-      return args.length === 2 && stringValue(args[0]) && plainRecord(args[1]);
+      return args.length === 2 && stringValue(args[0]) && hasOnlyFields(args[1], TASK_RUN_UPDATE_FIELDS);
     case "automation.updateHumanAssistanceContract":
       return args.length === 2 && stringValue(args[0]) && plainRecord(args[1]);
     case "automation.updateHumanAssistanceCompletion":

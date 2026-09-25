@@ -192,13 +192,11 @@ async function createRun() {
   const provider = createPgliteOperationalProvider(store);
   const run = await provider.automation.createTaskRun({
     taskId: TASK_ID,
-    script: `workflow:${TASK_ID}`,
     kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return { store, provider, run };
 }
@@ -291,7 +289,6 @@ test("Yuanta Trade audio, checkbox, and image stages continue through one App ru
     assert.equal(solverCalls, 3);
     assert.equal(sessions.length, 12);
     assert.ok(sessions.every((session) => session === run.taskRunId));
-    assert.equal(finalRun?.logPath, "");
     assert.deepEqual(await readdir(artifactRoot), [], "App assistance writes no workflow files");
   } finally {
     unregister();

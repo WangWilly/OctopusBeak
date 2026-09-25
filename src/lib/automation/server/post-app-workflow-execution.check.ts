@@ -38,8 +38,8 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
   const task = taskById("post-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "post-statements");
-  assert.equal(task.script, "workflow:post-statements");
-  assert.deepEqual(task.command, []);
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), HOME_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
@@ -195,13 +195,11 @@ async function createRun(provider: ReturnType<typeof createPgliteOperationalProv
   assert.ok(task);
   const created = await provider.automation.createTaskRun({
     taskId: task.id,
-    script: task.script,
     kind: task.kind,
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return created.taskRunId;
 }
@@ -274,7 +272,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({
       events: run?.events.map(({ stage, code }) => [stage, code]),
-      error: run?.errorMessage,
+      errorCode: run?.appWorkflowOutcome?.errorCode,
       sourceResponseReads: page.sourceResponseReads,
       commits: committed.length,
     }));
@@ -286,8 +284,8 @@ test("Post App task dispatches the typed provider with human assistance, complet
     assert.ok(committed[0]!.length > 0);
     assert.ok(committed[0]!.every((item) => (item as { provider: string }).provider === "post"));
     assert.equal(run?.status, "completed");
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "human-assistance-completed"));
     assert.ok(run?.events.some((event) => event.code === "source-decoding-completed"));

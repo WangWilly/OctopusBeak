@@ -127,13 +127,11 @@ test("authenticated child RPC reaches the same worker named registries", async (
     assert.equal(typeof child.workflow.commit, "function");
     const created = await child.operationalProvider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T00:00:00.000Z",
-      logPath: "data/automation/logs/child-rpc.log",
     });
     assert.equal(
       (await child.operationalProvider.automation.taskRunById(created.taskRunId))?.status,

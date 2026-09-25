@@ -29,7 +29,6 @@ export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
 };
 
 export type AutomationTask = AutomationTaskSummary & {
-  command: readonly string[];
   maxAttempts: number;
   /** App-owned typed workflow definition, when this task has migrated. */
   workflowId?: string;
@@ -948,8 +947,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "fubon-all-statements",
     label: "Fubon all statements",
-    script: "workflow:fubon-all-statements",
-    command: [],
     workflowId: "fubon-all-statements",
     kind: "crawler",
     credentialGroupId: "fubon",
@@ -960,8 +957,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "esun-credit-card-statements",
     label: "ESun credit card statements",
-    script: "workflow:esun-credit-card-statements",
-    command: [],
     workflowId: "esun-credit-card-statements",
     kind: "crawler",
     credentialGroupId: "esun",
@@ -972,8 +967,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-all-statements",
     label: "Yuanta all statements",
-    script: "workflow:yuanta-all-statements",
-    command: [],
     workflowId: "yuanta-all-statements",
     kind: "crawler",
     credentialGroupId: "yuanta",
@@ -984,8 +977,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-trade-statements",
     label: "Yuanta trade statements",
-    script: "workflow:yuanta-trade-statements",
-    command: [],
     workflowId: "yuanta-trade-statements",
     kind: "crawler",
     credentialGroupId: "yuanta-trade",
@@ -997,8 +988,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "cathay-all-statements",
     label: "Cathay all statements",
-    script: "workflow:cathay-all-statements",
-    command: [],
     workflowId: "cathay-all-statements",
     kind: "crawler",
     credentialGroupId: "cathay",
@@ -1009,8 +998,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "hncb-statements",
     label: "HNCB statements",
-    script: "workflow:hncb-statements",
-    command: [],
     workflowId: "hncb-statements",
     kind: "crawler",
     credentialGroupId: "hncb",
@@ -1021,8 +1008,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "ctbc-statements",
     label: "CTBC statements",
-    script: "workflow:ctbc-statements",
-    command: [],
     workflowId: "ctbc-statements",
     kind: "crawler",
     credentialGroupId: "ctbc",
@@ -1033,8 +1018,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "post-statements",
     label: "Post Office statements",
-    script: "workflow:post-statements",
-    command: [],
     workflowId: "post-statements",
     kind: "crawler",
     credentialGroupId: "post",
@@ -1045,8 +1028,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sinopac-statements",
     label: "SinoPac statements",
-    script: "workflow:sinopac-statements",
-    command: [],
     workflowId: "sinopac-statements",
     kind: "crawler",
     credentialGroupId: "sinopac",
@@ -1057,8 +1038,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "linebank-statements",
     label: "LINE Bank statements",
-    script: "workflow:linebank-statements",
-    command: [],
     workflowId: "linebank-statements",
     kind: "crawler",
     credentialGroupId: "linebank",
@@ -1069,8 +1048,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "einvoice-personal-invoices",
     label: "E-Invoice personal invoices",
-    script: "workflow:einvoice-personal-invoices",
-    command: [],
     workflowId: "einvoice-personal-invoices",
     kind: "crawler",
     credentialGroupId: "einvoice",
@@ -1081,8 +1058,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "exchange-rates",
     label: "Exchange rates",
-    script: "run:exchange-rates",
-    command: [],
     kind: "sync",
     credentialKeys: [],
     dependencies: [],
@@ -1091,8 +1066,6 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sync-maicoin",
     label: "MaiCoin sync",
-    script: "run:sync-maicoin",
-    command: [],
     kind: "sync",
     credentialGroupId: "maicoin",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[11].credentialKeys,

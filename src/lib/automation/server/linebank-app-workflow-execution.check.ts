@@ -167,13 +167,11 @@ function createPage(options: {
 async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
   const created = await provider.automation.createTaskRun({
     taskId: "linebank-statements",
-    script: "workflow:linebank-statements",
     kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return created.taskRunId;
 }
@@ -207,8 +205,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   const task = taskById("linebank-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "linebank-statements");
-  assert.deepEqual(task.command, []);
-  assert.equal(task.script, "workflow:linebank-statements");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
@@ -271,8 +269,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.equal(committed[0]?.length, 2);
     assert.equal((committed[0]?.[0] as { provider?: string }).provider, "linebank");
     assert.equal(run?.status, "completed");
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "source-validation-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));

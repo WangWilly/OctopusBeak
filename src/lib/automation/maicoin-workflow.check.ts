@@ -138,7 +138,9 @@ test("MaiCoin executes through injected commit and operational ports without fil
     ]);
     assert.equal(JSON.stringify(state.records).includes("secret-access"), false);
     assert.equal(JSON.stringify(state.records).includes("secret-key"), false);
-    assert.deepEqual(taskById("sync-maicoin")?.command, []);
+    const task = taskById("sync-maicoin");
+    assert.equal(task?.id, "sync-maicoin");
+    assert.equal(Object.hasOwn(task ?? {}, "command"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

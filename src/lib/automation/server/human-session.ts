@@ -1,4 +1,3 @@
-import { resumeSessionFromLog } from "./automation-session-disposition.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type {
   HumanAssistanceCompletionStatus,
@@ -8,7 +7,7 @@ import type {
 import { taskById } from "./tasks.ts";
 
 export function humanSessionFromRun(
-  run: (Pick<AutomationTaskRun, "status" | "logTail">
+  run: (Pick<AutomationTaskRun, "status">
     & Partial<Pick<AutomationTaskRun, "taskRunId">>) | undefined,
   taskId: string,
 ) {
@@ -16,13 +15,12 @@ export function humanSessionFromRun(
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);
   }
 
-  if (taskById(taskId)?.workflowId) {
-    if (run.taskRunId) return run.taskRunId;
-    throw new Error(`Missing App workflow run ID for automation task: ${taskId}`);
+  const task = taskById(taskId);
+  if (!task?.workflowId) {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
-  const session = resumeSessionFromLog(run.logTail);
-  if (!session) throw new Error(`Missing Libretto resume session for automation task: ${taskId}`);
-  return session;
+  if (run.taskRunId) return run.taskRunId;
+  throw new Error(`Missing App workflow run ID for automation task: ${taskId}`);
 }
 
 export async function humanSessionForTask(
@@ -38,7 +36,11 @@ export async function humanAssistanceContractForTask(
   taskId: string,
   provider: AutomationPersistenceProvider,
 ): Promise<HumanAssistanceContract | null> {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId) {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
+  }
   return (await provider.automation.latestTaskRuns())[taskId]?.humanAssistanceContract ?? null;
 }
 
@@ -47,7 +49,11 @@ export async function updateHumanAssistanceCompletionForTask(
   status: HumanAssistanceCompletionStatus,
   provider: AutomationPersistenceProvider,
 ): Promise<HumanAssistanceContract> {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId) {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
+  }
   const run = (await provider.automation.latestTaskRuns())[taskId];
   if (run?.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);
@@ -60,7 +66,11 @@ export async function updateHumanAssistanceContractForTask(
   input: HumanAssistanceContractInput,
   provider: AutomationPersistenceProvider,
 ): Promise<HumanAssistanceContract> {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId) {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
+  }
   const run = (await provider.automation.latestTaskRuns())[taskId];
   if (run?.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);

@@ -41,23 +41,46 @@ try {
 
   const db = await PGlite.create({ dataDir: join(root, "data", "pglite") });
   const rows = (await db.query(`
-    SELECT task_id, status, error_message, log_tail
+    SELECT task_id, status, record_json
     FROM automation_task_runs
     ORDER BY task_id
-  `)).rows.map((row) => ({ ...row }));
+  `)).rows.map((row) => {
+    const record = JSON.parse(row.record_json);
+    assert.equal("script" in record, false);
+    assert.equal("logPath" in record, false);
+    assert.equal("logTail" in record, false);
+    assert.equal("errorMessage" in record, false);
+    return {
+      task_id: row.task_id,
+      status: row.status,
+      app_workflow_outcome: record.appWorkflowOutcome ?? null,
+    };
+  });
+  const removedColumns = (await db.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'automation_task_runs'
+      AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')
+  `)).rows;
   await db.close();
+  assert.deepEqual(removedColumns, []);
   assert.deepEqual(rows, [
     {
       task_id: "esun-credit-card-statements",
       status: "failed",
-      error_message: "Mock fixture: E.SUN sign-in failed after the source was selected.",
-      log_tail: "automation-progress: 42\nMock fixture: E.SUN sign-in failed after the source was selected.",
+      app_workflow_outcome: {
+        errorCode: "workflow-failed",
+        summary: { status: "failed", counts: {} },
+      },
     },
     {
       task_id: "fubon-all-statements",
       status: "completed",
-      error_message: null,
-      log_tail: "automation-progress: 100",
+      app_workflow_outcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { rowCount: 1 } },
+      },
     },
   ]);
 } finally {
