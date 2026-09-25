@@ -1069,13 +1069,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sinopac-statements",
     label: "SinoPac statements",
-    script: "run:sinopac-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/sinopac-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:sinopac-statements",
+    command: [],
+    workflowId: "sinopac-statements",
     kind: "crawler",
     credentialGroupId: "sinopac",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[8].credentialKeys,
