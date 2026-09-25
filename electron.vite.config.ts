@@ -25,6 +25,7 @@ const external = [
 export default defineConfig({
   build: {
     emptyOutDir: true,
+    ssr: true,
     outDir: "build-electron",
     lib: {
       entry: {
