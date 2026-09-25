@@ -134,19 +134,22 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
   const harness = createHarness({ pages: [report("Stock"), report("StockTrade")] });
   const collected: string[] = [];
   const temp = await mkdtemp(join(tmpdir(), "yuanta-trade-"));
+  const originalCwd = process.cwd();
   try {
-    const output = await runYuantaTradeProviderWorkflow(harness.context, {
-      ...selectedInput,
-      outputDir: temp,
-    }, {
-      authenticate: async () => true,
-      captureReport: async (_page, reportType) => {
-        collected.push(reportType);
-        return harness.context.signal.aborted
-          ? Promise.reject(new Error("unexpected abort"))
-          : reportType === "Stock" ? report("Stock") : report("StockTrade");
+    process.chdir(temp);
+    const output = await runYuantaTradeProviderWorkflow(
+      harness.context,
+      selectedInput,
+      {
+        authenticate: async () => true,
+        captureReport: async (_page, reportType) => {
+          collected.push(reportType);
+          return harness.context.signal.aborted
+            ? Promise.reject(new Error("unexpected abort"))
+            : reportType === "Stock" ? report("Stock") : report("StockTrade");
+        },
       },
-    });
+    );
     assert.deepEqual(collected, ["Stock", "StockTrade"]);
     assert.equal(harness.committed.length, 1);
     assert.equal(harness.committed[0]?.length, 1);
@@ -157,6 +160,7 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     assert.ok(harness.events.some((event) => event.stage === "validation" && event.code === "source-validation-completed"));
     assert.ok(harness.events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
   } finally {
+    process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });
   }
 });

@@ -1,17 +1,5 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { externalPrerequisiteSignal } from "../lib/automation/external-prerequisite.ts";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
-import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
@@ -272,7 +260,7 @@ const tradeTypeSchema = z.enum([
   "InternationalSecuritiesTrade",
 ]);
 
-const inputSchema = z.object({
+const typedInputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountIndex: z.number().int().default(-1),
@@ -280,10 +268,6 @@ const inputSchema = z.object({
   includeTrades: z.boolean().default(true),
   holdingTypes: z.array(holdingTypeSchema).default(holdingTypeSchema.options),
   tradeTypes: z.array(tradeTypeSchema).default(tradeTypeSchema.options),
-  outputDir: z.string().default("downloads/yuanta-trade-statements"),
-});
-
-const typedInputSchema = inputSchema.omit({ outputDir: true }).extend({
   credentials: z.object({
     yuanta_trade_user_id: z.string().trim().min(1),
     yuanta_trade_password: z.string().trim().min(1),
@@ -292,47 +276,10 @@ const typedInputSchema = inputSchema.omit({ outputDir: true }).extend({
   }),
 });
 
-const generatedTableFileSchema = z.object({
-  tableName: z.enum(["trade-transactions", "holdings", "asset-summaries"]),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-  accounts: z.array(z.string()),
-  periods: z.array(z.string()),
-  assetTypes: z.array(z.string()),
-  tradeTypes: z.array(z.string()),
-  subCategories: z.array(z.string()),
-  generatedAt: z.string(),
-  workflow: z.literal("yuantaTradeStatements"),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-});
-
-const outputSchema = z.object({
-  dateRange: z.object({
-    startDate: dateSchema,
-    endDate: dateSchema,
-  }),
-  usedExistingSession: z.boolean(),
-  holdingPageCount: z.number().int().nonnegative(),
-  holdingGridCount: z.number().int().nonnegative(),
-  holdingRowCount: z.number().int().nonnegative(),
-  holdingCaptureComplete: z.boolean(),
-  tradePageCount: z.number().int().nonnegative(),
-  tradeGridCount: z.number().int().nonnegative(),
-  tradeRowCount: z.number().int().nonnegative(),
-  files: z.array(generatedTableFileSchema),
-});
-
-type WorkflowInput = z.infer<typeof inputSchema>;
 type YuantaTradeProviderInput = z.infer<typeof typedInputSchema>;
 type HoldingType = z.infer<typeof holdingTypeSchema>;
 type TradeType = z.infer<typeof tradeTypeSchema>;
-type FileMetadata = z.infer<typeof generatedTableFileSchema>;
-type CsvRow = Record<string, string>;
+type NormalizedRow = Record<string, string>;
 
 export type YuantaTradeProviderWorkflowOutput = Readonly<{
   usedExistingSession: boolean;
@@ -384,57 +331,6 @@ type ReportPage = {
 
 export type YuantaTradeReportPage = ReportPage;
 
-const tradeTransactionHeaders = [
-  "trade_date",
-  "account_number",
-  "asset_type",
-  "trade_type",
-  "sub_category",
-  "product_code",
-  "product_name",
-  "currency",
-  "action",
-  "source_transaction_reference",
-  "quantity",
-  "price",
-  "gross_amount",
-  "fee",
-  "tax",
-  "settlement_amount",
-  "settlement_currency",
-  "realized_pnl",
-  "cost_amount",
-] as const;
-
-const holdingHeaders = [
-  "as_of_date",
-  "account_number",
-  "asset_type",
-  "sub_category",
-  "product_code",
-  "product_name",
-  "currency",
-  "quantity",
-  "market_date",
-  "market_price",
-  "market_value_original",
-  "market_value_twd",
-  "cost_price",
-  "cost_amount",
-  "unrealized_pnl_original",
-  "unrealized_pnl_twd",
-  "return_rate",
-  "fx_rate",
-] as const;
-
-const assetSummaryHeaders = [
-  "as_of_date",
-  "asset_type",
-  "asset_name",
-  "asset_value_twd",
-  "unrealized_pnl_twd",
-] as const;
-
 const DEFAULT_TRADE_SUBCATEGORIES: Partial<Record<TradeType, string>> = {
   SecuritiesLendingTrade: "Lend",
   UnlimitedUseLendingTrade: "Collateral",
@@ -451,9 +347,7 @@ function requireCredential(
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
+    throw new Error(`Missing credential ${name}.`);
   }
   return value;
 }
@@ -472,16 +366,6 @@ function defaultStartDate(endDate: Date): Date {
   const startDate = new Date(endDate);
   startDate.setDate(startDate.getDate() - 90);
   return startDate;
-}
-
-function resolveDateRange(input: WorkflowInput): {
-  startDate: string;
-  endDate: string;
-} {
-  const today = new Date();
-  const endDate = input.endDate ?? formatDate(today);
-  const startDate = input.startDate ?? formatDate(defaultStartDate(today));
-  return { startDate, endDate };
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -581,32 +465,6 @@ function stripTags(html: string): string {
   );
 }
 
-function csvCell(value: unknown): string {
-  const text =
-    value === null || value === undefined
-      ? ""
-      : typeof value === "object"
-        ? JSON.stringify(value)
-        : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-const nextTimestamp = createTimestampGenerator();
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.length > 0))];
-}
-
 function rowValue(row: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = row[key];
@@ -620,14 +478,6 @@ function rowValue(row: Record<string, unknown>, keys: string[]): string {
 function cleanOptionalAmount(value: string): string {
   const text = cleanText(value);
   return text === "--" ? "" : text;
-}
-
-function rowsToCsv(rows: CsvRow[], headers: readonly string[]): string {
-  const lines = [headers.map(csvCell).join(",")];
-  for (const row of rows) {
-    lines.push(headers.map((header) => csvCell(row[header] ?? "")).join(","));
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 function periodLabel(dateRange: {
@@ -649,7 +499,10 @@ function dateSortKey(value: string): string {
   return `${match[1]}${match[2]}${match[3]}`;
 }
 
-function compareTradeRowsByDateDesc(left: CsvRow, right: CsvRow): number {
+function compareTradeRowsByDateDesc(
+  left: NormalizedRow,
+  right: NormalizedRow,
+): number {
   return dateSortKey(right.trade_date).localeCompare(
     dateSortKey(left.trade_date),
   );
@@ -939,70 +792,6 @@ async function dismissPersonalMessageIfPresent(page: Page): Promise<void> {
   await settleAfterNavigation(page);
 }
 
-async function completeCertificateIfPresent(
-  page: Page,
-  certificatePath: string,
-  certificatePassword: string,
-  session: string,
-): Promise<void> {
-  const selectFileButton = page.locator("#btnPfxFile");
-  const deadline = Date.now() + 60_000;
-
-  while (Date.now() < deadline) {
-    if (
-      await page
-        .locator("#btnLogout, #checkDisclaimer")
-        .first()
-        .isVisible()
-        .catch(() => false)
-    ) {
-      return;
-    }
-
-    if (await isYuantaSecurityComponentMissing(page)) {
-      console.log(externalPrerequisiteSignal("yuanta-servisign"));
-      throw new Error(
-        "The YuanTa security component is unavailable. Install or update it, then run the task again.",
-      );
-    }
-
-    if (await selectFileButton.isVisible().catch(() => false)) {
-      break;
-    }
-
-    await page.waitForTimeout(500);
-  }
-
-  if (!(await selectFileButton.isVisible().catch(() => false))) {
-    if (await isYuantaSecurityComponentMissing(page)) {
-      console.log(externalPrerequisiteSignal("yuanta-servisign"));
-      throw new Error(
-        "The YuanTa security component is unavailable. Install or update it, then run the task again.",
-      );
-    }
-    throw new Error("Timed out waiting for the YuanTa certificate form.");
-  }
-
-  await page.locator("#jpki_PfxFile").fill(certificatePath);
-  const passwordField = page.locator("#jpki_PfxFilePwd");
-  const passwordVisible = await passwordField
-    .isVisible({ timeout: 5_000 })
-    .catch(() => false);
-
-  if (!passwordVisible) {
-    console.log(
-      "manual-auth-required: choose the YuanTa certificate file if direct path entry is unavailable, then run `npx libretto resume --session " +
-        session +
-        "`.",
-    );
-    await pause(session);
-  }
-
-  await passwordField.fill(certificatePassword);
-  await page.locator("#btnGo").click();
-  await settleAfterNavigation(page);
-}
-
 export async function fillTradeLoginForm(
   page: Page,
   credentials: YuantaTradeCredentials,
@@ -1014,67 +803,6 @@ export async function fillTradeLoginForm(
   await page.locator("#loginid").fill(userId);
   await page.locator("#loginPWD").fill(password);
   await page.locator("#loginPWD").blur();
-}
-
-async function checkYuantaCustomerBox(page: Page): Promise<void> {
-  const checkbox = page.locator("#chbYCaptchaV2");
-  if (!(await checkbox.isVisible({ timeout: 2_000 }).catch(() => false))) {
-    return;
-  }
-
-  if (!(await checkbox.isChecked().catch(() => false))) {
-    await checkbox.check({ force: true });
-  }
-}
-
-async function submitLoginIfReady(page: Page): Promise<void> {
-  const loginButton = page.locator("#loginBtn");
-  if (!(await loginButton.isVisible({ timeout: 2_000 }).catch(() => false))) {
-    return;
-  }
-
-  await checkYuantaCustomerBox(page);
-  await loginButton.click();
-  await settleAfterNavigation(page);
-}
-
-async function postAssetReport(
-  page: Page,
-  reportType: string,
-  params: Record<string, string | number>,
-): Promise<void> {
-  await page.evaluate(
-    ({ reportType, params }) => {
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = reportType;
-
-      for (const [key, value] of Object.entries(params)) {
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = key;
-        input.value = String(value);
-        form.appendChild(input);
-      }
-
-      document.body.appendChild(form);
-      window.setTimeout(() => form.submit(), 0);
-    },
-    { reportType, params },
-  );
-
-  await settleAfterNavigation(page);
-  await acceptDisclaimerIfPresent(page);
-  await page.locator("#btnLogout").waitFor({ timeout: 60_000 });
-}
-
-async function captureReport(
-  page: Page,
-  reportType: string,
-  params: Record<string, string | number>,
-): Promise<ReportPage> {
-  await postAssetReport(page, reportType, params);
-  return parseReportPage(await page.content(), page.url(), reportType);
 }
 
 function responseCharset(headers: Record<string, string>, bytes: Uint8Array): string {
@@ -1173,7 +901,7 @@ async function captureTypedReport(
 }
 
 function tradeParams(
-  input: Pick<WorkflowInput, "accountIndex">,
+  input: Pick<YuantaTradeProviderInput, "accountIndex">,
   tradeType: TradeType,
   dateRange: { startDate: string; endDate: string },
 ): Record<string, string | number> {
@@ -1255,9 +983,9 @@ export function isCompleteTradeCapture(
 export function normalizeTradeRows(
   pages: ReportPage[],
   dateRange: { startDate: string; endDate: string },
-): CsvRow[] {
+): NormalizedRow[] {
   const period = periodLabel(dateRange);
-  const rows: CsvRow[] = [];
+  const rows: NormalizedRow[] = [];
 
   for (const page of pages) {
     for (const grid of page.grids) {
@@ -1381,8 +1109,8 @@ export function normalizeTradeRows(
 function normalizeHoldingRows(
   pages: ReportPage[],
   _fallbackDateRange: { startDate: string; endDate: string },
-): CsvRow[] {
-  const rows: CsvRow[] = [];
+): NormalizedRow[] {
+  const rows: NormalizedRow[] = [];
 
   for (const page of pages) {
     const asOfDate = page.endDate || page.startDate || "";
@@ -1475,149 +1203,6 @@ function normalizeHoldingRows(
   return rows;
 }
 
-function normalizeSummaryRows(
-  pages: ReportPage[],
-  fallbackDateRange: { startDate: string; endDate: string },
-): CsvRow[] {
-  const rows: CsvRow[] = [];
-  const seen = new Set<string>();
-
-  for (const page of pages) {
-    const asOfDate =
-      page.endDate || page.startDate || fallbackDateRange.endDate;
-    const period = reportPeriod(page) || asOfDate;
-
-    for (const summaryRow of page.summaryRows) {
-      const key = `${asOfDate}|${summaryRow.assetType}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      rows.push({
-        as_of_date: asOfDate,
-        asset_type: summaryRow.assetType,
-        asset_name: summaryRow.assetName,
-        asset_value_twd: summaryRow.assetValueTwd,
-        unrealized_pnl_twd: summaryRow.unrealizedPnlTwd,
-        __period: period,
-      });
-    }
-  }
-
-  return rows;
-}
-
-function metadataForRows(
-  tableName: FileMetadata["tableName"],
-  rows: CsvRow[],
-  headers: readonly string[],
-  generatedAt: string,
-  csvFilename: string,
-  jsonFilename: string,
-): Omit<FileMetadata, "csvPath" | "jsonPath" | "csvBytes" | "jsonBytes"> {
-  return {
-    tableName,
-    csvFilename,
-    jsonFilename,
-    accounts: unique(rows.map((row) => row.account_number ?? "")),
-    periods: unique(rows.map((row) => row.__period ?? "")),
-    assetTypes: unique(rows.map((row) => row.asset_type ?? "")),
-    tradeTypes: unique(
-      rows.map((row) => row.trade_type ?? row.__trade_type ?? ""),
-    ),
-    subCategories: unique(rows.map((row) => row.sub_category ?? "")),
-    generatedAt,
-    workflow: "yuantaTradeStatements",
-    rowCount: rows.length,
-    headers: [...headers],
-  };
-}
-
-async function writeTableWithMetadata(
-  outputDir: string,
-  tableName: FileMetadata["tableName"],
-  rows: CsvRow[],
-  headers: readonly string[],
-): Promise<FileMetadata> {
-  await mkdir(outputDir, { recursive: true });
-
-  const csvFilename = `${tableName}-${nextTimestamp()}.csv`;
-  const jsonFilename = csvFilename.replace(/\.csv$/, ".json");
-  const csvPath = join(outputDir, csvFilename);
-  const jsonPath = join(outputDir, jsonFilename);
-  const generatedAt = new Date().toISOString();
-  const metadata = metadataForRows(
-    tableName,
-    rows,
-    headers,
-    generatedAt,
-    csvFilename,
-    jsonFilename,
-  );
-  const csvContent = rowsToCsv(rows, headers);
-  const jsonContent = `${JSON.stringify(metadata, null, 2)}\n`;
-
-  await writeFile(csvPath, csvContent, "utf8");
-  await writeFile(jsonPath, jsonContent, "utf8");
-
-  const csvStats = await stat(csvPath);
-  const jsonStats = await stat(jsonPath);
-
-  return {
-    ...metadata,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStats.size,
-    jsonBytes: jsonStats.size,
-  };
-}
-
-async function writeResultsFiles(
-  outputDir: string,
-  result: {
-    holdings: CsvRow[];
-    holdingsCaptureComplete: boolean;
-    trades: CsvRow[];
-    summaries: CsvRow[];
-  },
-): Promise<FileMetadata[]> {
-  const files: FileMetadata[] = [];
-
-  if (result.trades.length > 0) {
-    files.push(
-      await writeTableWithMetadata(
-        outputDir,
-        "trade-transactions",
-        result.trades,
-        tradeTransactionHeaders,
-      ),
-    );
-  }
-
-  if (result.holdingsCaptureComplete) {
-    files.push(
-      await writeTableWithMetadata(
-        outputDir,
-        "holdings",
-        result.holdings,
-        holdingHeaders,
-      ),
-    );
-  }
-
-  if (result.summaries.length > 0) {
-    files.push(
-      await writeTableWithMetadata(
-        outputDir,
-        "asset-summaries",
-        result.summaries,
-        assetSummaryHeaders,
-      ),
-    );
-  }
-
-  return files;
-}
-
 function exactAmount(value: string): { coefficient: string; scale: number } {
   const normalized = value.replaceAll(",", "").trim();
   const match = /^-?(\d+)(?:\.(\d+))?$/.exec(normalized);
@@ -1639,7 +1224,7 @@ function sourceDate(value: string): string {
 
 export function mapYuantaTradeCanonicalInvestmentRow(
   accountNumber: string,
-  row: CsvRow,
+  row: NormalizedRow,
   rowKind: "holding" | "transaction",
   occurrenceOrdinal: number,
 ): YuantaCanonicalInvestmentRow {
@@ -1687,7 +1272,7 @@ export function explicitAction(value: string): InvestmentTransactionAction {
 export function yuantaTradeCanonicalOccurrenceIdentity(
   accountNumber: string,
   rowKind: "holding" | "transaction",
-  row: CsvRow,
+  row: NormalizedRow,
   _occurrenceOrdinal: number,
 ): string {
   const stableSourceIdentity = row.source_transaction_reference?.trim();
@@ -1710,7 +1295,7 @@ export function yuantaTradeCanonicalOccurrenceIdentity(
 export function assertYuantaTradeCanonicalOccurrenceIdentities(
   accountNumber: string,
   rowKind: "holding" | "transaction",
-  rows: readonly CsvRow[],
+  rows: readonly NormalizedRow[],
 ): string[] {
   const identities = rows.map((row, index) =>
     yuantaTradeCanonicalOccurrenceIdentity(accountNumber, rowKind, row, index),
@@ -1723,8 +1308,8 @@ export function assertYuantaTradeCanonicalOccurrenceIdentities(
 }
 export function buildYuantaTradeCanonicalCaptures(
   credentials: YuantaTradeCredentials,
-  holdingRows: CsvRow[],
-  tradeRows: CsvRow[],
+  holdingRows: NormalizedRow[],
+  tradeRows: NormalizedRow[],
 ): InvestmentValidatedCapture[] {
   const accountNumbers = [
     ...new Set(
@@ -1766,7 +1351,7 @@ export function buildYuantaTradeCanonicalCaptures(
         "Yuanta Trade canonical holdings require one source-proven as-of date.",
       );
     const mapRow = (
-      row: CsvRow,
+      row: NormalizedRow,
       rowKind: "holding" | "transaction",
       occurrenceOrdinal: number,
     ): YuantaCanonicalInvestmentRow =>
@@ -1830,55 +1415,6 @@ export function buildYuantaTradeCanonicalCaptures(
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
   return captures;
-}
-
-async function commitYuantaTradeCanonicalIfComplete(
-  credentials: YuantaTradeCredentials,
-  holdingRows: CsvRow[],
-  tradeRows: CsvRow[],
-  complete: boolean,
-): Promise<void> {
-  if (!complete) {
-    console.warn("yuanta-trade-canonical-not-admitted", {
-      reason: "holding-capture-incomplete",
-    });
-    return;
-  }
-  const captures = buildYuantaTradeCanonicalCaptures(
-    credentials,
-    holdingRows,
-    tradeRows,
-  );
-  if (captures.length === 0) return;
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const result = await executePGliteWorkflowRun({
-      client: client.workflow,
-      provider: "yuanta-trade",
-      product: "investment",
-      items: captures.map((capture) => ({
-        provider: "yuanta-trade",
-        product: "investment",
-        itemKey: capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-          request: { capture },
-        },
-        relationCommands: () => [{
-          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-          request: {
-            sourceConnectionKey: capture.identity.sourceConnectionKey,
-            observedAt: capture.observedAt,
-          },
-        }],
-      } as const)),
-    });
-    if (result.status !== "completed")
-      throw new Error(`Yuanta trade PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-  } finally {
-    client.close();
-  }
 }
 
 export async function assertYuantaTradeServiSignAvailable(
@@ -2231,166 +1767,3 @@ export async function runYuantaTradeProviderWorkflow(
     };
   });
 }
-
-export default workflow("yuantaTradeStatements", {
-  startUrl: YUANTA_TRADE_LOGIN_URL,
-  credentials: [
-    "yuanta_trade_user_id",
-    "yuanta_trade_password",
-    "yuanta_trade_ca_path",
-    "yuanta_trade_ca_password",
-  ],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (
-      input as typeof input & {
-        credentials: YuantaTradeCredentials;
-      }
-    ).credentials;
-    let lastBankDialogMessage = "";
-    emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
-
-    await grantYuantaBrowserPermissions(page);
-
-    page.on("dialog", async (dialog) => {
-      lastBankDialogMessage = dialog.message();
-      console.warn("bank-dialog", {
-        type: dialog.type(),
-        message: lastBankDialogMessage,
-      });
-      await dialog.accept();
-    });
-
-    const authResult = await librettoAuthenticate(ctx, {
-      credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async (
-        { page: authPage, session: authSession },
-        signInCredentials,
-      ) => {
-        await fillTradeLoginForm(
-          authPage,
-          signInCredentials as YuantaTradeCredentials,
-        );
-        await authPage.evaluate(() => (
-          window as unknown as { switchCaptchaType: (type: string) => void }
-        ).switchCaptchaType("A"));
-        await emitHumanAssistanceStage(
-          yuantaTradeAudioAssistanceStage(authPage),
-        );
-        console.log(
-          "manual-auth-required: enter the YuanTa Trade audio verification code, then run `npx libretto resume --session " +
-            authSession +
-            "`.",
-        );
-        await pause(authSession);
-        const verificationCode = authPage.locator("#verificationCode");
-        if (!(await verificationCode.inputValue()).trim()) {
-          throw new Error(
-            "YuanTa Trade audio verification code is empty. Enter it in the browser before resuming.",
-          );
-        }
-        await submitLoginIfReady(authPage);
-        await completeCertificateIfPresent(
-          authPage,
-          requireCredential(
-            signInCredentials as YuantaTradeCredentials,
-            "yuanta_trade_ca_path",
-          ),
-          requireCredential(
-            signInCredentials as YuantaTradeCredentials,
-            "yuanta_trade_ca_password",
-          ),
-          authSession,
-        );
-        await dismissPasswordChangeReminderIfPresent(authPage);
-        await dismissPersonalMessageIfPresent(authPage);
-        await acceptDisclaimerIfPresent(authPage);
-        await authPage.locator("#btnLogout").waitFor({ timeout: 120_000 });
-      },
-    });
-    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-
-    if (!(await isSignedIn(page))) {
-      await page.goto(
-        "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
-        { waitUntil: "domcontentloaded" },
-      );
-      await settleAfterNavigation(page);
-      await dismissPersonalMessageIfPresent(page);
-      await acceptDisclaimerIfPresent(page);
-    }
-
-    const dateRange = resolveDateRange(input);
-    const holdings: ReportPage[] = [];
-    const trades: ReportPage[] = [];
-    emitAutomationProgress({ phaseCode: "workflow", completed: 40, total: 100, percent: 40 });
-
-    if (input.includeHoldings) {
-      for (const holdingType of input.holdingTypes as HoldingType[]) {
-        holdings.push(
-          await captureReport(page, holdingType, {
-            index: input.accountIndex,
-          }),
-        );
-      }
-    }
-    emitAutomationProgress({ phaseCode: "workflow", completed: 60, total: 100, percent: 60 });
-
-    if (input.includeTrades) {
-      for (const tradeType of input.tradeTypes as TradeType[]) {
-        trades.push(
-          await captureReport(
-            page,
-            tradeType,
-            tradeParams(input, tradeType, dateRange),
-          ),
-        );
-      }
-    }
-    emitAutomationProgress({ phaseCode: "workflow", completed: 80, total: 100, percent: 80 });
-
-    const tradeRows = normalizeTradeRows(trades, dateRange);
-    const holdingRows = normalizeHoldingRows(holdings, dateRange);
-    const summaryRows = normalizeSummaryRows(
-      [...holdings, ...trades],
-      dateRange,
-    );
-    const holdingCaptureComplete =
-      input.includeHoldings &&
-      isCompleteHoldingCapture(holdings, input.holdingTypes);
-    if (input.includeHoldings && !holdingCaptureComplete) {
-      console.warn(
-        "Holding capture was incomplete; preserving the previous authoritative snapshot.",
-      );
-    }
-    await commitYuantaTradeCanonicalIfComplete(
-      credentials,
-      holdingRows,
-      tradeRows,
-      holdingCaptureComplete,
-    );
-    const files = await writeResultsFiles(input.outputDir, {
-      holdings: holdingRows,
-      holdingsCaptureComplete: holdingCaptureComplete,
-      trades: tradeRows,
-      summaries: summaryRows,
-    });
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-
-    return {
-      dateRange,
-      usedExistingSession: authResult.usedProfile,
-      holdingPageCount: holdings.length,
-      holdingGridCount: gridCount(holdings),
-      holdingRowCount: holdingRows.length,
-      holdingCaptureComplete,
-      tradePageCount: trades.length,
-      tradeGridCount: gridCount(trades),
-      tradeRowCount: tradeRows.length,
-      files,
-    };
-  },
-});
