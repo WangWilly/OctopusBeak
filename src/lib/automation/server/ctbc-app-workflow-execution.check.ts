@@ -219,6 +219,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(committed.length, 1);
     assert.equal((committed[0]?.[0] as { provider?: string }).provider, "ctbc");
     assert.equal(run?.status, "completed");
+    assert.deepEqual(run?.appWorkflowOutcome, result.result.appWorkflowOutcome);
     assert.equal(run?.logPath, "");
     assert.equal(run?.logTail, "");
     assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
@@ -244,6 +245,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(incomplete.result.appWorkflowOutcome?.errorCode, "source-validation-failed");
     assert.equal(committed.length, 1, "incomplete CTBC source is rejected before commit");
     const rejectedRun = await provider.automation.taskRunById(incompleteRunId);
+    assert.equal(rejectedRun?.appWorkflowOutcome?.errorCode, "source-validation-failed");
     assert.ok(rejectedRun?.events.some((event) => event.code === "source-validation-rejected"));
 
     const malformedPage = createPage({ malformedSource: true, signedIn: true });
@@ -264,6 +266,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(malformed.result.appWorkflowOutcome?.errorCode, "source-integrity-failed");
     assert.equal(committed.length, 1, "undecodable CTBC source is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
+    assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
     assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
 
     const cancellationPage = createPage();
@@ -295,6 +298,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(cancelled.status, "cancelled");
     assert.ok(cancelled.result);
     assert.equal(cancelled.result.appWorkflowOutcome?.errorCode, "cancelled");
+    assert.equal((await provider.automation.taskRunById(cancellationRunId))?.appWorkflowOutcome?.errorCode, "cancelled");
     assert.equal(committed.length, 1, "cancelled CTBC run does not commit");
     assert.deepEqual(await readdir(root), []);
 
@@ -323,6 +327,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.ok(ambiguous.result);
     assert.equal(ambiguous.result.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.equal(commitAttempts, 1, "an ambiguous commit is not replayed by task execution");
+    assert.equal((await provider.automation.taskRunById(ambiguousRunId))?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
   } finally {
     process.chdir(previousDirectory);
     await store.close();

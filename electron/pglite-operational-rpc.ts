@@ -24,6 +24,7 @@ const AUTOMATION_METHODS = [
   "latestTaskRuns",
   "todayTaskRunIds",
   "hasSuccessfulTaskRunSince",
+  "hasOccurrenceBeenAttempted",
   "recentTaskRuns",
   "appendRunEvent",
   "pruneRunEvents",
@@ -183,6 +184,8 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
         && dateValue(args[0].startUtc) && dateValue(args[0].endUtc);
     case "automation.hasSuccessfulTaskRunSince":
       return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
+    case "automation.hasOccurrenceBeenAttempted":
+      return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
     case "automation.recentTaskRuns":
       return args.length === 0 || (args.length === 1 && Number.isSafeInteger(args[0]) && (args[0] as number) >= 0);
     case "automation.appendRunEvent":
@@ -280,6 +283,10 @@ async function invokeOperation(
       case "hasSuccessfulTaskRunSince": return provider.automation.hasSuccessfulTaskRunSince(
         args[0] as Parameters<AutomationPersistencePort["hasSuccessfulTaskRunSince"]>[0],
         args[1] as Parameters<AutomationPersistencePort["hasSuccessfulTaskRunSince"]>[1],
+      );
+      case "hasOccurrenceBeenAttempted": return provider.automation.hasOccurrenceBeenAttempted(
+        args[0] as Parameters<AutomationPersistencePort["hasOccurrenceBeenAttempted"]>[0],
+        args[1] as Parameters<AutomationPersistencePort["hasOccurrenceBeenAttempted"]>[1],
       );
       case "recentTaskRuns": return provider.automation.recentTaskRuns(
         args[0] as Parameters<AutomationPersistencePort["recentTaskRuns"]>[0],
@@ -505,6 +512,7 @@ export function createPGliteOperationalRpcClient(
     latestTaskRuns: (...args) => automationMethod("latestTaskRuns", args),
     todayTaskRunIds: (...args) => automationMethod("todayTaskRunIds", args),
     hasSuccessfulTaskRunSince: (...args) => automationMethod("hasSuccessfulTaskRunSince", args),
+    hasOccurrenceBeenAttempted: (...args) => automationMethod("hasOccurrenceBeenAttempted", args),
     recentTaskRuns: (...args) => automationMethod("recentTaskRuns", args),
     appendRunEvent: (...args) => automationMethod("appendRunEvent", args),
     pruneRunEvents: (...args) => automationMethod("pruneRunEvents", args),

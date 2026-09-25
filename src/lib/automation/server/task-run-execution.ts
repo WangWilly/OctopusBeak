@@ -410,6 +410,7 @@ async function createAutomationTaskRunExecution(
           attempt,
           maxAttempts,
           startedAt,
+          scheduledAtUtc: options.scheduledAtUtc,
           logPath,
           progress: indeterminateProgress(attempt),
           humanAssistanceContract: resumeHumanAssistanceContract(

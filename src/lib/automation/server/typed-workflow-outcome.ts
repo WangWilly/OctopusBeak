@@ -9,6 +9,11 @@ export type TypedWorkflowErrorCode =
   | "commit-outcome-unknown"
   | "workflow-failed";
 
+export type TypedWorkflowOutcome = Readonly<{
+  errorCode: TypedWorkflowErrorCode | null;
+  summary: TypedWorkflowOutcomeSummary | null;
+}>;
+
 export type TypedWorkflowOutcomeSummary = Readonly<{
   status?: "financial-admitted" | "source-only" | "no-data" | "completed" | "partial" | "failed";
   counts: Readonly<Partial<Record<TypedWorkflowCountName, number>>>;
@@ -62,6 +67,14 @@ const SAFE_COUNT_NAMES = [
 ] as const satisfies readonly TypedWorkflowCountName[];
 const MAX_COUNT = 1_000_000_000;
 const MAX_SUMMARY_BYTES = 512;
+const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
+  "cancelled",
+  "source-integrity-failed",
+  "source-validation-failed",
+  "canonical-commit-failed",
+  "commit-outcome-unknown",
+  "workflow-failed",
+]);
 
 /** Keep only known aggregate fields; provider output may contain financial data. */
 export function summarizeTypedWorkflowOutput(
@@ -88,6 +101,29 @@ export function summarizeTypedWorkflowOutput(
   };
   if (Buffer.byteLength(JSON.stringify(summary), "utf8") > MAX_SUMMARY_BYTES) return null;
   return summary;
+}
+
+/** Normalize persisted outcome metadata to the same strict allow-list. */
+export function sanitizeTypedWorkflowOutcome(value: unknown): TypedWorkflowOutcome | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const errorCode = candidate.errorCode === null
+    ? null
+    : typeof candidate.errorCode === "string" && ERROR_CODES.has(candidate.errorCode as TypedWorkflowErrorCode)
+    ? candidate.errorCode as TypedWorkflowErrorCode
+    : "workflow-failed";
+  let summary: TypedWorkflowOutcomeSummary | null = null;
+  if (candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary)) {
+    const source = candidate.summary as Record<string, unknown>;
+    const counts = source.counts && typeof source.counts === "object" && !Array.isArray(source.counts)
+      ? source.counts as Record<string, unknown>
+      : {};
+    summary = summarizeTypedWorkflowOutput({
+      ...counts,
+      ...(source.status === undefined ? {} : { status: source.status }),
+    });
+  }
+  return { errorCode, summary };
 }
 
 /** Classify from typed failure evidence only; never persist the thrown message. */
