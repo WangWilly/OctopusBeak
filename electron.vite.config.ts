@@ -30,6 +30,7 @@ export default defineConfig({
       entry: {
         main: "electron/main.ts",
         preload: "electron/preload.ts",
+        "app-workflow-worker": "electron/app-workflow-worker.ts",
         "pglite-view-worker": "electron/pglite-view-worker.ts",
       },
       formats: ["cjs"],
