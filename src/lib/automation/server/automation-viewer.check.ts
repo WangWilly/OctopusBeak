@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   isClosedViewerSessionError,
   viewerScreenshotErrorKind,
+  captureSessionScreenshot,
   isNestedFrameElement,
   humanVerificationTargetAtPoint,
   focusHumanVerificationTarget,
@@ -13,7 +14,6 @@ import {
   normalizeViewerPoint,
   refreshTargetRect,
   selectAllShortcut,
-  selectViewerPage,
   VIEWER_SCREENSHOT_OPTIONS,
   viewerRectContainsPoint,
   clickVerificationSelectionsOnPage,
@@ -27,12 +27,16 @@ assert.deepEqual(VIEWER_SCREENSHOT_OPTIONS, {
   scale: "css",
 });
 
-assert.equal(isClosedViewerSessionError(new Error("browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:57930")), true);
-assert.equal(isClosedViewerSessionError(new Error("No CDP endpoint available for Libretto session ses-ist4.")), true);
+const unavailableAppViewerError = new Error("No active App browser page is available for this workflow run.");
+assert.equal(isClosedViewerSessionError(unavailableAppViewerError), true);
 assert.equal(isClosedViewerSessionError(new Error("Unsupported viewer input.")), false);
-assert.equal(viewerScreenshotErrorKind(new Error("No CDP endpoint available for Libretto session ses-ist4.")), "unavailable");
+assert.equal(viewerScreenshotErrorKind(unavailableAppViewerError), "unavailable");
 assert.equal(viewerScreenshotErrorKind(new Error("browserType.connectOverCDP: socket hang up")), "transient");
 assert.equal(viewerScreenshotErrorKind(new Error("Unexpected screenshot failure")), "failed");
+await assert.rejects(
+  () => captureSessionScreenshot("unknown-app-run"),
+  /No active App browser page is available for this workflow run\./,
+);
 assert.equal(isNestedFrameElement("IFRAME"), true);
 assert.equal(isNestedFrameElement("FRAME"), true);
 assert.equal(isNestedFrameElement("DIV"), false);
@@ -272,15 +276,6 @@ assert.throws(
   }, humanContract),
   /contract is stale/,
 );
-
-assert.equal(selectViewerPage([
-  { url: () => "https://first.example" },
-  { url: () => "about:blank" },
-  { url: () => "chrome://new-tab-page" },
-  { url: () => "chrome-error://chromewebdata/" },
-  { url: () => "devtools://devtools/bundled/inspector.html" },
-  { url: () => "https://last.example" },
-])?.url(), "https://last.example");
 
 const selectionClicks: Array<[number, number]> = [];
 await clickVerificationSelectionsOnPage({
