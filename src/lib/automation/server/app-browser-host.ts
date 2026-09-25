@@ -1,7 +1,12 @@
-import { mkdir, readFile, rm, utimes } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
+import {
+  getAutomationCredentialCodec,
+  type AutomationCredentialCodec,
+} from "./config-files.ts";
 
 export type AppWorkflowBrowserConnection = Readonly<{
   endpoint: string;
@@ -21,6 +26,7 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   taskRunId: string;
   signal: AbortSignal;
   userDataDirectory: string;
+  credentialCodec?: AutomationCredentialCodec | null;
   startUrl?: string;
   launchPersistentContext?: (
     userDataDirectory: string,
@@ -34,6 +40,10 @@ type HostedPage = Readonly<{
 }>;
 
 const hostedPages = new Map<string, HostedPage>();
+const COOKIE_STATE_FORMAT = "octopusbeak.browser-auth.cookies.safeStorage.v1";
+const COOKIE_STATE_MAX_BYTES = 1_048_576;
+const COOKIE_STATE_MAX_COUNT = 512;
+type AppBrowserCookie = Parameters<BrowserContext["addCookies"]>[0][number];
 const remoteDebuggingArgs = [
   "--remote-debugging-address=127.0.0.1",
   "--remote-debugging-port=0",
@@ -92,6 +102,126 @@ async function defaultPersistentContext(
   return await chromium.launchPersistentContext(userDataDirectory, {
     ...options,
     headless: false,
+  });
+}
+
+async function removeDirectoryEntriesExcept(directory: string, retainedName: string) {
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    if (name === retainedName) continue;
+    const path = join(directory, name);
+    let metadata;
+    try {
+      metadata = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    await rm(path, { recursive: metadata.isDirectory() && !metadata.isSymbolicLink(), force: true });
+  }
+}
+
+async function ensureDirectory(path: string) {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      await rm(path, { recursive: metadata.isDirectory() && !metadata.isSymbolicLink(), force: true });
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await mkdir(path, { recursive: true });
+  await chmod(path, 0o700);
+}
+
+async function readRetainedCookies(
+  path: string,
+  codec: AutomationCredentialCodec | null,
+): Promise<AppBrowserCookie[]> {
+  if (!codec) return [];
+  let contents: string;
+  try {
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.size > COOKIE_STATE_MAX_BYTES) return [];
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return [];
+  }
+  try {
+    const envelope = JSON.parse(contents) as { format?: unknown; data?: unknown };
+    if (envelope.format !== COOKIE_STATE_FORMAT || typeof envelope.data !== "string") return [];
+    const state = JSON.parse(codec.decrypt(envelope.data)) as { cookies?: unknown };
+    if (!Array.isArray(state.cookies) || state.cookies.length > COOKIE_STATE_MAX_COUNT) return [];
+    const cookies: AppBrowserCookie[] = [];
+    for (const value of state.cookies) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const cookie = value as Record<string, unknown>;
+      if (
+        typeof cookie.name !== "string" || cookie.name.length === 0 || cookie.name.length > 4_096 ||
+        typeof cookie.value !== "string" || Buffer.byteLength(cookie.value, "utf8") > COOKIE_STATE_MAX_BYTES ||
+        typeof cookie.domain !== "string" || cookie.domain.length === 0 || cookie.domain.length > 2_048 ||
+        typeof cookie.path !== "string" || cookie.path.length === 0 || cookie.path.length > 4_096
+      ) return [];
+      if (cookie.expires !== undefined && (typeof cookie.expires !== "number" || !Number.isFinite(cookie.expires))) return [];
+      if (cookie.httpOnly !== undefined && typeof cookie.httpOnly !== "boolean") return [];
+      if (cookie.secure !== undefined && typeof cookie.secure !== "boolean") return [];
+      if (cookie.sameSite !== undefined && !["Strict", "Lax", "None"].includes(String(cookie.sameSite))) return [];
+      if (cookie.partitionKey !== undefined && typeof cookie.partitionKey !== "string") return [];
+      cookies.push({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        ...(typeof cookie.expires === "number" ? { expires: cookie.expires } : {}),
+        ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+        ...(typeof cookie.secure === "boolean" ? { secure: cookie.secure } : {}),
+        ...(cookie.sameSite === "Strict" || cookie.sameSite === "Lax" || cookie.sameSite === "None"
+          ? { sameSite: cookie.sameSite }
+          : {}),
+        ...(typeof cookie.partitionKey === "string" ? { partitionKey: cookie.partitionKey } : {}),
+      });
+    }
+    return cookies;
+  } catch {
+    // Invalid or unavailable retained authentication simply starts a clean login.
+    return [];
+  }
+}
+
+async function writeRetainedCookies(
+  path: string,
+  cookies: readonly AppBrowserCookie[],
+  codec: AutomationCredentialCodec | null,
+) {
+  if (!codec || cookies.length > COOKIE_STATE_MAX_COUNT) return;
+  const serialized = JSON.stringify({ cookies });
+  if (Buffer.byteLength(serialized, "utf8") > COOKIE_STATE_MAX_BYTES) return;
+  const envelope = JSON.stringify({
+    format: COOKIE_STATE_FORMAT,
+    data: codec.encrypt(serialized),
+  });
+  const temporaryPath = `${path}.tmp-${randomUUID()}`;
+  await writeFile(temporaryPath, envelope, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    await chmod(temporaryPath, 0o600);
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function removeEmptyDirectory(path: string) {
+  await rmdir(path).catch((error) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOTDIR") throw error;
   });
 }
 
@@ -207,33 +337,57 @@ export function createAppWorkflowBrowserPort(
 ): WorkflowBrowserPort {
   assertSafePathSegment(input.taskId);
   assertSafePathSegment(input.taskRunId);
-  const userDataDirectory = join(
+  const browserStateDirectory = join(
     input.userDataDirectory,
     "data",
     "automation",
     "browser-state",
     input.taskId,
   );
+  const authenticationDirectory = join(browserStateDirectory, "authentication");
+  const cookieStatePath = join(authenticationDirectory, "cookies.safeStorage.json");
+  const browserRuntimeRoot = join(input.userDataDirectory, "data", "automation", "browser-runtime");
+  const browserRuntimeTaskDirectory = join(browserRuntimeRoot, input.taskId);
+  const browserRuntimeDirectory = join(browserRuntimeTaskDirectory, input.taskRunId);
+  const credentialCodec = input.credentialCodec === undefined
+    ? getAutomationCredentialCodec()
+    : input.credentialCodec;
   const launch = input.launchPersistentContext ?? defaultPersistentContext;
 
   return {
     async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
-      input.signal.throwIfAborted();
-      await mkdir(userDataDirectory, { recursive: true });
-      await rm(join(userDataDirectory, "DevToolsActivePort"), { force: true });
-      const context = await launch(userDataDirectory, {
-        ...launchOptions,
-        args: [...launchOptions.args],
-      });
-      if (input.signal.aborted) {
-        await context.close().catch(() => {});
-        input.signal.throwIfAborted();
-      }
-      const page = context.pages()[0] ?? await context.newPage();
-      let connection: AppWorkflowBrowserConnection | null = null;
+      let context: BrowserContext | null = null;
+      let unregister = () => {};
+      const closeOnAbort = () => {
+        void context?.close().catch(() => {});
+      };
       try {
+        input.signal.throwIfAborted();
+        await ensureDirectory(browserStateDirectory);
+        await removeDirectoryEntriesExcept(browserStateDirectory, "authentication");
+        await ensureDirectory(authenticationDirectory);
+        await removeDirectoryEntriesExcept(authenticationDirectory, "cookies.safeStorage.json");
+        const retainedCookies = await readRetainedCookies(cookieStatePath, credentialCodec);
+        await ensureDirectory(browserRuntimeRoot);
+        await ensureDirectory(browserRuntimeTaskDirectory);
+        await rm(browserRuntimeDirectory, { recursive: true, force: true });
+        await ensureDirectory(browserRuntimeDirectory);
+        context = await launch(browserRuntimeDirectory, {
+          ...launchOptions,
+          args: [...launchOptions.args],
+        });
+        input.signal.throwIfAborted();
+        const page = context.pages()[0] ?? await context.newPage();
+        if (retainedCookies.length > 0) {
+          try {
+            await context.addCookies(retainedCookies);
+          } catch {
+            // A rejected cookie jar is discarded for this run; the workflow may log in again.
+          }
+        }
+        let connection: AppWorkflowBrowserConnection | null = null;
         const endpoint = await loopbackDevToolsEndpoint(
-          userDataDirectory,
+          browserRuntimeDirectory,
           input.signal,
           !input.launchPersistentContext,
         );
@@ -243,16 +397,8 @@ export function createAppWorkflowBrowserPort(
         if (endpoint) {
           connection = { endpoint, targetId: await targetIdForPage(context, page) };
         }
-      } catch (error) {
-        await context.close().catch(() => {});
-        throw error;
-      }
-      const unregister = registerHostedPage(input.taskRunId, page, connection);
-      const closeOnAbort = () => {
-        void context.close().catch(() => {});
-      };
-      input.signal.addEventListener("abort", closeOnAbort, { once: true });
-      try {
+        unregister = registerHostedPage(input.taskRunId, page, connection);
+        input.signal.addEventListener("abort", closeOnAbort, { once: true });
         input.signal.throwIfAborted();
         if (input.startUrl) {
           await page.goto(input.startUrl, { waitUntil: "domcontentloaded" });
@@ -262,9 +408,20 @@ export function createAppWorkflowBrowserPort(
       } finally {
         input.signal.removeEventListener("abort", closeOnAbort);
         unregister();
-        await context.close().catch(() => {});
+        if (credentialCodec && context) {
+          try {
+            const cookies = await context.cookies();
+            await writeRetainedCookies(cookieStatePath, cookies, credentialCodec);
+          } catch {
+            // Never fall back to writing browser state in clear text.
+          }
+        }
+        await context?.close().catch(() => {});
         const lastUsed = new Date();
-        await utimes(userDataDirectory, lastUsed, lastUsed).catch(() => {});
+        if (context) await utimes(browserStateDirectory, lastUsed, lastUsed).catch(() => {});
+        await rm(browserRuntimeDirectory, { recursive: true, force: true }).catch(() => {});
+        await removeEmptyDirectory(browserRuntimeTaskDirectory);
+        await removeEmptyDirectory(browserRuntimeRoot);
       }
     },
   };
