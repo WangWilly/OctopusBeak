@@ -5,6 +5,7 @@ import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-
 import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
@@ -17,9 +18,6 @@ import {
   linebankHumanAttestedCapture,
   normalizeLineBankFinancialCapture,
   linebankQueryWindows,
-  linebankSortStatementRows,
-  linebankSignIn,
-  linebankStatementRowsToCsv,
   linebankTransactionPageFromResponse,
   linebankValidateSourceOccurrenceFields,
   linebankValidateTransactionTime,
@@ -69,7 +67,7 @@ const delayedAccountSnapshotPage = {
     // samples its default before this await; the fixed client samples after it.
     SequencedDate.noArgumentValues.shift();
     return {
-      body: accountSnapshotBody,
+      bodyBytes: Array.from(new TextEncoder().encode(accountSnapshotBody)),
       url: accountSnapshotEndpoint,
       status: 200,
       method: "GET",
@@ -97,9 +95,9 @@ SequencedDate.noArgumentValues = [
 ];
 globalThis.Date = SequencedDate as unknown as DateConstructor;
 try {
-  const snapshot = await new LineBankApiClient(
-    delayedAccountSnapshotPage,
-  ).fetchAccountSnapshot();
+  const snapshot = await new LineBankApiClient(delayedAccountSnapshotPage, {
+    text: strictSourceText,
+  }).fetchAccountSnapshot();
   assert.equal(snapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
 } finally {
   globalThis.Date = OriginalDate;
@@ -107,9 +105,9 @@ try {
 
 await assert.rejects(
   () =>
-    new LineBankApiClient(delayedAccountSnapshotPage).fetchAccountSnapshot(
-      "1970-01-01T10:00:00.000Z",
-    ),
+    new LineBankApiClient(delayedAccountSnapshotPage, {
+      text: strictSourceText,
+    }).fetchAccountSnapshot("1970-01-01T10:00:00.000Z"),
   /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
 );
 
@@ -117,10 +115,44 @@ const linebankWorkflowSource = await readFile(
   new URL("./linebank-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(\)/u);
+assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
 assert.match(linebankWorkflowSource, /buildLinebankCurrentDepositBalanceCaptures/u);
 assert.match(linebankWorkflowSource, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/u);
+assert.match(linebankWorkflowSource, /runLineBankProviderWorkflow/u);
+assert.match(linebankWorkflowSource, /financialCommit\.execute/u);
+assert.match(linebankWorkflowSource, /text:\s*context\.text/u);
+assert.doesNotMatch(
+  linebankWorkflowSource,
+  /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|LibrettoWorkflowContext/u,
+);
+assert.doesNotMatch(
+  linebankWorkflowSource,
+  /node:fs\/promises|writeFile|outputDir|downloadSchema|outputSchema|writeStatementFiles|linebankStatementRowsToCsv|downloadLineBankStatements/u,
+);
+assert.doesNotMatch(
+  linebankWorkflowSource,
+  /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client/u,
+);
+
+await assert.rejects(
+  () =>
+    new LineBankApiClient(
+      {
+        async evaluate() {
+          return {
+            bodyBytes: [0xff],
+            url: accountSnapshotEndpoint,
+            status: 200,
+            method: "GET",
+            headers: accountSnapshotHeaders,
+          };
+        },
+      } as never,
+      { text: strictSourceText },
+    ).fetchAccountSnapshot(),
+  /Source text integrity failed: invalid-encoding/u,
+);
 
 assert.deepEqual(
   linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),
@@ -318,88 +350,6 @@ const transactionPage = {
 } as never;
 assert.equal(await linebankIsSignedIn(transactionPage), true);
 
-const signInEvents: string[] = [];
-let signInUrl = "https://accessibility.linebank.com.tw/";
-let signedIn = false;
-const signInLinkLocator = {
-  async count() {
-    return 1;
-  },
-  nth() {
-    return {
-      async isVisible() {
-        return signedIn;
-      },
-    };
-  },
-};
-const noDialogLocator = {
-  async count() {
-    return 0;
-  },
-};
-const credentialField = (selector: string) => ({
-  async fill(value: string) {
-    signInEvents.push(`fill:${selector}:${value}`);
-  },
-});
-const signInButton = {
-  async isVisible() {
-    return true;
-  },
-  async click() {
-    signInEvents.push("click:login");
-    signInUrl = "https://accessibility.linebank.com.tw/";
-    signedIn = true;
-  },
-};
-const signInButtonLocator = {
-  async count() {
-    return 1;
-  },
-  first() {
-    return signInButton;
-  },
-};
-const signInPage = {
-  url: () => signInUrl,
-  locator: (selector: string) => credentialField(selector),
-  getByRole: (role: string) => {
-    if (role === "alertdialog") return noDialogLocator;
-    if (role === "button") return signInButtonLocator;
-    return signInLinkLocator;
-  },
-  async goto(url: string) {
-    signInEvents.push(`goto:${url}`);
-    signInUrl = url;
-  },
-  async waitForTimeout(timeout: number) {
-    signInEvents.push(`wait:${timeout}`);
-  },
-} as never;
-await linebankSignIn(signInPage, {
-  linebank_user_id: "synthetic-national-id",
-  linebank_account: "synthetic-user-id",
-  linebank_password: "synthetic-password",
-});
-assert.deepEqual(signInEvents, [
-  "goto:https://accessibility.linebank.com.tw/login",
-  "fill:#nationalId:synthetic-national-id",
-  "fill:#userId:synthetic-user-id",
-  "fill:#pw:synthetic-password",
-  "click:login",
-]);
-
-signInEvents.length = 0;
-signInUrl = "https://accessibility.linebank.com.tw/";
-signedIn = true;
-await linebankSignIn(signInPage, {
-  linebank_user_id: "synthetic-national-id",
-  linebank_account: "synthetic-user-id",
-  linebank_password: "synthetic-password",
-});
-assert.deepEqual(signInEvents, []);
-
 const alreadyTransactionPage = {
   url: () => "https://accessibility.linebank.com.tw/transaction",
   locator: (selector: string) => {
@@ -407,18 +357,6 @@ const alreadyTransactionPage = {
     return transactionDropdown;
   },
 } as never;
-signedIn = false;
-signInUrl = "https://accessibility.linebank.com.tw/login";
-await assert.rejects(
-  () =>
-    linebankSignIn(signInPage, {
-      linebank_user_id: "synthetic-national-id",
-      linebank_account: "",
-      linebank_password: "synthetic-password",
-    }),
-  /linebank_account credential is required/,
-);
-
 const noAlertLocator = {
   async count() {
     return 0;
@@ -965,10 +903,6 @@ assert.deepEqual(
   ],
 );
 
-assert.equal(
-  linebankStatementRowsToCsv(rows),
-  "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註,匯率\n2026/07/05,2026/07/05,14:37:38,轉帳,,1000,1005,匯入 備註,\n",
-);
 
 const withdrawalRows = linebankApiRowsToStatementRows([
   {
@@ -1226,7 +1160,6 @@ const repeatedSourceRows = linebankApiRowsToStatementRows([
   },
 ]);
 assert.equal(repeatedSourceRows.length, 2);
-assert.equal(linebankSortStatementRows(repeatedSourceRows).length, 2);
 
 const pageOne = {
   pageNbr: 1,

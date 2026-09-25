@@ -5,7 +5,7 @@ import {
   type LineBankProviderWorkflowOutput,
 } from "../../workflows/linebank-statements.ts";
 
-/** App-owned LINE Bank statements workflow; the Libretto entry remains during migration. */
+/** Typed App-owned workflow definition for LINE Bank statement collection. */
 export const linebankStatementsWorkflow: WorkflowDefinition<
   LineBankProviderWorkflowInput,
   LineBankProviderWorkflowOutput
