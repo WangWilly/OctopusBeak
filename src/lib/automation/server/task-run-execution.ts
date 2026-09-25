@@ -60,7 +60,15 @@ import {
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
-import type { WorkflowBrowserPort, WorkflowExecutorPorts } from "../workflow-executor.ts";
+import type {
+  WorkflowBrowserPort,
+  WorkflowExecutorPorts,
+  WorkflowRunEvent,
+} from "../workflow-executor.ts";
+import {
+  classifyTypedWorkflowFailure,
+  summarizeTypedWorkflowOutput,
+} from "./typed-workflow-outcome.ts";
 import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
 import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
 import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
@@ -135,6 +143,7 @@ async function executeAppWorkflow(
       logTail: "",
       resumeFailure: null,
       statementSummary: null,
+      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
@@ -202,7 +211,7 @@ async function executeAppWorkflow(
         ?? (() => console.error("workflow-event-persistence-failed")),
     };
     const executor = createWorkflowExecutor([definition], ports);
-    await executor.run(
+    const workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
       workflowInputForTask(execution.task.workflowId, launchEnv),
@@ -215,12 +224,22 @@ async function executeAppWorkflow(
       logTail: "",
       resumeFailure: null,
       statementSummary: null,
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: summarizeTypedWorkflowOutput(workflowOutput),
+      },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
   } catch (error) {
     const cancelled = controller.signal.aborted
       || options.isCancellationRequested?.() === true;
+    let events: readonly WorkflowRunEvent[] = [];
+    try {
+      events = (await execution.persistence.taskRunById(execution.run.taskRunId))?.events ?? [];
+    } catch {
+      // Classification falls back to the opaque workflow code if events are unavailable.
+    }
     result = {
       exitCode: cancelled ? null : 1,
       signal: cancelled ? "SIGTERM" : null,
@@ -232,6 +251,10 @@ async function executeAppWorkflow(
       logTail: "",
       resumeFailure: null,
       statementSummary: null,
+      appWorkflowOutcome: {
+        errorCode: classifyTypedWorkflowFailure(error, events, cancelled),
+        summary: null,
+      },
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };

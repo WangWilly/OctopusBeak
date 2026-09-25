@@ -19,6 +19,10 @@ import {
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
 import { sanitizeAutomationLogChunk } from "./log-sanitizer.ts";
+import type {
+  TypedWorkflowErrorCode,
+  TypedWorkflowOutcomeSummary,
+} from "./typed-workflow-outcome.ts";
 export {
   appendCleanupError,
   automationCleanupFailureDetails,
@@ -76,6 +80,11 @@ export type AutomationTaskProcessResult = {
   logTail: string;
   resumeFailure: string | null;
   statementSummary: StatementRunSummary | null;
+  /** Typed App result kept on the process boundary for durable finalization. */
+  appWorkflowOutcome?: Readonly<{
+    errorCode: TypedWorkflowErrorCode | null;
+    summary: TypedWorkflowOutcomeSummary | null;
+  }>;
   outputPersistenceWarnings: string[];
   externalPrerequisiteIds: string[];
 };

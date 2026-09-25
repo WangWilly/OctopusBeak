@@ -206,6 +206,12 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
+    assert.ok(result.result);
+    assert.equal(result.result.appWorkflowOutcome?.errorCode, null);
+    assert.deepEqual(
+      Object.keys(result.result.appWorkflowOutcome?.summary?.counts ?? {}).sort(),
+      ["count", "rowCount", "sourceCaptureCount"],
+    );
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(app.credential("form input[type=text]"), "synthetic-user-id");
     assert.equal(app.credential("form input[type=password]", 0), "synthetic-account");
@@ -234,6 +240,8 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       workflowBrowserPortFactory: () => incompleteBrowser,
     }, async () => {});
     assert.equal(incomplete.status, "failed");
+    assert.ok(incomplete.result);
+    assert.equal(incomplete.result.appWorkflowOutcome?.errorCode, "source-validation-failed");
     assert.equal(committed.length, 1, "incomplete CTBC source is rejected before commit");
     const rejectedRun = await provider.automation.taskRunById(incompleteRunId);
     assert.ok(rejectedRun?.events.some((event) => event.code === "source-validation-rejected"));
@@ -252,6 +260,8 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       workflowBrowserPortFactory: () => malformedBrowser,
     }, async () => {});
     assert.equal(malformed.status, "failed");
+    assert.ok(malformed.result);
+    assert.equal(malformed.result.appWorkflowOutcome?.errorCode, "source-integrity-failed");
     assert.equal(committed.length, 1, "undecodable CTBC source is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
     assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
@@ -283,8 +293,36 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       workflowBrowserPortFactory: () => cancellationBrowser,
     }, async () => {});
     assert.equal(cancelled.status, "cancelled");
+    assert.ok(cancelled.result);
+    assert.equal(cancelled.result.appWorkflowOutcome?.errorCode, "cancelled");
     assert.equal(committed.length, 1, "cancelled CTBC run does not commit");
     assert.deepEqual(await readdir(root), []);
+
+    const ambiguousPage = createPage({ signedIn: true });
+    const ambiguousBrowser: WorkflowBrowserPort = {
+      async withPage(runPage) {
+        return runPage(ambiguousPage.page);
+      },
+    };
+    let commitAttempts = 0;
+    const ambiguousRunId = await createRun(provider);
+    const ambiguous = await runAutomationTaskExecution(task, provider.automation, {
+      taskRunId: ambiguousRunId,
+      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      workflowPorts: {
+        financialCommit: {
+          async execute() {
+            commitAttempts += 1;
+            throw new Error("synthetic transport loss after commit dispatch");
+          },
+        },
+      },
+      workflowBrowserPortFactory: () => ambiguousBrowser,
+    }, async () => {});
+    assert.equal(ambiguous.status, "failed");
+    assert.ok(ambiguous.result);
+    assert.equal(ambiguous.result.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+    assert.equal(commitAttempts, 1, "an ambiguous commit is not replayed by task execution");
   } finally {
     process.chdir(previousDirectory);
     await store.close();
