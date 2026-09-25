@@ -301,6 +301,11 @@ async function start() {
       setTimer: (callback, ms) => setTimeout(callback, ms),
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
+      hasOccurrenceBeenAttempted: (occurrenceUtc) =>
+        operationalRuntime.provider.automation.hasOccurrenceBeenAttempted(
+          "exchange-rates",
+          occurrenceUtc,
+        ),
       hasSuccessSince: (occurrenceUtc) => operationalRuntime.provider.automation.hasSuccessfulTaskRunSince(
         "exchange-rates",
         occurrenceUtc,
