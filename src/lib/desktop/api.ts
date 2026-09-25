@@ -286,7 +286,7 @@ export type OctopusBeakApi = {
     openSetupGuideLink(groupId: string, linkId: string, locale: "en" | "zh-TW"): Promise<{ ok: true }>;
     run(taskId: string): Promise<{ started: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     runMany(taskIds: string[]): Promise<AutomationRunManyResult>;
-    resume(taskId: string): Promise<{ resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
+    resumeHumanAssistance(taskId: string): Promise<{ resumed: string; runId?: string; runtime?: AutomationRuntimeSnapshot }>;
     cancel(taskId: string): Promise<{ cancelled: string }>;
     forceTerminate(taskId: string): Promise<{ cancelled: string }>;
     runHistory(): Promise<AutomationTaskHistoryRow[]>;
@@ -338,7 +338,7 @@ export const octopusBeakApiChannels = [
   "automation:openSetupGuideLink",
   "automation:run",
   "automation:runMany",
-  "automation:resume",
+  "automation:resumeHumanAssistance",
   "automation:cancel",
   "automation:forceTerminate",
   "automation:runHistory",

@@ -684,7 +684,6 @@ const en = {
     actionLabels: {
       Run: "Run",
       "Run again": "Run again",
-      Resume: "Resume",
       Locked: "Locked",
       Cancel: "Cancel",
       Configure: "Configure",
@@ -1558,7 +1557,6 @@ const zh: typeof en = {
     actionLabels: {
       Run: "執行",
       "Run again": "重新執行",
-      Resume: "繼續",
       Locked: "已鎖定",
       Cancel: "取消",
       Configure: "設定",

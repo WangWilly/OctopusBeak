@@ -8,6 +8,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
+  automationResumeHumanAssistance,
   automationSetupGuideLink,
   loadAutomationDesktopModel,
 } from "./desktop-api.ts";
@@ -115,4 +116,30 @@ test("automation setup links remain stable without loading the ledger", () => {
     "https://campaign.maicoin.com/en/api",
   );
   assert.equal(automationSetupGuideLink("maicoin", "missing", "en"), null);
+});
+
+test("legacy workflow sessions cannot be resumed from a saved Libretto log", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    await provider.automation.createTaskRun({
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status: "waiting_for_human",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-26T00:00:00.000Z",
+      logPath: "data/automation/logs/legacy-run.log",
+      logTail: 'Resume requested for session "ses-legacy".',
+    });
+    await assert.rejects(
+      automationResumeHumanAssistance("exchange-rates", provider),
+      /Start a new run from the source/u,
+    );
+  } finally {
+    await store.close();
+  }
 });

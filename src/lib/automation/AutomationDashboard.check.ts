@@ -151,8 +151,13 @@ const resumeHumanViewerSource = source.slice(
   source.indexOf("async function resumeHumanViewer"),
   source.indexOf("function pointerPoint"),
 );
-assert.match(resumeHumanViewerSource, /automation\.resume\(task\.id\)/);
+assert.match(
+  resumeHumanViewerSource,
+  /automation\.resumeHumanAssistance\(task\.id\)/,
+);
 assert.doesNotMatch(resumeHumanViewerSource, /runTask\(task\)/);
+assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
+assert.match(runTaskSource, /automation\.run\(task\.id\)/);
 const viewerPointerUpSource = source.slice(
   source.indexOf("function handleViewerPointerUp"),
   source.indexOf("async function submitViewerDrag"),

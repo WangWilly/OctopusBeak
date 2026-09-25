@@ -35,7 +35,7 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:openSetupGuideLink",
   "automation:run",
   "automation:runMany",
-  "automation:resume",
+  "automation:resumeHumanAssistance",
   "automation:cancel",
   "automation:forceTerminate",
   "automation:runHistory",

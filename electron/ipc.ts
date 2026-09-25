@@ -10,7 +10,7 @@ import {
   cathayGmailOtpStatus,
   disconnectCathayGmailOtp,
   enableCathayGmailOtp,
-  automationResume,
+  automationResumeHumanAssistance,
   automationRun,
   automationRunMany,
   automationForceTerminate,
@@ -451,9 +451,9 @@ export function registerOctopusBeakIpc({
     await ensureAutomationRuntimeReady("automation-run-many");
     return automationRunMany(taskIds, operationalProvider);
   });
-  ipcMain.handle("automation:resume", async (_event, taskId: string) => {
+  ipcMain.handle("automation:resumeHumanAssistance", async (_event, taskId: string) => {
     await ensureAutomationRuntimeReady("automation-resume");
-    return automationResume(taskId, operationalProvider);
+    return automationResumeHumanAssistance(taskId, operationalProvider);
   });
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
     automationCancel(taskId, operationalProvider),
@@ -566,7 +566,7 @@ export function registerOctopusBeakIpc({
         );
       if (resumed) {
         await ensureAutomationRuntimeReady("automation-resume");
-        await automationResume(taskId, operationalProvider);
+        await automationResumeHumanAssistance(taskId, operationalProvider);
       }
       return { ok: true as const, contract: updatedContract, resumed };
     },
