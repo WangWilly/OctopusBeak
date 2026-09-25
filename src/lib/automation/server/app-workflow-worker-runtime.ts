@@ -7,6 +7,7 @@ import type {
   WorkflowFinancialCommitPort,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
+import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
@@ -23,8 +24,14 @@ import {
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerOutboundFrame,
   type AppWorkflowWorkerStart,
+  type CathayGmailOtpOperation,
+  type CathayGmailOtpRequestFrame,
+  type CathayGmailOtpResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
-import { workflowDefinitionForTask } from "./app-workflow-registry.ts";
+import {
+  workflowDefinitionForTask,
+  type AppWorkflowRegistryDependencies,
+} from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
 import { createPGliteChildRpcClient } from "../../../../electron/pglite-child-rpc-client.ts";
 
@@ -52,7 +59,10 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   port: MessagePort;
   workerData: unknown;
   /** Test seam; production resolves from the App's typed workflow catalog. */
-  resolveDefinition?: (workflowId: string) => WorkflowDefinition | null;
+  resolveDefinition?: (
+    workflowId: string,
+    dependencies?: AppWorkflowRegistryDependencies,
+  ) => WorkflowDefinition | null;
   /** Test seam; production attaches to the run-scoped App browser page. */
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
@@ -93,6 +103,11 @@ export async function runAppWorkflowWorker(
   const controller = new AbortController();
   const pendingEvents = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
   const pendingAssistance = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
+  const pendingCathayOtp = new Map<string, Readonly<{
+    operation: CathayGmailOtpOperation;
+    resolve(frame: AppWorkflowWorkerInboundFrame): void;
+    reject(error: Error): void;
+  }>>();
   const events: WorkflowRunEvent[] = [];
   let protocolFailure = false;
   let terminal = false;
@@ -104,6 +119,7 @@ export async function runAppWorkflowWorker(
   const failPending = () => {
     pendingEvents.clear();
     pendingAssistance.clear();
+    pendingCathayOtp.clear();
   };
   const onAbort = () => failPending();
   controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -131,6 +147,17 @@ export async function runAppWorkflowWorker(
       }
       pendingEvents.delete(frame.eventId);
       resolve(frame);
+      return;
+    }
+    if (frame.kind === "cathay-gmail-otp-response") {
+      const pending = pendingCathayOtp.get(frame.requestId);
+      if (!pending || pending.operation !== frame.operation) {
+        protocolFailure = true;
+        if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
+        return;
+      }
+      pendingCathayOtp.delete(frame.requestId);
+      pending.resolve(frame);
       return;
     }
     const resolve = pendingAssistance.get(frame.requestId);
@@ -176,9 +203,88 @@ export async function runAppWorkflowWorker(
     }
   });
 
+  const requestCathayOtp = (
+    operation: CathayGmailOtpOperation,
+    boundaryId?: string,
+  ): Promise<CathayGmailOtpResponseFrame> => new Promise((resolve, reject) => {
+    if (controller.signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    if (start.workflowId !== "cathay-all-statements" || pendingCathayOtp.size >= 8) {
+      reject(new AppWorkflowWorkerProtocolError());
+      return;
+    }
+    const requestId = randomUUID();
+    const frame: CathayGmailOtpRequestFrame = operation === "retrieve"
+      ? {
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        kind: "cathay-gmail-otp-request",
+        requestId,
+        operation,
+        boundaryId: boundaryId ?? "",
+      }
+      : {
+        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+        kind: "cathay-gmail-otp-request",
+        requestId,
+        operation,
+      };
+    const onAbortRequest = () => {
+      pendingCathayOtp.delete(requestId);
+      reject(abortError());
+    };
+    controller.signal.addEventListener("abort", onAbortRequest, { once: true });
+    pendingCathayOtp.set(requestId, {
+      operation,
+      resolve: (value) => {
+        controller.signal.removeEventListener("abort", onAbortRequest);
+        resolve(value as CathayGmailOtpResponseFrame);
+      },
+      reject: (error) => {
+        controller.signal.removeEventListener("abort", onAbortRequest);
+        reject(error);
+      },
+    });
+    try {
+      send(frame);
+    } catch {
+      controller.signal.removeEventListener("abort", onAbortRequest);
+      pendingCathayOtp.delete(requestId);
+      reject(new AppWorkflowWorkerProtocolError());
+    }
+  });
+
+  const cathayGmailOtpPort: CathayGmailOtpPort = {
+    async ensureAccess() {
+      const response = await requestCathayOtp("ensure-access");
+      if (response.operation !== "ensure-access") throw new AppWorkflowWorkerProtocolError();
+      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
+      if (response.status !== "ready") throw new AppWorkflowWorkerProtocolError();
+      return { status: "ready" };
+    },
+    async prepareRetrieval() {
+      const response = await requestCathayOtp("prepare-retrieval");
+      if (response.operation !== "prepare-retrieval") throw new AppWorkflowWorkerProtocolError();
+      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
+      if (response.status !== "prepared") throw new AppWorkflowWorkerProtocolError();
+      return { status: "prepared", boundaryId: response.boundaryId };
+    },
+    async retrieve(boundaryId) {
+      const response = await requestCathayOtp("retrieve", boundaryId);
+      if (response.operation !== "retrieve") throw new AppWorkflowWorkerProtocolError();
+      if (response.status === "fallback") return { status: "fallback", reason: response.reason };
+      if (response.status !== "found") throw new AppWorkflowWorkerProtocolError();
+      return { status: "found", otp: response.otp };
+    },
+  };
+
   let childRpc: ReturnType<typeof createPGliteChildRpcClient> | undefined;
   try {
-    const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId);
+    const definitionDependencies: AppWorkflowRegistryDependencies = start.workflowId === "cathay-all-statements"
+      ? { cathayGmailOtpPort }
+      : {};
+    const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
     if (definition.requiresMaicoinPersistence) throw new Error("worker-start-failed");
 

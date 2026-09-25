@@ -36,6 +36,7 @@ import {
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
+import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
@@ -73,6 +74,8 @@ export type AutomationTaskExecutionOptions = {
   }) => Promise<unknown>;
   /** App composition may replace a typed workflow capability at its port seam. */
   workflowPorts?: Partial<WorkflowExecutorPorts>;
+  /** Test seam for exercising the main-only Cathay Gmail OTP dependency. */
+  createCathayGmailOtpPort?: typeof createCathayGmailOtpPort;
   workflowBrowserPortFactory?: (input: {
     taskId: string;
     taskRunId: string;
@@ -86,7 +89,12 @@ async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  const definition = workflowDefinitionForTask(execution.task.workflowId);
+  const workflowDependencies = execution.task.workflowId === "cathay-all-statements"
+    ? {
+      cathayGmailOtpPort: (options.createCathayGmailOtpPort ?? createCathayGmailOtpPort)(),
+    }
+    : {};
+  const definition = workflowDefinitionForTask(execution.task.workflowId, workflowDependencies);
   if (!definition || !execution.task.workflowId) {
     return {
       exitCode: 1,

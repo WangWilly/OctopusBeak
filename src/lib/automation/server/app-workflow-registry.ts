@@ -19,6 +19,7 @@ import type {
   CathayAllProviderWorkflowInput,
   CathayAllProviderWorkflowOutput,
 } from "../../../workflows/cathay-all-statements.ts";
+import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
 import {
   YUANTA_TRADE_LOGIN_URL,
   type YuantaTradeProviderWorkflowOutput,
@@ -27,6 +28,7 @@ import type { AutomationPersistenceProvider } from "./store.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
+  definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
   startUrl?: string;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
   registerHumanAssistance?: (
@@ -34,23 +36,33 @@ type AppWorkflowRegistration = Readonly<{
   ) => Promise<() => void> | (() => void);
 }>;
 
-const cathayAllStatementsWorkflow: WorkflowDefinition<
-  unknown,
-  CathayAllProviderWorkflowOutput
-> = {
-  id: "cathay-all-statements",
-  requiresFinancialCommit: true,
-  async run(context, input) {
-    const [provider, otpHost] = await Promise.all([
-      import("../cathay-all-workflow.ts"),
-      import("./cathay-otp-port.ts"),
-    ]);
-    const definition = provider.createCathayAllStatementsWorkflow(
-      otpHost.createCathayGmailOtpPort(),
-    );
-    return await definition.run(context, input as CathayAllProviderWorkflowInput);
-  },
+export type AppWorkflowRegistryDependencies = Readonly<{
+  cathayGmailOtpPort?: CathayGmailOtpPort;
+}>;
+
+const unavailableCathayOtpPort: CathayGmailOtpPort = {
+  async ensureAccess() { return { status: "fallback", reason: "not-configured" }; },
+  async prepareRetrieval() { return { status: "fallback", reason: "not-configured" }; },
+  async retrieve() { return { status: "fallback", reason: "not-configured" }; },
 };
+
+function createCathayRegistryDefinition(
+  otp: CathayGmailOtpPort,
+): WorkflowDefinition<unknown, CathayAllProviderWorkflowOutput> {
+  return {
+    id: "cathay-all-statements",
+    requiresFinancialCommit: true,
+    async run(context, input) {
+      const { createCathayAllStatementsWorkflow } = await import("../cathay-all-workflow.ts");
+      return await createCathayAllStatementsWorkflow(otp).run(
+        context,
+        input as CathayAllProviderWorkflowInput,
+      );
+    },
+  };
+}
+
+const cathayAllStatementsWorkflow = createCathayRegistryDefinition(unavailableCathayOtpPort);
 
 const fubonAllStatementsWorkflow: WorkflowDefinition<
   FubonAllWorkflowInput,
@@ -240,6 +252,11 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: cathayAllStatementsWorkflow,
+    definitionForDependencies(dependencies) {
+      return dependencies.cathayGmailOtpPort
+        ? createCathayRegistryDefinition(dependencies.cathayGmailOtpPort)
+        : cathayAllStatementsWorkflow;
+    },
     startUrl: "https://www.cathaybk.com.tw/MyBank/",
     inputFromEnvironment(environment) {
       const configuredTypes = environment.LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES;
@@ -266,8 +283,13 @@ function workflowRegistration(workflowId: string | undefined) {
   return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
 }
 
-export function workflowDefinitionForTask(workflowId: string | undefined) {
-  return workflowRegistration(workflowId)?.definition ?? null;
+export function workflowDefinitionForTask(
+  workflowId: string | undefined,
+  dependencies: AppWorkflowRegistryDependencies = {},
+) {
+  const registration = workflowRegistration(workflowId);
+  if (!registration) return null;
+  return registration.definitionForDependencies?.(dependencies) ?? registration.definition;
 }
 
 export function workflowInputForTask(
