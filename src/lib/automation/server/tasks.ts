@@ -1045,15 +1045,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "ctbc-statements",
     label: "CTBC statements",
-    script: "run:ctbc-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/ctbc-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    script: "workflow:ctbc-statements",
+    command: [],
+    workflowId: "ctbc-statements",
     kind: "crawler",
     credentialGroupId: "ctbc",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[6].credentialKeys,
