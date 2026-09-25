@@ -60,14 +60,22 @@ import {
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
+import type { WorkflowBrowserPort, WorkflowExecutorPorts } from "../workflow-executor.ts";
 import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
 import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
 import { createMaicoinWorkflow } from "../maicoin-workflow.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
+import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
+import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
+import {
+  workflowDefinitionForTask,
+  workflowInputForTask,
+} from "./app-workflow-registry.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
   createPGliteChildRpcClient,
+  requirePGliteChildRpcClientFromEnv,
 } from "../../../../electron/pglite-child-rpc-client.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
@@ -76,6 +84,7 @@ import {
 
 const activeTaskChildren = new Map<string, ChildProcess>();
 const activeWorkflowControllers = new Map<string, AbortController>();
+const activeWorkflowRunIds = new Map<string, string>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
@@ -101,7 +110,134 @@ export type AutomationTaskExecutionOptions = {
     scheduledAtUtc?: string;
     emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
   }) => Promise<unknown>;
+  /** App composition may replace a typed workflow capability at its port seam. */
+  workflowPorts?: Partial<WorkflowExecutorPorts>;
+  workflowBrowserPortFactory?: (input: {
+    taskId: string;
+    taskRunId: string;
+    signal: AbortSignal;
+    userDataDirectory: string;
+  }) => WorkflowBrowserPort;
 };
+
+async function executeAppWorkflow(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+): Promise<AutomationTaskProcessResult> {
+  const definition = workflowDefinitionForTask(execution.task.workflowId);
+  if (!definition || !execution.task.workflowId) {
+    return {
+      exitCode: 1,
+      signal: null,
+      error: new Error("App workflow definition is unavailable."),
+      logTail: "",
+      resumeFailure: null,
+      statementSummary: null,
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  }
+
+  const controller = new AbortController();
+  const cancellationPoll = setInterval(() => {
+    if (options.isCancellationRequested?.() && !controller.signal.aborted) {
+      controller.abort(new Error("Automation task cancelled."));
+    }
+  }, 50);
+  cancellationPoll.unref();
+  activeWorkflowControllers.set(execution.task.id, controller);
+  activeWorkflowRunIds.set(execution.task.id, execution.run.taskRunId);
+
+  let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
+  let result: AutomationTaskProcessResult;
+  try {
+    const launchEnv = options.launchEnv ?? automationProcessEnv();
+    if (options.isCancellationRequested?.()) {
+      controller.abort(new Error("Automation task cancelled."));
+    }
+    const injectedPorts = options.workflowPorts ?? {};
+    let financialCommit = injectedPorts.financialCommit;
+    if (definition.requiresFinancialCommit && !financialCommit) {
+      childRpc = requirePGliteChildRpcClientFromEnv(launchEnv);
+      await childRpc.ready;
+      financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
+    }
+    const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
+    const browser = injectedPorts.browser
+      ?? options.workflowBrowserPortFactory?.({
+        taskId: execution.task.id,
+        taskRunId: execution.run.taskRunId,
+        signal: controller.signal,
+        userDataDirectory,
+      })
+      ?? createAppWorkflowBrowserPort({
+        taskId: execution.task.id,
+        taskRunId: execution.run.taskRunId,
+        signal: controller.signal,
+        userDataDirectory,
+      });
+    const ports: WorkflowExecutorPorts = {
+      browser,
+      text: strictSourceText,
+      humanAssistance: injectedPorts.humanAssistance
+        ?? createAppWorkflowHumanAssistancePort({
+          taskRunId: execution.run.taskRunId,
+          persistence: execution.persistence,
+          onRuntimeUpdate: execution.onRuntimeUpdate,
+        }),
+      ...(financialCommit ? { financialCommit } : {}),
+      events: injectedPorts.events ?? {
+        async append(event) {
+          await execution.persistence.appendRunEvent(event);
+          await execution.onRuntimeUpdate?.(event.runId);
+        },
+      },
+      now: injectedPorts.now ?? (() => new Date().toISOString()),
+      onEventFailure: injectedPorts.onEventFailure
+        ?? (() => console.error("workflow-event-persistence-failed")),
+    };
+    const executor = createWorkflowExecutor([definition], ports);
+    await executor.run(
+      execution.task.workflowId,
+      execution.run.taskRunId,
+      workflowInputForTask(execution.task.workflowId, launchEnv),
+      controller.signal,
+    );
+    result = {
+      exitCode: 0,
+      signal: null,
+      error: null,
+      logTail: "",
+      resumeFailure: null,
+      statementSummary: null,
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  } catch (error) {
+    const cancelled = controller.signal.aborted
+      || options.isCancellationRequested?.() === true;
+    result = {
+      exitCode: cancelled ? null : 1,
+      signal: cancelled ? "SIGTERM" : null,
+      // Provider exceptions may contain account or invoice data. Persist only
+      // a stable task-level classification in the operational database.
+      error: cancelled
+        ? new Error("Automation task cancelled.")
+        : new Error("App workflow failed (workflow-failed)."),
+      logTail: "",
+      resumeFailure: null,
+      statementSummary: null,
+      outputPersistenceWarnings: [],
+      externalPrerequisiteIds: [],
+    };
+  } finally {
+    clearInterval(cancellationPoll);
+    activeWorkflowControllers.delete(execution.task.id);
+    activeWorkflowRunIds.delete(execution.task.id);
+    childRpc?.close();
+  }
+  return result;
+}
 
 export function createAutomationSessionId(
   uuid: () => string = randomUUID,
@@ -202,7 +338,9 @@ async function createAutomationTaskRunExecution(
     session,
     options.resumeSession ? undefined : options.hostOwnedDialogProvider,
   );
-  const command = task.id === "exchange-rates" || task.id === "sync-maicoin"
+  const command = task.workflowId
+    ? { command: "", args: [], display: `workflow:${task.workflowId}`, env }
+    : task.id === "exchange-rates" || task.id === "sync-maicoin"
     ? { command: "", args: [], display: `workflow:${task.id}`, env }
     : resolveTaskCommand(
       task,
@@ -227,12 +365,12 @@ async function createAutomationTaskRunExecution(
     ? await persistence.taskRunById(options.taskRunId)
     : resumeFrom;
   if (options.taskRunId && !existingRun) return null;
-  const logPath = existingRun?.logPath ?? join(
+  const logPath = existingRun?.logPath ?? (task.workflowId ? "" : join(
     "data",
     "automation",
     "logs",
     `${task.id}-${Date.now()}-${attempt}.log`,
-  );
+  ));
   const run = existingRun
     ? { taskRunId: existingRun.taskRunId, attempt }
     : {
@@ -717,6 +855,43 @@ export async function runAutomationTaskExecution(
       owner: execution.owner,
       };
   }
+  if (task.workflowId) {
+    const result = await executeAppWorkflow(execution, options);
+    const provider = { automation: persistence };
+    if (options.deferFinalization) {
+      return {
+        status: automationTaskProcessStatus(task.kind, result, {
+          attempt: execution.run.attempt,
+          maxAttempts: options.maxAttempts ?? execution.run.attempt,
+          forceTerminated: options.isForceTerminationRequested?.() === true,
+        }),
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
+      };
+    }
+    const finalized = await finalizeAutomationTaskRun(
+      {
+        provider,
+        taskId: task.id,
+        taskKind: task.kind,
+        taskRunId: execution.run.taskRunId,
+        logPath: execution.logPath,
+        forceTerminated: options.isForceTerminationRequested?.() === true,
+      },
+      result,
+    );
+    return {
+      status: finalized.status,
+      taskRunId: execution.run.taskRunId,
+      executionId: execution.executionId,
+      session: execution.session,
+      owner: execution.owner,
+      result,
+    };
+  }
   if (task.id === "exchange-rates") {
     let result: AutomationTaskProcessResult;
     let progressQueue = Promise.resolve();
@@ -1003,6 +1178,30 @@ export function automationTaskProcessStatus(
 
 export function automationTaskChild(taskId: string) {
   return activeTaskChildren.get(taskId);
+}
+
+/** Abort live App workflows and persist interruption before startup recovery. */
+export async function interruptActiveAppWorkflows(
+  persistence: AutomationPersistencePort,
+) {
+  for (const [taskId, taskRunId] of activeWorkflowRunIds) {
+    const controller = activeWorkflowControllers.get(taskId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new Error("App is shutting down."));
+    }
+    const current = await persistence.taskRunById(taskRunId);
+    if (!current || !["preparing", "queued", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
+      continue;
+    }
+    await persistence.transitionTaskRunToTerminal(taskRunId, {
+      status: "interrupted",
+      finishedAt: new Date().toISOString(),
+      exitCode: null,
+      signal: null,
+      errorMessage: "App closed while this workflow was running.",
+      logTail: "",
+    });
+  }
 }
 
 function signalAutomationChildTree(child: ChildProcess, signal: NodeJS.Signals) {

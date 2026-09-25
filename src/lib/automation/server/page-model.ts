@@ -98,7 +98,11 @@ export function buildAutomationPageModel(input: {
       progressPercent,
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       statementFailures,
-      humanSession: status === "waiting_for_human" ? resumeSessionFromLog(runtime?.logTail ?? run?.logTail ?? "") : null,
+      humanSession: status === "waiting_for_human"
+        ? task.workflowId
+          ? run?.taskRunId ?? runtime?.runId ?? null
+          : resumeSessionFromLog(runtime?.logTail ?? run?.logTail ?? "")
+        : null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,
       forceTerminateAvailable: runtime?.forceTerminateAvailable === true,
       isActive,

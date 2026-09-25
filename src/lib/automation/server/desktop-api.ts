@@ -64,6 +64,7 @@ import {
   setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
 } from "./gmail-otp-service.ts";
 import { automationRuntimeState } from "./runtime-state.ts";
+import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
 
 const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
   "authorization-cancelled",
@@ -582,6 +583,23 @@ export async function automationResume(
   if (row.status !== "waiting_for_human")
     throw new Error("Task is not waiting for human input.");
   assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
+  if (task.workflowId) {
+    const runId = row.runId;
+    if (!runId) throw new Error("Missing App workflow run ID.");
+    const completionStatus = row.humanAssistanceContract?.completion.status;
+    if (!completionStatus || completionStatus === "pending") {
+      throw new Error("Human verification input is incomplete. Enter the verification input before Resume.");
+    }
+    const resumedInPlace = await resumeAppWorkflowHumanAssistance(runId, completionStatus);
+    if (!resumedInPlace) {
+      throw new Error("The App workflow is no longer active. Restart it from the beginning.");
+    }
+    return {
+      resumed: task.id,
+      runId,
+      runtime: automationRuntimeState.snapshot(),
+    };
+  }
   const session = resumeSessionFromLog(row.logTail);
   if (!session) throw new Error("Missing Libretto resume session in latest log.");
   const resumed = await startAutomationResume(task.id, session, provider);

@@ -331,15 +331,17 @@ export async function finalizePersistedRun(
     + " cleanup-error=" + (sessionCleanup.cleanupFailed ? "failed" : "none") + "\n";
   let logTail = current.logTail;
   let errorText = sessionCleanup.errorMessage;
-  try {
-    appendLog(current.logPath, finalizationLog);
-  } catch (error) {
-    const warning = sanitizeAutomationLogChunk(
-      "automation-output-write-failed: " + errorMessage(error),
-    );
-    console.error(warning);
-    errorText = [errorText, warning].filter(Boolean).join("\n") || null;
-    logTail = tail(logTail + "\n" + warning + "\n");
+  if (!taskById(current.taskId)?.workflowId) {
+    try {
+      appendLog(current.logPath, finalizationLog);
+    } catch (error) {
+      const warning = sanitizeAutomationLogChunk(
+        "automation-output-write-failed: " + errorMessage(error),
+      );
+      console.error(warning);
+      errorText = [errorText, warning].filter(Boolean).join("\n") || null;
+      logTail = tail(logTail + "\n" + warning + "\n");
+    }
   }
   await finalizeTaskRunTransition(provider, run, {
     status,

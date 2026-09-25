@@ -12,13 +12,18 @@ import type {
 import { taskById } from "./tasks.ts";
 
 export function humanSessionFromRun(
-  run: Pick<AutomationTaskRun, "status" | "logTail"> | undefined,
+  run: (Pick<AutomationTaskRun, "status" | "logTail">
+    & Partial<Pick<AutomationTaskRun, "taskRunId">>) | undefined,
   taskId: string,
 ) {
   if (run?.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);
   }
 
+  if (taskById(taskId)?.workflowId) {
+    if (run.taskRunId) return run.taskRunId;
+    throw new Error(`Missing App workflow run ID for automation task: ${taskId}`);
+  }
   const session = resumeSessionFromLog(run.logTail);
   if (!session) throw new Error(`Missing Libretto resume session for automation task: ${taskId}`);
   return session;

@@ -122,17 +122,12 @@ assert.deepEqual(
 
 const eInvoice = taskById("einvoice-personal-invoices");
 assert.ok(eInvoice);
-const eInvoiceCommand = resolveTaskCommand(eInvoice, {}, { PATH: "/usr/bin" });
-assert.deepEqual(eInvoiceCommand, {
-  display: "run:einvoice-personal-invoices",
-  command: "npm",
-  args: ["run", "run:einvoice-personal-invoices"],
-  env: { PATH: "/usr/bin" },
-});
-assert.equal(
-  packageJson.scripts[eInvoiceCommand.display],
-  "libretto run src/workflows/einvoice-personal-invoices.ts --headless",
+assert.throws(
+  () => resolveTaskCommand(eInvoice, {}, { PATH: "/usr/bin" }),
+  /App workflow tasks do not have a Libretto command/u,
 );
+assert.equal(eInvoice.workflowId, "einvoice-personal-invoices");
+assert.deepEqual(eInvoice.command, []);
 
 assert.deepEqual(
   resolveLibrettoCommand(["resume", "--session", "ses-123"], env),

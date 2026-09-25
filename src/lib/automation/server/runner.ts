@@ -21,6 +21,7 @@ import {
   createAutomationOutputBuffer,
   createAutomationSessionId,
   createAutomationProgressFrameParser,
+  interruptActiveAppWorkflows,
   liveTaskRunUpdate,
   resumeFailureMessage,
   runAutomationTaskExecution,
@@ -333,7 +334,9 @@ async function preparedRunForTaskWithPersistence(
     attempt: 1,
     maxAttempts: task.maxAttempts,
     startedAt: new Date().toISOString(),
-    logPath: join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
+    logPath: task.workflowId
+      ? ""
+      : join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
   });
   const run = await provider.automation.taskRunById(created.taskRunId);
   if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
@@ -662,6 +665,11 @@ export async function shutdownAutomationSessions(
 ): Promise<void> {
   terminateAutomationTaskProcesses();
   const errors: unknown[] = [];
+  try {
+    await interruptActiveAppWorkflows(provider.automation);
+  } catch (error) {
+    errors.push(error);
+  }
   const finalizeOwnedSessions = dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
   const finalizePersistedRuns = dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
   try {
