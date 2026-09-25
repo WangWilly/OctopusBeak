@@ -49,7 +49,7 @@ The Automation page keeps sources, sign-in details, run history, and human assis
 1. Open OctopusBeak and use Welcome to choose a language and whether to start setup.
 2. Choose one source, enter its sign-in details, and select statement types.
 3. Start collection. Complete any CAPTCHA or OTP requested by the provider.
-4. Run Import after collection finishes.
+4. The app validates source completeness and writes accepted data directly to the local database.
 5. Return to Overview to review the result.
 
 The app remembers onboarding progress, so you can quit and continue later. You can also restart onboarding from Settings.
@@ -71,11 +71,11 @@ The app remembers onboarding progress, so you can quit and continue later. You c
 | E-Invoice | Personal invoices and purchased items |
 | MAX / MaiCoin | Crypto balances and statement rows |
 
-SinoPac foreign-currency statements are collected and retained as traceable source evidence, and their rows are promoted to canonical Financial Transactions under a human-attested identity contract. Advertised canonical foreign-currency support currently includes SinoPac, Yuanta, Cathay, and LINE Bank.
+SinoPac foreign-currency data is retained as traceable account records, and rows that satisfy the human-attested identity contract are promoted to canonical Financial Transactions. Advertised canonical foreign-currency support currently includes SinoPac, Yuanta, Cathay, and LINE Bank.
 
 ## Your data stays on your device
 
-Downloaded statements, the ledger, automation settings, and run history are stored locally. Sign-in details also stay on your Mac and are encrypted with Electron `safeStorage`. If secure encryption is unavailable, OctopusBeak stops at startup instead of writing plaintext passwords.
+Financial records, automation settings, and run summaries are stored in the local database. The app processes source content in memory without saving source downloads, generated CSV/JSON, or raw logs; structured run events are kept for 30 days. Sign-in details stay on your Mac and are encrypted with Electron `safeStorage`. If secure encryption is unavailable, OctopusBeak stops at startup instead of writing plaintext passwords.
 
 CAPTCHAs, OTPs, session cookies, and other authentication material are not sent to a model. When a provider asks for manual verification, you complete it in the window.
 
@@ -86,7 +86,6 @@ CAPTCHAs, OTPs, session cookies, and other authentication material are not sent 
 
 ```bash
 npm install
-npm run libretto:setup
 npm run typecheck
 npm run desktop:dev
 ```
@@ -107,21 +106,17 @@ See [Desktop release](docs/desktop-release.md) for signing and notarization.
 <details>
 <summary>CLI and local ledger</summary>
 
-The packaged desktop app includes Libretto, so regular users do not need to install the CLI. For workflow development, run the npm scripts directly:
+The desktop app starts production workflows. For typed workflow development, use the project CLI and its fixture:
 
 ```bash
-npm run run:fubon-all-statements
-npx libretto resume --session <session-name>
-npm run libretto:close-all
+npm run workflow:dev -- help
+npm run workflow:dev -- list
+npm run workflow:dev -- fixture
 ```
 
-Workflows write CSV files and matching JSON metadata under `downloads/<workflow-name>/`. The desktop PGlite worker stores financial data in `data/pglite/`.
+See the [workflow development guide](docs/agents/workflow-development.md) for how to add and test a provider. Run production bank, invoice, and synchronization tasks through the desktop app's automation interface.
 
-For direct MAX / MaiCoin sync, set `MAX_ACCESS_KEY`, `MAX_SECRET_KEY`, and `MAX_SUB_ACCOUNT`, then run:
-
-```bash
-npm run run:sync-maicoin
-```
+The desktop PGlite worker stores financial data in `data/pglite/`.
 
 </details>
 
@@ -130,13 +125,12 @@ npm run run:sync-maicoin
 
 | Path | Purpose |
 | --- | --- |
-| `src/workflows/` | Libretto browser workflows |
+| `src/workflows/` | Existing workflow modules migrating to the App typed runtime |
 | `src/ledger/` | Source parsing, PGlite storage, and financial queries |
 | `src/lib/overview/`, `src/lib/assets/`, `src/lib/liabilities/` | Financial overview UI |
 | `src/lib/spending/` | E-Invoice and spending UI |
 | `src/lib/automation/` | Automation UI and server helpers |
 | `electron/` | Electron main process and runtime helpers |
-| `downloads/` | Local statement exports |
 | `data/pglite/` | Local PGlite data |
 | `~/Library/Application Support/OctopusBeak/` | Packaged app runtime data |
 
