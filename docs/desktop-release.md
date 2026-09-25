@@ -90,7 +90,6 @@ Run code checks before packaging:
 ```bash
 npm run typecheck
 node electron/runtime.check.cjs
-node --no-warnings --experimental-strip-types src/lib/automation/server/desktop-command.check.ts
 node --no-warnings --experimental-strip-types src/lib/automation/server/runner.check.ts
 npm run desktop:runtime-probe
 npm run desktop:strip-types-probe

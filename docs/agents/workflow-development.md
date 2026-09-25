@@ -1,6 +1,6 @@
 # Developing typed workflows
 
-The desktop App is the only production entry point for workflow collection. Use the project-owned `workflow:dev` command while building a provider workflow; it loads the same `WorkflowDefinition` used by the App and injects development ports. Do not use generic Libretto `run` commands as the workflow development contract.
+All 13 production tasks currently run through the desktop App's typed execution path. Use the project-owned `workflow:dev` command while building a browser provider; it loads the same `WorkflowDefinition` used by the App and injects development ports. Do not use generic Libretto `run` commands as the workflow development contract.
 
 See [ADR 0032](../adr/0032-app-owned-workflow-runtime.md) and the [App-owned workflow runtime contract](../specs/app-owned-workflow-runtime.md) for production behavior and migration gates.
 
@@ -14,13 +14,13 @@ npm run workflow:dev -- fixture
 npm run workflow:dev -- inspect http://127.0.0.1:4173
 ```
 
-`list` reads the App workflow catalog directly, so it stays aligned with the workflows currently enabled for production. `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. It can also parse input JSON from an environment variable without displaying it:
+`list` shows the eleven browser provider definitions in the App registry. `exchange-rates` and `sync-maicoin` are typed non-browser workflows and do not use this browser CLI. `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. The shared `WorkflowDefinition` type has no runtime input schema, so the provider validates its own input before browser activity. `validate` can parse input JSON from an environment variable without displaying it:
 
 ```sh
 npm run workflow:dev -- validate src/lib/automation/example-workflow.ts exampleWorkflow --input-env WORKFLOW_DEV_INPUT_JSON
 ```
 
-The shared `WorkflowDefinition` type currently does not expose a runtime input schema. This command checks JSON syntax and definition shape; the provider must validate its own input before browser activity.
+This command checks JSON syntax and definition shape; it does not validate provider-specific input fields.
 
 `fixture` runs a built-in synthetic workflow through the executor. It exercises the injected browser, strict text decoder, typed stage events, and a dry-run financial commit port without opening a browser or writing files. `inspect` opens a visible, temporary browser for a local page. For a remote page, add `--allow-live-source` explicitly.
 
@@ -85,4 +85,8 @@ The development browser has no persistent user-data directory. The CLI creates n
 
 ## Activate for production
 
-After provider tests pass, register the definition and its credential/start-URL mapping in `src/lib/automation/server/app-workflow-registry.ts`, then route the product task through the App executor. Production activation is a separate migration phase with acceptance checks for real injected Canonical Financial Commit, malformed-source rejection, cancellation, human assistance, and absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
+For a new provider, first add its definition and credential/start-URL mapping to `src/lib/automation/server/app-workflow-registry.ts`, then add the App task with the matching `workflowId` in `src/lib/automation/server/tasks.ts`. All existing catalog tasks already use the App-owned execution path. Focused checks should cover the real injected Canonical Financial Commit contract, malformed-source rejection, cancellation, human assistance where needed, and the absence of source/output/log artifacts. Do not add a provider-owned production CLI or persistence path.
+
+## Test evidence and live service acceptance
+
+Provider checks use deterministic input, browser, or HTTP fixtures to verify the contract implemented by the code. They do not prove that a bank's current production login or export page still matches those fixtures. HNCB's local HTTP/browser fixture uses synthetic CP950/Big5 export bytes and verifies in-memory collection and injected commit behavior; it is not a live HNCB login/export run. Record live-site acceptance separately when it has actually been performed.

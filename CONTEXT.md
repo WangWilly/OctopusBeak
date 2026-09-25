@@ -754,14 +754,14 @@ A structured workflow result that identifies a recoverable external prerequisite
 _Avoid_: Error-text classification, generic failure
 
 **Automation session finalization**:
-The act of relinquishing an owned automation session after a run, including graceful close, daemon teardown when needed, and removal of the session's ownership record.
+The act of ending an automation session after the workflow no longer needs browser interaction, including releasing any resources held for it.
 _Avoid_: Session close (which names only the graceful close operation).
 
 **Automation task**:
-A reusable scheduled unit that can be started manually, in a batch, or as a resume.
+A reusable unit of automation that can be started manually, in a batch, or by its schedule.
 
 **Automation task run**:
-One persisted execution attempt of an automation task, including its status, bounded operational events, and any retained session. A run waiting for human input remains that run; resuming creates a new run for the subsequent outcome.
+One execution attempt of an automation task, including its status, bounded operational events, and any human assistance needed to continue it. Completing human assistance continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
 **Automation run event**:
 A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
@@ -772,16 +772,16 @@ The App-owned production runtime that starts typed workflow definitions, injects
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
 **Automation task run finalization**:
-The act of deciding an automation task run's terminal outcome, recording its result, and relinquishing or retaining its automation session.
+The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session.
 
 **Automation task run finalization intent**:
-The stated outcome and session disposition that guide how an automation task run is finalized.
+The stated outcome and safe result summary that guide how an automation task run is finalized.
 
 **Automation session disposition**:
 The decision to retain an automation session for human assistance or relinquish it after a task run.
 
 **Automation task run force-quit**:
-An operator-initiated action that ends a task run waiting for human input by relinquishing its exact automation session and finalizing the run as failed.
+An operator-initiated action that ends a task run waiting for human input and records the run as cancelled.
 
 **Verification target**:
 A workflow-declared browser control or verification modal area that a Verification Actor may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. The host permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed verification.
