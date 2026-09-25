@@ -16,7 +16,7 @@ export function humanSessionFromRun(
   }
 
   const task = taskById(taskId);
-  if (!task?.workflowId) {
+  if (!task?.workflowId || task.kind !== "crawler") {
     throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
   if (run.taskRunId) return run.taskRunId;
@@ -38,7 +38,7 @@ export async function humanAssistanceContractForTask(
 ): Promise<HumanAssistanceContract | null> {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  if (!task.workflowId) {
+  if (!task.workflowId || task.kind !== "crawler") {
     throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
   return (await provider.automation.latestTaskRuns())[taskId]?.humanAssistanceContract ?? null;
@@ -51,7 +51,7 @@ export async function updateHumanAssistanceCompletionForTask(
 ): Promise<HumanAssistanceContract> {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  if (!task.workflowId) {
+  if (!task.workflowId || task.kind !== "crawler") {
     throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
   const run = (await provider.automation.latestTaskRuns())[taskId];
@@ -68,7 +68,7 @@ export async function updateHumanAssistanceContractForTask(
 ): Promise<HumanAssistanceContract> {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  if (!task.workflowId) {
+  if (!task.workflowId || task.kind !== "crawler") {
     throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
   const run = (await provider.automation.latestTaskRuns())[taskId];

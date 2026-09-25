@@ -4,7 +4,6 @@ import test from "node:test";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
   cancelAutomationTask,
-  createExchangeRateSyncService,
   hasActiveAutomationTask,
   pgliteWorkflowRuntimeEnv,
   forceTerminateAutomationTask,
@@ -18,6 +17,7 @@ import type {
 } from "./store.ts";
 import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../ledger/exchange-rates.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
 
 function providerStub(automation: Record<string, unknown> = {}) {
   return {
@@ -97,7 +97,7 @@ test("exchange-rate service uses injected overview and persistence with progress
   } as unknown as AutomationPersistenceProvider;
   const progress: Array<{ phaseCode: string | null; completed: number | null }> = [];
   let receivedSignal: AbortSignal | undefined;
-  const service = createExchangeRateSyncService(provider, {
+  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
     now: () => new Date("2026-07-12T12:00:00.000Z"),
     fetchImpl: async (input, init) => {
       const url = new URL(input.toString());
@@ -156,7 +156,7 @@ test("exchange-rate service forwards cancellation to its in-flight request", asy
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const service = createExchangeRateSyncService(provider, {
+  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
     now: () => new Date("2026-07-12T12:00:00.000Z"),
     fetchImpl: async (_input, init) => {
       markFetchStarted();

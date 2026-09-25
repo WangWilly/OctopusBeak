@@ -60,7 +60,7 @@ export type AppWorkflowWorkerStart = Readonly<{
   workflowId: string;
   taskRunId: string;
   input: unknown;
-  browserConnection: Readonly<{ endpoint: string; targetId: string }>;
+  browserConnection?: Readonly<{ endpoint: string; targetId: string }>;
   pgliteRpc?: Readonly<{ endpoint: string; token: string }>;
 }>;
 
@@ -143,6 +143,15 @@ export type AppWorkflowWorkerOutboundFrame =
     kind: "human-assistance-request";
     requestId: string;
     contract: HumanAssistanceContractInput;
+  }>
+  | Readonly<{
+    protocolVersion: 2;
+    kind: "exchange-rate-progress";
+    eventId: string;
+    phaseCode: "load-request" | "sync" | "complete";
+    completed: number;
+    total: number;
+    percent: number;
   }>
   | Readonly<{
     protocolVersion: 2;
@@ -246,8 +255,9 @@ function validPGliteRpc(value: unknown): value is NonNullable<AppWorkflowWorkerS
 
 export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerStart {
   if (!isRecord(value) || !exactKeys(value, [
-    "protocolVersion", "workflowId", "taskRunId", "input", "browserConnection",
-  ], ["pgliteRpc"])) invalid();
+    "protocolVersion", "workflowId", "taskRunId", "input",
+  ], ["browserConnection", "pgliteRpc"])) invalid();
+  const nonbrowser = value.workflowId === "exchange-rates" || value.workflowId === "sync-maicoin";
   if (
     value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION
     || typeof value.workflowId !== "string"
@@ -255,7 +265,8 @@ export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerSt
     || typeof value.taskRunId !== "string"
     || !SAFE_ID.test(value.taskRunId)
     || !Object.hasOwn(value, "input")
-    || !validLoopbackConnection(value.browserConnection)
+    || (nonbrowser ? Object.hasOwn(value, "browserConnection") : !validLoopbackConnection(value.browserConnection))
+    || (nonbrowser && !Object.hasOwn(value, "pgliteRpc"))
     || (Object.hasOwn(value, "pgliteRpc") && !validPGliteRpc(value.pgliteRpc))
     || !boundedJson(value)
   ) invalid();
@@ -393,6 +404,17 @@ function validSummary(value: unknown): value is TypedWorkflowOutcomeSummary | nu
 
 export function parseAppWorkflowWorkerOutboundFrame(value: unknown): AppWorkflowWorkerOutboundFrame {
   if (!isRecord(value) || value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION || !boundedJson(value)) invalid();
+  if (value.kind === "exchange-rate-progress" && exactKeys(value, ["protocolVersion", "kind", "eventId", "phaseCode", "completed", "total", "percent"])) {
+    if (
+      typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId)
+      || (value.phaseCode !== "load-request" && value.phaseCode !== "sync" && value.phaseCode !== "complete")
+      || !Number.isSafeInteger(value.completed) || Number(value.completed) < 0 || Number(value.completed) > 3
+      || value.total !== 3
+      || !Number.isSafeInteger(value.percent) || Number(value.percent) < 0 || Number(value.percent) > 100
+      || Number(value.completed) > Number(value.total)
+    ) invalid();
+    return value as unknown as AppWorkflowWorkerOutboundFrame;
+  }
   if (value.kind === "event" && exactKeys(value, ["protocolVersion", "kind", "eventId", "event"])) {
     if (typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId) || !validEvent(value.event)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;

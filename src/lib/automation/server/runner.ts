@@ -1,10 +1,3 @@
-import {
-  syncExchangeRates,
-  type ExchangeRatePersistencePort,
-  type ExchangeRateSyncResult,
-  type ExchangeRateSyncOptions,
-} from "../../../ledger/exchange-rates.ts";
-import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
 import {
@@ -96,39 +89,6 @@ export function pgliteWorkflowRuntimeEnv(
     throw new Error("PGlite workflow transport is unavailable.");
   }
   return { ...workflow.env };
-}
-
-/** Build exchange-rate work from the App's injected overview and persistence ports. */
-type ExchangeRateSyncServiceOptions = Parameters<
-  NonNullable<AutomationTaskExecutionOptions["runExchangeRateSync"]>
->[0];
-
-export function createExchangeRateSyncService(
-  provider: AutomationPersistenceProvider,
-  dependencies: Pick<ExchangeRateSyncOptions, "fetchImpl" | "now"> = {},
-): (options: ExchangeRateSyncServiceOptions) => Promise<ExchangeRateSyncResult> {
-  const persistence = (provider as AutomationPersistenceProvider & {
-    exchangeRates?: ExchangeRatePersistencePort;
-  }).exchangeRates;
-  const financial = (provider as AutomationPersistenceProvider & {
-    financial?: Pick<{
-      overviewCurrent(expectedSources?: readonly unknown[]): Promise<OverviewPageDto>;
-    }, "overviewCurrent">;
-  }).financial;
-  if (!persistence || !financial) {
-    throw new Error("PGlite exchange-rate persistence is unavailable.");
-  }
-  return async ({ signal, emitProgress }) => {
-    signal.throwIfAborted();
-    emitProgress?.({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
-    const request = exchangeRateRequestFromOverview(await financial.overviewCurrent());
-    signal.throwIfAborted();
-    emitProgress?.({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
-    const result = await syncExchangeRates(persistence, request, { ...dependencies, signal });
-    signal.throwIfAborted();
-    emitProgress?.({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
-    return result;
-  };
 }
 
 type PersistenceRunOptions = StartAutomationTaskOptions & {
@@ -628,7 +588,6 @@ export async function runAutomationTask(
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
         taskRunId: options.taskRunId,
-        runExchangeRateSync: createExchangeRateSyncService(provider),
       },
       execute: execution,
       isCancellationRequested: () => automationTaskCancellationRequested(taskId),
