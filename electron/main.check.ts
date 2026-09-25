@@ -3,10 +3,7 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
-assert.match(
-  source,
-  /try\s*{\s*prepareLibrettoRunCdpPatch\(\);\s*}\s*catch\s*\(error\)\s*{\s*console\.warn\("libretto-run-cdp-patch-failed", error\);\s*}/,
-);
+assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-failed/u);
 assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.match(source, /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)/);
 assert.match(source, /hydrateAutomationRuntimeState\(operationalRuntime\.provider\)/);

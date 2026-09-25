@@ -4,7 +4,6 @@ import { app, BrowserWindow, dialog } from "electron";
 import {
   activeAutomationTaskIds,
   hydrateAutomationRuntimeState,
-  prepareLibrettoRunCdpPatch,
   recoverAbandonedAutomationSessions,
   shutdownAutomationSessions,
   startAutomationTask,
@@ -234,11 +233,6 @@ async function start() {
   pgliteOperationalRuntime = operationalRuntime;
   registerAutomationCredentialSafeStorage();
   registerCathayGmailOtpElectronRuntime(appRoot);
-  try {
-    prepareLibrettoRunCdpPatch();
-  } catch (error) {
-    console.warn("libretto-run-cdp-patch-failed", error);
-  }
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
@@ -267,9 +261,7 @@ async function start() {
                 percent: 0,
                 attempt: 1,
               },
-              statementFailures: [],
-              logTail: "",
-              errorMessage: null,
+              appWorkflowOutcome: null,
               updatedAt: new Date().toISOString(),
             });
           }
