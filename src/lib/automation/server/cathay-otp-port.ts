@@ -28,6 +28,27 @@ const SERVICE_BOUNDARY_TTL_MS = CATHAY_GMAIL_POLL_TIMEOUT_MS + 60_000;
 function fallback(reason: GmailOtpFallbackReason) {
   return { status: "fallback" as const, reason };
 }
+
+function awaitCathayOtpHostOperation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    return Promise.reject(new Error("Cathay OTP host operation was cancelled."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(new Error("Cathay OTP host operation was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+  });
+}
+
 function boundedFallback(
   value: unknown,
   defaultReason: GmailOtpFallbackReason,
@@ -64,21 +85,25 @@ export function createCathayGmailOtpPort(
 
   return {
     async ensureAccess() {
+      if (signal?.aborted) return fallback("gmail-request-failed");
       try {
-        const result: unknown = await operations.ensureAccess();
+        const result: unknown = await awaitCathayOtpHostOperation(operations.ensureAccess(signal), signal);
+        if (signal?.aborted) return fallback("gmail-request-failed");
         if (
           result && typeof result === "object" &&
           (result as { status?: unknown }).status === "ready"
         ) return { status: "ready" };
         return boundedFallback(result, "authorization-failed");
       } catch {
-        return fallback("authorization-failed");
+        return fallback(signal?.aborted ? "gmail-request-failed" : "authorization-failed");
       }
     },
 
     async prepareRetrieval() {
+      if (signal?.aborted) return fallback("gmail-request-failed");
       try {
-        const result: unknown = await operations.prepareRetrieval();
+        const result: unknown = await awaitCathayOtpHostOperation(operations.prepareRetrieval(signal), signal);
+        if (signal?.aborted) return fallback("gmail-request-failed");
         const record = result && typeof result === "object"
           ? result as { status?: unknown; boundaryId?: unknown }
           : null;
@@ -115,7 +140,7 @@ export function createCathayGmailOtpPort(
       if (signal?.aborted) return fallback("gmail-request-failed");
 
       try {
-        const result: unknown = await operations.retrieve(boundaryId, signal);
+        const result: unknown = await awaitCathayOtpHostOperation(operations.retrieve(boundaryId, signal), signal);
         if (signal?.aborted) return fallback("gmail-request-failed");
         const record = result && typeof result === "object"
           ? result as { status?: unknown; otp?: unknown }
