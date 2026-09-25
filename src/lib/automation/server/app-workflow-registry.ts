@@ -3,6 +3,8 @@ import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.t
 import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
 import { linebankStatementsWorkflow } from "../linebank-workflow.ts";
 import { postDomesticDepositWorkflow } from "../post-workflow.ts";
+import { sinopacStatementsWorkflow } from "../sinopac-workflow.ts";
+import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 
 type AppWorkflowRegistration = Readonly<{
@@ -74,6 +76,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           post_user_id: environment.LIBRETTO_CLOUD_POST_USER_ID ?? "",
           post_account: environment.LIBRETTO_CLOUD_POST_ACCOUNT ?? "",
           post_password: environment.LIBRETTO_CLOUD_POST_PASSWORD ?? "",
+        },
+      };
+    },
+  },
+  {
+    definition: sinopacStatementsWorkflow,
+    startUrl: SINOPAC_LOGIN_URL,
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          sinopac_user_id: environment.LIBRETTO_CLOUD_SINOPAC_USER_ID ?? "",
+          sinopac_account: environment.LIBRETTO_CLOUD_SINOPAC_ACCOUNT ?? "",
+          sinopac_password: environment.LIBRETTO_CLOUD_SINOPAC_PASSWORD ?? "",
         },
       };
     },
