@@ -22,7 +22,6 @@ import {
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
-import { sanitizeAutomationLogTail } from "../../lib/automation/server/log-sanitizer.ts";
 import { sanitizeTypedWorkflowOutcome } from "../../lib/automation/server/typed-workflow-outcome.ts";
 import type {
   ExchangeRatePersistencePort,
@@ -38,7 +37,7 @@ import {
   type PGliteMaicoinPersistencePort,
 } from "./maicoin-operational.ts";
 
-export const PGLITE_OPERATIONAL_BASELINE_VERSION = 1;
+export const PGLITE_OPERATIONAL_BASELINE_VERSION = 2;
 
 const OPERATIONAL_TABLES = [
   "automation_task_runs",
@@ -187,7 +186,6 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
   return {
     taskRunId: String(row.task_run_id),
     taskId: String(row.task_id),
-    script: String(row.script),
     kind: row.kind as AutomationTaskKind,
     status: row.status as AutomationTaskStatus,
     attempt: Number(row.attempt),
@@ -196,9 +194,6 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     finishedAt: nullableString(row.finished_at),
     exitCode: nullableNumber(row.exit_code),
     signal: nullableString(row.signal),
-    errorMessage: nullableString(row.error_message),
-    logPath: String(row.log_path),
-    logTail: sanitizeAutomationLogTail(String(row.log_tail)),
     events: recordEvents(recordJson),
     recordJson,
     appWorkflowOutcome: recordAppWorkflowOutcome(recordJson),
@@ -212,6 +207,25 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
 function taskRunRecordJson(run: AutomationTaskRun): string {
   const { recordJson: _recordJson, ...record } = run;
   return JSON.stringify(record);
+}
+
+const CREATE_TASK_RUN_FIELDS = new Set([
+  "taskId", "kind", "status", "attempt", "maxAttempts", "startedAt",
+  "finishedAt", "exitCode", "signal", "progress", "humanAssistanceContract",
+  "scheduledAtUtc",
+]);
+const TASK_RUN_UPDATE_FIELDS = new Set([
+  "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
+  "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
+]);
+
+function assertKnownFields(value: unknown, fields: ReadonlySet<string>, label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid automation ${label}.`);
+  }
+  if (Object.keys(value).some((field) => !fields.has(field))) {
+    throw new Error(`Invalid automation ${label}.`);
+  }
 }
 
 function rowToTaskPrerequisiteNotice(row: Row): AutomationTaskPrerequisiteNoticeRecord {
@@ -256,10 +270,6 @@ function noticeRecordJson(
 function sanitizeRun(run: AutomationTaskRun): AutomationTaskRun {
   return {
     ...run,
-    logTail: sanitizeAutomationLogTail(run.logTail),
-    errorMessage: run.errorMessage === null
-      ? null
-      : sanitizeAutomationLogTail(run.errorMessage),
     ...(run.appWorkflowOutcome === undefined
       ? {}
       : { appWorkflowOutcome: sanitizeTypedWorkflowOutcome(run.appWorkflowOutcome) }),
@@ -292,9 +302,8 @@ async function writeTaskRun(
     `
     UPDATE automation_task_runs
     SET status = $1, attempt = $2, max_attempts = $3, finished_at = $4,
-        exit_code = $5, signal = $6, error_message = $7, log_tail = $8,
-        record_json = $9
-    WHERE task_run_id = $10
+        exit_code = $5, signal = $6, record_json = $7
+    WHERE task_run_id = $8
   `,
     [
       run.status,
@@ -303,8 +312,6 @@ async function writeTaskRun(
       run.finishedAt,
       run.exitCode,
       run.signal,
-      run.errorMessage,
-      run.logTail,
       taskRunRecordJson(run),
       taskRunId,
     ],
@@ -318,8 +325,17 @@ export async function applyPgliteOperationalBaseline(
     "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'pglite_operational_baseline_metadata') AS exists",
   );
   if (installed.rows[0]?.exists) {
-    await assertPgliteOperationalBaseline(database);
-    return;
+    const metadata = await database.query<{ baseline_version: number | string }>(
+      "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
+    );
+    const version = numeric(metadata.rows[0]?.baseline_version ?? -1);
+    if (version === PGLITE_OPERATIONAL_BASELINE_VERSION) {
+      await assertPgliteOperationalBaseline(database);
+      return;
+    }
+    throw new Error(
+      `PGlite operational baseline reset required: found version ${version}, expected ${PGLITE_OPERATIONAL_BASELINE_VERSION}.`,
+    );
   }
   await database.transaction(async (transaction) => {
     await transaction.exec(PGLITE_OPERATIONAL_BASELINE_SQL);
@@ -348,7 +364,7 @@ export async function assertPgliteOperationalBaseline(
   ) {
     throw new Error("PGlite operational baseline metadata does not match its known manifest.");
   }
-  const [tables, indexes, triggers] = await Promise.all([
+  const [tables, indexes, triggers, obsoleteColumns] = await Promise.all([
     database.query<{ count: number | string }>(
       `SELECT COUNT(*) AS count FROM information_schema.tables
        WHERE table_schema = current_schema()
@@ -365,6 +381,12 @@ export async function assertPgliteOperationalBaseline(
          SELECT oid FROM pg_class WHERE relnamespace = current_schema()::regnamespace
        ) AND tgname IN (${OPERATIONAL_TRIGGERS.map((name) => `'${name}'`).join(", ")})`,
     ),
+    database.query<{ count: number | string }>(
+      `SELECT COUNT(*) AS count FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'automation_task_runs'
+         AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')`,
+    ),
   ]);
   if (
     numeric(tables.rows[0]?.count ?? -1) !== PGLITE_OPERATIONAL_BASELINE_MANIFEST.tableCount
@@ -372,6 +394,11 @@ export async function assertPgliteOperationalBaseline(
     || numeric(triggers.rows[0]?.count ?? -1) !== PGLITE_OPERATIONAL_BASELINE_MANIFEST.triggerCount
   ) {
     throw new Error("PGlite operational baseline object inventory is incomplete.");
+  }
+  if (numeric(obsoleteColumns.rows[0]?.count ?? -1) !== 0) {
+    throw new Error(
+      "PGlite operational baseline reset required: automation_task_runs contains retired diagnostic fields.",
+    );
   }
 }
 
@@ -393,35 +420,38 @@ export class PGliteOperationalStore
   }
 
   async createTaskRun(input: CreateTaskRunInput): Promise<{ taskRunId: string }> {
+    assertKnownFields(input, CREATE_TASK_RUN_FIELDS, "task run input");
     if (input.scheduledAtUtc !== undefined && !isCanonicalUtcInstant(input.scheduledAtUtc)) {
       throw new Error("Invalid scheduled occurrence UTC.");
     }
     const taskRunId = randomUUID();
-    const errorMessage = input.errorMessage === undefined || input.errorMessage === null
-      ? input.errorMessage ?? null
-      : sanitizeAutomationLogTail(input.errorMessage);
-    const logTail = sanitizeAutomationLogTail(input.logTail ?? "");
     const record = {
       taskRunId,
-      ...input,
-      errorMessage,
-      logTail,
+      taskId: input.taskId,
+      kind: input.kind,
+      status: input.status,
+      attempt: input.attempt,
+      maxAttempts: input.maxAttempts,
+      startedAt: input.startedAt,
+      finishedAt: input.finishedAt ?? null,
+      exitCode: input.exitCode ?? null,
+      signal: input.signal ?? null,
+      ...(input.progress === undefined ? {} : { progress: input.progress }),
       events: [],
       humanAssistanceContract: input.humanAssistanceContract ?? null,
+      ...(input.scheduledAtUtc === undefined ? {} : { scheduledAtUtc: input.scheduledAtUtc }),
     };
     await this.#database.transaction(async (transaction) => {
       await transaction.query(
         `
         INSERT INTO automation_task_runs (
-          task_run_id, task_id, script, kind, status, attempt, max_attempts,
-          started_at, finished_at, exit_code, signal, error_message, log_path,
-          log_tail, record_json
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          task_run_id, task_id, kind, status, attempt, max_attempts,
+          started_at, finished_at, exit_code, signal, record_json
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       `,
         [
           taskRunId,
           input.taskId,
-          input.script,
           input.kind,
           input.status,
           input.attempt,
@@ -430,9 +460,6 @@ export class PGliteOperationalStore
           input.finishedAt ?? null,
           input.exitCode ?? null,
           input.signal ?? null,
-          errorMessage,
-          input.logPath,
-          logTail,
           JSON.stringify(record),
         ],
       );
@@ -441,6 +468,7 @@ export class PGliteOperationalStore
   }
 
   async updateTaskRun(taskRunId: string, update: AutomationTaskRunUpdate): Promise<void> {
+    assertKnownFields(update, TASK_RUN_UPDATE_FIELDS, "task run update");
     await this.#database.transaction(async (transaction) => {
       const current = await taskRunByIdFrom(transaction, taskRunId);
       if (!current) throw new Error(`Missing automation task run: ${taskRunId}`);
@@ -496,6 +524,7 @@ export class PGliteOperationalStore
     update: AutomationTaskRunUpdate & { status: AutomationTaskStatus },
     allowedStatuses: readonly AutomationTaskStatus[],
   ): Promise<{ status: AutomationTaskStatus; applied: boolean }> {
+    assertKnownFields(update, TASK_RUN_UPDATE_FIELDS, "task run update");
     return this.#database.transaction(async (transaction) => {
       const current = await taskRunByIdFrom(transaction, taskRunId);
       if (!current) throw new Error(`Missing automation task run: ${taskRunId}`);
@@ -503,14 +532,13 @@ export class PGliteOperationalStore
         return { status: current.status, applied: false };
       }
       const next = sanitizeRun({ ...current, ...update });
-      const firstStatus = 11;
+      const firstStatus = 9;
       const changed = await transaction.query<{ task_run_id: string }>(
         `
         UPDATE automation_task_runs
         SET status = $1, attempt = $2, max_attempts = $3, finished_at = $4,
-            exit_code = $5, signal = $6, error_message = $7, log_tail = $8,
-            record_json = $9
-        WHERE task_run_id = $10 AND status IN (${statusPlaceholders(firstStatus, allowedStatuses)})
+            exit_code = $5, signal = $6, record_json = $7
+        WHERE task_run_id = $8 AND status IN (${statusPlaceholders(firstStatus, allowedStatuses)})
         RETURNING task_run_id
       `,
         [
@@ -520,8 +548,6 @@ export class PGliteOperationalStore
           next.finishedAt,
           next.exitCode,
           next.signal,
-          next.errorMessage,
-          next.logTail,
           taskRunRecordJson(next),
           taskRunId,
           ...allowedStatuses,
@@ -659,10 +685,8 @@ export class PGliteOperationalStore
       `
       SELECT EXISTS (
         SELECT 1 FROM automation_task_runs
-        WHERE task_id = $1 AND (
-          record_json::jsonb ->> 'scheduledAtUtc' = $2
-          OR right(script, char_length(' --scheduled-at-utc ' || $2)) = ' --scheduled-at-utc ' || $2
-        )
+        WHERE task_id = $1
+          AND record_json::jsonb ->> 'scheduledAtUtc' = $2
       ) AS exists
     `,
       [taskId, occurrenceUtc],
@@ -673,8 +697,8 @@ export class PGliteOperationalStore
   async recentTaskRuns(limit = 100): Promise<AutomationTaskHistoryRow[]> {
     const result = await this.#database.query<Row>(
       `
-      SELECT task_run_id, task_id, script, kind, status, started_at,
-             finished_at, exit_code, signal, error_message, log_path
+      SELECT task_run_id, task_id, kind, status, started_at,
+             finished_at, exit_code, signal, record_json
       FROM automation_task_runs
       ORDER BY started_at DESC, task_run_id DESC
       LIMIT $1
@@ -684,15 +708,13 @@ export class PGliteOperationalStore
     return result.rows.map((row) => ({
       taskRunId: String(row.task_run_id),
       taskId: String(row.task_id),
-      script: String(row.script),
       kind: row.kind as AutomationTaskKind,
       status: row.status as AutomationTaskStatus,
       startedAt: String(row.started_at),
       finishedAt: nullableString(row.finished_at),
       exitCode: nullableNumber(row.exit_code),
       signal: nullableString(row.signal),
-      errorMessage: nullableString(row.error_message),
-      logPath: String(row.log_path),
+      appWorkflowOutcome: recordAppWorkflowOutcome(String(row.record_json)),
     }));
   }
 

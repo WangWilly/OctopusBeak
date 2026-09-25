@@ -33,6 +33,7 @@ assert.match(source, /ipcMain\.handle\("automation:resumeHumanAssistance"/);
 assert.match(source, /ipcMain\.handle\("automation:forceTerminate",[\s\S]*?automationForceTerminate\(taskId, operationalProvider\)/);
 assert.doesNotMatch(source, /ipcMain\.handle\("automation:forceQuit"/);
 assert.doesNotMatch(source, /forceQuitHumanSessionForTask/);
+assert.doesNotMatch(source, /terminateAutomationTaskProcesses/);
 assert.doesNotMatch(source, /ipcMain\.handle\("automation:resume"/);
 assert.match(source, /data:invalidated/);
 assert.match(

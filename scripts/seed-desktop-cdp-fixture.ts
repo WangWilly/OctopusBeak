@@ -105,33 +105,39 @@ export async function seedDesktopCdpFixture(
     await applyPgliteOperationalBaseline(store);
     const automation = createPgliteOperationalStore(store);
     const day = referenceDate.toISOString().slice(0, 10);
-    await automation.createTaskRun({
+    const fubonRun = await automation.createTaskRun({
       taskId: "fubon-all-statements",
-      script: "run:fubon-all-statements",
       kind: "crawler",
-      status: "completed",
+      status: "running",
       attempt: 1,
       maxAttempts: 2,
       startedAt: `${day}T08:00:00.000Z`,
+    });
+    await automation.transitionTaskRunToTerminal(fubonRun.taskRunId, {
+      status: "completed",
       finishedAt: `${day}T08:02:00.000Z`,
       exitCode: 0,
-      logPath: "data/automation/logs/mock-fubon-all-statements.log",
-      logTail: "automation-progress: 100",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { rowCount: 1 } },
+      },
     });
-    const error = "Mock fixture: E.SUN sign-in failed after the source was selected.";
-    await automation.createTaskRun({
+    const esunRun = await automation.createTaskRun({
       taskId: "esun-credit-card-statements",
-      script: "run:esun-credit-card-statements",
       kind: "crawler",
-      status: "failed",
+      status: "running",
       attempt: 1,
       maxAttempts: 2,
       startedAt: `${day}T09:00:00.000Z`,
+    });
+    await automation.transitionTaskRunToTerminal(esunRun.taskRunId, {
+      status: "failed",
       finishedAt: `${day}T09:02:00.000Z`,
       exitCode: 1,
-      errorMessage: error,
-      logPath: "data/automation/logs/mock-esun-credit-card-statements.log",
-      logTail: `automation-progress: 42\n${error}`,
+      appWorkflowOutcome: {
+        errorCode: "workflow-failed",
+        summary: { status: "failed", counts: {} },
+      },
     });
   } finally {
     await database.close();

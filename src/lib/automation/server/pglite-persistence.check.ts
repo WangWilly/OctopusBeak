@@ -12,7 +12,7 @@ import {
 import {
   hydrateAutomationRuntimeState,
   persistCancellationTransitionForRunWithPersistence,
-  recoverAbandonedAutomationSessions,
+  recoverInterruptedAutomationRuns,
   runAutomationTask,
   startAutomationTask,
 } from "./runner.ts";
@@ -78,19 +78,16 @@ try {
   },
 };
   const run = await provider.automation.createTaskRun({
-    taskId: "exchange-rates",
-    script: "run:exchange-rates",
-    kind: "sync",
+    taskId: "ctbc-statements",
+    kind: "crawler",
     status: "waiting_for_human",
     attempt: 1,
     maxAttempts: 1,
     startedAt: "2026-09-22T00:00:00.000Z",
-    logPath: "data/automation/logs/pglite-human.log",
-    logTail: "libretto resume --session pglite-human",
   });
 
-  assert.equal(await humanSessionForTask("exchange-rates", provider), "pglite-human");
-  assert.equal(await humanAssistanceContractForTask("exchange-rates", provider), null);
+  assert.equal(await humanSessionForTask("ctbc-statements", provider), run.taskRunId);
+  assert.equal(await humanAssistanceContractForTask("ctbc-statements", provider), null);
   const contractInput = {
     stageId: "otp",
     title: "Enter OTP",
@@ -100,24 +97,41 @@ try {
     focus: { targetId: "otp", contextRegionIds: [] },
   };
   const contract = await updateHumanAssistanceContractForTask(
-    "exchange-rates",
+    "ctbc-statements",
     contractInput,
     provider,
   );
   assert.equal(contract.version, 1);
   assert.equal(
-    (await humanAssistanceContractForTask("exchange-rates", provider))?.stageId,
+    (await humanAssistanceContractForTask("ctbc-statements", provider))?.stageId,
     "otp",
   );
   assert.equal(
-    (await updateHumanAssistanceCompletionForTask("exchange-rates", "entered", provider))
+    (await updateHumanAssistanceCompletionForTask("ctbc-statements", "entered", provider))
       .completion.status,
     "entered",
   );
 
   const hydrated = await hydrateAutomationRuntimeState(provider);
-  assert.equal(hydrated.tasks.find((task) => task.taskId === "exchange-rates")?.runId, run.taskRunId);
+  assert.equal(hydrated.tasks.find((task) => task.taskId === "ctbc-statements")?.runId, run.taskRunId);
   assert.equal((await automationRunHistory(provider))[0]?.taskRunId, run.taskRunId);
+
+  await provider.automation.createTaskRun({
+    taskId: "exchange-rates",
+    kind: "sync",
+    status: "waiting_for_human",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-09-22T00:00:00.000Z",
+  });
+  await assert.rejects(
+    () => humanSessionForTask("exchange-rates", provider),
+    /requires an App browser workflow/u,
+  );
+  await assert.rejects(
+    () => humanAssistanceContractForTask("exchange-rates", provider),
+    /requires an App browser workflow/u,
+  );
 
   const cancelling = await persistCancellationTransitionForRunWithPersistence(
     provider,
@@ -127,40 +141,34 @@ try {
   assert.equal(cancelling?.status, "cancelling");
   const cancelled = await finalizeTaskRunTransition(
     provider,
-    { taskRunId: run.taskRunId, logPath: "data/automation/logs/pglite-human.log" },
+    { taskRunId: run.taskRunId },
     {
       status: "cancelled",
       exitCode: null,
       signal: null,
-      errorMessage: null,
-      logTail: "cancelled",
+      appWorkflowOutcome: { errorCode: "cancelled", summary: null },
     },
   );
   assert.deepEqual(cancelled, { status: "cancelled", skipped: false });
 
   const abandoned = await provider.automation.createTaskRun({
-    taskId: "exchange-rates",
-    script: "run:exchange-rates",
-    kind: "sync",
+    taskId: "ctbc-statements",
+    kind: "crawler",
     status: "waiting_for_human",
     attempt: 1,
     maxAttempts: 1,
     startedAt: "2026-09-21T00:00:00.000Z",
-    logPath: "data/automation/logs/pglite-abandoned.log",
-    logTail: "libretto resume --session abandoned",
   });
-  await recoverAbandonedAutomationSessions(provider);
+  await recoverInterruptedAutomationRuns(provider);
   assert.equal((await provider.automation.taskRunById(abandoned.taskRunId))?.status, "interrupted");
 
   const closing = await provider.automation.createTaskRun({
-    taskId: "exchange-rates",
-    script: "run:exchange-rates",
-    kind: "sync",
+    taskId: "ctbc-statements",
+    kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: "2026-09-22T00:00:00.000Z",
-    logPath: "data/automation/logs/pglite-closing.log",
   });
   await provider.automation.appendRunEvent({
     runId: closing.taskRunId,
@@ -207,9 +215,7 @@ try {
     ["run-started", "run-completed"],
   );
 
-  // Exercise the actual runner command boundary with a deterministic child
-  // seam. The runner owns the campaign/finalization flow; the injected seam
-  // only stands in for spawning Libretto so this check never opens SQLite.
+  // Exercise the App runner boundary with a deterministic execution seam.
   const deterministicExecution = async (
     _task: Parameters<typeof runAutomationTaskExecution>[0],
     persistence: Parameters<typeof runAutomationTaskExecution>[1],
@@ -221,13 +227,11 @@ try {
       : null;
     const taskRun = created ?? await persistence.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "data/automation/logs/pglite-runner.log",
     });
     await onRunCreated(taskRun.taskRunId);
     await options.onRuntimeUpdate?.(taskRun.taskRunId);
@@ -235,14 +239,10 @@ try {
       status: "completed" as const,
       taskRunId: taskRun.taskRunId,
       executionId: "pglite-runner-execution",
-      session: null,
-      owner: null,
       result: {
         exitCode: 0,
         signal: null,
         error: null,
-        logTail: "",
-        resumeFailure: null,
         statementSummary: null,
         outputPersistenceWarnings: [],
         externalPrerequisiteIds: [],

@@ -19,17 +19,22 @@ test("desktop automation model and history are read from the provider", async ()
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
-    await provider.automation.createTaskRun({
+    const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
-      status: "completed",
+      status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T00:00:00.000Z",
+    });
+    await provider.automation.updateTaskRun(created.taskRunId, {
+      status: "completed",
       finishedAt: "2026-09-22T00:01:00.000Z",
       exitCode: 0,
-      logPath: "data/automation/logs/exchange-rates.log",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { count: 2 } },
+      },
     });
     const model = await loadAutomationDesktopModel(provider);
     assert.ok(model.credentialGroups.length > 0);
@@ -37,6 +42,13 @@ test("desktop automation model and history are read from the provider", async ()
     const history = await automationRunHistory(provider);
     assert.equal(history[0]?.taskId, "exchange-rates");
     assert.equal(history[0]?.status, "completed");
+    assert.deepEqual(history[0]?.appWorkflowOutcome, {
+      errorCode: null,
+      summary: { status: "completed", counts: { count: 2 } },
+    });
+    assert.equal(Object.hasOwn(history[0] ?? {}, "script"), false);
+    assert.equal(Object.hasOwn(history[0] ?? {}, "errorMessage"), false);
+    assert.equal(Object.hasOwn(history[0] ?? {}, "logPath"), false);
   } finally {
     await store.close();
   }
@@ -50,14 +62,11 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T00:00:00.000Z",
-      logPath: "",
-      logTail: "",
     });
     await provider.automation.updateTaskRun(created.taskRunId, {
       appWorkflowOutcome: {
@@ -130,7 +139,7 @@ test("automation setup links remain stable without loading the ledger", () => {
   assert.equal(automationSetupGuideLink("maicoin", "missing", "en"), null);
 });
 
-test("legacy workflow sessions cannot be resumed from a saved Libretto log", async () => {
+test("non-typed task runs cannot be resumed as App workflow assistance", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {
@@ -138,18 +147,15 @@ test("legacy workflow sessions cannot be resumed from a saved Libretto log", asy
     const provider = createPgliteOperationalProvider(store);
     await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "waiting_for_human",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-26T00:00:00.000Z",
-      logPath: "data/automation/logs/legacy-run.log",
-      logTail: 'Resume requested for session "ses-legacy".',
     });
     await assert.rejects(
       automationResumeHumanAssistance("exchange-rates", provider),
-      /Start a new run from the source/u,
+      /does not use an App browser workflow/u,
     );
   } finally {
     await store.close();

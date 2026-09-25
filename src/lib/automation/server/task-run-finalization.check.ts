@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import {
@@ -14,16 +11,14 @@ import {
   finalizeAutomationTaskRun,
   finalizePersistedActiveRuns,
   finalizeTaskRunTransition,
-  type AutomationTaskProcessResult,
+  type AutomationTaskExecutionResult,
 } from "./task-run-finalization.ts";
 
-function result(overrides: Partial<AutomationTaskProcessResult> = {}): AutomationTaskProcessResult {
+function result(overrides: Partial<AutomationTaskExecutionResult> = {}): AutomationTaskExecutionResult {
   return {
     exitCode: 0,
     signal: null,
     error: null,
-    logTail: "workflow finished",
-    resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
@@ -39,13 +34,11 @@ test("provider partial status invalidates once without retaining log output", as
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "fubon-all-statements",
-      script: "run:fubon-all-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "/tmp/automation-finalization.log",
     });
     const invalidations = createDataVersionStore();
     const summary = {
@@ -60,12 +53,11 @@ test("provider partial status invalidates once without retaining log output", as
       taskId: "fubon-all-statements",
       taskKind: "crawler",
       taskRunId: created.taskRunId,
-      logPath: "/tmp/automation-finalization.log",
       dataVersionStore: invalidations,
     }, result({ statementSummary: summary })), { status: "partial" });
     const saved = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(saved?.status, "partial");
-    assert.equal(saved?.logTail, "");
+    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: null, summary: null });
     assert.equal(invalidations.snapshot().version, 1);
   } finally {
     await store.close();
@@ -80,13 +72,11 @@ test("typed App outcome is retained in run metadata without using log tail", asy
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "ctbc-statements",
-      script: "workflow:ctbc-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
 
     assert.deepEqual(await finalizeAutomationTaskRun({
@@ -94,9 +84,7 @@ test("typed App outcome is retained in run metadata without using log tail", asy
       taskId: "ctbc-statements",
       taskKind: "crawler",
       taskRunId: created.taskRunId,
-      logPath: "",
     }, result({
-      logTail: "",
       appWorkflowOutcome: {
         errorCode: null,
         summary: {
@@ -107,7 +95,6 @@ test("typed App outcome is retained in run metadata without using log tail", asy
     })), { status: "completed" });
 
     const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.logTail, "");
     assert.deepEqual(saved?.appWorkflowOutcome, {
       errorCode: null,
       summary: {
@@ -129,13 +116,11 @@ test("typed failure persists only its stable error code and aggregate summary", 
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "ctbc-statements",
-      script: "workflow:ctbc-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
 
     assert.deepEqual(await finalizeAutomationTaskRun({
@@ -143,10 +128,9 @@ test("typed failure persists only its stable error code and aggregate summary", 
       taskId: "ctbc-statements",
       taskKind: "crawler",
       taskRunId: created.taskRunId,
-      logPath: "",
     }, result({
       exitCode: 0,
-      logTail: "private account detail 123456789",
+      error: new Error("private account detail 123456789"),
       outputPersistenceWarnings: ["private output path /Users/person/statement.csv"],
       appWorkflowOutcome: {
         errorCode: "source-integrity-failed",
@@ -155,8 +139,6 @@ test("typed failure persists only its stable error code and aggregate summary", 
     })), { status: "failed" });
 
     const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.errorMessage, "Workflow failed (source-integrity-failed).");
-    assert.equal(saved?.logTail, "");
     assert.deepEqual(saved?.appWorkflowOutcome, {
       errorCode: "source-integrity-failed",
       summary: { status: "failed", counts: { rowCount: 6 } },
@@ -176,13 +158,11 @@ test("typed cancellation code produces a cancelled terminal run", async () => {
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "ctbc-statements",
-      script: "workflow:ctbc-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
 
     assert.deepEqual(await finalizeAutomationTaskRun({
@@ -190,37 +170,30 @@ test("typed cancellation code produces a cancelled terminal run", async () => {
       taskId: "ctbc-statements",
       taskKind: "crawler",
       taskRunId: created.taskRunId,
-      logPath: "",
     }, result({
       exitCode: 1,
       appWorkflowOutcome: { errorCode: "cancelled", summary: null },
     })), { status: "cancelled" });
     const saved = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(saved?.errorMessage, "Workflow cancelled.");
-    assert.equal(saved?.logTail, "");
     assert.equal(saved?.appWorkflowOutcome?.errorCode, "cancelled");
   } finally {
     await store.close();
   }
 });
 
-test("App-close interruption preserves typed outcome without touching log files", async () => {
+test("App-close interruption preserves typed outcome without a file-log contract", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), "typed-finalization-"));
-  const logPath = join(temporaryDirectory, "must-not-exist.log");
   try {
     await applyPgliteOperationalBaseline(store);
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "workflow:typed-test",
-      kind: "crawler",
+      kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath,
     });
     await provider.automation.updateTaskRun(created.taskRunId, {
       appWorkflowOutcome: {
@@ -232,15 +205,12 @@ test("App-close interruption preserves typed outcome without touching log files"
     await finalizePersistedActiveRuns(provider, "App closed");
     const saved = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(saved?.status, "interrupted");
-    assert.equal(saved?.logTail, "");
     assert.deepEqual(saved?.appWorkflowOutcome, {
       errorCode: null,
       summary: { status: "completed", counts: { itemCount: 4 } },
     });
-    assert.equal(existsSync(logPath), false);
   } finally {
     await store.close();
-    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
 
@@ -252,13 +222,11 @@ test("a completed typed run can leave the human-assistance waiting state", async
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "ctbc-statements",
-      script: "workflow:ctbc-statements",
       kind: "crawler",
       status: "waiting_for_human",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
 
     assert.deepEqual(await finalizeAutomationTaskRun({
@@ -266,9 +234,7 @@ test("a completed typed run can leave the human-assistance waiting state", async
       taskId: "ctbc-statements",
       taskKind: "crawler",
       taskRunId: created.taskRunId,
-      logPath: "",
     }, result({
-      logTail: "manual-otp-required",
       appWorkflowOutcome: {
         errorCode: null,
         summary: { status: "financial-admitted", counts: { itemCount: 2 } },
@@ -276,7 +242,6 @@ test("a completed typed run can leave the human-assistance waiting state", async
     })), { status: "completed" });
     const saved = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(saved?.status, "completed");
-    assert.equal(saved?.logTail, "");
   } finally {
     await store.close();
   }
@@ -290,37 +255,34 @@ test("terminal provider transition is idempotent under a stale finalizer", async
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "/tmp/automation-transition.log",
     });
     const first = await finalizeTaskRunTransition(provider, {
       taskRunId: created.taskRunId,
-      logPath: "/tmp/automation-transition.log",
     }, {
       status: "completed",
       exitCode: 0,
       signal: null,
-      errorMessage: null,
-      logTail: "complete",
+      appWorkflowOutcome: { errorCode: null, summary: null },
     });
     const stale = await finalizeTaskRunTransition(provider, {
       taskRunId: created.taskRunId,
-      logPath: "/tmp/automation-transition.log",
     }, {
       status: "failed",
       exitCode: 1,
       signal: null,
-      errorMessage: "late failure",
-      logTail: "late",
+      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
     });
     assert.deepEqual(first, { status: "completed", skipped: false });
     assert.deepEqual(stale, { status: "completed", skipped: true });
-    assert.equal((await provider.automation.taskRunById(created.taskRunId))?.errorMessage, null);
+    assert.deepEqual(
+      (await provider.automation.taskRunById(created.taskRunId))?.appWorkflowOutcome,
+      { errorCode: null, summary: null },
+    );
   } finally {
     await store.close();
   }

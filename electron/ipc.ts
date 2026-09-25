@@ -27,7 +27,6 @@ import {
   assertKnownAutomationRuntimeTasks,
   AutomationRuntimeInvariantError,
 } from "../src/lib/automation/runtime-invariants.ts";
-import { terminateAutomationTaskProcesses } from "../src/lib/automation/server/task-run-execution.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,

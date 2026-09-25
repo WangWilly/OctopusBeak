@@ -46,8 +46,8 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   const task = taskById("yuanta-all-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "yuanta-all-statements");
-  assert.equal(task.script, "workflow:yuanta-all-statements");
-  assert.deepEqual(task.command, [], "App workflow dispatch must not resolve a Libretto command");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "yuanta-all-statements");
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForTask(task.workflowId), YUANTA_ENTRY_URL);
@@ -83,13 +83,11 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
-      script: task.script,
       kind: task.kind,
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const result = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: created.taskRunId,
@@ -105,8 +103,8 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     assert.equal(observedStartUrl, YUANTA_ENTRY_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no source or log files");
   } finally {
     process.chdir(previousDirectory);

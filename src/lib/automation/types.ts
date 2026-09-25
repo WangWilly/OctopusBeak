@@ -104,7 +104,6 @@ export type CathayGmailOtpConnectionError =
 export type AutomationTaskSummary = {
   id: string;
   label: string;
-  script: string;
   kind: AutomationTaskKind;
   credentialGroupId?: string;
   credentialKeys: readonly string[];
@@ -131,15 +130,13 @@ export type StatementTypeCapability = { id: string };
 export type AutomationTaskHistoryRow = {
   taskRunId: string;
   taskId: string;
-  script: string;
   kind: AutomationTaskKind;
   status: AutomationTaskStatus;
   startedAt: string;
   finishedAt: string | null;
   exitCode: number | null;
   signal: string | null;
-  errorMessage: string | null;
-  logPath: string;
+  appWorkflowOutcome: TypedWorkflowOutcome | null;
 };
 
 export type AutomationTaskPrerequisiteNotice = {

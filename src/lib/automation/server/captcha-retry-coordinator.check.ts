@@ -17,13 +17,11 @@ test("non-browser workflow fails closed on a legacy human-pause result without r
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "workflow:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     let executions = 0;
     let verificationRoutes = 0;
@@ -44,14 +42,10 @@ test("non-browser workflow fails closed on a legacy human-pause result without r
           status: "waiting_for_human" as const,
           taskRunId: created.taskRunId,
           executionId: "legacy-pause-result",
-          session: "legacy-session-key",
-          owner: null,
           result: {
             exitCode: null,
             signal: null,
             error: null,
-            logTail: "Workflow paused. libretto resume --session legacy-session-key",
-            resumeFailure: null,
             statementSummary: null,
             outputPersistenceWarnings: [],
             externalPrerequisiteIds: [],
@@ -65,8 +59,7 @@ test("non-browser workflow fails closed on a legacy human-pause result without r
     assert.equal(verificationRoutes, 0);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "failed");
-    assert.equal(finalRun?.logTail, "");
-    assert.match(finalRun?.errorMessage ?? "", /^Workflow failed \(workflow-failed\)\.$/u);
+    assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "workflow-failed");
   } finally {
     await store.close();
   }
@@ -80,13 +73,11 @@ test("CAPTCHA campaign finalizes its provider-owned run exactly once", async () 
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "/tmp/captcha-coordinator.log",
     });
     let executions = 0;
     const result = await runCaptchaRetryCampaign({
@@ -102,14 +93,10 @@ test("CAPTCHA campaign finalizes its provider-owned run exactly once", async () 
           status: "completed" as const,
           taskRunId: created.taskRunId,
           executionId: "campaign-check-execution",
-          session: null,
-          owner: null,
           result: {
             exitCode: 0,
             signal: null,
             error: null,
-            logTail: "exchange sync complete",
-            resumeFailure: null,
             statementSummary: null,
             outputPersistenceWarnings: [],
             externalPrerequisiteIds: [],

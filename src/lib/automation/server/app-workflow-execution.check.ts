@@ -16,7 +16,7 @@ import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { humanSessionForTask, updateHumanAssistanceCompletionForTask } from "./human-session.ts";
 import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
 import { automationResumeHumanAssistance } from "./desktop-api.ts";
-import { shutdownAutomationSessions } from "./runner.ts";
+import { shutdownAppAutomationWorkflows } from "./runner.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
@@ -92,13 +92,11 @@ async function createRun(
 ) {
   const created = await provider.automation.createTaskRun({
     taskId: "einvoice-personal-invoices",
-    script: "workflow:einvoice-personal-invoices",
     kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   const run = await provider.automation.taskRunById(created.taskRunId);
   assert.ok(run);
@@ -109,7 +107,6 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
   assert.equal(task.workflowId, "einvoice-personal-invoices");
-  assert.deepEqual(task.command, [], "App workflow dispatch must not resolve a Libretto command");
 
   const root = await mkdtemp(join(tmpdir(), "einvoice-app-workflow-"));
   const database = await PGlite.create();
@@ -192,8 +189,8 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
 
     const waitingRun = await waitForStatus(provider, firstRun.taskRunId, "waiting_for_human");
     assert.equal(await humanSessionForTask(task.id, provider), firstRun.taskRunId);
-    assert.equal(waitingRun.logPath, "");
-    assert.equal(waitingRun.logTail, "");
+    assert.equal(Object.hasOwn(waitingRun, "logPath"), false);
+    assert.equal(Object.hasOwn(waitingRun, "logTail"), false);
     const contract = waitingRun.humanAssistanceContract;
     assert.ok(contract);
     assert.equal(contract.stageId, "einvoice-login-captcha");
@@ -224,7 +221,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     assert.equal(result.status, "completed");
     const completedRun = await provider.automation.taskRunById(firstRun.taskRunId);
     assert.equal(completedRun?.status, "completed");
-    assert.equal(completedRun?.logTail, "");
+    assert.equal(Object.hasOwn(completedRun ?? {}, "logTail"), false);
     assert.ok(completedRun?.events.some((event) => event.code === "authentication-completed"));
     assert.ok(completedRun?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
@@ -269,7 +266,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
         }),
     }, async () => {});
     await waitForStatus(provider, shutdownRun.taskRunId, "waiting_for_human");
-    await shutdownAutomationSessions(provider);
+    await shutdownAppAutomationWorkflows(provider);
     assert.equal((await provider.automation.taskRunById(shutdownRun.taskRunId))?.status, "interrupted");
     await interrupted;
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);

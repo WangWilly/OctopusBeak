@@ -41,31 +41,43 @@ try {
   );
 
   const operational = createPgliteOperationalStore(store);
+  const removedColumns = await store.query<{ column_name: string }>(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'automation_task_runs'
+      AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')
+  `);
+  assert.deepEqual(removedColumns.rows, []);
   const created = await operational.createTaskRun({
     taskId: "exchange-rates",
-    script: "run:exchange-rates",
     kind: "sync",
     status: "running",
     attempt: 1,
     maxAttempts: 2,
     startedAt: "2026-09-22T00:00:00.000Z",
-    errorMessage: "token=raw-error",
-    logPath: "data/automation/logs/exchange-rates.log",
-    logTail: "authorization=raw-token\nstarted",
   });
   assert.match(created.taskRunId, /^[0-9a-f-]{36}$/);
-  const storedSensitive = await store.query<{
-    error_message: string;
-    log_tail: string;
-    record_json: string;
-  }>(
-    "SELECT error_message, log_tail, record_json FROM automation_task_runs WHERE task_run_id = $1",
+  const storedRun = await store.query<{ record_json: string }>(
+    "SELECT record_json FROM automation_task_runs WHERE task_run_id = $1",
     [created.taskRunId],
   );
-  assert.equal(storedSensitive.rows[0]?.error_message, "token=[REDACTED]");
-  assert.equal(storedSensitive.rows[0]?.log_tail, "authorization=[REDACTED]\nstarted");
-  assert.doesNotMatch(storedSensitive.rows[0]?.record_json ?? "", /raw-(?:error|token)/u);
-  assert.match(storedSensitive.rows[0]?.record_json ?? "", /\[REDACTED\]/u);
+  assert.doesNotMatch(storedRun.rows[0]?.record_json ?? "", /script|logPath|logTail|errorMessage/u);
+  await assert.rejects(
+    operational.createTaskRun({
+      taskId: "exchange-rates",
+      kind: "sync",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-22T00:00:01.000Z",
+      script: "workflow:legacy",
+      logPath: "data/automation/logs/legacy.log",
+      logTail: "secret=legacy",
+      errorMessage: "legacy raw error",
+    } as never),
+    /Invalid automation task run input/u,
+  );
   assert.equal((await operational.activeTaskRuns()).length, 1);
   assert.equal((await operational.taskRunById(created.taskRunId))?.status, "running");
   assert.equal((await operational.taskRunById(created.taskRunId))?.appWorkflowOutcome ?? null, null);
@@ -110,7 +122,6 @@ try {
   });
 
   await operational.updateTaskRun(created.taskRunId, {
-    logTail: "progress",
     progress: {
       phaseCode: "fetch",
       completed: 1,
@@ -124,32 +135,28 @@ try {
   const occurrence = "2026-09-22T00:10:00.000Z";
   const scheduled = await operational.createTaskRun({
     taskId: "exchange-rates",
-    script: `run:exchange-rates --scheduled-at-utc ${occurrence}`,
     kind: "sync",
     status: "failed",
     attempt: 1,
     maxAttempts: 1,
     startedAt: "2026-09-21T00:11:00.000Z",
     scheduledAtUtc: occurrence,
-    logPath: "",
   });
   assert.equal((await operational.taskRunById(scheduled.taskRunId))?.scheduledAtUtc, occurrence);
   assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", occurrence), true);
   assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", "2026-09-22T00:12:00.000Z"), false);
 
   const legacyOccurrence = "2026-09-22T00:20:00.000Z";
-  const legacyScheduled = await operational.createTaskRun({
+  await assert.rejects(operational.createTaskRun({
     taskId: "exchange-rates",
-    script: `run:exchange-rates --scheduled-at-utc ${legacyOccurrence}`,
     kind: "sync",
     status: "interrupted",
     attempt: 1,
     maxAttempts: 1,
     startedAt: "2026-09-21T00:13:00.000Z",
-    logPath: "",
-  });
-  assert.ok(legacyScheduled.taskRunId);
-  assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", legacyOccurrence), true);
+    script: `run:exchange-rates --scheduled-at-utc ${legacyOccurrence}`,
+  } as never), /Invalid automation task run input/u);
+  assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", legacyOccurrence), false);
 
   const contractInput = {
     stageId: "otp",
@@ -181,24 +188,22 @@ try {
   const staleFinalizer = await operational.transitionTaskRunToTerminal(created.taskRunId, {
     status: "failed",
     finishedAt: "2026-09-22T00:02:00.000Z",
-    errorMessage: "stale",
   });
   assert.deepEqual(staleFinalizer, { status: "completed", applied: false });
   await assert.rejects(
-    operational.updateTaskRun(created.taskRunId, { logTail: "mutated" }),
-    /Terminal automation task run is immutable/u,
+    operational.updateTaskRun(created.taskRunId, { logTail: "mutated" } as never),
+    /Invalid automation task run update/u,
   );
   await assert.rejects(
-    store.query(
-      "UPDATE automation_task_runs SET log_tail = $1 WHERE task_run_id = $2",
-      ["direct mutation", created.taskRunId],
-    ),
-    /Terminal automation task run is immutable/u,
+    store.query("UPDATE automation_task_runs SET log_tail = $1 WHERE task_run_id = $2", [
+      "direct mutation",
+      created.taskRunId,
+    ]),
+    /column .*log_tail.* does not exist/u,
   );
 
   const later = await operational.createTaskRun({
     taskId: "exchange-rates",
-    script: "run:exchange-rates",
     kind: "sync",
     status: "failed",
     attempt: 1,
@@ -206,8 +211,6 @@ try {
     startedAt: "2026-09-22T00:03:00.000Z",
     finishedAt: "2026-09-22T00:04:00.000Z",
     exitCode: 1,
-    errorMessage: "network",
-    logPath: "data/automation/logs/exchange-rates-2.log",
   });
   assert.equal((await operational.latestTaskRuns())["exchange-rates"]?.taskRunId, later.taskRunId);
   assert.deepEqual(
@@ -232,6 +235,11 @@ try {
     true,
   );
   assert.equal((await operational.recentTaskRuns(1))[0]?.taskRunId, later.taskRunId);
+  assert.deepEqual(
+    (await operational.recentTaskRuns(5)).find((run) => run.taskRunId === created.taskRunId)
+      ?.appWorkflowOutcome,
+    safeOutcome?.appWorkflowOutcome,
+  );
 
   await operational.upsertTaskPrerequisiteNotice({
     taskId: "exchange-rates",
@@ -319,4 +327,117 @@ try {
   }]);
 } finally {
   await store.close();
+}
+
+const legacyDatabase = await PGlite.create();
+const legacyStore = new PGliteStore(legacyDatabase);
+try {
+  await legacyStore.transaction(async (transaction) => {
+    await transaction.exec(`
+      CREATE TABLE pglite_operational_baseline_metadata (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        baseline_version INTEGER NOT NULL,
+        table_count INTEGER NOT NULL,
+        index_count INTEGER NOT NULL,
+        trigger_count INTEGER NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO pglite_operational_baseline_metadata(
+        singleton_id, baseline_version, table_count, index_count, trigger_count
+      ) VALUES (1, 1, 3, 5, 1);
+      CREATE TABLE automation_task_runs (
+        task_run_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        script TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        max_attempts INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        exit_code INTEGER,
+        signal TEXT,
+        error_message TEXT,
+        log_path TEXT NOT NULL,
+        log_tail TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      INSERT INTO automation_task_runs (
+        task_run_id, task_id, script, kind, status, attempt, max_attempts,
+        started_at, error_message, log_path, log_tail, record_json
+      ) VALUES (
+        'legacy-run', 'exchange-rates', 'run:exchange-rates', 'sync', 'failed', 1, 1,
+        '2026-09-22T00:00:00.000Z', 'raw error', 'data/automation/logs/old.log',
+        'password=old-secret', '{"logTail":"password=old-secret"}'
+      );
+      CREATE TABLE automation_task_prerequisite_notices (
+        notice_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        prerequisite_id TEXT NOT NULL,
+        latest_task_run_id TEXT NOT NULL,
+        first_detected_at TEXT NOT NULL,
+        last_detected_at TEXT NOT NULL,
+        latest_error_message TEXT,
+        resolved_at TEXT,
+        resolved_by_task_run_id TEXT,
+        record_json TEXT NOT NULL,
+        UNIQUE (task_id, prerequisite_id)
+      );
+      INSERT INTO automation_task_prerequisite_notices (
+        notice_id, task_id, prerequisite_id, latest_task_run_id,
+        first_detected_at, last_detected_at, latest_error_message, record_json
+      ) VALUES (
+        'notice-1', 'exchange-rates', 'api-key', 'legacy-run',
+        '2026-09-21T00:00:00.000Z', '2026-09-22T00:00:00.000Z',
+        'missing API key', '{}'
+      );
+      CREATE TABLE exchange_rates (
+        rate_date TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        twd_per_unit DOUBLE PRECISION NOT NULL,
+        source TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (rate_date, currency)
+      );
+      INSERT INTO exchange_rates(rate_date, currency, twd_per_unit, source, fetched_at)
+      VALUES ('2026-09-21', 'USD', 31.5, 'legacy', '2026-09-21T00:00:00.000Z');
+    `);
+  });
+  await assert.rejects(
+    applyPgliteOperationalBaseline(legacyStore),
+    /PGlite operational baseline reset required: found version 1, expected 2/u,
+  );
+  const oldRunCount = await legacyStore.query<{ count: number | string }>(
+    "SELECT COUNT(*) AS count FROM automation_task_runs WHERE task_run_id = 'legacy-run'",
+  );
+  assert.equal(Number(oldRunCount.rows[0]?.count), 1);
+  const oldColumns = await legacyStore.query<{ column_name: string }>(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'automation_task_runs'
+      AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')
+  `);
+  assert.deepEqual(
+    new Set(oldColumns.rows.map(({ column_name }) => column_name)),
+    new Set(["script", "error_message", "log_path", "log_tail"]),
+  );
+  const unchangedMetadata = await legacyStore.query<{ baseline_version: number | string }>(
+    "SELECT baseline_version FROM pglite_operational_baseline_metadata WHERE singleton_id = 1",
+  );
+  assert.equal(Number(unchangedMetadata.rows[0]?.baseline_version), 1);
+  const retainedRawLegacyRow = await legacyStore.query<{ log_tail: string }>(
+    "SELECT log_tail FROM automation_task_runs WHERE task_run_id = 'legacy-run'",
+  );
+  assert.equal(retainedRawLegacyRow.rows[0]?.log_tail, "password=old-secret");
+  const retainedRate = await legacyStore.query<{ count: number | string }>(
+    "SELECT COUNT(*) AS count FROM exchange_rates WHERE currency = 'USD'",
+  );
+  assert.equal(Number(retainedRate.rows[0]?.count), 1);
+  const retainedNotice = await legacyStore.query<{ count: number | string }>(
+    "SELECT COUNT(*) AS count FROM automation_task_prerequisite_notices WHERE notice_id = 'notice-1'",
+  );
+  assert.equal(Number(retainedNotice.rows[0]?.count), 1);
+} finally {
+  await legacyStore.close();
 }

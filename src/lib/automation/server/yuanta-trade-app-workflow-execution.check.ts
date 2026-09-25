@@ -38,8 +38,8 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   const task = taskById("yuanta-trade-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "yuanta-trade-statements");
-  assert.equal(task.script, "workflow:yuanta-trade-statements");
-  assert.deepEqual(task.command, [], "App workflow dispatch must not resolve a Libretto command");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.deepEqual(task.externalPrerequisites?.map(({ id }) => id), ["yuanta-servisign"]);
   assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "yuanta-trade-statements");
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
@@ -87,13 +87,11 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     };
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
-      script: task.script,
       kind: task.kind,
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const result = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: created.taskRunId,
@@ -109,8 +107,8 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     assert.equal(observedStartUrl, YUANTA_TRADE_LOGIN_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no source or log files");
     const unregister = await registerWorkflowHumanAssistanceForTask(task.workflowId, provider);
     unregister();

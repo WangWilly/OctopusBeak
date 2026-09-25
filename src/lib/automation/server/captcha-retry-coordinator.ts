@@ -10,7 +10,7 @@ import {
 } from "./captcha-retry-campaign.ts";
 import {
   finalizeAutomationTaskRun,
-  type AutomationTaskProcessResult,
+  type AutomationTaskExecutionResult,
 } from "./task-run-finalization.ts";
 import {
   type AutomationPersistenceProvider,
@@ -178,12 +178,10 @@ async function finalizeCaptchaRetryExecution(
   const run = await provider.automation.taskRunById(taskRunId);
   if (!run) return { status: "failed" as const };
   const processResult = "result" in result ? result.result : null;
-  const fallback: AutomationTaskProcessResult = {
+  const fallback: AutomationTaskExecutionResult = {
     exitCode: 1,
     signal: null,
     error: new Error("Automation task execution failed."),
-    logTail: "",
-    resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
@@ -196,7 +194,6 @@ async function finalizeCaptchaRetryExecution(
       taskId: run.taskId,
       taskKind: run.kind,
       taskRunId,
-      logPath: "",
     },
     {
       ...(processResult ?? fallback),
@@ -207,8 +204,6 @@ async function finalizeCaptchaRetryExecution(
           error: new Error(message),
         }
         : {}),
-      logTail: "",
-      resumeFailure: null,
     },
   );
 }
@@ -225,10 +220,8 @@ async function prepareCaptchaRetryRound(
     finishedAt: null,
     exitCode: null,
     signal: null,
-    errorMessage: null,
     attempt: round,
     maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
-    logTail: "",
   });
   return true;
 }

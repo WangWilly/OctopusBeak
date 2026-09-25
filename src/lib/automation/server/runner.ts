@@ -1,9 +1,10 @@
 import {
   syncExchangeRates,
   type ExchangeRatePersistencePort,
+  type ExchangeRateSyncResult,
+  type ExchangeRateSyncOptions,
 } from "../../../ledger/exchange-rates.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
-import { runExchangeRateSyncCommand } from "../../../ledger/sync-exchange-rates.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
 import {
@@ -15,7 +16,7 @@ import {
   interruptActiveAppWorkflows,
   runAutomationTaskExecution,
 } from "./task-run-execution.ts";
-export { resumeFailureMessage, terminateAutomationTaskProcesses } from "./task-run-execution.ts";
+export { abortActiveAppWorkflowExecutions } from "./task-run-execution.ts";
 import {
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
@@ -97,14 +98,15 @@ export function pgliteWorkflowRuntimeEnv(
   return { ...workflow.env };
 }
 
-/**
- * Exchange-rate automation is a worker-owned command in the PGlite path.  It
- * obtains its requirement from the same worker overview DTO and persists via
- * the injected rate port, so the task never opens the retired SQLite ledger.
- */
-function exchangeRateSyncForProvider(
+/** Build exchange-rate work from the App's injected overview and persistence ports. */
+type ExchangeRateSyncServiceOptions = Parameters<
+  NonNullable<AutomationTaskExecutionOptions["runExchangeRateSync"]>
+>[0];
+
+export function createExchangeRateSyncService(
   provider: AutomationPersistenceProvider,
-): AutomationTaskExecutionOptions["runExchangeRateSync"] {
+  dependencies: Pick<ExchangeRateSyncOptions, "fetchImpl" | "now"> = {},
+): (options: ExchangeRateSyncServiceOptions) => Promise<ExchangeRateSyncResult> {
   const persistence = (provider as AutomationPersistenceProvider & {
     exchangeRates?: ExchangeRatePersistencePort;
   }).exchangeRates;
@@ -116,13 +118,17 @@ function exchangeRateSyncForProvider(
   if (!persistence || !financial) {
     throw new Error("PGlite exchange-rate persistence is unavailable.");
   }
-  return ({ signal, scheduledAtUtc, emitProgress }) => runExchangeRateSyncCommand({
-    argv: scheduledAtUtc ? ["--scheduled-at-utc", scheduledAtUtc] : [],
-    signal,
-    loadRequest: async () => exchangeRateRequestFromOverview(await financial.overviewCurrent()),
-    sync: (_ledgerDir, request, syncOptions) => syncExchangeRates(persistence, request, syncOptions),
-    ...(emitProgress ? { emitProgress } : {}),
-  });
+  return async ({ signal, emitProgress }) => {
+    signal.throwIfAborted();
+    emitProgress?.({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
+    const request = exchangeRateRequestFromOverview(await financial.overviewCurrent());
+    signal.throwIfAborted();
+    emitProgress?.({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
+    const result = await syncExchangeRates(persistence, request, { ...dependencies, signal });
+    signal.throwIfAborted();
+    emitProgress?.({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
+    return result;
+  };
 }
 
 type PersistenceRunOptions = StartAutomationTaskOptions & {
@@ -181,15 +187,6 @@ function validateScheduledAtUtc(value: string | undefined) {
   ) {
     throw new Error(`Invalid scheduledAtUtc: ${value}`);
   }
-}
-
-/**
- * Temporary Electron compatibility hook. The App workflow host no longer
- * patches or launches a Libretto CDP process; remove this export with the
- * remaining Electron bootstrap call site.
- */
-export function prepareLibrettoRunCdpPatch(): void {
-  // Intentionally inert until Electron's legacy call site is retired.
 }
 
 export function hasActiveAutomationTask() {
@@ -264,16 +261,12 @@ async function preparedRunForTaskWithPersistence(
   if (existingRun) return existingRun;
   const created = await provider.automation.createTaskRun({
     taskId: task.id,
-    script: options.scheduledAtUtc
-      ? `${task.script} --scheduled-at-utc ${options.scheduledAtUtc}`
-      : task.script,
     kind: task.kind,
     status: "preparing",
     attempt: 1,
     maxAttempts: task.maxAttempts,
     startedAt: new Date().toISOString(),
     scheduledAtUtc: options.scheduledAtUtc,
-    logPath: "",
   });
   const run = await provider.automation.taskRunById(created.taskRunId);
   if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
@@ -299,20 +292,22 @@ async function startPreparedTaskWithPersistence(
   }).then(async () => {
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
     if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
-  }).catch(async (error) => {
-    console.error("automation-task-run-failed", error);
+  }).catch(async () => {
+    console.error("automation-task-run-failed");
     const failed = await provider.automation.taskRunById(run.taskRunId);
     if (!failed) return;
     try {
-      await provider.automation.updateTaskRun(run.taskRunId, {
+      await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
         status: "failed",
         finishedAt: new Date().toISOString(),
-        errorMessage: "Automation task failed to start.",
+        exitCode: 1,
+        signal: null,
+        appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
       });
       const finalized = await provider.automation.taskRunById(run.taskRunId);
       if (finalized) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalized));
-    } catch (finalizationError) {
-      console.error("automation-task-run-finalization-failed", finalizationError);
+    } catch {
+      console.error("automation-task-run-finalization-failed");
     }
   });
   return { taskId: task.id, runId: run.taskRunId, runtime };
@@ -530,7 +525,7 @@ export async function forceTerminateAutomationTask(
   return forceTerminateAutomationTaskWithPersistence(taskId, provider);
 }
 
-export type AbandonedAutomationRecoveryDependencies = {
+export type InterruptedAutomationRecoveryDependencies = {
   finalizeRunWithPersistence?: (
     provider: AutomationPersistenceProvider,
     run: AutomationTaskRun,
@@ -539,9 +534,9 @@ export type AbandonedAutomationRecoveryDependencies = {
   ) => Promise<void>;
 };
 
-export async function recoverAbandonedAutomationSessions(
+export async function recoverInterruptedAutomationRuns(
   provider: AutomationPersistenceProvider,
-  dependencies: AbandonedAutomationRecoveryDependencies = {},
+  dependencies: InterruptedAutomationRecoveryDependencies = {},
 ): Promise<void> {
   const errors: unknown[] = [];
   for (const run of await provider.automation.activeTaskRuns()) {
@@ -559,7 +554,7 @@ export async function recoverAbandonedAutomationSessions(
   if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
-export async function shutdownAutomationSessions(
+export async function shutdownAppAutomationWorkflows(
   provider: AutomationPersistenceProvider,
   dependencies: Partial<{
     finalizePersistedRuns: typeof finalizePersistedActiveRuns;
@@ -633,7 +628,7 @@ export async function runAutomationTask(
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
         taskRunId: options.taskRunId,
-        runExchangeRateSync: exchangeRateSyncForProvider(provider),
+        runExchangeRateSync: createExchangeRateSyncService(provider),
       },
       execute: execution,
       isCancellationRequested: () => automationTaskCancellationRequested(taskId),

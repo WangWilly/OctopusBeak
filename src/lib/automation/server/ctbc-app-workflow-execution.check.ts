@@ -114,13 +114,11 @@ async function createRun(
 ) {
   const created = await provider.automation.createTaskRun({
     taskId: "ctbc-statements",
-    script: "workflow:ctbc-statements",
     kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return created.taskRunId;
 }
@@ -154,8 +152,8 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   const task = taskById("ctbc-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "ctbc-statements");
-  assert.deepEqual(task.command, []);
-  assert.equal(task.script, "workflow:ctbc-statements");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
@@ -220,8 +218,8 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal((committed[0]?.[0] as { provider?: string }).provider, "ctbc");
     assert.equal(run?.status, "completed");
     assert.deepEqual(run?.appWorkflowOutcome, result.result.appWorkflowOutcome);
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "canonical-admission-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));

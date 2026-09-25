@@ -58,7 +58,6 @@ const task = (
   input: Partial<AutomationTaskRow> & Pick<AutomationTaskRow, "id" | "kind">,
 ): AutomationTaskRow => ({
   label: input.id,
-  script: input.id,
   credentialKeys: [],
   dependencies: [],
   status: "queued",

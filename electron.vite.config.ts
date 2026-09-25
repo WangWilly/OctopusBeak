@@ -11,7 +11,6 @@ const external = [
   // assets from the installed dependency instead of rewriting their URLs into
   // the worker bundle.
   /^@electric-sql\/pglite(?:\/.*)?$/,
-  /^libretto/,
   /^playwright/,
   /^zod/,
   /^@ai-sdk\/openai/,

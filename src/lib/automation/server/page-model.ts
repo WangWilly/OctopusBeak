@@ -125,7 +125,6 @@ export function buildAutomationPageModel(input: {
       id: task.id,
       runId: runtime?.runId ?? run?.taskRunId ?? null,
       label: task.label,
-      script: task.script,
       kind: task.kind,
       credentialGroupId: task.credentialGroupId,
       credentialKeys: task.credentialKeys,

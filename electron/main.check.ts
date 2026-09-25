@@ -5,12 +5,14 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-failed/u);
 assert.match(source, /createPGliteOperationalRuntime\(/u);
-assert.match(source, /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)/);
+assert.match(source, /recoverInterruptedAutomationRuns\(operationalRuntime\.provider\)/);
 assert.match(source, /hydrateAutomationRuntimeState\(operationalRuntime\.provider\)/);
 assert.match(
   source,
-  /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)[\s\S]*?\.then\(\(\) => hydrateAutomationRuntimeState\(operationalRuntime\.provider\)\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/,
+  /recoverInterruptedAutomationRuns\(operationalRuntime\.provider\)[\s\S]*?\.then\(\(\) => hydrateAutomationRuntimeState\(operationalRuntime\.provider\)\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/,
 );
+assert.match(source, /abortActiveAppWorkflowExecutions\(\)/u);
+assert.match(source, /shutdownAppAutomationWorkflows\(pgliteOperationalRuntime\.provider\)/u);
 assert.match(
   source,
   /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*\}\)/,

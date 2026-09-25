@@ -242,18 +242,19 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     // must not force a complete financial DTO recomputation.
     const taskRun = await client.operationalProvider.automation.createTaskRun({
       taskId: "exchange-rates",
-      script: "run:exchange-rates",
       kind: "sync",
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: "2026-09-22T02:00:00.000Z",
-      logPath: "data/automation/logs/pglite-financial-check.log",
     });
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(snapshots.length, afterRateUpdate, "automation task creation must not invalidate overview");
     await client.operationalProvider.automation.updateTaskRun(taskRun.taskRunId, {
-      logTail: "same dependency row, newer task state",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { count: 1 } },
+      },
     });
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(snapshots.length, afterRateUpdate, "automation task updates must not invalidate overview");

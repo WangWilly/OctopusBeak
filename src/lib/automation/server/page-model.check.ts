@@ -6,7 +6,6 @@ import type { AutomationTaskRun } from "./store.ts";
 const completedRun: AutomationTaskRun = {
   taskRunId: "run-1",
   taskId: "fubon-all-statements",
-  script: "run:fubon-all-statements",
   kind: "crawler",
   status: "completed",
   attempt: 1,
@@ -15,9 +14,6 @@ const completedRun: AutomationTaskRun = {
   finishedAt: "2026-06-30T01:01:00.000Z",
   exitCode: 0,
   signal: null,
-  errorMessage: null,
-  logPath: "data/automation/logs/run-1.log",
-  logTail: "ok",
   events: [],
   recordJson: "{}",
   humanAssistanceContract: null,
@@ -45,6 +41,7 @@ const fubonRow = model.tasks.find((task) => task.id === "fubon-all-statements");
 assert.equal(fubonRow?.status, "completed");
 assert.equal(fubonRow?.primaryAction, "Run");
 assert.equal(fubonRow?.ranToday, true);
+assert.equal(Object.hasOwn(fubonRow ?? {}, "script"), false);
 assert.deepEqual(fubonRow?.appWorkflowOutcome, null);
 assert.equal(Object.hasOwn(fubonRow ?? {}, "logTail"), false);
 assert.equal(Object.hasOwn(fubonRow ?? {}, "logPath"), false);
@@ -62,7 +59,6 @@ const typedRowModel = buildAutomationPageModel({
       ...completedRun,
       taskRunId: typedRunId,
       taskId: typedTask.id,
-      script: typedTask.script,
       events: [
         {
           runId: typedRunId,
@@ -118,9 +114,6 @@ const typedNoRecentEvents = buildAutomationPageModel({
       ...completedRun,
       taskRunId: "typed-run-after-retention",
       taskId: typedTask.id,
-      script: typedTask.script,
-      logPath: "",
-      logTail: "",
       events: [],
     },
   },
@@ -140,7 +133,6 @@ const boundedEventsModel = buildAutomationPageModel({
       ...completedRun,
       taskRunId: "typed-run-bounded",
       taskId: typedTask.id,
-      script: typedTask.script,
       events: Array.from({ length: 205 }, (_, index) => ({
         runId: "typed-run-bounded",
         stage: "collection" as const,
@@ -225,7 +217,6 @@ const activeModel = buildAutomationPageModel({
       taskRunId: "run-active",
       status: "running",
       finishedAt: null,
-      logTail: "automation-progress: 42\nCollecting and writing canonical data",
     },
   },
   activeTaskIds: ["fubon-all-statements"],
@@ -252,10 +243,8 @@ const waitingModel = buildAutomationPageModel({
       ...completedRun,
       taskRunId: "run-legacy-waiting",
       taskId: legacyWaitingTask.id,
-      script: legacyWaitingTask.script,
       status: "waiting_for_human",
       finishedAt: null,
-      logTail: 'Resume requested for session "ses-help".',
     },
   },
   todayRunTaskIds: [legacyWaitingTask.id],
@@ -275,10 +264,8 @@ const typedWaitingModel = buildAutomationPageModel({
       ...completedRun,
       taskRunId: typedRunId,
       taskId: typedTask.id,
-      script: typedTask.script,
       status: "waiting_for_human",
       finishedAt: null,
-      logTail: 'Resume requested for session "ses-legacy-log".',
       events: [
         {
           runId: typedRunId,
@@ -304,10 +291,8 @@ const failedModel = buildAutomationPageModel({
       ...completedRun,
       taskRunId: "run-failed",
       taskId: "hncb-statements",
-      script: "run:hncb-statements",
       status: "failed",
       exitCode: 1,
-      errorMessage: "Task exited with code 1",
     },
   },
   credentials: {},
@@ -378,7 +363,6 @@ const legacyMarkerModel = buildAutomationPageModel({
       ...completedRun,
       taskId: typedTask.id,
       status: "completed",
-      logTail: 'Resume requested for session "ses-legacy-marker".',
     },
   },
   credentials: {},

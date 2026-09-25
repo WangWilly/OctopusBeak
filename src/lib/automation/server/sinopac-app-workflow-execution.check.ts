@@ -110,13 +110,11 @@ async function createRun(provider: ReturnType<typeof createPgliteOperationalProv
   assert.ok(task);
   const created = await provider.automation.createTaskRun({
     taskId: task.id,
-    script: task.script,
     kind: task.kind,
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return created.taskRunId;
 }
@@ -150,8 +148,8 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
   const task = taskById("sinopac-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "sinopac-statements");
-  assert.deepEqual(task.command, []);
-  assert.equal(task.script, "workflow:sinopac-statements");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), SINOPAC_LOGIN_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
@@ -193,8 +191,8 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     assert.equal(committed.length, 1);
     assert.ok((committed[0]?.[0] as { provider?: string }).provider === "sinopac");
     assert.equal(run?.status, "completed");
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source, output, or log files");
 

@@ -16,7 +16,6 @@ export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 export type AutomationTaskRun = {
   taskRunId: string;
   taskId: string;
-  script: string;
   kind: AutomationTaskKind;
   status: AutomationTaskStatus;
   attempt: number;
@@ -25,9 +24,6 @@ export type AutomationTaskRun = {
   finishedAt: string | null;
   exitCode: number | null;
   signal: string | null;
-  errorMessage: string | null;
-  logPath: string;
-  logTail: string;
   events: readonly WorkflowRunEvent[];
   progress?: AutomationTaskProgress;
   terminationMode?: "forced";
@@ -43,16 +39,16 @@ export type AutomationTaskHistoryRow = Pick<
   AutomationTaskRun,
   | "taskRunId"
   | "taskId"
-  | "script"
   | "kind"
   | "status"
   | "startedAt"
   | "finishedAt"
   | "exitCode"
   | "signal"
-  | "errorMessage"
-  | "logPath"
->;
+> & {
+  /** Null for legacy runs without an App typed outcome. */
+  appWorkflowOutcome: TypedWorkflowOutcome | null;
+};
 
 export type AutomationTaskPrerequisiteNoticeRecord = {
   noticeId: string;
@@ -69,7 +65,6 @@ export type AutomationTaskPrerequisiteNoticeRecord = {
 
 export type CreateTaskRunInput = {
   taskId: string;
-  script: string;
   kind: AutomationTaskKind;
   status: AutomationTaskStatus;
   attempt: number;
@@ -78,9 +73,6 @@ export type CreateTaskRunInput = {
   finishedAt?: string | null;
   exitCode?: number | null;
   signal?: string | null;
-  errorMessage?: string | null;
-  logPath: string;
-  logTail?: string;
   progress?: AutomationTaskProgress;
   humanAssistanceContract?: HumanAssistanceContract | null;
   scheduledAtUtc?: string;
@@ -151,8 +143,6 @@ export type AutomationTaskRunUpdate = Partial<
     | "finishedAt"
     | "exitCode"
     | "signal"
-    | "errorMessage"
-    | "logTail"
     | "progress"
     | "terminationMode"
     | "humanAssistanceContract"

@@ -19,8 +19,8 @@ test("HNCB statements resolve to the App-owned typed workflow", () => {
   const task = taskById("hncb-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "hncb-statements");
-  assert.equal(task.script, "workflow:hncb-statements");
-  assert.deepEqual(task.command, []);
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
 
   const definition = workflowDefinitionForTask(task.workflowId);
   assert.equal(definition?.id, "hncb-statements");

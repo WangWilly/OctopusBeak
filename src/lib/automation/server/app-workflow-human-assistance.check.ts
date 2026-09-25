@@ -43,13 +43,11 @@ test("App workflow assistance lets the host route and resume the same waiting ru
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
-      script: "workflow:sinopac-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 3,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     let releaseRoute!: () => void;
     let notifyRouteStarted!: () => void;
@@ -88,13 +86,11 @@ test("App workflow assistance rejects a failed host route instead of leaving a d
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
-      script: "workflow:sinopac-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 3,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: created.taskRunId,
@@ -118,13 +114,11 @@ test("App workflow assistance dispatches the registered route by task and live r
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: "sinopac-statements",
-      script: "workflow:sinopac-statements",
       kind: "crawler",
       status: "running",
       attempt: 1,
       maxAttempts: 3,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     let releaseRoute!: () => void;
     const routeFinished = new Promise<void>((resolve) => { releaseRoute = resolve; });

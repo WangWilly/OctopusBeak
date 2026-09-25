@@ -47,8 +47,8 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   const task = taskById("cathay-all-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "cathay-all-statements");
-  assert.equal(task.script, "workflow:cathay-all-statements");
-  assert.deepEqual(task.command, []);
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   const definition = workflowDefinitionForTask(task.workflowId);
   assert.equal(definition?.id, "cathay-all-statements");
   assert.equal(definition?.requiresFinancialCommit, true);
@@ -86,13 +86,11 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     const provider = createPgliteOperationalProvider(store);
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
-      script: task.script,
       kind: task.kind,
       status: "running",
       attempt: 1,
       maxAttempts: 1,
       startedAt: new Date().toISOString(),
-      logPath: "",
     });
     const result = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: created.taskRunId,
@@ -108,8 +106,8 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.deepEqual(await readdir(root), [], "typed App dispatch creates no statement or log files");
   } finally {
     process.chdir(previousDirectory);

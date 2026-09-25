@@ -162,13 +162,11 @@ function fakePage(now: Date) {
 async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
   const created = await provider.automation.createTaskRun({
     taskId: "esun-credit-card-statements",
-    script: "workflow:esun-credit-card-statements",
     kind: "crawler",
     status: "running",
     attempt: 1,
     maxAttempts: 1,
     startedAt: new Date().toISOString(),
-    logPath: "",
   });
   return created.taskRunId;
 }
@@ -177,8 +175,8 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
   const task = taskById("esun-credit-card-statements");
   assert.ok(task);
   assert.equal(task.workflowId, "esun-credit-card-statements");
-  assert.deepEqual(task.command, []);
-  assert.equal(task.script, "workflow:esun-credit-card-statements");
+  assert.equal(Object.hasOwn(task, "script"), false);
+  assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), BANK_ENTRY_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, testEnvironment()), {
     credentials: {
@@ -251,8 +249,8 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
     assert.equal(committed[0]?.length, 1);
     assert.equal((committed[0]?.[0] as { provider?: string }).provider, "esun");
     assert.equal(run?.status, "completed");
-    assert.equal(run?.logPath, "");
-    assert.equal(run?.logTail, "");
+    assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
     assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "source-decoding-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
