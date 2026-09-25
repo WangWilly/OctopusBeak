@@ -10,7 +10,9 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationTaskChild,
   createAutomationProgressFrameParser,
+  interruptActiveAppWorkflows,
   runAutomationTaskExecution,
+  terminateAutomationTaskProcessTree,
 } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
 
@@ -118,6 +120,149 @@ test("exchange-rate dispatch remains typed and stores no output-file path", asyn
     assert.equal(run?.logPath, "");
     assert.equal(run?.logTail, "");
     assert.ok(run?.events.some((event) => event.code === "progress-update"));
+  } finally {
+    await store.close();
+  }
+});
+
+test("normal cancellation aborts exchange-rate sync and finalizes after it settles", async () => {
+  const task = taskById("exchange-rates");
+  assert.ok(task);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    let cancellationRequested = false;
+    let syncSettled = false;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const execution = runAutomationTaskExecution(
+      task,
+      provider.automation,
+      {
+        isCancellationRequested: () => cancellationRequested,
+        runExchangeRateSync: async ({ signal }) => {
+          markStarted();
+          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
+          await new Promise<void>((resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              setTimeout(() => {
+                syncSettled = true;
+                resolve();
+              }, 30);
+            }, { once: true });
+            if (signal.aborted) reject(signal.reason);
+          });
+          return { status: "completed" };
+        },
+      },
+      async (id) => { taskRunId = id; },
+    );
+
+    await started;
+    cancellationRequested = true;
+    const result = await execution;
+    assert.equal(syncSettled, true);
+    assert.equal(result.status, "cancelled");
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "cancelled");
+  } finally {
+    await store.close();
+  }
+});
+
+test("forced termination aborts exchange-rate sync before returning", async () => {
+  const task = taskById("exchange-rates");
+  assert.ok(task);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    let syncSettled = false;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const execution = runAutomationTaskExecution(
+      task,
+      provider.automation,
+      {
+        runExchangeRateSync: async ({ signal }) => {
+          markStarted();
+          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
+          await new Promise<void>((resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              setTimeout(() => {
+                syncSettled = true;
+                resolve();
+              }, 30);
+            }, { once: true });
+            if (signal.aborted) reject(signal.reason);
+          });
+          return { status: "completed" };
+        },
+      },
+      async (id) => { taskRunId = id; },
+    );
+
+    await started;
+    await terminateAutomationTaskProcessTree(task.id);
+    const result = await execution;
+    assert.equal(syncSettled, true);
+    assert.equal(result.status, "cancelled");
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "cancelled");
+  } finally {
+    await store.close();
+  }
+});
+
+test("App shutdown waits for exchange-rate sync to settle before interruption", async () => {
+  const task = taskById("exchange-rates");
+  assert.ok(task);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    let syncSettled = false;
+    let markStarted!: () => void;
+    let markAborted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+    const execution = runAutomationTaskExecution(
+      task,
+      provider.automation,
+      {
+        runExchangeRateSync: async ({ signal }) => {
+          markStarted();
+          if (!signal) throw new Error("Exchange-rate sync must receive a signal.");
+          await new Promise<void>((resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              markAborted();
+              setTimeout(() => {
+                syncSettled = true;
+                resolve();
+              }, 30);
+            }, { once: true });
+            if (signal.aborted) reject(signal.reason);
+          });
+          return { status: "completed" };
+        },
+      },
+      async (id) => { taskRunId = id; },
+    );
+
+    await started;
+    const shutdown = interruptActiveAppWorkflows(provider.automation);
+    await aborted;
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
+    await shutdown;
+    const result = await execution;
+    assert.equal(syncSettled, true);
+    assert.equal(result.status, "interrupted");
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "interrupted");
   } finally {
     await store.close();
   }

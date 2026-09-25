@@ -54,6 +54,9 @@ import {
 
 const activeWorkflowControllers = new Map<string, AbortController>();
 const activeWorkflowRunIds = new Map<string, string>();
+const activeExchangeRateWorkCompletions = new Map<string, Promise<void>>();
+const appShutdownRunIds = new Set<string>();
+const appShutdownTransitions = new Map<string, Promise<void>>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
@@ -77,6 +80,7 @@ export type AutomationTaskExecutionOptions = {
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
   /** Worker-owned exchange-rate command; absence fails closed. */
   runExchangeRateSync?: (options: {
+    signal: AbortSignal;
     scheduledAtUtc?: string;
     emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
   }) => Promise<unknown>;
@@ -586,6 +590,18 @@ export async function runAutomationTaskExecution(
   }
   if (task.id === "exchange-rates") {
     let result: AutomationTaskProcessResult;
+    const controller = new AbortController();
+    const cancellationPoll = setInterval(() => {
+      if (options.isCancellationRequested?.() && !controller.signal.aborted) {
+        controller.abort(new Error("Automation task cancelled."));
+      }
+    }, 50);
+    cancellationPoll.unref();
+    activeWorkflowControllers.set(task.id, controller);
+    activeWorkflowRunIds.set(task.id, execution.run.taskRunId);
+    let settleSync!: () => void;
+    const syncSettled = new Promise<void>((resolve) => { settleSync = resolve; });
+    activeExchangeRateWorkCompletions.set(task.id, syncSettled);
     let progressQueue = Promise.resolve();
     const emitProgress = (event: Omit<AutomationProgressEvent, "type">) => {
       progressQueue = progressQueue.then(async () => {
@@ -625,7 +641,7 @@ export async function runAutomationTaskExecution(
         "exchange-rates",
         execution.run.taskRunId,
         undefined,
-        new AbortController().signal,
+        controller.signal,
       );
       await progressQueue;
       result = {
@@ -639,15 +655,41 @@ export async function runAutomationTaskExecution(
         externalPrerequisiteIds: [],
       };
     } catch (error) {
+      const cancelled = controller.signal.aborted
+        || options.isCancellationRequested?.() === true;
       result = {
-        exitCode: 1,
-        signal: null,
-        error: error instanceof Error ? error : new Error(String(error)),
+        exitCode: cancelled ? null : 1,
+        signal: cancelled ? "SIGTERM" : null,
+        error: cancelled
+          ? new Error("Automation task cancelled.")
+          : new Error("Exchange-rate workflow failed."),
         logTail: "",
         resumeFailure: null,
         statementSummary: null,
         outputPersistenceWarnings: [],
         externalPrerequisiteIds: [],
+      };
+    } finally {
+      await progressQueue.catch(() => undefined);
+      clearInterval(cancellationPoll);
+      settleSync();
+      if (activeExchangeRateWorkCompletions.get(task.id) === syncSettled) {
+        activeExchangeRateWorkCompletions.delete(task.id);
+      }
+      activeWorkflowControllers.delete(task.id);
+      activeWorkflowRunIds.delete(task.id);
+    }
+    if (appShutdownRunIds.has(execution.run.taskRunId)) {
+      await appShutdownTransitions.get(execution.run.taskRunId);
+      appShutdownRunIds.delete(execution.run.taskRunId);
+      appShutdownTransitions.delete(execution.run.taskRunId);
+      return {
+        status: "interrupted" as const,
+        taskRunId: execution.run.taskRunId,
+        executionId: execution.executionId,
+        session: execution.session,
+        owner: execution.owner,
+        result,
       };
     }
     const provider = { automation: persistence };
@@ -837,6 +879,31 @@ export async function interruptActiveAppWorkflows(
 ) {
   for (const [taskId, taskRunId] of activeWorkflowRunIds) {
     const controller = activeWorkflowControllers.get(taskId);
+    if (taskId === "exchange-rates") {
+      appShutdownRunIds.add(taskRunId);
+      const completion = activeExchangeRateWorkCompletions.get(taskId);
+      const transition = Promise.resolve().then(async () => {
+        await completion;
+        const current = await persistence.taskRunById(taskRunId);
+        if (!current || !["preparing", "queued", "running", "retrying", "cancelling", "waiting_for_human"].includes(current.status)) {
+          return;
+        }
+        await persistence.transitionTaskRunToTerminal(taskRunId, {
+          status: "interrupted",
+          finishedAt: new Date().toISOString(),
+          exitCode: null,
+          signal: null,
+          errorMessage: "App closed while this workflow was running.",
+          logTail: "",
+        });
+      });
+      appShutdownTransitions.set(taskRunId, transition);
+      if (controller && !controller.signal.aborted) {
+        controller.abort(new Error("App is shutting down."));
+      }
+      await transition;
+      continue;
+    }
     if (controller && !controller.signal.aborted) {
       controller.abort(new Error("App is shutting down."));
     }

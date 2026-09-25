@@ -49,8 +49,10 @@ type CommandOptions = {
   sync?: (
     ledgerDir: string,
     request: ExchangeRateRequest,
+    options: Readonly<{ signal?: AbortSignal }>,
   ) => Promise<ExchangeRateSyncResult>;
   emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
+  signal?: AbortSignal;
 };
 
 function validateScheduledAtUtc(argv: string[]) {
@@ -82,6 +84,7 @@ export async function runExchangeRateSyncCommand(
   };
 
   try {
+    options.signal?.throwIfAborted();
     validateScheduledAtUtc(options.argv ?? []);
     options.emitProgress?.({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
     const ledgerDir = options.ledgerDir ?? DEFAULT_LEDGER_DIR;
@@ -92,10 +95,12 @@ export async function runExchangeRateSyncCommand(
     const request = options.loadRequest
       ? await options.loadRequest(ledgerDir)
       : exchangeRateRequestFromOverview(await pglite!.overviewCurrent());
+    options.signal?.throwIfAborted();
     options.emitProgress?.({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
     const result = options.sync
-      ? await options.sync(ledgerDir, request)
-      : await syncExchangeRates(pglite!.exchangeRates, request);
+      ? await options.sync(ledgerDir, request, { signal: options.signal })
+      : await syncExchangeRates(pglite!.exchangeRates, request, { signal: options.signal });
+    options.signal?.throwIfAborted();
     await closePGlite();
     options.emitProgress?.({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
     return result;

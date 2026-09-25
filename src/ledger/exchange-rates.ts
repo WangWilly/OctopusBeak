@@ -38,6 +38,7 @@ export type ExchangeRateSyncResult = {
 type SyncOptions = {
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  signal?: AbortSignal;
 };
 
 export type ExchangeRateSyncOptions = SyncOptions;
@@ -93,6 +94,7 @@ export async function syncExchangeRatesWithPersistence(
   request: ExchangeRateRequest,
   options: SyncOptions = {},
 ): Promise<ExchangeRateSyncResult> {
+  options.signal?.throwIfAborted();
   const now = (options.now ?? (() => new Date()))();
   const to = now.toISOString().slice(0, 10);
   const currencies = [...new Set(request.currencies)]
@@ -108,6 +110,7 @@ export async function syncExchangeRatesWithPersistence(
     currencies,
     await persistence.readExchangeRates(currencies),
   );
+  options.signal?.throwIfAborted();
   if (!from || from > to) {
     return { requestedCurrencies: currencies, from, to, written: 0 };
   }
@@ -116,14 +119,18 @@ export async function syncExchangeRatesWithPersistence(
   url.searchParams.set("quotes", currencies.join(","));
   url.searchParams.set("from", from);
   url.searchParams.set("to", to);
-  const response = await (options.fetchImpl ?? fetch)(url, {
-    signal: AbortSignal.timeout(10_000),
-  });
+  const timeoutSignal = AbortSignal.timeout(10_000);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
+  const response = await (options.fetchImpl ?? fetch)(url, { signal });
+  options.signal?.throwIfAborted();
   if (!response.ok) {
     throw new Error(`Frankfurter request failed: ${response.status}`);
   }
   const parsed = apiResponseSchema.parse(await response.json())
     .filter((row) => currencies.includes(row.quote));
+  options.signal?.throwIfAborted();
   if (parsed.some((row) => row.date < from || row.date > to)) {
     throw new Error(`Frankfurter response date outside ${from}..${to}`);
   }
@@ -146,6 +153,7 @@ export async function syncExchangeRatesWithPersistence(
       fetchedAt,
     };
   });
+  options.signal?.throwIfAborted();
   await persistence.upsertExchangeRates(rows);
   return { requestedCurrencies: currencies, from, to, written: rows.length };
 }

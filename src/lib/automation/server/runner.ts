@@ -116,10 +116,11 @@ function exchangeRateSyncForProvider(
   if (!persistence || !financial) {
     throw new Error("PGlite exchange-rate persistence is unavailable.");
   }
-  return ({ scheduledAtUtc, emitProgress }) => runExchangeRateSyncCommand({
+  return ({ signal, scheduledAtUtc, emitProgress }) => runExchangeRateSyncCommand({
     argv: scheduledAtUtc ? ["--scheduled-at-utc", scheduledAtUtc] : [],
+    signal,
     loadRequest: async () => exchangeRateRequestFromOverview(await financial.overviewCurrent()),
-    sync: (_ledgerDir, request) => syncExchangeRates(persistence, request),
+    sync: (_ledgerDir, request, syncOptions) => syncExchangeRates(persistence, request, syncOptions),
     ...(emitProgress ? { emitProgress } : {}),
   });
 }
@@ -567,6 +568,11 @@ export async function shutdownAutomationSessions(
   const errors: unknown[] = [];
   try {
     await interruptActiveAppWorkflows(provider.automation);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await Promise.all([...activeTaskRunCompletions.values()]);
   } catch (error) {
     errors.push(error);
   }
