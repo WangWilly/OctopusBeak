@@ -19,6 +19,7 @@ const defaultAutomationSettings = {
 };
 
 function ensureDataRoot(userData) {
+  fs.mkdirSync(path.join(userData, "data"), { recursive: true });
   const settingsPath = path.join(userData, "settings.json");
   if (!fs.existsSync(settingsPath)) {
     fs.writeFileSync(

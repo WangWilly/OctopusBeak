@@ -31,6 +31,7 @@ async function main() {
     const settingsPath = path.join(root, "settings.json");
     const credentialsPath = path.join(root, "credentials.json");
     assert.equal(fs.existsSync(settingsPath), true);
+    assert.equal(fs.statSync(path.join(root, "data")).isDirectory(), true);
     assert.equal(fs.existsSync(credentialsPath), false);
     assert.equal(fs.existsSync(path.join(root, ".libretto")), false);
     assert.equal(fs.existsSync(path.join(root, "downloads")), false);

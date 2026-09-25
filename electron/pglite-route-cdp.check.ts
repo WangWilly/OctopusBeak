@@ -73,7 +73,11 @@ test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, asyn
       }
       assert.fail(`Electron exited before CDP: ${output.slice(-1000)} ${errorOutput.slice(-1000)}`);
     }
-    browser = await chromium.connectOverCDP(url);
+    try {
+      browser = await chromium.connectOverCDP(url);
+    } catch (error) {
+      assert.fail(`Electron CDP closed during connection: ${String(error)}; exit=${child.exitCode ?? child.signalCode ?? "running"}; stdout=${output.slice(-4000)}; stderr=${errorOutput.slice(-4000)}`);
+    }
     const page = browser.contexts()[0]?.pages()[0];
     assert.ok(page);
     await page.waitForFunction(() => window.location.hash === "#/overview", undefined, { timeout: 10_000 });
@@ -104,10 +108,16 @@ test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, asyn
       new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
     ]);
     if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-    if (child && child.exitCode === null && child.signalCode === null) await Promise.race([
-      new Promise<void>((resolve) => child!.once("exit", () => resolve())),
-      new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
-    ]);
+    if (child && child.exitCode === null && child.signalCode === null) {
+      await Promise.race([
+        new Promise<void>((resolve) => child!.once("exit", () => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
+      ]);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await new Promise<void>((resolve) => child!.once("exit", () => resolve()));
+      }
+    }
     rmSync(directory, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
   }
 });
