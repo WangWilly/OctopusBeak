@@ -36,6 +36,14 @@ assert.equal(yuantaAllStatements.id, "yuanta-all-statements");
 assert.equal(yuantaAllStatements.script, "workflow:yuanta-all-statements");
 assert.equal(yuantaAllStatements.workflowId, "yuanta-all-statements");
 assert.deepEqual(yuantaAllStatements.command, []);
+const yuantaTradeStatements = taskById("yuanta-trade-statements");
+assert.ok(yuantaTradeStatements);
+assert.equal(yuantaTradeStatements.script, "workflow:yuanta-trade-statements");
+assert.equal(yuantaTradeStatements.workflowId, "yuanta-trade-statements");
+assert.deepEqual(yuantaTradeStatements.command, []);
+assert.deepEqual(yuantaTradeStatements.externalPrerequisites?.map(({ id }) => id), [
+  "yuanta-servisign",
+]);
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");
