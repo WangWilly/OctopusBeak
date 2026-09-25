@@ -8,6 +8,7 @@ import {
   type HumanAssistanceContractInput,
   type HumanAssistanceCompletionStatus,
 } from "../human-assistance.ts";
+import type { WorkflowRunEvent } from "../workflow-executor.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -26,6 +27,7 @@ export type AutomationTaskRun = {
   errorMessage: string | null;
   logPath: string;
   logTail: string;
+  events: readonly WorkflowRunEvent[];
   progress?: AutomationTaskProgress;
   terminationMode?: "forced";
   recordJson: string;
@@ -104,6 +106,8 @@ export interface AutomationPersistencePort {
   todayTaskRunIds(input: { startUtc: Date; endUtc: Date }): Promise<string[]>;
   hasSuccessfulTaskRunSince(taskId: string, occurrence: string): Promise<boolean>;
   recentTaskRuns(limit?: number): Promise<AutomationTaskHistoryRow[]>;
+  appendRunEvent(event: WorkflowRunEvent): Promise<void>;
+  pruneRunEvents(cutoffUtc: string): Promise<number>;
   upsertTaskPrerequisiteNotice(input: {
     taskId: string;
     prerequisiteId: string;

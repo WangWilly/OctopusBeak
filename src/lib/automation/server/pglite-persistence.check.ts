@@ -16,7 +16,7 @@ import {
   runAutomationTask,
   startAutomationTask,
 } from "./runner.ts";
-import { finalizeTaskRunTransition } from "./task-run-finalization.ts";
+import { finalizePersistedActiveRuns, finalizeTaskRunTransition } from "./task-run-finalization.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
@@ -149,12 +149,38 @@ try {
     logPath: "data/automation/logs/pglite-abandoned.log",
     logTail: "libretto resume --session abandoned",
   });
-  await recoverAbandonedAutomationSessions(provider, {
-    now: () => Date.parse("2026-09-22T00:00:00.000Z"),
-    isExpectedDaemon: () => false,
-    probeEndpoint: async () => false,
-  });
+  await recoverAbandonedAutomationSessions(provider);
   assert.equal((await provider.automation.taskRunById(abandoned.taskRunId))?.status, "interrupted");
+
+  const closing = await provider.automation.createTaskRun({
+    taskId: "exchange-rates",
+    script: "run:exchange-rates",
+    kind: "sync",
+    status: "running",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-09-22T00:00:00.000Z",
+    logPath: "data/automation/logs/pglite-closing.log",
+  });
+  await provider.automation.appendRunEvent({
+    runId: closing.taskRunId,
+    stage: "collection",
+    code: "source-started",
+    occurredAt: "2026-09-22T00:00:00.000Z",
+  });
+  await provider.automation.appendRunEvent({
+    runId: closing.taskRunId,
+    stage: "validation",
+    code: "source-complete",
+    occurredAt: "2026-09-25T00:00:00.000Z",
+    completed: 2,
+    total: 2,
+  });
+  assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.events.length, 2);
+  assert.equal(await provider.automation.pruneRunEvents("2026-09-24T00:00:00.000Z"), 1);
+  assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.events[0]?.code, "source-complete");
+  await finalizePersistedActiveRuns(provider, "App closed");
+  assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeSyncCalled = 0;
   const exchangeExecution = async (
@@ -176,6 +202,10 @@ try {
   });
   assert.equal(exchangeExecutionResult.status, "completed");
   assert.equal(exchangeSyncCalled, 1, "PGlite exchange sync must stay in the injected worker path");
+  assert.deepEqual(
+    (await provider.automation.latestTaskRuns())["exchange-rates"]?.events.map((event) => event.code),
+    ["run-started", "run-completed"],
+  );
 
   // Exercise the actual runner command boundary with a deterministic child
   // seam. The runner owns the campaign/finalization flow; the injected seam

@@ -59,6 +59,18 @@ test("the worker exposes operational start/read/write/failure through one provid
       (await runtime.provider.automation.taskRunById(created.taskRunId))?.logTail,
       "updated-progress",
     );
+    await runtime.provider.automation.appendRunEvent({
+      runId: created.taskRunId,
+      stage: "collection",
+      code: "source-complete",
+      occurredAt: "2026-09-22T00:00:00.000Z",
+      completed: 1,
+      total: 1,
+    });
+    assert.equal(
+      (await runtime.provider.automation.taskRunById(created.taskRunId))?.events[0]?.code,
+      "source-complete",
+    );
     await runtime.provider.exchangeRates.upsertExchangeRates([{
       rateDate: "2026-09-22",
       currency: "USD",

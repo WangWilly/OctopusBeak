@@ -11,6 +11,8 @@ import {
   terminateAutomationTaskProcesses,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
+import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createBeforeQuitHandler } from "./automation-shutdown.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
@@ -60,6 +62,8 @@ let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
+let stopBrowserStateCleanup: (() => void) | null = null;
+let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
 let automationRuntimeFatalHandled = false;
@@ -97,6 +101,8 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
     scheduler?.stop();
+    stopBrowserStateCleanup?.();
+    stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
     if (activeAutomationTaskIds().length > 0) {
       if (!pgliteOperationalRuntime) {
@@ -211,6 +217,11 @@ async function start() {
   const appRoot = projectRoot();
   const cdpFixture = process.env.OCTOPUSBEAK_CDP_FIXTURE === "171";
   ensureDataRoot(userData);
+  stopBrowserStateCleanup = startBrowserStateCleanup({
+    directory: path.join(userData, "data", "automation", "browser-state"),
+    isActive: (name) => activeAutomationTaskIds().includes(name),
+    onError: () => console.error("browser-state-cleanup-failed"),
+  });
   Object.assign(process.env, buildDesktopEnv({
     userData,
     appRoot,
@@ -326,7 +337,13 @@ async function start() {
   // Recovery owns the persisted active-run boundary.  Do not let the
   // scheduler claim a new run until that boundary has been reconciled; the
   // shell and IPC registration still proceed while recovery is in flight.
-  void automationRuntimeReady.then(() => scheduler?.start()).catch(() => {
+  void automationRuntimeReady.then(() => {
+    stopWorkflowRunEventCleanup = startWorkflowRunEventCleanup(
+      operationalRuntime.provider.automation,
+      { onError: () => console.error("workflow-run-event-cleanup-failed") },
+    );
+    scheduler?.start();
+  }).catch(() => {
     // The shared readiness rejection already reports the fatal runtime error.
   });
   currentRendererUrl = rendererEntry(appRoot);

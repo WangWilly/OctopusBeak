@@ -25,6 +25,8 @@ const AUTOMATION_METHODS = [
   "todayTaskRunIds",
   "hasSuccessfulTaskRunSince",
   "recentTaskRuns",
+  "appendRunEvent",
+  "pruneRunEvents",
   "upsertTaskPrerequisiteNotice",
   "activeTaskPrerequisiteNotices",
   "allTaskPrerequisiteNotices",
@@ -183,6 +185,12 @@ function validOperationalArgs(operation: PGliteOperationalOperation, args: reado
       return args.length === 2 && stringValue(args[0]) && stringValue(args[1]);
     case "automation.recentTaskRuns":
       return args.length === 0 || (args.length === 1 && Number.isSafeInteger(args[0]) && (args[0] as number) >= 0);
+    case "automation.appendRunEvent":
+      return args.length === 1 && stringFields(args[0], ["runId", "stage", "code", "occurredAt"])
+        && ["preparation", "authentication", "collection", "decoding", "validation", "commit", "finalization"].includes(String((args[0] as Record<string, unknown>).stage))
+        && (args[0] as Record<string, unknown>).code!.toString().length <= 64;
+    case "automation.pruneRunEvents":
+      return args.length === 1 && stringValue(args[0]) && dateValue(args[0]);
     case "automation.upsertTaskPrerequisiteNotice":
       return args.length === 1 && stringFields(args[0], ["taskId", "prerequisiteId", "taskRunId", "detectedAt"]);
     case "automation.resolveTaskPrerequisiteNotices":
@@ -275,6 +283,12 @@ async function invokeOperation(
       );
       case "recentTaskRuns": return provider.automation.recentTaskRuns(
         args[0] as Parameters<AutomationPersistencePort["recentTaskRuns"]>[0],
+      );
+      case "appendRunEvent": return provider.automation.appendRunEvent(
+        args[0] as Parameters<AutomationPersistencePort["appendRunEvent"]>[0],
+      );
+      case "pruneRunEvents": return provider.automation.pruneRunEvents(
+        args[0] as Parameters<AutomationPersistencePort["pruneRunEvents"]>[0],
       );
       case "upsertTaskPrerequisiteNotice": return provider.automation.upsertTaskPrerequisiteNotice(
         args[0] as Parameters<AutomationPersistencePort["upsertTaskPrerequisiteNotice"]>[0],
@@ -492,6 +506,8 @@ export function createPGliteOperationalRpcClient(
     todayTaskRunIds: (...args) => automationMethod("todayTaskRunIds", args),
     hasSuccessfulTaskRunSince: (...args) => automationMethod("hasSuccessfulTaskRunSince", args),
     recentTaskRuns: (...args) => automationMethod("recentTaskRuns", args),
+    appendRunEvent: (...args) => automationMethod("appendRunEvent", args),
+    pruneRunEvents: (...args) => automationMethod("pruneRunEvents", args),
     upsertTaskPrerequisiteNotice: (...args) => automationMethod("upsertTaskPrerequisiteNotice", args),
     activeTaskPrerequisiteNotices: (...args) => automationMethod("activeTaskPrerequisiteNotices", args),
     allTaskPrerequisiteNotices: (...args) => automationMethod("allTaskPrerequisiteNotices", args),

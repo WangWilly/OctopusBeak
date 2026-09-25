@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TextDecoder } from "node:util";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
@@ -15,6 +14,7 @@ import {
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
@@ -79,7 +79,6 @@ export {
 } from "./yuanta-auth.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
 const dateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
@@ -710,6 +709,7 @@ type DownloadText = {
 
 async function readBig5DownloadAsUtf8(
   download: Download,
+  text: SourceTextPort = strictSourceText,
 ): Promise<DownloadText> {
   const stream = await download.createReadStream();
   const chunks: Buffer[] = [];
@@ -720,7 +720,7 @@ async function readBig5DownloadAsUtf8(
 
   const bytes = Buffer.concat(chunks);
   return {
-    content: big5Decoder.decode(bytes),
+    content: text.decode(bytes, "big5"),
     byteLength: bytes.byteLength,
     contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
   };

@@ -404,7 +404,7 @@ export async function finalizePersistedActiveRuns(
   try {
     for (const run of await provider.automation.activeTaskRuns()) {
       try {
-        await finalizePersistedRun(provider, run, reason);
+        await finalizePersistedRun(provider, run, reason, "interrupted");
       } catch (error) {
         errors.push(error);
       }

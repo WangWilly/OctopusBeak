@@ -1,7 +1,7 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { TextDecoder } from "node:util";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   librettoAuthenticate,
   pause,
@@ -60,7 +60,6 @@ const BANK_BASE_URL = "https://netbank.hncb.com.tw";
 const LOGOUT_PATH =
   "/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Logout&state=confirm";
 
-const big5Decoder = new TextDecoder("big5");
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
 const inputSchema = z.object({
@@ -627,6 +626,7 @@ type DownloadText = {
 
 async function readBig5DownloadAsUtf8(
   download: Download,
+  text: SourceTextPort = strictSourceText,
 ): Promise<DownloadText> {
   const stream = await download.createReadStream();
   if (!stream)
@@ -638,7 +638,7 @@ async function readBig5DownloadAsUtf8(
   }
   const bytes = Buffer.concat(chunks);
   return {
-    content: big5Decoder.decode(bytes),
+    content: text.decode(bytes, "big5"),
     byteLength: bytes.byteLength,
     contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
   };

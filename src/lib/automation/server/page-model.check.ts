@@ -19,6 +19,7 @@ const completedRun: AutomationTaskRun = {
   errorMessage: null,
   logPath: "data/automation/logs/run-1.log",
   logTail: "ok",
+  events: [],
   recordJson: "{}",
   humanAssistanceContract: null,
 };

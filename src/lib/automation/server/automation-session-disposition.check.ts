@@ -33,6 +33,7 @@ test("session identity parsing uses the latest appended identity", () => {
       errorMessage: null,
       logPath: "/missing/automation.log",
     logTail: "libretto resume --session ses-second",
+      events: [],
       recordJson: "{}",
       humanAssistanceContract: null,
     }),

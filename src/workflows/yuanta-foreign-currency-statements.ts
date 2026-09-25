@@ -1,7 +1,7 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { TextDecoder } from "node:util";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Download, Frame, Locator, Page } from "playwright";
 import { z } from "zod";
@@ -48,7 +48,6 @@ import {
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "../ledger/canonical/investment-funding-contract.ts";
 
-const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
 
@@ -2057,7 +2056,10 @@ function foreignCurrencyTransactionsToCsv(
   ]);
 }
 
-async function readBig5DownloadAsUtf8(download: Download): Promise<string> {
+async function readBig5DownloadAsUtf8(
+  download: Download,
+  text: SourceTextPort = strictSourceText,
+): Promise<string> {
   const stream = await download.createReadStream();
   const chunks: Buffer[] = [];
 
@@ -2065,7 +2067,7 @@ async function readBig5DownloadAsUtf8(download: Download): Promise<string> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
 
-  return big5Decoder.decode(Buffer.concat(chunks));
+  return text.decode(Buffer.concat(chunks), "big5");
 }
 
 async function writeForeignCurrencyTransactionsFile(

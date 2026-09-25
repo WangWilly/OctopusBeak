@@ -1,0 +1,11 @@
+# App-owned workflow runtime
+
+Status: accepted
+
+The desktop App is the sole production entry point for automation. An App-owned executor runs typed workflow definitions in supervised workers and injects browser access, text decoding and integrity checks, human assistance, stage events, cancellation, and the existing Canonical Financial Commit through explicit ports. Workflows do not launch their own production commands, open the financial database, or choose a persistence transport. This keeps provider-specific page collection separate from run lifecycle and financial admission while allowing a browser failure to be isolated from the App.
+
+Production source exports are consumed in memory and validated as a complete source before financial commit. No production workflow retains downloaded source files, generated CSV/JSON, raw network bodies, stdout logs, or Libretto session telemetry files. Bounded, sanitized stage events live in the operational database for 30 days; run outcome summaries and error codes remain available longer. Browser authentication state is the only permitted workflow file state, and an App-owned scheduled cleanup removes it after 30 days by default. The App does not execute schedules while closed. On restart, each workflow catches up at most one missed occurrence; an interrupted run is finalized as interrupted and starts again from the source beginning rather than reconnecting to an old browser process.
+
+Migration is per workflow. Until a workflow passes the new contract's acceptance checks, the App may launch its existing path. No compatibility layer is added for that path and the App does not display a migration badge. After the final workflow is migrated, remove production command launching, legacy file output and session telemetry dependencies. Libretto CLI remains available only through a documented project-specific development interface; its development artifacts are outside the production retention contract.
+
+The existing Canonical Financial Commit module remains the sole financial admission authority. The executor injects a typed commit port whose worker adapter forwards to that module; this decision does not introduce a second commit policy or a workflow-owned database handle.

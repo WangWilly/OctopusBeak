@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
   parseStatementRunSummary,
   type StatementRunSummary,
@@ -57,6 +58,10 @@ import {
   type AutomationProgressEvent,
 } from "../progress.ts";
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
+import { strictSourceText } from "../source-text.ts";
+import { createWorkflowExecutor } from "../workflow-executor.ts";
+import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
+import { createOperationalWorkflowEventPort } from "../workflow-run-events.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
   sinopacHostDialogOwner,
@@ -189,19 +194,16 @@ async function createAutomationTaskRunExecution(
     session,
     options.resumeSession ? undefined : options.hostOwnedDialogProvider,
   );
-  const command = resolveTaskCommand(
-    task,
-    {
-      resumeSession: options.resumeSession,
-      session: options.resumeSession ? undefined : (session ?? undefined),
-    },
-    env,
-  );
-  if (task.id === "exchange-rates" && options.scheduledAtUtc) {
-    if (command.command === "npm") command.args.push("--");
-    command.args.push("--scheduled-at-utc", options.scheduledAtUtc);
-    command.display += ` --scheduled-at-utc ${options.scheduledAtUtc}`;
-  }
+  const command = task.id === "exchange-rates"
+    ? { command: "", args: [], display: "workflow:exchange-rates", env }
+    : resolveTaskCommand(
+      task,
+      {
+        resumeSession: options.resumeSession,
+        session: options.resumeSession ? undefined : (session ?? undefined),
+      },
+      env,
+    );
   const activeRuns = options.resumeSession
     ? await persistence.activeTaskRuns()
     : [];
@@ -440,10 +442,11 @@ async function executeAutomationTaskProcess(
     mkdirSync(dirname(humanAssistancePath), { recursive: true });
     rmSync(humanAssistancePath, { force: true });
     humanAssistanceReadTimer = setInterval(readHumanAssistanceFile, 50);
-    const onOutput = (chunk: Buffer) => {
+    const onOutput = (chunk: string) => {
+      if (!chunk) return;
       const output = accumulateAutomationOutput(
         { logTail, resumeFailure: detectedResumeFailure },
-        chunk.toString("utf8"),
+        chunk,
       );
       statementSummary =
         parseStatementRunSummary(`${logTail}${output.logChunk}`) ??
@@ -481,8 +484,10 @@ async function executeAutomationTaskProcess(
       },
     });
     activeTaskChildren.set(execution.task.id, child);
-    child.stdout?.on("data", onOutput);
-    child.stderr?.on("data", onOutput);
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    child.stdout?.on("data", (chunk: Buffer) => onOutput(stdoutDecoder.write(chunk)));
+    child.stderr?.on("data", (chunk: Buffer) => onOutput(stderrDecoder.write(chunk)));
     child.stdio[3]?.on("data", hostContractParser.push);
     child.stdio[4]?.on("data", progressParser.push);
     let childSettled = false;
@@ -493,6 +498,8 @@ async function executeAutomationTaskProcess(
     }) => {
       if (childSettled) return;
       childSettled = true;
+      onOutput(stdoutDecoder.end());
+      onOutput(stderrDecoder.end());
       activeTaskChildren.delete(execution.task.id);
       if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
       readHumanAssistanceFile();
@@ -566,9 +573,10 @@ export function createAutomationProgressFrameParser(
       typeof param === "string" || typeof param === "number" || typeof param === "boolean",
     );
   let pending = "";
+  const decoder = new StringDecoder("utf8");
   return {
     push(chunk: Buffer | string) {
-      pending = (pending + chunk.toString("utf8")).slice(-64 * 1024);
+      pending = (pending + (typeof chunk === "string" ? chunk : decoder.write(chunk))).slice(-64 * 1024);
       let newline = pending.indexOf("\n");
       while (newline >= 0) {
         const line = pending.slice(0, newline).trim();
@@ -620,6 +628,7 @@ export function createAutomationProgressFrameParser(
       }
     },
     flush() {
+      pending += decoder.end();
       pending = "";
     },
   };
@@ -715,10 +724,26 @@ export async function runAutomationTaskExecution(
       if (!runExchangeRateSync) {
         throw new Error("PGlite exchange-rate synchronization is unavailable.");
       }
-      await runExchangeRateSync({
-        scheduledAtUtc: options.scheduledAtUtc,
-        emitProgress,
+      const executor = createWorkflowExecutor([createExchangeRateWorkflow(
+        runExchangeRateSync,
+        {
+          scheduledAtUtc: options.scheduledAtUtc,
+          emitProgress,
+        },
+      )], {
+        browser: { withPage: async () => { throw new Error("Exchange rates do not use a browser."); } },
+        text: strictSourceText,
+        humanAssistance: { request: async () => { throw new Error("Exchange rates do not use human assistance."); } },
+        events: createOperationalWorkflowEventPort(persistence),
+        now: () => new Date().toISOString(),
+        onEventFailure: () => console.error("workflow-event-persistence-failed"),
       });
+      await executor.run(
+        "exchange-rates",
+        execution.run.taskRunId,
+        undefined,
+        new AbortController().signal,
+      );
       await progressQueue;
       result = {
         exitCode: 0,
