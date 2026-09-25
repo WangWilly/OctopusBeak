@@ -7,6 +7,10 @@ import { sinopacStatementsWorkflow } from "../sinopac-workflow.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import type {
+  FubonAllWorkflowInput,
+  FubonAllWorkflowOutput,
+} from "../../../workflows/fubon-all-statements.ts";
+import type {
   CathayAllProviderWorkflowInput,
   CathayAllProviderWorkflowOutput,
 } from "../../../workflows/cathay-all-statements.ts";
@@ -35,8 +39,35 @@ const cathayAllStatementsWorkflow: WorkflowDefinition<
   },
 };
 
+const fubonAllStatementsWorkflow: WorkflowDefinition<
+  FubonAllWorkflowInput,
+  FubonAllWorkflowOutput
+> = {
+  id: "fubon-all-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const { fubonAllStatementsWorkflow: definition } = await import(
+      "../fubon-all-workflow.ts"
+    );
+    return await definition.run(context, input);
+  },
+};
+
 /** One registration catalog for workflows activated on the App executor. */
 export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
+  {
+    definition: fubonAllStatementsWorkflow,
+    startUrl: "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          fubon_user_id: environment.LIBRETTO_CLOUD_FUBON_USER_ID ?? "",
+          fubon_account: environment.LIBRETTO_CLOUD_FUBON_ACCOUNT ?? "",
+          fubon_password: environment.LIBRETTO_CLOUD_FUBON_PASSWORD ?? "",
+        },
+      };
+    },
+  },
   {
     definition: einvoicePersonalInvoicesWorkflow,
     inputFromEnvironment(environment) {

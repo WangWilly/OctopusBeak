@@ -45,15 +45,9 @@ assert.deepEqual(yuantaAllStatements.command, [
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");
-assert.equal(cathayAllStatements.script, "run:cathay-all-statements");
-assert.deepEqual(cathayAllStatements.command, [
-  "libretto",
-  "run",
-  "src/workflows/cathay-all-statements.ts",
-  "--headless",
-  "--params",
-  '{"telemetry":true}',
-]);
+assert.equal(cathayAllStatements.script, "workflow:cathay-all-statements");
+assert.equal(cathayAllStatements.workflowId, "cathay-all-statements");
+assert.deepEqual(cathayAllStatements.command, []);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "yuanta")
     ?.statementTypes,
@@ -99,6 +93,11 @@ assert.deepEqual(
 );
 const fubonGroup = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon");
 assert.ok(fubonGroup);
+const fubonTask = taskById("fubon-all-statements");
+assert.ok(fubonTask);
+assert.equal(fubonTask.script, "workflow:fubon-all-statements");
+assert.equal(fubonTask.workflowId, "fubon-all-statements");
+assert.deepEqual(fubonTask.command, []);
 assert.equal(
   fubonGroup.credentialFields.some((field) =>
     field.key.includes("IDENTITY_FINGERPRINT"),

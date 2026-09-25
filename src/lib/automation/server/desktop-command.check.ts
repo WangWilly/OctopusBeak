@@ -23,26 +23,12 @@ const env = {
 
 const fubon = taskById("fubon-all-statements");
 assert.ok(fubon);
-assert.deepEqual(
-  resolveTaskCommand(fubon, {}, env),
-  {
-    display: "run:fubon-all-statements",
-    command: "/AppRoot/OctopusBeak",
-    args: [
-      join("/AppRoot", "node_modules", "libretto", "dist", "cli", "index.js"),
-      "run",
-      join("/AppRoot", "src", "workflows", "fubon-all-statements.ts"),
-      "--headless",
-    ],
-    env: {
-      ...env,
-      ELECTRON_RUN_AS_NODE: "1",
-    },
-  },
-);
-assert.deepEqual(
-  resolveTaskCommand(fubon, { session: "ses-octopus-123" }, env).args.slice(-2),
-  ["--session", "ses-octopus-123"],
+assert.equal(fubon.script, "workflow:fubon-all-statements");
+assert.equal(fubon.workflowId, "fubon-all-statements");
+assert.deepEqual(fubon.command, []);
+assert.throws(
+  () => resolveTaskCommand(fubon, {}, env),
+  /App workflow tasks do not have a Libretto command/u,
 );
 
 const yuanta = taskById("yuanta-all-statements");
@@ -73,51 +59,27 @@ assert.deepEqual(
 
 const cathay = taskById("cathay-all-statements");
 assert.ok(cathay);
-const cathayCommand = resolveTaskCommand(cathay, {}, env);
-assert.equal(cathayCommand.args.filter((arg) => arg === "--headless").length, 1);
-assert.equal(cathayCommand.args.includes("--headed"), false);
-assert.deepEqual(cathayCommand.args.slice(-3), [
-  "--headless",
-  "--params",
-  '{"telemetry":true}',
-]);
-assert.deepEqual(
-  resolveTaskCommand(
-    cathay,
-    { session: "ses-octopus-123" },
-    env,
-  ).args.slice(-5),
-  [
-    "--headless",
-    "--params",
-    '{"telemetry":true}',
-    "--session",
-    "ses-octopus-123",
-  ],
+assert.equal(cathay.script, "workflow:cathay-all-statements");
+assert.equal(cathay.workflowId, "cathay-all-statements");
+assert.deepEqual(cathay.command, []);
+assert.throws(
+  () => resolveTaskCommand(cathay, {}, env),
+  /App workflow tasks do not have a Libretto command/u,
 );
-assert.deepEqual(
-  resolveTaskCommand(
-    cathay,
-    { resumeSession: "ses-octopus-123" },
-    env,
-  ).args.slice(-3),
-  ["resume", "--session", "ses-octopus-123"],
+assert.throws(
+  () => resolveTaskCommand(cathay, { session: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
+);
+assert.throws(
+  () => resolveTaskCommand(cathay, { resumeSession: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
 );
 
 assert.equal(taskById("import-downloads-csv"), null);
 
-assert.deepEqual(
-  resolveTaskCommand(fubon, {}, { PATH: "/usr/bin" }),
-  {
-    display: "run:fubon-all-statements",
-    command: "npm",
-    args: ["run", "run:fubon-all-statements"],
-    env: { PATH: "/usr/bin" },
-  },
-);
-assert.deepEqual(
-  resolveTaskCommand(fubon, { session: "ses-octopus-123" }, { PATH: "/usr/bin" }).args,
-  ["run", "run:fubon-all-statements", "--", "--session", "ses-octopus-123"],
+assert.throws(
+  () => resolveTaskCommand(fubon, { session: "ses-octopus-123" }, { PATH: "/usr/bin" }),
+  /App workflow tasks do not have a Libretto command/u,
 );
 
 const eInvoice = taskById("einvoice-personal-invoices");
