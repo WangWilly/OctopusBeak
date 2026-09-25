@@ -723,6 +723,7 @@ export async function runAutomationTask(
     });
     const result = await runCaptchaRetryCampaign({
       taskId,
+      appWorkflow: Boolean(task.workflowId),
       provider,
       launchVerificationSettings,
       initialExecutionOptions: {
