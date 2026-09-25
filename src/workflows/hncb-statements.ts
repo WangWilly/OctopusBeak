@@ -1,14 +1,18 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
+import {
+  SourceTextIntegrityError,
+  strictSourceText,
+  type SourceTextPort,
+} from "../lib/automation/source-text.ts";
 import {
   librettoAuthenticate,
   pause,
   workflow,
   type LibrettoWorkflowContext,
 } from "libretto";
-import type { Download, Frame, Locator, Page } from "playwright";
+import type { Download, Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
@@ -35,6 +39,14 @@ import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContractInput,
+} from "../lib/automation/human-assistance.ts";
+import type {
+  WorkflowContext,
+  WorkflowFinancialCommitPort,
+} from "../lib/automation/workflow-executor.ts";
 import {
   readHncbCurrentDepositBalances,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
@@ -67,6 +79,17 @@ const inputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   outputDir: z.string().default("downloads/hncb-statements"),
+});
+
+const typedWorkflowInputSchema = z.object({
+  startDate: dateSchema.optional(),
+  endDate: dateSchema.optional(),
+  accountFilters: z.array(z.string()).default([]),
+  credentials: z.object({
+    hncb_user_id: z.string().trim().min(1),
+    hncb_account: z.string().trim().min(1),
+    hncb_password: z.string().trim().min(1),
+  }),
 });
 
 const downloadSchema = z.object({
@@ -104,6 +127,13 @@ type HncbCredentials = {
 type WorkflowInput = z.infer<typeof inputSchema>;
 type WorkflowOutput = z.infer<typeof outputSchema>;
 type StatementDownload = z.infer<typeof downloadSchema>;
+export type HncbWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
+export type HncbWorkflowOutput = Readonly<{
+  usedExistingSession: boolean;
+  dateRange: Readonly<{ startDate: string; endDate: string }>;
+  accountCount: number;
+  status: "financial-admitted" | "source-only";
+}>;
 
 type DateParts = {
   year: number;
@@ -128,6 +158,7 @@ type HncbStatementDownload = ParsedStatement & {
   filename: string;
   byteLength: number;
   contentDigest: `sha256:${string}`;
+  sourceResponse?: Readonly<{ status: number; contentType: string }>;
 };
 
 type ExistingHncbFinancialCapture = Readonly<{
@@ -335,6 +366,11 @@ export function indexHncbCurrentDepositFinancialCaptures(
 
 export type HncbStatementsRunDependencies = {
   usedExistingSession?: boolean;
+  inMemory?: boolean;
+  text?: SourceTextPort;
+  signal?: AbortSignal;
+  event?: WorkflowContext["event"];
+  financialCommit?: WorkflowFinancialCommitPort;
   readAccountOptions?: (
     page: Page,
     filters: string[],
@@ -348,6 +384,7 @@ export type HncbStatementsRunDependencies = {
     page: Page,
     fallbackAccount: string,
     resultFrame: Frame,
+    text?: SourceTextPort,
   ) => Promise<HncbStatementDownload>;
   writeStatementFile?: typeof writeStatementFile;
   /** Injected in checks; production reads the authenticated current-balance page. */
@@ -783,21 +820,59 @@ export function hncbCaptchaAssistanceStage(
 async function signInHncb(
   ctx: LibrettoWorkflowContext,
   credentials: HncbCredentials,
+  requestHumanAssistance?: (
+    stage: WorkflowHumanAssistanceStage,
+    signal: AbortSignal,
+  ) => Promise<HumanAssistanceCompletionStatus>,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const { page, session } = ctx;
-  await fillLoginForm(page, credentials);
-  await emitHumanAssistanceStage(hncbCaptchaAssistanceStage(page));
-
-  console.log(
-    "manual-auth-required: enter the HNCB CAPTCHA in the browser, then run `npx libretto resume --session " +
-      session +
-      "`.",
+  return await signInHncbPage(
+    ctx.page,
+    ctx.session,
+    credentials,
+    requestHumanAssistance,
+    signal,
   );
-  await pause(session);
+}
+
+async function signInHncbPage(
+  page: Page,
+  session: string,
+  credentials: HncbCredentials,
+  requestHumanAssistance?: (
+    stage: WorkflowHumanAssistanceStage,
+    signal: AbortSignal,
+  ) => Promise<HumanAssistanceCompletionStatus>,
+  signal?: AbortSignal,
+): Promise<void> {
+  await fillLoginForm(page, credentials);
+  signal?.throwIfAborted();
+  if (requestHumanAssistance) {
+    if (!signal)
+      throw new Error("HNCB human-assistance cancellation signal is missing.");
+    const status = await requestHumanAssistance(
+      hncbCaptchaAssistanceStage(page),
+      signal,
+    );
+    signal?.throwIfAborted();
+    if (status !== "entered" && status !== "verified") {
+      throw new Error(`HNCB human assistance ended with status ${status}.`);
+    }
+  } else {
+    await emitHumanAssistanceStage(hncbCaptchaAssistanceStage(page));
+
+    console.log(
+      "manual-auth-required: enter the HNCB CAPTCHA in the browser, then run `npx libretto resume --session " +
+        session +
+        "`.",
+    );
+    await pause(session);
+  }
 
   const accountField = page.locator("#NICKNAME");
   if (!(await accountField.inputValue()).trim()) {
-    console.warn("hncb-login-account-refilled-after-captcha");
+    if (!requestHumanAssistance)
+      console.warn("hncb-login-account-refilled-after-captcha");
     await accountField.fill(requireCredential(credentials, "hncb_account"));
   }
   if (!(await page.locator("#TrxCaptchaKey").inputValue()).trim()) {
@@ -807,6 +882,23 @@ async function signInHncb(
   }
   await page.locator("li#WannaLogin a").click();
   await waitForSignedInState(page);
+}
+
+export async function requestHncbCaptchaAssistance(
+  stage: WorkflowHumanAssistanceStage,
+  request: (
+    contract: HumanAssistanceContractInput,
+    signal: AbortSignal,
+  ) => Promise<HumanAssistanceCompletionStatus>,
+  signal: AbortSignal,
+): Promise<HumanAssistanceCompletionStatus> {
+  signal.throwIfAborted();
+  const contract = await emitHumanAssistanceStage(stage, (value) => value);
+  const status = await request(contract, signal);
+  signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified")
+    throw new Error(`HNCB human assistance ended with status ${status}.`);
+  return status;
 }
 
 async function waitForSignedInState(page: Page): Promise<void> {
@@ -1011,6 +1103,7 @@ async function downloadCurrentStatement(
   page: Page,
   fallbackAccount: string,
   resultFrame?: Frame,
+  text: SourceTextPort = strictSourceText,
 ): Promise<HncbStatementDownload> {
   const mainFrame = resultFrame ?? (await waitForStatementResult(page));
   if (!mainFrame) {
@@ -1036,7 +1129,7 @@ async function downloadCurrentStatement(
       popupWindow.doSubmit();
     });
     const download = await downloadPromise;
-    const downloaded = await readBig5DownloadAsUtf8(download);
+    const downloaded = await readBig5DownloadAsUtf8(download, text);
     return {
       ...parseStatementExport(downloaded.content, fallbackAccount),
       filename: download.suggestedFilename(),
@@ -1044,6 +1137,154 @@ async function downloadCurrentStatement(
       contentDigest: downloaded.contentDigest,
     };
   } finally {
+    await popup.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Capture HNCB's export response through Playwright routing so Chromium never
+ * creates its managed download artifact. The paused browser request is fetched
+ * exactly once with the page's cookies, decoded from the returned bytes, then
+ * fulfilled with an empty response so attachment handling cannot write a file.
+ */
+export async function downloadCurrentStatementInMemory(
+  page: Page,
+  fallbackAccount: string,
+  resultFrame?: Frame,
+  text: SourceTextPort = strictSourceText,
+  timeoutMs = 60_000,
+  signal?: AbortSignal,
+): Promise<HncbStatementDownload> {
+  signal?.throwIfAborted();
+  const mainFrame = resultFrame ?? (await waitForStatementResult(page));
+  if (!mainFrame)
+    throw new Error("Cannot collect an empty HNCB statement result.");
+
+  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+  await statementDownloadLink(mainFrame).click();
+  const popup = await popupPromise;
+  let intercepted = false;
+  let resolveCapture!: (statement: HncbStatementDownload) => void;
+  let rejectCapture!: (error: Error) => void;
+  const capturePromise = new Promise<HncbStatementDownload>((resolve, reject) => {
+    resolveCapture = resolve;
+    rejectCapture = reject;
+  });
+  void capturePromise.catch(() => undefined);
+  const captureError = (error: unknown): Error =>
+    error instanceof Error ? error : new Error("HNCB export response could not be read.");
+  const handleRoute = async (route: Route): Promise<void> => {
+    const request = route.request();
+    if (!request.url().includes("/netbank/servlet/TrxDispatcher")) {
+      await route.continue();
+      return;
+    }
+    if (request.method() !== "POST") {
+      const error = new Error("HNCB export did not use the expected POST request.");
+      rejectCapture(error);
+      await route.abort("failed").catch(() => undefined);
+      return;
+    }
+    if (intercepted) {
+      const error = new Error("HNCB export submitted more than once.");
+      rejectCapture(error);
+      await route.abort("failed").catch(() => undefined);
+      return;
+    }
+    intercepted = true;
+    try {
+      const response = await route.fetch();
+      if (response.status() !== 200)
+        throw new Error("HNCB export response was not terminal.");
+      const headers = response.headers();
+      const contentType = headers["content-type"]?.trim() ?? "";
+      const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+      if (
+        ![
+          "application/vnd.ms-excel",
+          "application/x-excel",
+          "application/xls",
+          "application/octet-stream",
+          "text/html",
+        ].includes(mediaType)
+      )
+        throw new Error("HNCB export response has an unexpected content type.");
+      if (!/\battachment\b/iu.test(headers["content-disposition"] ?? ""))
+        throw new Error("HNCB export response is missing terminal attachment evidence.");
+      const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
+        contentType,
+      )?.[1]?.toLowerCase();
+      if (
+        charset &&
+        !["big5", "cp950", "windows-950"].includes(charset)
+      )
+        throw new Error("HNCB export response charset contradicts the Big5 contract.");
+      const declaredLength = Number(headers["content-length"]);
+      const maxExportBytes = 64 * 1024 * 1024;
+      if (Number.isFinite(declaredLength) && declaredLength > maxExportBytes)
+        throw new Error("HNCB export response exceeds the in-memory size limit.");
+      const bytes = new Uint8Array(await response.body());
+      if (bytes.byteLength === 0 || bytes.byteLength > maxExportBytes)
+        throw new Error("HNCB export response is empty or exceeds the in-memory size limit.");
+      const content = text.decode(bytes, "big5");
+      text.assertIntact(content);
+      const parsed = parseStatementExport(content, fallbackAccount);
+      if (!parsed.queryPeriod || !parsed.currency)
+        throw new Error("HNCB export workbook is incomplete.");
+      await route.fulfill({ status: 204, body: "" });
+      resolveCapture({
+        ...parsed,
+        filename: "hncb-domestic-deposit-export.xls",
+        byteLength: bytes.byteLength,
+        contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
+        sourceResponse: { status: response.status(), contentType },
+      });
+    } catch (error) {
+      const failure = captureError(error);
+      rejectCapture(failure);
+      await route.abort("failed").catch(() => undefined);
+    }
+  };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  try {
+    await popup
+      .waitForLoadState("domcontentloaded", { timeout: 10_000 })
+      .catch(() => undefined);
+    await popup.route("**/*", handleRoute);
+    await popup.evaluate(() => {
+      const popupWindow = window as typeof window & { doSubmit?: () => void };
+      if (typeof popupWindow.doSubmit !== "function")
+        throw new Error("HNCB export popup did not expose doSubmit().");
+      popupWindow.doSubmit();
+    });
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("Timed out waiting for the HNCB export response.")),
+        timeoutMs,
+      );
+      timer.unref?.();
+    });
+    const outcomes: Array<Promise<HncbStatementDownload | never>> = [
+      capturePromise,
+      timeout,
+    ];
+    if (signal) {
+      outcomes.push(new Promise<never>((_, reject) => {
+        abortListener = () => reject(signal.reason instanceof Error
+          ? signal.reason
+          : new Error("HNCB export collection was cancelled."));
+        signal.addEventListener("abort", abortListener, { once: true });
+        if (signal.aborted) abortListener();
+      }));
+    }
+    return await Promise.race(outcomes);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && abortListener)
+      signal.removeEventListener("abort", abortListener);
+    await popup.unroute("**/*", handleRoute).catch(() => undefined);
     await popup.close().catch(() => undefined);
   }
 }
@@ -1212,7 +1453,20 @@ export async function runHncbStatements(
         filters,
       ));
   const query = overrides.queryAccount ?? queryAccountStatements;
-  const download = overrides.downloadStatement ?? downloadCurrentStatement;
+  const sourceText = overrides.text ?? strictSourceText;
+  const download = overrides.downloadStatement ?? (
+    overrides.inMemory
+      ? (candidatePage, fallbackAccount, resultFrame) =>
+          downloadCurrentStatementInMemory(
+            candidatePage,
+            fallbackAccount,
+            resultFrame,
+            sourceText,
+            60_000,
+            overrides.signal,
+          )
+      : downloadCurrentStatement
+  );
   const write = overrides.writeStatementFile ?? writeStatementFile;
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readHncbCurrentDepositBalances;
@@ -1234,12 +1488,24 @@ export async function runHncbStatements(
 
   {
     const accounts = await readAccounts(page, input.accountFilters);
-    for (const account of accounts) {
+    await overrides.event?.("collection", "collection-started", {
+      completed: 0,
+      total: accounts.length,
+    });
+    for (const [accountIndex, account] of accounts.entries()) {
+      overrides.signal?.throwIfAborted();
       const resultFrame = await query(page, account, dateRange);
       if (!resultFrame) {
-        console.warn("hncb-account-no-statement-data", {
-          account: account.label,
-        });
+        if (overrides.event) {
+          await overrides.event("collection", "account-no-data", {
+            completed: accountIndex + 1,
+            total: accounts.length,
+          });
+        } else {
+          console.warn("hncb-account-no-statement-data", {
+            account: account.label,
+          });
+        }
         const structural = admitHncbDomesticDepositCaptureEvidence(
           buildHncbCapture(account, dateRange, observedAt),
         );
@@ -1248,18 +1514,50 @@ export async function runHncbStatements(
             `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
           );
         captures.push(structural.capture);
+        await overrides.event?.("validation", "source-validation-completed", {
+          completed: accountIndex + 1,
+          total: accounts.length,
+        });
         continue;
       }
-      const statement = await download(page, account.label, resultFrame);
+      await overrides.event?.("decoding", "source-decoding-started", {
+        completed: accountIndex,
+        total: accounts.length,
+      });
+      let statement: HncbStatementDownload;
+      try {
+        statement = await download(page, account.label, resultFrame, sourceText);
+      } catch (error) {
+        await overrides.event?.(
+          error instanceof SourceTextIntegrityError ? "decoding" : "validation",
+          error instanceof SourceTextIntegrityError
+            ? "source-decode-rejected"
+            : "source-export-rejected",
+          { completed: accountIndex, total: accounts.length },
+        );
+        throw error;
+      }
+      overrides.signal?.throwIfAborted();
+      await overrides.event?.("decoding", "source-decoding-completed", {
+        completed: accountIndex + 1,
+        total: accounts.length,
+      });
       const structural = admitHncbDomesticDepositCaptureEvidence(
         buildHncbCapture(account, dateRange, observedAt, statement),
       );
       if (structural.status !== "admissible" || !structural.capture)
         throw new Error(
           `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
-        );
+          );
       captures.push(structural.capture);
-      downloads.push(await write(input.outputDir, statement));
+      if (overrides.inMemory) {
+        await overrides.event?.("validation", "source-validation-completed", {
+          completed: accountIndex + 1,
+          total: accounts.length,
+        });
+      } else {
+        downloads.push(await write(input.outputDir, statement));
+      }
     }
     if (captures.length === 0)
       throw new Error("No HNCB accounts reached a terminal source result.");
@@ -1348,33 +1646,61 @@ export async function runHncbStatements(
       });
     }
 
+    const items = [
+      ...sourceOnlyEntries.map((entry) => ({
+        provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+          request: createHncbDomesticDepositSourceEvidence(entry.capture, entry.captureId),
+        },
+      } as const)),
+      ...financialInputs.map((entry) => ({
+        provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+          request: { capture: entry.financialCapture },
+        },
+      } as const)),
+      ...currentBalanceCaptures.map((capture) => ({
+        provider: "hncb", product: "current-balance",
+        itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
+      } as const)),
+    ];
+    overrides.signal?.throwIfAborted();
+    await overrides.event?.("commit", "canonical-commit-started", {
+      completed: 0,
+      total: items.length,
+    });
+    if (overrides.financialCommit) {
+      const committed = await overrides.financialCommit.execute(items, {
+        provider: "hncb",
+        product: "financial",
+        ...(overrides.signal ? { signal: overrides.signal } : {}),
+      });
+      if (committed.status !== "completed")
+        throw new Error(
+          `HNCB Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
+        );
+      await overrides.event?.("commit", "canonical-commit-completed", {
+        completed: committed.committedCount,
+        total: items.length,
+      });
+      return {
+        dateRange,
+        usedExistingSession: overrides.usedExistingSession ?? false,
+        count: overrides.inMemory ? captures.length : downloads.length,
+        downloads,
+        status,
+      };
+    }
+
     const client = requirePGliteChildRpcClientFromEnv();
     try {
       await client.ready;
-      const items = [
-        ...sourceOnlyEntries.map((entry) => ({
-          provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-            request: createHncbDomesticDepositSourceEvidence(entry.capture, entry.captureId),
-          },
-        } as const)),
-        ...financialInputs.map((entry) => ({
-          provider: "hncb", product: "domestic-deposit", itemKey: entry.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-            request: { capture: entry.financialCapture },
-          },
-        } as const)),
-        ...currentBalanceCaptures.map((capture) => ({
-          provider: "hncb", product: "current-balance",
-          itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(capture),
-          },
-        } as const)),
-      ];
       const committed = await executePGliteWorkflowRun({
         client: client.workflow, items, provider: "hncb", product: "financial",
       });
@@ -1392,6 +1718,81 @@ export async function runHncbStatements(
     }
 
   }
+}
+
+/** App-owned entry point. The Libretto workflow below remains during migration. */
+export async function runHncbProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+): Promise<HncbWorkflowOutput> {
+  const parsed = typedWorkflowInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("HNCB workflow input or sign-in details are missing or invalid.");
+  if (!context.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  context.signal.throwIfAborted();
+
+  await context.event("authentication", "authentication-started");
+  return await context.browser.withPage(async (page) => {
+    await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
+    const usedExistingSession = await isSignedIn(page);
+    if (!usedExistingSession) {
+      await signInHncbPage(
+        page,
+        "",
+        parsed.data.credentials,
+        async (stage, signal) => {
+          await context.event("authentication", "human-assistance-requested");
+          const status = await requestHncbCaptchaAssistance(
+            stage,
+            (contract, assistanceSignal) =>
+              context.humanAssistance.request(contract, assistanceSignal),
+            signal,
+          );
+          await context.event("authentication", "human-assistance-completed");
+          return status;
+        },
+        context.signal,
+      );
+    }
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+
+    const firstResultFrame = await openFirstStatementDetail(page);
+    const result = await runHncbStatements(
+      page,
+      { ...parsed.data, outputDir: "" },
+      {
+        usedExistingSession,
+        inMemory: true,
+        text: context.text,
+        signal: context.signal,
+        event: context.event,
+        financialCommit: context.financialCommit,
+        readAccountOptions: async (_candidatePage, filters) =>
+          readAccountOptions(firstResultFrame, filters),
+        downloadStatement: async (candidatePage, account, resultFrame, text) =>
+          downloadCurrentStatementInMemory(
+            candidatePage,
+            account,
+            resultFrame,
+            text ?? context.text,
+            60_000,
+            context.signal,
+          ),
+        readCurrentDepositBalances: readHncbCurrentDepositBalances,
+        readCurrentDepositOverviewBalances:
+          readHncbCurrentDepositOverviewBalances,
+      },
+    );
+    context.signal.throwIfAborted();
+    return {
+      usedExistingSession,
+      dateRange: result.dateRange,
+      accountCount: result.count,
+      status: result.status,
+    };
+  });
 }
 
 export default workflow("hncbStatements", {
