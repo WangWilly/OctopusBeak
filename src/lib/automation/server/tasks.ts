@@ -948,13 +948,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "fubon-all-statements",
     label: "Fubon all statements",
-    script: "run:fubon-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/fubon-all-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:fubon-all-statements",
+    command: [],
+    workflowId: "fubon-all-statements",
     kind: "crawler",
     credentialGroupId: "fubon",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[0].credentialKeys,
