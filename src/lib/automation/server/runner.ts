@@ -1,5 +1,3 @@
-import { spawnSync } from "node:child_process";
-import { join } from "node:path";
 import {
   syncExchangeRates,
   type ExchangeRatePersistencePort,
@@ -8,56 +6,16 @@ import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-r
 import { runExchangeRateSyncCommand } from "../../../ledger/sync-exchange-rates.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
-import { resolvePatchCommand } from "./desktop-command.ts";
 import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,
 } from "./task-run-finalization.ts";
 import {
-  accumulateAutomationOutput,
-  automationProcessEnv,
-  automationTaskChild,
-  claimRunAutomationSession,
-  createAutomationOutputBuffer,
-  createAutomationSessionId,
-  createAutomationProgressFrameParser,
+  automationProcessEnv as workflowEnvironmentFromSettings,
   interruptActiveAppWorkflows,
-  liveTaskRunUpdate,
-  resumeFailureMessage,
   runAutomationTaskExecution,
-  terminateAutomationTaskProcessTree,
-  terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
-export {
-  appendCleanupError,
-  automationCleanupFailureDetails,
-  automationSessionFromLog,
-  finalFailureMessage,
-  finalizeTerminalAutomationSession,
-  isForceQuitRun,
-  nextAttemptStatus,
-  resumeSessionFromLog,
-  shouldMarkWaitingForHuman,
-  shouldRetainAutomationSession,
-} from "./task-run-finalization.ts";
-export {
-  accumulateAutomationOutput,
-  automationProcessEnv,
-  claimRunAutomationSession,
-  createAutomationOutputBuffer,
-  createAutomationSessionId,
-  createAutomationProgressFrameParser,
-  liveTaskRunUpdate,
-  resumeFailureMessage,
-  terminateAutomationTaskProcesses,
-} from "./task-run-execution.ts";
-import {
-  relinquishAutomationSessionForTask,
-} from "./automation-session-disposition.ts";
-import {
-  closeLibrettoSession,
-  finalizeAllOwnedAutomationSessions,
-} from "./session-lifecycle.ts";
+export { resumeFailureMessage, terminateAutomationTaskProcesses } from "./task-run-execution.ts";
 import {
   isActiveTaskRunStatus,
   isTerminalTaskRunStatus,
@@ -77,8 +35,6 @@ import {
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 
-export { closeLibrettoSession };
-
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
 ) {
@@ -91,14 +47,22 @@ export async function hydrateAutomationRuntimeState(
 }
 
 const activeTaskRunIds = new Map<string, string>();
+const activeTaskRunCompletions = new Map<string, Promise<void>>();
 const cancellationRequestedTaskIds = new Set<string>();
 const forceTerminationRequestedTaskIds = new Set<string>();
 const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-let librettoRunCdpPatched = false;
+const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
+
+function assertAppExecutorTask(
+  task: NonNullable<ReturnType<typeof taskById>>,
+) {
+  if (!task.workflowId && !NON_BROWSER_APP_TASK_IDS.has(task.id)) {
+    throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
+  }
+}
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
-  resumeSession?: string;
   taskRunId?: string;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
@@ -110,11 +74,10 @@ type PGliteWorkflowCapability = Readonly<{
 }>;
 
 /**
- * Carry the authenticated parent-worker endpoint through every automation
- * child boundary. A provider without that endpoint fails
- * before a workflow process can fall back to a private database.
+ * Carry the authenticated PGlite service capability into the typed App
+ * workflow financial-commit adapter. No workflow process is launched.
  */
-export function pgliteWorkflowLaunchEnv(
+export function pgliteWorkflowRuntimeEnv(
   provider: AutomationPersistenceProvider,
 ): NodeJS.ProcessEnv {
   const workflow = (provider as AutomationPersistenceProvider & {
@@ -175,7 +138,7 @@ export type StartedAutomationTask = {
 type AutomationTaskPersistenceExecutionRunnerInput = {
   task: NonNullable<ReturnType<typeof taskById>>;
   provider: AutomationPersistenceProvider;
-  baseLaunchEnv: NodeJS.ProcessEnv;
+  baseWorkflowEnvironment: NodeJS.ProcessEnv;
   currentTaskRunId: () => string | null;
   onRunCreated: (taskRunId: string) => void | Promise<void>;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
@@ -184,7 +147,7 @@ type AutomationTaskPersistenceExecutionRunnerInput = {
   runExecution?: typeof runAutomationTaskExecution;
 };
 
-/** Build the async execution closure used by all provider-backed rounds. */
+/** Build the async execution closure used by all App-owned workflow rounds. */
 export function createAutomationTaskExecutionRunnerWithPersistence(
   input: AutomationTaskPersistenceExecutionRunnerInput,
 ) {
@@ -196,7 +159,7 @@ export function createAutomationTaskExecutionRunnerWithPersistence(
       {
         ...executionOptions,
         launchEnv: {
-          ...input.baseLaunchEnv,
+          ...input.baseWorkflowEnvironment,
           ...(executionOptions.launchEnv ?? {}),
         },
         taskRunId:
@@ -219,39 +182,13 @@ function validateScheduledAtUtc(value: string | undefined) {
   }
 }
 
-export function shouldCloseResumeSession(input: {
-  status: AutomationTaskStatus;
-  resumeSession?: string;
-}) {
-  return input.status === "failed" && Boolean(input.resumeSession);
-}
-
-export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
-  const command = resolvePatchCommand(input);
-  return command ? ([command.command, ...command.args] as const) : null;
-}
-
-export function prepareLibrettoRunCdpPatch(
-  runPatch: () => void = () => {
-    const command = resolvePatchCommand({});
-    if (!command) return;
-    const patch = spawnSync(command.command, command.args, {
-      env: command.env,
-      encoding: "utf8",
-    });
-    if (patch.stdout) console.info(patch.stdout.trim());
-    if (patch.stderr) console.warn(patch.stderr.trim());
-    if (patch.error || patch.status !== 0) {
-      throw (
-        patch.error ??
-        new Error(`Libretto CDP patch exited with code ${patch.status}`)
-      );
-    }
-  },
-) {
-  if (librettoRunCdpPatched) return;
-  runPatch();
-  librettoRunCdpPatched = true;
+/**
+ * Temporary Electron compatibility hook. The App workflow host no longer
+ * patches or launches a Libretto CDP process; remove this export with the
+ * remaining Electron bootstrap call site.
+ */
+export function prepareLibrettoRunCdpPatch(): void {
+  // Intentionally inert until Electron's legacy call site is retired.
 }
 
 export function hasActiveAutomationTask() {
@@ -335,9 +272,7 @@ async function preparedRunForTaskWithPersistence(
     maxAttempts: task.maxAttempts,
     startedAt: new Date().toISOString(),
     scheduledAtUtc: options.scheduledAtUtc,
-    logPath: task.workflowId
-      ? ""
-      : join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
+    logPath: "",
   });
   const run = await provider.automation.taskRunById(created.taskRunId);
   if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
@@ -359,7 +294,6 @@ async function startPreparedTaskWithPersistence(
     claimed: true,
     taskRunId: options.taskRunId ?? run.taskRunId,
     scheduledAtUtc: options.scheduledAtUtc,
-    resumeSession: options.resumeSession,
     runExecution: options.runExecution,
   }).then(async () => {
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
@@ -390,25 +324,17 @@ export async function startAutomationTask(
 ): Promise<StartedAutomationTask> {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  assertAppExecutorTask(task);
   validateScheduledAtUtc(options.scheduledAtUtc);
   const group = task.credentialGroupId
     ? AUTOMATION_CREDENTIAL_GROUPS.find(
         (candidate) => candidate.id === task.credentialGroupId,
       )
     : null;
-  if (
-    !options.resumeSession &&
-    group &&
-    isStatementSelectionGroup(group) &&
-    group.id !== "fubon" &&
-    group.id !== "sinopac"
-  ) {
+  if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
     selectStatementTypes(group, readAutomationSettings(), "strict");
   }
   const current = activeTaskRunIds.get(taskId);
-  if (options.resumeSession && current) {
-    throw new Error(`Automation task is already running: ${taskId}`);
-  }
   if (current && current !== "pending") {
     const snapshot = runtimeForTask(taskId);
     if (snapshot) {
@@ -464,10 +390,8 @@ export async function runAutomationBatch(
 ) {
   const selectedTaskIds = [...new Set(taskIds)];
   const errors: unknown[] = [];
-  // Each automation workflow can open the canonical database in its own
-  // Libretto process. Keep the batch on one slot so those processes never
-  // contend for the lifecycle's exclusive path lease while a capture is
-  // being admitted or the projection is rebuilt.
+  // Keep App workflows on one slot while they use the shared browser host and
+  // authenticated financial-commit service.
   await runWithConcurrency(selectedTaskIds, 1, execute).catch((error) => {
     errors.push(error);
   });
@@ -534,13 +458,6 @@ async function cancelAutomationTaskWithPersistence(
       updatedAt: new Date().toISOString(),
     });
   }, 10_000));
-  const child = automationTaskChild(taskId);
-  if (!child) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    return { cancelled: taskId };
-  }
-  child.kill("SIGTERM");
-  await relinquishAutomationSessionForTask(taskId);
   return { cancelled: taskId };
 }
 
@@ -553,6 +470,7 @@ export async function startAutomationTasks(
   for (const taskId of uniqueTaskIds) {
     const task = taskById(taskId);
     if (!task) throw new Error("Unknown automation task: " + taskId);
+    assertAppExecutorTask(task);
     const group = task.credentialGroupId
       ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
       : null;
@@ -562,22 +480,6 @@ export async function startAutomationTasks(
     }
   }
   return Promise.all(uniqueTaskIds.map((taskId) => startAutomationTask(taskId, provider)));
-}
-
-export async function startAutomationResume(
-  taskId: string,
-  session: string,
-  provider: AutomationPersistenceProvider,
-): Promise<StartedAutomationTask> {
-  if (!taskById(taskId)) throw new Error("Unknown automation task: " + taskId);
-  if (!session.match(/^[\w-]+$/))
-    throw new Error("Invalid Libretto session: " + session);
-  const latest = await provider.automation.latestTaskRuns();
-  const currentRun = latest[taskId] ?? null;
-  return startAutomationTask(taskId, provider, {
-    resumeSession: session,
-    ...(currentRun ? { taskRunId: currentRun.taskRunId } : {}),
-  });
 }
 
 export async function cancelAutomationTask(
@@ -616,8 +518,7 @@ async function forceTerminateAutomationTaskWithPersistence(
       updatedAt: new Date().toISOString(),
     });
   }
-  await terminateAutomationTaskProcessTree(taskId);
-  await relinquishAutomationSessionForTask(taskId);
+  await activeTaskRunCompletions.get(taskId);
   return { cancelled: taskId };
 }
 
@@ -660,30 +561,22 @@ export async function recoverAbandonedAutomationSessions(
 export async function shutdownAutomationSessions(
   provider: AutomationPersistenceProvider,
   dependencies: Partial<{
-    finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
     finalizePersistedRuns: typeof finalizePersistedActiveRuns;
   }> = {},
 ): Promise<void> {
-  terminateAutomationTaskProcesses();
   const errors: unknown[] = [];
   try {
     await interruptActiveAppWorkflows(provider.automation);
   } catch (error) {
     errors.push(error);
   }
-  const finalizeOwnedSessions = dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
   const finalizePersistedRuns = dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
-  try {
-    await finalizeOwnedSessions();
-  } catch (error) {
-    errors.push(error);
-  }
   try {
     await finalizePersistedRuns(provider, "App 關閉，人工操作未完成");
   } catch (error) {
     errors.push(error);
   }
-  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation sessions");
+  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation workflows");
 }
 
 export async function runAutomationTask(
@@ -693,12 +586,16 @@ export async function runAutomationTask(
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  assertAppExecutorTask(task);
   validateScheduledAtUtc(options.scheduledAtUtc);
   if (!options.claimed) claimTask(taskId);
+  let completeRun!: () => void;
+  const runCompletion = new Promise<void>((resolve) => { completeRun = resolve; });
+  activeTaskRunCompletions.set(taskId, runCompletion);
   try {
-    const launchEnv = {
-      ...automationProcessEnv(),
-      ...pgliteWorkflowLaunchEnv(provider),
+    const workflowEnvironment = {
+      ...workflowEnvironmentFromSettings(),
+      ...pgliteWorkflowRuntimeEnv(provider),
     };
     const launchVerificationSettings = { ...readAutomationSettings() };
     let taskRunId: string | null = null;
@@ -711,7 +608,7 @@ export async function runAutomationTask(
     const execution = createAutomationTaskExecutionRunnerWithPersistence({
       task,
       provider,
-      baseLaunchEnv: launchEnv,
+      baseWorkflowEnvironment: workflowEnvironment,
       currentTaskRunId: () => taskRunId,
       onRunCreated,
       onRuntimeUpdate: async (updatedTaskRunId) => {
@@ -729,7 +626,6 @@ export async function runAutomationTask(
       launchVerificationSettings,
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
-        resumeSession: options.resumeSession,
         taskRunId: options.taskRunId,
         runExchangeRateSync: exchangeRateSyncForProvider(provider),
       },
@@ -743,6 +639,10 @@ export async function runAutomationTask(
     return result;
   } finally {
     activeTaskRunIds.delete(taskId);
+    if (activeTaskRunCompletions.get(taskId) === runCompletion) {
+      activeTaskRunCompletions.delete(taskId);
+    }
+    completeRun();
     cancellationRequestedTaskIds.delete(taskId);
     forceTerminationRequestedTaskIds.delete(taskId);
     const forceTimer = cancellationForceTimers.get(taskId);
