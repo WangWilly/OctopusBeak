@@ -468,6 +468,156 @@ test("service cancellation reaches an in-flight Gmail list or get and consumes i
   }
 });
 
+test("service cancellation aborts token refresh and does not cache a late access token", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-refresh-cancel-"));
+  const settingsPath = join(dir, "settings.json");
+  const credentialsPath = join(dir, "credentials.json");
+  writeFakeOAuthClientConfig(dir);
+  setAutomationCredentialCodec(fakeCredentialCodec);
+  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+  writeAutomationCredentialsFile(credentialsPath, {
+    [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh-before-cancel",
+    [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
+  });
+  const controller = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  let requestStarted!: () => void;
+  const requestPending = new Promise<void>((resolve) => { requestStarted = resolve; });
+  let fetchCalls = 0;
+  const service = createCathayGmailOtpService({
+    appRoot: dir,
+    settingsPath,
+    credentialsPath,
+    now: () => 1000,
+    fetch: async (_url, init) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        requestSignal = init?.signal as AbortSignal | undefined;
+        requestStarted();
+        return await new Promise<Response>(() => undefined);
+      }
+      return new Response(JSON.stringify({ access_token: "access-after-retry", expires_in: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  try {
+    const cancelledRefresh = service.ensureAccess(controller.signal);
+    await requestPending;
+    controller.abort();
+    assert.deepEqual(await cancelledRefresh, { status: "fallback", reason: "gmail-request-failed" });
+    assert.equal(requestSignal, controller.signal);
+    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "refresh-before-cancel");
+    assert.deepEqual(await service.ensureAccess(), { status: "ready" });
+    assert.equal(fetchCalls, 2, "the cancelled refresh must not cache its access token");
+  } finally {
+    setAutomationCredentialCodec(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preparation cancellation aborts Gmail listing and never creates a retrieval boundary", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-prepare-cancel-"));
+  const settingsPath = join(dir, "settings.json");
+  const credentialsPath = join(dir, "credentials.json");
+  writeFakeOAuthClientConfig(dir);
+  setAutomationCredentialCodec(fakeCredentialCodec);
+  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+  writeAutomationCredentialsFile(credentialsPath, {
+    [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh",
+    [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
+  });
+  const controller = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  let requestStarted!: () => void;
+  const requestPending = new Promise<void>((resolve) => { requestStarted = resolve; });
+  const service = createCathayGmailOtpService({
+    appRoot: dir,
+    settingsPath,
+    credentialsPath,
+    now: () => 1000,
+    fetch: async () => new Response(JSON.stringify({ access_token: "access", expires_in: 3600 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    api: {
+      async listMessages(_accessToken, _requestedAfterMs, signal) {
+        requestSignal = signal;
+        requestStarted();
+        return await new Promise<{ messages: { id: string }[] }>(() => undefined);
+      },
+    },
+  });
+
+  try {
+    const preparation = service.prepareRetrieval(controller.signal);
+    await requestPending;
+    controller.abort();
+    assert.deepEqual(await preparation, { status: "fallback", reason: "gmail-request-failed" });
+    assert.equal(requestSignal, controller.signal);
+    assert.deepEqual(await service.retrieve("7d3e1a6b-abc1-4c34-8def-0987654321ab"), {
+      status: "fallback",
+      reason: "protocol-error",
+    });
+  } finally {
+    setAutomationCredentialCodec(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cancelled shared OAuth authorization cannot save credentials after it resolves late", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-oauth-cancel-"));
+  const settingsPath = join(dir, "settings.json");
+  const credentialsPath = join(dir, "credentials.json");
+  resetCathayGmailOtpServiceForTests();
+  setAutomationCredentialCodec(fakeCredentialCodec);
+  writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+  writeAutomationCredentialsFile(credentialsPath, {});
+  const controller = new AbortController();
+  let authorizationSignal: AbortSignal | undefined;
+  let authorizationStarted!: () => void;
+  const authorizationPending = new Promise<void>((resolve) => { authorizationStarted = resolve; });
+  let releaseAuthorization!: (value: { refreshToken: string; connectedEmail: string }) => void;
+  let authorizationCalls = 0;
+  const service = createCathayGmailOtpService({
+    settingsPath,
+    credentialsPath,
+    oauthAuthorize: async (signal) => {
+      authorizationCalls += 1;
+      authorizationSignal = signal;
+      if (authorizationCalls === 1) {
+        authorizationStarted();
+        return await new Promise<{ refreshToken: string; connectedEmail: string }>((resolve) => {
+          releaseAuthorization = resolve;
+        });
+      }
+      return { refreshToken: "retry-refresh", connectedEmail: "test@gmail.com" };
+    },
+  });
+
+  try {
+    const cancelledAuthorization = service.ensureAccess(controller.signal);
+    await authorizationPending;
+    controller.abort();
+    assert.deepEqual(await cancelledAuthorization, { status: "fallback", reason: "gmail-request-failed" });
+    assert.ok(authorizationSignal);
+    assert.equal(authorizationSignal?.aborted, true, "the unused shared authorization flight should be cancelled");
+    releaseAuthorization({ refreshToken: "late-refresh", connectedEmail: "late@gmail.com" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], undefined);
+    assert.deepEqual(await service.ensureAccess(), { status: "ready" });
+    assert.equal(authorizationCalls, 2, "a later run should not join the abandoned authorization flight");
+    assert.equal(readAutomationCredentialsFile(credentialsPath)[CATHAY_GMAIL_REFRESH_TOKEN_KEY], "retry-refresh");
+  } finally {
+    setAutomationCredentialCodec(null);
+    resetCathayGmailOtpServiceForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("host token persistence is encrypted and never copied to workflow env", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-service-"));
   const settingsPath = join(dir, "settings.json");

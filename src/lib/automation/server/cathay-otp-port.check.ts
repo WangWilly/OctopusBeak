@@ -99,6 +99,49 @@ test("App OTP adapter passes cancellation to retrieval and never replays or retu
   assert.deepEqual(await otp.retrieve(boundaryId), { status: "fallback", reason: "protocol-error" });
 });
 
+test("App OTP adapter forwards cancellation to access and preparation without retaining late boundaries", async () => {
+  const boundaryId = "7d3e1a6b-abc1-4c34-8def-0987654321ab";
+
+  const accessController = new AbortController();
+  let accessSignal: AbortSignal | undefined;
+  let accessStarted!: () => void;
+  const accessPending = new Promise<void>((resolve) => { accessStarted = resolve; });
+  let releaseAccess!: (value: { status: "ready" }) => void;
+  const accessPort = createCathayGmailOtpPort(operations({
+    async ensureAccess(signal) {
+      accessSignal = signal;
+      accessStarted();
+      return await new Promise<{ status: "ready" }>((resolve) => { releaseAccess = resolve; });
+    },
+  }), { signal: accessController.signal });
+  const access = accessPort.ensureAccess();
+  await accessPending;
+  accessController.abort();
+  assert.deepEqual(await access, { status: "fallback", reason: "gmail-request-failed" });
+  assert.equal(accessSignal, accessController.signal);
+  releaseAccess({ status: "ready" });
+
+  const prepareController = new AbortController();
+  let prepareSignal: AbortSignal | undefined;
+  let prepareStarted!: () => void;
+  const preparePending = new Promise<void>((resolve) => { prepareStarted = resolve; });
+  let releasePreparation!: (value: { status: "prepared"; boundaryId: string }) => void;
+  const preparePort = createCathayGmailOtpPort(operations({
+    async prepareRetrieval(signal) {
+      prepareSignal = signal;
+      prepareStarted();
+      return await new Promise<{ status: "prepared"; boundaryId: string }>((resolve) => { releasePreparation = resolve; });
+    },
+  }), { signal: prepareController.signal });
+  const preparation = preparePort.prepareRetrieval();
+  await preparePending;
+  prepareController.abort();
+  assert.deepEqual(await preparation, { status: "fallback", reason: "gmail-request-failed" });
+  assert.equal(prepareSignal, prepareController.signal);
+  releasePreparation({ status: "prepared", boundaryId });
+  assert.deepEqual(await preparePort.retrieve(boundaryId), { status: "fallback", reason: "protocol-error" });
+});
+
 test("App OTP adapter consumes a boundary without starting retrieval when already cancelled", async () => {
   const controller = new AbortController();
   let retrievalCount = 0;
