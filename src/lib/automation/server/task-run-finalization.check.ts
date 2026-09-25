@@ -69,6 +69,55 @@ test("provider finalization persists partial summary and invalidates once", asyn
   }
 });
 
+test("typed App outcome is retained in run metadata without using log tail", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "ctbc-statements",
+      script: "workflow:ctbc-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+      logPath: "",
+    });
+
+    assert.deepEqual(await finalizeAutomationTaskRun({
+      provider,
+      taskId: "ctbc-statements",
+      taskKind: "crawler",
+      taskRunId: created.taskRunId,
+      logPath: "",
+    }, result({
+      logTail: "",
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: {
+          status: "financial-admitted",
+          counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
+        },
+      },
+    })), { status: "completed" });
+
+    const saved = await provider.automation.taskRunById(created.taskRunId);
+    assert.equal(saved?.logTail, "");
+    assert.deepEqual(saved?.appWorkflowOutcome, {
+      errorCode: null,
+      summary: {
+        status: "financial-admitted",
+        counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
+      },
+    });
+    assert.ok(saved?.recordJson.includes('"appWorkflowOutcome"'));
+  } finally {
+    await store.close();
+  }
+});
+
 test("terminal provider transition is idempotent under a stale finalizer", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);

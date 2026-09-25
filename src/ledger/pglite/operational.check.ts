@@ -68,6 +68,46 @@ try {
   assert.match(storedSensitive.rows[0]?.record_json ?? "", /\[REDACTED\]/u);
   assert.equal((await operational.activeTaskRuns()).length, 1);
   assert.equal((await operational.taskRunById(created.taskRunId))?.status, "running");
+  assert.equal((await operational.taskRunById(created.taskRunId))?.appWorkflowOutcome ?? null, null);
+
+  await operational.updateTaskRun(created.taskRunId, {
+    appWorkflowOutcome: {
+      errorCode: "source-validation-failed",
+      summary: {
+        status: "partial",
+        counts: {
+          accountCount: 2,
+          rowCount: 18,
+          itemCount: 12,
+          accountNumber: "sensitive-account-number",
+        },
+        rawResponse: "credential=must-not-persist",
+      },
+    } as never,
+  });
+  const safeOutcome = await operational.taskRunById(created.taskRunId);
+  assert.deepEqual(safeOutcome?.appWorkflowOutcome, {
+    errorCode: "source-validation-failed",
+    summary: {
+      status: "partial",
+      counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
+    },
+  });
+  assert.doesNotMatch(safeOutcome?.recordJson ?? "", /sensitive-account-number|must-not-persist/u);
+  await operational.appendRunEvent({
+    runId: created.taskRunId,
+    stage: "validation",
+    code: "source-validation-rejected",
+    occurredAt: "2026-09-22T00:00:00.000Z",
+  });
+  assert.equal(await operational.pruneRunEvents("2026-09-23T00:00:00.000Z"), 1);
+  assert.deepEqual((await operational.taskRunById(created.taskRunId))?.appWorkflowOutcome, {
+    errorCode: "source-validation-failed",
+    summary: {
+      status: "partial",
+      counts: { accountCount: 2, rowCount: 18, itemCount: 12 },
+    },
+  });
 
   await operational.updateTaskRun(created.taskRunId, {
     logTail: "progress",
@@ -80,6 +120,36 @@ try {
     },
   });
   assert.equal((await operational.taskRunById(created.taskRunId))?.progress?.percent, 50);
+
+  const occurrence = "2026-09-22T00:10:00.000Z";
+  const scheduled = await operational.createTaskRun({
+    taskId: "exchange-rates",
+    script: `run:exchange-rates --scheduled-at-utc ${occurrence}`,
+    kind: "sync",
+    status: "failed",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-09-21T00:11:00.000Z",
+    scheduledAtUtc: occurrence,
+    logPath: "",
+  });
+  assert.equal((await operational.taskRunById(scheduled.taskRunId))?.scheduledAtUtc, occurrence);
+  assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", occurrence), true);
+  assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", "2026-09-22T00:12:00.000Z"), false);
+
+  const legacyOccurrence = "2026-09-22T00:20:00.000Z";
+  const legacyScheduled = await operational.createTaskRun({
+    taskId: "exchange-rates",
+    script: `run:exchange-rates --scheduled-at-utc ${legacyOccurrence}`,
+    kind: "sync",
+    status: "interrupted",
+    attempt: 1,
+    maxAttempts: 1,
+    startedAt: "2026-09-21T00:13:00.000Z",
+    logPath: "",
+  });
+  assert.ok(legacyScheduled.taskRunId);
+  assert.equal(await operational.hasOccurrenceBeenAttempted("exchange-rates", legacyOccurrence), true);
 
   const contractInput = {
     stageId: "otp",

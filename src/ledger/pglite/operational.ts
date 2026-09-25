@@ -23,6 +23,7 @@ import {
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
 import { sanitizeAutomationLogTail } from "../../lib/automation/server/log-sanitizer.ts";
+import { sanitizeTypedWorkflowOutcome } from "../../lib/automation/server/typed-workflow-outcome.ts";
 import type {
   ExchangeRatePersistencePort,
   ExchangeRateRecord,
@@ -87,6 +88,31 @@ function nullableString(value: unknown): string | null {
 
 function nullableNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
+}
+
+function isCanonicalUtcInstant(value: string): boolean {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function recordScheduledAtUtc(recordJson: string): string | undefined {
+  try {
+    const value = JSON.parse(recordJson) as { scheduledAtUtc?: unknown };
+    return typeof value.scheduledAtUtc === "string" && isCanonicalUtcInstant(value.scheduledAtUtc)
+      ? value.scheduledAtUtc
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recordAppWorkflowOutcome(recordJson: string) {
+  try {
+    const value = JSON.parse(recordJson) as { appWorkflowOutcome?: unknown };
+    return sanitizeTypedWorkflowOutcome(value.appWorkflowOutcome);
+  } catch {
+    return null;
+  }
 }
 
 function recordProgress(recordJson: string): AutomationTaskProgress | undefined {
@@ -175,6 +201,8 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     logTail: sanitizeAutomationLogTail(String(row.log_tail)),
     events: recordEvents(recordJson),
     recordJson,
+    appWorkflowOutcome: recordAppWorkflowOutcome(recordJson),
+    scheduledAtUtc: recordScheduledAtUtc(recordJson),
     progress: recordProgress(recordJson),
     terminationMode: recordTerminationMode(recordJson),
     humanAssistanceContract: parseHumanAssistanceContract(recordJson),
@@ -232,6 +260,9 @@ function sanitizeRun(run: AutomationTaskRun): AutomationTaskRun {
     errorMessage: run.errorMessage === null
       ? null
       : sanitizeAutomationLogTail(run.errorMessage),
+    ...(run.appWorkflowOutcome === undefined
+      ? {}
+      : { appWorkflowOutcome: sanitizeTypedWorkflowOutcome(run.appWorkflowOutcome) }),
   };
 }
 
@@ -362,6 +393,9 @@ export class PGliteOperationalStore
   }
 
   async createTaskRun(input: CreateTaskRunInput): Promise<{ taskRunId: string }> {
+    if (input.scheduledAtUtc !== undefined && !isCanonicalUtcInstant(input.scheduledAtUtc)) {
+      throw new Error("Invalid scheduled occurrence UTC.");
+    }
     const taskRunId = randomUUID();
     const errorMessage = input.errorMessage === undefined || input.errorMessage === null
       ? input.errorMessage ?? null
@@ -613,6 +647,25 @@ export class PGliteOperationalStore
       ) AS exists
     `,
       [taskId, occurrence],
+    );
+    return Boolean(result.rows[0]?.exists);
+  }
+
+  async hasOccurrenceBeenAttempted(taskId: string, occurrenceUtc: string): Promise<boolean> {
+    if (!isCanonicalUtcInstant(occurrenceUtc)) {
+      throw new Error("Invalid scheduled occurrence UTC.");
+    }
+    const result = await this.#database.query<{ exists: boolean }>(
+      `
+      SELECT EXISTS (
+        SELECT 1 FROM automation_task_runs
+        WHERE task_id = $1 AND (
+          record_json::jsonb ->> 'scheduledAtUtc' = $2
+          OR right(script, char_length(' --scheduled-at-utc ' || $2)) = ' --scheduled-at-utc ' || $2
+        )
+      ) AS exists
+    `,
+      [taskId, occurrenceUtc],
     );
     return Boolean(result.rows[0]?.exists);
   }

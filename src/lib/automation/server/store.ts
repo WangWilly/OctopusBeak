@@ -9,6 +9,7 @@ import {
   type HumanAssistanceCompletionStatus,
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -32,6 +33,10 @@ export type AutomationTaskRun = {
   terminationMode?: "forced";
   recordJson: string;
   humanAssistanceContract: HumanAssistanceContract | null;
+  /** App-owned typed outcome retained in record_json, if this was a typed run. */
+  appWorkflowOutcome?: TypedWorkflowOutcome | null;
+  /** Canonical schedule occurrence identity, persisted in record_json. */
+  scheduledAtUtc?: string;
 };
 
 export type AutomationTaskHistoryRow = Pick<
@@ -78,6 +83,7 @@ export type CreateTaskRunInput = {
   logTail?: string;
   progress?: AutomationTaskProgress;
   humanAssistanceContract?: HumanAssistanceContract | null;
+  scheduledAtUtc?: string;
 };
 
 /** Async persistence contract implemented by the worker-owned PGlite store. */
@@ -105,6 +111,7 @@ export interface AutomationPersistencePort {
   latestTaskRuns(): Promise<Record<string, AutomationTaskRun>>;
   todayTaskRunIds(input: { startUtc: Date; endUtc: Date }): Promise<string[]>;
   hasSuccessfulTaskRunSince(taskId: string, occurrence: string): Promise<boolean>;
+  hasOccurrenceBeenAttempted(taskId: string, occurrenceUtc: string): Promise<boolean>;
   recentTaskRuns(limit?: number): Promise<AutomationTaskHistoryRow[]>;
   appendRunEvent(event: WorkflowRunEvent): Promise<void>;
   pruneRunEvents(cutoffUtc: string): Promise<number>;
@@ -149,6 +156,7 @@ export type AutomationTaskRunUpdate = Partial<
     | "progress"
     | "terminationMode"
     | "humanAssistanceContract"
+    | "appWorkflowOutcome"
   >
 >;
 

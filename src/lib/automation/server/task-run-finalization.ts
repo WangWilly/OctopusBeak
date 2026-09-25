@@ -139,6 +139,7 @@ type TaskRunFinalizationIntent = {
   signal: NodeJS.Signals | null;
   errorMessage: string | null;
   logTail: string;
+  appWorkflowOutcome?: AutomationTaskProcessResult["appWorkflowOutcome"];
   terminationMode?: "forced";
   statementSummary?: StatementRunSummary | null;
 };
@@ -154,6 +155,7 @@ export type AsyncTaskRunFinalizationIntent = {
   signal: NodeJS.Signals | null;
   errorMessage: string | null;
   logTail: string;
+  appWorkflowOutcome?: AutomationTaskProcessResult["appWorkflowOutcome"];
   terminationMode?: "forced";
 };
 
@@ -187,6 +189,9 @@ export async function finalizeTaskRunTransition(
       signal: intent.signal,
       errorMessage: intent.errorMessage,
       logTail: intent.logTail,
+      ...(intent.appWorkflowOutcome === undefined
+        ? {}
+        : { appWorkflowOutcome: intent.appWorkflowOutcome }),
     });
     const persisted = await persistence.taskRunById(run.taskRunId);
     if (!persisted) throw new Error(`Missing automation task run: ${run.taskRunId}`);
@@ -202,6 +207,9 @@ export async function finalizeTaskRunTransition(
     signal: intent.signal,
     errorMessage: intent.errorMessage,
     logTail: intent.logTail,
+    ...(intent.appWorkflowOutcome === undefined
+      ? {}
+      : { appWorkflowOutcome: intent.appWorkflowOutcome }),
     ...(intent.terminationMode ? { terminationMode: intent.terminationMode } : {}),
   });
   if (!transition.applied) {
@@ -275,6 +283,9 @@ export async function finalizeAutomationTaskRun(
       signal: result.signal,
       errorMessage: sessionCleanup?.errorMessage ?? taskError,
       logTail,
+      ...(result.appWorkflowOutcome === undefined
+        ? {}
+        : { appWorkflowOutcome: result.appWorkflowOutcome }),
       ...(status === "cancelled" && context.forceTerminated
         ? { terminationMode: "forced" as const }
         : {}),

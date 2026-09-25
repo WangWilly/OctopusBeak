@@ -334,6 +334,7 @@ async function preparedRunForTaskWithPersistence(
     attempt: 1,
     maxAttempts: task.maxAttempts,
     startedAt: new Date().toISOString(),
+    scheduledAtUtc: options.scheduledAtUtc,
     logPath: task.workflowId
       ? ""
       : join("data", "automation", "logs", `${task.id}-${Date.now()}-1.log`),
