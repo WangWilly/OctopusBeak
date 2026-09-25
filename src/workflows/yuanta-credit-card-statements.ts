@@ -1,21 +1,19 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { pause, workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import {
+  SourceTextIntegrityError,
+  type SourceTextPort,
+} from "../lib/automation/source-text.ts";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
   yuantaCanonicalSpineCapture,
@@ -34,11 +32,9 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
-  authenticateYuantaBank as sharedAuthenticateYuantaBank,
   deriveYuantaSourceConnectionKey,
   yuantaSourceConnectionScope,
   type YuantaCredentials,
@@ -104,10 +100,6 @@ export type YuantaCreditCardIssuerSummary = {
 };
 
 const YUANTA_SUMMARY_MAX_PAGES = 100;
-
-/** Narrow local-only bridge for desktop inspection when task params are unavailable. */
-export const YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV =
-  "YUANTA_INSPECT_FIRST_HISTORY_SUMMARY" as const;
 
 /** Stable source scope for issuer-settled summaries found in each history query. */
 export const YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY =
@@ -314,7 +306,6 @@ export const yuantaCreditCardStatementsInputSchema = z.object({
   includeUnbilled: z.boolean().default(true),
   includePaymentDetails: z.boolean().default(true),
   includeSummary: z.boolean().default(true),
-  inspectFirstHistorySummary: z.boolean().default(false),
   replaceActiveSession: z.boolean().default(true),
   canonicalHumanAttestation: z
     .object({
@@ -326,31 +317,7 @@ export const yuantaCreditCardStatementsInputSchema = z.object({
 });
 const inputSchema = yuantaCreditCardStatementsInputSchema;
 
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.enum(["unbilled", "billed"]),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  periods: z.array(z.string()),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  usedExistingSession: z.boolean(),
-  replacedActiveSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  files: z.array(tableFileSchema),
-  canonicalAdmission: z.enum(["not-configured", "admitted"]),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-});
-
-type WorkflowInput = z.infer<typeof inputSchema> & { credentials?: YuantaCredentials };
-type TableFile = z.infer<typeof tableFileSchema>;
+type WorkflowInput = z.infer<typeof inputSchema>;
 
 /**
  * The workflow's Yuanta identity epoch is deliberately tied to the
@@ -497,41 +464,6 @@ function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
   );
-}
-
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-function consumeDateSortKey(row: StatementRow): string {
-  const date = toAsciiDigits(cleanText(row.consumeDate));
-  const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
-  if (!match) return "";
-
-  const year =
-    match[1].length === 3 ? Number(match[1]) + 1911 : Number(match[1]);
-  return `${String(year).padStart(4, "0")}${match[2]}${match[3]}`;
-}
-
-function compareRowsByConsumeDateDesc(
-  left: StatementRow,
-  right: StatementRow,
-): number {
-  return consumeDateSortKey(right).localeCompare(consumeDateSortKey(left));
 }
 
 async function waitForFrame(
@@ -1403,20 +1335,6 @@ async function clickCreditCardFunction(
   return await waitForCreditCardFunctionResult(page, description);
 }
 
-const baseStatementHeaders = [
-  "信用卡號",
-  "信用卡名稱",
-  "消費日期",
-  "入帳日期",
-  "消費明細",
-  "國家/幣別",
-  "外幣折算日",
-  "外幣金額",
-  "新臺幣金額",
-];
-
-const billedStatementHeaders = [...baseStatementHeaders, "繳費狀態"];
-
 function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&nbsp;/gi, " ")
@@ -1979,47 +1897,6 @@ function hasUntraversedYuantaSummaryPager(html: string): boolean {
   );
 }
 
-export type YuantaCreditCardHistoryInspectionPauseOptions = {
-  enabled: boolean;
-  session: string;
-  monthIndex: number;
-  pageOrdinal: number;
-  /** Test seam; production uses Libretto's pause(session). */
-  pauseFn?: (session: string) => Promise<void>;
-};
-
-export function yuantaInspectFirstHistorySummaryEnabled(
-  inputEnabled: boolean,
-): boolean {
-  if (process.env.NODE_ENV === "production") return false;
-  return (
-    inputEnabled ||
-    process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV] === "1"
-  );
-}
-
-/**
- * Leave the first rendered history response available for human inspection.
- * This is opt-in, does nothing in production, and never logs page contents.
- */
-export async function pauseBeforeYuantaCreditCardHistorySummaryParse(
-  options: YuantaCreditCardHistoryInspectionPauseOptions,
-): Promise<void> {
-  if (
-    !options.enabled ||
-    options.pageOrdinal !== 0 ||
-    process.env.NODE_ENV === "production"
-  )
-    return;
-  console.log("yuanta-credit-card-history-summary-inspection-pause", {
-    monthIndex: options.monthIndex,
-    pageOrdinal: options.pageOrdinal,
-    phase: "queryHistoryDetail-rendered-before-summary-parse",
-  });
-  if (options.pauseFn) await options.pauseFn(options.session);
-  else await pause(options.session);
-}
-
 function yuantaSummaryPageFingerprint(html: string): string {
   const fragments = yuantaSummaryResultFragments(html);
   return (fragments[0] ?? html).replace(/\s+/gu, " ").trim();
@@ -2087,10 +1964,6 @@ function normalizeTableRows(tableLabel: string, rows: string[][]): string[][] {
   });
 
   return [normalizedHeaders, ...normalizedBodyRows];
-}
-
-function creditCardDownloadsDir(): string {
-  return join(process.cwd(), "downloads", "yuanta-credit-card-statements");
 }
 
 function headerScore(row: string[]): number {
@@ -4948,33 +4821,6 @@ async function readBillingPaymentStatus(page: Page): Promise<string> {
   return "";
 }
 
-function statementHeaders(kind: StatementKind): string[] {
-  return kind === "billed" ? billedStatementHeaders : baseStatementHeaders;
-}
-
-function statementRowsToCsv(kind: StatementKind, rows: StatementRow[]): string {
-  const csvRows = [
-    statementHeaders(kind),
-    ...[...rows].sort(compareRowsByConsumeDateDesc).map((row) => {
-      const values = [
-        row.creditCardNo,
-        row.creditCardName,
-        row.consumeDate,
-        row.postedDate,
-        row.description,
-        row.countryCurrency,
-        row.foreignExchangeDate,
-        row.foreignAmount,
-        row.twdAmount,
-      ];
-      if (kind === "billed") values.push(row.paymentStatus);
-      return values;
-    }),
-  ];
-
-  return rowsToCsv(csvRows);
-}
-
 function cardKeyForRow(row: StatementRow): string {
   return row.creditCardNo.replace(/\D/g, "").slice(-4);
 }
@@ -5152,80 +4998,6 @@ export function buildYuantaCanonicalCreditCardCaptures(
   return capture ? [capture] : [];
 }
 
-async function writeStatementFile(
-  nextTimestamp: () => string,
-  kind: StatementKind,
-  rows: StatementRow[],
-  capture: CaptureMetadata,
-  cardKeys: string[],
-): Promise<TableFile> {
-  const downloadsDir = creditCardDownloadsDir();
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${kind}-statements-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const generatedAt = new Date().toISOString();
-  const headers = statementHeaders(kind);
-  const periods = [
-    ...new Set(
-      rows.map((row) => row.period).filter((period) => period !== null),
-    ),
-  ];
-
-  await writeFile(csvPath, statementRowsToCsv(kind, rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt,
-        workflow: "yuantaCreditCardStatements",
-        kind,
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers,
-        periods,
-        paymentStatuses:
-          kind === "billed"
-            ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
-            : [],
-        ...capture,
-        ...(capture.snapshotMode === "full"
-          ? {
-              cardRowCounts: captureCardRowCounts(
-                cardKeys,
-                rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
-              ),
-            }
-          : {}),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    baseName,
-    kind,
-    rowCount: rows.length,
-    headers,
-    periods,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
-}
-
 async function creditCardBillsFrame(page: Page): Promise<Frame> {
   const preferred = page.frame({ name: "fmain" });
   if (preferred) return preferred;
@@ -5337,18 +5109,13 @@ async function submitCreditCardUnbilled(page: Page): Promise<string> {
 }
 
 type YuantaCreditCardAppCollection = {
-  credentials: YuantaCredentials;
   sourceText: SourceTextPort;
   signal: AbortSignal;
+  /** Run-local items stay private until every selected source passes admission. */
   items: PGliteWorkflowRunItem[];
   now(): string;
   canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
   instrumentFingerprintSecret?: string;
-  collection?: YuantaCreditCardWorkflowCollection;
-};
-
-type YuantaCreditCardAppContext = LibrettoWorkflowContext & {
-  yuantaAppCollection?: YuantaCreditCardAppCollection;
 };
 
 export type YuantaCreditCardWorkflowCollection = Readonly<{
@@ -5367,439 +5134,26 @@ export type YuantaCreditCardWorkflowDependencies = Readonly<{
   instrumentFingerprintSecret?: string;
 }>;
 
-const yuantaCreditCardStatements = workflow("yuantaCreditCardStatements", {
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const appCollection = (ctx as YuantaCreditCardAppContext).yuantaAppCollection;
-    const appItemStart = appCollection?.items.length ?? 0;
-    const log = (...args: Parameters<typeof console.log>) => {
-      if (!appCollection) console.log(...args);
-    };
-    const { page, session } = ctx;
-    const credentials = appCollection?.credentials ?? (
-      input as typeof input & { credentials: YuantaCredentials }
-    ).credentials;
-    const authResult = appCollection
-      ? { usedProfile: true, usedExistingSession: true, replacedActiveSession: false }
-      : await sharedAuthenticateYuantaBank(ctx, credentials, input.replaceActiveSession);
-    const replacedActiveSession = authResult.replacedActiveSession;
-    const instrumentFingerprintSecret =
-      appCollection?.instrumentFingerprintSecret ?? process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
-    const canonicalHumanAttestation =
-      appCollection?.canonicalHumanAttestation ?? yuantaCanonicalHumanAttestationFromEnvironment(credentials);
-    const inspectFirstHistorySummary =
-      !appCollection && yuantaInspectFirstHistorySummaryEnabled(input.inspectFirstHistorySummary);
-
-    const pageReadyStartedAt = Date.now();
-    log("yuanta-credit-card-page-ready-start", {
-      startedAt: new Date(pageReadyStartedAt).toISOString(),
-    });
-    const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
-    appCollection?.sourceText.assertIntact(currentMonthHtml);
-    appCollection?.signal.throwIfAborted();
-    if (isCreditCardProductAbsentText(currentMonthHtml)) {
-      throw new StatementComponentAbsentError(
-        "No YuanTa credit-card product is available for this login.",
-      );
-    }
-    log("yuanta-credit-card-page-ready-complete", {
-      durationMs: Date.now() - pageReadyStartedAt,
-    });
-    if (hasUntraversedPager(currentMonthHtml)) {
-      throw new Error(
-        "YuanTa credit-card response has untraversed pagination.",
-      );
-    }
-    const allMonthOptions = parseCreditCardBillsHtml(
-      currentMonthHtml,
-      null,
-    ).monthOptions;
-    const monthOptions = selectMonthOptions(allMonthOptions, input);
-    log("yuanta-credit-card-months-found", {
-      available: allMonthOptions.length,
-      selected: monthOptions.length,
-    });
-    const nextTimestamp = createTimestampGenerator();
-    const billedRows: StatementRow[] = [];
-    const billedHistoryPages: YuantaCreditCardHistorySettledSummaryPage[] = [];
-    const terminalPages: boolean[] = [];
-    const creditCardStepCount =
-      monthOptions.length +
-      (input.includeUnbilled ? 1 : 0) +
-      (input.includeSummary ? 1 : 0);
-    let completedCreditCardSteps = 0;
-    const creditCardProgress = (
-      currentCreditCardSteps = completedCreditCardSteps,
-    ) => {
-      if (appCollection) return;
-      const percent = 60 + Math.min(
-        14,
-        Math.round(
-          (currentCreditCardSteps / Math.max(creditCardStepCount, 1)) * 14,
-        ),
-      );
-      emitAutomationProgress({
-        phaseCode: "workflow",
-        completed: percent,
-        total: 100,
-        percent,
-      });
-    };
-
-    let monthStartedAt = 0;
-    await submitCreditCardMonthOptions(
-      monthOptions,
-      async (month, monthPosition) => {
-        monthStartedAt = Date.now();
-        appCollection?.signal.throwIfAborted();
-        log("yuanta-credit-card-month-start", {
-          index: monthPosition + 1,
-          total: monthOptions.length,
-          monthIndex: month.index,
-          period: month.label,
-          startedAt: new Date(monthStartedAt).toISOString(),
-        });
-        creditCardProgress(monthPosition + 1);
-        return submitCreditCardMonth(page, month);
-      },
-      async (month, monthHtml, monthPosition) => {
-        appCollection?.signal.throwIfAborted();
-        appCollection?.sourceText.assertIntact(monthHtml);
-        terminalPages.push(true);
-        if (input.includeSummary)
-          await pauseBeforeYuantaCreditCardHistorySummaryParse({
-            enabled: inspectFirstHistorySummary,
-            session,
-            monthIndex: month.index,
-            pageOrdinal: monthPosition,
-          });
-        log(
-          "yuanta-credit-card-history-diagnostic",
-          diagnoseYuantaCreditCardHistoryHtml(monthHtml, month.index),
-        );
-        if (input.includeSummary) {
-          billedHistoryPages.push(
-            parseYuantaCreditCardSettledStatementHistoryPage(
-              monthHtml,
-              month,
-              monthPosition,
-            ),
-          );
-        }
-        const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
-        billedRows.push(...monthRows);
-        completedCreditCardSteps += 1;
-        log("yuanta-credit-card-month-complete", {
-          index: monthPosition + 1,
-          total: monthOptions.length,
-          monthIndex: month.index,
-          period: month.label,
-          rowCount: monthRows.length,
-          durationMs: Date.now() - monthStartedAt,
-        });
-        creditCardProgress();
-      },
-    );
-
-    const files: TableFile[] = [];
-    let unbilledRows: StatementRow[] = [];
-    if (input.includeUnbilled) {
-      const unbilledStartedAt = Date.now();
-      log("yuanta-credit-card-unbilled-start", {
-        startedAt: new Date(unbilledStartedAt).toISOString(),
-      });
-      creditCardProgress(completedCreditCardSteps + 1);
-      const unbilledHtml = await submitCreditCardUnbilled(page);
-      appCollection?.sourceText.assertIntact(unbilledHtml);
-      appCollection?.signal.throwIfAborted();
-      if (hasUntraversedPager(unbilledHtml)) {
-        throw new Error(
-          "YuanTa credit-card response has untraversed pagination.",
-        );
-      }
-      terminalPages.push(true);
-      unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
-      completedCreditCardSteps += 1;
-      log("yuanta-credit-card-unbilled-complete", {
-        rowCount: unbilledRows.length,
-        durationMs: Date.now() - unbilledStartedAt,
-      });
-      creditCardProgress();
-    }
-
-    let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
-    let statementSummaries: YuantaCreditCardStatementSummary[] = [];
-    let currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined;
-    if (input.includeSummary) {
-      issuerSummaries = collectYuantaCreditCardHistorySummaries(
-        billedHistoryPages,
-        monthOptions,
-      );
-      if (issuerSummaries.length >= 2)
-        statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
-      log("yuanta-credit-card-history-summary-authority", {
-        sourceKey: YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY,
-        pageCount: billedHistoryPages.length,
-        issuerSummaryCount: issuerSummaries.length,
-        settledCycleCount: statementSummaries.length,
-      });
-      const summaryStartedAt = Date.now();
-      log("yuanta-credit-card-summary-start", {
-        startedAt: new Date(summaryStartedAt).toISOString(),
-      });
-      creditCardProgress(completedCreditCardSteps + 1);
-      let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
-      try {
-        summaryTraversal = await submitCreditCardSummary(page, appCollection
-          ? { sourceText: appCollection.sourceText, signal: appCollection.signal, silent: true }
-          : undefined);
-        if (appCollection)
-          appCollection.sourceText.assertIntact(JSON.stringify(summaryTraversal));
-        currentUsedCredit = summaryTraversal.currentUsedCredit;
-        log(
-          "yuanta-credit-card-summary-diagnostic",
-          diagnoseYuantaCreditCardSummaryTraversal(summaryTraversal),
-        );
-        if (!currentUsedCredit)
-          log(
-            "yuanta-credit-card-current-used-credit-unavailable",
-            summaryTraversal.currentUsedCreditDiagnostic ?? {
-              reason: "optional-current-credit-estimate",
-            },
-          );
-      } catch (error) {
-        if (error instanceof YuantaCreditCardSummaryParseError) {
-          log(
-            "yuanta-credit-card-summary-diagnostic",
-            error.diagnostic,
-          );
-          log("yuanta-credit-card-current-used-credit-unavailable", {
-            reason: "summary-parse-error",
-          });
-        } else {
-          const reason =
-            error instanceof YuantaCreditSummaryNavigationError
-              ? error.diagnosticReason
-              : "summary-route-error";
-          log("yuanta-credit-card-summary-unavailable", {
-            reason,
-            ...(error instanceof YuantaCreditSummaryNavigationError &&
-            error.diagnostic
-              ? { diagnostic: error.diagnostic }
-              : {}),
-          });
-          log("yuanta-credit-card-current-used-credit-unavailable", {
-            reason,
-            ...(error instanceof YuantaCreditSummaryNavigationError &&
-            error.diagnostic
-              ? { diagnostic: error.diagnostic }
-              : {}),
-          });
-        }
-      }
-      completedCreditCardSteps += 1;
-      log("yuanta-credit-card-summary-complete", {
-        issuerSummaryCount: issuerSummaries.length,
-        settledCycleCount: statementSummaries.length,
-        pageCount: summaryTraversal?.pages.length ?? 0,
-        terminalPage: summaryTraversal?.pages.at(-1)?.pageOrdinal ?? null,
-        durationMs: Date.now() - summaryStartedAt,
-      });
-      creditCardProgress();
-    }
-
-    const cardKeys = [
-      ...new Set(
-        [...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean),
-      ),
-    ];
-    const isFullCapture =
-      !input.monthIndexes &&
-      input.includeUnbilled &&
-      allMonthOptions.length === 6 &&
-      monthOptions.length === allMonthOptions.length &&
-      terminalPages.length === 7 &&
-      terminalPages.every((terminal) => terminal === true) &&
-      [...billedRows, ...unbilledRows].every(
-        (row) => cardKeyForRow(row).length === 4,
-      );
-    const capture: CaptureMetadata = isFullCapture
-      ? {
-          snapshotMode: "full",
-          captureId: randomUUID(),
-          capturedAt: new Date().toISOString(),
-          captureKinds: ["billed", "unbilled"],
-          completenessEvidence: {
-            bank: "yuanta",
-            monthIndexes: allMonthOptions.map((month) => month.index),
-            unbilled: true,
-            pagination: "none",
-            summary: {
-              requested: input.includeSummary,
-              issuerSummaryCount: issuerSummaries.length,
-              settledCycleCount: statementSummaries.length,
-              periods: issuerSummaries.map((summary) => summary.period),
-            },
-          },
-        }
-      : {
-          snapshotMode: "partial",
-          completenessEvidence: {
-            bank: "yuanta",
-            reason: "scope_not_full",
-            monthIndexes: monthOptions.map((month) => month.index),
-            unbilled: input.includeUnbilled,
-            summary: {
-              requested: input.includeSummary,
-              issuerSummaryCount: issuerSummaries.length,
-              settledCycleCount: statementSummaries.length,
-              periods: issuerSummaries.map((summary) => summary.period),
-            },
-          },
-        };
-
-    let canonicalAdmission: "not-configured" | "admitted" =
-      "not-configured";
-    let canonicalCaptureCount = 0;
-    if (
-      canonicalHumanAttestation &&
-      instrumentFingerprintSecret &&
-      isFullCapture
-    ) {
-      const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures({
-        capture,
-        identity: canonicalHumanAttestation,
-        instrumentFingerprintSecret,
-        allMonthOptions,
-        selectedMonthOptions: monthOptions,
-        includeUnbilled: input.includeUnbilled,
-        includeSummary: input.includeSummary,
-        terminalPages,
-        billedRows,
-        unbilledRows,
-        statementSummaries,
-      });
-      if (canonicalCaptures.length > 0) {
-        const requests = canonicalCaptures.map((capture) =>
-          creditCardCommandRequestFromCanonicalCapture(
-            yuantaCanonicalSpineCapture(capture),
-            yuantaNeutralCreditCardCapture(capture),
-          ),
-        );
-        const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
-          provider: "yuanta",
-          product: "credit-card",
-          itemKey: request.capture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-            request,
-          },
-        }));
-        if (currentUsedCredit) {
-          const balanceCapture = yuantaCreditCurrentSnapshotCapture(
-            canonicalCaptures[0]!,
-            currentUsedCredit,
-          );
-          items.push({
-            provider: "yuanta",
-            product: "current-balance",
-            itemKey: balanceCapture.captureId,
-            command: {
-              kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-              request: creditCardBalanceCommandRequest(
-                balanceCapture,
-                requests[0]!.identity,
-              ),
-            },
-          });
-        }
-        if (appCollection) {
-          appCollection.signal.throwIfAborted();
-          for (const item of items)
-            appCollection.sourceText.assertIntact(JSON.stringify(item.command));
-          appCollection.items.push(...items);
-          canonicalAdmission = "admitted";
-          canonicalCaptureCount = canonicalCaptures.length;
-        } else {
-          const client = requirePGliteChildRpcClientFromEnv();
-          try {
-            await client.ready;
-            const result = await executePGliteWorkflowRun({
-              client: client.workflow,
-              items,
-              provider: "yuanta",
-              product: "credit-card",
-            });
-            if (result.status !== "completed")
-              throw new Error(
-                `Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`,
-              );
-            canonicalAdmission = "admitted";
-            canonicalCaptureCount = canonicalCaptures.length;
-          } finally {
-            client.close();
-          }
-        }
-      }
-    }
-
-    if (!appCollection && input.includeUnbilled) {
-      files.push(
-        await writeStatementFile(
-          nextTimestamp,
-          "unbilled",
-          unbilledRows,
-          capture,
-          cardKeys,
-        ),
-      );
-    }
-    if (!appCollection) {
-      files.push(
-        await writeStatementFile(
-          nextTimestamp,
-          "billed",
-          billedRows,
-          capture,
-          cardKeys,
-        ),
-      );
-    }
-
-    if (appCollection) {
-      appCollection.signal.throwIfAborted();
-      appCollection.collection = {
-        sourceCount: monthOptions.length + (input.includeUnbilled ? 1 : 0) + (input.includeSummary ? 1 : 0),
-        rowCount: billedRows.length + unbilledRows.length,
-        itemCount: appCollection.items.length - appItemStart,
-      };
-    }
-
-    return {
-      usedExistingSession: authResult.usedProfile,
-      replacedActiveSession,
-      count: files.length,
-      files,
-      canonicalAdmission,
-      canonicalCaptureCount,
-    };
-  },
-});
-
-export default yuantaCreditCardStatements;
-
 export async function runYuantaCreditCardStatements(
   page: Page,
-  input: WorkflowInput,
+  rawInput: unknown,
   dependencies: YuantaCreditCardWorkflowDependencies,
 ): Promise<YuantaCreditCardWorkflowCollection> {
+  if (
+    dependencies.collectOnly !== true ||
+    !dependencies.deferredCommitItems ||
+    !dependencies.sourceText ||
+    !dependencies.signal ||
+    typeof dependencies.now !== "function"
+  ) {
+    throw new Error("Yuanta credit-card App collection ports are unavailable.");
+  }
+  dependencies.signal.throwIfAborted();
+  const input = inputSchema.parse(rawInput);
   const appCollection: YuantaCreditCardAppCollection = {
-    credentials: input.credentials ?? {},
     sourceText: dependencies.sourceText,
     signal: dependencies.signal,
-    items: dependencies.deferredCommitItems,
+    items: [],
     now: dependencies.now,
     ...(dependencies.canonicalHumanAttestation
       ? { canonicalHumanAttestation: dependencies.canonicalHumanAttestation }
@@ -5808,19 +5162,321 @@ export async function runYuantaCreditCardStatements(
       ? { instrumentFingerprintSecret: dependencies.instrumentFingerprintSecret }
       : {}),
   };
-  const context: YuantaCreditCardAppContext = {
+  const collection = await collectYuantaCreditCardStatements(
     page,
-    session: "app-owned-yuanta-workflow",
-    yuantaAppCollection: appCollection,
-  };
-  const credentials = input.credentials ?? {};
-  const legacyOutput = await yuantaCreditCardStatements.run(context, {
-    ...input,
-    credentials,
-    canonicalHumanAttestation: dependencies.canonicalHumanAttestation,
+    input,
+    appCollection,
+  );
+  dependencies.signal.throwIfAborted();
+  dependencies.deferredCommitItems.push(...appCollection.items);
+  return collection;
+}
+
+async function collectYuantaCreditCardStatements(
+  page: Page,
+  input: WorkflowInput,
+  appCollection: YuantaCreditCardAppCollection,
+): Promise<YuantaCreditCardWorkflowCollection> {
+  const log = (..._args: unknown[]): void => undefined;
+  const instrumentFingerprintSecret = appCollection.instrumentFingerprintSecret;
+  const canonicalHumanAttestation = appCollection.canonicalHumanAttestation;
+
+  const pageReadyStartedAt = Date.now();
+  log("yuanta-credit-card-page-ready-start", {
+    startedAt: new Date(pageReadyStartedAt).toISOString(),
   });
-  if (!appCollection.collection)
-    throw new Error("Yuanta credit-card source collection did not complete.");
-  void legacyOutput;
-  return appCollection.collection;
+  const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+  appCollection.sourceText.assertIntact(currentMonthHtml);
+  appCollection.signal.throwIfAborted();
+  if (isCreditCardProductAbsentText(currentMonthHtml)) {
+    throw new StatementComponentAbsentError(
+      "No YuanTa credit-card product is available for this login.",
+    );
+  }
+  log("yuanta-credit-card-page-ready-complete", {
+    durationMs: Date.now() - pageReadyStartedAt,
+  });
+  if (hasUntraversedPager(currentMonthHtml)) {
+    throw new Error(
+      "YuanTa credit-card response has untraversed pagination.",
+    );
+  }
+  const allMonthOptions = parseCreditCardBillsHtml(
+    currentMonthHtml,
+    null,
+  ).monthOptions;
+  const monthOptions = selectMonthOptions(allMonthOptions, input);
+  log("yuanta-credit-card-months-found", {
+    available: allMonthOptions.length,
+    selected: monthOptions.length,
+  });
+  const billedRows: StatementRow[] = [];
+  const billedHistoryPages: YuantaCreditCardHistorySettledSummaryPage[] = [];
+  const terminalPages: boolean[] = [];
+
+  let monthStartedAt = 0;
+  await submitCreditCardMonthOptions(
+    monthOptions,
+    async (month, monthPosition) => {
+      monthStartedAt = Date.now();
+      appCollection.signal.throwIfAborted();
+      log("yuanta-credit-card-month-start", {
+        index: monthPosition + 1,
+        total: monthOptions.length,
+        monthIndex: month.index,
+        period: month.label,
+        startedAt: new Date(monthStartedAt).toISOString(),
+      });
+      return submitCreditCardMonth(page, month);
+    },
+    async (month, monthHtml, monthPosition) => {
+      appCollection.signal.throwIfAborted();
+      appCollection.sourceText.assertIntact(monthHtml);
+      terminalPages.push(true);
+      log(
+        "yuanta-credit-card-history-diagnostic",
+        diagnoseYuantaCreditCardHistoryHtml(monthHtml, month.index),
+      );
+      if (input.includeSummary) {
+        billedHistoryPages.push(
+          parseYuantaCreditCardSettledStatementHistoryPage(
+            monthHtml,
+            month,
+            monthPosition,
+          ),
+        );
+      }
+      const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
+      billedRows.push(...monthRows);
+      log("yuanta-credit-card-month-complete", {
+        index: monthPosition + 1,
+        total: monthOptions.length,
+        monthIndex: month.index,
+        period: month.label,
+        rowCount: monthRows.length,
+        durationMs: Date.now() - monthStartedAt,
+      });
+    },
+  );
+
+  let unbilledRows: StatementRow[] = [];
+  if (input.includeUnbilled) {
+    const unbilledStartedAt = Date.now();
+    log("yuanta-credit-card-unbilled-start", {
+      startedAt: new Date(unbilledStartedAt).toISOString(),
+    });
+    const unbilledHtml = await submitCreditCardUnbilled(page);
+    appCollection.sourceText.assertIntact(unbilledHtml);
+    appCollection.signal.throwIfAborted();
+    if (hasUntraversedPager(unbilledHtml)) {
+      throw new Error(
+        "YuanTa credit-card response has untraversed pagination.",
+      );
+    }
+    terminalPages.push(true);
+    unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
+    log("yuanta-credit-card-unbilled-complete", {
+      rowCount: unbilledRows.length,
+      durationMs: Date.now() - unbilledStartedAt,
+    });
+  }
+
+  let issuerSummaries: YuantaCreditCardIssuerSummary[] = [];
+  let statementSummaries: YuantaCreditCardStatementSummary[] = [];
+  let currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined;
+  if (input.includeSummary) {
+    issuerSummaries = collectYuantaCreditCardHistorySummaries(
+      billedHistoryPages,
+      monthOptions,
+    );
+    if (issuerSummaries.length >= 2)
+      statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
+    log("yuanta-credit-card-history-summary-authority", {
+      sourceKey: YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY,
+      pageCount: billedHistoryPages.length,
+      issuerSummaryCount: issuerSummaries.length,
+      settledCycleCount: statementSummaries.length,
+    });
+    const summaryStartedAt = Date.now();
+    log("yuanta-credit-card-summary-start", {
+      startedAt: new Date(summaryStartedAt).toISOString(),
+    });
+    let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
+    try {
+      summaryTraversal = await submitCreditCardSummary(page, {
+        sourceText: appCollection.sourceText,
+        signal: appCollection.signal,
+        silent: true,
+      });
+      appCollection.sourceText.assertIntact(JSON.stringify(summaryTraversal));
+      currentUsedCredit = summaryTraversal.currentUsedCredit;
+      log(
+        "yuanta-credit-card-summary-diagnostic",
+        diagnoseYuantaCreditCardSummaryTraversal(summaryTraversal),
+      );
+      if (!currentUsedCredit)
+        log(
+          "yuanta-credit-card-current-used-credit-unavailable",
+          summaryTraversal.currentUsedCreditDiagnostic ?? {
+            reason: "optional-current-credit-estimate",
+          },
+        );
+    } catch (error) {
+      if (
+        error instanceof SourceTextIntegrityError ||
+        appCollection.signal.aborted
+      ) {
+        throw error;
+      }
+      if (error instanceof YuantaCreditCardSummaryParseError) {
+        log(
+          "yuanta-credit-card-summary-diagnostic",
+          error.diagnostic,
+        );
+        log("yuanta-credit-card-current-used-credit-unavailable", {
+          reason: "summary-parse-error",
+        });
+      } else {
+        const reason =
+          error instanceof YuantaCreditSummaryNavigationError
+            ? error.diagnosticReason
+            : "summary-route-error";
+        log("yuanta-credit-card-summary-unavailable", {
+          reason,
+          ...(error instanceof YuantaCreditSummaryNavigationError &&
+          error.diagnostic
+            ? { diagnostic: error.diagnostic }
+            : {}),
+        });
+        log("yuanta-credit-card-current-used-credit-unavailable", {
+          reason,
+          ...(error instanceof YuantaCreditSummaryNavigationError &&
+          error.diagnostic
+            ? { diagnostic: error.diagnostic }
+            : {}),
+        });
+      }
+    }
+    log("yuanta-credit-card-summary-complete", {
+      issuerSummaryCount: issuerSummaries.length,
+      settledCycleCount: statementSummaries.length,
+      pageCount: summaryTraversal?.pages.length ?? 0,
+      terminalPage: summaryTraversal?.pages.at(-1)?.pageOrdinal ?? null,
+      durationMs: Date.now() - summaryStartedAt,
+    });
+  }
+
+  const isFullCapture =
+    !input.monthIndexes &&
+    input.includeUnbilled &&
+    allMonthOptions.length === 6 &&
+    monthOptions.length === allMonthOptions.length &&
+    terminalPages.length === 7 &&
+    terminalPages.every((terminal) => terminal === true) &&
+    [...billedRows, ...unbilledRows].every(
+      (row) => cardKeyForRow(row).length === 4,
+    );
+  const capture: CaptureMetadata = isFullCapture
+    ? {
+        snapshotMode: "full",
+        captureId: randomUUID(),
+        capturedAt: appCollection.now(),
+        captureKinds: ["billed", "unbilled"],
+        completenessEvidence: {
+          bank: "yuanta",
+          monthIndexes: allMonthOptions.map((month) => month.index),
+          unbilled: true,
+          pagination: "none",
+          summary: {
+            requested: input.includeSummary,
+            issuerSummaryCount: issuerSummaries.length,
+            settledCycleCount: statementSummaries.length,
+            periods: issuerSummaries.map((summary) => summary.period),
+          },
+        },
+      }
+    : {
+        snapshotMode: "partial",
+        completenessEvidence: {
+          bank: "yuanta",
+          reason: "scope_not_full",
+          monthIndexes: monthOptions.map((month) => month.index),
+          unbilled: input.includeUnbilled,
+          summary: {
+            requested: input.includeSummary,
+            issuerSummaryCount: issuerSummaries.length,
+            settledCycleCount: statementSummaries.length,
+            periods: issuerSummaries.map((summary) => summary.period),
+          },
+        },
+      };
+
+  if (
+    canonicalHumanAttestation &&
+    instrumentFingerprintSecret &&
+    isFullCapture
+  ) {
+    const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures({
+      capture,
+      identity: canonicalHumanAttestation,
+      instrumentFingerprintSecret,
+      allMonthOptions,
+      selectedMonthOptions: monthOptions,
+      includeUnbilled: input.includeUnbilled,
+      includeSummary: input.includeSummary,
+      terminalPages,
+      billedRows,
+      unbilledRows,
+      statementSummaries,
+    });
+    if (canonicalCaptures.length > 0) {
+      const requests = canonicalCaptures.map((capture) =>
+        creditCardCommandRequestFromCanonicalCapture(
+          yuantaCanonicalSpineCapture(capture),
+          yuantaNeutralCreditCardCapture(capture),
+        ),
+      );
+      const items: PGliteWorkflowRunItem[] = requests.map((request) => ({
+        provider: "yuanta",
+        product: "credit-card",
+        itemKey: request.capture.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
+          request,
+        },
+      }));
+      if (currentUsedCredit) {
+        const balanceCapture = yuantaCreditCurrentSnapshotCapture(
+          canonicalCaptures[0]!,
+          currentUsedCredit,
+        );
+        items.push({
+          provider: "yuanta",
+          product: "current-balance",
+          itemKey: balanceCapture.captureId,
+          command: {
+            kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+            request: creditCardBalanceCommandRequest(
+              balanceCapture,
+              requests[0]!.identity,
+            ),
+          },
+        });
+      }
+      appCollection.signal.throwIfAborted();
+      for (const item of items)
+        appCollection.sourceText.assertIntact(JSON.stringify(item.command));
+      appCollection.items.push(...items);
+    }
+  }
+
+  appCollection.signal.throwIfAborted();
+  return {
+    sourceCount:
+      monthOptions.length +
+      (input.includeUnbilled ? 1 : 0) +
+      (input.includeSummary ? 1 : 0),
+    rowCount: billedRows.length + unbilledRows.length,
+    itemCount: appCollection.items.length,
+  };
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -26,9 +28,52 @@ assert.match(
   workflowImports,
   /from "\.\.\/ledger\/canonical\/yuanta-credit-card-admission\.ts"/,
 );
-assert.match(workflowSource, /executePGliteWorkflowRun/);
+assert.doesNotMatch(
+  workflowImports,
+  /from ["']libretto["']|LibrettoWorkflowContext|node:fs\/promises|node:path|pglite-child-rpc/u,
+  "the App-owned provider must not depend on a legacy runner, file writer, or child RPC",
+);
+assert.doesNotMatch(
+  workflowSource,
+  /executePGliteWorkflowRun|writeStatementFile|creditCardDownloadsDir|downloads[\\/]yuanta-credit-card-statements/u,
+  "the typed provider must not commit directly or produce statement files",
+);
+assert.doesNotMatch(
+  workflowSource,
+  /export\s+default\s|workflow\(|LibrettoWorkflowContext/u,
+  "the provider must expose only its typed App runner",
+);
+assert.match(workflowSource, /error instanceof SourceTextIntegrityError/u);
+assert.match(workflowSource, /sourceText\.assertIntact/u);
+assert.match(workflowSource, /deferredCommitItems/u);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND/);
+const collectorStart = workflowSource.indexOf(
+  "async function collectYuantaCreditCardStatements(",
+);
+const commandSourcePreflight = workflowSource.indexOf(
+  "appCollection.sourceText.assertIntact(JSON.stringify(item.command))",
+);
+const privateCollectionAppend = workflowSource.indexOf(
+  "appCollection.items.push(...items)",
+);
+const runCollection = workflowSource.slice(
+  workflowSource.indexOf("export async function runYuantaCreditCardStatements("),
+  collectorStart,
+);
+const collectCall = runCollection.indexOf(
+  "await collectYuantaCreditCardStatements(",
+);
+const executorCollectionAppend = runCollection.indexOf(
+  "dependencies.deferredCommitItems.push(...appCollection.items)",
+);
+assert.ok(
+  commandSourcePreflight >= collectorStart &&
+    commandSourcePreflight < privateCollectionAppend &&
+    collectCall >= 0 &&
+    collectCall < executorCollectionAppend,
+  "complete command source preflight must precede any append to the Executor sink",
+);
 
 const {
   buildYuantaCanonicalCreditCardCaptures,
@@ -45,7 +90,6 @@ const {
   parseYuantaCreditCardSettledStatementSummaries,
   parseYuantaCreditCardSettledStatementHistoryPage,
   parseYuantaCurrentCreditCardUsedCreditSummaryHtml,
-  pauseBeforeYuantaCreditCardHistorySummaryParse,
   resolveYuantaSettledStatementCycles,
   toYuantaCanonicalCreditCardSourceRow,
   submitCreditCardMonthOptions,
@@ -56,9 +100,31 @@ const {
   yuantaCanonicalHumanAttestationFromEnvironment,
   yuantaCreditCardCaptureBuilderOptions,
   yuantaCreditCardTerminalPagesFromHtml,
-  yuantaInspectFirstHistorySummaryEnabled,
-  YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV,
+  runYuantaCreditCardStatements,
 } = await import("./yuanta-credit-card-statements.ts");
+
+await assert.rejects(
+  runYuantaCreditCardStatements(
+    {} as never,
+    {},
+    {} as never,
+  ),
+  /App collection ports are unavailable/u,
+);
+const cancelledSink: PGliteWorkflowRunItem[] = [];
+const cancelled = new AbortController();
+cancelled.abort();
+await assert.rejects(
+  runYuantaCreditCardStatements({} as never, {}, {
+    collectOnly: true,
+    deferredCommitItems: cancelledSink,
+    sourceText: strictSourceText,
+    signal: cancelled.signal,
+    now: () => "2026-09-25T00:00:00.000Z",
+  }),
+  /abort/i,
+);
+assert.deepEqual(cancelledSink, []);
 
 const yuantaCurrentCredit = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(`
   <table class="rwdTable">
@@ -353,28 +419,6 @@ assert.equal(
     .settledSummaryParserContract,
   YUANTA_CREDIT_CARD_SETTLED_SUMMARY_PARSER_CONTRACT,
 );
-
-const previousInspectionEnv = process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV];
-const previousInspectionNodeEnv = process.env.NODE_ENV;
-try {
-  delete process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV];
-  delete process.env.NODE_ENV;
-  assert.equal(yuantaInspectFirstHistorySummaryEnabled(false), false);
-  assert.equal(yuantaInspectFirstHistorySummaryEnabled(true), true);
-  process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV] = "1";
-  assert.equal(yuantaInspectFirstHistorySummaryEnabled(false), true);
-  process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV] = "true";
-  assert.equal(yuantaInspectFirstHistorySummaryEnabled(false), false);
-  process.env.NODE_ENV = "production";
-  process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV] = "1";
-  assert.equal(yuantaInspectFirstHistorySummaryEnabled(true), false);
-} finally {
-  if (previousInspectionEnv === undefined)
-    delete process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV];
-  else process.env[YUANTA_INSPECT_FIRST_HISTORY_SUMMARY_ENV] = previousInspectionEnv;
-  if (previousInspectionNodeEnv === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = previousInspectionNodeEnv;
-}
 
 const settledSummaryFixture = `
   <section>
@@ -738,53 +782,6 @@ await assert.rejects(
 
 const submitted: number[] = [];
 const handled: number[] = [];
-const inspectionPauseCalls: string[] = [];
-await pauseBeforeYuantaCreditCardHistorySummaryParse({
-  enabled: false,
-  session: "yuanta-debug-session",
-  monthIndex: 0,
-  pageOrdinal: 0,
-  pauseFn: async (session) => {
-    inspectionPauseCalls.push(session);
-  },
-});
-await pauseBeforeYuantaCreditCardHistorySummaryParse({
-  enabled: true,
-  session: "yuanta-debug-session",
-  monthIndex: 1,
-  pageOrdinal: 1,
-  pauseFn: async (session) => {
-    inspectionPauseCalls.push(session);
-  },
-});
-assert.equal(inspectionPauseCalls.length, 0);
-await pauseBeforeYuantaCreditCardHistorySummaryParse({
-  enabled: true,
-  session: "yuanta-debug-session",
-  monthIndex: 0,
-  pageOrdinal: 0,
-  pauseFn: async (session) => {
-    inspectionPauseCalls.push(session);
-  },
-});
-assert.deepEqual(inspectionPauseCalls, ["yuanta-debug-session"]);
-const previousNodeEnv = process.env.NODE_ENV;
-process.env.NODE_ENV = "production";
-try {
-  await pauseBeforeYuantaCreditCardHistorySummaryParse({
-    enabled: true,
-    session: "yuanta-debug-session",
-    monthIndex: 0,
-    pageOrdinal: 0,
-    pauseFn: async (session) => {
-      inspectionPauseCalls.push(session);
-    },
-  });
-  assert.deepEqual(inspectionPauseCalls, ["yuanta-debug-session"]);
-} finally {
-  if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = previousNodeEnv;
-}
 await submitCreditCardMonthOptions(
   [
     { index: 0, label: "115/06" },
