@@ -464,7 +464,7 @@ const identityPage = {
     count: async () => 0,
   }),
   getByText: () => ({ count: async () => 0 }),
-  evaluate: async (expression: unknown) => {
+  evaluate: async (expression: unknown, options?: unknown) => {
     if (typeof expression === "string") {
       return {
         botGlobal: false,
@@ -473,7 +473,17 @@ const identityPage = {
       };
     }
     identityQueryCount += 1;
-    return [identityResponse];
+    const requestOptions = options as { path?: string } | undefined;
+    return {
+      url: new URL(
+        requestOptions?.path ?? "/ws/bank/transdetail/ws_transdetailMerge.ashx",
+        "https://mma.sinopac.com",
+      ).toString(),
+      status: 200,
+      method: "POST",
+      contentType: "application/json; charset=utf-8",
+      bytes: Array.from(new TextEncoder().encode(JSON.stringify([identityResponse]))),
+    };
   },
 } as never;
 const identitySummary = await runSinopacIdentityValidation(
