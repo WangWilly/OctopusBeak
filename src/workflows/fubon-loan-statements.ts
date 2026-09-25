@@ -5,6 +5,7 @@ import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
@@ -55,6 +56,7 @@ export type LoanNavigationOptions = Readonly<{
   retryFormReadyTimeoutMs?: number;
   navigationControlTimeoutMs?: number;
   navigationLinkTimeoutMs?: number;
+  silent?: boolean;
 }>;
 
 const DEFAULT_LOAN_NAVIGATION_OPTIONS: Required<LoanNavigationOptions> = {
@@ -63,6 +65,7 @@ const DEFAULT_LOAN_NAVIGATION_OPTIONS: Required<LoanNavigationOptions> = {
   retryFormReadyTimeoutMs: 5_000,
   navigationControlTimeoutMs: 5_000,
   navigationLinkTimeoutMs: 30_000,
+  silent: false,
 };
 
 type LoanNavigationStage =
@@ -76,8 +79,9 @@ type LoanNavigationStageStatus = "start" | "success" | "timeout" | "failure";
 function logLoanNavigationStage(
   stage: LoanNavigationStage,
   status: LoanNavigationStageStatus,
+  silent = false,
 ): void {
-  console.log(stage, { status });
+  if (!silent) console.log(stage, { status });
 }
 
 type FubonCredentials = {
@@ -165,6 +169,17 @@ export type FubonLoanStatementsRunDependencies = Partial<{
   sourceConnectionKey: string;
   explicitRelationLinks: readonly ExplicitLoanTransactionLink[];
   observedAt: () => string;
+  /** Internal App-owned collection mode: validate and return items without persistence or files. */
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  collectOnly: true;
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+}>;
+
+export type FubonLoanWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
 }>;
 
 type LoanPeriod = FubonLoanStatementsOutput["period"];
@@ -473,8 +488,8 @@ function logFubonLoanPaginationObservation(observation: {
   nextPage?: number | null;
   terminal?: boolean;
   evidence?: FubonLoanPaginationSignal["evidence"];
-}): void {
-  console.log("fubon-loan-pagination-observation", {
+}, silent = false): void {
+  if (!silent) console.log("fubon-loan-pagination-observation", {
     ruleVersion: FUBON_LOAN_TERMINAL_RULE_VERSION,
     ...observation,
   });
@@ -490,10 +505,11 @@ function logFubonLoanPaginationObservation(observation: {
  */
 export function parseFubonLoanPaginationSignal(
   html: string,
+  options: Readonly<{ silent?: boolean }> = {},
 ): FubonLoanPaginationSignal {
   const context = fubonLoanResultContext(html);
   if (!context) {
-    logFubonLoanPaginationObservation({ resultContext: false });
+    logFubonLoanPaginationObservation({ resultContext: false }, options.silent);
     return {
       nextPage: null,
       pageFieldName: null,
@@ -548,7 +564,7 @@ export function parseFubonLoanPaginationSignal(
         nextPage: Number(nextMatch[1]),
         terminal: false,
         evidence: "next-page",
-      });
+      }, options.silent);
       return {
         nextPage: nextMatch[1],
         pageFieldName: nextMatch[2],
@@ -570,7 +586,7 @@ export function parseFubonLoanPaginationSignal(
       ).length,
       terminal: false,
       evidence: null,
-    });
+    }, options.silent);
     return {
       nextPage: null,
       pageFieldName: null,
@@ -640,7 +656,7 @@ export function parseFubonLoanPaginationSignal(
       explicitNoNext: hasExplicitNoNext,
       terminal: true,
       evidence: "terminal-no-next",
-    });
+    }, options.silent);
     return {
       nextPage: null,
       pageFieldName: null,
@@ -665,7 +681,7 @@ export function parseFubonLoanPaginationSignal(
     explicitNoNext: hasExplicitNoNext,
     terminal: false,
     evidence: null,
-  });
+  }, options.silent);
 
   return {
     nextPage: null,
@@ -851,13 +867,14 @@ async function findLoanFormScope(
     LoanNavigationStage,
     "loan-link-resolve" | "loan-menu-trigger"
   >,
+  silent = false,
 ): Promise<BrowserScope> {
-  logLoanNavigationStage(stage, "start");
+  logLoanNavigationStage(stage, "start", silent);
   const deadline = Date.now() + Math.max(0, timeoutMs);
   while (true) {
     for (const scope of scopesForLoanNavigation(page)) {
       if (await hasLoanForm(scope, deadline)) {
-        logLoanNavigationStage(stage, "success");
+        logLoanNavigationStage(stage, "success", silent);
         return scope;
       }
       if (Date.now() >= deadline) break;
@@ -869,7 +886,7 @@ async function findLoanFormScope(
     );
   }
 
-  logLoanNavigationStage(stage, "timeout");
+  logLoanNavigationStage(stage, "timeout", silent);
   throw new Error(
     `Could not find selector "${LOAN_ACCOUNT_SELECTOR}" in any frame.`,
   );
@@ -878,14 +895,15 @@ async function findLoanFormScope(
 async function findLoanNavigationLink(
   page: Page,
   timeoutMs: number,
+  silent = false,
 ): Promise<Locator> {
-  logLoanNavigationStage("loan-link-resolve", "start");
+  logLoanNavigationStage("loan-link-resolve", "start", silent);
   const deadline = Date.now() + Math.max(0, timeoutMs);
   while (true) {
     for (const scope of scopesForLoanNavigation(page)) {
       const taskLink = scope.locator("a.task_CLNQU001.menu_CLN02").first();
       if (await waitForLoanAttached(taskLink, deadline)) {
-        logLoanNavigationStage("loan-link-resolve", "success");
+        logLoanNavigationStage("loan-link-resolve", "success", silent);
         return taskLink;
       }
       if (Date.now() >= deadline) break;
@@ -895,7 +913,7 @@ async function findLoanNavigationLink(
         .filter({ hasText: "貸款交易明細查詢" })
         .first();
       if (await waitForLoanAttached(textLink, deadline)) {
-        logLoanNavigationStage("loan-link-resolve", "success");
+        logLoanNavigationStage("loan-link-resolve", "success", silent);
         return textLink;
       }
       if (Date.now() >= deadline) break;
@@ -907,7 +925,7 @@ async function findLoanNavigationLink(
     );
   }
 
-  logLoanNavigationStage("loan-link-resolve", "timeout");
+  logLoanNavigationStage("loan-link-resolve", "timeout", silent);
   throw new Error("Could not find the loan statement navigation control.");
 }
 
@@ -1026,12 +1044,13 @@ export async function navigateToLoanStatementsPage(
       page,
       timings.existingScopeTimeoutMs,
       "loan-existing-form-probe",
+      timings.silent,
     );
   } catch {
     // Continue with the bounded navigation trigger below.
   }
 
-  logLoanNavigationStage("loan-menu-trigger", "start");
+  logLoanNavigationStage("loan-menu-trigger", "start", timings.silent);
   try {
     const headerFrame = await waitForFrame(
       page,
@@ -1042,9 +1061,9 @@ export async function navigateToLoanStatementsPage(
       headerFrame.locator("#menu_CLN"),
       timings.navigationControlTimeoutMs,
     );
-    logLoanNavigationStage("loan-menu-trigger", "success");
+    logLoanNavigationStage("loan-menu-trigger", "success", timings.silent);
   } catch {
-    logLoanNavigationStage("loan-menu-trigger", "failure");
+    logLoanNavigationStage("loan-menu-trigger", "failure", timings.silent);
     // The transaction frame can already be on the target page. In that case
     // the link trigger is unnecessary, and the readiness probe below is the
     // source of truth.
@@ -1056,6 +1075,7 @@ export async function navigateToLoanStatementsPage(
       navigationLink = await findLoanNavigationLink(
         page,
         timings.navigationLinkTimeoutMs,
+        timings.silent,
       ).catch(() => undefined);
     }
 
@@ -1081,6 +1101,7 @@ export async function navigateToLoanStatementsPage(
           ? timings.formReadyTimeoutMs
           : timings.retryFormReadyTimeoutMs,
         "loan-form-ready",
+        timings.silent,
       );
     } catch {
       if (attempt === 0) {
@@ -1094,8 +1115,8 @@ export async function navigateToLoanStatementsPage(
   throw new Error(LOAN_NAVIGATION_ERROR);
 }
 
-async function openLoanStatementsPage(page: Page): Promise<BrowserScope> {
-  const scope = await navigateToLoanStatementsPage(page);
+async function openLoanStatementsPage(page: Page, options: LoanNavigationOptions = {}): Promise<BrowserScope> {
+  const scope = await navigateToLoanStatementsPage(page, options);
   await loanForm(scope).waitFor({ state: "attached", timeout: 60_000 });
   return scope;
 }
@@ -1307,6 +1328,7 @@ async function parseLoanStatementHtml(
   page: Page,
   html: string,
   pageOrdinal: number,
+  silent = false,
 ): Promise<ParsedFubonLoanPage> {
   const parsed = (await page.evaluate(
     ({ html: sourceHtml, headers }) => {
@@ -1383,7 +1405,7 @@ async function parseLoanStatementHtml(
     rows: string[][];
   };
 
-  const pagination = parseFubonLoanPaginationSignal(html);
+  const pagination = parseFubonLoanPaginationSignal(html, { silent });
   return {
     accountType: parsed.accountType,
     branchName: parsed.branchName,
@@ -1394,12 +1416,13 @@ async function parseLoanStatementHtml(
   };
 }
 
-async function fetchLoanQueryHtml(page: Page): Promise<string> {
+async function fetchLoanQueryHtml(page: Page, sourceText?: SourceTextPort): Promise<string> {
   const scope = await findScopeWithSelector(page, "#form1\\:doValidate");
   const html = await fetchFormPostbackHtml(
     scope.locator("form").first(),
     "form1:doValidate",
   );
+  sourceText?.assertIntact(html);
   await replaceDocumentHtml(scope, html);
   await findScopeWithLocator(page, loanResultTable, "loan result table");
 
@@ -1456,15 +1479,18 @@ async function fetchFubonLoanStatementPages(
   firstHtml: string,
   account: LoanAccountOption,
   input: FubonLoanStatementsInput,
+  sourceText?: SourceTextPort,
+  silent = false,
 ): Promise<ParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
   const requests = new Set<string>();
   let html = firstHtml;
 
   while (true) {
+    sourceText?.assertIntact(html);
     if (pages.length >= FUBON_LOAN_MAX_PAGES)
       throw new Error("Fubon loan pagination exceeded the safe page limit.");
-    const parsed = await parseLoanStatementHtml(page, html, pages.length);
+    const parsed = await parseLoanStatementHtml(page, html, pages.length, silent);
     pages.push(parsed);
     if (!parsed.pagination.nextPage) break;
     if (!parsed.pagination.pageFieldName)
@@ -1482,6 +1508,7 @@ async function fetchFubonLoanStatementPages(
       undefined,
       { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
     );
+    sourceText?.assertIntact(html);
     await replaceDocumentHtml(scope, html);
     await findScopeWithLocator(page, loanResultTable, "loan result table");
   }
@@ -1489,17 +1516,21 @@ async function fetchFubonLoanStatementPages(
   return assembleFubonLoanStatement(pages, account, input);
 }
 
-async function writeLoanStatementFiles(
+/** @internal Source-admission boundary shared by the legacy writer and typed collector. */
+export async function writeLoanStatementFiles(
   page: Page,
   html: string,
   account: LoanAccountOption,
   queryItem: z.infer<typeof queryItemSchema>,
   input: FubonLoanStatementsInput,
+  options: Readonly<{ collectOnly?: boolean; sourceText?: SourceTextPort }> = {},
 ): Promise<{
-  download: FubonLoanStatementsOutput["downloads"][number];
+  download?: FubonLoanStatementsOutput["downloads"][number];
   parsed: ParsedLoanStatement;
 }> {
-  const parsed = await fetchFubonLoanStatementPages(page, html, account, input);
+  options.sourceText?.assertIntact(html);
+  const parsed = await fetchFubonLoanStatementPages(page, html, account, input, options.sourceText, options.collectOnly);
+  options.sourceText?.assertIntact(JSON.stringify(parsed));
   if (
     !parsed.completeness ||
     parsed.pages.length !== parsed.completeness.pageCount
@@ -1508,6 +1539,8 @@ async function writeLoanStatementFiles(
       "Fubon loan result lacks explicit complete terminal page evidence.",
     );
   }
+
+  if (options.collectOnly) return { parsed };
 
   const downloadsDir = join(
     process.cwd(),
@@ -1564,11 +1597,24 @@ async function writeLoanStatementFiles(
   };
 }
 
+export function runFubonLoanStatements(
+  page: Page,
+  input: FubonLoanStatementsInput,
+  overrides: FubonLoanStatementsRunDependencies & {
+    collectOnly: true;
+    deferredCommitItems: PGliteWorkflowRunItem[];
+  },
+): Promise<FubonLoanWorkflowCollection>;
+export function runFubonLoanStatements(
+  page: Page,
+  input: FubonLoanStatementsInput,
+  overrides?: FubonLoanStatementsRunDependencies,
+): Promise<FubonLoanStatementsOutput>;
 export async function runFubonLoanStatements(
   page: Page,
   input: FubonLoanStatementsInput,
   overrides: FubonLoanStatementsRunDependencies = {},
-): Promise<FubonLoanStatementsOutput> {
+): Promise<FubonLoanStatementsOutput | FubonLoanWorkflowCollection> {
   if (input.downloadFormat !== "EXCEL") {
     throw new Error(
       'fubon-loan-statements normalized output currently supports downloadFormat="EXCEL" only.',
@@ -1581,7 +1627,7 @@ export async function runFubonLoanStatements(
   } = requireSourceConnectionIdentity("fubon", "Fubon loan", overrides);
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
 
-  let scope = await openLoanStatementsPage(page);
+  let scope = await openLoanStatementsPage(page, { silent: overrides.collectOnly === true });
   const loanAccounts = await readLoanAccountOptions(
     scope,
     input.loanAccountLabels,
@@ -1593,9 +1639,12 @@ export async function runFubonLoanStatements(
 
   const downloads: FubonLoanStatementsOutput["downloads"] = [];
   const skippedAccounts: FubonLoanStatementsOutput["skippedAccounts"] = [];
+  let collectedItemCount = 0;
+  let collectedRowCount = 0;
 
   const items = async function* (): AsyncIterable<PGliteWorkflowRunItem> {
     for (const account of loanAccounts) {
+      overrides.signal?.throwIfAborted();
       scope = await selectLoanAccount(page, account);
       const availableQueryItems = await readAvailableLoanQueryItems(scope);
       const accountQueryItems = queryItems.filter((queryItem) =>
@@ -1608,11 +1657,12 @@ export async function runFubonLoanStatements(
       if (explicitQueryItems) {
         for (const queryItem of unavailableQueryItems) {
           const reason = `Loan query item is not available for this account: ${queryItem}`;
-          console.warn("loan-query-skipped", {
-            loanAccount: account.label,
-            queryItem,
-            reason,
-          });
+          if (!overrides.collectOnly)
+            console.warn("loan-query-skipped", {
+              loanAccount: account.label,
+              queryItem,
+              reason,
+            });
           skippedAccounts.push({
             loanAccount: account.label,
             queryItem,
@@ -1625,11 +1675,12 @@ export async function runFubonLoanStatements(
         const queryItem = queryItems[0];
         const reason =
           "No requested loan query items are available for this account.";
-        console.warn("loan-query-skipped", {
-          loanAccount: account.label,
-          queryItem,
-          reason,
-        });
+        if (!overrides.collectOnly)
+          console.warn("loan-query-skipped", {
+            loanAccount: account.label,
+            queryItem,
+            reason,
+          });
         skippedAccounts.push({
           loanAccount: account.label,
           queryItem,
@@ -1639,14 +1690,16 @@ export async function runFubonLoanStatements(
       }
 
       for (const queryItem of accountQueryItems) {
+        overrides.signal?.throwIfAborted();
         scope = await configureLoanQuery(page, input, queryItem);
-        const html = await fetchLoanQueryHtml(page);
+        const html = await fetchLoanQueryHtml(page, overrides.sourceText);
         const written = await writeLoanStatementFiles(
           page,
           html,
           account,
           queryItem,
           input,
+          { collectOnly: overrides.collectOnly, sourceText: overrides.sourceText },
         );
         const completeness = written.parsed.completeness;
         if (
@@ -1697,7 +1750,9 @@ export async function runFubonLoanStatements(
           written.parsed.loanAccount,
         );
         const provenanceRecord = capture.records[0];
-        downloads.push(written.download);
+        if (written.download) downloads.push(written.download);
+        collectedItemCount += 1;
+        collectedRowCount += written.parsed.rows.length;
         yield {
           provider: "fubon",
           product: "loan",
@@ -1744,6 +1799,28 @@ export async function runFubonLoanStatements(
       }
     }
   };
+  if (overrides.deferredCommitItems) {
+    if (!overrides.collectOnly)
+      throw new Error("Fubon deferred collection requires collectOnly mode.");
+    overrides.signal?.throwIfAborted();
+    const deferred: PGliteWorkflowRunItem[] = [];
+    for await (const item of items()) {
+      overrides.signal?.throwIfAborted();
+      overrides.sourceText?.assertIntact(JSON.stringify(item.command));
+      deferred.push(item);
+    }
+    if (deferred.length === 0 && skippedAccounts.length > 0) {
+      throw new StatementComponentAbsentError(
+        `No Fubon loan statement query is available. First skipped account reason: ${skippedAccounts[0].reason}`,
+      );
+    }
+    overrides.deferredCommitItems.push(...deferred);
+    return {
+      sourceCount: deferred.length,
+      rowCount: collectedRowCount,
+      itemCount: collectedItemCount,
+    };
+  }
   const client = requirePGliteChildRpcClientFromEnv();
   let executionResult: Awaited<ReturnType<typeof executePGliteWorkflowRun>>;
   try {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 import type { Frame, Locator, Page } from "playwright";
@@ -127,6 +127,7 @@ type LoanNavigationOptions = {
   retryFormReadyTimeoutMs?: number;
   navigationControlTimeoutMs?: number;
   navigationLinkTimeoutMs?: number;
+  silent?: boolean;
 };
 
 class TestHTMLElement {
@@ -351,6 +352,20 @@ const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
 ) => string[][];
 const parseFubonLoanPaginationSignal =
   module.parseFubonLoanPaginationSignal as (html: string) => unknown;
+const writeLoanStatementFiles = module.writeLoanStatementFiles as (
+  page: Page,
+  html: string,
+  account: { label: string; value: string },
+  queryItem: "TRANSACTION_DETAIL_QUERY",
+  input: {
+    loanAccountLabels: string[];
+    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
+    quickMonths: "1" | "3" | "6";
+    downloadFormat: "EXCEL";
+    dateRange: { startDate: string; endDate: string };
+  },
+  options: { collectOnly: true; sourceText: { assertIntact(value: string): void } },
+) => Promise<{ parsed: unknown }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   pages: ReadonlyArray<{
     accountType: string;
@@ -402,9 +417,58 @@ const deriveFubonLoanAccountNumberEvidence =
         value: string;
         kind: "loan-account";
         evidenceVersion: "fubon/loan/account-number-v1";
-        sourceField: "form1:loanAccountCombo option.text";
-      }
+      sourceField: "form1:loanAccountCombo option.text";
+    }
     | null;
+
+test("typed Fubon loan source collection returns before CSV/JSON filesystem writes", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "fubon-loan-typed-no-files-"));
+  const originalCwd = process.cwd();
+  process.chdir(temp);
+  try {
+    const page = {
+      evaluate: async () => ({
+        accountType: "synthetic-loan",
+        branchName: "synthetic-branch",
+        currency: "TWD",
+        rows: [[
+          "2026/01/31",
+          "SYNTHETIC-LOAN-ROW",
+          "12500.00",
+          "1.50",
+          "2026/01/31",
+          "2026/02/28",
+          "87500.00",
+          "",
+        ]],
+      }),
+    } as unknown as Page;
+    const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
+    const result = await writeLoanStatementFiles(
+      page,
+      fixtureHtml,
+      {
+        label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
+        value: "opaque-synthetic-loan-option",
+      },
+      "TRANSACTION_DETAIL_QUERY",
+      {
+        loanAccountLabels: [],
+        queryItems: ["TRANSACTION_DETAIL_QUERY"],
+        quickMonths: "6",
+        downloadFormat: "EXCEL",
+        dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+      },
+      { collectOnly: true, sourceText: { assertIntact: (value) => assert.ok(value.length > 0) } },
+    );
+
+    assert.deepEqual(await readdir(temp), [], "typed loan execution must not reach CSV/JSON writes");
+    assert.equal((result.parsed as { completeness?: { terminal: boolean } }).completeness?.terminal, true);
+  } finally {
+    process.chdir(originalCwd);
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
@@ -1005,4 +1069,20 @@ test("emits exactly one ordered link/readiness retry", async () => {
     ["loan-form-ready", "start"],
     ["loan-form-ready", "success"],
   ]);
+});
+
+test("typed collection suppresses raw loan navigation diagnostics", async () => {
+  const header = fakeScope("frame1");
+  const landing = fakeScope("txnFrame");
+  landing.readyOnNavigationClick = 1;
+  const page = fakePage([header, landing]);
+  const originalLog = console.log;
+  const logs: unknown[][] = [];
+  console.log = ((...values: unknown[]) => logs.push(values)) as typeof console.log;
+  try {
+    await navigateToLoanStatementsPage(page, { ...fastNavigation, silent: true });
+  } finally {
+    console.log = originalLog;
+  }
+  assert.deepEqual(logs, []);
 });

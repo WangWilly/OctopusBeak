@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
 import {
@@ -24,6 +24,8 @@ import {
   type FubonCurrentDepositBalanceRow,
 } from "./fubon-current-deposit-balances.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   createPGliteChildRpcServer,
   type PGliteChildProvider,
@@ -375,6 +377,39 @@ try {
   assert.equal(overview.accounts.length, 1);
   assert.equal(overview.accounts[0]?.transactionCount, 1);
   assert.equal(overview.accounts[0]?.valueAvailability, "available");
+
+  const typedOutputDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fubon-collect-only-"));
+  const originalCwd = process.cwd();
+  process.chdir(typedOutputDir);
+  try {
+    const deferredItems: PGliteWorkflowRunItem[] = [];
+    const typedResult = await runFubonStatements(
+      {} as never,
+      { dateRanges: ["30"], downloadFormat: "EXCEL" },
+      {
+        sourceConnectionScope,
+        sourceConnectionKey,
+        readCurrentDepositBalances: async () => [currentBalanceRow],
+        openTransactionDetailForAccountIndex: async () => "****0000",
+        readDepositAccountOptions: async () => [selectedAccount],
+        selectDepositAccount: async () => undefined,
+        fetchDepositStatement: async () => statement,
+        writeDepositStatementFiles: async () => {
+          throw new Error("collect-only workflow attempted file output");
+        },
+        deferredCommitItems: deferredItems,
+        collectOnly: true,
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
+      },
+    );
+    assert.ok(typedResult.itemCount > 0);
+    assert.equal(deferredItems.length, typedResult.itemCount);
+    assert.deepEqual(await readdir(typedOutputDir), [], "collect-only path must not write CSV/JSON/log files");
+  } finally {
+    process.chdir(originalCwd);
+    await rm(typedOutputDir, { recursive: true, force: true });
+  }
 
   const malformedStatement: FubonParsedDepositStatement = {
     ...statement,
