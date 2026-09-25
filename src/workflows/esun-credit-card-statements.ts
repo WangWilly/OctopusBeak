@@ -41,6 +41,12 @@ import {
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -607,9 +613,10 @@ export function buildEsunCanonicalCreditCardCapture(
 
 async function readEsunCurrentUsedCredit(
   response: Response | undefined,
+  readJson: (response: Response) => Promise<unknown> = (value) => value.json(),
 ): Promise<EsunCurrentUsedCreditSnapshot | undefined> {
   if (!response || response.status() !== 200) return undefined;
-  return esunCurrentUsedCreditFromSummaryResponse(await response.json(), {
+  return esunCurrentUsedCreditFromSummaryResponse(await readJson(response), {
     endpoint: response.url(),
     httpDate: response.headers().date,
   });
@@ -649,11 +656,52 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("E.SUN workflow was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function waitForOptionalResponse(
+  response: Promise<Response | undefined>,
+  timeoutMs: number,
+): Promise<Response | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs);
+    response.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
 async function waitForSignedInState(page: Page): Promise<void> {
   await page.getByText("信用卡", { exact: true }).waitFor({ timeout: 60_000 });
 }
 
-async function fillLoginForm(
+async function enterLoginCredentials(
   page: Page,
   credentials: EsunCredentials,
 ): Promise<void> {
@@ -683,6 +731,13 @@ async function fillLoginForm(
     }
   }
   await page.getByRole("button", { name: "登入", exact: true }).click();
+}
+
+async function fillLoginForm(
+  page: Page,
+  credentials: EsunCredentials,
+): Promise<void> {
+  await enterLoginCredentials(page, credentials);
   const duplicateLogin = page.getByRole("button", { name: "確定登入" });
   await Promise.race([
     waitForSignedInState(page),
@@ -714,11 +769,19 @@ const timelineResponseSchema = z.object({
   }),
 });
 
-async function openCardPopup(page: Page, label: string, path: string): Promise<Page> {
+async function openCardPopup(
+  page: Page,
+  label: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<Page> {
   const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-  await page.getByText(label, { exact: true }).click();
-  const popup = await popupPromise;
-  await popup.waitForURL((url) => url.pathname === path, { timeout: 60_000 });
+  await withAbort(page.getByText(label, { exact: true }).click(), signal);
+  const popup = await withAbort(popupPromise, signal);
+  await withAbort(
+    popup.waitForURL((url) => url.pathname === path, { timeout: 60_000 }),
+    signal,
+  );
   return popup;
 }
 
@@ -765,27 +828,41 @@ export function rowsFromTimelineResponse(raw: unknown): {
 async function queryStatements(
   page: Page,
   input: WorkflowInput,
+  options: Readonly<{
+    readJson?: (response: Response) => Promise<unknown>;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<{ rows: StatementRow[]; timeline: EsunCreditCardTimeline; startDate: string; endDate: string }> {
   const endDate = input.endDate ?? formatDate(new Date());
   const startDate = input.startDate ?? defaultStartDate(endDate);
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
-  const popup = await openCardPopup(page, "刷卡明細", "/IESC/cardTrans");
+  const popup = await openCardPopup(page, "刷卡明細", "/IESC/cardTrans", options.signal);
   try {
+    options.signal?.throwIfAborted();
     const responsePromise = popup.waitForResponse(
       (response) => response.url().includes("/GW/creditLastYear/getFilterResult") &&
         response.request().method() === "POST",
       { timeout: 30_000 },
     );
-    await popup.locator('input[name="comboFilter"]').click();
-    await popup.getByText("近一年刷卡明細", { exact: true }).click();
-    let response = await responsePromise;
+    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
+    await withAbort(popup.getByText("近一年刷卡明細", { exact: true }).click(), options.signal);
+    let response = await withAbort(responsePromise, options.signal);
     const rows: StatementRow[] = [];
     const months: string[] = [];
     let pageCount = 0;
     const targetMonth = startDate.slice(0, 7);
     while (pageCount < 20) {
+      options.signal?.throwIfAborted();
       if (response.status() !== 200) throw new Error("E.SUN timeline request failed.");
-      const parsed = rowsFromTimelineResponse(await response.json());
+      const raw = options.readJson
+        ? await options.readJson(response)
+        : await response.json();
+      let parsed: ReturnType<typeof rowsFromTimelineResponse>;
+      try {
+        parsed = rowsFromTimelineResponse(raw);
+      } catch {
+        throw new Error("E.SUN timeline source is malformed or incomplete.");
+      }
       for (const month of parsed.months) {
         if (months.length && priorMonth(months[months.length - 1]!) !== month)
           throw new Error("E.SUN timeline month coverage is discontinuous.");
@@ -802,7 +879,7 @@ async function queryStatements(
       await popup.locator(".timeline-query-continer").evaluate(
         (element) => { element.scrollTop = element.scrollHeight; },
       );
-      response = await nextResponse;
+      response = await withAbort(nextResponse, options.signal);
     }
     if (!months.length || months.at(-1)! > targetMonth)
       throw new Error("E.SUN timeline did not cover the requested start month.");
@@ -1080,10 +1157,14 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 
 async function readIssuerStatementSummaries(
   page: Page,
+  options: Readonly<{
+    readJson?: (response: Response) => Promise<unknown>;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<EsunIssuerStatementSummary[]> {
-  const popup = await openCardPopup(page, "帳單明細", "/IESC/cardBill");
+  const popup = await openCardPopup(page, "帳單明細", "/IESC/cardBill", options.signal);
   try {
-    await popup.locator('input[name="comboFilter"]').click();
+    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
     const periods = (await popup.locator(".info-scrollable li").allTextContents())
       .map(cleanText)
       .filter((value) => /^\d{4}\/\d{2}$/u.test(value));
@@ -1091,6 +1172,7 @@ async function readIssuerStatementSummaries(
       throw new Error("E.SUN needs at least two available statement periods.");
     const summaries: EsunIssuerStatementSummary[] = [];
     for (const period of [...periods].reverse()) {
+      options.signal?.throwIfAborted();
       const responsePromise = popup.waitForResponse(
         (response) => response.url().includes("/GW/creditBill/getSummaryResult") &&
           response.request().method() === "POST",
@@ -1098,10 +1180,19 @@ async function readIssuerStatementSummaries(
       );
       if (!(await popup.locator(".info-scrollable li").first().isVisible()))
         await popup.locator('input[name="comboFilter"]').click();
-      await popup.getByText(period, { exact: true }).click();
-      const response = await responsePromise;
+      await withAbort(popup.getByText(period, { exact: true }).click(), options.signal);
+      const response = await withAbort(responsePromise, options.signal);
       if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
-      summaries.push(issuerSummaryFromBillResponse(await response.json()));
+      let raw: unknown;
+      try {
+        raw = options.readJson
+          ? await options.readJson(response)
+          : await response.json();
+        summaries.push(issuerSummaryFromBillResponse(raw));
+      } catch (error) {
+        if (error instanceof SourceTextIntegrityError) throw error;
+        throw new Error("E.SUN bill summary source is malformed or incomplete.");
+      }
     }
     if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
       throw new Error("E.SUN bill summary dates are duplicated.");
@@ -1214,6 +1305,310 @@ async function writeStatementFile(
     csvBytes: csvStat.size,
     jsonBytes: jsonStat.size,
   };
+}
+
+type EsunProviderWorkflowInput = {
+  credentials: EsunCredentials;
+  startDate?: string;
+  endDate?: string;
+};
+
+export type EsunProviderWorkflowOutput = Readonly<{
+  usedExistingSession: boolean;
+  count: number;
+  query: Readonly<{ startDate: string; endDate: string }>;
+  canonicalAdmission: "admitted";
+  canonicalCaptureCount: 1;
+  captureId: string;
+}>;
+
+const typedInputSchema = z.object({
+  credentials: z.object({
+    esun_user_id: z.string().trim().min(1),
+    esun_account: z.string().trim().min(1),
+    esun_password: z.string().trim().min(1),
+  }),
+  startDate: dateSchema.optional(),
+  endDate: dateSchema.optional(),
+});
+
+function esunManualSignInStage(page: Page): WorkflowHumanAssistanceStage {
+  const pageBody = page.locator("body");
+  return {
+    stageId: "esun-login-verification",
+    title: "Complete E.SUN sign-in or verification",
+    targets: [{
+      id: "sign-in-page",
+      label: "E.SUN sign-in page",
+      semanticId: "esun.login.page",
+      modes: ["click", "type", "press"],
+      locator: pageBody,
+    }],
+    contextRegions: [{
+      id: "sign-in-context",
+      label: "E.SUN sign-in and verification",
+      semanticId: "esun.login.context",
+      locator: pageBody,
+    }],
+    completion: { mode: "independent", targetIds: ["sign-in-page"] },
+    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
+    prompt: "Complete any provider verification in the open E.SUN page, then wait for the card page to appear.",
+  };
+}
+
+async function authenticateEsunPage(
+  page: Page,
+  credentials: EsunCredentials,
+  context: WorkflowContext,
+): Promise<boolean> {
+  if (await isSignedIn(page)) return true;
+  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
+  context.signal.throwIfAborted();
+  await enterLoginCredentials(page, credentials);
+  context.signal.throwIfAborted();
+
+  try {
+    await withAbort(
+      page.getByText("信用卡", { exact: true }).waitFor({ timeout: 15_000 }),
+      context.signal,
+    );
+    return false;
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    const duplicateLogin = page.getByRole("button", { name: "確定登入" });
+    if (await duplicateLogin.isVisible().catch(() => false)) {
+      await withAbort(duplicateLogin.click(), context.signal);
+      await withAbort(waitForSignedInState(page), context.signal);
+      return false;
+    }
+  }
+
+  const contract = await emitHumanAssistanceStage(esunManualSignInStage(page), (value) => value);
+  await context.event("authentication", "human-assistance-requested");
+  const status = await context.humanAssistance.request(contract, context.signal);
+  context.signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified") {
+    await context.event("authentication", "human-assistance-failed");
+    throw new Error(`E.SUN human assistance ended with status ${status}.`);
+  }
+  await withAbort(waitForSignedInState(page), context.signal);
+  await context.event("authentication", "human-assistance-completed");
+  return false;
+}
+
+async function readEsunResponseJson(
+  response: Response,
+  context: WorkflowContext,
+): Promise<unknown> {
+  try {
+    const decoded = context.text.decode(await response.body(), "utf-8");
+    context.text.assertIntact(decoded);
+    return JSON.parse(decoded) as unknown;
+  } catch (error) {
+    await context.event("decoding", "source-decoding-failed");
+    if (error instanceof SourceTextIntegrityError) throw error;
+    throw new Error("E.SUN provider response is not valid JSON.");
+  }
+}
+
+/** App-owned provider entry. This path collects and commits without writing source artifacts. */
+export async function runEsunCreditCardProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+): Promise<EsunProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success) throw new Error("E.SUN workflow credentials are missing or invalid.");
+  if (!context.financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  if (parsed.data.startDate || parsed.data.endDate) {
+    throw new Error("E.SUN canonical collection requires the complete default one-year source.");
+  }
+  context.signal.throwIfAborted();
+
+  const credentials = parsed.data.credentials;
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    page.on("dialog", (dialog) => {
+      void dialog.accept().catch(() => undefined);
+    });
+    await context.event("authentication", "authentication-started");
+    const usedExistingSession = await authenticateEsunPage(page, credentials, context);
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+
+    const currentCreditResponse = page.waitForResponse(
+      (response) => response.url() ===
+        "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+      { timeout: 120_000 },
+    ).catch(() => undefined);
+    await context.event("collection", "collection-started");
+    await context.event("decoding", "source-decoding-started");
+    const endDate = formatDate(new Date(context.now()));
+    const startDate = defaultStartDate(endDate);
+    let rows: StatementRow[];
+    let timeline: EsunCreditCardTimeline;
+    try {
+      ({ rows, timeline } = await queryStatements(page, { startDate, endDate }, {
+        readJson: (response) => readEsunResponseJson(response, context),
+        signal: context.signal,
+      }));
+    } catch (error) {
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    await context.event("collection", "timeline-collected", {
+      completed: timeline.pageCount,
+      total: timeline.pageCount,
+    });
+    context.signal.throwIfAborted();
+
+    let issuerSummaries: EsunIssuerStatementSummary[];
+    try {
+      issuerSummaries = await readIssuerStatementSummaries(page, {
+        readJson: (response) => readEsunResponseJson(response, context),
+        signal: context.signal,
+      });
+    } catch (error) {
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    await context.event("collection", "bill-summaries-collected", {
+      completed: issuerSummaries.length,
+      total: issuerSummaries.length,
+    });
+    let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
+    const response = await withAbort(
+      waitForOptionalResponse(currentCreditResponse, 5_000),
+      context.signal,
+    );
+    if (response) {
+      currentUsedCredit = await readEsunCurrentUsedCredit(
+        response,
+        (value) => readEsunResponseJson(value, context),
+      );
+    }
+    let settledPeriods: EsunCreditCardSettledPeriod[];
+    try {
+      settledPeriods = buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
+    } catch {
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN bill summary source failed validation.");
+    }
+    const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(rows, settledPeriods);
+    const unbilledRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "unbilled");
+    const billedRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "billed");
+    await context.event("decoding", "source-decoding-completed");
+
+    const isComplete =
+      timeline.firstMonth === endDate.slice(0, 7) &&
+      timeline.lastMonth === startDate.slice(0, 7) &&
+      timeline.monthCount === 13 &&
+      timeline.terminal &&
+      [...billedRows, ...unbilledRows].every((row) => cardKeyForRow(row).length === 4);
+    if (!isComplete || issuerSummaries.length < 2) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: timeline.monthCount,
+        total: 13,
+      });
+      throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
+    }
+    await context.event("validation", "source-validation-started", {
+      completed: rows.length,
+      total: rows.length,
+    });
+
+    const managedSecret = optionalEsunManagedSecret();
+    if (!managedSecret) throw new Error("E.SUN managed identity secret is unavailable.");
+    const identity = deriveEsunCanonicalHumanAttestation(credentials, managedSecret);
+    if (!identity) throw new Error("E.SUN canonical identity could not be established.");
+    const capture: CaptureMetadata = {
+      snapshotMode: "full",
+      captureId: randomUUID(),
+      capturedAt: context.now(),
+      captureKinds: ["billed", "unbilled"],
+      completenessEvidence: {
+        bank: "esun",
+        range: "default_one_year",
+        grid: timeline,
+      },
+    };
+    let canonicalCapture: EsunCreditCardValidatedCapture | undefined;
+    try {
+      canonicalCapture = buildEsunCanonicalCreditCardCapture({
+        startDate,
+        endDate,
+        identity,
+        statementRows: billedRows,
+        unbilledRows,
+        grid: timeline,
+        capture,
+        instrumentFingerprintSecret: managedSecret,
+        settledPeriods,
+      });
+    } catch {
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN source failed canonical admission validation.");
+    }
+    if (!canonicalCapture) {
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN source failed canonical completeness validation.");
+    }
+    await context.event("validation", "source-validation-completed", {
+      completed: rows.length,
+      total: rows.length,
+    });
+    context.signal.throwIfAborted();
+
+    const cardRequest = creditCardCommandRequestFromCanonicalCapture(
+      esunCanonicalSpineCapture(canonicalCapture),
+      esunNeutralCreditCardCapture(canonicalCapture),
+    );
+    const items: PGliteWorkflowRunItem[] = [{
+      provider: "esun",
+      product: "credit-card",
+      itemKey: canonicalCapture.captureId,
+      command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
+    }];
+    if (currentUsedCredit) {
+      const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
+      items.push({
+        provider: "esun",
+        product: "current-balance",
+        itemKey: balanceCapture.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+          request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
+        },
+      });
+    }
+
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: items.length,
+    });
+    const result = await financialCommit.execute(items, {
+      provider: "esun",
+      product: "credit-card",
+      signal: context.signal,
+    });
+    if (result.status !== "completed" || result.items.length !== items.length ||
+      result.items.some((item) => item.status !== "committed")) {
+      const codes = result.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+      throw new Error(`E.SUN Canonical Financial Commit failed: ${codes || result.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: items.length,
+      total: items.length,
+    });
+    return {
+      usedExistingSession,
+      count: rows.length,
+      query: { startDate, endDate },
+      canonicalAdmission: "admitted",
+      canonicalCaptureCount: 1,
+      captureId: canonicalCapture.captureId,
+    };
+  });
 }
 
 export default workflow("esunCreditCardStatements", {
