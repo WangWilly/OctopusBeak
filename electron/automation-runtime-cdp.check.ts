@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,7 +14,6 @@ import {
 } from "../scripts/seed-desktop-cdp-fixture.ts";
 
 const TASK_ID = "esun-credit-card-statements";
-const SECOND_TASK_ID = "fubon-all-statements";
 const UNKNOWN_ACTIVE_TASK_ID = "unknown-cdp-active-task";
 async function reserveCdpPort() {
   const server = createServer();
@@ -93,25 +92,74 @@ async function waitForPagePredicate<Arg>(
     if (await page.evaluate(predicate as never, arg) as boolean) return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      const diagnostic = await page.evaluate(() => ({
-        secondRow: document.querySelector("#fubon-all-statements-task-row")?.textContent,
-        summary: document.querySelector('[data-progressive-block="summary"]')?.textContent?.slice(0, 180),
-      })).catch(() => null);
+      const diagnostic = await page.evaluate(async () => {
+        let runtimeTasks: Array<{
+          taskId: string;
+          status: string;
+          hasRunId: boolean;
+          phaseCode: string | null;
+          percent: number | null;
+        }> = [];
+        let runtimeError: string | null = null;
+        try {
+          const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+          runtimeTasks = snapshot.tasks.map((task) => ({
+            taskId: task.taskId,
+            status: task.status,
+            hasRunId: task.runId !== null,
+            phaseCode: task.progress.phaseCode,
+            percent: task.progress.percent,
+          }));
+        } catch (error) {
+          runtimeError = error instanceof Error ? error.name : "unknown";
+        }
+        const target = window as unknown as {
+          __octopusBeakFailureProbe?: {
+            eventAt: number | null;
+            domAt: number | null;
+            renderMs: number | null;
+            status: string | null;
+            runId: string | null;
+          };
+        };
+        const probe = target.__octopusBeakFailureProbe;
+        return {
+          rowBusy: [...document.querySelectorAll<HTMLButtonElement>(
+            '[data-onboarding-action="primary"]',
+          )].map((button) => ({
+            taskId: button.closest<HTMLElement>("[id$='-task-row']")?.id ?? "unknown",
+            busy: button.getAttribute("aria-busy"),
+          })),
+          runtimeTasks,
+          runtimeError,
+          failureProbe: probe ? {
+            hasEvent: probe.eventAt !== null,
+            hasDom: probe.domAt !== null,
+            renderMs: probe.renderMs,
+            status: probe.status,
+            hasRunId: Boolean(probe.runId),
+          } : null,
+          blocks: [...document.querySelectorAll<HTMLElement>("[data-progressive-block]")]
+            .map((element) => ({
+              block: element.dataset.progressiveBlock ?? "unknown",
+              state: element.dataset.blockState ?? "unknown",
+            })),
+        };
+      }).catch(() => null);
       throw new Error(`Timed out waiting for Electron page condition after ${timeoutMs}ms: ${JSON.stringify(diagnostic)}`);
     }
     await page.waitForTimeout(Math.min(50, remaining));
   }
 }
 
-async function waitForRuntimeRun(page: Page, taskId: string) {
-  await waitForPagePredicate(page, async (candidateTaskId: string) => {
-    const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-    return snapshot.tasks.some((task) =>
-      task.taskId === candidateTaskId
-      && task.runId !== null
-      && !["completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status),
-    );
-  }, taskId, 2_000);
+/** Prevent the typed workflow from opening an external bank page in this fixture. */
+function blockAppBrowserLaunch(userData: string) {
+  const automationDirectory = join(userData, "data", "automation");
+  const browserStateRoot = join(automationDirectory, "browser-state");
+  mkdirSync(automationDirectory, { recursive: true });
+  rmSync(browserStateRoot, { recursive: true, force: true });
+  writeFileSync(browserStateRoot, "CDP fixture blocks browser launch.", "utf8");
+  return browserStateRoot;
 }
 
 function stopChild(child: ChildProcess) {
@@ -132,7 +180,7 @@ function assertUnknownActiveFatalOutput(
   assert.doesNotMatch(combined, /fixture-cdp-/);
 }
 
-test("isolated Electron/CDP automation runtime stays synchronized", async (t) => {
+test("isolated Electron/CDP typed App run records and renders a safe failure", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "octopusbeak-runtime-cdp-"));
   const userData = join(directory, "user-data");
   let child: ChildProcess | null = null;
@@ -154,7 +202,6 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
         env: {
           ...process.env,
           OCTOPUSBEAK_CDP_FIXTURE: "171",
-          OCTOPUSBEAK_AUTOMATION_FAKE_RUNNER: "1",
           OCTOPUSBEAK_USER_DATA: userData,
           OCTOPUSBEAK_CDP_PORT: String(cdpPort),
         },
@@ -163,10 +210,7 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     );
     child.stdout?.on("data", (chunk) => { output += String(chunk); });
     child.stderr?.on("data", (chunk) => { errorOutput += String(chunk); });
-    exited = new Promise<{
-      status: number | null;
-      signal: NodeJS.Signals | null;
-    }>((resolve) => {
+    exited = new Promise((resolve) => {
       child!.once("exit", (status, signal) => resolve({ status, signal }));
       child!.once("error", () => resolve({ status: null, signal: null }));
     });
@@ -192,178 +236,86 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
     const page = await waitForRendererPage(browser, 10_000);
     await navigateToAutomation(page);
     const row = page.locator(`#${TASK_ID}-task-row`);
-    const secondRow = page.locator(`#${SECOND_TASK_ID}-task-row`);
     await row.waitFor({ state: "visible", timeout: 10_000 });
-    await secondRow.waitFor({ state: "visible", timeout: 10_000 });
-
-    // Block data must settle independently. A route switch is deliberately
-    // not part of this assertion: the dashboard should leave loading once
-    // same-page block requests complete, and only the summary block may own
-    // a visible refresh spinner.
     await page.waitForFunction(() => {
       const blocks = [...document.querySelectorAll<HTMLElement>("[data-progressive-block]")]
         .filter((element) => ["summary", "details", "list"].includes(element.dataset.progressiveBlock ?? ""));
       return blocks.length === 3 && blocks.every((element) => element.dataset.blockState === "ready");
     }, undefined, { timeout: 10_000 });
+    assert.doesNotMatch(await row.locator(".credential-state").innerText(), /missing|未設定/i);
+
+    const previousRunId = await page.evaluate(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      return snapshot.tasks.find((task) => task.taskId === taskId)?.runId ?? null;
+    }, TASK_ID);
+    assert.ok(previousRunId, "Fixture must expose its persisted initial run.");
+
+    // The filesystem obstacle is installed only after App startup. The typed
+    // executor creates a real run, then fails while opening its managed browser
+    // state root, before Playwright can navigate to the bank.
+    const browserStateRoot = blockAppBrowserLaunch(userData);
+    const started = await page.evaluate(async (input: { taskId: string; userData: string }) => {
+      try {
+        const result = await window.octopusBeak.automation.run(input.taskId);
+        return { runId: result.runId, errorClass: null as string | null, diagnostic: null as string | null };
+      } catch (error) {
+        const rawMessage = error instanceof Error ? error.message : "";
+        const message = rawMessage
+          .replaceAll(input.userData, "<TEMP>")
+          .replace(/fixture-cdp-[A-Za-z0-9_-]+/gu, "<FIXTURE>")
+          .slice(0, 240);
+        const errorClass = message.startsWith("Missing credentials:")
+          ? "missing-credentials"
+          : message.startsWith("Select at least one ")
+            ? "missing-statement-selection"
+            : message.includes("disabled")
+              ? "task-disabled"
+              : error instanceof Error ? error.name : "unknown-error";
+        return { runId: null, errorClass, diagnostic: message };
+      }
+    }, { taskId: TASK_ID, userData });
+    assert.ok(started.runId, `App rejected the typed task before creating a run (${started.errorClass ?? "unknown"}): ${started.diagnostic ?? ""}`);
+    assert.notEqual(started.runId, previousRunId);
+
+    await waitForPagePredicate(page, async (input: { taskId: string; previousRunId: string }) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const task = snapshot.tasks.find((candidate) => candidate.taskId === input.taskId);
+      return task?.runId !== null
+        && task?.runId !== input.previousRunId
+        && task?.status === "failed";
+    }, { taskId: TASK_ID, previousRunId }, 10_000);
+    await waitForPagePredicate(page, (taskId: string) => {
+      const rowText = document.querySelector<HTMLElement>(`#${taskId}-task-row`)?.textContent ?? "";
+      const button = document.querySelector<HTMLButtonElement>(
+        `#${taskId}-task-row [data-onboarding-action="primary"]`,
+      );
+      return /failed|失敗/iu.test(rowText) && button?.getAttribute("aria-busy") === "false";
+    }, TASK_ID, 5_000);
+
+    const finalRuntime = await page.evaluate(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
+      return task ? {
+        runId: task.runId,
+        status: task.status,
+        phaseCode: task.progress.phaseCode,
+      } : null;
+    }, TASK_ID);
+    assert.equal(finalRuntime?.status, "failed");
+    assert.notEqual(finalRuntime?.runId, previousRunId);
+    assert.doesNotMatch(JSON.stringify(finalRuntime), /fixture-cdp-|password|account|sourceText/i);
+    assert.equal(existsSync(join(browserStateRoot, TASK_ID)), false);
+    assert.equal(readFileSync(browserStateRoot, "utf8"), "CDP fixture blocks browser launch.");
+    const logDirectory = join(userData, "data", "automation", "logs");
+    assert.deepEqual(existsSync(logDirectory) ? readdirSync(logDirectory) : [], []);
+    assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
     assert.equal(await page.locator('[data-progressive-block="details"] .block-spinner').count(), 0);
     assert.equal(await page.locator('[data-progressive-block="list"] .block-spinner').count(), 0);
 
-    const credentialState = await row.locator(".credential-state").innerText();
-    assert.doesNotMatch(credentialState, /missing|未設定/i);
-
-    const optimisticStart = await page.evaluate((taskId) => {
-      const button = document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
-      );
-      if (!button) throw new Error(`Missing primary action for ${taskId}`);
-      const start = performance.now();
-      button.click();
-      return start;
-    }, TASK_ID);
-    await page.waitForFunction(
-      (taskId) => document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
-      )?.getAttribute("aria-busy") === "true",
-      TASK_ID,
-      { timeout: 1_000 },
-    );
-    const optimisticElapsed = await page.evaluate(
-      (start) => performance.now() - start,
-      optimisticStart,
-    );
-    assert.ok(
-      optimisticElapsed <= 200,
-      `Run click did not render optimistic state within 200ms: ${optimisticElapsed.toFixed(1)}ms`,
-    );
-
-    await waitForRuntimeRun(page, TASK_ID);
-    await waitForPagePredicate(page, async (taskId: string) => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
-      const fill = document.querySelector<HTMLElement>(
-        `#${taskId}-task-row .progress-bar > span`,
-      );
-      return task?.runId !== null
-        && task?.status === "running"
-        && task.progress.percent !== null
-        && task.progress.percent >= 33
-        && fill?.style.width === `${task.progress.percent}%`;
-    }, TASK_ID, 2_500);
-    const runningProgress = await row.locator(".progress-bar > span").evaluate((element) => element.style.width);
-    assert.equal(runningProgress, "33%");
-    const firstRun = page.evaluate((taskId) => window.octopusBeak.automation.run(taskId), TASK_ID);
-    const secondRun = page.evaluate((taskId) => window.octopusBeak.automation.run(taskId), TASK_ID);
-    const [first, second] = await Promise.all([firstRun, secondRun]);
-    assert.equal(first.runId, second.runId);
-    assert.match(page.url(), /#\/automation/);
-    await row.locator('.task-control[aria-busy="true"]').waitFor({ state: "visible", timeout: 1_000 });
-    await row.locator(".progress-cell").waitFor({ state: "visible", timeout: 1_000 });
-
-    const secondOptimisticStart = await page.evaluate((taskId) => {
-      const button = document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
-      );
-      if (!button) throw new Error(`Missing primary action for ${taskId}`);
-      const start = performance.now();
-      button.click();
-      return start;
-    }, SECOND_TASK_ID);
-    await page.waitForFunction(
-      (taskId) => document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
-      )?.getAttribute("aria-busy") === "true",
-      SECOND_TASK_ID,
-      { timeout: 1_000 },
-    );
-    const secondOptimisticElapsed = await page.evaluate(
-      (start) => performance.now() - start,
-      secondOptimisticStart,
-    );
-    assert.ok(secondOptimisticElapsed <= 200);
-    await waitForRuntimeRun(page, SECOND_TASK_ID);
-    await waitForPagePredicate(page, async () => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      const activeCount = snapshot.tasks.filter((task) =>
-        ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
-      ).length;
-      const heading = document.querySelector<HTMLElement>(
-        '[data-progressive-block="summary"] .sync-hero h2',
-      );
-      return activeCount === 2 && Boolean(heading?.textContent?.includes(String(activeCount)));
-    }, undefined, 1_000);
-    let cancelDialogError: unknown;
-    let cancelDialogSeen = false;
-    page.once("dialog", async (dialog) => {
-      cancelDialogSeen = true;
-      try {
-        assert.equal(dialog.type(), "confirm");
-        await dialog.accept();
-      }
-      catch (error) {
-        cancelDialogError = error;
-        await dialog.dismiss().catch(() => {});
-      }
-    });
-    await secondRow.locator('[data-onboarding-action="primary"]').click();
-    assert.equal(cancelDialogError, undefined);
-    assert.equal(cancelDialogSeen, true, "cancellation must present its confirmation dialog");
-    await waitForPagePredicate(page, async (taskId: string) => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "cancelled");
-    }, SECOND_TASK_ID, 5_000);
-    await waitForPagePredicate(page, (taskId: string) => /cancelled|已取消/iu.test(
-      document.querySelector<HTMLElement>(`#${taskId}-task-row`)?.textContent ?? "",
-    ), SECOND_TASK_ID, 5_000);
-    assert.match(await secondRow.innerText(), /cancelled|已取消/i);
-    await waitForPagePredicate(page, async () => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      const activeCount = snapshot.tasks.filter((task) =>
-        ["preparing", "running", "retrying", "cancelling", "waiting_for_human"].includes(task.status)
-      ).length;
-      const heading = document.querySelector<HTMLElement>(
-        '[data-progressive-block="summary"] .sync-hero h2',
-      );
-      const hero = document.querySelector<HTMLElement>(
-        '[data-progressive-block="summary"] .sync-hero',
-      );
-      return activeCount <= 1
-        && hero?.classList.contains("active") === (activeCount > 0)
-        && (activeCount === 0 || Boolean(heading?.textContent?.includes(String(activeCount))));
-    }, undefined, 1_000);
-
-    await waitForPagePredicate(page, async (taskId: string) => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      return snapshot.tasks.some((task) => task.taskId === taskId && task.status === "completed");
-    }, TASK_ID, 10_000);
-    await row.locator(".progress-bar").waitFor({ state: "visible", timeout: 2_000 });
-    await row.locator('[data-onboarding-action="logs"]').click();
-    const logOutput = page.locator(`#${TASK_ID}-inline-log .log-output`);
-    await logOutput.waitFor({ state: "visible", timeout: 5_000 });
-    assert.match(await logOutput.innerText(), /fixture-log-entry/);
-    assert.match(await row.innerText(), /completed|完成/i);
-    await waitForPagePredicate(page, async (taskId: string) => {
-      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-      const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
-      const button = document.querySelector<HTMLButtonElement>(
-        `#${taskId}-task-row [data-onboarding-action="primary"]`,
-      );
-      const fill = document.querySelector<HTMLElement>(
-        `#${taskId}-task-row .progress-bar > span`,
-      );
-      return task?.status === "completed"
-        && task.progress.percent === 100
-        && button?.getAttribute("aria-busy") === "false"
-        && !/cancel|取消/i.test(button.textContent ?? "")
-        && fill?.style.width === "100%";
-    }, TASK_ID, 2_000);
-    assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
-    assert.doesNotMatch(await secondRow.innerText(), /fixture-log-entry/);
-    assert.match(page.url(), /#\/automation/);
     await page.evaluate(() => { window.location.hash = "#/overview"; });
-    await page.waitForTimeout(100);
     await navigateToAutomation(page);
     await row.waitFor({ state: "visible", timeout: 10_000 });
-    assert.match(await row.innerText(), /completed|完成|fixture/i);
+    assert.match(await row.innerText(), /failed|失敗/i);
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (child) stopChild(child);
@@ -375,8 +327,8 @@ test("isolated Electron/CDP automation runtime stays synchronized", async (t) =>
   }
 });
 
-test("isolated Electron/CDP partial runtime updates the current row within 200ms", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "octopusbeak-runtime-partial-cdp-"));
+test("isolated Electron/CDP runtime failure event reaches the row within 200ms", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "octopusbeak-runtime-failure-cdp-"));
   const userData = join(directory, "user-data");
   let child: ChildProcess | null = null;
   let browser: Browser | null = null;
@@ -397,8 +349,6 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
         env: {
           ...process.env,
           OCTOPUSBEAK_CDP_FIXTURE: "171",
-          OCTOPUSBEAK_AUTOMATION_FAKE_RUNNER: "1",
-          OCTOPUSBEAK_AUTOMATION_FAKE_RESULT: "partial",
           OCTOPUSBEAK_USER_DATA: userData,
           OCTOPUSBEAK_CDP_PORT: String(cdpPort),
         },
@@ -407,7 +357,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
     );
     child.stdout?.on("data", (chunk) => { output += String(chunk); });
     child.stderr?.on("data", (chunk) => { errorOutput += String(chunk); });
-    exited = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    exited = new Promise((resolve) => {
       child!.once("exit", (status, signal) => resolve({ status, signal }));
       child!.once("error", () => resolve({ status: null, signal: null }));
     });
@@ -427,7 +377,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
         t.skip("Electron fixture hit the known macOS NSApplication SIGABRT initialization limitation.");
         return;
       }
-      assert.fail(`Electron partial fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
+      assert.fail(`Electron failure fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
     }
 
     browser = await chromium.connectOverCDP(cdpUrl);
@@ -441,10 +391,16 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
         .filter((element) => ["summary", "details", "list"].includes(element.dataset.progressiveBlock ?? ""));
       return blocks.length === 3 && blocks.every((element) => element.dataset.blockState === "ready");
     }, undefined, { timeout: 10_000 });
-    const credentialState = await row.locator(".credential-state").innerText();
-    assert.doesNotMatch(credentialState, /missing|未設定/i);
+    assert.doesNotMatch(await row.locator(".credential-state").innerText(), /missing|未設定/i);
 
-    await page.evaluate((taskId) => {
+    const previousRunId = await page.evaluate(async (taskId) => {
+      const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
+      return snapshot.tasks.find((task) => task.taskId === taskId)?.runId ?? null;
+    }, TASK_ID);
+    assert.ok(previousRunId, "Fixture must expose its persisted initial run.");
+    const browserStateRoot = blockAppBrowserLaunch(userData);
+
+    await page.evaluate((input: { taskId: string; previousRunId: string }) => {
       const target = window as unknown as Record<string, unknown>;
       const probe = {
         eventAt: null as number | null,
@@ -454,36 +410,37 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
         runId: null as string | null,
         unsubscribe: null as (() => void) | null,
       };
-      const renderPartial = () => {
+      const observeRow = () => {
         if (probe.domAt !== null) return;
-        const rowElement = document.querySelector<HTMLElement>(`#${taskId}-task-row`);
+        const rowElement = document.querySelector<HTMLElement>(`#${input.taskId}-task-row`);
         const button = rowElement?.querySelector<HTMLButtonElement>('[data-onboarding-action="primary"]');
-        const progress = rowElement?.querySelector<HTMLElement>('[role="progressbar"]');
-        const partialHint = document.querySelector<HTMLElement>(".partial-task-detail");
-        const ready = Boolean(rowElement && button && progress && partialHint)
-          && progress?.getAttribute("aria-valuenow") === "100"
-          && button?.getAttribute("aria-busy") === "false"
-          && !/cancel|取消/i.test(button?.textContent ?? "")
-          && /fixture partial failure/i.test(partialHint?.textContent ?? "");
+        const ready = Boolean(rowElement && button)
+          && /failed|失敗/iu.test(rowElement?.textContent ?? "")
+          && button?.getAttribute("aria-busy") === "false";
         if (ready) {
           probe.domAt = performance.now();
           probe.renderMs = probe.domAt - (probe.eventAt ?? probe.domAt);
           return;
         }
         if (performance.now() - (probe.eventAt ?? performance.now()) < 1_000) {
-          requestAnimationFrame(renderPartial);
+          requestAnimationFrame(observeRow);
         }
       };
       probe.unsubscribe = window.octopusBeak.automation.onRuntimeChanged((snapshot) => {
-        const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
-        if (!task || task.status !== "partial" || probe.eventAt !== null) return;
+        const task = snapshot.tasks.find((candidate) => candidate.taskId === input.taskId);
+        if (
+          !task
+          || task.status !== "failed"
+          || task.runId === input.previousRunId
+          || probe.eventAt !== null
+        ) return;
         probe.eventAt = performance.now();
         probe.status = task.status;
         probe.runId = task.runId;
-        requestAnimationFrame(renderPartial);
+        requestAnimationFrame(observeRow);
       });
-      target.__octopusBeakPartialProbe = probe;
-    }, TASK_ID);
+      target.__octopusBeakFailureProbe = probe;
+    }, { taskId: TASK_ID, previousRunId });
 
     const optimisticStart = await page.evaluate((taskId) => {
       const button = document.querySelector<HTMLButtonElement>(
@@ -501,21 +458,16 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
       TASK_ID,
       { timeout: 1_000 },
     );
-    const optimisticElapsed = await page.evaluate(
-      (start) => performance.now() - start,
-      optimisticStart,
-    );
-    assert.ok(optimisticElapsed <= 200, `Partial run click was not immediately visible: ${optimisticElapsed.toFixed(1)}ms`);
+    const optimisticElapsed = await page.evaluate((start) => performance.now() - start, optimisticStart);
+    assert.ok(optimisticElapsed <= 200, `Run click did not render optimistic state within 200ms: ${optimisticElapsed.toFixed(1)}ms`);
 
-    await page.waitForFunction(
-      () => Boolean((window as unknown as { __octopusBeakPartialProbe?: { domAt: number | null } })
-        .__octopusBeakPartialProbe?.domAt),
-      undefined,
-      { timeout: 10_000 },
-    );
+    await waitForPagePredicate(page, () => Boolean(
+      (window as unknown as { __octopusBeakFailureProbe?: { domAt: number | null } })
+        .__octopusBeakFailureProbe?.domAt,
+    ), undefined, 10_000);
     const probe = await page.evaluate(() => {
       const target = window as unknown as {
-        __octopusBeakPartialProbe?: {
+        __octopusBeakFailureProbe?: {
           eventAt: number | null;
           domAt: number | null;
           renderMs: number | null;
@@ -524,7 +476,7 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
           unsubscribe?: (() => void) | null;
         };
       };
-      const value = target.__octopusBeakPartialProbe;
+      const value = target.__octopusBeakFailureProbe;
       value?.unsubscribe?.();
       return {
         eventAt: value?.eventAt ?? null,
@@ -534,16 +486,15 @@ test("isolated Electron/CDP partial runtime updates the current row within 200ms
         runId: value?.runId ?? null,
       };
     });
-    assert.equal(probe.status, "partial");
-    assert.ok(probe.runId, "Partial runtime update must identify a run.");
+    assert.equal(probe.status, "failed");
+    assert.ok(probe.runId && probe.runId !== previousRunId, "Failure event must identify the new App run.");
     assert.ok(probe.eventAt !== null && probe.domAt !== null);
-    assert.ok(probe.renderMs !== null && probe.renderMs <= 200, `Authoritative partial event rendered too slowly: ${probe.renderMs}ms`);
-    assert.equal(page.url(), initialUrl, "Partial state must appear without a route switch.");
+    assert.ok(probe.renderMs !== null && probe.renderMs <= 200, `Authoritative failure rendered too slowly: ${probe.renderMs}ms`);
+    assert.equal(page.url(), initialUrl, "Failure state must appear without a route switch.");
     assert.equal(await row.locator('[data-onboarding-action="primary"]').getAttribute("aria-busy"), "false");
-    assert.match(await row.innerText(), /100%/);
-    assert.equal(await page.locator(".partial-task-detail").count(), 1);
-    await page.locator(".partial-task-detail summary").click();
-    assert.match(await page.locator(".partial-task-detail").innerText(), /fixture partial failure/);
+    assert.match(await row.innerText(), /failed|失敗/i);
+    assert.equal(existsSync(join(browserStateRoot, TASK_ID)), false);
+    assert.equal(readFileSync(browserStateRoot, "utf8"), "CDP fixture blocks browser launch.");
     assert.equal(await page.locator('[data-progressive-block="summary"] .block-spinner').count(), 0);
     assert.equal(await page.locator('[data-progressive-block="details"] .block-spinner').count(), 0);
     assert.equal(await page.locator('[data-progressive-block="list"] .block-spinner').count(), 0);
@@ -581,7 +532,6 @@ test("isolated Electron/CDP runtime invariant exits on an unknown active task", 
           ...process.env,
           OCTOPUSBEAK_CDP_FIXTURE: "171",
           OCTOPUSBEAK_CDP_FATAL_FIXTURE: "unknown-active",
-          OCTOPUSBEAK_AUTOMATION_FAKE_RUNNER: "1",
           OCTOPUSBEAK_USER_DATA: userData,
           OCTOPUSBEAK_CDP_PORT: String(cdpPort),
         },
