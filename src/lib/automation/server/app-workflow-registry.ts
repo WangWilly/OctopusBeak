@@ -1,8 +1,10 @@
 import { einvoicePersonalInvoicesWorkflow } from "../einvoice-workflow.ts";
+import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
+  startUrl?: string;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
 }>;
 
@@ -15,6 +17,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
         credentials: {
           einvoice_phone_number: environment.LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER ?? "",
           einvoice_password: environment.LIBRETTO_CLOUD_EINVOICE_PASSWORD ?? "",
+        },
+      };
+    },
+  },
+  {
+    definition: esunCreditCardStatementsWorkflow,
+    startUrl: "https://ebank.esunbank.com.tw/index.jsp",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          esun_user_id: environment.LIBRETTO_CLOUD_ESUN_USER_ID ?? "",
+          esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
+          esun_password: environment.LIBRETTO_CLOUD_ESUN_PASSWORD ?? "",
         },
       };
     },
@@ -36,4 +51,10 @@ export function workflowInputForTask(
   if (!workflowId) return undefined;
   return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)
     ?.inputFromEnvironment(environment);
+}
+
+export function workflowStartUrlForTask(workflowId: string | undefined) {
+  if (!workflowId) return undefined;
+  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId)
+    ?.startUrl;
 }

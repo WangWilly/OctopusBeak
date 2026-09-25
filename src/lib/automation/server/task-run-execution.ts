@@ -70,6 +70,7 @@ import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assis
 import {
   workflowDefinitionForTask,
   workflowInputForTask,
+  workflowStartUrlForTask,
 } from "./app-workflow-registry.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
@@ -117,6 +118,7 @@ export type AutomationTaskExecutionOptions = {
     taskRunId: string;
     signal: AbortSignal;
     userDataDirectory: string;
+    startUrl?: string;
   }) => WorkflowBrowserPort;
 };
 
@@ -163,18 +165,21 @@ async function executeAppWorkflow(
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
+    const startUrl = workflowStartUrlForTask(execution.task.workflowId);
     const browser = injectedPorts.browser
       ?? options.workflowBrowserPortFactory?.({
         taskId: execution.task.id,
         taskRunId: execution.run.taskRunId,
         signal: controller.signal,
         userDataDirectory,
+        startUrl,
       })
       ?? createAppWorkflowBrowserPort({
         taskId: execution.task.id,
         taskRunId: execution.run.taskRunId,
         signal: controller.signal,
         userDataDirectory,
+        startUrl,
       });
     const ports: WorkflowExecutorPorts = {
       browser,

@@ -8,6 +8,7 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   taskRunId: string;
   signal: AbortSignal;
   userDataDirectory: string;
+  startUrl?: string;
   launchPersistentContext?: (userDataDirectory: string) => Promise<BrowserContext>;
 }>;
 
@@ -78,6 +79,10 @@ export function createAppWorkflowBrowserPort(
       input.signal.addEventListener("abort", closeOnAbort, { once: true });
       try {
         input.signal.throwIfAborted();
+        if (input.startUrl) {
+          await page.goto(input.startUrl, { waitUntil: "domcontentloaded" });
+          input.signal.throwIfAborted();
+        }
         return await run(page);
       } finally {
         input.signal.removeEventListener("abort", closeOnAbort);
