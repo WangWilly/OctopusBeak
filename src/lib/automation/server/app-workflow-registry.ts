@@ -1,5 +1,6 @@
 import { einvoicePersonalInvoicesWorkflow } from "../einvoice-workflow.ts";
 import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.ts";
+import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 
 type AppWorkflowRegistration = Readonly<{
@@ -30,6 +31,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           esun_user_id: environment.LIBRETTO_CLOUD_ESUN_USER_ID ?? "",
           esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
           esun_password: environment.LIBRETTO_CLOUD_ESUN_PASSWORD ?? "",
+        },
+      };
+    },
+  },
+  {
+    definition: ctbcStatementsWorkflow,
+    startUrl: "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          ctbc_user_id: environment.LIBRETTO_CLOUD_CTBC_USER_ID ?? "",
+          ctbc_account: environment.LIBRETTO_CLOUD_CTBC_ACCOUNT ?? "",
+          ctbc_password: environment.LIBRETTO_CLOUD_CTBC_PASSWORD ?? "",
         },
       };
     },
