@@ -83,8 +83,10 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   let downloadEvents = 0;
   let browserSubmissions = 0;
   let submitInvocations = 0;
-  const outputDir = await mkdtemp(join(tmpdir(), "hncb-memory-workflow-"));
+  const workingDirectory = await mkdtemp(join(tmpdir(), "hncb-memory-workflow-"));
+  const previousWorkingDirectory = process.cwd();
   try {
+    process.chdir(workingDirectory);
     const page = await browser.newPage();
     page.on("popup", (popup) => {
       popup.on("download", () => { downloadEvents += 1; });
@@ -132,15 +134,12 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
       startDate: "2026/08/01",
       endDate: "2026/08/31",
       accountFilters: [],
-      outputDir,
     }, {
-      inMemory: true,
       financialCommit,
       readAccountOptions: async () => [{ value: account, label: `HNCB ${account}` }],
       queryAccount: async (candidatePage) => candidatePage.mainFrame(),
       readCurrentDepositBalances: async () => [],
       readCurrentDepositOverviewBalances: async () => [],
-      writeStatementFile: async () => { throw new Error("typed execution must not write files"); },
       event: async (stage, code) => { events.push({ stage, code }); },
       downloadStatement: async (candidatePage, fallbackAccount, frame, text) => {
         const statement = await downloadCurrentStatementInMemory(
@@ -159,7 +158,6 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
 
     assert.equal(output.status, "financial-admitted");
     assert.equal(output.count, 1);
-    assert.deepEqual(output.downloads, []);
     assert.equal(statementResponse?.status, 200);
     assert.equal(statementResponse?.contentType, "application/vnd.ms-excel; charset=big5");
     assert.equal(postCount, 1);
@@ -169,7 +167,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     assert.equal(commitItems[0]?.length, 1);
     assert.ok(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
     assert.equal(downloadEvents, 0);
-    assert.deepEqual(await readdir(outputDir), []);
+    assert.deepEqual(await readdir(workingDirectory), []);
 
     assert.match(requestCookie, /hncb-session=fixture/u);
     assert.equal(
@@ -236,7 +234,8 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     assert.match(requestCookie, /hncb-session=fixture/u);
     assert.equal(postCount - 1, rejectedResponses.length);
   } finally {
-    await rm(outputDir, { recursive: true, force: true });
+    process.chdir(previousWorkingDirectory);
+    await rm(workingDirectory, { recursive: true, force: true });
     await browser.close();
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
@@ -246,7 +245,8 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
 });
 
 test("HNCB rejects malformed or incomplete exports before the Canonical Financial Commit", async () => {
-  const outputDir = await mkdtemp(join(tmpdir(), "hncb-memory-workflow-"));
+  const workingDirectory = await mkdtemp(join(tmpdir(), "hncb-memory-workflow-"));
+  const previousWorkingDirectory = process.cwd();
   const commitItems: unknown[][] = [];
   const financialCommit: WorkflowFinancialCommitPort = {
     async execute(items) {
@@ -274,19 +274,17 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     startDate: "2026/08/01",
     endDate: "2026/08/31",
     accountFilters: [],
-    outputDir,
   };
   const dependencies = {
-    inMemory: true,
     financialCommit,
     readAccountOptions: async () => [{ value: account, label: `HNCB ${account}` }],
     queryAccount: async () => ({} as Frame),
     readCurrentDepositBalances: async () => [],
     readCurrentDepositOverviewBalances: async () => [],
-    writeStatementFile: async () => { throw new Error("typed execution must not write files"); },
   };
   const page = {} as Page;
   try {
+    process.chdir(workingDirectory);
     await assert.rejects(
       runHncbStatements(page, baseInput, {
         ...dependencies,
@@ -338,11 +336,10 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     });
     assert.equal(result.status, "financial-admitted");
     assert.equal(result.count, 1);
-    assert.deepEqual(result.downloads, []);
     assert.equal(commitItems.length, 1);
     assert.ok(events.some((event) => event.stage === "decoding" && event.code === "source-decoding-completed"));
     assert.ok(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
-    assert.deepEqual(await readdir(outputDir), []);
+    assert.deepEqual(await readdir(workingDirectory), []);
 
     const cancelled = new AbortController();
     cancelled.abort(new Error("cancelled"));
@@ -355,7 +352,8 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
     );
     assert.equal(commitItems.length, 1);
   } finally {
-    await rm(outputDir, { recursive: true, force: true });
+    process.chdir(previousWorkingDirectory);
+    await rm(workingDirectory, { recursive: true, force: true });
   }
 });
 

@@ -1,12 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Worker } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
+import { readFileSync } from "node:fs";
 import { chromium, type Frame, type Page } from "playwright";
 import {
   emitHumanAssistanceStage,
@@ -28,6 +21,30 @@ import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   parseHncbCurrentDepositOverviewTable,
 } from "./hncb-current-deposit-balances.ts";
+
+const providerSource = readFileSync(new URL("./hncb-statements.ts", import.meta.url), "utf8");
+assert.doesNotMatch(
+  providerSource,
+  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|\bpause\(/u,
+  "HNCB production must use the App-owned typed workflow only",
+);
+assert.doesNotMatch(
+  providerSource,
+  /node:fs\/promises|writeStatementFile|outputDir|downloads\/hncb-statements|csvFilename|jsonFilename/u,
+  "HNCB production must not generate statement files",
+);
+assert.doesNotMatch(
+  providerSource,
+  /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u,
+  "HNCB must commit through the injected Canonical Financial Commit port",
+);
+assert.doesNotMatch(
+  providerSource,
+  /console\./u,
+  "HNCB production must report progress through structured events",
+);
+assert.match(providerSource, /runHncbProviderWorkflow/u);
+assert.match(providerSource, /financialCommit\.execute\(/u);
 
 const accountA = ["0001", "0002", "0003"].join("");
 const accountB = ["0002", "0003", "0004"].join("");
@@ -404,77 +421,3 @@ assert.equal(
   reopenedFrame,
 );
 assert.equal(observedTimeout, 5_000);
-
-const pgliteDir = await mkdtemp(join(tmpdir(), "hncb-pglite-workflow-"));
-const pgliteWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-  execArgv: ["--experimental-strip-types"],
-  workerData: { dataDir: pgliteDir },
-});
-const pgliteOwner = createPGliteViewWorkerClient(pgliteWorker);
-const pgliteServer = createPGliteChildRpcServer({ provider: {
-  operational: pgliteOwner.operationalProvider,
-  financial: pgliteOwner.financial.registry,
-} });
-const priorPgliteEnv = {
-  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
-  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-};
-try {
-  await pgliteServer.ready;
-  Object.assign(process.env, pgliteServer.env);
-  const account = { value: accountA, label: `HNCB ${accountA}` };
-  const output = await runHncbStatements({} as never, {
-    startDate: "2026/08/01",
-    endDate: "2026/08/20",
-    accountFilters: [],
-    outputDir: pgliteDir,
-  }, {
-    readAccountOptions: async () => [account],
-    queryAccount: async () => ({} as Frame),
-    downloadStatement: async () => ({
-      account: `${accountA.slice(0, 6)}-${accountA.slice(6)}`,
-      accountId: account.value,
-      queryPeriod: "2026/08/01-2026/08/20",
-      currency: "TWD",
-      rows: [["2026/08/02", "09:10:11", "2026/08/03", "TWD", "100", "", "900", "fixture", "", "", ""]],
-      filename: "fixture.xls",
-      byteLength: 10,
-      contentDigest: `sha256:${createHash("sha256").update("fixture").digest("base64url")}`,
-    }),
-    writeStatementFile: async () => ({
-      accountId: account.value,
-      account: account.label,
-      queryPeriods: ["2026/08/01-2026/08/20"],
-      currency: "TWD",
-      baseName: "fixture",
-      csvFilename: "fixture.csv",
-      jsonFilename: "fixture.json",
-      csvPath: "fixture.csv",
-      jsonPath: "fixture.json",
-      csvBytes: 1,
-      jsonBytes: 1,
-      rowCount: 1,
-    }),
-    readCurrentDepositBalances: async () => [],
-  });
-  assert.equal(output.status, "financial-admitted");
-} finally {
-  for (const [key, value] of [
-    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorPgliteEnv.required],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorPgliteEnv.endpoint],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorPgliteEnv.token],
-  ] as const) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteServer.close();
-  await pgliteOwner.close();
-}
-const pgliteDb = await PGlite.create(pgliteDir);
-try {
-  assert.equal((await pgliteDb.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
-} finally {
-  await pgliteDb.close();
-  await rm(pgliteDir, { recursive: true, force: true });
-}
