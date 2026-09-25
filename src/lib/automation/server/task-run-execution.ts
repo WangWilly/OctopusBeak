@@ -1,60 +1,24 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import {
-  parseStatementRunSummary,
-  type StatementRunSummary,
-} from "../statement-run-summary.ts";
-import { parseExternalPrerequisiteSignals } from "../external-prerequisite.ts";
-import {
-  createHumanAssistanceContractFrameParser,
-  HUMAN_ASSISTANCE_HOST_FD_ENV,
-  HUMAN_ASSISTANCE_HOST_PATH_ENV,
-  type HumanAssistanceContractInput,
-} from "../human-assistance.ts";
-import {
-  GMAIL_OTP_IPC_ENDPOINT_ENV,
-  GMAIL_OTP_IPC_TOKEN_ENV,
-} from "../gmail-otp.ts";
-import { createGmailOtpIpcServer } from "./gmail-otp-broker.ts";
-import {
-  ensureCathayGmailOtpAccess,
-  prepareCathayGmailOtpRetrieval,
-  retrieveCathayGmailOtp,
-} from "./gmail-otp-service.ts";
-import { resolveTaskCommand } from "./desktop-command.ts";
+import type { ChildProcess } from "node:child_process";
 import { automationConfigEnv } from "./config-files.ts";
-import { validateLibrettoSessionName } from "./libretto-session.ts";
 import {
-  appendLog,
-  errorMessage,
-  sessionPid,
   tail,
   claimAutomationTaskRunSession,
-  refreshAutomationSession,
-  sessionFromRun,
-  type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
-import { ownAutomationSession } from "./session-lifecycle.ts";
 import {
   finalizeAutomationTaskRun,
-  isForceQuitRun,
   nextAttemptStatus,
   shouldMarkWaitingForHuman,
   type AutomationTaskProcessResult,
-  type AutomationTaskRunFinalizationContext,
   type AutomationTaskRunExecution,
 } from "./task-run-finalization.ts";
 import {
-  resumeHumanAssistanceContract,
   type AutomationPersistencePort,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import {
-  AUTOMATION_PROGRESS_FD_ENV,
   type AutomationProgressEvent,
 } from "../progress.ts";
 import { sanitizeAutomationLogChunk, sanitizeAutomationLogTail } from "./log-sanitizer.ts";
@@ -87,23 +51,19 @@ import {
   createPGliteChildRpcClient,
   requirePGliteChildRpcClientFromEnv,
 } from "../../../../electron/pglite-child-rpc-client.ts";
-import {
-  SINOPAC_DIALOG_OWNER_ENV,
-  sinopacHostDialogOwner,
-} from "../sinopac-captcha.ts";
 
-const activeTaskChildren = new Map<string, ChildProcess>();
 const activeWorkflowControllers = new Map<string, AbortController>();
 const activeWorkflowRunIds = new Map<string, string>();
 
 export type AutomationTaskExecutionOptions = {
   scheduledAtUtc?: string;
+  /** Legacy field retained for the runner contract; App workflows do not resume Libretto sessions. */
   resumeSession?: string;
   /** Reuse the user-visible task run for an internal execution. */
   taskRunId?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
-  /** Set on the original daemon launch, not only on a later resume CLI. */
+  /** Legacy field retained while the runner API is retired. */
   hostOwnedDialogProvider?: "sinopac";
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
@@ -111,7 +71,7 @@ export type AutomationTaskExecutionOptions = {
   maxAttempts?: number;
   /** Let a higher-level campaign own the single terminal transition. */
   deferFinalization?: boolean;
-  /** Stop before launching a child when the host task was cancelled. */
+  /** Stop a typed workflow when the host task was cancelled. */
   isCancellationRequested?: () => boolean;
   isForceTerminationRequested?: () => boolean;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
@@ -277,7 +237,9 @@ async function executeAppWorkflow(
 export function createAutomationSessionId(
   uuid: () => string = randomUUID,
 ): string {
-  return validateLibrettoSessionName("ses-octopus-" + uuid());
+  // Compatibility name for runner/captcha coordination. This value is an
+  // execution correlation ID; typed workflows do not create Libretto sessions.
+  return "ses-octopus-" + uuid();
 }
 
 export function resumeFailureMessage(output: string) {
@@ -289,19 +251,6 @@ export function resumeFailureMessage(output: string) {
 
 export function automationProcessEnv(baseEnv: NodeJS.ProcessEnv = process.env) {
   return automationConfigEnv({ baseEnv });
-}
-
-export function automationDialogOwnerLaunchEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  taskId: string,
-  session: string | null,
-  provider: AutomationTaskExecutionOptions["hostOwnedDialogProvider"],
-): NodeJS.ProcessEnv {
-  const env = { ...baseEnv };
-  if (provider === "sinopac" && taskId === "sinopac-statements" && session) {
-    env[SINOPAC_DIALOG_OWNER_ENV] = sinopacHostDialogOwner(session);
-  }
-  return env;
 }
 
 export function createAutomationOutputBuffer(
@@ -340,6 +289,7 @@ export function createAutomationOutputBuffer(
   };
 }
 
+/** @deprecated Compatibility export; App-owned workflows do not claim sessions. */
 export const claimRunAutomationSession = claimAutomationTaskRunSession;
 
 export function accumulateAutomationOutput(
@@ -363,49 +313,18 @@ async function createAutomationTaskRunExecution(
   const attempt = options.attempt ?? 1;
   const maxAttempts = options.maxAttempts ?? 1;
   const startedAt = new Date().toISOString();
-  const isLibrettoTask = task.command[0] === "libretto";
-  const session = isLibrettoTask
-    ? (options.resumeSession ?? createAutomationSessionId())
-    : null;
-  const env = automationDialogOwnerLaunchEnv(
-    options.launchEnv ?? automationProcessEnv(),
-    task.id,
-    session,
-    options.resumeSession ? undefined : options.hostOwnedDialogProvider,
-  );
-  const command = task.workflowId
-    ? { command: "", args: [], display: `workflow:${task.workflowId}`, env }
-    : task.id === "exchange-rates" || task.id === "sync-maicoin"
-    ? { command: "", args: [], display: `workflow:${task.id}`, env }
-    : resolveTaskCommand(
-      task,
-      {
-        resumeSession: options.resumeSession,
-        session: options.resumeSession ? undefined : (session ?? undefined),
-      },
-      env,
-    );
-  const activeRuns = options.resumeSession
-    ? await persistence.activeTaskRuns()
-    : [];
-  const resumeFrom = options.resumeSession
-    ? activeRuns.find(
-        (candidate) =>
-          candidate.taskId === task.id &&
-          candidate.status === "waiting_for_human" &&
-          sessionFromRun(candidate) === options.resumeSession,
-      )
-    : undefined;
   const existingRun = options.taskRunId
     ? await persistence.taskRunById(options.taskRunId)
-    : resumeFrom;
+    : null;
   if (options.taskRunId && !existingRun) return null;
-  const logPath = existingRun?.logPath ?? (task.workflowId ? "" : join(
-    "data",
-    "automation",
-    "logs",
-    `${task.id}-${Date.now()}-${attempt}.log`,
-  ));
+  const env = options.launchEnv ?? automationProcessEnv();
+  const command = {
+    command: "",
+    args: [],
+    display: `workflow:${task.workflowId ?? task.id}`,
+    env,
+  };
+  const logPath = "";
   const run = existingRun
     ? { taskRunId: existingRun.taskRunId, attempt }
     : {
@@ -420,9 +339,6 @@ async function createAutomationTaskRunExecution(
           scheduledAtUtc: options.scheduledAtUtc,
           logPath,
           progress: indeterminateProgress(attempt),
-          humanAssistanceContract: resumeHumanAssistanceContract(
-            resumeFrom?.humanAssistanceContract,
-          ),
         })),
         attempt,
       };
@@ -438,286 +354,16 @@ async function createAutomationTaskRunExecution(
       progress: indeterminateProgress(attempt),
     });
   }
-  const owner = session
-    ? {
-        taskId: task.id,
-        taskRunId: run.taskRunId,
-        session,
-        pid: sessionPid(session),
-      }
-    : null;
-  if (session) {
-    if (!options.resumeSession || !existingRun) {
-      appendLog(logPath, "automation-session: " + session + "\n");
-    }
-    if (!options.resumeSession) {
-      if (
-        !(await claimAutomationTaskRunSession(
-          persistence,
-          run.taskRunId,
-          owner!,
-          { resumeFrom },
-        ))
-      ) return null;
-    } else if (!ownAutomationSession(owner!)) {
-      return null;
-    }
-  }
   return {
     task,
     persistence,
     run,
     logPath,
     command,
-    session,
-    owner,
+    session: null,
+    owner: null,
     executionId: options.executionId ?? createAutomationSessionId(),
     onRuntimeUpdate: options.onRuntimeUpdate,
-  };
-}
-
-async function executeAutomationTaskProcess(
-  execution: AutomationTaskRunExecution,
-  isCancellationRequested?: () => boolean,
-): Promise<AutomationTaskProcessResult> {
-  let logTail = "";
-  let detectedResumeFailure: string | null = null;
-  let lastHumanAssistanceContractJson: string | null = null;
-  let statementSummary: StatementRunSummary | null = null;
-  const externalPrerequisiteIds = new Set<string>();
-  const outputPersistenceWarnings: string[] = [];
-  const humanAssistancePath = join(
-    "data",
-    "automation",
-    "human-assistance",
-    `${execution.session ?? execution.run.taskRunId}.jsonl`,
-  );
-  let humanAssistanceReadOffset = 0;
-  let humanAssistanceReadTimer: ReturnType<typeof setInterval> | null = null;
-  let latestProgress: AutomationTaskProgress | null = null;
-  let progressTimer: ReturnType<typeof setTimeout> | null = null;
-  let gmailOtpServer: ReturnType<typeof createGmailOtpIpcServer>;
-  try {
-    gmailOtpServer = createGmailOtpIpcServer({
-      service: {
-        ensureAccess: ensureCathayGmailOtpAccess,
-        prepareRetrieval: prepareCathayGmailOtpRetrieval,
-        retrieve: retrieveCathayGmailOtp,
-      },
-      onProtocolError: (reason) => {
-        console.warn(`gmail-otp-bridge-protocol-error: ${reason}`);
-      },
-    });
-    await gmailOtpServer.ready;
-  } catch {
-    return {
-      exitCode: null,
-      signal: null,
-      error: new Error("Gmail OTP bridge could not start."),
-      logTail,
-      resumeFailure: null,
-      statementSummary,
-      outputPersistenceWarnings,
-      externalPrerequisiteIds: [],
-    };
-  }
-  if (isCancellationRequested?.()) {
-    await gmailOtpServer.close();
-    return {
-      exitCode: null,
-      signal: null,
-      error: new Error("Automation task cancelled."),
-      logTail,
-      resumeFailure: null,
-      statementSummary,
-      outputPersistenceWarnings,
-      externalPrerequisiteIds: [],
-    };
-  }
-  const result = await new Promise<
-    Pick<AutomationTaskProcessResult, "exitCode" | "signal" | "error">
-  >((resolve) => {
-    const recordOutputPersistenceError = (error: unknown) => {
-      const line = sanitizeAutomationLogChunk(
-        `automation-output-write-failed: ${errorMessage(error)}`,
-      );
-      console.error(line);
-      logTail = tail(`${logTail}\n${line}\n`);
-      outputPersistenceWarnings.push(line);
-    };
-    let persistenceQueue = Promise.resolve();
-    const enqueuePersistence = (work: () => Promise<void>) => {
-      persistenceQueue = persistenceQueue.then(work).catch((error) => {
-        recordOutputPersistenceError(error);
-      });
-    };
-    const persistRuntimeUpdate = () => enqueuePersistence(async () => {
-      const current = await execution.persistence.taskRunById(
-        execution.run.taskRunId,
-      );
-      if (isForceQuitRun(current)) return;
-      await execution.persistence.updateTaskRun(
-        execution.run.taskRunId,
-        liveTaskRunUpdate(
-          logTail,
-          execution.run.attempt,
-          latestProgress ?? undefined,
-        ),
-      );
-      await execution.onRuntimeUpdate?.(execution.run.taskRunId);
-    });
-    const recordProgress = () => {
-      if (progressTimer) return;
-      progressTimer = setTimeout(() => {
-        progressTimer = null;
-        try {
-          persistRuntimeUpdate();
-        } catch (error) {
-          recordOutputPersistenceError(error);
-        }
-      }, 1_000);
-    };
-    const outputBuffer = createAutomationOutputBuffer(
-      persistRuntimeUpdate,
-      500,
-      recordOutputPersistenceError,
-    );
-    const progressParser = createAutomationProgressFrameParser((event) => {
-      latestProgress = {
-        phaseCode: event.phaseCode,
-        completed: event.completed,
-        total: event.total,
-        percent: event.percent,
-        attempt: event.attempt ?? execution.run.attempt,
-        ...(event.params ? { params: event.params } : {}),
-      };
-      recordProgress();
-    });
-    const onHumanAssistanceContract = (latestHumanAssistanceContract: HumanAssistanceContractInput) => {
-      const contractJson = JSON.stringify(latestHumanAssistanceContract);
-      if (contractJson === lastHumanAssistanceContractJson) return;
-      enqueuePersistence(async () => {
-        await execution.persistence.updateHumanAssistanceContract(
-          execution.run.taskRunId,
-          latestHumanAssistanceContract,
-        );
-        lastHumanAssistanceContractJson = contractJson;
-      });
-    };
-    const hostContractParser = createHumanAssistanceContractFrameParser(
-      onHumanAssistanceContract,
-    );
-    const readHumanAssistanceFile = () => {
-      try {
-        const content = readFileSync(humanAssistancePath);
-        if (content.length <= humanAssistanceReadOffset) return;
-        hostContractParser.push(content.subarray(humanAssistanceReadOffset));
-        humanAssistanceReadOffset = content.length;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          console.error(
-            `human-assistance-contract-read-failed: ${errorMessage(error)}`,
-          );
-        }
-      }
-    };
-    mkdirSync(dirname(humanAssistancePath), { recursive: true });
-    rmSync(humanAssistancePath, { force: true });
-    humanAssistanceReadTimer = setInterval(readHumanAssistanceFile, 50);
-    const onOutput = (chunk: string) => {
-      if (!chunk) return;
-      const output = accumulateAutomationOutput(
-        { logTail, resumeFailure: detectedResumeFailure },
-        chunk,
-      );
-      statementSummary =
-        parseStatementRunSummary(`${logTail}${output.logChunk}`) ??
-        statementSummary;
-      for (const prerequisiteId of parseExternalPrerequisiteSignals(
-        `${logTail}${output.logChunk}`,
-      )) {
-        externalPrerequisiteIds.add(prerequisiteId);
-      }
-      logTail = output.logTail;
-      detectedResumeFailure = output.resumeFailure;
-      try {
-        appendLog(execution.logPath, output.logChunk);
-      } catch (error) {
-        recordOutputPersistenceError(error);
-      }
-      outputBuffer.push(output.logChunk);
-      if (execution.owner) {
-        refreshAutomationSession(execution.owner);
-      }
-    };
-    const child = spawn(execution.command.command, execution.command.args, {
-      // fd 3 is the existing human-assistance contract stream. Gmail OTP uses
-      // an authenticated local socket because child-process fd numbers are not
-      // stable across the Libretto CLI -> daemon spawn boundary.
-      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"] as const,
-      detached: process.platform !== "win32",
-      env: {
-        ...execution.command.env,
-        [HUMAN_ASSISTANCE_HOST_FD_ENV]: "3",
-        [HUMAN_ASSISTANCE_HOST_PATH_ENV]: humanAssistancePath,
-        [GMAIL_OTP_IPC_ENDPOINT_ENV]: gmailOtpServer.endpoint,
-        [GMAIL_OTP_IPC_TOKEN_ENV]: gmailOtpServer.token,
-        [AUTOMATION_PROGRESS_FD_ENV]: "4",
-      },
-    });
-    activeTaskChildren.set(execution.task.id, child);
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-    child.stdout?.on("data", (chunk: Buffer) => onOutput(stdoutDecoder.write(chunk)));
-    child.stderr?.on("data", (chunk: Buffer) => onOutput(stderrDecoder.write(chunk)));
-    child.stdio[3]?.on("data", hostContractParser.push);
-    child.stdio[4]?.on("data", progressParser.push);
-    let childSettled = false;
-    const finishChild = async (processResult: {
-      exitCode: number | null;
-      signal: NodeJS.Signals | null;
-      error: Error | null;
-    }) => {
-      if (childSettled) return;
-      childSettled = true;
-      onOutput(stdoutDecoder.end());
-      onOutput(stderrDecoder.end());
-      activeTaskChildren.delete(execution.task.id);
-      if (humanAssistanceReadTimer) clearInterval(humanAssistanceReadTimer);
-      readHumanAssistanceFile();
-      hostContractParser.flush();
-      progressParser.flush();
-      outputBuffer.flush();
-      if (progressTimer) clearTimeout(progressTimer);
-      progressTimer = null;
-      try {
-        persistRuntimeUpdate();
-      } catch (error) {
-        recordOutputPersistenceError(error);
-      }
-      rmSync(humanAssistancePath, { force: true });
-      try {
-        await gmailOtpServer.close();
-      } catch {
-        // Closing the local broker is best effort after the child exits.
-      }
-      await persistenceQueue;
-      resolve(processResult);
-    };
-    child.on("error", (error) => {
-      void finishChild({ exitCode: null, signal: null, error });
-    });
-    child.on("close", (exitCode, signal) => {
-      void finishChild({ exitCode, signal, error: null });
-    });
-  });
-  return {
-    ...result,
-    logTail,
-    resumeFailure: detectedResumeFailure ?? resumeFailureMessage(logTail),
-    statementSummary,
-    outputPersistenceWarnings,
-    externalPrerequisiteIds: [...externalPrerequisiteIds],
   };
 }
 
@@ -824,6 +470,16 @@ export async function runAutomationTaskExecution(
 ) {
   if (options.isCancellationRequested?.()) {
     return { status: "cancelled" as const };
+  }
+  if (options.resumeSession) {
+    throw new Error("Libretto session resume is not supported by App workflows.");
+  }
+  if (
+    !task.workflowId &&
+    task.id !== "exchange-rates" &&
+    task.id !== "sync-maicoin"
+  ) {
+    throw new Error("App workflow definition is unavailable.");
   }
   const maicoinLaunchEnv = task.id === "sync-maicoin"
     ? options.launchEnv ?? automationProcessEnv()
@@ -1139,48 +795,7 @@ export async function runAutomationTaskExecution(
       result,
     };
   }
-  try {
-    const result = await executeAutomationTaskProcess(
-      execution,
-      options.isCancellationRequested,
-    );
-    const provider = { automation: persistence };
-    if (options.deferFinalization) {
-      return {
-        status: automationTaskProcessStatus(task.kind, result, {
-          attempt: execution.run.attempt,
-          maxAttempts: options.maxAttempts ?? execution.run.attempt,
-          forceTerminated: options.isForceTerminationRequested?.() === true,
-        }),
-        taskRunId: execution.run.taskRunId,
-        executionId: execution.executionId,
-        session: execution.session,
-        owner: execution.owner,
-        result,
-      };
-    }
-    const finalized = await finalizeAutomationTaskRun(
-      {
-        provider,
-        taskId: task.id,
-        taskKind: task.kind,
-        taskRunId: execution.run.taskRunId,
-        logPath: execution.logPath,
-        forceTerminated: options.isForceTerminationRequested?.() === true,
-      },
-      result,
-    );
-    return {
-      status: finalized.status,
-      taskRunId: execution.run.taskRunId,
-      executionId: execution.executionId,
-      session: execution.session,
-      owner: execution.owner,
-      result,
-    };
-  } finally {
-    activeTaskChildren.delete(task.id);
-  }
+  throw new Error("App workflow definition is unavailable.");
 }
 
 export function automationTaskProcessStatus(
@@ -1212,8 +827,8 @@ export function automationTaskProcessStatus(
   return status;
 }
 
-export function automationTaskChild(taskId: string) {
-  return activeTaskChildren.get(taskId);
+export function automationTaskChild(_taskId: string): ChildProcess | undefined {
+  return undefined;
 }
 
 /** Abort live App workflows and persist interruption before startup recovery. */
@@ -1240,67 +855,19 @@ export async function interruptActiveAppWorkflows(
   }
 }
 
-function signalAutomationChildTree(child: ChildProcess, signal: NodeJS.Signals) {
-  if (child.pid && process.platform === "win32") {
-    try {
-      // Windows has no POSIX process groups; taskkill's /T flag is the
-      // equivalent tree boundary and /F is required for force termination.
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-        stdio: "ignore",
-      });
-      return;
-    } catch {
-      // Fall back to the direct child below when taskkill is unavailable.
-    }
-  }
-  if (child.pid && process.platform !== "win32") {
-    try {
-      // Child processes are detached into their own group so descendants are
-      // terminated together. Fall back to the direct child when the group has
-      // already disappeared.
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // The process group may have exited between the lookup and the signal.
-    }
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // Shutdown and force termination are best-effort by contract.
-  }
-}
-
 export async function terminateAutomationTaskProcessTree(
   taskId: string,
-  signal: NodeJS.Signals = "SIGKILL",
-  timeoutMs = 2_000,
+  _signal: NodeJS.Signals = "SIGKILL",
+  _timeoutMs = 2_000,
 ) {
   const workflowController = activeWorkflowControllers.get(taskId);
   if (workflowController && !workflowController.signal.aborted) {
     workflowController.abort(new Error("Automation task cancelled."));
   }
-  const child = activeTaskChildren.get(taskId);
-  if (!child) return;
-  signalAutomationChildTree(child, signal);
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    let timer: ReturnType<typeof setTimeout> | null = setTimeout(resolve, timeoutMs);
-    const done = () => {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      resolve();
-    };
-    child.once("close", done);
-    child.once("error", done);
-  });
 }
 
 export function terminateAutomationTaskProcesses() {
   for (const controller of activeWorkflowControllers.values()) {
     if (!controller.signal.aborted) controller.abort(new Error("App is shutting down."));
-  }
-  for (const child of activeTaskChildren.values()) {
-    signalAutomationChildTree(child, "SIGTERM");
   }
 }
