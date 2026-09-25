@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { statementRunSummaryLine } from "../statement-run-summary.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 import type { AutomationTaskRun } from "./store.ts";
@@ -46,7 +45,9 @@ const fubonRow = model.tasks.find((task) => task.id === "fubon-all-statements");
 assert.equal(fubonRow?.status, "completed");
 assert.equal(fubonRow?.primaryAction, "Run");
 assert.equal(fubonRow?.ranToday, true);
-assert.equal(fubonRow?.logTail, "ok");
+assert.deepEqual(fubonRow?.appWorkflowOutcome, null);
+assert.equal(Object.hasOwn(fubonRow ?? {}, "logTail"), false);
+assert.equal(Object.hasOwn(fubonRow ?? {}, "logPath"), false);
 assert.equal(Object.hasOwn(model, "runHistory"), false);
 assert.equal(model.parallelRunnableTaskIds.includes("fubon-all-statements"), true);
 assert.equal(model.parallelRunnableTaskIds.includes("esun-credit-card-statements"), false);
@@ -86,7 +87,7 @@ const typedRowModel = buildAutomationPageModel({
   businessDate: "2026-06-30",
 });
 const typedRow = typedRowModel.tasks.find((task) => task.id === typedTask.id);
-assert.equal(typedRow?.eventDisplayMode, "structured");
+assert.deepEqual(typedRow?.appWorkflowOutcome, null);
 assert.deepEqual(typedRow?.events, [
   {
     runId: typedRunId,
@@ -130,7 +131,7 @@ const typedNoRecentEvents = buildAutomationPageModel({
 const typedNoRecentEventsRow = typedNoRecentEvents.tasks.find(
   (task) => task.id === typedTask.id,
 );
-assert.equal(typedNoRecentEventsRow?.eventDisplayMode, "structured");
+assert.deepEqual(typedNoRecentEventsRow?.appWorkflowOutcome, null);
 assert.deepEqual(typedNoRecentEventsRow?.events, []);
 const boundedEventsModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -265,7 +266,7 @@ const waitingModel = buildAutomationPageModel({
 const waitingRow = waitingModel.tasks.find((task) => task.id === legacyWaitingTask.id);
 assert.equal(waitingRow?.status, "waiting_for_human");
 assert.equal(waitingRow?.primaryAction, "Cancel");
-assert.equal(waitingRow?.humanSession, null);
+assert.equal(waitingRow?.humanSession, "run-legacy-waiting");
 
 const typedWaitingModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
@@ -324,11 +325,13 @@ const partialModel = buildAutomationPageModel({
     "fubon-all-statements": {
       ...completedRun,
       status: "partial",
-      logTail: `canonical write partial\n${statementRunSummaryLine([
-        { typeId: "deposit", status: "success" },
-        { typeId: "loan", status: "failed", error: "no account" },
-        { typeId: "fund", status: "skipped" },
-      ])}`,
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: {
+          status: "partial",
+          counts: { rowCount: 12, itemCount: 3, skippedProductCount: 1 },
+        },
+      },
     },
   },
   credentials: {},
@@ -339,4 +342,51 @@ const partialRow = partialModel.tasks.find((task) => task.id === "fubon-all-stat
 assert.equal(partialRow?.status, "partial");
 assert.equal(partialRow?.primaryAction, "Run");
 assert.equal(partialRow?.progressText, "Partial");
-assert.deepEqual(partialRow?.statementFailures, [{ typeId: "loan", error: "no account" }]);
+assert.deepEqual(partialRow?.appWorkflowOutcome, {
+  errorCode: null,
+  summary: {
+    status: "partial",
+    counts: { rowCount: 12, itemCount: 3, skippedProductCount: 1 },
+  },
+});
+
+const failedOutcomeModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "fubon-all-statements": {
+      ...completedRun,
+      status: "running",
+      appWorkflowOutcome: {
+        errorCode: "source-integrity-failed",
+        summary: { status: "failed", counts: { sourceCaptureCount: 2 } },
+      },
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+assert.equal(
+  failedOutcomeModel.tasks.find((task) => task.id === "fubon-all-statements")?.status,
+  "failed",
+);
+
+const legacyMarkerModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskId: typedTask.id,
+      status: "completed",
+      logTail: 'Resume requested for session "ses-legacy-marker".',
+    },
+  },
+  credentials: {},
+  active: false,
+  businessDate: "2026-06-30",
+});
+assert.equal(
+  legacyMarkerModel.tasks.find((task) => task.id === typedTask.id)?.status,
+  "completed",
+  "status must not be derived from legacy log text",
+);

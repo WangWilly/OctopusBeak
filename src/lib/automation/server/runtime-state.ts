@@ -1,18 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type {
   AutomationRuntimeSnapshot,
-  AutomationRuntimeStatementFailure,
   AutomationRuntimeTaskSnapshot,
   AutomationRuntimeTaskStatus,
 } from "$lib/desktop/api.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import type { AutomationTaskRun } from "./store.ts";
-import { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
 import { assertKnownAutomationRuntimeTasks } from "../runtime-invariants.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
-import { parseStatementRunSummary } from "../statement-run-summary.ts";
-
-export { sanitizeAutomationLogTail } from "./log-sanitizer.ts";
+import { sanitizeTypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 const RUNTIME_STATUSES = new Set<AutomationRuntimeTaskStatus>([
   "queued",
@@ -48,15 +44,6 @@ function isSafeProgress(value: unknown): value is AutomationTaskProgress {
   );
 }
 
-function statementFailuresFromLogTail(logTail: string) {
-  return parseStatementRunSummary(logTail)?.results
-    .filter((result) => result.status === "failed")
-    .map(({ typeId, error }) => ({
-      typeId,
-      ...(error ? { error: sanitizeAutomationLogTail(error) } : {}),
-    })) ?? [];
-}
-
 export function assertAutomationRuntimeSnapshot(
   value: AutomationRuntimeSnapshot,
 ) {
@@ -71,6 +58,7 @@ export function assertAutomationRuntimeSnapshot(
   }
   const taskIds = new Set<string>();
   for (const task of value.tasks) {
+    const sanitizedOutcome = sanitizeTypedWorkflowOutcome(task.appWorkflowOutcome);
     if (
       typeof task.taskId !== "string"
       || taskIds.has(task.taskId)
@@ -80,17 +68,9 @@ export function assertAutomationRuntimeSnapshot(
       || task.attempt < 0
       || !Number.isSafeInteger(task.maxAttempts)
       || task.maxAttempts < 1
-      || (task.statementFailures !== undefined && !Array.isArray(task.statementFailures))
-      || (task.statementFailures !== undefined && task.statementFailures.some((failure: AutomationRuntimeStatementFailure) =>
-        !failure
-        || typeof failure.typeId !== "string"
-        || !failure.typeId
-        || (failure.error !== undefined && typeof failure.error !== "string")
-        || (failure.error !== undefined && failure.error !== sanitizeAutomationLogTail(failure.error))
-      ))
-      || typeof task.logTail !== "string"
-      || Buffer.byteLength(task.logTail, "utf8") > 64 * 1024
-      || task.logTail !== sanitizeAutomationLogTail(task.logTail)
+      || (task.appWorkflowOutcome !== null
+        && (!sanitizedOutcome
+          || JSON.stringify(sanitizedOutcome) !== JSON.stringify(task.appWorkflowOutcome)))
       || !isSafeProgress(task.progress)
     ) {
       throw new Error("Invalid automation runtime task snapshot.");
@@ -111,10 +91,9 @@ function emptyProgress(attempt: number): AutomationTaskProgress {
 }
 
 export function runtimeTaskSnapshotFromRun(
-  run: Pick<AutomationTaskRun, "taskId" | "taskRunId" | "status" | "attempt" | "maxAttempts" | "logTail" | "errorMessage" | "progress">,
+  run: Pick<AutomationTaskRun, "taskId" | "taskRunId" | "status" | "attempt" | "maxAttempts" | "progress" | "appWorkflowOutcome">,
   status = run.status as AutomationRuntimeTaskStatus,
 ): AutomationRuntimeTaskSnapshot {
-  const logTail = sanitizeAutomationLogTail(run.logTail);
   const baseProgress = run.progress ?? emptyProgress(run.attempt);
   const progress = status === "completed"
     ? {
@@ -132,11 +111,7 @@ export function runtimeTaskSnapshotFromRun(
     attempt: run.attempt,
     maxAttempts: run.maxAttempts,
     progress,
-    statementFailures: statementFailuresFromLogTail(logTail),
-    logTail,
-    errorMessage: run.errorMessage === null
-      ? null
-      : sanitizeAutomationLogTail(run.errorMessage),
+    appWorkflowOutcome: sanitizeTypedWorkflowOutcome(run.appWorkflowOutcome),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -189,7 +164,7 @@ export function createAutomationRuntimeState(
       }
       tasks.set(task.taskId, {
         ...task,
-        logTail: sanitizeAutomationLogTail(task.logTail),
+        appWorkflowOutcome: sanitizeTypedWorkflowOutcome(task.appWorkflowOutcome),
       });
       return publish();
     },

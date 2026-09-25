@@ -93,7 +93,7 @@
   let credentialsOpen = false;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
-  let expandedLogTaskId: string | null = null;
+  let expandedRunDetailsTaskId: string | null = null;
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
@@ -874,19 +874,19 @@
     }
   }
 
-  async function revealTaskLog(task: AutomationTaskRow) {
+  async function revealTaskDetails(task: AutomationTaskRow) {
     const stageId = "sync";
     stageOpen = { ...stageOpen, [stageId]: true };
-    expandedLogTaskId = task.id;
+    expandedRunDetailsTaskId = task.id;
     jumpHighlightTaskId = task.id;
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
 
     await tick();
     const target = document.getElementById(`${task.id}-task-row`);
-    const inlineLog = document.getElementById(`${task.id}-inline-log`);
+    const detailsRow = document.getElementById(`${task.id}-run-details`);
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     target?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
-    inlineLog?.querySelector<HTMLElement>(".inline-log-panel")?.focus({ preventScroll: true });
+    detailsRow?.querySelector<HTMLElement>(".inline-run-details")?.focus({ preventScroll: true });
     jumpHighlightTimer = setTimeout(() => {
       jumpHighlightTaskId = null;
       jumpHighlightTimer = null;
@@ -898,7 +898,7 @@
       openHumanViewer(task);
       return;
     }
-    void revealTaskLog(task);
+    void revealTaskDetails(task);
   }
 
   function scrollActiveTasks(event: WheelEvent) {
@@ -1707,16 +1707,16 @@
                     {/if}
                     <button
                       class="button secondary task-control"
-                      class:active-log={expandedLogTaskId === task.id}
+                      class:active-details={expandedRunDetailsTaskId === task.id}
                       type="button"
                       aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
                       title={$t.automation.runDetails}
-                      aria-expanded={expandedLogTaskId === task.id}
-                      aria-controls={`${task.id}-inline-log`}
+                      aria-expanded={expandedRunDetailsTaskId === task.id}
+                      aria-controls={`${task.id}-run-details`}
                       data-onboarding-task={task.id}
                       data-onboarding-group={task.credentialGroupId}
-                      data-onboarding-action="logs"
-                      onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
+                      data-onboarding-action="run-details"
+                      onclick={() => (expandedRunDetailsTaskId = expandedRunDetailsTaskId === task.id ? null : task.id)}
                     >
                       <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
                       <span class="visually-hidden">{$t.automation.runDetails}</span>
@@ -1724,57 +1724,46 @@
                   </div>
                 </td>
               </tr>
-              {#if task.status === "partial" && task.statementFailures.length}
-                <tr class="partial-task-detail">
+              {#if expandedRunDetailsTaskId === task.id}
+                <tr class="inline-run-details-row" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-run-details`}>
                   <td colspan="5">
-                    <details>
-                      <summary>{$t.automation.partialSyncWarning}</summary>
-                      <ul>
-                        {#each task.statementFailures as failure}
-                          <li>
-                            <strong>{$t.automation.statementTypeLabels[failure.typeId] ?? failure.typeId}</strong>
-                            {#if failure.error}<span>{failure.error}</span>{/if}
-                          </li>
-                        {/each}
-                      </ul>
-                    </details>
-                  </td>
-                </tr>
-              {/if}
-              {#if expandedLogTaskId === task.id}
-                <tr class="inline-task-log" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-inline-log`}>
-                  <td colspan="5">
-                    <div class="inline-log-panel" tabindex="-1" transition:disclosureSlide>
-                      <div class="inline-log-head">
-                        <strong>{task.eventDisplayMode === "structured"
-                          ? $t.automation.workflowEventTitle(taskLabel(task, $t))
-                          : $t.automation.inlineLogTitle(taskLabel(task, $t))}</strong>
+                    <div class="inline-run-details" tabindex="-1" transition:disclosureSlide>
+                      <div class="inline-run-details-head">
+                        <strong>{$t.automation.workflowEventTitle(taskLabel(task, $t))}</strong>
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
-                      {#if task.eventDisplayMode === "structured"}
-                        {#if task.events.length}
-                          <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
-                            {#each task.events as event, index (index)}
-                              <li class="workflow-event-row">
-                                <div class="workflow-event-main">
-                                  <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
-                                  <code>{event.code}</code>
-                                </div>
-                                <div class="workflow-event-meta">
-                                  <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
-                                  {#if event.completed !== undefined || event.total !== undefined}
-                                    <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
-                                  {/if}
-                                </div>
-                              </li>
-                            {/each}
-                          </ol>
-                        {:else}
-                          <p class="workflow-event-empty">{$t.automation.workflowEventEmpty}</p>
-                        {/if}
+                      {#if task.appWorkflowOutcome?.errorCode}
+                        <p class="workflow-outcome-error"><code>{task.appWorkflowOutcome.errorCode}</code></p>
+                      {/if}
+                      {#if task.appWorkflowOutcome?.summary}
+                        <div class="workflow-outcome-summary" aria-label="Workflow outcome summary">
+                          {#if task.appWorkflowOutcome.summary.status}
+                            <span>{task.appWorkflowOutcome.summary.status}</span>
+                          {/if}
+                          {#each Object.entries(task.appWorkflowOutcome.summary.counts) as count}
+                            <span>{count[0]}: {count[1]}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if task.events.length}
+                        <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
+                          {#each task.events as event, index (index)}
+                            <li class="workflow-event-row">
+                              <div class="workflow-event-main">
+                                <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
+                                <code>{event.code}</code>
+                              </div>
+                              <div class="workflow-event-meta">
+                                <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
+                                {#if event.completed !== undefined || event.total !== undefined}
+                                  <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
+                                {/if}
+                              </div>
+                            </li>
+                          {/each}
+                        </ol>
                       {:else}
-                        <p class="mono inline-log-path">{task.logPath ?? $t.automation.noLogFile}</p>
-                        <pre class="log-output">{task.errorMessage ?? (task.logTail || $t.automation.noLogs)}</pre>
+                        <p class="workflow-event-empty">{$t.automation.workflowEventEmpty}</p>
                       {/if}
                     </div>
                   </td>
@@ -2872,7 +2861,7 @@
     font-size: 12px;
   }
 
-  .task-control.active-log {
+  .task-control.active-details {
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-soft);
@@ -2893,45 +2882,13 @@
     color: var(--danger);
   }
 
-  .inline-task-log td {
+  .inline-run-details-row td {
     padding: 0;
     background: color-mix(in oklch, var(--accent-soft) 38%, var(--surface));
     scroll-margin-top: 88px;
   }
 
-  .partial-task-detail td {
-    padding: 0 var(--space-4) var(--space-4);
-    border-top: 0;
-    color: var(--fg);
-    background: color-mix(in oklch, var(--warn) 3%, var(--surface));
-  }
-
-  .partial-task-detail details {
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--border));
-    border-radius: var(--radius);
-  }
-
-  .partial-task-detail summary {
-    color: var(--warn);
-    font-size: 12px;
-    font-weight: 720;
-    cursor: pointer;
-  }
-
-  .partial-task-detail ul {
-    margin: var(--space-3) 0 0;
-    padding-left: var(--space-5);
-  }
-
-  .partial-task-detail li span {
-    display: block;
-    margin-top: var(--space-1);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .inline-log-panel {
+  .inline-run-details {
     display: grid;
     gap: var(--space-3);
     padding: var(--space-5);
@@ -2941,12 +2898,12 @@
     transition: background 240ms ease, box-shadow 240ms ease;
   }
 
-  .inline-task-log.jump-highlight .inline-log-panel {
+  .inline-run-details-row.jump-highlight .inline-run-details {
     background: color-mix(in oklch, var(--accent-soft) 76%, var(--surface));
     box-shadow: inset 4px 0 0 var(--accent);
   }
 
-  .inline-log-head {
+  .inline-run-details-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3012,18 +2969,20 @@
     font-size: 13px;
   }
 
-  .inline-log-path {
+  .workflow-outcome-error {
     margin: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
   }
 
-  .inline-log-panel .log-output {
-    min-height: 120px;
-    max-height: 280px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+  .workflow-outcome-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .sync-sheet {
@@ -4072,18 +4031,6 @@
     background: color-mix(in oklch, var(--danger) 5%, var(--surface));
   }
 
-  .log-output {
-    min-height: 240px;
-    margin: 0;
-    padding: var(--space-5);
-    overflow: auto;
-    color: var(--fg);
-    background: var(--surface-soft);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    white-space: pre-wrap;
-  }
-
   @media (max-width: 1100px) {
     .automation-content.sync-sheet-open {
       margin-right: 0;
@@ -4137,7 +4084,7 @@
       flex-basis: 36px;
     }
 
-    .inline-log-head {
+    .inline-run-details-head {
       align-items: flex-start;
       flex-direction: column;
     }

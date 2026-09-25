@@ -19,9 +19,7 @@ const snapshot = (
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: null, completed: percent === null ? null : percent, total: percent === null ? null : 100, percent, attempt: 1 },
-    statementFailures: [],
-    logTail: "",
-    errorMessage: null,
+    appWorkflowOutcome: null,
     updatedAt: new Date().toISOString(),
   }],
 });

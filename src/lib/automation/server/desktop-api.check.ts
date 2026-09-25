@@ -59,6 +59,12 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
       logPath: "",
       logTail: "",
     });
+    await provider.automation.updateTaskRun(created.taskRunId, {
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "partial", counts: { itemCount: 4, skippedProductCount: 1 } },
+      },
+    });
     const beforeEvents = await loadAutomationDesktopModel(provider);
     assert.deepEqual(
       beforeEvents.automation.tasks.find((task) => task.id === "exchange-rates")?.events,
@@ -83,15 +89,20 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
     const currentTask = current.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
-    assert.equal(currentTask?.eventDisplayMode, "structured");
     assert.deepEqual(currentTask?.events.map((event) => event.code), [
       "authentication-completed",
       "source-collected",
     ]);
     assert.equal(currentTask?.events[1]?.completed, 2);
     assert.equal(currentTask?.events[1]?.total, 2);
-    assert.equal(currentTask?.logPath, "");
-    assert.equal(currentTask?.logTail, "");
+    assert.deepEqual(currentTask?.appWorkflowOutcome, {
+      errorCode: null,
+      summary: { status: "partial", counts: { itemCount: 4, skippedProductCount: 1 } },
+    });
+    assert.equal(Object.hasOwn(currentTask ?? {}, "logPath"), false);
+    assert.equal(Object.hasOwn(currentTask ?? {}, "logTail"), false);
+    assert.equal(Object.hasOwn(currentTask ?? {}, "errorMessage"), false);
+    assert.equal(Object.hasOwn(currentTask ?? {}, "statementFailures"), false);
 
     assert.equal(
       await provider.automation.pruneRunEvents("2026-09-26T00:00:00.000Z"),
@@ -101,10 +112,11 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
     const expiredTask = expired.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
-    assert.equal(expiredTask?.eventDisplayMode, "legacy");
     assert.deepEqual(expiredTask?.events, []);
-    assert.equal(expiredTask?.logPath, "");
-    assert.equal(expiredTask?.logTail, "");
+    assert.deepEqual(expiredTask?.appWorkflowOutcome, {
+      errorCode: null,
+      summary: { status: "partial", counts: { itemCount: 4, skippedProductCount: 1 } },
+    });
   } finally {
     await store.close();
   }

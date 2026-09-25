@@ -4,6 +4,7 @@ import type {
   AutomationPageModel,
   AutomationTaskHistoryRow,
   AutomationTaskProgress,
+  TypedWorkflowOutcome,
   CathayGmailOtpStatus,
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -67,11 +68,6 @@ export type AutomationRuntimeTaskStatus =
   | "cancelled"
   | "interrupted";
 
-export type AutomationRuntimeStatementFailure = {
-  typeId: string;
-  error?: string;
-};
-
 export type AutomationRuntimeTaskSnapshot = {
   taskId: string;
   runId: string | null;
@@ -79,12 +75,9 @@ export type AutomationRuntimeTaskSnapshot = {
   attempt: number;
   maxAttempts: number;
   progress: AutomationTaskProgress;
-  /** Present on current authoritative terminal snapshots; optional for old IPC fixtures. */
-  statementFailures?: readonly AutomationRuntimeStatementFailure[];
+  appWorkflowOutcome: TypedWorkflowOutcome | null;
   cancellationRequestedAt?: string | null;
   forceTerminateAvailable?: boolean;
-  logTail: string;
-  errorMessage: string | null;
   updatedAt: string;
 };
 
