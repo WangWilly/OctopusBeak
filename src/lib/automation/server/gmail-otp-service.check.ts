@@ -328,6 +328,146 @@ test("polling accepts only one post-boundary candidate and times out safely", as
   assert.deepEqual(clockSkewedNewMessage, { status: "found", otp: "ABCD-123456" });
 });
 
+test("polling cancellation is prompt before requests, during sleep, and during list/get", async () => {
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  let calledBeforeCancellation = false;
+  await assert.rejects(pollCathayGmailOtp({
+    requestedAfterMs: 0,
+    signal: alreadyAborted.signal,
+    listMessages: async () => {
+      calledBeforeCancellation = true;
+      return { messages: [] };
+    },
+    getMessage: async () => plainMessage(),
+  }), /cancelled/u);
+  assert.equal(calledBeforeCancellation, false);
+
+  const waitFor = (start: (resolve: () => void) => void) => new Promise<void>(start);
+
+  const sleepController = new AbortController();
+  let sleepSignal: AbortSignal | undefined;
+  let sleepStarted!: () => void;
+  const sleepPending = waitFor((resolve) => { sleepStarted = resolve; });
+  const sleepingPoll = pollCathayGmailOtp({
+    requestedAfterMs: 0,
+    signal: sleepController.signal,
+    now: () => 0,
+    timeoutMs: 10_000,
+    listMessages: async () => ({ messages: [] }),
+    getMessage: async () => plainMessage(),
+    sleep: async (_ms, signal) => {
+      sleepSignal = signal;
+      sleepStarted();
+      return await new Promise<void>(() => undefined);
+    },
+  });
+  await sleepPending;
+  sleepController.abort();
+  await assert.rejects(sleepingPoll, /cancelled/u);
+  assert.equal(sleepSignal, sleepController.signal);
+
+  const listController = new AbortController();
+  let listSignal: AbortSignal | undefined;
+  let listStarted!: () => void;
+  const listPending = waitFor((resolve) => { listStarted = resolve; });
+  const listingPoll = pollCathayGmailOtp({
+    requestedAfterMs: 0,
+    signal: listController.signal,
+    listMessages: async (signal) => {
+      listSignal = signal;
+      listStarted();
+      return await new Promise<{ messages: { id: string }[] }>(() => undefined);
+    },
+    getMessage: async () => plainMessage(),
+  });
+  await listPending;
+  listController.abort();
+  await assert.rejects(listingPoll, /cancelled/u);
+  assert.equal(listSignal, listController.signal);
+
+  const getController = new AbortController();
+  let getSignal: AbortSignal | undefined;
+  let getStarted!: () => void;
+  const getPending = waitFor((resolve) => { getStarted = resolve; });
+  const gettingPoll = pollCathayGmailOtp({
+    requestedAfterMs: 0,
+    signal: getController.signal,
+    listMessages: async () => ({ messages: [{ id: "pending" }] }),
+    getMessage: async (_id, signal) => {
+      getSignal = signal;
+      getStarted();
+      return await new Promise<ReturnType<typeof plainMessage>>(() => undefined);
+    },
+  });
+  await getPending;
+  getController.abort();
+  await assert.rejects(gettingPoll, /cancelled/u);
+  assert.equal(getSignal, getController.signal);
+});
+
+test("service cancellation reaches an in-flight Gmail list or get and consumes its boundary", async () => {
+  for (const cancelledRequest of ["list", "get"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), `cathay-gmail-cancel-${cancelledRequest}-`));
+    const settingsPath = join(dir, "settings.json");
+    const credentialsPath = join(dir, "credentials.json");
+    writeFakeOAuthClientConfig(dir);
+    setAutomationCredentialCodec(fakeCredentialCodec);
+    writeAutomationSettingsFile(settingsPath, { [CATHAY_GMAIL_OTP_ENABLED_KEY]: true });
+    writeAutomationCredentialsFile(credentialsPath, {
+      [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: "refresh",
+      [CATHAY_GMAIL_CONNECTED_EMAIL_KEY]: "test@gmail.com",
+    });
+    let listCalls = 0;
+    let requestSignal: AbortSignal | undefined;
+    let requestStarted!: () => void;
+    const requestPending = new Promise<void>((resolve) => { requestStarted = resolve; });
+    const service = createCathayGmailOtpService({
+      appRoot: dir,
+      settingsPath,
+      credentialsPath,
+      now: () => 1000,
+      fetch: async () => new Response(JSON.stringify({ access_token: "access", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } }),
+      api: {
+        async listMessages(_accessToken, _requestedAfterMs, signal) {
+          listCalls += 1;
+          if (listCalls === 1) return { messages: [] };
+          if (cancelledRequest === "list") {
+            requestSignal = signal;
+            requestStarted();
+            return await new Promise<{ messages: { id: string }[] }>((_resolve, reject) => {
+              signal?.addEventListener("abort", () => reject(new Error("request-aborted")), { once: true });
+            });
+          }
+          return { messages: [{ id: "candidate" }] };
+        },
+        async getMessage(_accessToken, _id, signal) {
+          requestSignal = signal;
+          requestStarted();
+          return await new Promise<ReturnType<typeof plainMessage>>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("request-aborted")), { once: true });
+          });
+        },
+      },
+    });
+
+    try {
+      const boundary = await service.prepareRetrieval();
+      if (boundary.status !== "prepared") assert.fail("expected prepared boundary");
+      const controller = new AbortController();
+      const retrieval = service.retrieve(boundary.boundaryId, controller.signal);
+      await requestPending;
+      controller.abort();
+      await assert.rejects(retrieval, /cancelled/u);
+      assert.equal(requestSignal, controller.signal);
+      assert.deepEqual(await service.retrieve(boundary.boundaryId), { status: "fallback", reason: "protocol-error" });
+    } finally {
+      setAutomationCredentialCodec(null);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("host token persistence is encrypted and never copied to workflow env", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cathay-gmail-service-"));
   const settingsPath = join(dir, "settings.json");

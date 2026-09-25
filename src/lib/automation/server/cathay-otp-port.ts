@@ -46,9 +46,11 @@ export function createCathayGmailOtpPort(
   options: Readonly<{
     now?: () => number;
     maxPendingBoundaries?: number;
+    signal?: AbortSignal;
   }> = {},
 ): CathayGmailOtpPort {
   const now = options.now ?? Date.now;
+  const signal = options.signal;
   const maxPendingBoundaries = options.maxPendingBoundaries ?? DEFAULT_BOUNDARY_LIMIT;
   const pendingBoundaries = new Map<string, number>();
 
@@ -110,9 +112,11 @@ export function createCathayGmailOtpPort(
       if (at - createdAt > SERVICE_BOUNDARY_TTL_MS) {
         return fallback("protocol-error");
       }
+      if (signal?.aborted) return fallback("gmail-request-failed");
 
       try {
-        const result: unknown = await operations.retrieve(boundaryId);
+        const result: unknown = await operations.retrieve(boundaryId, signal);
+        if (signal?.aborted) return fallback("gmail-request-failed");
         const record = result && typeof result === "object"
           ? result as { status?: unknown; otp?: unknown }
           : null;

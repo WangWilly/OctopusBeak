@@ -65,7 +65,7 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
     signal: AbortSignal,
   ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
   /** Test seam; production creates one host OTP adapter per Cathay run. */
-  createCathayGmailOtpPort?: () => CathayGmailOtpPort;
+  createCathayGmailOtpPort?: (signal: AbortSignal) => CathayGmailOtpPort;
   /** Defaults to the sibling bundle emitted by the Electron build. */
   workerPath?: string;
   /** Test seam; production always uses node:worker_threads. */
@@ -183,6 +183,8 @@ export async function runSupervisedAppWorkflow(
   options: RunSupervisedAppWorkflowOptions,
 ): Promise<AppWorkflowWorkerOutcome> {
   if (options.signal.aborted) return CANCELLED;
+  const controller = new AbortController();
+  const signal = controller.signal;
 
   let start: AppWorkflowWorkerStart;
   try {
@@ -215,7 +217,9 @@ export async function runSupervisedAppWorkflow(
   let cathayGmailOtpPort: CathayGmailOtpPort | undefined;
   try {
     if (options.workflowId === "cathay-all-statements") {
-      cathayGmailOtpPort = (options.createCathayGmailOtpPort ?? createCathayGmailOtpPort)();
+      const createPort = options.createCathayGmailOtpPort
+        ?? ((runSignal: AbortSignal) => createCathayGmailOtpPort(undefined, { signal: runSignal }));
+      cathayGmailOtpPort = createPort(signal);
     }
   } catch {
     void Promise.resolve(worker.terminate()).catch(() => undefined);
@@ -225,8 +229,6 @@ export async function runSupervisedAppWorkflow(
   // worker_threads has received its structured clone.
   start = undefined as unknown as AppWorkflowWorkerStart;
 
-  const controller = new AbortController();
-  const signal = controller.signal;
   let settled = false;
   let workerOnline = false;
   let cancellationRequested = false;

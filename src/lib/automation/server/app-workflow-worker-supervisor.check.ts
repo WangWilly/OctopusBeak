@@ -380,19 +380,23 @@ test("cancellation aborts the host wait for OTP retrieval and consumes the bound
   const controller = new AbortController();
   const boundaryId = "ad6c9a82-815c-42f1-a5ba-7173f82616ec";
   const calls: string[] = [];
+  let hostRunSignal: AbortSignal | undefined;
   let finishRetrieve!: (value: { status: "found"; otp: string }) => void;
   const task = harness({
     workflowId: "cathay-all-statements",
     signal: controller.signal,
     cancelGraceMs: 5,
-    createCathayGmailOtpPort: () => ({
-      async ensureAccess() { return { status: "ready" }; },
-      async prepareRetrieval() { return { status: "prepared", boundaryId }; },
-      retrieve() {
-        calls.push("retrieve");
-        return new Promise((resolve) => { finishRetrieve = resolve; });
-      },
-    }),
+    createCathayGmailOtpPort: (signal) => {
+      hostRunSignal = signal;
+      return {
+        async ensureAccess() { return { status: "ready" }; },
+        async prepareRetrieval() { return { status: "prepared", boundaryId }; },
+        retrieve() {
+          calls.push("retrieve");
+          return new Promise((resolve) => { finishRetrieve = resolve; });
+        },
+      };
+    },
   });
   task.worker.send({
     protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -411,6 +415,7 @@ test("cancellation aborts the host wait for OTP retrieval and consumes the bound
   await tick();
   controller.abort();
   assert.equal((await task.run).status, "cancelled");
+  assert.equal(hostRunSignal?.aborted, true);
   finishRetrieve({ status: "found", otp: "ABCD-123456" });
   await tick();
   assert.deepEqual(calls, ["retrieve"]);
