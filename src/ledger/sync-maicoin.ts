@@ -1,75 +1,27 @@
-import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  PGLITE_CHILD_RPC_ENDPOINT_ENV,
-  PGLITE_CHILD_RPC_TOKEN_ENV,
-  requirePGliteChildRpcClientFromEnv,
-  type PGliteChildRpcClient,
-} from "../../electron/pglite-child-rpc-client.ts";
-import { createMaicoinCliPGliteWorkerClient } from "./pglite/maicoin-cli-worker.ts";
-import { executePGliteWorkflowRun } from "./pglite/workflow-run.ts";
 import type {
   PGliteMaicoinSnapshot,
   PGliteMaicoinStatementRow,
 } from "./pglite/maicoin-operational.ts";
 import {
-  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-  type PGliteWorkflowClient,
-} from "./pglite/workflow-client.ts";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import {
-  buildMaicoinInvestmentCaptures,
   parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
   resolveMaicoinTwdQuote,
   type MaicoinAccountRecord,
-  type MaicoinInvestmentCaptureBuildInput,
   type MaicoinPublicMarket,
   type MaicoinStatementBatch,
   type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
 
-const DEFAULT_LEDGER_DIR = process.env.OCTOPUSBEAK_PGLITE_DATA_DIR ?? "data/pglite";
-
-type MaicoinPGliteClient = Pick<
-  PGliteChildRpcClient,
-  "ready" | "operationalProvider" | "workflow"
-> & {
-  close(): void | Promise<unknown>;
-};
-
-function createMaicoinPGliteClient(dataDir: string): MaicoinPGliteClient {
-  if (process.env[PGLITE_CHILD_RPC_ENDPOINT_ENV] !== undefined
-    || process.env[PGLITE_CHILD_RPC_TOKEN_ENV] !== undefined) {
-    return requirePGliteChildRpcClientFromEnv();
-  }
-  return createMaicoinCliPGliteWorkerClient(dataDir);
-}
-
 const API_BASE_URL = "https://max-api.maicoin.com";
-const DEFAULT_STATEMENT_LIMIT = 1000;
+export const MAICOIN_STATEMENT_LIMIT = 1000;
 const FETCH_TIMEOUT_MS = 30_000;
 const FETCH_RETRY_DELAYS_MS = [500, 1_000, 2_000];
-const WALLET_TYPES = ["spot", "m"] as const;
+export const MAICOIN_WALLET_TYPES = ["spot", "m"] as const;
 
-type WalletType = typeof WALLET_TYPES[number];
-type QueryParams = Record<string, string | number | boolean | undefined>;
-
-type CliParams = {
-  ledgerDir: string;
-  walletTypes: WalletType[];
-  statementJson: string | null;
-  statementLimit: number;
-  subAccount: string;
-  selfTest: boolean;
-  help: boolean;
-};
+export type WalletType = typeof MAICOIN_WALLET_TYPES[number];
+type QueryParams = Record<string, string | number | boolean | readonly string[] | undefined>;
 
 export type MaxCredentials = {
   accessKey: string;
@@ -97,7 +49,7 @@ type MaxResponse<T> = {
   providerDate: string | null;
 };
 
-type Market = {
+export type MaicoinMarket = {
   id: string;
   base_unit: string;
   quote_unit: string;
@@ -116,7 +68,7 @@ type TickerSnapshot = {
   tickers: Map<string, Ticker>;
 };
 
-type AccountSnapshot = {
+export type MaicoinAccountSnapshot = {
   walletType: WalletType;
   account: Account;
   price: PriceQuote;
@@ -141,17 +93,31 @@ type KLine = [number, number | string, number | string, number | string, number 
 export class MaxClient {
   #lastNonce = 0;
   private readonly credentials: Credentials;
+  private readonly signal?: AbortSignal;
 
-  constructor(credentials: Credentials) {
+  constructor(credentials: Credentials, signal?: AbortSignal) {
     this.credentials = credentials;
+    this.signal = signal;
+  }
+
+  throwIfAborted() {
+    this.signal?.throwIfAborted();
   }
 
   async publicGet<T>(path: string, params: QueryParams = {}): Promise<T> {
     return fetchWithRetry(() => {
       const url = new URL(path, API_BASE_URL);
       appendQuery(url, params);
-      return fetchJson<T>(url);
-    });
+      return fetchJson<T>(url, { signal: this.signal });
+    }, FETCH_RETRY_DELAYS_MS, this.signal);
+  }
+
+  async publicGetWithMetadata<T>(path: string, params: QueryParams = {}): Promise<MaxResponse<T>> {
+    return fetchWithRetry(() => {
+      const url = new URL(path, API_BASE_URL);
+      appendQuery(url, params);
+      return fetchJsonWithMetadata<T>(url, { signal: this.signal });
+    }, FETCH_RETRY_DELAYS_MS, this.signal);
   }
 
   private async privateGetResponse<T>(
@@ -168,6 +134,7 @@ export class MaxClient {
       const url = new URL(path, API_BASE_URL);
       appendQuery(url, signedParams);
       return fetchJsonWithMetadata<T>(url, {
+        signal: this.signal,
         headers: {
           "Content-Type": "application/json",
           "X-MAX-ACCESSKEY": this.credentials.accessKey,
@@ -176,7 +143,7 @@ export class MaxClient {
           "X-Sub-Account": this.credentials.subAccount,
         },
       });
-    });
+    }, FETCH_RETRY_DELAYS_MS, this.signal);
   }
 
   async privateGet<T>(path: string, params: QueryParams = {}): Promise<T> {
@@ -200,95 +167,6 @@ export class MaxClient {
     this.#lastNonce = Math.max(Date.now(), this.#lastNonce + 1);
     return this.#lastNonce;
   }
-}
-
-function usage() {
-  return `Usage:
-  npm run run:sync-maicoin
-  npm run run:sync-maicoin -- --statement-json data/ledger/maicoin-statement.json
-
-Options:
-  --ledger-dir <dir>       PGlite worker data directory. Default: ${DEFAULT_LEDGER_DIR}
-  --wallet-types <list>    Comma list: spot,m. Default: spot,m
-  --statement-json <file>  Export full statement rows as JSON
-  --limit <n>              Statement page size per endpoint. Max/default: ${DEFAULT_STATEMENT_LIMIT}
-  --sub-account <name>     MAX sub-account header. Default: main
-  --self-test              Run local checks only
-`;
-}
-
-function parseCli(argv: string[]): CliParams {
-  const params: CliParams = {
-    ledgerDir: DEFAULT_LEDGER_DIR,
-    walletTypes: [...WALLET_TYPES],
-    statementJson: null,
-    statementLimit: DEFAULT_STATEMENT_LIMIT,
-    subAccount: process.env.MAX_SUB_ACCOUNT ?? "main",
-    selfTest: false,
-    help: false,
-  };
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--help" || arg === "-h") {
-      params.help = true;
-    } else if (arg === "--self-test") {
-      params.selfTest = true;
-    } else if (arg === "--ledger-dir") {
-      params.ledgerDir = requireValue(argv, ++index, arg);
-    } else if (arg === "--wallet-types" || arg === "--wallet-type") {
-      params.walletTypes = parseWalletTypes(requireValue(argv, ++index, arg));
-    } else if (arg === "--statement-json") {
-      params.statementJson = requireValue(argv, ++index, arg);
-    } else if (arg === "--limit") {
-      const limit = parsePositiveInt(requireValue(argv, ++index, arg), arg);
-      if (limit > DEFAULT_STATEMENT_LIMIT) throw new Error(`${arg} must be <= ${DEFAULT_STATEMENT_LIMIT}`);
-      params.statementLimit = limit;
-    } else if (arg === "--sub-account") {
-      params.subAccount = requireValue(argv, ++index, arg);
-    } else {
-      throw new Error(`Unknown option: ${arg}`);
-    }
-  }
-
-  return params;
-}
-
-function requireValue(argv: string[], index: number, flag: string) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
-
-function parsePositiveInt(value: string, flag: string) {
-  const numberValue = Number(value);
-  if (!Number.isInteger(numberValue) || numberValue <= 0) {
-    throw new Error(`${flag} must be a positive integer`);
-  }
-  return numberValue;
-}
-
-function parseWalletTypes(value: string): WalletType[] {
-  const walletTypes = value.split(",").map((item) => item.trim()).filter(Boolean);
-  if (walletTypes.length === 0) throw new Error("--wallet-types cannot be empty");
-  for (const walletType of walletTypes) {
-    if (!WALLET_TYPES.includes(walletType as WalletType)) {
-      throw new Error(`Unsupported wallet type: ${walletType}`);
-    }
-  }
-  return walletTypes as WalletType[];
-}
-
-function credentialsFromEnv(subAccount: string): Credentials {
-  const accessKey = process.env.MAX_ACCESS_KEY;
-  const secretKey = process.env.MAX_SECRET_KEY;
-  if (!accessKey || !secretKey) {
-    throw new Error("Set MAX_ACCESS_KEY and MAX_SECRET_KEY before running sync-maicoin.");
-  }
-  const providerEmail = process.env.MAX_PROVIDER_EMAIL?.trim() || undefined;
-  return { accessKey, secretKey, subAccount, providerEmail };
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -331,7 +209,9 @@ export function resolveMaicoinProviderEmail(
 function appendQuery(url: URL, params: QueryParams) {
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
-    url.searchParams.append(key, String(value));
+    for (const item of Array.isArray(value) ? value : [value]) {
+      url.searchParams.append(key, String(item));
+    }
   }
 }
 
@@ -339,9 +219,13 @@ async function fetchJsonWithMetadata<T>(
   url: URL,
   init: RequestInit = {},
 ): Promise<MaxResponse<T>> {
+  const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeoutSignal])
+    : timeoutSignal;
   const response = await fetch(url, {
     ...init,
-    signal: init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    signal,
   });
   const body = await response.text();
   if (!response.ok) {
@@ -362,15 +246,18 @@ async function fetchJson<T>(url: URL, init: RequestInit = {}): Promise<T> {
 async function fetchWithRetry<T>(
   request: () => Promise<T>,
   delays = FETCH_RETRY_DELAYS_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       return await request();
     } catch (error) {
+      if (signal?.aborted) signal.throwIfAborted();
       lastError = error;
       if (attempt === delays.length || !isRetryableFetchError(error)) throw error;
-      await sleep(delays[attempt]);
+      await sleep(delays[attempt]!, signal);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -383,8 +270,21 @@ function isRetryableFetchError(error: unknown) {
   return typeof status !== "number" || status === 408 || status === 429 || status >= 500;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason);
+    };
+    function done() {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function signPayload(path: string, params: QueryParams, secretKey: string) {
@@ -493,11 +393,9 @@ function tickerMarketsForAccounts(accounts: Account[], markets: Set<string>) {
 
 async function fetchTickers(client: MaxClient, markets: Set<string>) {
   if (markets.size === 0) return { providerDate: null, tickers: new Map<string, Ticker>() };
-  const url = new URL("/api/v3/tickers", API_BASE_URL);
-  for (const market of [...markets].sort()) {
-    url.searchParams.append("markets[]", market);
-  }
-  const response = await fetchWithRetry(() => fetchJsonWithMetadata<Ticker[]>(url));
+  const response = await client.publicGetWithMetadata<Ticker[]>("/api/v3/tickers", {
+    "markets[]": [...markets].sort(),
+  });
   let providerDate: TickerSnapshot["providerDate"] = null;
   try {
     providerDate = parseMaicoinProviderDate(response.providerDate);
@@ -520,7 +418,7 @@ async function fetchTickers(client: MaxClient, markets: Set<string>) {
   return { providerDate, tickers };
 }
 
-function publicMarket(market: Market): MaicoinPublicMarket {
+function publicMarket(market: MaicoinMarket): MaicoinPublicMarket {
   return {
     id: market.id,
     baseUnit: market.base_unit,
@@ -531,7 +429,7 @@ function publicMarket(market: Market): MaicoinPublicMarket {
 
 function valuationQuotesForAccounts(
   accounts: readonly MaicoinAccountRecord[],
-  markets: readonly Market[],
+  markets: readonly MaicoinMarket[],
   tickerSnapshot: TickerSnapshot,
 ) {
   if (!tickerSnapshot.providerDate) return new Map<string, MaicoinTwdQuote>();
@@ -575,10 +473,83 @@ async function statementValueMap(
   const values: StatementValueMap = new Map();
   for (const batch of statement) {
     for (const row of batch.rows) {
+      client.throwIfAborted();
       values.set(statementIdFor(batch, row), await statementValueTwd(client, markets, cache, batch.rowType, row));
     }
   }
   return values;
+}
+
+export type MaicoinSourceCollection = Readonly<{
+  providerEmail: string;
+  walletTypes: readonly WalletType[];
+  accountBatches: readonly MaicoinWalletAccountBatch[];
+  marketRows: readonly MaicoinMarket[];
+  statementBatches: readonly MaicoinStatementBatch[];
+  snapshots: readonly MaicoinAccountSnapshot[];
+  valuationQuotes: ReadonlyMap<string, MaicoinTwdQuote>;
+  statementValues: ReadonlyMap<string, number | null>;
+  capturedAt: string;
+}>;
+
+/** Collect and preflight all MAX source values in memory before any commit. */
+export async function collectMaicoinSource(
+  credentials: MaxCredentials,
+  options: Readonly<{
+    walletTypes?: readonly WalletType[];
+    statementLimit?: number;
+    signal?: AbortSignal;
+    now(): string;
+    onWalletsCollected?(count: number): void | Promise<void>;
+    onStatementsStarted?(): void | Promise<void>;
+    onStatementsCollected?(count: number): void | Promise<void>;
+  }>,
+): Promise<MaicoinSourceCollection> {
+  options.signal?.throwIfAborted();
+  const client = new MaxClient(credentials, options.signal);
+  const selection = await fetchWalletTypes(
+    client,
+    [...(options.walletTypes ?? MAICOIN_WALLET_TYPES)],
+    credentials.providerEmail,
+  );
+  if (selection.walletTypes.length === 0)
+    throw new Error("MAX reported no requested wallet types enabled for this account.");
+  const accountBatches = await fetchAccounts(client, selection.walletTypes);
+  const accounts = accountBatches.flatMap((batch) => batch.accounts);
+  options.signal?.throwIfAborted();
+  const marketRows = validateMarkets(await client.publicGet<unknown>("/api/v3/markets"));
+  const markets = new Set(marketRows.map((market) => market.id.toLowerCase()));
+  const tickerSnapshot = await fetchTickers(
+    client,
+    tickerMarketsForAccounts(accounts, markets),
+  );
+  const snapshots = buildSnapshots(accountBatches, tickerSnapshot.tickers);
+  const valuationQuotes = valuationQuotesForAccounts(accounts, marketRows, tickerSnapshot);
+  const capturedAt = options.now();
+  await options.onWalletsCollected?.(snapshots.length);
+
+  await options.onStatementsStarted?.();
+  const statementBatches = await fetchStatement(
+    client,
+    selection.walletTypes,
+    options.statementLimit ?? MAICOIN_STATEMENT_LIMIT,
+  );
+  const statementValues = await statementValueMap(client, statementBatches, markets);
+  const statementCount = statementBatches.reduce((count, batch) => count + batch.rows.length, 0);
+  await options.onStatementsCollected?.(statementCount);
+  options.signal?.throwIfAborted();
+
+  return {
+    providerEmail: selection.providerEmail,
+    walletTypes: selection.walletTypes,
+    accountBatches,
+    marketRows,
+    statementBatches,
+    snapshots,
+    valuationQuotes,
+    statementValues,
+    capturedAt,
+  };
 }
 
 async function statementValueTwd(
@@ -657,6 +628,7 @@ async function historicalMarketClose(client: MaxClient, market: string, dayStart
     const row = rows.find((item) => Number(item[0]) >= dayStart && Number(item[0]) < dayStart + 86400) ?? rows[0];
     return numeric(row?.[4]);
   } catch {
+    client.throwIfAborted();
     return null;
   }
 }
@@ -702,6 +674,8 @@ export async function fetchAccounts(
     const providerDate = parseMaicoinProviderDate(response.providerDate);
     if (!Array.isArray(response.data))
       throw new Error(`MAX ${walletType} wallet accounts response is not an array.`);
+    if (response.data.some((account) => typeof account !== "object" || account === null || Array.isArray(account)))
+      throw new Error(`MAX ${walletType} wallet accounts response contains an invalid row.`);
     // Keep zero-valued rows: a complete provider snapshot includes the fact
     // that the account exists even when its current holding is zero.
     batches.push({
@@ -711,6 +685,25 @@ export async function fetchAccounts(
     });
   }
   return batches;
+}
+
+function validateMarkets(value: unknown): MaicoinMarket[] {
+  if (!Array.isArray(value)) throw new Error("MAX public markets response is not an array.");
+  const seen = new Set<string>();
+  return value.map((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+      throw new Error("MAX public markets response contains an invalid row.");
+    const market = candidate as Partial<MaicoinMarket>;
+    if (typeof market.id !== "string" || market.id.trim() === ""
+      || typeof market.base_unit !== "string" || market.base_unit.trim() === ""
+      || typeof market.quote_unit !== "string" || market.quote_unit.trim() === ""
+      || typeof market.status !== "string" || market.status.trim() === "")
+      throw new Error("MAX public markets response contains an incomplete row.");
+    const key = market.id.toLowerCase();
+    if (seen.has(key)) throw new Error("MAX public markets response contains a duplicate market.");
+    seen.add(key);
+    return market as MaicoinMarket;
+  });
 }
 
 async function fetchStatement(
@@ -768,11 +761,16 @@ async function fetchFullStatementRows(client: MaxClient, endpoint: string, limit
       limit,
       timestamp,
     });
+    if (!Array.isArray(page)) throw new Error(`MAX statement response for ${endpoint} is not an array.`);
+    if (page.some((row) => typeof row !== "object" || row === null || Array.isArray(row)))
+      throw new Error(`MAX statement response for ${endpoint} contains an invalid row.`);
     if (page.length === 0) break;
 
     rows.push(...page);
     const nextTimestamp = Math.max(...page.map((row) => createdAtMillis(row))) + 1;
-    if (page.length < limit || nextTimestamp <= timestamp) break;
+    if (page.length < limit) break;
+    if (nextTimestamp <= timestamp)
+      throw new Error(`MAX statement pagination for ${endpoint} did not advance.`);
     timestamp = nextTimestamp;
   }
   return rows;
@@ -782,7 +780,7 @@ function buildSnapshots(
   accountBatches: Array<{ walletType: WalletType; accounts: Account[] }>,
   tickers: Map<string, Ticker>,
 ) {
-  const snapshots: AccountSnapshot[] = [];
+  const snapshots: MaicoinAccountSnapshot[] = [];
   for (const batch of accountBatches) {
     for (const account of batch.accounts) {
       const price = priceForCurrency(account.currency, tickers);
@@ -799,11 +797,11 @@ function buildSnapshots(
   return snapshots;
 }
 
-function pgliteSnapshotRows(
+export function pgliteSnapshotRows(
   syncRunId: string,
   capturedAt: string,
   subAccount: string,
-  snapshots: readonly AccountSnapshot[],
+  snapshots: readonly MaicoinAccountSnapshot[],
 ): PGliteMaicoinSnapshot[] {
   return snapshots.map((snapshot) => ({
     snapshotId: randomUUID(), syncRunId, capturedAt, subAccount,
@@ -825,11 +823,11 @@ function pgliteSnapshotRows(
   }));
 }
 
-function pgliteStatementRows(
+export function pgliteStatementRows(
   syncRunId: string,
   capturedAt: string,
   statement: readonly StatementBatch[],
-  statementValues: StatementValueMap,
+  statementValues: ReadonlyMap<string, number | null>,
 ): PGliteMaicoinStatementRow[] {
   return statement.flatMap((batch) => batch.rows.map((row) => {
     const statementId = statementIdFor(batch, row);
@@ -854,7 +852,7 @@ function pgliteStatementRows(
 }
 
 /** Keep each authenticated socket frame below its 4 MiB transport ceiling. */
-function* maicoinRpcChunks<T>(rows: readonly T[]): Iterable<readonly T[]> {
+export function* maicoinRpcChunks<T>(rows: readonly T[]): Iterable<readonly T[]> {
   let chunk: T[] = [];
   let bytes = 0;
   for (const row of rows) {
@@ -873,266 +871,4 @@ function* maicoinRpcChunks<T>(rows: readonly T[]): Iterable<readonly T[]> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-async function writeStatementJson(filePath: string, statement: StatementBatch[]) {
-  const outputPath = resolve(filePath);
-  await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, JSON.stringify(statement, null, 2));
-  return outputPath;
-}
-
-/**
- * Admit each wallet scope through the shared execution seam.  A wallet is a
- * complete provider-domain investment capture, so its margin/loan spines stay
- * in one transaction while independent wallets retain separate item results.
- * The operational database remains owned by syncMaicoin; only the canonical
- * store lifecycle moves behind execution.
- */
-export async function commitMaicoinCanonicalInvestmentCaptures(
-  ledgerDir: string,
-  input: MaicoinInvestmentCaptureBuildInput,
-  workflowClient?: PGliteWorkflowClient,
-) {
-  const captures = buildMaicoinInvestmentCaptures(input);
-  const ownedClient = workflowClient ? undefined : createMaicoinPGliteClient(ledgerDir);
-  const client = workflowClient ?? ownedClient!.workflow;
-  try {
-    await ownedClient?.ready;
-    const result = await executePGliteWorkflowRun({
-      client,
-      provider: "maicoin",
-      product: "investment",
-      items: captures.map((capture) => ({
-        provider: "maicoin",
-        product: "investment",
-        itemKey: capture.captureId,
-        command: { kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND, request: { capture } },
-        relationCommands: () => [{
-          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-          request: {
-            sourceConnectionKey: capture.identity.sourceConnectionKey,
-            observedAt: capture.observedAt,
-          },
-        }],
-      })),
-    });
-    if (result.status !== "completed")
-      throw new Error(`MaiCoin PGlite canonical persistence ${result.status}: ${result.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
-    return result.items.flatMap((item) => item.status === "committed" ? [item.value] : []);
-  } finally {
-    await ownedClient?.close();
-  }
-}
-
-export async function syncMaicoin(params: CliParams) {
-  emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
-  const credentials = credentialsFromEnv(params.subAccount);
-  const client = new MaxClient(credentials);
-  const syncRunId = randomUUID();
-  const startedAt = new Date().toISOString();
-  const pglite = createMaicoinPGliteClient(params.ledgerDir);
-  let runStarted = false;
-  try {
-    await pglite.ready;
-    await pglite.operationalProvider.maicoin.startRun({
-      syncRunId, startedAt,
-      subAccount: params.subAccount,
-      walletTypes: params.walletTypes,
-      statementLimit: params.statementLimit,
-      record: { status: "started", params },
-    });
-    runStarted = true;
-    const walletSelection = await fetchWalletTypes(
-      client,
-      params.walletTypes,
-      credentials.providerEmail,
-    );
-    const walletTypes = walletSelection.walletTypes;
-    const accountBatches = await fetchAccounts(client, walletTypes);
-    const accounts = accountBatches.flatMap((batch) => batch.accounts);
-  emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    const marketRows = await client.publicGet<Market[]>("/api/v3/markets");
-    const markets = new Set(marketRows.map((market) => market.id));
-    const tickerSnapshot = await fetchTickers(
-      client,
-      tickerMarketsForAccounts(accounts, markets),
-    );
-    const snapshots = buildSnapshots(accountBatches, tickerSnapshot.tickers);
-    const valuationQuotes = valuationQuotesForAccounts(
-      accounts,
-      marketRows,
-      tickerSnapshot,
-    );
-    const capturedAt = new Date().toISOString();
-  emitAutomationProgress({ phaseCode: "workflow", completed: 50, total: 100, percent: 50 });
-    const statement = await fetchStatement(client, walletTypes, params.statementLimit);
-    const statementValues = await statementValueMap(client, statement, markets);
-    const statementJsonPath = params.statementJson
-      ? await writeStatementJson(params.statementJson, statement)
-      : null;
-  emitAutomationProgress({ phaseCode: "workflow", completed: 80, total: 100, percent: 80 });
-
-    const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
-      params.ledgerDir,
-      {
-        captureId: syncRunId,
-        providerEmail: walletSelection.providerEmail,
-        subAccount: credentials.subAccount,
-        accountBatches,
-        statementBatches: statement,
-        valuationQuotes,
-      },
-      pglite.workflow,
-    );
-
-    for (const chunk of maicoinRpcChunks(pgliteSnapshotRows(
-      syncRunId, capturedAt, credentials.subAccount, snapshots,
-    ))) await pglite.operationalProvider.maicoin.appendSnapshots(chunk);
-    for (const chunk of maicoinRpcChunks(pgliteStatementRows(
-      syncRunId, capturedAt, statement, statementValues,
-    ))) await pglite.operationalProvider.maicoin.appendStatementRows(chunk);
-
-    const result = {
-      status: "completed",
-      syncRunId,
-      ledgerDir: params.ledgerDir,
-      capturedAt,
-      walletTypes,
-      canonicalInvestmentCaptures: canonicalResults.length,
-      accountSnapshots: snapshots.length,
-      statementMode: "full",
-      statementRows: statement.reduce((sum, batch) => sum + batch.rows.length, 0),
-      statementJsonPath,
-      missingPrices: snapshots
-        .filter((snapshot) => snapshot.price.price === null)
-        .map((snapshot) => `${snapshot.walletType}:${snapshot.account.currency.toLowerCase()}`),
-      totalValueTwd: snapshots.reduce((sum, snapshot) => sum + (snapshot.valueTwd ?? 0), 0),
-    };
-    await pglite.operationalProvider.maicoin.finishRun({
-      syncRunId, finishedAt: new Date().toISOString(), record: result,
-    });
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-    return result;
-  } catch (error) {
-    const failedRecord = {
-      status: "failed",
-      syncRunId,
-      errorName: error instanceof Error ? error.name : "Error",
-      errorMessage: error instanceof Error ? error.message : String(error),
-    };
-    if (runStarted) await pglite.operationalProvider.maicoin.finishRun({
-      syncRunId, finishedAt: new Date().toISOString(), record: failedRecord,
-    }).catch(() => undefined);
-    throw error;
-  } finally {
-    await pglite.close();
-  }
-}
-
-async function selfTest() {
-  assert.equal(parseCli([]).statementLimit, DEFAULT_STATEMENT_LIMIT);
-  assert.throws(() => parseCli(["--statement"]), /Unknown option/);
-  assert.throws(() => parseCli(["--statement-full"]), /Unknown option/);
-  assert.throws(() => parseCli(["--limit", "1001"]), /--limit must be <= 1000/);
-
-  const signed = signPayload("/api/v3/info", { nonce: 123 }, "secret");
-  assert.equal(
-    signed.signature,
-    createHmac("sha256", "secret").update(signed.payload).digest("hex"),
-  );
-  assert.deepEqual(JSON.parse(Buffer.from(signed.payload, "base64").toString()), {
-    nonce: 123,
-    path: "/api/v3/info",
-  });
-
-  const originalFetch = globalThis.fetch;
-  try {
-    let calls = 0;
-    globalThis.fetch = (async () => {
-      calls += 1;
-      return new Response(JSON.stringify({ ok: calls === 2 }), {
-        status: calls === 1 ? 503 : 200,
-      });
-    }) as typeof fetch;
-
-    assert.deepEqual(
-      await fetchWithRetry(() => fetchJson<{ ok: boolean }>(new URL("https://example.test/retry")), [0]),
-      { ok: true },
-    );
-    assert.equal(calls, 2);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  const tickers = new Map<string, Ticker>([
-    ["usdttwd", { market: "usdttwd", at: 1_700_000_000, last: "31" }],
-    ["btcusdt", { market: "btcusdt", at: 1_700_000_001, last: "50000" }],
-  ]);
-  assert.equal(priceForCurrency("twd", tickers).price, 1);
-  assert.equal(priceForCurrency("btc", tickers).price, 1_550_000);
-
-  const dataDir = await mkdtemp(join(tmpdir(), "maicoin-pglite-self-test-"));
-  const worker = createMaicoinCliPGliteWorkerClient(dataDir);
-  try {
-    await worker.ready;
-    const syncRunId = randomUUID();
-    const startedAt = new Date().toISOString();
-    await worker.operationalProvider.maicoin.startRun({
-      syncRunId,
-      startedAt,
-      subAccount: "self-test",
-      walletTypes: ["spot"],
-      statementLimit: DEFAULT_STATEMENT_LIMIT,
-      record: { status: "started", selfTest: true },
-    });
-    const canonicalResults = await commitMaicoinCanonicalInvestmentCaptures(
-      dataDir,
-      {
-        captureId: syncRunId,
-        providerEmail: "self-test@example.test",
-        subAccount: "self-test",
-        accountBatches: [
-          {
-            walletType: "spot",
-            providerDate: parseMaicoinProviderDate("Wed, 02 Sep 2026 04:05:06 GMT"),
-            accounts: [],
-          },
-        ],
-      },
-      worker.workflow,
-    );
-    await worker.operationalProvider.maicoin.finishRun({
-      syncRunId,
-      finishedAt: new Date().toISOString(),
-      record: { status: "completed", selfTest: true },
-    });
-    assert.equal(canonicalResults.length, 1);
-  } finally {
-    await worker.close();
-    await rm(dataDir, { recursive: true, force: true });
-  }
-}
-
-async function main() {
-  const params = parseCli(process.argv.slice(2));
-  if (params.help) {
-    console.log(usage());
-    return;
-  }
-  if (params.selfTest) {
-    await selfTest();
-    console.log("sync-maicoin self-test passed");
-    return;
-  }
-
-  const result = await syncMaicoin(params);
-  console.log(JSON.stringify(result, null, 2));
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  });
 }

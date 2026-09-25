@@ -8,6 +8,7 @@ import type {
   PGliteWorkflowRunResult,
 } from "../../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "./source-text.ts";
+import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
 
 export type WorkflowStage =
   | "preparation"
@@ -53,16 +54,19 @@ export interface WorkflowFinancialCommitPort {
 export type WorkflowContext = Readonly<{
   runId: string;
   signal: AbortSignal;
+  now(): string;
   browser: WorkflowBrowserPort;
   text: SourceTextPort;
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
+  maicoinPersistence?: PGliteMaicoinPersistencePort;
   event(stage: WorkflowStage, code: string, counts?: Readonly<{ completed?: number; total?: number }>): Promise<void>;
 }>;
 
 export type WorkflowDefinition<Input = unknown, Output = unknown> = Readonly<{
   id: string;
   requiresFinancialCommit: boolean;
+  requiresMaicoinPersistence?: boolean;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -71,6 +75,7 @@ export type WorkflowExecutorPorts = Readonly<{
   text: SourceTextPort;
   humanAssistance: WorkflowHumanAssistancePort;
   financialCommit?: WorkflowFinancialCommitPort;
+  maicoinPersistence?: PGliteMaicoinPersistencePort;
   events: WorkflowEventPort;
   now(): string;
   onEventFailure?(code: "event-persistence-failed"): void;
@@ -102,6 +107,9 @@ export function createWorkflowExecutor(
       if (definition.requiresFinancialCommit && !ports.financialCommit) {
         throw new Error("Canonical Financial Commit port is unavailable.");
       }
+      if (definition.requiresMaicoinPersistence && !ports.maicoinPersistence) {
+        throw new Error("MaiCoin operational persistence port is unavailable.");
+      }
       const appendEvent: WorkflowContext["event"] = async (stage, code, counts) => {
         if (!SAFE_CODE.test(code)) throw new Error("Invalid workflow event code.");
         await ports.events.append({
@@ -129,11 +137,15 @@ export function createWorkflowExecutor(
       const context: WorkflowContext = {
         runId,
         signal,
+        now: ports.now,
         browser: ports.browser,
         text: ports.text,
         humanAssistance: ports.humanAssistance,
         ...(definition.requiresFinancialCommit
           ? { financialCommit: ports.financialCommit }
+          : {}),
+        ...(definition.requiresMaicoinPersistence
+          ? { maicoinPersistence: ports.maicoinPersistence }
           : {}),
         event,
       };

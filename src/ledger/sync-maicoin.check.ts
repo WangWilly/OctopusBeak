@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
-  commitMaicoinCanonicalInvestmentCaptures,
   fetchAccounts,
   MaxClient,
   resolveMaicoinProviderEmail,
@@ -13,6 +9,7 @@ import {
 import {
   deriveMaicoinSourceConnectionKey,
   buildMaicoinInvestmentCapture,
+  buildMaicoinInvestmentCaptures,
   parseMaicoinProviderDate,
   type MaicoinProviderDate,
 } from "./canonical/maicoin-crypto-adapters.ts";
@@ -79,46 +76,35 @@ test("MAX canonical sync rejects missing, malformed, or duplicate provider Date 
   }
 });
 
-test("MAX canonical handoff rejects missing or invalid provider Date without partial writes", async () => {
+test("MAX capture construction rejects missing or invalid provider Date before commit", () => {
   for (const [label, invalidDate] of [
     ["missing", undefined],
     ["invalid", "not-a-date"],
   ] as const) {
-    const directory = await mkdtemp(join(tmpdir(), `maicoin-date-${label}-`));
-    try {
-      await assert.rejects(
-        () =>
-          commitMaicoinCanonicalInvestmentCaptures(directory, {
-            captureId: `sync-run-${label}`,
-            providerEmail: "owner@example.test",
-            subAccount: "main",
-            accountBatches: [
-              {
-                walletType: "spot",
-                providerDate,
-                accounts: [
-                  { currency: "BTC", balance: "1", locked: "0" },
-                ],
-              },
-              {
-                walletType: "m",
-                providerDate: invalidDate === undefined
-                  ? undefined as unknown as MaicoinProviderDate
-                  : { ...providerDate, sourceValue: invalidDate },
-                accounts: [
-                  { currency: "ETH", balance: "2", locked: "0" },
-                ],
-              },
-            ],
-          }),
-        invalidDate === undefined
-          ? /missing.*required.*HTTP Date header/i
-          : /HTTP Date header.*invalid/i,
-      );
-      assert.deepEqual(await readdir(directory), []);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    assert.throws(
+      () => buildMaicoinInvestmentCapture({
+        captureId: `sync-run-${label}`,
+        providerEmail: "owner@example.test",
+        subAccount: "main",
+        accountBatches: [
+          {
+            walletType: "spot",
+            providerDate,
+            accounts: [{ currency: "BTC", balance: "1", locked: "0" }],
+          },
+          {
+            walletType: "m",
+            providerDate: invalidDate === undefined
+              ? undefined as unknown as MaicoinProviderDate
+              : { ...providerDate, sourceValue: invalidDate },
+            accounts: [{ currency: "ETH", balance: "2", locked: "0" }],
+          },
+        ],
+      }),
+      invalidDate === undefined
+        ? /missing.*required.*HTTP Date header/i
+        : /HTTP Date header.*invalid/i,
+    );
   }
 });
 
@@ -140,20 +126,17 @@ test("MAX source identity comes from provider email and not an API key", () => {
   );
 });
 
-test("MAX canonical handoff commits all wallet captures as one batch", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "maicoin-canonical-sync-"));
-  try {
-    const result = await commitMaicoinCanonicalInvestmentCaptures(directory, {
-      captureId: "sync-run-1",
-      providerEmail: "owner@example.test",
-      subAccount: "main",
-      accountBatches: [
-        { walletType: "spot", providerDate, accounts: [] },
-        { walletType: "m", providerDate, accounts: [] },
-      ],
-    });
-    assert.equal(result.length, 2);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+test("MAX capture builder preserves one capture per wallet scope", () => {
+  const result = buildMaicoinInvestmentCaptures({
+    captureId: "sync-run-1",
+    providerEmail: "owner@example.test",
+    subAccount: "main",
+    accountBatches: [
+      { walletType: "spot", providerDate, accounts: [] },
+      { walletType: "m", providerDate, accounts: [] },
+    ],
+  });
+  assert.equal(result.length, 2);
+  assert.equal(result[0]?.captureId.includes(":spot:"), true);
+  assert.equal(result[1]?.captureId.includes(":m:"), true);
 });
