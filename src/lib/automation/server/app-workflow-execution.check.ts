@@ -15,7 +15,7 @@ import { captureSessionScreenshot, sendHumanVerificationInput } from "./automati
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { humanSessionForTask, updateHumanAssistanceCompletionForTask } from "./human-session.ts";
 import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
-import { automationResume } from "./desktop-api.ts";
+import { automationResumeHumanAssistance } from "./desktop-api.ts";
 import { shutdownAutomationSessions } from "./runner.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
@@ -210,9 +210,9 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const enabledKey = "LIBRETTO_CLOUD_EINVOICE_ENABLED";
     const originalEnabled = process.env[enabledKey];
     process.env[enabledKey] = "true";
-    let resumed: Awaited<ReturnType<typeof automationResume>>;
+    let resumed: Awaited<ReturnType<typeof automationResumeHumanAssistance>>;
     try {
-      resumed = await automationResume(task.id, provider);
+      resumed = await automationResumeHumanAssistance(task.id, provider);
     } finally {
       if (originalEnabled === undefined) delete process.env[enabledKey];
       else process.env[enabledKey] = originalEnabled;

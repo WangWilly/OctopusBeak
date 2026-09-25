@@ -10,7 +10,7 @@ import type {
 import { isActiveAutomationRuntimeStatus } from "../runtime-status.ts";
 import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
 import { parseStatementRunSummary } from "../statement-run-summary.ts";
-import { resumeFailureMessage, resumeSessionFromLog } from "./runner.ts";
+import { resumeFailureMessage } from "./runner.ts";
 import { primaryActionForAutomationTask } from "../primary-action.ts";
 
 const workflowStages = new Set<WorkflowStage>([
@@ -148,9 +148,9 @@ export function buildAutomationPageModel(input: {
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       statementFailures,
       humanSession: status === "waiting_for_human"
-        ? task.workflowId
-          ? run?.taskRunId ?? runtime?.runId ?? null
-          : resumeSessionFromLog(runtime?.logTail ?? run?.logTail ?? "")
+        && task.workflowId
+        && events.length > 0
+        ? run?.taskRunId ?? runtime?.runId ?? null
         : null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,
       forceTerminateAvailable: runtime?.forceTerminateAvailable === true,

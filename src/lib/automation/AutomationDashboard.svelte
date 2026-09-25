@@ -746,16 +746,13 @@
 
   async function runTask(task: AutomationTaskRow) {
     if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
-    const actionKind: AutomationActionKind = task.primaryAction === "Resume" ? "resume" : "run";
-    const token = beginActionToken(task.id, actionKind);
+    const token = beginActionToken(task.id, "run");
     if (!token) return;
     applyLocalPreparing(task.id);
     schedulePreparingTimeout(task.id);
     try {
       actionError = "";
-      const result = task.primaryAction === "Resume"
-        ? await window.octopusBeak.automation.resume(task.id)
-        : await window.octopusBeak.automation.run(task.id);
+      const result = await window.octopusBeak.automation.run(task.id);
       runtimeController?.bindRun(token, result.runId);
       if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
@@ -1219,7 +1216,7 @@
     closeHumanViewer();
     try {
       actionError = "";
-      await window.octopusBeak.automation.resume(task.id);
+      await window.octopusBeak.automation.resumeHumanAssistance(task.id);
       await reload();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);

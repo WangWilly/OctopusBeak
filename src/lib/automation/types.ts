@@ -175,7 +175,7 @@ export type AutomationTaskRow = AutomationTaskSummary & {
   forceTerminateAvailable?: boolean;
   isActive: boolean;
   ranToday: boolean;
-  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel" | "Configure";
+  primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };
 

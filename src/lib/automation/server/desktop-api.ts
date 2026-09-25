@@ -29,8 +29,6 @@ import {
   currentAutomationTaskRun,
   forceTerminateAutomationTask,
   hasActiveAutomationTask,
-  resumeSessionFromLog,
-  startAutomationResume,
   startAutomationTask,
 } from "./runner.ts";
 import {
@@ -389,7 +387,7 @@ function assertAutomationTaskCanStartInModel(
   if (!row) throw new Error("Task is disabled.");
   if (row.status === "waiting_for_human") {
     throw new Error(
-      "Task is waiting for human input. Resume or force quit it first.",
+      "Task is waiting for human input. Complete assistance or cancel the run first.",
     );
   }
   const group = task.credentialGroupId
@@ -571,37 +569,36 @@ export function assertHumanAssistanceCompletionCanResume(
   }
 }
 
-export async function automationResume(
+export async function automationResumeHumanAssistance(
   taskId: string,
   provider: AutomationPersistenceProvider,
 ): Promise<{ resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
   const task = taskById(taskId);
   if (!task) throw new Error("Unknown automation task: " + taskId);
+  if (!task.workflowId) {
+    throw new Error(
+      "This saved browser session cannot be continued. Start a new run from the source.",
+    );
+  }
   const model = await loadAutomationDesktopModel(provider);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status !== "waiting_for_human")
     throw new Error("Task is not waiting for human input.");
   assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
-  if (task.workflowId) {
-    const runId = row.runId;
-    if (!runId) throw new Error("Missing App workflow run ID.");
-    const completionStatus = row.humanAssistanceContract?.completion.status;
-    if (!completionStatus || completionStatus === "pending") {
-      throw new Error("Human verification input is incomplete. Enter the verification input before Resume.");
-    }
-    const resumedInPlace = await resumeAppWorkflowHumanAssistance(runId, completionStatus);
-    if (!resumedInPlace) {
-      throw new Error("The App workflow is no longer active. Restart it from the beginning.");
-    }
-    return {
-      resumed: task.id,
-      runId,
-      runtime: automationRuntimeState.snapshot(),
-    };
+  const runId = row.runId;
+  if (!runId) throw new Error("Missing App workflow run ID.");
+  const completionStatus = row.humanAssistanceContract?.completion.status;
+  if (!completionStatus || completionStatus === "pending") {
+    throw new Error("Human verification input is incomplete. Enter the verification input before continuing.");
   }
-  const session = resumeSessionFromLog(row.logTail);
-  if (!session) throw new Error("Missing Libretto resume session in latest log.");
-  const resumed = await startAutomationResume(task.id, session, provider);
-  return { resumed: task.id, runId: resumed.runId, runtime: resumed.runtime };
+  const resumedInPlace = await resumeAppWorkflowHumanAssistance(runId, completionStatus);
+  if (!resumedInPlace) {
+    throw new Error("The App workflow is no longer active. Restart it from the beginning.");
+  }
+  return {
+    resumed: task.id,
+    runId,
+    runtime: automationRuntimeState.snapshot(),
+  };
 }

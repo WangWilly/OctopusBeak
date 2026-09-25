@@ -1,6 +1,6 @@
 import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
 
-export type AutomationActionKind = "run" | "resume" | "cancel" | "force-terminate";
+export type AutomationActionKind = "run" | "cancel" | "force-terminate";
 
 export type AutomationActionToken = {
   token: string;
@@ -91,7 +91,7 @@ export function createAutomationRuntimeController() {
     for (const [taskId, token] of pending) {
       const task = byTaskId.get(taskId);
       if (!task) continue;
-      if (token.kind === "run" || token.kind === "resume") {
+      if (token.kind === "run") {
         if (task.runId && ["preparing", "running", "retrying", "waiting_for_human", "cancelling", "completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
           pending.delete(taskId);
         }

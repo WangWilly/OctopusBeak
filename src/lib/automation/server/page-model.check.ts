@@ -242,14 +242,14 @@ assert.equal(activeFubonRow?.progressPercent, null);
 assert.equal(activeFubonRow?.progressText, "Running attempt 1/2");
 assert.equal(activeModel.parallelRunnableTaskIds.includes("fubon-all-statements"), false);
 
-const legacyWaitingTask = AUTOMATION_TASKS.find((task) => !task.workflowId);
-assert.ok(legacyWaitingTask, "a legacy task is needed to cover Libretto session extraction");
+const legacyWaitingTask = AUTOMATION_TASKS.find((task) => task.workflowId);
+assert.ok(legacyWaitingTask, "a migrated task is needed to cover an old waiting run");
 const waitingModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {
     [legacyWaitingTask.id]: {
       ...completedRun,
-      taskRunId: "run-waiting",
+      taskRunId: "run-legacy-waiting",
       taskId: legacyWaitingTask.id,
       script: legacyWaitingTask.script,
       status: "waiting_for_human",
@@ -265,7 +265,36 @@ const waitingModel = buildAutomationPageModel({
 const waitingRow = waitingModel.tasks.find((task) => task.id === legacyWaitingTask.id);
 assert.equal(waitingRow?.status, "waiting_for_human");
 assert.equal(waitingRow?.primaryAction, "Cancel");
-assert.equal(waitingRow?.humanSession, "ses-help");
+assert.equal(waitingRow?.humanSession, null);
+
+const typedWaitingModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    [typedTask.id]: {
+      ...completedRun,
+      taskRunId: typedRunId,
+      taskId: typedTask.id,
+      script: typedTask.script,
+      status: "waiting_for_human",
+      finishedAt: null,
+      logTail: 'Resume requested for session "ses-legacy-log".',
+      events: [
+        {
+          runId: typedRunId,
+          stage: "authentication",
+          code: "human-assistance-requested",
+          occurredAt: "2026-06-30T01:00:01.000Z",
+        },
+      ],
+    },
+  },
+  credentials: {},
+  active: true,
+  businessDate: "2026-06-30",
+});
+const typedWaitingRow = typedWaitingModel.tasks.find((task) => task.id === typedTask.id);
+assert.equal(typedWaitingRow?.status, "waiting_for_human");
+assert.equal(typedWaitingRow?.humanSession, typedRunId);
 
 const failedModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,

@@ -58,7 +58,7 @@ function applyOptimisticAction(
   task: AutomationTaskRow,
   action: AutomationActionToken,
 ): AutomationTaskRow {
-  if (action.kind === "run" || action.kind === "resume") {
+  if (action.kind === "run") {
     return {
       ...task,
       status: "preparing",
