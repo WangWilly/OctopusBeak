@@ -1,5 +1,9 @@
 import { pause } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContractInput,
+} from "../lib/automation/human-assistance.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import {
   emitHumanAssistanceStage,
@@ -168,6 +172,7 @@ export type FubonPostLoginOutcomeOptions = Readonly<{
   timeoutMs?: number;
   pollIntervalMs?: number;
   frameName?: string;
+  silent?: boolean;
   dialogChannel?: FubonLoginDialogChannel;
   probe?: (
     page: Page,
@@ -1358,6 +1363,135 @@ export async function completeFubonHumanLogin(
   await completeFubonHumanLoginAttempt(page, session, values);
 }
 
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Workflow cancelled."));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Fubon authentication using the App-owned human-assistance port. */
+export async function completeFubonHumanLoginWithAssistance(
+  page: Page,
+  values: FubonLoginCredentialValues,
+  options: Readonly<{
+    signal: AbortSignal;
+    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
+    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+  }>,
+): Promise<void> {
+  const { signal, request } = options;
+  const dialogs = captureFubonLoginDialogs(page);
+  const event = options.event ?? (() => Promise.resolve());
+  const assistance = async (stage: WorkflowHumanAssistanceStage) => {
+    signal.throwIfAborted();
+    const contract = await withAbort(emitHumanAssistanceStage(stage, (value) => value), signal);
+    await event("human-assistance-requested");
+    const status = await withAbort(request(contract, signal), signal);
+    signal.throwIfAborted();
+    if (status !== "entered" && status !== "verified") {
+      await event("human-assistance-failed");
+      throw new Error("Fubon login human assistance did not complete.");
+    }
+    await event("human-assistance-completed");
+  };
+
+  try {
+    let outcomeWindowStarted = false;
+    let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
+    const submit = await withAbort(runFubonCaptchaAcquisition({
+      prepare: async () => {
+        signal.throwIfAborted();
+        await prepareFubonLoginDocument(page);
+        await fillFubonLoginCredentials(page, values);
+        assistanceBefore = await readFubonLoginGeneration(page);
+        if (!assistanceBefore)
+          throw new Error("Fubon login frame disappeared while preparing assistance.");
+        return assistanceBefore;
+      },
+      assistAndPause: async () => {
+        if (!outcomeWindowStarted) {
+          dialogs.beginOutcomeWindow();
+          outcomeWindowStarted = true;
+        }
+        const frame = await waitForLoginFrame(
+          page,
+          FUBON_LOGIN_FRAME_NAME,
+          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+        );
+        await frame.locator("#m1_userCaptcha").focus();
+        await assistance(fubonCaptchaAssistanceStage(frame));
+      },
+      submit: async () => {
+        signal.throwIfAborted();
+        if (dialogs.messages.length > 0 || dialogs.terminalReason !== undefined) {
+          await withAbort(waitForFubonPostLoginOutcome(page, {
+            dialogChannel: dialogs,
+            silent: true,
+          }), signal);
+        }
+        return await submitFubonCaptchaFromCurrentFrame(page, values, {
+          before: assistanceBefore,
+        });
+      },
+    }), signal);
+
+    if (submit.status === "submit-outcome-uncertain")
+      throw new FubonSubmitOutcomeUncertainError(submit.reason);
+    if (submit.status !== "submitted")
+      throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
+
+    if (await withAbort(currentOtpChallengeVisible(page), signal)) {
+      for (;;) {
+        signal.throwIfAborted();
+        const otpBefore = await readFubonLoginGeneration(page);
+        const frame = await waitForLoginFrame(
+          page,
+          FUBON_LOGIN_FRAME_NAME,
+          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
+        );
+        await assistance({
+          stageId: "fubon-login-otp",
+          title: "Enter the Fubon OTP",
+          targets: [{
+            id: "otp-input",
+            label: "OTP input",
+            semanticId: "fubon.login.otp-input",
+            modes: ["click", "type"],
+            locator: frame.locator("#m1_inputOTP"),
+          }],
+          contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
+          completion: { mode: "inline", targetIds: ["otp-input"] },
+          focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
+        });
+        const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
+        if (otp.status === "ready" || otp.status === "no-challenge") break;
+      }
+    }
+
+    await withAbort(waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true }), signal);
+  } finally {
+    dialogs.dispose();
+  }
+}
+
 function emitOutcome(
   status: "success" | "rejected" | "timeout",
   reason: string,
@@ -1802,13 +1936,13 @@ export async function waitForFubonPostLoginOutcome(
         rejectionReason !== "login-form-visible" ||
         Date.now() >= loginFormRejectionAfter
       ) {
-        emitOutcome("rejected", rejectionReason);
+        if (!options.silent) emitOutcome("rejected", rejectionReason);
         throw new FubonLoginRejectedError(rejectionReason, snapshot?.errorCode);
       }
     }
 
     if (authenticatedMarkerForSnapshot(snapshot)) {
-      emitOutcome("success", "marker");
+      if (!options.silent) emitOutcome("success", "marker");
       return;
     }
 
@@ -1827,10 +1961,10 @@ export async function waitForFubonPostLoginOutcome(
   }
 
   if (lastRejectionReason === "login-form-visible") {
-    emitOutcome("rejected", lastRejectionReason);
+    if (!options.silent) emitOutcome("rejected", lastRejectionReason);
     throw new FubonLoginRejectedError(lastRejectionReason, lastErrorCode);
   }
 
-  emitOutcome("timeout", "no-authenticated-outcome");
+  if (!options.silent) emitOutcome("timeout", "no-authenticated-outcome");
   throw new Error("Fubon post-login outcome timed out.");
 }

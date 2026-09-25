@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -29,12 +33,56 @@ const {
   parseFubonSettledStatementSummary,
   parseFubonCurrentCreditCardUsedCreditHtml,
   diagnoseFubonCurrentCreditCardUsedCreditHtml,
+  runFubonCreditCardStatements,
   resolveFubonSettledStatementCycles,
 } =
   await import("./fubon-credit-card-statements.ts");
 const { deriveFubonSourceConnectionKey } = await import(
   "./fubon-source-connection.ts"
 );
+
+test("typed Fubon card collection returns before its CSV/JSON writers", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "fubon-card-typed-no-files-"));
+  const originalCwd = process.cwd();
+  process.chdir(temp);
+  try {
+    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    const result = await runFubonCreditCardStatements(
+      {} as Page,
+      fubonCreditCardStatementsInputSchema.parse({}),
+      {
+        collectOnly: true,
+        deferredCommitItems,
+        observedAt: () => "2026-09-25T00:00:00.000Z",
+        sourceText: strictSourceText,
+        readSourceSnapshot: async () => ({
+          statementRows: [],
+          statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
+          paymentStatuses: [],
+          summaries: [],
+          gridStates: Array.from({ length: 7 }, () => ({
+            currentPage: "1",
+            currentPageSize: "2147483647",
+          })),
+          unavailablePeriodOffsets: [],
+          unbilledRows: [],
+        }),
+      },
+    );
+
+    assert.deepEqual(result, {
+      sourceCount: 7,
+      rowCount: 0,
+      itemCount: 0,
+      financialAdmissionCount: 0,
+    });
+    assert.deepEqual(deferredCommitItems, []);
+    assert.deepEqual(await readdir(temp), [], "typed card execution must not reach CSV/JSON writes");
+  } finally {
+    process.chdir(originalCwd);
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 const fubonLoginSourceConnectionKey = deriveFubonSourceConnectionKey({
   fubon_user_id: "synthetic-fubon-user",
