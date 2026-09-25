@@ -9,8 +9,6 @@ import type {
 } from "../types.ts";
 import { isActiveAutomationRuntimeStatus } from "../runtime-status.ts";
 import type { AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
-import { parseStatementRunSummary } from "../statement-run-summary.ts";
-import { resumeFailureMessage } from "./runner.ts";
 import { primaryActionForAutomationTask } from "../primary-action.ts";
 
 const workflowStages = new Set<WorkflowStage>([
@@ -64,7 +62,8 @@ function rowStatus(
   isActive: boolean,
   setupRequiredGroupIds: ReadonlySet<string>,
 ) {
-  if (run && resumeFailureMessage(run.logTail)) return "failed";
+  if (run?.appWorkflowOutcome?.errorCode === "cancelled") return "cancelled";
+  if (run?.appWorkflowOutcome?.errorCode) return "failed";
   if (run?.status === "waiting_for_human") return "waiting_for_human";
   if (isActive) return run?.status === "retrying" ? "retrying" : "running";
   if (task.credentialGroupId && setupRequiredGroupIds.has(task.credentialGroupId)) return "needs_setup";
@@ -121,9 +120,7 @@ export function buildAutomationPageModel(input: {
     const attempt = runtime?.attempt ?? run?.attempt ?? 0;
     const maxAttempts = runtime?.maxAttempts ?? run?.maxAttempts ?? task.maxAttempts;
     const events = pageWorkflowEvents(run?.events, run?.taskRunId);
-    const statementFailures = parseStatementRunSummary(run?.logTail ?? "")?.results
-      .filter((result) => result.status === "failed")
-      .map(({ typeId, error }) => ({ typeId, ...(error ? { error } : {}) })) ?? [];
+    const appWorkflowOutcome = runtime?.appWorkflowOutcome ?? run?.appWorkflowOutcome ?? null;
     return {
       id: task.id,
       runId: runtime?.runId ?? run?.taskRunId ?? null,
@@ -139,17 +136,12 @@ export function buildAutomationPageModel(input: {
       maxAttempts,
       latestStartedAt: run?.startedAt ?? null,
       latestFinishedAt: run?.finishedAt ?? null,
-      logTail: runtime?.logTail ?? run?.logTail ?? "",
-      errorMessage: runtime?.errorMessage ?? run?.errorMessage ?? null,
-      logPath: run?.logPath ?? null,
-      eventDisplayMode: task.workflowId || events.length > 0 ? "structured" : "legacy",
+      appWorkflowOutcome,
       events,
       progressPercent,
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
-      statementFailures,
       humanSession: status === "waiting_for_human"
         && task.workflowId
-        && events.length > 0
         ? run?.taskRunId ?? runtime?.runId ?? null
         : null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,

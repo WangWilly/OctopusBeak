@@ -20,8 +20,8 @@ const runParallelTasksSource = source.slice(
   source.indexOf("async function stopAllTasks"),
 );
 
-assert.doesNotMatch(runTaskSource, /expandedLogTaskId\s*=/);
-assert.doesNotMatch(runParallelTasksSource, /expandedLogTaskId\s*=/);
+assert.doesNotMatch(runTaskSource, /expandedRunDetailsTaskId\s*=/);
+assert.doesNotMatch(runParallelTasksSource, /expandedRunDetailsTaskId\s*=/);
 assert.match(
   runParallelTasksSource,
   /automation\.runMany\((?:tasks\.map\(\(task\) => task\.id\)|actionTokens\.map\(\(token\) => token\.taskId\))\)/,
@@ -34,7 +34,7 @@ assert.match(
   /matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches \? 0 : 220/,
 );
 assert.match(source, /class="stage-body"[^>]*transition:disclosureSlide/);
-assert.match(source, /class="inline-log-panel"[^>]*transition:disclosureSlide/);
+assert.match(source, /class="inline-run-details"[^>]*transition:disclosureSlide/);
 assert.match(source, /class="table-reveal"/);
 assert.doesNotMatch(source, /container\.animate\(/);
 assert.doesNotMatch(source, /class="task-row"[^>]*transition:disclosureSlide/);
@@ -58,7 +58,7 @@ assert.match(
   source,
   /shouldDispatchViewerClickBeforeType\(modes\) && !await sendViewerInput\(/,
 );
-assert.match(source, /class="inline-task-log"/);
+assert.match(source, /class="inline-run-details-row"/);
 assert.match(
   source,
   /\$: if \(\(automation\.active[\s\S]*?pollTimer = setInterval\(\(\) => \{\s*void reload\(\);\s*\}, 2_000\)/,
@@ -90,20 +90,16 @@ assert.match(
   source,
   /aria-label=\{`\$\{\$t\.automation\.runDetails\} · \$\{taskLabel\(task, \$t\)\}`\}/,
 );
-const structuredEventListStart = source.indexOf('<ol class="workflow-event-list"');
-const legacyLogStart = source.indexOf('<p class="mono inline-log-path">', structuredEventListStart);
-assert.ok(structuredEventListStart >= 0 && legacyLogStart > structuredEventListStart);
-const structuredEventDetailSource = source.slice(structuredEventListStart, legacyLogStart);
-assert.match(source, /task\.eventDisplayMode === "structured"/);
-assert.match(structuredEventDetailSource, /\{#each task\.events as event, index/);
-assert.match(structuredEventDetailSource, /\$t\.automation\.workflowStages\[event\.stage\]/);
-assert.match(structuredEventDetailSource, /\{event\.code\}/);
-assert.match(structuredEventDetailSource, /formatTime\(event\.occurredAt\)/);
-assert.match(structuredEventDetailSource, /workflowEventCounts\(event\.completed, event\.total\)/);
-assert.doesNotMatch(structuredEventDetailSource, /task\.(?:logPath|logTail|errorMessage)/);
-const legacyLogDetailSource = source.slice(legacyLogStart, source.indexOf("</pre>", legacyLogStart));
-assert.match(legacyLogDetailSource, /task\.logPath/);
-assert.match(legacyLogDetailSource, /task\.logTail/);
+assert.match(source, /\{#each task\.events as event, index/);
+assert.match(source, /\$t\.automation\.workflowStages\[event\.stage\]/);
+assert.match(source, /\{event\.code\}/);
+assert.match(source, /formatTime\(event\.occurredAt\)/);
+assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
+assert.match(source, /task\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /Object\.entries\(task\.appWorkflowOutcome\.summary\.counts\)/);
+assert.doesNotMatch(source, /eventDisplayMode/);
+assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
+assert.doesNotMatch(source, /inline-log-path|task\.logPath|task\.logTail/);
 assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
 assert.match(source, /onclick=\{\(\) => handleActiveTaskClick\(task\)\}/);
 assert.match(
@@ -115,8 +111,8 @@ assert.match(
   /task\.status === "waiting_for_human" && task\.humanSession/,
 );
 assert.match(source, /openHumanViewer\(task\)/);
-assert.match(source, /async function revealTaskLog\(task: AutomationTaskRow\)/);
-assert.match(source, /expandedLogTaskId = task\.id/);
+assert.match(source, /async function revealTaskDetails\(task: AutomationTaskRow\)/);
+assert.match(source, /expandedRunDetailsTaskId = task\.id/);
 assert.match(
   source,
   /<tr class="task-row"[^>]*id=\{`\$\{task\.id\}-task-row`\}/,

@@ -22,14 +22,10 @@ function task(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
     maxAttempts: 1,
     latestStartedAt: null,
     latestFinishedAt: null,
-    logTail: "old log",
-    errorMessage: null,
-    logPath: null,
-    eventDisplayMode: "legacy",
+    appWorkflowOutcome: null,
     events: [],
     progressPercent: null,
     progressText: "Queued",
-    statementFailures: [],
     humanSession: null,
     humanAssistanceContract: null,
     forceTerminateAvailable: false,
@@ -70,24 +66,23 @@ function runtime(overrides: Partial<AutomationRuntimeSnapshot> = {}): Automation
         percent: 50,
         attempt: 1,
       },
-      statementFailures: [],
+      appWorkflowOutcome: null,
       forceTerminateAvailable: false,
-      logTail: "new log",
-      errorMessage: null,
       updatedAt: "2026-09-21T00:00:00.000Z",
     }],
     ...overrides,
   };
 }
 
-test("runtime merge gives live status, progress, logs, and action precedence", () => {
+test("runtime merge gives live status, progress, outcome, and action precedence", () => {
   const merged = mergeAutomationRuntime(model([task()]), runtime());
   const item = merged.tasks[0]!;
   assert.equal(item.status, "running");
   assert.equal(item.isActive, true);
   assert.equal(item.progressPercent, 50);
   assert.equal(item.progressText, "50%");
-  assert.equal(item.logTail, "new log");
+  assert.equal(item.appWorkflowOutcome, null);
+  assert.equal("logTail" in item, false);
   assert.equal(item.primaryAction, "Cancel");
   assert.equal(item.canRun, true);
   assert.equal(merged.activeTaskCount, 1);
@@ -100,7 +95,7 @@ test("block metadata remains the static source while runtime overlay is authorit
   const merged = selectAutomationBlockModel(fallback, block, runtime());
   assert.equal(merged.tasks[0]?.label, "block");
   assert.equal(merged.tasks[0]?.status, "running");
-  assert.equal(merged.tasks[0]?.logTail, "new log");
+  assert.equal(merged.tasks[0]?.appWorkflowOutcome, null);
 });
 
 test("stale detection compares the captured session and revision", () => {
@@ -150,19 +145,20 @@ test("terminal runtime status derives the current action instead of stale block 
   assert.equal(partial.progressPercent, 67);
 });
 
-test("partial runtime updates carry the live statement failures into the row", () => {
-  const source = task({ statementFailures: [] });
+test("runtime updates carry the durable typed outcome into the row", () => {
+  const source = task();
   const partialRuntime = {
     ...runtime().tasks[0]!,
     status: "partial" as const,
     progress: { ...runtime().tasks[0]!.progress, percent: 100 },
-    statementFailures: [{ typeId: "loan", error: "fixture failure" }],
+    appWorkflowOutcome: {
+      errorCode: null,
+      summary: { status: "partial" as const, counts: { skippedProductCount: 1, itemCount: 2 } },
+    },
   };
   const merged = mergeAutomationRuntimeTask(source, partialRuntime);
 
-  assert.deepEqual(merged.statementFailures, [
-    { typeId: "loan", error: "fixture failure" },
-  ]);
+  assert.deepEqual(merged.appWorkflowOutcome, partialRuntime.appWorkflowOutcome);
 });
 
 test("a newer terminal run replaces a stale terminal block row", () => {
@@ -173,7 +169,6 @@ test("a newer terminal run replaces a stale terminal block row", () => {
       runId: "run-old",
       progressPercent: 100,
       progressText: "100%",
-      logTail: "old terminal run",
       primaryAction: "Run",
     }),
   };
@@ -182,14 +177,17 @@ test("a newer terminal run replaces a stale terminal block row", () => {
     runId: "run-new",
     status: "completed" as const,
     progress: { ...runtime().tasks[0]!.progress, percent: 100 },
-    logTail: "new terminal run",
+    appWorkflowOutcome: {
+      errorCode: null,
+      summary: { status: "completed" as const, counts: { itemCount: 3 } },
+    },
   };
   const merged = mergeAutomationRuntimeTask(source, runtimeTask);
 
   assert.equal(merged.runId, "run-new");
   assert.equal(merged.status, "completed");
   assert.equal(merged.progressPercent, 100);
-  assert.equal(merged.logTail, "new terminal run");
+  assert.deepEqual(merged.appWorkflowOutcome, runtimeTask.appWorkflowOutcome);
 });
 
 test("an accepted active snapshot replaces a stale active block row", () => {
@@ -200,7 +198,6 @@ test("an accepted active snapshot replaces a stale active block row", () => {
       runId: "run-old",
       progressPercent: 18,
       progressText: "18%",
-      logTail: "old active run",
       primaryAction: "Cancel",
     }),
   };
@@ -209,7 +206,6 @@ test("an accepted active snapshot replaces a stale active block row", () => {
     runId: "run-new",
     status: "running" as const,
     progress: { ...runtime().tasks[0]!.progress, percent: 42 },
-    logTail: "new active run",
   };
   const merged = mergeAutomationRuntimeTask(source, runtimeTask);
 
@@ -217,7 +213,7 @@ test("an accepted active snapshot replaces a stale active block row", () => {
   assert.equal(merged.status, "running");
   assert.equal(merged.progressPercent, 42);
   assert.equal(merged.progressText, "42%");
-  assert.equal(merged.logTail, "new active run");
+  assert.equal(merged.appWorkflowOutcome, null);
 });
 
 test("each task receives only its own run progress update", () => {

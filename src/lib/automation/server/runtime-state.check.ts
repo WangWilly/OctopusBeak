@@ -4,10 +4,9 @@ import {
   assertAutomationRuntimeSnapshot,
   createAutomationRuntimeState,
   runtimeTaskSnapshotFromRun,
-  sanitizeAutomationLogTail,
 } from "./runtime-state.ts";
 
-test("runtime state broadcasts monotonic full snapshots and bounds logs", () => {
+test("runtime state broadcasts monotonic snapshots with typed outcomes and no log payload", () => {
   const state = createAutomationRuntimeState("session-test");
   const events: number[] = [];
   state.subscribe((snapshot) => events.push(snapshot.revision));
@@ -18,21 +17,23 @@ test("runtime state broadcasts monotonic full snapshots and bounds logs", () => 
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: "download", completed: 1, total: 2, percent: 50, attempt: 1 },
-    statementFailures: [],
-    logTail: `${"x".repeat(70_000)}\n${"y".repeat(70_000)}`,
-    errorMessage: null,
+    appWorkflowOutcome: {
+      errorCode: "source-validation-failed",
+      summary: { status: "failed", counts: { rowCount: 12 } },
+    },
     updatedAt: new Date().toISOString(),
   });
   assert.equal(snapshot.sessionId, "session-test");
   assert.equal(snapshot.revision, 1);
   assert.deepEqual(events, [1]);
-  assert.ok(Buffer.byteLength(snapshot.tasks[0]!.logTail, "utf8") <= 64 * 1024);
+  assert.deepEqual(snapshot.tasks[0]!.appWorkflowOutcome, {
+    errorCode: "source-validation-failed",
+    summary: { status: "failed", counts: { rowCount: 12 } },
+  });
+  assert.equal("logTail" in snapshot.tasks[0]!, false);
+  assert.equal("errorMessage" in snapshot.tasks[0]!, false);
+  assert.equal("statementFailures" in snapshot.tasks[0]!, false);
   assert.equal(state.snapshot().tasks[0]?.runId, "run-1");
-});
-
-test("log sanitizer redacts secret-like fields", () => {
-  assert.match(sanitizeAutomationLogTail("password=top-secret token:abc"), /password=\[REDACTED\]/);
-  assert.doesNotMatch(sanitizeAutomationLogTail("password=top-secret"), /top-secret/);
 });
 
 test("runtime snapshot rejects malformed persisted progress and duplicate tasks", () => {
@@ -43,9 +44,7 @@ test("runtime snapshot rejects malformed persisted progress and duplicate tasks"
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: "sync", completed: 1, total: 2, percent: 50, attempt: 1 },
-    statementFailures: [],
-    logTail: "safe",
-    errorMessage: null,
+    appWorkflowOutcome: null,
     updatedAt: new Date().toISOString(),
   };
   assert.doesNotThrow(() => assertAutomationRuntimeSnapshot({
@@ -82,8 +81,7 @@ test("every run has a determinate terminal progress state", () => {
       percent: 75,
       attempt: 1,
     },
-    logTail: "safe",
-    errorMessage: null,
+    appWorkflowOutcome: null,
   };
   const partial = runtimeTaskSnapshotFromRun(run);
   assert.equal(partial.status, "partial");
@@ -111,9 +109,7 @@ test("production runtime state rejects unknown active tasks before publishing", 
       attempt: 1,
       maxAttempts: 1,
       progress: { phaseCode: null, completed: null, total: null, percent: null, attempt: 1 },
-      statementFailures: [],
-      logTail: "",
-      errorMessage: null,
+      appWorkflowOutcome: null,
       updatedAt: new Date().toISOString(),
     }),
     /automation-unknown-active-task/,
@@ -126,9 +122,7 @@ test("production runtime state rejects unknown active tasks before publishing", 
     attempt: 1,
     maxAttempts: 1,
     progress: { phaseCode: null, completed: 1, total: 1, percent: 100, attempt: 1 },
-    statementFailures: [],
-    logTail: "",
-    errorMessage: null,
+    appWorkflowOutcome: null,
     updatedAt: new Date().toISOString(),
   }));
   assert.equal(broadcasts, 1);
