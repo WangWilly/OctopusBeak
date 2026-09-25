@@ -964,13 +964,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "esun-credit-card-statements",
     label: "ESun credit card statements",
-    script: "run:esun-credit-card-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/esun-credit-card-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:esun-credit-card-statements",
+    command: [],
+    workflowId: "esun-credit-card-statements",
     kind: "crawler",
     credentialGroupId: "esun",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[1].credentialKeys,
