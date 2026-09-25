@@ -11,6 +11,10 @@ import type {
   FubonAllWorkflowOutput,
 } from "../../../workflows/fubon-all-statements.ts";
 import type {
+  YuantaAllWorkflowInput,
+  YuantaAllWorkflowOutput,
+} from "../../../workflows/yuanta-all-statements.ts";
+import type {
   CathayAllProviderWorkflowInput,
   CathayAllProviderWorkflowOutput,
 } from "../../../workflows/cathay-all-statements.ts";
@@ -53,6 +57,20 @@ const fubonAllStatementsWorkflow: WorkflowDefinition<
   },
 };
 
+const yuantaAllStatementsWorkflow: WorkflowDefinition<
+  YuantaAllWorkflowInput,
+  YuantaAllWorkflowOutput
+> = {
+  id: "yuanta-all-statements",
+  requiresFinancialCommit: true,
+  async run(context, input) {
+    const { yuantaAllStatementsWorkflow: definition } = await import(
+      "../yuanta-all-workflow.ts"
+    );
+    return await definition.run(context, input);
+  },
+};
+
 /** One registration catalog for workflows activated on the App executor. */
 export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
   {
@@ -88,6 +106,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           esun_user_id: environment.LIBRETTO_CLOUD_ESUN_USER_ID ?? "",
           esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
           esun_password: environment.LIBRETTO_CLOUD_ESUN_PASSWORD ?? "",
+        },
+      };
+    },
+  },
+  {
+    definition: yuantaAllStatementsWorkflow,
+    startUrl: "https://ebank.yuantabank.com.tw/nib/ibanc.jsp",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          yuanta_user_id: environment.LIBRETTO_CLOUD_YUANTA_USER_ID ?? "",
+          yuanta_account: environment.LIBRETTO_CLOUD_YUANTA_ACCOUNT ?? "",
+          yuanta_password: environment.LIBRETTO_CLOUD_YUANTA_PASSWORD ?? "",
         },
       };
     },

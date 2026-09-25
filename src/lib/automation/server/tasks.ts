@@ -972,15 +972,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-all-statements",
     label: "Yuanta all statements",
-    script: "run:yuanta-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/yuanta-all-statements.ts",
-      "--headless",
-      "--params",
-      '{"statements":{"telemetry":true}}',
-    ],
+    script: "workflow:yuanta-all-statements",
+    command: [],
+    workflowId: "yuanta-all-statements",
     kind: "crawler",
     credentialGroupId: "yuanta",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[2].credentialKeys,

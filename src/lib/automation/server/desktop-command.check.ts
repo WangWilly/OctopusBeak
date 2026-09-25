@@ -33,28 +33,20 @@ assert.throws(
 
 const yuanta = taskById("yuanta-all-statements");
 assert.ok(yuanta);
-assert.deepEqual(resolveTaskCommand(yuanta, {}, env).args.slice(-2), [
-  "--params",
-  '{"statements":{"telemetry":true}}',
-]);
-assert.deepEqual(
-  resolveTaskCommand(yuanta, { session: "ses-octopus-123" }, env).args.slice(
-    -4,
-  ),
-  [
-    "--params",
-    '{"statements":{"telemetry":true}}',
-    "--session",
-    "ses-octopus-123",
-  ],
+assert.equal(yuanta.script, "workflow:yuanta-all-statements");
+assert.equal(yuanta.workflowId, "yuanta-all-statements");
+assert.deepEqual(yuanta.command, []);
+assert.throws(
+  () => resolveTaskCommand(yuanta, {}, env),
+  /App workflow tasks do not have a Libretto command/u,
 );
-assert.deepEqual(
-  resolveTaskCommand(
-    yuanta,
-    { resumeSession: "ses-octopus-123" },
-    env,
-  ).args.slice(-3),
-  ["resume", "--session", "ses-octopus-123"],
+assert.throws(
+  () => resolveTaskCommand(yuanta, { session: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
+);
+assert.throws(
+  () => resolveTaskCommand(yuanta, { resumeSession: "ses-octopus-123" }, env),
+  /App workflow tasks do not have a Libretto command/u,
 );
 
 const cathay = taskById("cathay-all-statements");
