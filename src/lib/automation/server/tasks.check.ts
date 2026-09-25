@@ -78,27 +78,15 @@ assert.deepEqual(hncbStatements.command, [
 const ctbcStatements = taskById("ctbc-statements");
 assert.ok(ctbcStatements);
 assert.equal(ctbcStatements.id, "ctbc-statements");
-assert.equal(ctbcStatements.script, "run:ctbc-statements");
-assert.deepEqual(ctbcStatements.command, [
-  "libretto",
-  "run",
-  "src/workflows/ctbc-statements.ts",
-  "--headless",
-  "--params",
-  '{"telemetry":true}',
-]);
+assert.equal(ctbcStatements.script, "workflow:ctbc-statements");
+assert.equal(ctbcStatements.workflowId, "ctbc-statements");
+assert.deepEqual(ctbcStatements.command, []);
 const postStatements = taskById("post-statements");
 assert.ok(postStatements);
 assert.equal(postStatements.id, "post-statements");
-assert.equal(postStatements.script, "run:post-statements");
-assert.deepEqual(postStatements.command, [
-  "libretto",
-  "run",
-  "src/workflows/post-statements.ts",
-  "--headless",
-  "--params",
-  '{"telemetry":true}',
-]);
+assert.equal(postStatements.script, "workflow:post-statements");
+assert.equal(postStatements.workflowId, "post-statements");
+assert.deepEqual(postStatements.command, []);
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "sinopac")
     ?.statementTypes,
