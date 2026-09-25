@@ -1091,13 +1091,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "linebank-statements",
     label: "LINE Bank statements",
-    script: "run:linebank-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/linebank-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:linebank-statements",
+    command: [],
+    workflowId: "linebank-statements",
     kind: "crawler",
     credentialGroupId: "linebank",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[9].credentialKeys,

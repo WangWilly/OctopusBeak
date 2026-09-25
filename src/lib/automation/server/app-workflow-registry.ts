@@ -1,6 +1,7 @@
 import { einvoicePersonalInvoicesWorkflow } from "../einvoice-workflow.ts";
 import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.ts";
 import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
+import { linebankStatementsWorkflow } from "../linebank-workflow.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 
 type AppWorkflowRegistration = Readonly<{
@@ -45,6 +46,21 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
           ctbc_account: environment.LIBRETTO_CLOUD_CTBC_ACCOUNT ?? "",
           ctbc_password: environment.LIBRETTO_CLOUD_CTBC_PASSWORD ?? "",
         },
+      };
+    },
+  },
+  {
+    definition: linebankStatementsWorkflow,
+    startUrl: "https://accessibility.linebank.com.tw/login",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          linebank_user_id: environment.LIBRETTO_CLOUD_LINEBANK_USER_ID ?? "",
+          linebank_account: environment.LIBRETTO_CLOUD_LINEBANK_ACCOUNT ?? "",
+          linebank_password: environment.LIBRETTO_CLOUD_LINEBANK_PASSWORD ?? "",
+        },
+        accountFilters: [],
+        currencyFilters: [],
       };
     },
   },
