@@ -31,6 +31,8 @@ export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
 export type AutomationTask = AutomationTaskSummary & {
   command: readonly string[];
   maxAttempts: number;
+  /** App-owned typed workflow definition, when this task has migrated. */
+  workflowId?: string;
 };
 
 const localized = (en: string, zh: string) => ({ en, "zh-TW": zh });
@@ -1115,13 +1117,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "einvoice-personal-invoices",
     label: "E-Invoice personal invoices",
-    script: "run:einvoice-personal-invoices",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/einvoice-personal-invoices.ts",
-      "--headless",
-    ],
+    script: "workflow:einvoice-personal-invoices",
+    command: [],
+    workflowId: "einvoice-personal-invoices",
     kind: "crawler",
     credentialGroupId: "einvoice",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[10].credentialKeys,

@@ -9,6 +9,7 @@ import type {
 import { transformHumanAssistanceContract } from "../human-assistance.ts";
 import type { VerificationSelectionPoint } from "./verification-solver.ts";
 import { cdpEndpointForSession } from "./libretto-session.ts";
+import { appWorkflowPageForSession } from "./app-browser-host.ts";
 
 export type ViewerInput =
   | { type: "click"; x: number; y: number }
@@ -242,6 +243,8 @@ function visiblePage(browser: Browser, session: string) {
 }
 
 async function withPausedPage<T>(session: string, action: (page: Page) => Promise<T>) {
+  const appWorkflowPage = appWorkflowPageForSession(session);
+  if (appWorkflowPage) return action(appWorkflowPage);
   const endpoint = cdpEndpointForSession(session);
   if (!endpoint) {
     throw new Error(

@@ -91,6 +91,9 @@ export function resolveTaskCommand(
   options: { resumeSession?: string; session?: string } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedAutomationCommand {
+  if (task.workflowId) {
+    throw new Error("App workflow tasks do not have a Libretto command.");
+  }
   if (options.resumeSession) {
     return resolveLibrettoCommand(["resume", "--session", options.resumeSession], env);
   }
