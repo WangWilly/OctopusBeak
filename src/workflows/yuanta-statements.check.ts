@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
@@ -10,6 +12,7 @@ import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
@@ -186,6 +189,7 @@ assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWor
 assert.doesNotMatch(source, /from ["']node:fs\/promises["']|writeBankTransactionsFile|downloads[\\/]yuanta-statements/u, "the domestic provider must not write statement source or output files");
 assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic provider must not write standalone logs or expose a legacy workflow entry");
 assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
+assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
 assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
 const popup = new DelayedVisibilityLocator(20);
@@ -592,4 +596,322 @@ try {
 } finally {
   process.chdir(originalCwd);
   await rm(typedOutputDir, { recursive: true, force: true });
+}
+
+const browserFixtureBytes = Buffer.from(
+  "IrFiuLkiLCKxYrDIpOm0wSIsIqXmqfak6bTBIiwipeap9q7JtqEiLCKl5qn2u6Gp+iIsIqTkpViq98NCIiwipnOkSqr3w0IiLCKxYq2xvmzDQiIsIrK8vtq4ub1YIiwis8a1+SIKIllVQU5UQS1BQ0NPVU5ULTAwMSIsIjIwMjYwODAyIiwiMjAyNjA4MDIiLCIwOToxMDoxMSIsIkNMRUFOIERFUE9TSVQiLCIiLCIxMDAiLCI5MDAiLCIiLCIiCg==",
+  "base64",
+);
+const streamedFixtureLimit = 25 * 1024 * 1024;
+const streamedFixtureTotal = streamedFixtureLimit + 32 * 1024 * 1024;
+let fixtureCookie: string | undefined;
+type FixtureBodyMode =
+  | "success"
+  | "forbidden"
+  | "invalid-big5"
+  | "declared-oversize"
+  | "streamed-oversize"
+  | "redirect-cross-origin"
+  | "redirect-same-origin"
+  | "unsafe-filename"
+  | "slow";
+let fixtureHref: string | null = "/export.csv";
+let fixtureBaseHref: string | null = null;
+let fixtureBodyMode: FixtureBodyMode = "success";
+let crossOriginRequestCount = 0;
+let streamedFixtureBytes = 0;
+let streamWasCanceledEarly = false;
+const browserFixtureServer = createServer((request, response) => {
+  if (request.url?.startsWith("/start")) {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "set-cookie": "yuanta-fixture-session=present; Path=/; SameSite=Lax",
+    });
+    const base = fixtureBaseHref === null
+      ? ""
+      : `<base href="${fixtureBaseHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}">`;
+    const href = fixtureHref === null
+      ? ""
+      : ` href="${fixtureHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}"`;
+    response.end(`${base}<a class="order_2 m_color_check"${href}>下載CSV檔</a>`);
+    return;
+  }
+  if (request.url === "/export.csv" || request.url === "/export-final.csv") {
+    fixtureCookie = request.headers.cookie;
+    if (fixtureBodyMode === "forbidden") {
+      response.writeHead(403, { "content-length": "0" });
+      response.end();
+      return;
+    }
+    if (fixtureBodyMode === "invalid-big5") {
+      response.writeHead(200, {
+        "content-type": "text/csv",
+        "content-disposition": 'attachment; filename="invalid.csv"',
+        "content-length": "1",
+      });
+      response.end(Buffer.from([0x81]));
+      return;
+    }
+    if (fixtureBodyMode === "declared-oversize") {
+      response.writeHead(200, {
+        "content-type": "text/csv",
+        "content-length": String(25 * 1024 * 1024 + 1),
+      });
+      response.flushHeaders();
+      return;
+    }
+    if (fixtureBodyMode === "streamed-oversize") {
+      response.writeHead(200, { "content-type": "text/csv" });
+      let finished = false;
+      const sendChunk = () => {
+        if (finished || response.destroyed) return;
+        const length = Math.min(64 * 1024, streamedFixtureTotal - streamedFixtureBytes);
+        if (length <= 0) {
+          finished = true;
+          response.end();
+          return;
+        }
+        streamedFixtureBytes += length;
+        const canContinue = response.write(Buffer.alloc(length, 0x41));
+        if (streamedFixtureBytes >= streamedFixtureTotal) {
+          finished = true;
+          response.end();
+        } else if (canContinue) {
+          setTimeout(sendChunk, 8);
+        } else {
+          response.once("drain", () => setTimeout(sendChunk, 8));
+        }
+      };
+      response.on("close", () => {
+        finished = true;
+        streamWasCanceledEarly = streamedFixtureBytes < streamedFixtureTotal;
+      });
+      sendChunk();
+      return;
+    }
+    if (fixtureBodyMode === "slow") {
+      response.writeHead(200, { "content-length": "100" });
+      response.flushHeaders();
+      const timer = setTimeout(() => response.end("x".repeat(100)), 5_000);
+      response.on("close", () => clearTimeout(timer));
+      return;
+    }
+    if (request.url === "/export.csv" && fixtureBodyMode === "redirect-cross-origin") {
+      response.writeHead(302, { location: crossOriginFixtureUrl, "content-length": "0" });
+      response.end();
+      return;
+    }
+    if (request.url === "/export.csv" && fixtureBodyMode === "redirect-same-origin") {
+      response.writeHead(302, { location: "/export-final.csv", "content-length": "0" });
+      response.end();
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/csv; charset=big5",
+      "content-disposition": fixtureBodyMode === "unsafe-filename"
+        ? 'attachment; filename="../private.csv"'
+        : 'attachment; filename="yuanta-fixture.csv"',
+      "content-length": String(browserFixtureBytes.byteLength),
+    });
+    response.end(browserFixtureBytes);
+    return;
+  }
+  response.writeHead(404, { "content-length": "0" });
+  response.end();
+});
+const crossOriginFixtureServer = createServer((_request, response) => {
+  crossOriginRequestCount += 1;
+  response.writeHead(200, { "content-length": "0" });
+  response.end();
+});
+await new Promise<void>((resolve, reject) => {
+  crossOriginFixtureServer.once("error", reject);
+  crossOriginFixtureServer.listen(0, "127.0.0.1", resolve);
+});
+const crossOriginFixtureAddress = crossOriginFixtureServer.address();
+assert.ok(crossOriginFixtureAddress && typeof crossOriginFixtureAddress !== "string");
+const crossOriginFixtureUrl = `http://127.0.0.1:${crossOriginFixtureAddress.port}/export.csv`;
+await new Promise<void>((resolve, reject) => {
+  browserFixtureServer.once("error", reject);
+  browserFixtureServer.listen(0, "127.0.0.1", resolve);
+});
+const browserFixtureAddress = browserFixtureServer.address();
+assert.ok(browserFixtureAddress && typeof browserFixtureAddress !== "string");
+const browserFixtureBaseUrl = `http://127.0.0.1:${browserFixtureAddress.port}`;
+const browserFixtureDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-deposit-browser-fixture-"),
+);
+const browserFixtureOutputDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-deposit-output-fixture-"),
+);
+const browserFixtureOriginalCwd = process.cwd();
+process.chdir(browserFixtureOutputDirectory);
+let observedBrowserDownload = false;
+try {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  try {
+    let runOrdinal = 0;
+    async function collectFixture(
+      controller = new AbortController(),
+      items: PGliteWorkflowRunItem[] = [],
+    ): Promise<{ result: Awaited<ReturnType<typeof runYuantaStatements>>; items: PGliteWorkflowRunItem[] }> {
+      runOrdinal += 1;
+      observedBrowserDownload = false;
+      fixtureCookie = undefined;
+      const signal = controller.signal;
+      const browserPort = createAppWorkflowBrowserPort({
+        taskId: "yuanta-domestic-fixture",
+        taskRunId: `yuanta-domestic-run-${runOrdinal}`,
+        userDataDirectory: browserFixtureDirectory,
+        startUrl: `${browserFixtureBaseUrl}/start`,
+        signal,
+        launchPersistentContext: async () =>
+          await browser.newContext({ acceptDownloads: false }),
+      });
+      const result = await browserPort.withPage(async (page) => {
+        page.on("download", () => { observedBrowserDownload = true; });
+        return await runYuantaStatements(
+          page,
+          { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+          {
+            preparePage: async () => undefined,
+            readDepositAccountOptions: async () => [workflowAccount],
+            queryAccount: async () => undefined,
+            observedAt: stableConnectionIdentity.observedAt,
+            readCurrentDepositBalances: async () => [],
+            sourceConnectionScope: stableConnectionScope,
+            sourceConnectionKey: stableConnectionKey,
+            deferredCommitItems: items,
+            sourceText: strictSourceText,
+            signal,
+          },
+        );
+      });
+      return { result, items };
+    }
+
+    const success = await collectFixture();
+    const result = success.result;
+    const browserFixtureItems = success.items;
+    assert.equal(result.sourceCount, 1);
+    assert.ok(result.itemCount > 0);
+    const typedCommandPayload = JSON.stringify(browserFixtureItems);
+    const expectedFilenameDigest = createHash("sha256")
+      .update("yuanta-filename-v1\0")
+      .update("yuanta-fixture.csv")
+      .digest("base64url");
+    assert.ok(
+      typedCommandPayload.includes(expectedFilenameDigest),
+      "the selected safe response filename must contribute to source metadata",
+    );
+    assert.ok(
+      typedCommandPayload.includes(
+        createHash("sha256").update(browserFixtureBytes).digest("base64url"),
+      ),
+      "the raw export bytes must retain their content digest",
+    );
+    assert.equal(
+      fixtureCookie,
+      "yuanta-fixture-session=present",
+      "the in-memory request must carry the authenticated same-origin cookie",
+    );
+    assert.equal(
+      observedBrowserDownload,
+      false,
+      "App acceptDownloads:false collection must not trigger a browser download",
+    );
+    assert.deepEqual(await readdir(browserFixtureDirectory), ["data"]);
+    assert.deepEqual(await readdir(join(browserFixtureDirectory, "data")), ["automation"]);
+    assert.deepEqual(await readdir(join(browserFixtureDirectory, "data", "automation")), ["browser-state"]);
+    assert.deepEqual(
+      await readdir(join(browserFixtureDirectory, "data", "automation", "browser-state", "yuanta-domestic-fixture")),
+      [],
+      "the export must remain in memory and not become a profile file",
+    );
+
+    for (const testCase of [
+      { href: null, mode: "success" as const, error: /no fetchable URL/u },
+      { href: "javascript:void(0)", mode: "success" as const, error: /no fetchable URL/u },
+      { href: crossOriginFixtureUrl, mode: "success" as const, error: /left the authenticated origin/u },
+      {
+        href: "/export.csv",
+        base: `${new URL(crossOriginFixtureUrl).origin}/`,
+        mode: "success" as const,
+        error: /left the authenticated origin/u,
+      },
+      { href: "/export.csv", mode: "redirect-cross-origin" as const, error: /same-origin|Failed to fetch|redirect/u },
+      { href: "/export.csv", mode: "forbidden" as const, error: /did not return a complete response/u },
+      { href: "/export.csv", mode: "unsafe-filename" as const, error: /filename is unsafe/u },
+      { href: "/export.csv", mode: "invalid-big5" as const, error: /Source text integrity failed/u },
+      { href: "/export.csv", mode: "declared-oversize" as const, error: /in-memory size limit/u },
+      { href: "/export.csv", mode: "streamed-oversize" as const, error: /in-memory size limit/u },
+    ]) {
+      fixtureHref = testCase.href;
+      fixtureBaseHref = "base" in testCase ? testCase.base ?? null : null;
+      fixtureBodyMode = testCase.mode;
+      const rejectedItems: PGliteWorkflowRunItem[] = [];
+      await assert.rejects(
+        () => collectFixture(new AbortController(), rejectedItems),
+        testCase.error,
+      );
+      assert.deepEqual(
+        rejectedItems,
+        [],
+        `failed fixture ${testCase.mode} must not yield Canonical Financial Commit items`,
+      );
+    }
+    assert.equal(
+      crossOriginRequestCount,
+      0,
+      "a cross-origin target and a cross-origin redirect must not reach the target server",
+    );
+    assert.ok(
+      streamedFixtureBytes > streamedFixtureLimit,
+      "the streamed limit test must send bytes past the cap before the reader cancels",
+    );
+    assert.equal(
+      streamWasCanceledEarly,
+      true,
+      "the browser response body reader must cancel before the oversized fixture finishes",
+    );
+    assert.ok(streamedFixtureBytes < streamedFixtureTotal);
+
+    fixtureHref = "/export.csv";
+    fixtureBaseHref = null;
+    fixtureBodyMode = "redirect-same-origin";
+    const redirectedSuccess = await collectFixture();
+    assert.equal(redirectedSuccess.result.sourceCount, 1);
+    assert.ok(redirectedSuccess.items.length > 0);
+    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
+    assert.equal(observedBrowserDownload, false);
+
+    fixtureHref = "/export.csv";
+    fixtureBaseHref = null;
+    fixtureBodyMode = "slow";
+    const cancellation = new AbortController();
+    const canceledItems: PGliteWorkflowRunItem[] = [];
+    const pending = collectFixture(cancellation, canceledItems);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    cancellation.abort(new Error("fixture run canceled"));
+    await assert.rejects(pending, /fixture run canceled/u);
+    assert.deepEqual(canceledItems, [], "canceled retrieval must return no Canonical Financial Commit items");
+    assert.deepEqual(
+      await readdir(browserFixtureOutputDirectory),
+      [],
+      "successful and rejected collection paths must leave no source, output, or log files",
+    );
+  } finally {
+    await browser.close();
+  }
+} finally {
+  process.chdir(browserFixtureOriginalCwd);
+  await new Promise<void>((resolve, reject) => {
+    browserFixtureServer.close((error) => error ? reject(error) : resolve());
+  });
+  await new Promise<void>((resolve, reject) => {
+    crossOriginFixtureServer.close((error) => error ? reject(error) : resolve());
+  });
+  await rm(browserFixtureDirectory, { recursive: true, force: true });
+  await rm(browserFixtureOutputDirectory, { recursive: true, force: true });
 }
