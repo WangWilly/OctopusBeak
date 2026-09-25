@@ -64,13 +64,9 @@ assert.deepEqual(
 const hncbStatements = taskById("hncb-statements");
 assert.ok(hncbStatements);
 assert.equal(hncbStatements.id, "hncb-statements");
-assert.equal(hncbStatements.script, "run:hncb-statements");
-assert.deepEqual(hncbStatements.command, [
-  "libretto",
-  "run",
-  "src/workflows/hncb-statements.ts",
-  "--headless",
-]);
+assert.equal(hncbStatements.script, "workflow:hncb-statements");
+assert.equal(hncbStatements.workflowId, "hncb-statements");
+assert.deepEqual(hncbStatements.command, []);
 const ctbcStatements = taskById("ctbc-statements");
 assert.ok(ctbcStatements);
 assert.equal(ctbcStatements.id, "ctbc-statements");
