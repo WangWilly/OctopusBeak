@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
 import {
   buildEsunCanonicalCreditCardCapture,
   buildEsunSettledPeriodsFromIssuerSummaries,
@@ -14,9 +15,21 @@ import {
   type StatementRow,
   isEsunCompleteGrid,
   parseEsunCurrentCreditCardUsedCreditHtml,
+  esunCurrentUsedCreditFromSummaryResponse,
+  esunCreditCurrentSnapshotCapture,
+  rowsFromTimelineResponse,
+  issuerSummaryFromBillResponse,
 } from "./esun-credit-card-statements.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+import {
+  esunCanonicalSpineCapture,
+  esunNeutralCreditCardCapture,
+} from "../ledger/canonical/esun-credit-card-admission.ts";
+import { creditCardBalanceCommandRequest, creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
+import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
+import { commitPGliteCanonicalCreditCardBalanceCapture, commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
 
 const workflowSource = await readFile(
   new URL("./esun-credit-card-statements.ts", import.meta.url),
@@ -34,6 +47,38 @@ assert.doesNotMatch(
   workflowSource,
   /canonicalFinancialLedgerDir|canonicalSourceLedgerDir|createCanonicalSourceStore|canonicalDatabaseWriterKey|DatabaseSync/,
 );
+
+assert.deepEqual(
+  rowsFromTimelineResponse({ body: {
+    rtnCode: "S", cursor: 1, transList: [{
+      year: "2026", month: "09", transDetailList: [{
+        merchantName: "Sample shop", paymentCurrency: "TWD", paymentAmount: 123,
+        transCurrency: "USD", transAmount: 4, cardNo: "4323-XXXX-XXXX-8397",
+        statusName: "未入帳", transMonthDay: "0921",
+      }],
+    }],
+  } }).rows.map((row) => [row.consumeDate, row.paymentStatus, row.foreignCurrency, row.twdAmount]),
+  [["2026/09/21", "unbilled", "USD", "123"]],
+);
+assert.throws(() => rowsFromTimelineResponse({ body: {
+  rtnCode: "S", cursor: 1, transList: [{
+    year: "2026", month: "09", transDetailList: [{
+      merchantName: "Sample shop", paymentCurrency: "TWD", paymentAmount: 123,
+      transCurrency: "TWD", transAmount: 123, cardNo: "4323-XXXX-XXXX-8397",
+      statusName: "未知", transMonthDay: "0921",
+    }],
+  }],
+} }));
+assert.deepEqual(issuerSummaryFromBillResponse({ body: {
+  rtnCode: "S", billInfo: {
+    billDate: "20260915", paymentDueDate: "20261001",
+    billTotalInfoList: [{ billTotalCurrency: "TWD", billTotalAmount: 11210 }],
+    minimumPaymentInfoList: [{ minimumPaymentCurrency: "TWD", minimumPaymentAmount: 4183 }],
+  },
+} }), {
+  cycleEnd: "2026/09/15", dueDate: "2026/10/01",
+  balance: "11210", minimumPayment: "4183", currency: "TWD",
+});
 
 assert.equal(
   isEsunCompleteGrid({
@@ -88,6 +133,22 @@ assert.throws(
     `),
   /ambiguous/u,
 );
+
+const redesignedCurrentCredit = esunCurrentUsedCreditFromSummaryResponse({
+  resultCode: "0000",
+  resultTime: "2026-09-24 15:21:22",
+  resultBody: {
+    hasCreditCard: true,
+    usedCreditLimit: "46,989",
+    availableCreditLimit: "53,011",
+  },
+}, {
+  endpoint: "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+  httpDate: "Thu, 24 Sep 2026 07:21:22 GMT",
+});
+assert(redesignedCurrentCredit);
+assert.equal(redesignedCurrentCredit.usedCredit, "46989");
+assert.equal(redesignedCurrentCredit.queryTime, "2026-09-24 15:21:22");
 
 const identity = deriveEsunCanonicalHumanAttestation(
   credentials,
@@ -150,7 +211,7 @@ assert.deepEqual(
 );
 assert.equal(
   identity.identityEpochKey,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
 );
 assert.notEqual(
   identity.sourceConnectionKey,
@@ -316,6 +377,78 @@ const canonicalCapture = buildEsunCanonicalCreditCardCapture({
   settledPeriods,
 });
 assert(canonicalCapture);
+const timelineGrid = {
+  kind: "past-year-timeline" as const,
+  firstMonth: "2026/08",
+  lastMonth: "2025/08",
+  pageCount: 3,
+  monthCount: 13,
+  capturedRowCount: 2,
+  terminal: true as const,
+};
+const timelineCapture = buildEsunCanonicalCreditCardCapture({
+  startDate: "2025/08/26",
+  endDate: "2026/08/26",
+  identity,
+  statementRows: [billedRow],
+  unbilledRows: [unbilledRow],
+  grid: timelineGrid,
+  capture: completeCapture,
+  instrumentFingerprintSecret: managedSecret,
+  settledPeriods,
+});
+assert(timelineCapture);
+const currentCreditCapture = esunCreditCurrentSnapshotCapture(timelineCapture, redesignedCurrentCredit);
+assert.equal(currentCreditCapture.authorityRoute, "esun/credit-card/current-used-credit-v2");
+assert.equal(currentCreditCapture.observations[0]?.time.effectiveAt, "2026-09-24T07:21:22.000Z");
+assert.throws(
+  () => esunCreditCurrentSnapshotCapture(timelineCapture, {
+    ...redesignedCurrentCredit,
+    httpDate: "Thu, 24 Sep 2026 07:22:22 GMT",
+  }),
+  /resultTime and HTTP Date differ/u,
+);
+assert.equal(timelineCapture.scope.completeness.grid.kind, "past-year-timeline");
+const timelineSpine = esunCanonicalSpineCapture(timelineCapture);
+assert.equal(timelineSpine.authorityRoute, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE);
+assert.equal(timelineSpine.pages[0]?.proofKind, "bounded-one-year-timeline");
+assert.equal(
+  timelineSpine.scope.completenessBasis,
+  "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
+);
+const timelineCommand = creditCardCommandRequestFromCanonicalCapture(
+  timelineSpine,
+  esunNeutralCreditCardCapture(timelineCapture),
+);
+assert.equal(timelineCommand.capture.routeKey, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE);
+test("E.SUN v3 timeline capture commits to a fresh PGlite database", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const result = await commitPGliteCanonicalCreditCardCapture(store, timelineCommand);
+    assert.equal(result.transactionCount, 2);
+    assert.equal(result.statementCount, 1);
+    const balanceResult = await commitPGliteCanonicalCreditCardBalanceCapture(
+      store,
+      creditCardBalanceCommandRequest(currentCreditCapture, timelineCommand.identity),
+    );
+    assert.equal(balanceResult.balanceRevisionCreated, true);
+  } finally {
+    await store.close();
+  }
+});
+assert.equal(buildEsunCanonicalCreditCardCapture({
+  startDate: "2025/08/26",
+  endDate: "2026/08/26",
+  identity,
+  statementRows: [billedRow],
+  unbilledRows: [unbilledRow],
+  grid: { ...timelineGrid, monthCount: 12 },
+  capture: completeCapture,
+  instrumentFingerprintSecret: managedSecret,
+  settledPeriods,
+}), undefined);
 assert.equal(canonicalCapture.transactions.length, 2);
 assert.equal(canonicalCapture.instruments.length, 1);
 assert.equal(canonicalCapture.instruments[0]?.cardMask, "****1234");

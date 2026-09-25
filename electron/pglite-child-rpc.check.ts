@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createConnection, createServer } from "node:net";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
 import {
@@ -29,6 +30,85 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+
+test("child RPC preserves UTF-8 characters split across socket chunks", async () => {
+  const label = "全家便利商店";
+  let received: string | undefined;
+  const provider = {
+    operational: { automation: { taskRunById: async (value: string) => {
+      received = value;
+      return null;
+    } } },
+    financial: {},
+  } as unknown as PGliteChildProvider;
+  const server = createPGliteChildRpcServer({ provider });
+  await server.ready;
+  const socket = createConnection(server.endpoint);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(JSON.stringify({
+      kind: "pglite-child-auth", version: 1, token: server.token,
+    }) + "\n");
+    await new Promise<void>((resolve, reject) => {
+      socket.once("data", () => resolve());
+      socket.once("error", reject);
+    });
+    const frame = Buffer.from(JSON.stringify({
+      kind: "pglite-operational-request", version: 1, id: 1,
+      operation: "automation.taskRunById", args: [label],
+    }) + "\n");
+    const split = frame.indexOf(Buffer.from("家")) + 1;
+    assert(split > 0);
+    socket.write(frame.subarray(0, split));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    socket.write(frame.subarray(split));
+    await waitFor(() => received !== undefined);
+    assert.equal(received, label);
+  } finally {
+    socket.destroy();
+    await server.close();
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "octopus-beak-utf8-rpc-"));
+  const endpoint = join(directory, "rpc.sock");
+  const rawServer = createServer((peer) => {
+    let buffer = "";
+    peer.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const frame = JSON.parse(buffer.slice(0, newline)) as { kind: string; id?: number };
+        buffer = buffer.slice(newline + 1);
+        if (frame.kind === "pglite-child-auth") {
+          peer.write(JSON.stringify({ kind: "pglite-child-auth-response", version: 1, ok: true }) + "\n");
+        } else {
+          const reply = Buffer.from(JSON.stringify({
+            kind: "pglite-operational-response", version: 1,
+            id: frame.id, ok: true, value: { label },
+          }) + "\n");
+          const split = reply.indexOf(Buffer.from("家")) + 1;
+          peer.write(reply.subarray(0, split));
+          setTimeout(() => peer.write(reply.subarray(split)), 20);
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => rawServer.listen(endpoint, resolve));
+  const child = createPGliteChildRpcClient({ endpoint, token: "A".repeat(43) });
+  try {
+    await child.ready;
+    const value = await child.operationalProvider.automation.taskRunById("fixture");
+    assert.equal((value as unknown as { label: string }).label, label);
+  } finally {
+    child.close();
+    await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("authenticated child RPC reaches the same worker named registries", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-pglite-child-rpc-"));

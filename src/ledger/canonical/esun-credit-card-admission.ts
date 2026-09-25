@@ -2,19 +2,19 @@ import { createHash } from "node:crypto";
 import { admitCanonicalFinancialDepositCapture, type CanonicalFinancialDepositValidatedCapture } from "./canonical-financial-deposit-admission.ts";
 import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-card-contracts.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
   isEsunCreditCardHumanAttestedAccountKey,
-  isEsunCreditCardHumanAttestedV2Active,
+  isEsunCreditCardHumanAttestedV3Active,
 } from "./esun-credit-card-human-attestation-contract.ts";
 
-export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
+export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
 
 export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   source: "esun",
   stream: "credit-card",
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
-  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.evidenceVersion,
+  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
+  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.evidenceVersion,
   accountType: "credit",
   accountSubtype: "credit_card",
   providerGuaranteed: false,
@@ -26,7 +26,7 @@ export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   statementRule: "issuer-close-due-total-minimum-with-prior-close-cycle-start",
   relationRule: "explicit-source-linkage-only",
   completenessRule:
-    "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
+    "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
 } as const);
 
 export const ESUN_CREDIT_CARD_MAX_PAGE_SIZE = 2_147_483_647;
@@ -82,6 +82,16 @@ export type EsunCreditCardTransactionInput = {
   sourceKey?: string;
 };
 
+export type EsunCreditCardTimeline = {
+  kind: "past-year-timeline";
+  firstMonth: string;
+  lastMonth: string;
+  pageCount: number;
+  monthCount: number;
+  capturedRowCount: number;
+  terminal: true;
+};
+
 export type EsunCreditCardGrid = {
   kind: "combined";
   currentPage: number;
@@ -89,7 +99,7 @@ export type EsunCreditCardGrid = {
   maximumPageSize: number;
   capturedRowCount: number;
   terminal: boolean;
-};
+} | EsunCreditCardTimeline;
 
 export type EsunCreditCardCompleteness = {
   snapshotMode: "full";
@@ -184,8 +194,8 @@ export type EsunCreditCardAdmittedCapture = Omit<
   instruments: readonly EsunCreditCardInstrumentInput[];
   transactions: readonly EsunCreditCardAdmittedTransaction[];
   statements: readonly EsunCreditCardAdmittedStatement[];
-  contractVersion: "esun/credit-card/human-attested-v2";
-  authorityRoute: "esun/credit-card/human-attested-v2";
+  contractVersion: "esun/credit-card/human-attested-v3";
+  authorityRoute: "esun/credit-card/human-attested-v3";
 };
 
 export type EsunCreditCardValidatedCapture = EsunCreditCardAdmittedCapture & {
@@ -651,17 +661,20 @@ function validateCompleteness(
   if (completeness.snapshotMode !== "full")
     fail("E.SUN canonical admission requires a complete capture.");
   const grid = completeness.grid;
-  if (
-    grid.kind !== "combined" ||
-    grid.currentPage !== 1 ||
-    grid.pageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
-    grid.maximumPageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
-    !grid.terminal ||
-    !Number.isSafeInteger(grid.capturedRowCount) ||
-    grid.capturedRowCount < 0 ||
-    grid.capturedRowCount !== transactions.length
-  )
-    fail("E.SUN capture requires a terminal page-one maximum-size grid with matching row count.");
+  if (grid.kind === "combined") {
+    if (
+      grid.currentPage !== 1 ||
+      grid.pageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
+      grid.maximumPageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
+      !grid.terminal ||
+      !Number.isSafeInteger(grid.capturedRowCount) ||
+      grid.capturedRowCount < 0 ||
+      grid.capturedRowCount !== transactions.length
+    )
+      fail("E.SUN capture requires a terminal page-one maximum-size grid with matching row count.");
+  } else if (!validTimelineEvidence(grid, capture.scope.startDate, capture.scope.endDate, transactions.length)) {
+    fail("E.SUN capture requires complete past-year timeline coverage with matching row count.");
+  }
   const billedCount = transactions.filter((row) => row.billingStatus === "billed").length;
   const unbilledCount = transactions.filter((row) => row.billingStatus === "unbilled").length;
   if (
@@ -708,6 +721,28 @@ function validateCompleteness(
     )
   )
     fail("E.SUN billed period evidence does not cover all billed rows.");
+}
+
+function validTimelineEvidence(
+  evidence: EsunCreditCardTimeline,
+  startDate: string,
+  endDate: string,
+  rowCount: number,
+): boolean {
+  const firstMonth = endDate.slice(0, 7).replace("-", "/");
+  const lastMonth = startDate.slice(0, 7).replace("-", "/");
+  const [firstYear, firstNumber] = firstMonth.split("/").map(Number);
+  const [lastYear, lastNumber] = lastMonth.split("/").map(Number);
+  return evidence.kind === "past-year-timeline" &&
+    evidence.terminal === true &&
+    evidence.firstMonth === firstMonth &&
+    evidence.lastMonth === lastMonth &&
+    (firstYear - lastYear) * 12 + firstNumber - lastNumber === 12 &&
+    evidence.monthCount === 13 &&
+    Number.isSafeInteger(evidence.pageCount) &&
+    evidence.pageCount > 0 &&
+    evidence.pageCount <= evidence.monthCount &&
+    evidence.capturedRowCount === rowCount;
 }
 
 function validateStatement(
@@ -789,8 +824,8 @@ const freezeDeep = <T>(value: T, seen = new WeakSet<object>()): T => {
 export function admitEsunCreditCardCapture(
   capture: EsunCreditCardCaptureInput,
 ): EsunCreditCardValidatedCapture {
-  if (!isEsunCreditCardHumanAttestedV2Active())
-    fail("E.SUN credit-card human-attested v1 contract is revoked.");
+  if (!isEsunCreditCardHumanAttestedV3Active())
+    fail("E.SUN credit-card human-attested v3 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("E.SUN credit-card capture is required.");
   text(capture.captureId, "Capture ID");
@@ -1103,13 +1138,18 @@ export type EsunCreditCardCanonicalCaptureOptions = {
 export function buildEsunCanonicalCreditCardCapture(
   options: EsunCreditCardCanonicalCaptureOptions,
 ): EsunCreditCardValidatedCapture {
-  if (
-    options.grid.currentPage !== 1 ||
-    options.grid.pageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
-    options.grid.maximumPageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
-    !options.grid.terminal
-  )
-    fail("E.SUN canonical capture requires a complete terminal maximum-size grid.");
+  if (options.grid.kind === "combined") {
+    if (
+      options.grid.currentPage !== 1 ||
+      options.grid.pageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
+      options.grid.maximumPageSize !== ESUN_CREDIT_CARD_MAX_PAGE_SIZE ||
+      !options.grid.terminal
+    )
+      fail("E.SUN canonical capture requires a complete terminal maximum-size grid.");
+  } else if (!validTimelineEvidence(options.grid, options.startDate, options.endDate,
+    options.statementRows.length + (options.unbilledRows?.length ?? 0))) {
+    fail("E.SUN canonical capture requires complete past-year timeline coverage.");
+  }
   const identity = resolvedIdentity(options.identity);
   const allRows = [
     ...options.statementRows,
@@ -1430,8 +1470,7 @@ export function esunCanonicalSpineCapture(
       endDate: capture.scope.endDate,
       scopeKind: "bounded-range",
       completeness: "complete-range",
-      completenessBasis:
-        "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
+      completenessBasis: ESUN_CREDIT_CARD_CAPTURE_CONTRACT.completenessRule,
       completenessRuleVersion: capture.contractVersion,
       absenceAuthority: null,
       contractFingerprint: fingerprint,
@@ -1465,7 +1504,9 @@ export function esunCanonicalSpineCapture(
         capture.captureId,
         capture.scope.completeness.grid,
       ]),
-      proofKind: "source-declared-terminal-grid",
+      proofKind: capture.scope.completeness.grid.kind === "combined"
+        ? "source-declared-terminal-grid"
+        : "bounded-one-year-timeline",
       contractFingerprint: fingerprint,
       preflightFingerprint: fingerprint,
       metadataJson: JSON.stringify(capture.scope.completeness.grid),
