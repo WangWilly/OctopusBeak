@@ -4,7 +4,7 @@ This is the production contract for automation and the implementation baseline f
 
 ## Production boundary
 
-Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner.
+Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. All 13 production tasks run in App-supervised workers, including exchange rates and MaiCoin.
 
 `WorkflowContext` injects narrow ports for browser access, strict source-text decoding and integrity checks, human assistance, stage events, cancellation, and the existing Canonical Financial Commit. The App's browser host supplies the Playwright page. Financial workflows receive only a typed commit capability; they cannot open the financial database or select an alternate persistence route. MaiCoin uses its own injected operational-persistence port.
 
@@ -36,7 +36,7 @@ The task catalog and executor wiring establish which path the App starts; fixtur
 
 Provider exports may arrive as browser downloads or HTTP responses, but the workflow consumes them as bounded byte streams or in-memory values. Production workflows do not save original exports, generated CSV/JSON, raw response bodies, file logs, or Libretto session telemetry. Charset handling and strict decoding go through the text port. Invalid encodings, critical replacement characters, incomplete pages, and failed source admission stop the source before Canonical Financial Commit. A commit failure receives a stable category; an ambiguous commit outcome is not replayed automatically.
 
-Browser authentication state may be kept in the App's dedicated browser-state directory for login continuity. Startup and daily cleanup remove inactive state older than the default 30 days. State still active in a run is not removed by cleanup. The development CLI uses a temporary, non-persistent browser context and does not share this App state directory.
+The App retains only validated browser cookies, encrypted with Electron safeStorage, in its dedicated browser-state directory. It never falls back to plaintext when encryption is unavailable. Each run uses a private temporary Chromium profile for the App viewer and worker CDP connection; that profile is removed when the run ends. Startup and daily cleanup remove abandoned temporary profiles for inactive tasks and retained cookies older than the default 30 days. A task that needs localStorage to preserve login may require a fresh login on its next run. The development CLI uses a temporary, non-persistent browser context and does not share App-managed authentication state.
 
 ## Run lifecycle and scheduling
 
