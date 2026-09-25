@@ -4,7 +4,7 @@ import {
   type EinvoiceWorkflowOutput,
 } from "../../workflows/einvoice-personal-invoices.ts";
 
-/** Typed App-owned definition; the Libretto default export remains for the migration period. */
+/** Typed App-owned definition for personal invoice collection. */
 export const einvoicePersonalInvoicesWorkflow: WorkflowDefinition<unknown, EinvoiceWorkflowOutput> = {
   id: "einvoice-personal-invoices",
   requiresFinancialCommit: true,

@@ -1,14 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
-import { createWorkflowFinancialCommitPort } from "../lib/automation/workflow-financial-commit.ts";
 import type {
   WorkflowContext,
   WorkflowFinancialCommitPort,
@@ -32,7 +24,6 @@ import {
   type CanonicalEInvoiceOccurrence,
 } from "../ledger/canonical/einvoice-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -207,10 +198,6 @@ type InvoiceReadResult = {
   invoiceCount: number;
 };
 
-const inputSchema = z.object({
-  /** Override only for isolated checks; desktop supplies LEDGER_DIR. */
-});
-
 const workflowInputSchema = z.object({
   credentials: z.object({
     einvoice_phone_number: z.string().trim().min(1),
@@ -238,19 +225,13 @@ const outputSchema = z.object({
   }),
 });
 
-type Input = z.infer<typeof inputSchema> & {
-  credentials: EinvoiceCredentials;
-};
-
 function requireCredential(
   credentials: EinvoiceCredentials,
   name: keyof EinvoiceCredentials,
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
+    throw new Error(`Missing E-Invoice credential ${name}.`);
   }
   return value;
 }
@@ -572,9 +553,8 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-/** Libretto's locator telemetry can observe a redirect between locating and
- * marking an action. Retrying these pre-submit form actions is safe: no login
- * request or CAPTCHA answer has been submitted yet. */
+/** Retry a pre-submit action when navigation invalidates its execution context.
+ * No login request or CAPTCHA answer has been submitted at this point. */
 export async function retryEinvoiceLoginNavigation<T>(action: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -1162,14 +1142,15 @@ async function collectCanonicalCapture(
   return { result, capture };
 }
 
-/** App-owned entry point. The legacy Libretto handler below remains during migration. */
+/** App-owned entry point for collecting and admitting E-Invoice statements. */
 export async function runEinvoiceProviderWorkflow(
   context: WorkflowContext,
   rawInput: unknown,
 ): Promise<EinvoiceWorkflowOutput> {
   const parsed = workflowInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E-Invoice workflow credentials are missing or invalid.");
-  if (!context.financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
   context.signal.throwIfAborted();
 
   const credentials = parsed.data.credentials;
@@ -1216,7 +1197,7 @@ export async function runEinvoiceProviderWorkflow(
       completed: 0,
       total: result.invoiceCount,
     });
-    const commit = await commitCanonicalCapture(capture, context.financialCommit, context.signal);
+    const commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
     await context.event("commit", "canonical-commit-completed", {
       completed: commit.invoiceCount,
       total: result.invoiceCount,
@@ -1236,86 +1217,27 @@ export async function runEinvoiceProviderWorkflow(
 
 export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
-  injectedCommit?: WorkflowFinancialCommitPort,
+  financialCommit: WorkflowFinancialCommitPort,
   signal?: AbortSignal,
 ) {
-  const client = injectedCommit ? null : requirePGliteChildRpcClientFromEnv();
-  try {
-    if (client) await client.ready;
-    const financialCommit = injectedCommit ?? (
-      client ? createWorkflowFinancialCommitPort(client.workflow) : null
-    );
-    if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
-    const result = await financialCommit.execute([{
-      provider: "einvoice",
-      product: "personal-invoice",
-      itemKey: capture.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
-        request: capture,
-      },
-    }], {
-      provider: "einvoice",
-      product: "personal-invoice",
-      ...(signal === undefined ? {} : { signal }),
-    });
-    const committed = result.items[0];
-    if (committed?.status !== "committed")
-      throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
-        .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-        .join(", ")}`);
-    return committed.value as PGliteCanonicalEInvoiceCommitResult;
-  } finally {
-    client?.close();
-  }
+  if (!financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
+  const result = await financialCommit.execute([{
+    provider: "einvoice",
+    product: "personal-invoice",
+    itemKey: capture.captureId,
+    command: {
+      kind: PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
+      request: capture,
+    },
+  }], {
+    provider: "einvoice",
+    product: "personal-invoice",
+    ...(signal === undefined ? {} : { signal }),
+  });
+  const committed = result.items[0];
+  if (committed?.status !== "committed")
+    throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
+      .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
+      .join(", ")}`);
+  return committed.value as PGliteCanonicalEInvoiceCommitResult;
 }
-
-export default workflow("einvoicePersonalInvoices", {
-  startUrl: LOGIN_URL,
-  credentials: ["einvoice_phone_number", "einvoice_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const authResult = await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await isSignedIn(ctx.page),
-      signIn: async () => {
-        await signInEinvoice(ctx.page, input.credentials, async (stage) => {
-          await emitHumanAssistanceStage(stage);
-          console.log(
-            "manual-auth-required: enter the e-invoice CAPTCHA in the browser, then run `npx libretto resume --session " +
-              ctx.session +
-              "`.",
-          );
-          await pause(ctx.session);
-          return "entered";
-        });
-      },
-    });
-
-    emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
-    const { result, capture } = await collectCanonicalCapture(
-      ctx.page,
-      input.credentials,
-      strictSourceText,
-      new AbortController().signal,
-      async (completed, total) => {
-        const percent = 20 + Math.floor((70 * completed) / total);
-        emitAutomationProgress({ phaseCode: "workflow", completed: percent, total: 100, percent });
-      },
-    );
-    const commit = await commitCanonicalCapture(capture);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-
-    return {
-      usedExistingSession: authResult.usedProfile,
-      invoiceCount: result.invoiceCount,
-      itemCount: commit.itemCount,
-      months: result.months,
-      captureId: commit.captureId,
-      knowledgeAt: commit.knowledgeAt,
-      commit: { ...commit, sourceRecordIds: [...commit.sourceRecordIds] },
-    };
-  },
-});
