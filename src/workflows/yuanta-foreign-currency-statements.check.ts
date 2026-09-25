@@ -3,10 +3,6 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Worker } from "node:worker_threads";
-import { PGlite } from "@electric-sql/pglite";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -30,13 +26,11 @@ const {
   readYuantaForeignCurrencyAccountOptions,
   readYuantaForeignCurrencyOptions,
   buildYuantaForeignCurrencyCaptureInput,
-  commitYuantaForeignCaptures,
   buildYuantaForeignCurrentDepositBalanceCapture,
   deriveYuantaForeignAccountNumberEvidence,
   classifyYuantaForeignCurrencyResultMarkup,
   classifyYuantaForeignCurrencyFrameRoute,
   diagnoseYuantaForeignCurrencyResultMarkup,
-  clickYuantaForeignCurrencyCsvDownloadControl,
   findYuantaForeignCurrencyCsvDownloadControl,
   readYuantaForeignCurrencyResultFingerprint,
   waitForYuantaForeignCurrencyResultTransition,
@@ -52,18 +46,19 @@ const foreignWorkflowSource = await readFile(
   new URL("./yuanta-foreign-currency-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(
-  foreignWorkflowSource,
-  /executePGliteWorkflowRun[\s\S]*?PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/,
-);
 assert.doesNotMatch(
   foreignWorkflowSource,
-  /pgliteWorkflowEnabled|canonicalLedgerDir|executeCanonicalFinancialCommitRun|runCanonicalInvestmentRelationFollowThrough|commitForeignCurrencyDepositCaptureInTransaction/,
+  /from\s+["']libretto["']|LibrettoWorkflowContext|export\s+default\s+workflow\s*\(|requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeForeignCurrencyTransactionsFile|node:fs\/promises|writeFile\(|Playwright.*download|waitForEvent\(["']download["']\)/u,
+  "Yuanta foreign currency must keep only the typed, in-memory collection path",
 );
 assert.doesNotMatch(
   foreignWorkflowSource,
   /createCanonicalSourceStore|canonicalDatabaseWriterKey|OCTOPUSBEAK_CANONICAL_(?:SOURCE|FINANCIAL)_LEDGER_DIR/u,
 );
+assert.match(foreignWorkflowSource, /runYuantaForeignCurrencyStatements/u);
+assert.match(foreignWorkflowSource, /downloadTransactionRowsInMemory/u);
+assert.match(foreignWorkflowSource, /sourceText\.decode\([\s\S]{0,100}?"big5"\)/u);
+assert.match(foreignWorkflowSource, /sourceText\.assertIntact\(content\)/u);
 
 const fixedForeignDateRange = {
   startDate: "2026-08-14",
@@ -608,10 +603,6 @@ function fakeScopeElements(html: string, selector: string): FakeElement[] {
 class FakeScope {
   private frameUrl: string;
   public html: string;
-  public nativeClickCount = 0;
-  public beforeNextNativeClick: (() => void) | undefined;
-  public downloadWaitCount = 0;
-  public pendingDownloadResolve: ((value: unknown) => void) | undefined;
 
   constructor(frameUrl: string, html: string) {
     this.frameUrl = frameUrl;
@@ -626,28 +617,8 @@ class FakeScope {
     this.frameUrl = frameUrl;
   }
 
-  instrument(elements: FakeElement[]): FakeElement[] {
-    return elements.map((element) => {
-      element.click = () => {
-        const beforeClick = this.beforeNextNativeClick;
-        if (beforeClick) {
-          this.beforeNextNativeClick = undefined;
-          beforeClick();
-          throw new Error("fake CSV control detached before native click");
-        }
-        this.nativeClickCount += 1;
-        const resolveDownload = this.pendingDownloadResolve;
-        this.pendingDownloadResolve = undefined;
-        resolveDownload?.({ fake: "download" });
-      };
-      return element;
-    });
-  }
-
   locator(selector: string): FakeLocator {
-    return new FakeLocator([], () =>
-      this.instrument(fakeScopeElements(this.html, selector)),
-    );
+    return new FakeLocator([], () => fakeScopeElements(this.html, selector));
   }
 }
 
@@ -673,17 +644,6 @@ class FakePage extends FakeScope {
   }
 
   async waitForLoadState(): Promise<void> {}
-
-  waitForEvent(
-    event: "download",
-    _options: { timeout: number },
-  ): Promise<unknown> {
-    assert.equal(event, "download");
-    this.downloadWaitCount += 1;
-    return new Promise((resolve) => {
-      this.pendingDownloadResolve = resolve;
-    });
-  }
 }
 
 class DelayedAccountSelectionPage extends FakePage {
@@ -796,83 +756,6 @@ reorderedLivePage.html =
   );
 assert.equal(await reorderedTarget.refresh(), null);
 
-// RED regression for the former refresh -> scroll -> click sequence: the
-// already-resolved control becomes detached before the action and cannot be
-// clicked, even though this is a transient provider re-render.
-const staleActionPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
-const staleActionTarget = requireDownloadTarget(
-  await findYuantaForeignCurrencyCsvDownloadControl(
-    staleActionPage as never,
-    500,
-  ),
-);
-const staleActionControl = await staleActionTarget.refresh();
-assert.ok(staleActionControl);
-staleActionPage.onWait = () => {
-  staleActionPage.html =
-    yuantaForeignResultFixtures.timestampOnlyResult +
-    '<a href="#" data-date="2">2</a>';
-};
-await staleActionControl!.scrollIntoViewIfNeeded();
-await staleActionPage.waitForTimeout(500);
-await assert.rejects(
-  staleActionControl!.click(),
-  /missing fake element/,
-);
-
-// GREEN: retry the complete finder after a detached native click. The second
-// render is legitimate and must result in exactly one download-triggering
-// native click.
-const retryPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
-retryPage.beforeNextNativeClick = () => {
-  retryPage.html = yuantaForeignResultFixtures.liveFrameShape.replace(
-    liveCsvAnchor,
-    '<a href="#" data-date="2">2</a>' + liveCsvAnchor,
-  );
-};
-const retryDownload = await clickYuantaForeignCurrencyCsvDownloadControl(
-  retryPage as never,
-  500,
-);
-assert.deepEqual(retryDownload, { fake: "download" });
-assert.equal(retryPage.nativeClickCount, 1);
-assert.equal(retryPage.downloadWaitCount, 2);
-
-// A query can first render the provider's timestamp-only pending marker and
-// then settle after a fresh read-only form submission. One bounded requery
-// must allow the normal result to become downloadable without changing the
-// timestamp-only classifier into no-data.
-const pendingThenReadyPage = new FakePage(
-  yuantaForeignResultFixtures.timestampOnlyResult,
-);
-let pendingThenReadyRequeryCount = 0;
-const pendingThenReadyDownload =
-  await clickYuantaForeignCurrencyCsvDownloadControl(
-    pendingThenReadyPage as never,
-    7_000,
-    async () => {
-      pendingThenReadyRequeryCount += 1;
-      pendingThenReadyPage.html = yuantaForeignResultFixtures.liveFrameShape;
-    },
-  );
-assert.deepEqual(pendingThenReadyDownload, { fake: "download" });
-assert.equal(pendingThenReadyRequeryCount, 1);
-assert.equal(pendingThenReadyPage.nativeClickCount, 1);
-
-// If the control is replaced with an unrelated datepicker, bounded retries
-// fail closed and never click it or issue a second download request.
-const failedRetryPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
-failedRetryPage.beforeNextNativeClick = () => {
-  failedRetryPage.html =
-    yuantaForeignResultFixtures.timestampOnlyResult +
-    '<a href="#" data-date="2">2</a>';
-};
-await assert.rejects(
-  clickYuantaForeignCurrencyCsvDownloadControl(failedRetryPage as never, 25),
-  /Could not safely click YuanTa foreign-currency CSV download control/,
-);
-assert.equal(failedRetryPage.nativeClickCount, 0);
-
 const hiddenWideTableFrame = yuantaForeignResultFixtures.liveFrameShape.replace(
   '<div id="wide-table"><table>',
   '<div id="wide-table"><table style="display: none">',
@@ -942,14 +825,6 @@ assert.deepEqual(providerNoDataTarget, {
   kind: "empty",
   reason: "provider-explicit-no-data",
 });
-assert.equal(
-  await clickYuantaForeignCurrencyCsvDownloadControl(
-    providerNoDataPage as never,
-    500,
-  ),
-  null,
-);
-assert.equal(providerNoDataPage.nativeClickCount, 0);
 
 const providerNoDataTablePage = new FakePage(
   yuantaForeignResultFixtures.providerNoDataTable,
@@ -963,33 +838,25 @@ assert.deepEqual(providerNoDataTableTarget, {
   kind: "empty",
   reason: "provider-explicit-no-data",
 });
-assert.equal(
-  await clickYuantaForeignCurrencyCsvDownloadControl(
-    providerNoDataTablePage as never,
+
+
+// A ready account result and an explicit empty result remain distinct at the
+// typed source boundary; no native browser download object is created.
+const firstAccountTarget = requireDownloadTarget(
+  await findYuantaForeignCurrencyCsvDownloadControl(
+    new FakePage(yuantaForeignResultFixtures.liveFrameShape) as never,
     500,
   ),
-  null,
 );
-assert.equal(providerNoDataTablePage.nativeClickCount, 0);
-
-// A later account with no rows must complete as an empty capture even when a
-// previous account had a downloadable statement. The second query never
-// receives, clicks, or parses the first query's download.
-const firstAccountPage = new FakePage(yuantaForeignResultFixtures.liveFrameShape);
-const firstAccountDownload = await clickYuantaForeignCurrencyCsvDownloadControl(
-  firstAccountPage as never,
+assert.equal(firstAccountTarget.kind, "download");
+const secondAccountTarget = await findYuantaForeignCurrencyCsvDownloadControl(
+  new FakePage(yuantaForeignResultFixtures.providerNoDataTable) as never,
   500,
 );
-assert.deepEqual(firstAccountDownload, { fake: "download" });
-const secondAccountPage = new FakePage(
-  yuantaForeignResultFixtures.providerNoDataTable,
-);
-const secondAccountDownload = await clickYuantaForeignCurrencyCsvDownloadControl(
-  secondAccountPage as never,
-  500,
-);
-assert.equal(secondAccountDownload, null);
-assert.equal(secondAccountPage.nativeClickCount, 0);
+assert.deepEqual(secondAccountTarget, {
+  kind: "empty",
+  reason: "provider-explicit-no-data",
+});
 
 // The new empty table can coexist with the previous account's complete
 // result. The explicit provider no-data marker must still suppress the stale
@@ -1006,14 +873,6 @@ assert.deepEqual(staleReadyWithProviderNoDataTarget, {
   kind: "empty",
   reason: "provider-explicit-no-data",
 });
-assert.equal(
-  await clickYuantaForeignCurrencyCsvDownloadControl(
-    staleReadyWithProviderNoDataPage as never,
-    500,
-  ),
-  null,
-);
-assert.equal(staleReadyWithProviderNoDataPage.nativeClickCount, 0);
 
 // A prior ready result may remain for one or more polling ticks after submit.
 // The new query must first cross a result fingerprint transition; otherwise
@@ -1043,13 +902,12 @@ await waitForYuantaForeignCurrencyResultTransition(
 );
 assert.ok(temporalFenceWaits >= 2);
 assert.deepEqual(
-  await clickYuantaForeignCurrencyCsvDownloadControl(
+  await findYuantaForeignCurrencyCsvDownloadControl(
     temporalFencePage as never,
     500,
   ),
-  null,
+  { kind: "empty", reason: "provider-explicit-no-data" },
 );
-assert.equal(temporalFencePage.nativeClickCount, 0);
 
 // Account-driven navigation can leave the old selector and currency options
 // attached while the provider is still switching accounts. Selection must
@@ -1695,7 +1553,6 @@ try {
       readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
       queryAccountCurrency: async () => undefined,
       downloadRows: async () => ({
-        filename: "synthetic.csv",
         rows: [{
           accountLabel: "外幣綜合存款",
           accountValue: "00123456789012",
@@ -1732,11 +1589,25 @@ try {
         readCurrencies: async () => [{ value: "ALL", label: "全部幣別" }],
         queryAccountCurrency: async () => undefined,
         downloadRows: async () => ({
-          filename: "synthetic.csv",
           rows: [{
-            accountLabel: "外幣綜合存款", accountValue: "00123456789012",
-            queryCurrencyLabel: "全部幣別", queryCurrencyValue: "ALL",
-            values: ["1", "20260823", "20260823", "09:10", "USD", "bad\uFFFDsource", "", "10.00", "110.00", "交易資訊", "31.50"], sortTime: null,
+            accountLabel: "外幣綜合存款",
+            accountValue: "00123456789012",
+            queryCurrencyLabel: "全部幣別",
+            queryCurrencyValue: "ALL",
+            values: [
+              "1",
+              "20260823",
+              "20260823",
+              "09:10",
+              "USD",
+              "bad\uFFFDsource",
+              "",
+              "10.00",
+              "110.00",
+              "交易資訊",
+              "31.50",
+            ],
+            sortTime: null,
           }],
         }),
         readCurrentBalances: async () => [],
@@ -1754,47 +1625,4 @@ try {
 } finally {
   process.chdir(typedForeignOriginalCwd);
   await rm(typedForeignTemp, { recursive: true, force: true });
-}
-
-const enabledPgliteDir = await mkdtemp(join(tmpdir(), "yuanta-foreign-pglite-"));
-const enabledWorker = new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
-  execArgv: ["--experimental-strip-types"],
-  workerData: { dataDir: enabledPgliteDir },
-});
-const enabledOwner = createPGliteViewWorkerClient(enabledWorker);
-const enabledServer = createPGliteChildRpcServer({ provider: {
-  operational: enabledOwner.operationalProvider,
-  financial: enabledOwner.financial.registry,
-} });
-const priorEnabledEnv = {
-  required: process.env.OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED,
-  endpoint: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-  token: process.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-};
-try {
-  await enabledServer.ready;
-  Object.assign(process.env, enabledServer.env);
-  await commitYuantaForeignCaptures(
-    [yuantaForeignCapture],
-    {} as never,
-    { readCurrentDepositBalances: async () => [] },
-  );
-} finally {
-  for (const [key, value] of [
-    ["OCTOPUSBEAK_PGLITE_WORKFLOW_REQUIRED", priorEnabledEnv.required],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT", priorEnabledEnv.endpoint],
-    ["OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN", priorEnabledEnv.token],
-  ] as const) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await enabledServer.close();
-  await enabledOwner.close();
-}
-const enabledPglite = await PGlite.create(enabledPgliteDir);
-try {
-  assert.equal((await enabledPglite.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 1);
-} finally {
-  await enabledPglite.close();
-  await rm(enabledPgliteDir, { recursive: true, force: true });
 }
