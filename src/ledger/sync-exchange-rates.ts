@@ -5,10 +5,6 @@ import {
   requirePGliteChildRpcClientFromEnv,
 } from "../../electron/pglite-child-rpc-client.ts";
 import {
-  appendExchangeRateAuditRecord,
-  type ExchangeRateAuditRecord,
-} from "./exchange-rate-audit-log.ts";
-import {
   exchangeRateRequestFromOverview,
   type ExchangeRateRequest,
 } from "./exchange-rate-requirements.ts";
@@ -21,12 +17,8 @@ import {
   createExchangeRateCliPGliteWorkerClient,
   type ExchangeRateCliPGliteWorkerClient,
 } from "./pglite/exchange-rate-cli-worker.ts";
-import {
-  emitAutomationProgress,
-  type AutomationProgressEvent,
-} from "../lib/automation/progress.ts";
+import type { AutomationProgressEvent } from "../lib/automation/progress.ts";
 
-const AUDIT_LOG_PATH = "data/automation/logs/exchange-rates.log";
 const DEFAULT_LEDGER_DIR = process.env.LEDGER_DIR ?? "data/ledger";
 
 type ExchangeRateCliPGliteProvider = Readonly<{
@@ -58,14 +50,11 @@ type CommandOptions = {
     ledgerDir: string,
     request: ExchangeRateRequest,
   ) => Promise<ExchangeRateSyncResult>;
-  appendAudit?: (path: string, record: ExchangeRateAuditRecord) => void;
-  now?: () => Date;
-  stderr?: { write(chunk: string): unknown };
   emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 };
 
-function scheduledAtUtc(argv: string[]) {
-  if (argv.length === 0) return null;
+function validateScheduledAtUtc(argv: string[]) {
+  if (argv.length === 0) return;
   if (argv.length !== 2 || argv[0] !== "--scheduled-at-utc") {
     throw new Error(`Unknown arguments: ${argv.join(" ")}`);
   }
@@ -79,19 +68,11 @@ function scheduledAtUtc(argv: string[]) {
   if (!match || normalized !== expected) {
     throw new Error(`Invalid --scheduled-at-utc: ${value}`);
   }
-  return normalized;
 }
 
 export async function runExchangeRateSyncCommand(
   options: CommandOptions = {},
 ): Promise<ExchangeRateSyncResult> {
-  const now = options.now ?? (() => new Date());
-  const appendAudit = options.appendAudit ?? appendExchangeRateAuditRecord;
-  const stderr = options.stderr ?? process.stderr;
-  const emitProgress = options.emitProgress ?? emitAutomationProgress;
-  const startedAtUtc = now().toISOString();
-  let scheduled: string | null = null;
-  let request: ExchangeRateRequest = { requiredFrom: null, currencies: [] };
   let pglite: ExchangeRateCliPGliteProvider | undefined;
 
   const closePGlite = async () => {
@@ -100,52 +81,26 @@ export async function runExchangeRateSyncCommand(
     await owned?.close();
   };
 
-  const audit = (record: ExchangeRateAuditRecord) => {
-    try {
-      appendAudit(AUDIT_LOG_PATH, record);
-    } catch (error) {
-      stderr.write(`exchange-rate-audit-log-warning: ${error instanceof Error ? error.message : String(error)}\n`);
-    }
-  };
-
   try {
-    emitProgress({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
-    scheduled = scheduledAtUtc(options.argv ?? []);
+    validateScheduledAtUtc(options.argv ?? []);
+    options.emitProgress?.({ phaseCode: "load-request", completed: 0, total: 3, percent: 0 });
     const ledgerDir = options.ledgerDir ?? DEFAULT_LEDGER_DIR;
     if (!options.loadRequest || !options.sync) {
       pglite = createCliPGliteProvider(ledgerDir);
       await pglite.ready;
     }
-    request = options.loadRequest
+    const request = options.loadRequest
       ? await options.loadRequest(ledgerDir)
       : exchangeRateRequestFromOverview(await pglite!.overviewCurrent());
-    emitProgress({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
+    options.emitProgress?.({ phaseCode: "sync", completed: 1, total: 3, percent: 33 });
     const result = options.sync
       ? await options.sync(ledgerDir, request)
       : await syncExchangeRates(pglite!.exchangeRates, request);
     await closePGlite();
-    emitProgress({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
-    audit({
-      scheduledAtUtc: scheduled,
-      startedAtUtc,
-      finishedAtUtc: now().toISOString(),
-      requiredFrom: request.requiredFrom,
-      currencies: request.currencies,
-      written: result.written,
-      status: "success",
-    });
+    options.emitProgress?.({ phaseCode: "complete", completed: 3, total: 3, percent: 100 });
     return result;
   } catch (error) {
     await closePGlite().catch(() => undefined);
-    audit({
-      scheduledAtUtc: scheduled,
-      startedAtUtc,
-      finishedAtUtc: now().toISOString(),
-      requiredFrom: request.requiredFrom,
-      currencies: request.currencies,
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    });
     throw error;
   }
 }

@@ -19,13 +19,18 @@ export function createExchangeRateWorkflow(
     requiresFinancialCommit: false,
     async run(context) {
       let eventQueue = Promise.resolve();
-      await service({
-        scheduledAtUtc: options.scheduledAtUtc,
-        emitProgress: (event) => {
-          options.emitProgress(event);
-          eventQueue = eventQueue.then(() => context.event("collection", "progress-update"));
-        },
-      });
+      try {
+        await service({
+          scheduledAtUtc: options.scheduledAtUtc,
+          emitProgress: (event) => {
+            options.emitProgress(event);
+            eventQueue = eventQueue.then(() => context.event("collection", "progress-update"));
+          },
+        });
+      } catch (error) {
+        await eventQueue;
+        throw error;
+      }
       await eventQueue;
     },
   };
