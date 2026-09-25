@@ -65,6 +65,7 @@
     "run:sinopac-statements": "libretto run src/workflows/sinopac-statements.ts",
     "run:linebank-statements": "libretto run src/workflows/linebank-statements.ts --headless",
     "run:einvoice-personal-invoices": "libretto run src/workflows/einvoice-personal-invoices.ts --headless",
+    "workflow:dev": "node --no-warnings --experimental-strip-types scripts/workflow-dev.ts",
     "run:sync-maicoin": "node --env-file-if-exists=.env --no-warnings --experimental-strip-types src/ledger/sync-maicoin.ts",
     "run:exchange-rates": "node --no-warnings --experimental-strip-types src/ledger/sync-exchange-rates.ts",
     "run:seed-desktop-cdp-fixture": "node --no-warnings --experimental-strip-types scripts/seed-desktop-cdp-fixture.ts",
