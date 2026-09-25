@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { Frame, Page } from "playwright";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
@@ -11,22 +10,13 @@ const {
   classifyYuantaBankDialogMessage,
   yuantaBankDialogFailureMessage,
   yuantaBankDialogState,
-  yuantaPostSubmitDialogOwner,
   yuantaSourceConnectionScope,
   deriveYuantaSourceConnectionKey,
-} = await import(
-  "./yuanta-auth.ts",
-);
-const { deriveSourceConnectionIdentityKey } = await import(
-  "../ledger/canonical/source-connection-identity.ts"
-);
-const { canonicalLoanSourceIdentity } = await import(
-  "../ledger/canonical/loan-financial.ts"
-);
-import {
-  YUANTA_DIALOG_OWNER_ENV,
-  yuantaHostDialogOwner,
-} from "../lib/automation/yuanta-captcha.ts";
+} = await import("./yuanta-auth.ts");
+const { deriveSourceConnectionIdentityKey } =
+  await import("../ledger/canonical/source-connection-identity.ts");
+const { canonicalLoanSourceIdentity } =
+  await import("../ledger/canonical/loan-financial.ts");
 
 type FakeFrame = {
   frameName: string;
@@ -180,51 +170,35 @@ test("shared Yuanta signed-in probe checks every visible login field", async () 
   assert.equal(await isYuantaSignedIn(page), false);
 });
 
-test("Yuanta products delegate authentication to the shared CAPTCHA seam", async () => {
+test("the typed Yuanta App parent delegates authentication to shared assistance", async () => {
   const authSource = await readFile(
     new URL("./yuanta-auth.ts", import.meta.url),
     "utf8",
   );
-  assert.match(authSource, /export async function authenticateYuantaBank/);
+  const parentSource = await readFile(
+    new URL("./yuanta-all-statements.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    authSource,
+    /export async function authenticateYuantaBankWithAssistance/,
+  );
+  assert.doesNotMatch(
+    authSource,
+    /from\s+["']libretto["']|LibrettoWorkflowContext|librettoAuthenticate|\bpause\(|npx libretto|LIBRETTO_CLOUD_/u,
+  );
   assert.match(authSource, /emitHumanAssistanceStage/);
   assert.match(authSource, /#gcode/);
   assert.doesNotMatch(
     authSource,
     /console\.(log|warn|error)\([^\n]*(?:password|captcha)/i,
   );
-
-  for (const fileName of [
-    "yuanta-all-statements.ts",
-    "yuanta-statements.ts",
-    "yuanta-foreign-currency-statements.ts",
-    "yuanta-loan-statements.ts",
-    "yuanta-credit-card-statements.ts",
-    "yuanta-fund-statements.ts",
-  ]) {
-    const source = await readFile(
-      new URL(`./${fileName}`, import.meta.url),
-      "utf8",
-    );
-    if (fileName !== "yuanta-auth.ts") {
-      assert.match(source, /yuanta-auth\.ts/);
-    }
-  }
-});
-
-test("Yuanta post-submit dialog ownership is bound to the current hosted retry session", () => {
-  assert.equal(
-    yuantaPostSubmitDialogOwner("ses-yuanta-current", {
-      [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner("ses-yuanta-current"),
-    }),
-    "host",
+  assert.match(parentSource, /authenticateYuantaBankWithAssistance/);
+  assert.match(parentSource, /context\.humanAssistance\.request/);
+  assert.match(
+    parentSource,
+    /overrides\.authenticate \?\? authenticateYuantaForApp/u,
   );
-  assert.equal(
-    yuantaPostSubmitDialogOwner("ses-yuanta-current", {
-      [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner("ses-yuanta-stale"),
-    }),
-    "workflow",
-  );
-  assert.equal(yuantaPostSubmitDialogOwner("ses-yuanta-current", {}), "workflow");
 });
 
 test("Yuanta local dialog handling keeps provider text out of state and errors", async () => {
@@ -276,7 +250,11 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
   assert.deepEqual(contract.ocrAttemptPlan, [
     { ocrPageSegmentationMode: "single-line" },
     { ocrPageSegmentationMode: "single-word" },
-    { imagePreprocessing: [], ocrOutputStage: "grayscale", ocrPageSegmentationMode: "single-line" },
+    {
+      imagePreprocessing: [],
+      ocrOutputStage: "grayscale",
+      ocrPageSegmentationMode: "single-line",
+    },
   ]);
   assert.equal(contract.expectedAnswerLength, 6);
   assert.deepEqual(contract.challengeImageRegion, {
@@ -285,7 +263,10 @@ test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observ
     semanticId: "yuanta-bank.login.captcha-image",
     rect: { x: 13, y: 537, width: 107, height: 50 },
   });
-  assert.equal(contract.targets[0]?.semanticId, "yuanta-bank.login.captcha-input");
+  assert.equal(
+    contract.targets[0]?.semanticId,
+    "yuanta-bank.login.captcha-input",
+  );
   assert.deepEqual(contract.targets[0]?.rect, {
     x: 120,
     y: 537,
@@ -370,69 +351,40 @@ test("Yuanta stable login scope owns one shared field definition", async () => {
   assert.match(authSource, /yuantaStableLoginFields\(credentials\)/u);
 });
 
-// This regression must run through Libretto's actual TSX loader. The regular
-// repository test runner may use Node's strip-types mode, which cannot resolve
-// Libretto's nested TSX loader seam.
-if (!process.execArgv.includes("--experimental-strip-types")) {
-  test("the real Libretto loader resolves every Yuanta workflow", async () => {
-    const runtime = await import(
-      pathToFileURL(
-        process.cwd() +
-          "/node_modules/libretto/dist/cli/core/workflow-runtime.js",
-      ).href
+test("the Vite production auth loader uses current bank shell evidence", async () => {
+  const { createServer } = await import("vite");
+  const server = await createServer({
+    configFile: false,
+    cacheDir: "/tmp/octopus-beak-yuanta-auth-check",
+    server: { middlewareMode: true },
+    appType: "custom",
+    logLevel: "silent",
+  });
+  try {
+    const module = await server.ssrLoadModule("/src/workflows/yuanta-auth.ts");
+    assert.equal(
+      await module.isYuantaSignedIn(
+        fakePage([
+          fakeFrame("fmenu", "navigation"),
+          fakeFrame("fmain", "none"),
+        ]),
+      ),
+      true,
     );
-    for (const fileName of [
-      "yuanta-all-statements.ts",
-      "yuanta-statements.ts",
-      "yuanta-foreign-currency-statements.ts",
-      "yuanta-loan-statements.ts",
-      "yuanta-credit-card-statements.ts",
-      "yuanta-fund-statements.ts",
-    ]) {
-      const workflow = await runtime.loadDefaultWorkflow(
-        process.cwd() + "/src/workflows/" + fileName,
-      );
-      assert.match(workflow.name, /^yuanta/);
-    }
-  });
-
-  test("the Vite production auth loader uses current bank shell evidence", async () => {
-    const { createServer } = await import("vite");
-    const server = await createServer({
-      configFile: false,
-      cacheDir: "/tmp/octopus-beak-yuanta-auth-check",
-      server: { middlewareMode: true },
-      appType: "custom",
-      logLevel: "silent",
-    });
-    try {
-      const module = await server.ssrLoadModule(
-        "/src/workflows/yuanta-auth.ts",
-      );
-      assert.equal(
-        await module.isYuantaSignedIn(
-          fakePage([
-            fakeFrame("fmenu", "navigation"),
-            fakeFrame("fmain", "none"),
-          ]),
-        ),
-        true,
-      );
-      assert.equal(
-        await module.isYuantaSignedIn(
-          fakePage([
-            fakeFrame(
-              "fmenu",
-              "navigation",
-              "https://ebank.yuantabank.com.tw/nib/common/error/NotAuth.jsp?type=timeout",
-            ),
-            fakeFrame("fmain", "logout"),
-          ]),
-        ),
-        false,
-      );
-    } finally {
-      await server.close();
-    }
-  });
-}
+    assert.equal(
+      await module.isYuantaSignedIn(
+        fakePage([
+          fakeFrame(
+            "fmenu",
+            "navigation",
+            "https://ebank.yuantabank.com.tw/nib/common/error/NotAuth.jsp?type=timeout",
+          ),
+          fakeFrame("fmain", "logout"),
+        ]),
+      ),
+      false,
+    );
+  } finally {
+    await server.close();
+  }
+});
