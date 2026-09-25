@@ -35,11 +35,14 @@ const workflowSource = await readFile(
   new URL("./esun-credit-card-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(workflowSource, /pglite-child-rpc-client\.ts/);
-assert.match(workflowSource, /executePGliteWorkflowRun/);
 assert.match(workflowSource, /esun-credit-card-admission\.ts/);
 assert.match(workflowSource, /credit-card-current-balance-admission\.ts/);
-assert.doesNotMatch(workflowSource, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/);
+assert.match(workflowSource, /export async function runEsunCreditCardProviderWorkflow/);
+assert.doesNotMatch(workflowSource, /from "libretto"/);
+assert.doesNotMatch(workflowSource, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/);
+assert.doesNotMatch(workflowSource, /node:fs\/promises|downloads\/esun-credit-card-statements|writeStatementFile/);
+assert.doesNotMatch(workflowSource, /tableFileSchema|type TableFile|files: z\.array/);
+assert.doesNotMatch(workflowSource, /export default workflow\(/);
 assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/db\/client\.ts"/);
 assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/canonical\/esun-credit-card\.ts"/);
 assert.doesNotMatch(workflowSource, /from "\.\.\/ledger\/canonical\/credit-card-current-balance-writer\.ts"/);

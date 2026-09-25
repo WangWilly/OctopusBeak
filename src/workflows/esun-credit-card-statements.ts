@@ -1,24 +1,15 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   creditCardCommandRequestFromCanonicalCapture,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
   esunCanonicalSpineCapture,
@@ -39,7 +30,6 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
-import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
@@ -106,40 +96,6 @@ export type EsunCurrentUsedCreditSnapshot = Readonly<{
 }>;
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
-
-const inputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
-});
-
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.enum(["unbilled", "billed"]),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  periods: z.array(z.string()),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  usedExistingSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  query: z.object({
-    startDate: z.string(),
-    endDate: z.string(),
-  }),
-  files: z.array(tableFileSchema),
-  canonicalAdmission: z.enum(["not-configured", "admitted"]),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-});
-
-type WorkflowInput = z.infer<typeof inputSchema>;
-type TableFile = z.infer<typeof tableFileSchema>;
 
 function esunCurrentAmount(value: string | undefined): string {
   const normalized = cleanText(value).replace(/[,，\s]/gu, "");
@@ -234,19 +190,6 @@ export function parseEsunCurrentCreditCardUsedCreditHtml(
   };
 }
 
-const statementHeaders = [
-  "statement_period",
-  "card_number",
-  "card_label",
-  "consume_date",
-  "description",
-  "foreign_currency",
-  "foreign_amount",
-  "payment_currency",
-  "twd_amount",
-  "payment_status",
-];
-
 function requireCredential(
   credentials: EsunCredentials,
   name: keyof EsunCredentials,
@@ -264,14 +207,6 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function formatDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -281,27 +216,6 @@ function formatDate(date: Date): string {
 function defaultStartDate(endDate: string): string {
   const [year, month, day] = endDate.split("/").map(Number);
   return `${year - 1}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-function consumeDateSortKey(row: StatementRow): string {
-  return row.consumeDate.replace(/\D/g, "");
-}
-
-function compareRowsByConsumeDateDesc(
-  left: StatementRow,
-  right: StatementRow,
-): number {
-  return consumeDateSortKey(right).localeCompare(consumeDateSortKey(left));
 }
 
 export function esunCreditCardStatementKind(
@@ -705,7 +619,6 @@ async function enterLoginCredentials(
   page: Page,
   credentials: EsunCredentials,
 ): Promise<void> {
-  // Libretto opens the public entry URL before the handler starts.
   await page.locator('input[name="id"]').waitFor({ timeout: 60_000 });
 
   const userId = requireCredential(credentials, "esun_user_id");
@@ -731,21 +644,6 @@ async function enterLoginCredentials(
     }
   }
   await page.getByRole("button", { name: "登入", exact: true }).click();
-}
-
-async function fillLoginForm(
-  page: Page,
-  credentials: EsunCredentials,
-): Promise<void> {
-  await enterLoginCredentials(page, credentials);
-  const duplicateLogin = page.getByRole("button", { name: "確定登入" });
-  await Promise.race([
-    waitForSignedInState(page),
-    duplicateLogin.waitFor({ timeout: 60_000 }).then(async () => {
-      await duplicateLogin.click();
-      await waitForSignedInState(page);
-    }),
-  ]);
 }
 
 const timelineResponseSchema = z.object({
@@ -827,7 +725,7 @@ export function rowsFromTimelineResponse(raw: unknown): {
 
 async function queryStatements(
   page: Page,
-  input: WorkflowInput,
+  input: Readonly<{ startDate?: string; endDate?: string }>,
   options: Readonly<{
     readJson?: (response: Response) => Promise<unknown>;
     signal?: AbortSignal;
@@ -1202,25 +1100,6 @@ async function readIssuerStatementSummaries(
   }
 }
 
-function statementRowsToCsv(rows: StatementRow[]): string {
-  const csvRows = [
-    statementHeaders,
-    ...[...rows].sort(compareRowsByConsumeDateDesc).map((row) => [
-      row.issuerStatementPeriod ?? "",
-      row.cardNumber,
-      "",
-      row.consumeDate,
-      row.description,
-      row.foreignCurrency,
-      row.foreignAmount,
-      row.paymentCurrency,
-      row.twdAmount,
-      row.paymentStatus,
-    ]),
-  ];
-  return rowsToCsv(csvRows);
-}
-
 function statementKind(row: StatementRow): StatementKind {
   return row.paymentStatus;
 }
@@ -1228,90 +1107,6 @@ function statementKind(row: StatementRow): StatementKind {
 function cardKeyForRow(row: StatementRow): string {
   return row.cardNumber.replace(/\D/g, "").slice(-4);
 }
-
-function downloadsDir(): string {
-  return join(process.cwd(), "downloads", "esun-credit-card-statements");
-}
-
-async function writeStatementFile(
-  nextTimestamp: () => string,
-  kind: StatementKind,
-  rows: StatementRow[],
-  capture: CaptureMetadata,
-  cardKeys: string[],
-): Promise<TableFile> {
-  const dir = downloadsDir();
-  await mkdir(dir, { recursive: true });
-
-  const baseName = `${kind}-statements-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(dir, csvFilename);
-  const jsonPath = join(dir, jsonFilename);
-  const periods = [
-    ...new Set(
-      rows
-        .map((row) => row.issuerStatementPeriod)
-        .filter((period): period is string => Boolean(period)),
-    ),
-  ];
-
-  await writeFile(csvPath, statementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "esunCreditCardStatements",
-        kind,
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers: statementHeaders,
-        periods,
-        paymentStatuses:
-          kind === "billed"
-            ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
-            : [],
-        ...capture,
-        ...(capture.snapshotMode === "full"
-          ? {
-              cardRowCounts: captureCardRowCounts(
-                cardKeys,
-                rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
-              ),
-            }
-          : {}),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    baseName,
-    kind,
-    rowCount: rows.length,
-    headers: statementHeaders,
-    periods,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
-}
-
-type EsunProviderWorkflowInput = {
-  credentials: EsunCredentials;
-  startDate?: string;
-  endDate?: string;
-};
 
 export type EsunProviderWorkflowOutput = Readonly<{
   usedExistingSession: boolean;
@@ -1610,188 +1405,3 @@ export async function runEsunCreditCardProviderWorkflow(
     };
   });
 }
-
-export default workflow("esunCreditCardStatements", {
-  startUrl: BANK_ENTRY_URL,
-  credentials: ["esun_user_id", "esun_account", "esun_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (input as typeof input & { credentials: EsunCredentials })
-      .credentials;
-    const currentCreditResponse = page.waitForResponse(
-      (response) => response.url() ===
-        "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
-      { timeout: 120_000 },
-    ).catch(() => undefined);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 0, total: 100, percent: 0 });
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    emitAutomationProgress({ phaseCode: "workflow", completed: 20, total: 100, percent: 20 });
-    const authResult = await librettoAuthenticate(ctx, {
-      credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as EsunCredentials);
-      },
-    });
-    emitAutomationProgress({ phaseCode: "workflow", completed: 40, total: 100, percent: 40 });
-
-    let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
-    try {
-      currentUsedCredit = await readEsunCurrentUsedCredit(await Promise.race([
-        currentCreditResponse,
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5_000)),
-      ]));
-    } catch {
-      console.log("esun-credit-current-used-credit-unavailable", {
-        reason: "optional-current-credit-estimate",
-      });
-    }
-    const { rows, timeline, startDate, endDate } = await queryStatements(page, input);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 60, total: 100, percent: 60 });
-    emitAutomationProgress({ phaseCode: "workflow", completed: 80, total: 100, percent: 80 });
-    const nextTimestamp = createTimestampGenerator();
-    let unbilledRows = rows.filter(
-      (row) => statementKind(row) === "unbilled",
-    );
-    let billedRows = rows.filter((row) => statementKind(row) === "billed");
-    const cardKeys = [
-      ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
-    ];
-    const completeGrid = timeline;
-    const isFullCapture =
-      !input.startDate &&
-      !input.endDate &&
-      timeline.firstMonth === endDate.slice(0, 7) &&
-      timeline.lastMonth === startDate.slice(0, 7) &&
-      timeline.monthCount === 13 &&
-      [...billedRows, ...unbilledRows].every(
-        (row) => cardKeyForRow(row).length === 4,
-      );
-    const capture: CaptureMetadata = isFullCapture
-      ? {
-          snapshotMode: "full",
-          captureId: randomUUID(),
-          capturedAt: new Date().toISOString(),
-          captureKinds: ["billed", "unbilled"],
-          completenessEvidence: {
-            bank: "esun",
-            range: "default_one_year",
-            grid: completeGrid,
-          },
-        }
-      : {
-          snapshotMode: "partial",
-          completenessEvidence: {
-            bank: "esun",
-            reason:
-              input.startDate || input.endDate
-                ? "date_range_override"
-                : "grid_not_proven_complete",
-            grid: completeGrid,
-          },
-        };
-    const settledPeriods = isFullCapture
-      ? buildEsunSettledPeriodsFromIssuerSummaries(
-          await readIssuerStatementSummaries(page),
-        )
-      : [];
-    if (settledPeriods.length > 0) {
-      const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(
-        rows,
-        settledPeriods,
-      );
-      unbilledRows = rowsWithIssuerPeriods.filter(
-        (row) => statementKind(row) === "unbilled",
-      );
-      billedRows = rowsWithIssuerPeriods.filter(
-        (row) => statementKind(row) === "billed",
-      );
-    }
-    const files = [
-      await writeStatementFile(
-        nextTimestamp,
-        "unbilled",
-        unbilledRows,
-        capture,
-        cardKeys,
-      ),
-      await writeStatementFile(
-        nextTimestamp,
-        "billed",
-        billedRows,
-        capture,
-        cardKeys,
-      ),
-    ];
-    const managedSecret = optionalEsunManagedSecret();
-    const canonicalHumanAttestation = managedSecret
-      ? deriveEsunCanonicalHumanAttestation(credentials, managedSecret)
-      : undefined;
-    const canonicalCapture = canonicalHumanAttestation
-      ? buildEsunCanonicalCreditCardCapture({
-          startDate,
-          endDate,
-          identity: canonicalHumanAttestation,
-          statementRows: billedRows,
-          unbilledRows,
-          grid: completeGrid,
-          capture,
-          instrumentFingerprintSecret: managedSecret!,
-          settledPeriods,
-        })
-      : undefined;
-    let canonicalAdmission: "not-configured" | "admitted" =
-      "not-configured";
-    let canonicalCaptureCount = 0;
-    if (canonicalCapture) {
-      const cardRequest = creditCardCommandRequestFromCanonicalCapture(
-        esunCanonicalSpineCapture(canonicalCapture),
-        esunNeutralCreditCardCapture(canonicalCapture),
-      );
-      const items: PGliteWorkflowRunItem[] = [{
-        provider: "esun", product: "credit-card", itemKey: canonicalCapture.captureId,
-        command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
-      }];
-      if (currentUsedCredit) {
-        const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
-        items.push({
-          provider: "esun", product: "current-balance", itemKey: balanceCapture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-            request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
-          },
-        });
-      }
-      const client = requirePGliteChildRpcClientFromEnv();
-      try {
-        await client.ready;
-        const result = await executePGliteWorkflowRun({
-          client: client.workflow, items, provider: "esun", product: "credit-card",
-        });
-        if (result.status !== "completed")
-          throw new Error(`E.SUN credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
-      } finally {
-        client.close();
-      }
-      canonicalAdmission = "admitted";
-      canonicalCaptureCount = 1;
-    }
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-
-    return {
-      usedExistingSession: authResult.usedProfile,
-      count: files.length,
-      query: { startDate, endDate },
-      files,
-      canonicalAdmission,
-      canonicalCaptureCount,
-    };
-  },
-});
