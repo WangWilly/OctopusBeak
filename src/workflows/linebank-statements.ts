@@ -9,6 +9,8 @@ import {
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -38,6 +40,7 @@ import {
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
+import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -47,6 +50,28 @@ export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
 const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
 const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
+
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("LINE Bank workflow was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 function linebankCanonicalToken(...parts: string[]): string {
   return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;
@@ -223,6 +248,18 @@ const inputSchema = z.object({
   currencyFilters: z.array(z.string()).default([]),
 });
 
+const typedInputSchema = z.object({
+  credentials: z.object({
+    linebank_user_id: z.string().trim().min(1),
+    linebank_account: z.string().trim().min(1),
+    linebank_password: z.string().trim().min(1),
+  }),
+  startDate: dateSchema.optional(),
+  endDate: dateSchema.optional(),
+  accountFilters: z.array(z.string()).default([]),
+  currencyFilters: z.array(z.string()).default([]),
+});
+
 const downloadSchema = z.object({
   accountId: z.string(),
   account: z.string(),
@@ -254,6 +291,17 @@ type DateRange = {
   startDate: string;
   endDate: string;
 };
+
+export type LineBankProviderWorkflowInput = z.infer<typeof typedInputSchema>;
+
+export type LineBankProviderWorkflowOutput = Readonly<{
+  dateRange: DateRange;
+  accountCount: number;
+  statementRowCount: number;
+  sourceCaptureCount: number;
+  financialItemCount: number;
+  status: "source-only" | "financial-admitted";
+}>;
 
 type LineBankCredentials = {
   linebank_user_id?: string;
@@ -1195,11 +1243,26 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   });
 }
 
+function responseCharset(headers: Readonly<Record<string, string>>): string {
+  const contentType = Object.entries(headers).find(
+    ([name]) => name.toLowerCase() === "content-type",
+  )?.[1] ?? "";
+  const match = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType);
+  return match?.[1] ?? "utf-8";
+}
+
 export class LineBankApiClient {
   private page: Page;
+  private text?: SourceTextPort;
+  private signal?: AbortSignal;
 
-  constructor(page: Page) {
+  constructor(
+    page: Page,
+    options: { text?: SourceTextPort; signal?: AbortSignal } = {},
+  ) {
     this.page = page;
+    this.text = options.text;
+    this.signal = options.signal;
   }
 
   private async apiResponse(
@@ -1212,8 +1275,15 @@ export class LineBankApiClient {
     method: string;
     headers: Record<string, string>;
   }> {
-    return await this.page.evaluate(
-      async ({ path, body }) => {
+    const response = await withAbort(this.page.evaluate<{
+      body?: string;
+      bodyBytes?: number[];
+      url: string;
+      status: number;
+      method: string;
+      headers: Record<string, string>;
+    }, { path: string; body?: unknown; includeBytes: boolean }>(
+      async ({ path, body, includeBytes }) => {
         const headers = {
           accept: "application/json",
           chnldscd: "IBK",
@@ -1237,15 +1307,30 @@ export class LineBankApiClient {
           responseHeaders[key] = value;
         });
         return {
-          body: await response.text(),
+          ...(includeBytes
+            ? { bodyBytes: Array.from(new Uint8Array(await response.arrayBuffer())) }
+            : { body: await response.text() }),
           url: response.url,
           status: response.status,
           method: init.method ?? "GET",
           headers: responseHeaders,
         };
       },
-      { path, body: options?.body },
+      { path, body: options?.body, includeBytes: Boolean(this.text) },
+    ), this.signal);
+    if (!this.text) {
+      if (typeof response.body !== "string")
+        throw new Error("LINE Bank API response body is unavailable.");
+      return { ...response, body: response.body };
+    }
+    if (!Array.isArray(response.bodyBytes))
+      throw new Error("LINE Bank source response bytes are unavailable.");
+    const body = this.text.decode(
+      Uint8Array.from(response.bodyBytes),
+      responseCharset(response.headers),
     );
+    this.text.assertIntact(body);
+    return { ...response, body };
   }
 
   private async apiJson<T>(
@@ -1255,7 +1340,9 @@ export class LineBankApiClient {
     const response = await this.apiResponse(path, options);
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${path}`);
-    return parseLinebankApiJson<T>(response.body);
+    const value = parseLinebankApiJson<T>(response.body);
+    this.text?.assertIntact(JSON.stringify(value));
+    return value;
   }
 
   private async accountResponse(): Promise<{
@@ -1267,6 +1354,7 @@ export class LineBankApiClient {
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
     const payload = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
+    this.text?.assertIntact(JSON.stringify(payload));
     if (payload.code !== "200") {
       throw new Error(
         `LINE Bank account list failed: ${payload.message ?? "unknown"}`,
@@ -1613,6 +1701,404 @@ async function downloadLineBankStatements(
     client.close();
   }
 
+}
+
+function linebankHumanVerificationStage(page: Page) {
+  const body = page.locator("body");
+  return {
+    stageId: "linebank-login-verification",
+    title: "Complete LINE Bank sign-in or verification",
+    targets: [{
+      id: "sign-in-page",
+      label: "LINE Bank sign-in page",
+      semanticId: "linebank.login.page",
+      modes: ["click", "type", "press"] as const,
+      locator: body,
+    }],
+    contextRegions: [{
+      id: "sign-in-context",
+      label: "LINE Bank sign-in and verification",
+      semanticId: "linebank.login.context",
+      locator: body,
+    }],
+    completion: { mode: "independent" as const, targetIds: ["sign-in-page"] },
+    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
+    prompt: "Complete any LINE Bank verification in the open page, then wait for sign-in to finish.",
+  };
+}
+
+async function waitForLineBankSignIn(
+  page: Page,
+  context: WorkflowContext,
+): Promise<void> {
+  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    context.signal.throwIfAborted();
+    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+    if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+    await withAbort(page.waitForTimeout(250), context.signal);
+  }
+  throw new Error("Timed out waiting for LINE Bank signed-in state.");
+}
+
+async function linebankSignInForApp(
+  page: Page,
+  credentials: LineBankCredentials,
+  context: WorkflowContext,
+): Promise<void> {
+  if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
+  const userId = requireLineBankCredential(credentials, "linebank_account");
+  const password = requireLineBankCredential(credentials, "linebank_password");
+  if (new URL(page.url()).pathname !== "/login")
+    await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
+
+  await withAbort(page.locator("#nationalId").fill(nationalId), context.signal);
+  await withAbort(page.locator("#userId").fill(userId), context.signal);
+  await withAbort(page.locator("#pw").fill(password), context.signal);
+  const loginButtons = page.getByRole("button", {
+    name: "登入友善網路銀行",
+    exact: true,
+  });
+  if (await withAbort(loginButtons.count(), context.signal) !== 1)
+    throw new Error("LINE Bank login requires exactly one submit button.");
+  const loginButton = loginButtons.first();
+  if (!(await withAbort(loginButton.isVisible().catch(() => false), context.signal)))
+    throw new Error("LINE Bank login submit button is not visible.");
+  await withAbort(loginButton.click(), context.signal);
+  await withAbort(page.waitForTimeout(250), context.signal);
+  await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+  if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+
+  const contract = await withAbort(
+    emitHumanAssistanceStage(linebankHumanVerificationStage(page), () => undefined),
+    context.signal,
+  );
+  await context.event("authentication", "human-assistance-requested");
+  const status = await withAbort(
+    context.humanAssistance.request(contract, context.signal),
+    context.signal,
+  );
+  context.signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified") {
+    await context.event("authentication", "human-assistance-failed");
+    throw new Error(`LINE Bank human assistance ended with status ${status}.`);
+  }
+  await waitForLineBankSignIn(page, context);
+  await context.event("authentication", "human-assistance-completed");
+}
+
+function sourceDecodeError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.name === "SourceTextIntegrityError" ||
+    /API response body is not valid JSON/u.test(error.message)
+  );
+}
+
+function sourceValidationError(error: unknown): boolean {
+  return error instanceof Error && /pagination|page metadata|pageCnt|totTxCnt|transaction page|source account identity|total row count|transaction source/u.test(error.message);
+}
+
+/** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
+export async function runLineBankProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+): Promise<LineBankProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
+  if (!context.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  context.signal.throwIfAborted();
+  const dateRange = resolveDateRange(parsed.data);
+  const windows = linebankQueryWindows(dateRange);
+  await context.event("preparation", "input-validated");
+
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-started");
+    await linebankSignInForApp(page, parsed.data.credentials, context);
+    context.signal.throwIfAborted();
+    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+    await withAbort(linebankEnsureTransactionPage(page), context.signal);
+    await context.event("authentication", "authentication-completed");
+
+    const client = new LineBankApiClient(page, {
+      text: context.text,
+      signal: context.signal,
+    });
+    await context.event("collection", "collection-started");
+    await context.event("decoding", "source-decoding-started");
+    await context.event("collection", "current-balance-collection-started");
+    await context.event("decoding", "current-balance-decoding-started");
+    let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
+    let accounts: LineBankAccount[];
+    let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
+    try {
+      accountSnapshot = await client.fetchAccountSnapshot(context.now());
+      accounts = filterAccounts(
+        accountSnapshot.accounts,
+        parsed.data.accountFilters,
+        parsed.data.currencyFilters,
+      );
+      if (accounts.length === 0)
+        throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
+      const selectedAccountKeys = new Set(
+        accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+      );
+      currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
+        selectedAccountKeys.has(linebankAccountKey(row.account)),
+      );
+    } catch (error) {
+      if (sourceDecodeError(error))
+        await context.event("decoding", "source-decoding-failed");
+      else
+        await context.event("collection", "current-balance-collection-failed");
+      throw error;
+    }
+    await context.event("decoding", "current-balance-decoding-completed");
+    await context.event("collection", "current-balance-collection-completed", {
+      completed: currentBalanceRows.length,
+      total: currentBalanceRows.length,
+    });
+
+    const selectedSources: Array<{
+      account: LineBankAccount;
+      dateRange: DateRange;
+      pages: LineBankTransactionPage[];
+    }> = [];
+    let statementRowCount = 0;
+    const expectedSourceCount = accounts.length * windows.length;
+    try {
+      for (const account of accounts) {
+        for (const window of windows) {
+          context.signal.throwIfAborted();
+          const pages = await client.fetchTransactionPages(account, window);
+          selectedSources.push({ account, dateRange: window, pages });
+          statementRowCount += linebankApiRowsToStatementRows(
+            pages.flatMap((page) => page.rows),
+          ).length;
+        }
+        await context.event("collection", "account-collected", {
+          completed: selectedSources.length,
+          total: expectedSourceCount,
+        });
+      }
+    } catch (error) {
+      if (sourceDecodeError(error))
+        await context.event("decoding", "source-decoding-failed");
+      else if (sourceValidationError(error)) {
+        await context.event("validation", "source-validation-rejected", {
+          completed: selectedSources.length,
+          total: expectedSourceCount,
+        });
+      }
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    await context.event("decoding", "source-decoding-completed");
+    await context.event("collection", "collection-completed", {
+      completed: selectedSources.length,
+      total: expectedSourceCount,
+    });
+    if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: selectedSources.length,
+        total: expectedSourceCount,
+      });
+      throw new Error("LINE Bank source does not contain every selected account and date window.");
+    }
+
+    await context.event("validation", "source-validation-started", {
+      completed: 0,
+      total: selectedSources.length,
+    });
+    const observedAt = context.now();
+    const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
+    const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
+    const statementItems: PGliteWorkflowRunItem[] = [];
+    const captureOccurrenceId = randomUUID();
+    await context.event("validation", "canonical-admission-started", {
+      completed: 0,
+      total: selectedSources.length,
+    });
+    try {
+      for (const [index, selected] of selectedSources.entries()) {
+        context.signal.throwIfAborted();
+        const captureId = `linebank-${randomUUID()}`;
+        if (linebankAccountCurrency(selected.account) === "TWD") {
+          const capture = await linebankHumanAttestedCapture({
+            account: selected.account,
+            dateRange: selected.dateRange,
+            pages: selected.pages,
+            captureId,
+            observedAt,
+          });
+          if (!capture)
+            throw new Error("LINE Bank selected domestic source authority is not supported.");
+          const admitted = normalizeLineBankFinancialCapture(capture);
+          domesticCaptures.push(capture);
+          financialCaptures.push(admitted);
+          statementItems.push({
+            provider: "linebank",
+            product: "domestic-deposit",
+            itemKey: captureId,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: admitted },
+            },
+          });
+        } else {
+          const capture = buildLinebankForeignCurrencyCaptureInput({
+            account: selected.account,
+            dateRange: selected.dateRange,
+            pages: selected.pages,
+            observedAt,
+            captureOccurrenceId: `${captureOccurrenceId}:${index}`,
+          });
+          const admitted = admitForeignCurrencyDepositCapture(capture);
+          statementItems.push({
+            provider: "linebank",
+            product: "foreign-currency",
+            itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: admitted },
+            },
+          });
+          financialCaptures.push(admitted);
+        }
+        await context.event("validation", "account-source-admitted", {
+          completed: index + 1,
+          total: selectedSources.length,
+        });
+      }
+    } catch (error) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: statementItems.length,
+        total: selectedSources.length,
+      });
+      throw error;
+    }
+
+    await context.event("validation", "canonical-admission-completed", {
+      completed: statementItems.length,
+      total: selectedSources.length,
+    });
+    const balanceItems: PGliteWorkflowRunItem[] = [];
+    if (domesticCaptures.length > 0) {
+      const selectedTwdAccountKeys = new Set(
+        accounts
+          .filter((account) => linebankAccountCurrency(account) === "TWD")
+          .map((account) => linebankAccountKey(account)),
+      );
+      const admittedTwdAccountKeys = new Set(
+        domesticCaptures.map((capture) => capture.accountKey),
+      );
+      const selectedTwdSourceKeys = new Set(
+        currentBalanceRows.map((row) => row.sourceAccountKey),
+      );
+      if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
+        currentBalanceRows.length !== selectedTwdAccountKeys.size ||
+        selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
+        [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
+        await context.event("validation", "current-balance-validation-rejected", {
+          completed: currentBalanceRows.length,
+          total: selectedTwdAccountKeys.size,
+        });
+        throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
+      }
+      await context.event("validation", "current-balance-validation-started", {
+        completed: 0,
+        total: currentBalanceRows.length,
+      });
+      try {
+        const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+          currentBalanceRows,
+          domesticCaptures.map((capture) => ({
+            accountKey: capture.accountKey,
+            sourceConnection: capture.sourceConnection,
+            identityEpoch: capture.identityEpoch,
+            observedAt: capture.observedAt,
+          })),
+        );
+        for (const [index, capture] of currentBalanceCaptures.entries()) {
+          context.signal.throwIfAborted();
+          balanceItems.push({
+            provider: "linebank",
+            product: "current-balance",
+            itemKey: `current-balance:${index}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(
+                admitCurrentDepositBalanceCapture(capture),
+              ),
+            },
+          });
+        }
+      } catch {
+        await context.event("validation", "current-balance-validation-rejected", {
+          completed: 0,
+          total: currentBalanceRows.length,
+        });
+        throw new Error("LINE Bank current balance source admission was rejected.");
+      }
+      await context.event("validation", "current-balance-validation-completed", {
+        completed: balanceItems.length,
+        total: currentBalanceRows.length,
+      });
+    }
+    await context.event("validation", "source-validation-completed", {
+      completed: selectedSources.length,
+      total: expectedSourceCount,
+    });
+    context.signal.throwIfAborted();
+
+    const commitItems = [...statementItems, ...balanceItems];
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: commitItems.length,
+    });
+    if (balanceItems.length > 0)
+      await context.event("commit", "current-balance-commit-started", {
+        completed: 0,
+        total: balanceItems.length,
+      });
+    const committed = await financialCommit.execute(commitItems, {
+      provider: "linebank",
+      product: "financial",
+      signal: context.signal,
+    });
+    if (
+      committed.status !== "completed" ||
+      committed.items.length !== commitItems.length ||
+      committed.items.some((item) => item.status !== "committed")
+    ) {
+      const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+      await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed");
+      throw new Error(`LINE Bank Canonical Financial Commit failed: ${codes || committed.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: commitItems.length,
+      total: commitItems.length,
+    });
+    if (balanceItems.length > 0)
+      await context.event("commit", "current-balance-commit-completed", {
+        completed: balanceItems.length,
+        total: balanceItems.length,
+      });
+    const hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
+    return {
+      dateRange,
+      accountCount: accounts.length,
+      statementRowCount,
+      sourceCaptureCount: selectedSources.length,
+      financialItemCount: commitItems.length,
+      status: hasFinancialRecords ? "financial-admitted" : "source-only",
+    };
+  });
 }
 
 export default workflow("linebankStatements", {
