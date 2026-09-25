@@ -311,7 +311,8 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     capture.authorityRoute === "fubon/credit-card/human-attested-v2";
   const isEsunCreditCardCapture =
     capture.authorityRoute === "esun/credit-card/human-attested-v1" ||
-    capture.authorityRoute === "esun/credit-card/human-attested-v2";
+    capture.authorityRoute === "esun/credit-card/human-attested-v2" ||
+    capture.authorityRoute === "esun/credit-card/human-attested-v3";
   const isYuantaCreditCardCapture =
     capture.authorityRoute === "yuanta/credit-card/human-attested-v1" ||
     capture.authorityRoute === "yuanta/credit-card/human-attested-v2";
@@ -650,6 +651,28 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       recordKind: "esun-credit-card-transaction",
       accountType: "credit",
       contractVersion: "esun/credit-card/human-attested-v2",
+      requireProviderGuaranteedFalse: true,
+    },
+    "esun/credit-card/human-attested-v3": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "esun/credit-card/human-attested-v3",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis:
+        "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
+      completenessRuleVersion: "esun/credit-card/human-attested-v3",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "esun",
+      stream: "credit-card",
+      recordKind: "esun-credit-card-transaction",
+      accountType: "credit",
+      contractVersion: "esun/credit-card/human-attested-v3",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/credit-card/human-attested-v1": {

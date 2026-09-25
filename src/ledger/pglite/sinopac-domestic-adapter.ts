@@ -235,7 +235,9 @@ function sinopacFinancialRecord(
         timeZone: "Asia/Taipei",
         epochMilliseconds,
       },
-      effectiveOn: accountingDate,
+      // The attested route uses transaction time for the effective date;
+      // accountingDate remains in the compact source evidence.
+      effectiveOn: transactionDate,
       transactionDateTimeLocal: `${transactionDate}T${transactionTime}`,
     },
   };

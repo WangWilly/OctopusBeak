@@ -27,7 +27,7 @@ export type CreditCardCurrentBalanceTimeEvidence = Readonly<{
   effectiveAt: string;
   effectiveTimeBasis: "provider-http-date" | "provider-query-time";
   effectiveTimeRuleVersion: string;
-  sourceField: "HTTP Date" | "查詢時間";
+  sourceField: "HTTP Date" | "查詢時間" | "resultTime";
   sourceValue: string;
   contractVersion: string;
 }>;
@@ -76,6 +76,7 @@ export type CreditCardCurrentBalanceCaptureInput = Readonly<{
     endpoint: string;
     status: 200;
     cacheControl?: string;
+    httpDate?: string;
   }>;
   pages: readonly CanonicalSourcePage[];
   records: readonly CreditCardCurrentBalanceSourceRecordInput[];
@@ -154,6 +155,17 @@ export const CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS: Readonly<
     effectiveTimeBasis: "provider-query-time",
     effectiveTimeSourceField: "查詢時間",
   },
+  "esun/credit-card/current-used-credit-v2": {
+    integrationNamespace: "esun",
+    contractVersion: "esun/credit-card/current-used-credit-v2",
+    endpointHost: "ebank.esunbank.com.tw",
+    endpointPath: "/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+    requiredCacheTokens: [],
+    sourceFields: ["usedCreditLimit"],
+    estimateBasis: "provider-used-credit",
+    effectiveTimeBasis: "provider-query-time",
+    effectiveTimeSourceField: "resultTime",
+  },
   "fubon/credit-card/current-used-credit-v1": {
     integrationNamespace: "fubon",
     contractVersion: "fubon/credit-card/current-used-credit-v1",
@@ -211,7 +223,7 @@ const RFC3339 =
 const HTTP_DATE =
   /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
 const PROVIDER_QUERY_TIME =
-  /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u;
+  /^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u;
 
 function fail(message: string): never {
   throw new CanonicalCreditCardCurrentBalanceConflictError(message);
@@ -410,6 +422,10 @@ export function validateCreditCardCurrentBalanceCapture(input: CreditCardCurrent
   if (input.providerResponse.status !== 200) fail("Credit-card response must be HTTP 200.");
   parseEndpoint(input.providerResponse.endpoint, contract);
   const cache = (input.providerResponse.cacheControl ?? "").trim();
+  if (input.authorityRoute === "esun/credit-card/current-used-credit-v2") {
+    const httpDate = input.providerResponse.httpDate ?? "";
+    if (!HTTP_DATE.test(httpDate)) fail("E.SUN current-credit response requires HTTP Date.");
+  }
   for (const token of contract.requiredCacheTokens)
     if (!new RegExp(`\\b${token}\\b`, "iu").test(cache))
       fail(`Credit-card response must carry Cache-Control: ${token}.`);
@@ -452,6 +468,9 @@ export function validateCreditCardCurrentBalanceCapture(input: CreditCardCurrent
     const sourceInstant = providerTimeInstant(time.sourceValue, time.effectiveTimeBasis);
     if (sourceInstant !== canonicalInstant(time.effectiveAt))
       fail("Credit-card effective time does not match provider time evidence.");
+    if (input.authorityRoute === "esun/credit-card/current-used-credit-v2" &&
+      Math.abs(Date.parse(input.providerResponse.httpDate!) - Date.parse(time.effectiveAt)) > 5_000)
+      fail("E.SUN resultTime and HTTP Date differ by more than five seconds.");
     if (observation.estimate.kind !== "estimate" || observation.estimate.basis !== contract.estimateBasis)
       fail("Credit-card estimate kind or basis does not match the route.");
     requireText(observation.estimate.formula, "Credit-card estimate formula");

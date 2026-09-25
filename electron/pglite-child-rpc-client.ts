@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "node:net";
+import { StringDecoder } from "node:string_decoder";
 import {
   createPGliteOperationalRpcClient,
   type PGliteOperationalOperation,
@@ -65,6 +66,7 @@ function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChil
 class LineSocketPort implements SocketMessagePort {
   #listeners = new Set<SocketMessageListener>();
   #buffer = "";
+  #decoder = new StringDecoder("utf8");
   #closed = false;
   #writeQueue = Promise.resolve();
   private readonly socket: Socket;
@@ -135,7 +137,7 @@ class LineSocketPort implements SocketMessagePort {
 
   #read(chunk: Buffer): void {
     if (this.#closed) return;
-    this.#buffer += chunk.toString("utf8");
+    this.#buffer += this.#decoder.write(chunk);
     if (Buffer.byteLength(this.#buffer, "utf8") > MAX_FRAME_BYTES) {
       this.onProtocolError("frame-too-large");
       this.close();

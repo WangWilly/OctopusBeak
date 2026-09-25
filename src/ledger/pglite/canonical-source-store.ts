@@ -471,11 +471,12 @@ async function assertOccurrenceContinuity(
       const providerMatches = row.provider_key === record.providerKey;
       const hashMatches = row.content_hash === record.contentHash;
       const allowedFubonLoanEvolution = recordKind === "fubon-loan-transaction" && equivalentFubonLoanPayload(row.payload_json, comparablePayloadJson);
-      if (!providerMatches || (!hashMatches && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution) || (priorJson !== null && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution))
+      if (!providerMatches || (!hashMatches && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution) || (priorJson !== null && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)) {
         throw new PGliteCanonicalSourceAdmissionError(
           "occurrence-conflict",
           "Source occurrence content overwrite is forbidden.",
         );
+      }
     }
   }
 }

@@ -163,6 +163,12 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     contractVersions: ["esun/credit-card/human-attested-v2"],
   },
   {
+    routeKey: "esun/credit-card/human-attested-v3",
+    integrationNamespace: "esun",
+    stream: "credit-card",
+    contractVersions: ["esun/credit-card/human-attested-v3"],
+  },
+  {
     routeKey: "yuanta/credit-card/human-attested-v1",
     integrationNamespace: "yuanta",
     stream: "credit-card",
@@ -185,6 +191,12 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "esun",
     stream: "credit-card",
     contractVersions: ["esun/credit-card/current-used-credit-v1"],
+  },
+  {
+    routeKey: "esun/credit-card/current-used-credit-v2",
+    integrationNamespace: "esun",
+    stream: "credit-card",
+    contractVersions: ["esun/credit-card/current-used-credit-v2"],
   },
   {
     routeKey: "fubon/credit-card/current-used-credit-v1",

@@ -26,7 +26,7 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
       byteLength: 1024,
       contentDigest: `sha256:${"a".repeat(64)}`,
       columnNames: SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
-      rows: [{ rowOrdinal: 0, values: ["2026/08/02", "2026/08/02", "09:10", "SYNTHETIC TRANSFER", "100", "", "900", "SYNTHETIC NOTE", ""] }],
+      rows: [{ rowOrdinal: 0, values: ["2026/08/03", "2026/08/02", "09:10", "SYNTHETIC TRANSFER", "100", "", "900", "SYNTHETIC NOTE", ""] }],
       queryPeriods: ["2026/08/01 ~ 2026/08/23"],
       terminal: true,
     }],
@@ -46,6 +46,11 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
     captureId: "sinopac-financial-synthetic",
   });
   assert.equal(financial.status, "admitted", financial.diagnostics.join(", "));
+  assert.equal(financial.capture?.records[0]?.effectiveOn, "2026-08-02");
+  assert.equal(
+    JSON.parse(financial.capture!.records[0]!.compactJson).accountingDate,
+    "2026-08-03",
+  );
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {

@@ -3,6 +3,7 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
+import { StringDecoder } from "node:string_decoder";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcServer,
@@ -118,6 +119,7 @@ function safeTransportError(code: PGliteChildTransportError["code"]): PGliteChil
 class LineSocketPort implements SocketMessagePort {
   #listeners = new Set<SocketMessageListener>();
   #buffer = "";
+  #decoder = new StringDecoder("utf8");
   #closed = false;
   #writeQueue = Promise.resolve();
   private readonly socket: Socket;
@@ -188,7 +190,7 @@ class LineSocketPort implements SocketMessagePort {
 
   #read(chunk: Buffer): void {
     if (this.#closed) return;
-    this.#buffer += chunk.toString("utf8");
+    this.#buffer += this.#decoder.write(chunk);
     if (Buffer.byteLength(this.#buffer, "utf8") > MAX_FRAME_BYTES) {
       this.onProtocolError("frame-too-large");
       this.close();
