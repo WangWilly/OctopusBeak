@@ -826,8 +826,13 @@ try {
     assert.deepEqual(await readdir(join(browserFixtureDirectory, "data", "automation")), ["browser-state"]);
     assert.deepEqual(
       await readdir(join(browserFixtureDirectory, "data", "automation", "browser-state", "yuanta-domestic-fixture")),
+      ["authentication"],
+      "the export must remain in memory and not become a retained profile file",
+    );
+    assert.deepEqual(
+      await readdir(join(browserFixtureDirectory, "data", "automation", "browser-state", "yuanta-domestic-fixture", "authentication")),
       [],
-      "the export must remain in memory and not become a profile file",
+      "no cookie or export file is retained without a credential codec",
     );
 
     for (const testCase of [
