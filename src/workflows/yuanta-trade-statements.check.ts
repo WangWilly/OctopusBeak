@@ -35,16 +35,28 @@ const workflowSource = await readFile(
   new URL("./yuanta-trade-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(workflowSource, /commitYuantaTradeCanonicalIfComplete/);
+assert.match(workflowSource, /runYuantaTradeProviderWorkflow/);
 assert.match(workflowSource, /buildYuantaInvestmentCapture/);
-assert.match(workflowSource, /executePGliteWorkflowRun/);
+assert.match(workflowSource, /financialCommit\.execute/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
 assert.match(workflowSource, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
+assert.doesNotMatch(
+  workflowSource,
+  /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u,
+);
+assert.doesNotMatch(
+  workflowSource,
+  /node:fs\/promises|writeFile|outputDir|generatedTableFileSchema|writeResultsFiles|csvFilename|jsonFilename/u,
+);
+assert.doesNotMatch(
+  workflowSource,
+  /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client|commitYuantaTradeCanonicalIfComplete/u,
+);
 assert.doesNotMatch(workflowSource, /createCanonicalInvestmentStore/);
 assert.doesNotMatch(workflowSource, /commitCanonicalInvestmentCaptureBatch/);
-assert.match(workflowSource, /startUrl: YUANTA_TRADE_LOGIN_URL/);
+assert.match(workflowSource, /page\.goto\(YUANTA_TRADE_LOGIN_URL/);
+assert.match(workflowSource, /assertYuantaTradeServiSignAvailable/);
 assert.doesNotMatch(workflowSource, /resolveCanonicalInvestmentFundingRelations/);
-assert.match(workflowSource, /holding-capture-incomplete/);
 assert.match(
   workflowSource,
   /function normalizeHoldingRows[\s\S]*?const asOfDate = page\.endDate \|\| page\.startDate \|\| "";/,
