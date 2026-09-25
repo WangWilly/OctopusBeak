@@ -10,6 +10,7 @@ import {
   createDevelopmentBrowserPort,
   createTerminalHumanAssistancePort,
 } from "./workflow-dev.ts";
+import { APP_WORKFLOW_DEFINITIONS } from "../src/lib/automation/server/app-workflow-registry.ts";
 
 const cli = fileURLToPath(new URL("./workflow-dev.ts", import.meta.url));
 
@@ -43,12 +44,9 @@ test("workflow development CLI explains the project-owned typed interface", () =
 test("workflow development CLI lists only typed definitions enabled by the App", () => {
   const result = invoke("list");
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stdout.trim().split("\n").sort(), [
-    "ctbc-statements",
-    "einvoice-personal-invoices",
-    "esun-credit-card-statements",
-    "linebank-statements",
-  ]);
+  const listedIds = result.stdout.trim().split("\n").filter(Boolean).sort();
+  const appCatalogIds = APP_WORKFLOW_DEFINITIONS.map(({ id }) => id).sort();
+  assert.deepEqual(listedIds, appCatalogIds);
 });
 
 test("workflow development CLI validates a provider definition export", () => {

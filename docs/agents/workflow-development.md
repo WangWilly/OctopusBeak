@@ -14,7 +14,7 @@ npm run workflow:dev -- fixture
 npm run workflow:dev -- inspect http://127.0.0.1:4173
 ```
 
-`list` shows definitions already registered with the App. `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. It can also parse input JSON from an environment variable without displaying it:
+`list` reads the App workflow catalog directly, so it stays aligned with the workflows currently enabled for production. `validate` imports a trusted module under `src/lib/automation` and checks that the named export has a valid workflow ID, a `requiresFinancialCommit` declaration, and a `run(context, input)` handler. It can also parse input JSON from an environment variable without displaying it:
 
 ```sh
 npm run workflow:dev -- validate src/lib/automation/example-workflow.ts exampleWorkflow --input-env WORKFLOW_DEV_INPUT_JSON
