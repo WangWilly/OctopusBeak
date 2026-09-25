@@ -1057,15 +1057,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "post-statements",
     label: "Post Office statements",
-    script: "run:post-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/post-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    script: "workflow:post-statements",
+    command: [],
+    workflowId: "post-statements",
     kind: "crawler",
     credentialGroupId: "post",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[7].credentialKeys,

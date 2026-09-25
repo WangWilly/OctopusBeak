@@ -2,6 +2,7 @@ import { einvoicePersonalInvoicesWorkflow } from "../einvoice-workflow.ts";
 import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.ts";
 import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
 import { linebankStatementsWorkflow } from "../linebank-workflow.ts";
+import { postDomesticDepositWorkflow } from "../post-workflow.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 
 type AppWorkflowRegistration = Readonly<{
@@ -61,6 +62,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
         },
         accountFilters: [],
         currencyFilters: [],
+      };
+    },
+  },
+  {
+    definition: postDomesticDepositWorkflow,
+    startUrl: "https://ipost.post.gov.tw/pst/home.html",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          post_user_id: environment.LIBRETTO_CLOUD_POST_USER_ID ?? "",
+          post_account: environment.LIBRETTO_CLOUD_POST_ACCOUNT ?? "",
+          post_password: environment.LIBRETTO_CLOUD_POST_PASSWORD ?? "",
+        },
       };
     },
   },
