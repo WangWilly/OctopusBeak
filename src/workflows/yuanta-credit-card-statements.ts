@@ -15,6 +15,7 @@ import {
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   buildYuantaCanonicalCreditCardCapture as buildCanonicalYuantaCreditCardCapture,
   yuantaCanonicalSpineCapture,
@@ -308,7 +309,7 @@ export class YuantaCreditCardSummaryParseError extends Error {
   }
 }
 
-const inputSchema = z.object({
+export const yuantaCreditCardStatementsInputSchema = z.object({
   monthIndexes: z.array(z.number().int().min(0).max(24)).optional(),
   includeUnbilled: z.boolean().default(true),
   includePaymentDetails: z.boolean().default(true),
@@ -323,6 +324,7 @@ const inputSchema = z.object({
     })
     .optional(),
 });
+const inputSchema = yuantaCreditCardStatementsInputSchema;
 
 const tableFileSchema = z.object({
   baseName: z.string(),
@@ -347,7 +349,7 @@ const outputSchema = z.object({
   canonicalCaptureCount: z.number().int().nonnegative(),
 });
 
-type WorkflowInput = z.infer<typeof inputSchema>;
+type WorkflowInput = z.infer<typeof inputSchema> & { credentials?: YuantaCredentials };
 type TableFile = z.infer<typeof tableFileSchema>;
 
 /**
@@ -1286,7 +1288,10 @@ async function traverseYuantaSummaryWithCurrentEvidence(
   page: Page,
   firstHtml: string,
   evidence: ReturnType<typeof currentYuantaCreditEvidence>,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
 ): Promise<YuantaCreditCardSummaryTraversal> {
+  options.sourceText?.assertIntact(firstHtml);
+  options.signal?.throwIfAborted();
   let currentHtml = firstHtml;
   try {
     const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
@@ -1300,7 +1305,9 @@ async function traverseYuantaSummaryWithCurrentEvidence(
           );
         await pager.click({ force: true });
         await settleAfterNavigation(page);
+        options.signal?.throwIfAborted();
         const nextHtml = await readYuantaSummaryHtml(page, currentHtml);
+        options.sourceText?.assertIntact(nextHtml);
         currentHtml = nextHtml;
         return nextHtml;
       },
@@ -1317,10 +1324,11 @@ async function traverseYuantaSummaryWithCurrentEvidence(
     // The settled-summary page is an optional cross-check.  Keep a valid
     // current-used-credit evidence read even when the bank changes that table
     // independently of the historical statement parser.
-    console.log("yuanta-credit-card-settled-summary-unavailable", {
-      reason: "optional-cross-check-diagnostic",
-      diagnostic: error.diagnostic,
-    });
+    if (!options.silent)
+      console.log("yuanta-credit-card-settled-summary-unavailable", {
+        reason: "optional-cross-check-diagnostic",
+        diagnostic: error.diagnostic,
+      });
     return {
       summaries: [],
       pages: [],
@@ -1334,6 +1342,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
 
 async function submitCreditCardSummary(
   page: Page,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }> = {},
 ): Promise<YuantaCreditCardSummaryTraversal> {
   let link = await findYuantaCreditCardSummaryLink(page);
   let navigationRoute:
@@ -1354,9 +1363,10 @@ async function submitCreditCardSummary(
     }
   }
 
-  console.log("yuanta-credit-card-summary-navigation", {
-    route: navigationRoute,
-  });
+  if (!options.silent)
+    console.log("yuanta-credit-card-summary-navigation", {
+      route: navigationRoute,
+    });
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
@@ -1369,6 +1379,7 @@ async function submitCreditCardSummary(
     page,
     loaded.firstHtml,
     loaded.evidence,
+    options,
   );
 }
 
@@ -5325,39 +5336,75 @@ async function submitCreditCardUnbilled(page: Page): Promise<string> {
   return await (await responsePromise).text();
 }
 
-export default workflow("yuantaCreditCardStatements", {
+type YuantaCreditCardAppCollection = {
+  credentials: YuantaCredentials;
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+  items: PGliteWorkflowRunItem[];
+  now(): string;
+  canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
+  instrumentFingerprintSecret?: string;
+  collection?: YuantaCreditCardWorkflowCollection;
+};
+
+type YuantaCreditCardAppContext = LibrettoWorkflowContext & {
+  yuantaAppCollection?: YuantaCreditCardAppCollection;
+};
+
+export type YuantaCreditCardWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+}>;
+
+export type YuantaCreditCardWorkflowDependencies = Readonly<{
+  collectOnly: true;
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+  now(): string;
+  canonicalHumanAttestation?: YuantaCanonicalHumanAttestation;
+  instrumentFingerprintSecret?: string;
+}>;
+
+const yuantaCreditCardStatements = workflow("yuantaCreditCardStatements", {
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
+    const appCollection = (ctx as YuantaCreditCardAppContext).yuantaAppCollection;
+    const appItemStart = appCollection?.items.length ?? 0;
+    const log = (...args: Parameters<typeof console.log>) => {
+      if (!appCollection) console.log(...args);
+    };
     const { page, session } = ctx;
-    const credentials = (
+    const credentials = appCollection?.credentials ?? (
       input as typeof input & { credentials: YuantaCredentials }
     ).credentials;
-    const authResult = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
-    );
+    const authResult = appCollection
+      ? { usedProfile: true, usedExistingSession: true, replacedActiveSession: false }
+      : await sharedAuthenticateYuantaBank(ctx, credentials, input.replaceActiveSession);
     const replacedActiveSession = authResult.replacedActiveSession;
     const instrumentFingerprintSecret =
-      process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+      appCollection?.instrumentFingerprintSecret ?? process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
     const canonicalHumanAttestation =
-      yuantaCanonicalHumanAttestationFromEnvironment(credentials);
+      appCollection?.canonicalHumanAttestation ?? yuantaCanonicalHumanAttestationFromEnvironment(credentials);
     const inspectFirstHistorySummary =
-      yuantaInspectFirstHistorySummaryEnabled(input.inspectFirstHistorySummary);
+      !appCollection && yuantaInspectFirstHistorySummaryEnabled(input.inspectFirstHistorySummary);
 
     const pageReadyStartedAt = Date.now();
-    console.log("yuanta-credit-card-page-ready-start", {
+    log("yuanta-credit-card-page-ready-start", {
       startedAt: new Date(pageReadyStartedAt).toISOString(),
     });
     const currentMonthHtml = await readCurrentCreditCardBillsHtml(page);
+    appCollection?.sourceText.assertIntact(currentMonthHtml);
+    appCollection?.signal.throwIfAborted();
     if (isCreditCardProductAbsentText(currentMonthHtml)) {
       throw new StatementComponentAbsentError(
         "No YuanTa credit-card product is available for this login.",
       );
     }
-    console.log("yuanta-credit-card-page-ready-complete", {
+    log("yuanta-credit-card-page-ready-complete", {
       durationMs: Date.now() - pageReadyStartedAt,
     });
     if (hasUntraversedPager(currentMonthHtml)) {
@@ -5370,7 +5417,7 @@ export default workflow("yuantaCreditCardStatements", {
       null,
     ).monthOptions;
     const monthOptions = selectMonthOptions(allMonthOptions, input);
-    console.log("yuanta-credit-card-months-found", {
+    log("yuanta-credit-card-months-found", {
       available: allMonthOptions.length,
       selected: monthOptions.length,
     });
@@ -5386,6 +5433,7 @@ export default workflow("yuantaCreditCardStatements", {
     const creditCardProgress = (
       currentCreditCardSteps = completedCreditCardSteps,
     ) => {
+      if (appCollection) return;
       const percent = 60 + Math.min(
         14,
         Math.round(
@@ -5405,7 +5453,8 @@ export default workflow("yuantaCreditCardStatements", {
       monthOptions,
       async (month, monthPosition) => {
         monthStartedAt = Date.now();
-        console.log("yuanta-credit-card-month-start", {
+        appCollection?.signal.throwIfAborted();
+        log("yuanta-credit-card-month-start", {
           index: monthPosition + 1,
           total: monthOptions.length,
           monthIndex: month.index,
@@ -5416,6 +5465,8 @@ export default workflow("yuantaCreditCardStatements", {
         return submitCreditCardMonth(page, month);
       },
       async (month, monthHtml, monthPosition) => {
+        appCollection?.signal.throwIfAborted();
+        appCollection?.sourceText.assertIntact(monthHtml);
         terminalPages.push(true);
         if (input.includeSummary)
           await pauseBeforeYuantaCreditCardHistorySummaryParse({
@@ -5424,7 +5475,7 @@ export default workflow("yuantaCreditCardStatements", {
             monthIndex: month.index,
             pageOrdinal: monthPosition,
           });
-        console.log(
+        log(
           "yuanta-credit-card-history-diagnostic",
           diagnoseYuantaCreditCardHistoryHtml(monthHtml, month.index),
         );
@@ -5440,7 +5491,7 @@ export default workflow("yuantaCreditCardStatements", {
         const monthRows = parseCreditCardBillsHtml(monthHtml, month.label).rows;
         billedRows.push(...monthRows);
         completedCreditCardSteps += 1;
-        console.log("yuanta-credit-card-month-complete", {
+        log("yuanta-credit-card-month-complete", {
           index: monthPosition + 1,
           total: monthOptions.length,
           monthIndex: month.index,
@@ -5456,11 +5507,13 @@ export default workflow("yuantaCreditCardStatements", {
     let unbilledRows: StatementRow[] = [];
     if (input.includeUnbilled) {
       const unbilledStartedAt = Date.now();
-      console.log("yuanta-credit-card-unbilled-start", {
+      log("yuanta-credit-card-unbilled-start", {
         startedAt: new Date(unbilledStartedAt).toISOString(),
       });
       creditCardProgress(completedCreditCardSteps + 1);
       const unbilledHtml = await submitCreditCardUnbilled(page);
+      appCollection?.sourceText.assertIntact(unbilledHtml);
+      appCollection?.signal.throwIfAborted();
       if (hasUntraversedPager(unbilledHtml)) {
         throw new Error(
           "YuanTa credit-card response has untraversed pagination.",
@@ -5469,7 +5522,7 @@ export default workflow("yuantaCreditCardStatements", {
       terminalPages.push(true);
       unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
       completedCreditCardSteps += 1;
-      console.log("yuanta-credit-card-unbilled-complete", {
+      log("yuanta-credit-card-unbilled-complete", {
         rowCount: unbilledRows.length,
         durationMs: Date.now() - unbilledStartedAt,
       });
@@ -5486,27 +5539,31 @@ export default workflow("yuantaCreditCardStatements", {
       );
       if (issuerSummaries.length >= 2)
         statementSummaries = resolveYuantaSettledStatementCycles(issuerSummaries);
-      console.log("yuanta-credit-card-history-summary-authority", {
+      log("yuanta-credit-card-history-summary-authority", {
         sourceKey: YUANTA_CREDIT_CARD_HISTORY_SETTLED_SUMMARY_SOURCE_KEY,
         pageCount: billedHistoryPages.length,
         issuerSummaryCount: issuerSummaries.length,
         settledCycleCount: statementSummaries.length,
       });
       const summaryStartedAt = Date.now();
-      console.log("yuanta-credit-card-summary-start", {
+      log("yuanta-credit-card-summary-start", {
         startedAt: new Date(summaryStartedAt).toISOString(),
       });
       creditCardProgress(completedCreditCardSteps + 1);
       let summaryTraversal: YuantaCreditCardSummaryTraversal | undefined;
       try {
-        summaryTraversal = await submitCreditCardSummary(page);
+        summaryTraversal = await submitCreditCardSummary(page, appCollection
+          ? { sourceText: appCollection.sourceText, signal: appCollection.signal, silent: true }
+          : undefined);
+        if (appCollection)
+          appCollection.sourceText.assertIntact(JSON.stringify(summaryTraversal));
         currentUsedCredit = summaryTraversal.currentUsedCredit;
-        console.log(
+        log(
           "yuanta-credit-card-summary-diagnostic",
           diagnoseYuantaCreditCardSummaryTraversal(summaryTraversal),
         );
         if (!currentUsedCredit)
-          console.log(
+          log(
             "yuanta-credit-card-current-used-credit-unavailable",
             summaryTraversal.currentUsedCreditDiagnostic ?? {
               reason: "optional-current-credit-estimate",
@@ -5514,11 +5571,11 @@ export default workflow("yuantaCreditCardStatements", {
           );
       } catch (error) {
         if (error instanceof YuantaCreditCardSummaryParseError) {
-          console.log(
+          log(
             "yuanta-credit-card-summary-diagnostic",
             error.diagnostic,
           );
-          console.log("yuanta-credit-card-current-used-credit-unavailable", {
+          log("yuanta-credit-card-current-used-credit-unavailable", {
             reason: "summary-parse-error",
           });
         } else {
@@ -5526,14 +5583,14 @@ export default workflow("yuantaCreditCardStatements", {
             error instanceof YuantaCreditSummaryNavigationError
               ? error.diagnosticReason
               : "summary-route-error";
-          console.log("yuanta-credit-card-summary-unavailable", {
+          log("yuanta-credit-card-summary-unavailable", {
             reason,
             ...(error instanceof YuantaCreditSummaryNavigationError &&
             error.diagnostic
               ? { diagnostic: error.diagnostic }
               : {}),
           });
-          console.log("yuanta-credit-card-current-used-credit-unavailable", {
+          log("yuanta-credit-card-current-used-credit-unavailable", {
             reason,
             ...(error instanceof YuantaCreditSummaryNavigationError &&
             error.diagnostic
@@ -5543,7 +5600,7 @@ export default workflow("yuantaCreditCardStatements", {
         }
       }
       completedCreditCardSteps += 1;
-      console.log("yuanta-credit-card-summary-complete", {
+      log("yuanta-credit-card-summary-complete", {
         issuerSummaryCount: issuerSummaries.length,
         settledCycleCount: statementSummaries.length,
         pageCount: summaryTraversal?.pages.length ?? 0,
@@ -5658,28 +5715,37 @@ export default workflow("yuantaCreditCardStatements", {
             },
           });
         }
-        const client = requirePGliteChildRpcClientFromEnv();
-        try {
-          await client.ready;
-          const result = await executePGliteWorkflowRun({
-            client: client.workflow,
-            items,
-            provider: "yuanta",
-            product: "credit-card",
-          });
-          if (result.status !== "completed")
-            throw new Error(
-              `Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`,
-            );
+        if (appCollection) {
+          appCollection.signal.throwIfAborted();
+          for (const item of items)
+            appCollection.sourceText.assertIntact(JSON.stringify(item.command));
+          appCollection.items.push(...items);
           canonicalAdmission = "admitted";
           canonicalCaptureCount = canonicalCaptures.length;
-        } finally {
-          client.close();
+        } else {
+          const client = requirePGliteChildRpcClientFromEnv();
+          try {
+            await client.ready;
+            const result = await executePGliteWorkflowRun({
+              client: client.workflow,
+              items,
+              provider: "yuanta",
+              product: "credit-card",
+            });
+            if (result.status !== "completed")
+              throw new Error(
+                `Yuanta credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`,
+              );
+            canonicalAdmission = "admitted";
+            canonicalCaptureCount = canonicalCaptures.length;
+          } finally {
+            client.close();
+          }
         }
       }
     }
 
-    if (input.includeUnbilled) {
+    if (!appCollection && input.includeUnbilled) {
       files.push(
         await writeStatementFile(
           nextTimestamp,
@@ -5690,15 +5756,26 @@ export default workflow("yuantaCreditCardStatements", {
         ),
       );
     }
-    files.push(
-      await writeStatementFile(
-        nextTimestamp,
-        "billed",
-        billedRows,
-        capture,
-        cardKeys,
-      ),
-    );
+    if (!appCollection) {
+      files.push(
+        await writeStatementFile(
+          nextTimestamp,
+          "billed",
+          billedRows,
+          capture,
+          cardKeys,
+        ),
+      );
+    }
+
+    if (appCollection) {
+      appCollection.signal.throwIfAborted();
+      appCollection.collection = {
+        sourceCount: monthOptions.length + (input.includeUnbilled ? 1 : 0) + (input.includeSummary ? 1 : 0),
+        rowCount: billedRows.length + unbilledRows.length,
+        itemCount: appCollection.items.length - appItemStart,
+      };
+    }
 
     return {
       usedExistingSession: authResult.usedProfile,
@@ -5710,3 +5787,40 @@ export default workflow("yuantaCreditCardStatements", {
     };
   },
 });
+
+export default yuantaCreditCardStatements;
+
+export async function runYuantaCreditCardStatements(
+  page: Page,
+  input: WorkflowInput,
+  dependencies: YuantaCreditCardWorkflowDependencies,
+): Promise<YuantaCreditCardWorkflowCollection> {
+  const appCollection: YuantaCreditCardAppCollection = {
+    credentials: input.credentials ?? {},
+    sourceText: dependencies.sourceText,
+    signal: dependencies.signal,
+    items: dependencies.deferredCommitItems,
+    now: dependencies.now,
+    ...(dependencies.canonicalHumanAttestation
+      ? { canonicalHumanAttestation: dependencies.canonicalHumanAttestation }
+      : {}),
+    ...(dependencies.instrumentFingerprintSecret
+      ? { instrumentFingerprintSecret: dependencies.instrumentFingerprintSecret }
+      : {}),
+  };
+  const context: YuantaCreditCardAppContext = {
+    page,
+    session: "app-owned-yuanta-workflow",
+    yuantaAppCollection: appCollection,
+  };
+  const credentials = input.credentials ?? {};
+  const legacyOutput = await yuantaCreditCardStatements.run(context, {
+    ...input,
+    credentials,
+    canonicalHumanAttestation: dependencies.canonicalHumanAttestation,
+  });
+  if (!appCollection.collection)
+    throw new Error("Yuanta credit-card source collection did not complete.");
+  void legacyOutput;
+  return appCollection.collection;
+}

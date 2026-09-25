@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
@@ -9,6 +9,8 @@ import { Worker } from "node:worker_threads";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { createPGliteChildRpcServer, type PGliteChildProvider } from "../../electron/pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 
@@ -524,6 +526,65 @@ const writeWorkflowFile = async () => ({
   csvBytes: 1,
   jsonBytes: 1,
 });
+
+const typedOutputDir = await mkdtemp(join(tmpdir(), "yuanta-deposit-typed-"));
+const originalCwd = process.cwd();
+process.chdir(typedOutputDir);
+try {
+  const deferredItems: PGliteWorkflowRunItem[] = [];
+  const typedResult = await runYuantaStatements(
+    {} as never,
+    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
+    {
+      observedAt: stableConnectionIdentity.observedAt,
+      readDepositAccountOptions: async () => [workflowAccount],
+      queryAccount: async () => undefined,
+      downloadStatementRows: async () => workflowDownload,
+      writeBankTransactionsFile: async () => { throw new Error("typed Yuanta deposit attempted file output"); },
+      occurrenceDiagnosticDirectory: null,
+      sourceConnectionScope: stableConnectionScope,
+      sourceConnectionKey: stableConnectionKey,
+      readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
+      deferredCommitItems: deferredItems,
+      collectOnly: true,
+      sourceText: strictSourceText,
+      signal: new AbortController().signal,
+    },
+  );
+  assert.ok(typedResult.itemCount > 0);
+  assert.equal(deferredItems.length, typedResult.itemCount);
+  assert.deepEqual(await readdir(typedOutputDir), []);
+
+  const rejectedItems: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(
+    runYuantaStatements(
+      {} as never,
+      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
+      {
+        observedAt: stableConnectionIdentity.observedAt,
+        readDepositAccountOptions: async () => [workflowAccount],
+        queryAccount: async () => undefined,
+        downloadStatementRows: async () => {
+          strictSourceText.decode(Uint8Array.of(0x81), "big5");
+          return workflowDownload;
+        },
+        writeBankTransactionsFile: async () => { throw new Error("malformed source reached file output"); },
+        occurrenceDiagnosticDirectory: null,
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: stableConnectionKey,
+        deferredCommitItems: rejectedItems,
+        collectOnly: true,
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
+      },
+    ),
+    /Source text integrity failed/u,
+  );
+  assert.deepEqual(rejectedItems, [], "malformed Big5 must fail before any source item is returned");
+} finally {
+  process.chdir(originalCwd);
+  await rm(typedOutputDir, { recursive: true, force: true });
+}
 
 const pgliteRunDir = await mkdtemp(join(tmpdir(), "yuanta-pglite-workflow-"));
 const pgliteWorker = createPGliteViewWorkerClient(new Worker(

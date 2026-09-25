@@ -10,6 +10,8 @@ import {
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import { emitAutomationProgress } from "../lib/automation/progress.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   admitCanonicalInvestmentCapture,
   CanonicalInvestmentAdmissionError,
@@ -89,7 +91,7 @@ const customDateRangeSchema = z.object({
   endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
 });
 
-const inputSchema = z.object({
+export const yuantaFundStatementsInputSchema = z.object({
   dateRange: quickDateRangeSchema.default("one_year"),
   customDateRange: customDateRangeSchema.optional(),
   fundFilters: z.array(z.string()).default([]),
@@ -99,6 +101,7 @@ const inputSchema = z.object({
   includeOffHourOrders: z.boolean().default(false),
   replaceActiveSession: z.boolean().default(true),
 });
+const inputSchema = yuantaFundStatementsInputSchema;
 
 const tableFileSchema = z.object({
   baseName: z.string(),
@@ -1211,8 +1214,11 @@ async function parseFundTables(
   category: string,
   fund: string | null,
   period: string | null,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
 ): Promise<ParsedTable[]> {
+  options.signal?.throwIfAborted();
   const scope = await findScopeWithSelector(page, FUND_TABLE_SELECTOR);
+  options.sourceText?.assertIntact(await scope.locator("body").innerHTML());
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();
   const parsed: ParsedTable[] = [];
@@ -1236,6 +1242,8 @@ async function parseFundTables(
   if (parsed.length === 0) {
     throw new Error(`No YuanTa fund tables found for ${category}.`);
   }
+
+  options.sourceText?.assertIntact(JSON.stringify(parsed));
 
   return parsed;
 }
@@ -1633,8 +1641,9 @@ async function captureTables(
   category: string,
   fund: string | null,
   period: string | null,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
 ): Promise<void> {
-  const tables = await parseFundTables(page, category, fund, period);
+  const tables = await parseFundTables(page, category, fund, period, options);
   for (const table of tables) {
     parsedTables.push(table);
   }
@@ -1983,11 +1992,18 @@ async function commitYuantaFundCanonicalIfComplete(
   credentials: YuantaCredentials,
   positions: readonly FundPosition[],
   tables: readonly ParsedTable[],
-): Promise<void> {
+  options: Readonly<{
+    collectOnly?: true;
+    deferredCommitItems?: PGliteWorkflowRunItem[];
+    sourceText?: SourceTextPort;
+    signal?: AbortSignal;
+    observedAt?: string;
+  }> = {},
+): Promise<number> {
   const admission = evaluateYuantaFundCanonicalAdmission(tables, positions);
   if (admission.status === "not-admitted") {
     console.warn("yuanta-fund-canonical-not-admitted", admission);
-    return;
+    return 0;
   }
 
   const overviewRows = tables
@@ -2095,7 +2111,7 @@ async function commitYuantaFundCanonicalIfComplete(
     "yuanta-fund-account",
     [sourceConnectionKey, credentials.yuanta_account ?? ""],
   );
-  const observedAt = new Date().toISOString();
+  const observedAt = options.observedAt ?? new Date().toISOString();
   const captureGroups = new Map<
     string,
     {
@@ -2145,7 +2161,32 @@ async function commitYuantaFundCanonicalIfComplete(
     });
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
-  if (captures.length === 0) return;
+  if (captures.length === 0) return 0;
+  const items: PGliteWorkflowRunItem[] = captures.map((capture) => ({
+    provider: "yuanta-fund",
+    product: "investment",
+    itemKey: capture.captureId,
+    command: {
+      kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+      request: { capture },
+    },
+    relationCommands: () => [{
+      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+      request: {
+        sourceConnectionKey: capture.identity.sourceConnectionKey,
+        observedAt: capture.observedAt,
+      },
+    }],
+  }));
+  options.signal?.throwIfAborted();
+  for (const item of items)
+    options.sourceText?.assertIntact(JSON.stringify(item.command));
+  if (options.collectOnly) {
+    if (!options.deferredCommitItems)
+      throw new Error("Yuanta fund collection requires a deferred commit sink.");
+    options.deferredCommitItems.push(...items);
+    return items.length;
+  }
   const client = requirePGliteChildRpcClientFromEnv();
   try {
     await client.ready;
@@ -2153,45 +2194,64 @@ async function commitYuantaFundCanonicalIfComplete(
       client: client.workflow,
       provider: "yuanta-fund",
       product: "investment",
-      items: captures.map((capture) => ({
-        provider: "yuanta-fund",
-        product: "investment",
-        itemKey: capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-          request: { capture },
-        },
-        relationCommands: () => [{
-          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-          request: {
-            sourceConnectionKey: capture.identity.sourceConnectionKey,
-            observedAt: capture.observedAt,
-          },
-        }],
-      } as const)),
+      items,
     });
     if (result.status !== "completed")
       throw new Error(`Yuanta fund PGlite persistence ${result.status}: ${result.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
   } finally {
     client.close();
   }
+  return items.length;
 }
 
-export default workflow("yuantaFundStatements", {
+type YuantaFundAppCollection = {
+  credentials: YuantaCredentials;
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+  items: PGliteWorkflowRunItem[];
+  now(): string;
+  collection?: YuantaFundWorkflowCollection;
+};
+
+type YuantaFundAppContext = LibrettoWorkflowContext & {
+  yuantaAppCollection?: YuantaFundAppCollection;
+};
+
+export type YuantaFundWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+}>;
+
+export type YuantaFundWorkflowDependencies = Readonly<{
+  collectOnly: true;
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+  now(): string;
+}>;
+
+const yuantaFundStatements = workflow("yuantaFundStatements", {
   startUrl: YUANTA_ENTRY_URL,
   credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
   input: inputSchema,
   output: outputSchema,
   handler: async (ctx: LibrettoWorkflowContext, input) => {
+    const appCollection = (ctx as YuantaFundAppContext).yuantaAppCollection;
+    const appItemStart = appCollection?.items.length ?? 0;
+    const log = (...args: Parameters<typeof console.log>) => {
+      if (!appCollection) console.log(...args);
+    };
+    const warn = (...args: Parameters<typeof console.warn>) => {
+      if (!appCollection) console.warn(...args);
+    };
     const { page } = ctx;
-    const credentials = (
+    const credentials = appCollection?.credentials ?? (
       input as typeof input & { credentials: YuantaCredentials }
     ).credentials;
-    const authResult = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
-    );
+    const authResult = appCollection
+      ? { usedProfile: true, usedExistingSession: true, replacedActiveSession: false }
+      : await sharedAuthenticateYuantaBank(ctx, credentials, input.replaceActiveSession);
     const replacedActiveSession = authResult.replacedActiveSession;
 
     try {
@@ -2202,7 +2262,7 @@ export default workflow("yuantaFundStatements", {
       let completedFundSteps = 0;
       let fundStepCount = 0;
       const fundProgress = () => {
-        if (fundStepCount === 0) return;
+        if (appCollection || fundStepCount === 0) return;
         const percent = 75 + Math.min(
           24,
           Math.round((completedFundSteps / fundStepCount) * 24),
@@ -2223,6 +2283,7 @@ export default workflow("yuantaFundStatements", {
           "portfolio-summary",
           null,
           null,
+          appCollection ? { sourceText: appCollection.sourceText, signal: appCollection.signal } : undefined,
         );
       }
 
@@ -2237,7 +2298,7 @@ export default workflow("yuantaFundStatements", {
         // visible position; provider absence is handled by the position
         // reader and remains the only skip condition.
         selectedFunds = fundPositions;
-        console.log("yuanta-fund-positions-found", {
+        log("yuanta-fund-positions-found", {
           available: fundPositions.length,
           selected: selectedFunds.length,
           durationMs: Date.now() - overviewStartedAt,
@@ -2249,6 +2310,7 @@ export default workflow("yuantaFundStatements", {
           "investment-overview",
           null,
           null,
+          appCollection ? { sourceText: appCollection.sourceText, signal: appCollection.signal } : undefined,
         );
 
         if (selectedFunds.length === 0) {
@@ -2262,9 +2324,10 @@ export default workflow("yuantaFundStatements", {
           fundIndex += 1
         ) {
           const position = selectedFunds[fundIndex];
+          appCollection?.signal.throwIfAborted();
           const tableCountBefore = parsedTables.length;
           const historyStartedAt = Date.now();
-          console.log("yuanta-fund-history-start", {
+          log("yuanta-fund-history-start", {
             index: fundIndex + 1,
             total: selectedFunds.length,
             startedAt: new Date(historyStartedAt).toISOString(),
@@ -2277,6 +2340,7 @@ export default workflow("yuantaFundStatements", {
             "investment-source-evidence",
             fundPositionKey(position),
             null,
+            appCollection ? { sourceText: appCollection.sourceText, signal: appCollection.signal } : undefined,
           );
           if (input.includeHistoricalTransactions) {
             await queryFundTransactions(
@@ -2290,10 +2354,11 @@ export default workflow("yuantaFundStatements", {
               "historical-transactions",
               fundPositionKey(position),
               dateRange.label,
+              appCollection ? { sourceText: appCollection.sourceText, signal: appCollection.signal } : undefined,
             );
           }
           completedFundSteps += 1;
-          console.log("yuanta-fund-history-complete", {
+          log("yuanta-fund-history-complete", {
             index: fundIndex + 1,
             total: selectedFunds.length,
             tableCount: parsedTables.length - tableCountBefore,
@@ -2312,29 +2377,56 @@ export default workflow("yuantaFundStatements", {
           "offhour-orders",
           null,
           dateRange.label,
+          appCollection ? { sourceText: appCollection.sourceText, signal: appCollection.signal } : undefined,
         );
       }
+
+      appCollection?.signal.throwIfAborted();
+      if (appCollection)
+        appCollection.sourceText.assertIntact(JSON.stringify(parsedTables));
 
       const canonicalAdmission = evaluateYuantaFundCanonicalAdmission(
         parsedTables,
         selectedFunds,
       );
       if (canonicalAdmission.status !== "not-admitted") {
+        if (appCollection && canonicalAdmission.status !== "admitted")
+          throw new Error("Yuanta fund source completeness admission was incomplete.");
         await commitYuantaFundCanonicalIfComplete(
           credentials,
           selectedFunds,
           parsedTables,
+          appCollection
+            ? {
+                collectOnly: true,
+                deferredCommitItems: appCollection.items,
+                sourceText: appCollection.sourceText,
+                signal: appCollection.signal,
+                observedAt: appCollection.now(),
+              }
+            : undefined,
         );
         if (canonicalAdmission.status === "admitted") {
-          console.log("yuanta-fund-canonical-admitted", canonicalAdmission);
+          log("yuanta-fund-canonical-admitted", canonicalAdmission);
         } else {
-          console.warn("yuanta-fund-canonical-partial", canonicalAdmission);
+          warn("yuanta-fund-canonical-partial", canonicalAdmission);
         }
       } else {
-        console.warn("yuanta-fund-canonical-not-admitted", canonicalAdmission);
+        if (appCollection)
+          throw new Error("Yuanta fund source completeness admission was not established.");
+        warn("yuanta-fund-canonical-not-admitted", canonicalAdmission);
       }
-      const files = await writeOutputTableFiles(nextTimestamp, parsedTables);
-      assertYuantaFundCanonicalAdmission(canonicalAdmission);
+      const files = appCollection ? [] : await writeOutputTableFiles(nextTimestamp, parsedTables);
+      if (!appCollection) assertYuantaFundCanonicalAdmission(canonicalAdmission);
+
+      if (appCollection) {
+        appCollection.signal.throwIfAborted();
+        appCollection.collection = {
+          sourceCount: parsedTables.length,
+          rowCount: parsedTables.reduce((count, table) => count + table.rows.length, 0),
+          itemCount: appCollection.items.length - appItemStart,
+        };
+      }
 
       return {
         dateRange: dateRange.label,
@@ -2345,11 +2437,38 @@ export default workflow("yuantaFundStatements", {
         files,
       };
     } finally {
-      await logoutFromYuanTa(page).catch((error: unknown) => {
-        console.warn("yuanta-logout-failed", {
-          message: error instanceof Error ? error.message : String(error),
+      if (!appCollection)
+        await logoutFromYuanTa(page).catch((error: unknown) => {
+          console.warn("yuanta-logout-failed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     }
   },
 });
+
+export default yuantaFundStatements;
+
+export async function runYuantaFundStatements(
+  page: Page,
+  input: WorkflowInput,
+  credentials: YuantaCredentials,
+  dependencies: YuantaFundWorkflowDependencies,
+): Promise<YuantaFundWorkflowCollection> {
+  const appCollection: YuantaFundAppCollection = {
+    credentials,
+    sourceText: dependencies.sourceText,
+    signal: dependencies.signal,
+    items: dependencies.deferredCommitItems,
+    now: dependencies.now,
+  };
+  const context: YuantaFundAppContext = {
+    page,
+    session: "app-owned-yuanta-workflow",
+    yuantaAppCollection: appCollection,
+  };
+  await yuantaFundStatements.run(context, { ...input, credentials });
+  if (!appCollection.collection)
+    throw new Error("Yuanta fund source collection did not complete.");
+  return appCollection.collection;
+}

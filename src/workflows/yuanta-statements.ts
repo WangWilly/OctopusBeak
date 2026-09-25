@@ -254,7 +254,19 @@ export type YuantaStatementsRunDependencies = {
   observedAt?: () => string;
   /** Injected in checks; production reads the authenticated current-balance page. */
   readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances;
+  /** App-owned collection mode; source items are returned without a commit or output file. */
+  collectOnly?: true;
+  deferredCommitItems?: PGliteWorkflowRunItem[];
+  sourceText?: SourceTextPort;
+  signal?: AbortSignal;
 };
+
+export type YuantaDepositWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+  financialAdmissionCount: number;
+}>;
 
 type BankTransactionRow = {
   accountLabel: string;
@@ -985,6 +997,7 @@ async function queryAccount(
 async function downloadStatementRows(
   page: Page,
   account: { label: string; value: string },
+  sourceText: SourceTextPort = strictSourceText,
 ): Promise<YuantaStatementDownload> {
   const scope = await findScopeWithLocator(
     page,
@@ -1004,7 +1017,7 @@ async function downloadStatementRows(
   const download = await downloadPromise;
 
   const filename = download.suggestedFilename();
-  const downloaded = await readBig5DownloadAsUtf8(download);
+  const downloaded = await readBig5DownloadAsUtf8(download, sourceText);
   const publicAccountLabel = maskAccountLabel(account.label);
   const rows = statementRowsFromDownloadedCsv(
     downloaded.content,
@@ -1135,6 +1148,20 @@ function materializeYuantaCounterpartyEvidence(
   };
 }
 
+export function runYuantaStatements(
+  page: Page,
+  input: YuantaStatementsInput,
+  overrides: YuantaStatementsRunDependencies & {
+    collectOnly: true;
+    deferredCommitItems: PGliteWorkflowRunItem[];
+  },
+): Promise<YuantaDepositWorkflowCollection>;
+export function runYuantaStatements(
+  page: Page,
+  input: YuantaStatementsInput,
+  overrides?: YuantaStatementsRunDependencies,
+): Promise<z.infer<typeof outputSchema>>;
+
 /**
  * Run the domestic Yuanta capture after authentication/navigation. Source
  * evidence is always durable; financial projection is enabled only by an
@@ -1144,7 +1171,7 @@ export async function runYuantaStatements(
   page: Page,
   input: YuantaStatementsInput,
   overrides: YuantaStatementsRunDependencies = {},
-): Promise<z.infer<typeof outputSchema>> {
+): Promise<z.infer<typeof outputSchema> | YuantaDepositWorkflowCollection> {
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta deposit", overrides);
   const stableSourceIdentity = {
@@ -1156,7 +1183,10 @@ export async function runYuantaStatements(
     ((candidatePage: Page) =>
       readYuantaDepositAccountOptions(candidatePage, []));
   const query = overrides.queryAccount ?? queryAccount;
-  const download = overrides.downloadStatementRows ?? downloadStatementRows;
+  const download =
+    overrides.downloadStatementRows ??
+    ((candidatePage: Page, account: { label: string; value: string }) =>
+      downloadStatementRows(candidatePage, account, overrides.sourceText));
   const write =
     overrides.writeBankTransactionsFile ?? writeBankTransactionsFile;
   const readCurrent =
@@ -1198,8 +1228,11 @@ export async function runYuantaStatements(
     // the financial/source capture set.
     const accounts = await readAccounts(page);
     for (const account of accounts) {
+      overrides.signal?.throwIfAborted();
       await query(page, account);
+      overrides.signal?.throwIfAborted();
       const downloaded = await download(page, account);
+      overrides.sourceText?.assertIntact(JSON.stringify(downloaded));
       if (downloaded.source.terminal !== true)
         throw new Error(
           "Yuanta domestic deposit download did not reach a terminal CSV state.",
@@ -1325,6 +1358,7 @@ export async function runYuantaStatements(
           authorityClass: "existing-financial-admission",
         },
       });
+      overrides.sourceText?.assertIntact(JSON.stringify(currentRows));
       const currentObservedAt = overrides.observedAt?.() ?? yuantaObservedAt();
       const existingBySourceAccount = indexYuantaCurrentDepositFinancialCaptures(
         financialCaptures,
@@ -1342,18 +1376,16 @@ export async function runYuantaStatements(
       });
     }
 
-      const client = requirePGliteChildRpcClientFromEnv();
-      try {
-        await client.ready;
-        const items: PGliteWorkflowRunItem[] = [];
-        for (const entry of sourceOnlyEntries) items.push({
+      overrides.signal?.throwIfAborted();
+      const items: PGliteWorkflowRunItem[] = [];
+      for (const entry of sourceOnlyEntries) items.push({
           provider: "yuanta", product: "domestic-deposit", itemKey: entry.captureId,
           command: {
             kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
             request: createYuantaDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
           },
-        });
-        for (const capture of financialDepositCaptures) {
+      });
+      for (const capture of financialDepositCaptures) {
           const relation = relationInputs.find((item) => item.captureId === capture.captureId);
           items.push({
             provider: "yuanta", product: "domestic-deposit", itemKey: capture.captureId,
@@ -1373,23 +1405,46 @@ export async function runYuantaStatements(
               },
             } : {}),
           });
-        }
-        for (const capture of currentBalanceCaptures) items.push({
+      }
+      for (const capture of currentBalanceCaptures) items.push({
           provider: "yuanta", product: "current-balance",
           itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
           command: {
             kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
             request: currentDepositBalanceCommandRequest(capture),
           },
-        });
-        const executionResult = await executePGliteWorkflowRun({
-          client: client.workflow, items, provider: "yuanta", product: "financial",
-        });
-        if (executionResult.status !== "completed")
-          throw new Error(`Yuanta PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
-      } finally {
-        client.close();
+      });
+      for (const item of items) {
+        overrides.signal?.throwIfAborted();
+        overrides.sourceText?.assertIntact(JSON.stringify(item.command));
       }
+
+      if (overrides.deferredCommitItems) {
+        if (!overrides.collectOnly)
+          throw new Error("Yuanta deferred collection requires collectOnly mode.");
+        overrides.deferredCommitItems.push(...items);
+      } else {
+        const client = requirePGliteChildRpcClientFromEnv();
+        try {
+          await client.ready;
+          const executionResult = await executePGliteWorkflowRun({
+            client: client.workflow, items, provider: "yuanta", product: "financial",
+          });
+          if (executionResult.status !== "completed")
+            throw new Error(`Yuanta PGlite financial commit ${executionResult.status}: ${executionResult.diagnostics.map((d) => d.errorCode).join(", ")}`);
+        } finally {
+          client.close();
+        }
+      }
+
+    if (overrides.collectOnly) {
+      return {
+        sourceCount: sourceDownloads.length,
+        rowCount: rows.length,
+        itemCount: items.length,
+        financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
+      };
+    }
 
     const file = await write(
       nextTimestamp,

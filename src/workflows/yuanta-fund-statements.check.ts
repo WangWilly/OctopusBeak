@@ -56,7 +56,7 @@ assert.match(source, /yuanta-fund-canonical-not-admitted/);
 assert.match(source, /yuanta-fund-canonical-partial/);
 assert.match(
   source,
-  /const files = await writeOutputTableFiles\(nextTimestamp, parsedTables\);[\s\S]*assertYuantaFundCanonicalAdmission\(canonicalAdmission\);/,
+  /const files = appCollection \? \[\] : await writeOutputTableFiles\(nextTimestamp, parsedTables\);[\s\S]*if \(!appCollection\) assertYuantaFundCanonicalAdmission\(canonicalAdmission\);/,
 );
 assert.match(
   source,
