@@ -141,6 +141,7 @@ export function buildAutomationPageModel(input: {
       progressText: progressText(status, attempt, maxAttempts, progressPercent),
       humanSession: status === "waiting_for_human"
         && task.workflowId
+        && task.kind === "crawler"
         ? run?.taskRunId ?? runtime?.runId ?? null
         : null,
       humanAssistanceContract: run?.humanAssistanceContract ?? null,

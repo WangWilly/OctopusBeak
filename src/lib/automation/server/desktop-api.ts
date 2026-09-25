@@ -575,7 +575,7 @@ export async function automationResumeHumanAssistance(
 ): Promise<{ resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
   const task = taskById(taskId);
   if (!task) throw new Error("Unknown automation task: " + taskId);
-  if (!task.workflowId) {
+  if (!task.workflowId || task.kind !== "crawler") {
     throw new Error(
       "This task does not use an App browser workflow. Start a new run from the source.",
     );

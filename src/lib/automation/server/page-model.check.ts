@@ -257,6 +257,27 @@ assert.equal(waitingRow?.status, "waiting_for_human");
 assert.equal(waitingRow?.primaryAction, "Cancel");
 assert.equal(waitingRow?.humanSession, "run-legacy-waiting");
 
+const nonbrowserWaitingModel = buildAutomationPageModel({
+  tasks: AUTOMATION_TASKS,
+  latestRuns: {
+    "exchange-rates": {
+      ...completedRun,
+      taskRunId: "run-nonbrowser-waiting",
+      taskId: "exchange-rates",
+      status: "waiting_for_human",
+      finishedAt: null,
+    },
+  },
+  todayRunTaskIds: ["exchange-rates"],
+  credentials: {},
+  active: true,
+  businessDate: "2026-06-30",
+});
+assert.equal(
+  nonbrowserWaitingModel.tasks.find((task) => task.id === "exchange-rates")?.humanSession,
+  null,
+);
+
 const typedWaitingModel = buildAutomationPageModel({
   tasks: AUTOMATION_TASKS,
   latestRuns: {

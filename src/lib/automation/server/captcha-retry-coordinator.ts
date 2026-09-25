@@ -245,7 +245,7 @@ export async function runCaptchaRetryCampaign(
   } = dependencies;
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const appWorkflow = Boolean(task.workflowId);
+  const appWorkflow = Boolean(task.workflowId && task.kind === "crawler");
   if (dependencies.appWorkflow !== appWorkflow) {
     throw new Error(`Automation task routing does not match the App catalog: ${taskId}`);
   }
