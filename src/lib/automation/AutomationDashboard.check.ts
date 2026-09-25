@@ -179,10 +179,18 @@ assert.match(
   source,
   /\$: activeTasks = automation\.tasks\.filter\(\(task\) => task\.isActive\);/,
 );
-assert.match(
-  source,
-  /task\.status === "waiting_for_human"[\s\S]*?automation\.forceQuit\(task\.id\)/,
+const primaryTaskActionSource = source.slice(
+  source.indexOf("async function primaryTaskAction"),
+  source.indexOf("async function openRunHistory"),
 );
+assert.match(primaryTaskActionSource, /task\.status === "waiting_for_human"[\s\S]*?automation\.forceTerminate\(task\.id\)/);
+assert.match(primaryTaskActionSource, /else await window\.octopusBeak\.automation\.cancel\(task\.id\)/);
+const forceTerminateHumanViewerSource = source.slice(
+  source.indexOf("async function forceTerminateHumanViewer"),
+  source.indexOf("async function resumeHumanViewer"),
+);
+assert.match(forceTerminateHumanViewerSource, /automation\.forceTerminate\(humanTask\.id\)/);
+assert.doesNotMatch(source, /automation\.forceQuit\(/);
 assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
 assert.match(source, /class="stage-toggle-action"/);
 assert.match(source, /aria-expanded=\{stageOpen\[stage\.id\]\}/);

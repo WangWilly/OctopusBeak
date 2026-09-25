@@ -13,6 +13,8 @@ assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
 assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:resumeHumanAssistance"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
+assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
 assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:resume"), false);
 for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views:unsubscribe", "data-views:rows", "data-views:error"] as const)
   assert.equal(octopusBeakApiChannels.includes(channel), true);
@@ -28,6 +30,9 @@ assert.match(source, /ipcMain\.handle\("spending:revokeLink"/);
 assert.match(source, /ipcMain\.handle\("data:getVersion"/);
 assert.match(source, /ipcMain\.handle\("data:acknowledgeVersion"/);
 assert.match(source, /ipcMain\.handle\("automation:resumeHumanAssistance"/);
+assert.match(source, /ipcMain\.handle\("automation:forceTerminate",[\s\S]*?automationForceTerminate\(taskId, operationalProvider\)/);
+assert.doesNotMatch(source, /ipcMain\.handle\("automation:forceQuit"/);
+assert.doesNotMatch(source, /forceQuitHumanSessionForTask/);
 assert.doesNotMatch(source, /ipcMain\.handle\("automation:resume"/);
 assert.match(source, /data:invalidated/);
 assert.match(

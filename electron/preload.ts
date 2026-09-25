@@ -123,7 +123,6 @@ const api: OctopusBeakApi = {
     viewerInspect: (taskId, point) => ipcRenderer.invoke("automation:viewerInspect", taskId, point),
     viewerInput: (taskId, input) => ipcRenderer.invoke("automation:viewerInput", taskId, input),
     viewerCompletionCheck: (taskId) => ipcRenderer.invoke("automation:viewerCompletionCheck", taskId),
-    forceQuit: (taskId) => ipcRenderer.invoke("automation:forceQuit", taskId),
     runtimeSnapshot: () => ipcRenderer.invoke("automation:runtimeSnapshot"),
     fatalRuntimeSnapshot: () => ipcRenderer.invoke("automation:fatalRuntimeSnapshot"),
     onRuntimeChanged(listener) {
