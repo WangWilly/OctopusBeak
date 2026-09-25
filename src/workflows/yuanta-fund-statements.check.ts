@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { CanonicalInvestmentAdmissionError } from "../ledger/canonical/investment-financial-admission.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { runSelectedStatements } from "./run-selected-statements.ts";
 
 registerHooks({
@@ -27,41 +31,36 @@ const parseYuantaFundValuationBasis: typeof yuantaFundModule.parseYuantaFundValu
   yuantaFundModule.parseYuantaFundValuationBasis;
 const canonicalYuantaFundCurrency: typeof yuantaFundModule.canonicalYuantaFundCurrency =
   yuantaFundModule.canonicalYuantaFundCurrency;
+const runYuantaFundStatements: typeof yuantaFundModule.runYuantaFundStatements =
+  yuantaFundModule.runYuantaFundStatements;
+const yuantaFundStatementsInputSchema: typeof yuantaFundModule.yuantaFundStatementsInputSchema =
+  yuantaFundModule.yuantaFundStatementsInputSchema;
 
 const source = await readFile(
   new URL("./yuanta-fund-statements.ts", import.meta.url),
   "utf8",
 );
 
-assert.match(source, /yuanta-fund-positions-found/);
-assert.match(source, /yuanta-fund-history-start/);
-assert.match(source, /yuanta-fund-positions-found[\s\S]*durationMs/);
-assert.match(source, /yuanta-fund-history-start[\s\S]*startedAt/);
-assert.match(source, /yuanta-fund-history-complete[\s\S]*durationMs/);
-assert.match(source, /const fundProgress = \(\) =>/);
-assert.match(source, /selectedFunds = fundPositions/);
-assert.doesNotMatch(source, /selectedFunds = fundPositions\.filter/);
+assert.doesNotMatch(source, /console\.|emitAutomationProgress/);
+assert.match(source, /positions = await extractFundPositions\(page\)/);
 assert.match(source, /runFundMenuAction\(/);
-assert.match(source, /startUrl: YUANTA_ENTRY_URL/);
 assert.match(source, /evaluateYuantaFundCanonicalAdmission/);
-assert.match(source, /executePGliteWorkflowRun/);
 assert.match(source, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
 assert.doesNotMatch(source, /createCanonicalInvestmentStore/);
 assert.doesNotMatch(source, /commitCanonicalInvestmentCaptureBatch/);
+assert.doesNotMatch(
+  source,
+  /from\s+["']libretto["']|LibrettoWorkflowContext|export\s+default\s+yuantaFundStatements|requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|node:fs\/promises|writeFile\(|writeOutputTableFiles|fundDownloadsDir|waitForEvent\(["']download["']\)/u,
+  "Yuanta fund typed execution must not retain a legacy runner, database client, or file output path",
+);
+assert.match(
+  source,
+  /sourceText\.assertIntact\(JSON\.stringify\(sourceCollection\.tables\)\)/u,
+);
+assert.match(source, /export async function runYuantaFundStatements/u);
 assert.match(source, /reference-nav-and-fx-basis-date/);
 assert.match(source, /investment-source-evidence/);
-assert.match(source, /yuanta-fund-canonical-admitted/);
-assert.match(source, /yuanta-fund-canonical-not-admitted/);
-assert.match(source, /yuanta-fund-canonical-partial/);
-assert.match(
-  source,
-  /const files = appCollection \? \[\] : await writeOutputTableFiles\(nextTimestamp, parsedTables\);[\s\S]*if \(!appCollection\) assertYuantaFundCanonicalAdmission\(canonicalAdmission\);/,
-);
-assert.match(
-  source,
-  /const percent = 75 \+[\s\S]*Math\.min\(\s*24,[\s\S]*emitAutomationProgress\(/,
-);
 
 assert.equal(isYuantaFundPositionAbsentText("目前無持有基金"), true);
 assert.equal(isYuantaFundPositionAbsentText("未持有基金部位"), true);
@@ -204,7 +203,10 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  evaluateYuantaFundCanonicalAdmission([overview, colspanBasisTable], [position]),
+  evaluateYuantaFundCanonicalAdmission(
+    [overview, colspanBasisTable],
+    [position],
+  ),
   {
     status: "admitted",
     contractVersion: "yuanta-fund/investment/canonical-v1",
@@ -244,64 +246,206 @@ assert.throws(
   () => assertYuantaFundCanonicalAdmission(partialAdmission),
   (error: unknown) =>
     error instanceof CanonicalInvestmentAdmissionError &&
-    error.message.includes("1 dated transaction row(s) were committed") &&
-    error.message.includes("current holding observations were not committed"),
+    error.message.includes("1 dated transaction row(s) were rejected") &&
+    error.message.includes("the complete source was not admitted"),
 );
-const wrappedPartialRun = await runSelectedStatements(["fund"], [
-  {
-    typeId: "fund",
-    run: async () => {
-      assertYuantaFundCanonicalAdmission(partialAdmission);
-      return { count: 1 };
+const wrappedPartialRun = await runSelectedStatements(
+  ["fund"],
+  [
+    {
+      typeId: "fund",
+      run: async () => {
+        assertYuantaFundCanonicalAdmission(partialAdmission);
+        return { count: 1 };
+      },
     },
-  },
-]);
+  ],
+);
 assert.deepEqual(wrappedPartialRun.results, [
   {
     typeId: "fund",
     status: "failed",
     error:
-      "Yuanta fund canonical admission partial: source-effective-time-evidence-incomplete. 1 dated transaction row(s) were committed; current holding observations were not committed because the source did not report a holding effective date.",
+      "Yuanta fund canonical admission partial: source-effective-time-evidence-incomplete. 1 dated transaction row(s) were rejected; the complete source was not admitted because the source did not report a holding effective date.",
   },
 ]);
 assert.equal(Object.hasOwn(wrappedPartialRun.outputs, "fund"), false);
-const wrappedIncompleteRun = await runSelectedStatements(["fund"], [
-  {
-    typeId: "fund",
-    run: async () => {
-      assert.throws(
-        () => assertYuantaFundCanonicalAdmission(incompleteAdmission),
-        (error: unknown) =>
-          error instanceof CanonicalInvestmentAdmissionError &&
-          error.message.includes("source-effective-time-evidence-incomplete"),
-      );
-      assertYuantaFundCanonicalAdmission(incompleteAdmission);
-      return { count: 0 };
+const wrappedIncompleteRun = await runSelectedStatements(
+  ["fund"],
+  [
+    {
+      typeId: "fund",
+      run: async () => {
+        assert.throws(
+          () => assertYuantaFundCanonicalAdmission(incompleteAdmission),
+          (error: unknown) =>
+            error instanceof CanonicalInvestmentAdmissionError &&
+            error.message.includes("source-effective-time-evidence-incomplete"),
+        );
+        assertYuantaFundCanonicalAdmission(incompleteAdmission);
+        return { count: 0 };
+      },
     },
-  },
-]);
+  ],
+);
 assert.deepEqual(wrappedIncompleteRun.results, [
   {
     typeId: "fund",
     status: "failed",
     error:
-      "Yuanta fund canonical admission failed: source-effective-time-evidence-incomplete. Raw statement files were saved; canonical investment data was not committed.",
+      "Yuanta fund canonical admission failed: source-effective-time-evidence-incomplete. Canonical Financial Commit was not opened.",
   },
 ]);
 assert.equal(Object.hasOwn(wrappedIncompleteRun.outputs, "fund"), false);
 
-const wrappedAdmittedRun = await runSelectedStatements(["fund"], [
-  {
-    typeId: "fund",
-    run: async () => {
-      assertYuantaFundCanonicalAdmission(
-        evaluateYuantaFundCanonicalAdmission([overview, basisTable], [position]),
-      );
-      return { count: 1 };
+const wrappedAdmittedRun = await runSelectedStatements(
+  ["fund"],
+  [
+    {
+      typeId: "fund",
+      run: async () => {
+        assertYuantaFundCanonicalAdmission(
+          evaluateYuantaFundCanonicalAdmission(
+            [overview, basisTable],
+            [position],
+          ),
+        );
+        return { count: 1 };
+      },
     },
-  },
-]);
+  ],
+);
 assert.deepEqual(wrappedAdmittedRun.results, [
   { typeId: "fund", status: "success" },
 ]);
 assert.deepEqual(wrappedAdmittedRun.outputs.fund, { count: 1 });
+
+type FundSourceCollector = NonNullable<
+  Parameters<typeof runYuantaFundStatements>[3]["collectSourceTables"]
+>;
+const fundInput = yuantaFundStatementsInputSchema.parse({
+  includePortfolioSummary: false,
+  includeInvestmentDetails: true,
+  includeHistoricalTransactions: false,
+});
+const validFundCollector: FundSourceCollector = async () => ({
+  positions: [position],
+  tables: [overview, basisTable],
+});
+const fundDependencies = (
+  collector: FundSourceCollector,
+  deferredCommitItems: PGliteWorkflowRunItem[],
+  signal: AbortSignal,
+): Parameters<typeof runYuantaFundStatements>[3] => ({
+  collectOnly: true,
+  deferredCommitItems,
+  sourceText: strictSourceText,
+  signal,
+  now: () => "2026-09-09T12:00:00.000Z",
+  collectSourceTables: collector,
+});
+
+const typedFundOutputDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-fund-typed-output-"),
+);
+const typedFundOriginalCwd = process.cwd();
+process.chdir(typedFundOutputDirectory);
+try {
+  const admittedItems: PGliteWorkflowRunItem[] = [];
+  const collection = await runYuantaFundStatements(
+    {} as never,
+    fundInput,
+    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+    fundDependencies(
+      validFundCollector,
+      admittedItems,
+      new AbortController().signal,
+    ),
+  );
+  assert.deepEqual(collection, {
+    sourceCount: 2,
+    rowCount: 6,
+    itemCount: 1,
+  });
+  assert.equal(admittedItems.length, 1);
+  assert.equal(admittedItems[0]?.provider, "yuanta-fund");
+  assert.equal(admittedItems[0]?.product, "investment");
+
+  const partialItems: PGliteWorkflowRunItem[] = [];
+  const partialCollector: FundSourceCollector = async () => ({
+    positions: [position],
+    tables: [overview, buyTable],
+  });
+  await assert.rejects(
+    runYuantaFundStatements(
+      {} as never,
+      fundInput,
+      {
+        yuanta_user_id: "synthetic-login",
+        yuanta_account: "synthetic-account",
+      },
+      fundDependencies(
+        partialCollector,
+        partialItems,
+        new AbortController().signal,
+      ),
+    ),
+    /dated transaction row\(s\) were rejected/u,
+  );
+  assert.deepEqual(partialItems, []);
+
+  const malformedItems: PGliteWorkflowRunItem[] = [];
+  const malformedCollector: FundSourceCollector = async () => ({
+    positions: [position],
+    tables: [
+      {
+        ...overview,
+        rows: overview.rows.map((row) =>
+          row.map((value) => value.replace("SANITIZED", "SANITIZED\uFFFD")),
+        ),
+      },
+      basisTable,
+    ],
+  });
+  await assert.rejects(
+    runYuantaFundStatements(
+      {} as never,
+      fundInput,
+      {
+        yuanta_user_id: "synthetic-login",
+        yuanta_account: "synthetic-account",
+      },
+      fundDependencies(
+        malformedCollector,
+        malformedItems,
+        new AbortController().signal,
+      ),
+    ),
+    /replacement-character/u,
+  );
+  assert.deepEqual(malformedItems, []);
+
+  const cancelledItems: PGliteWorkflowRunItem[] = [];
+  const cancellation = new AbortController();
+  const abortAfterCollect: FundSourceCollector = async () => {
+    cancellation.abort();
+    return { positions: [position], tables: [overview, basisTable] };
+  };
+  await assert.rejects(
+    runYuantaFundStatements(
+      {} as never,
+      fundInput,
+      {
+        yuanta_user_id: "synthetic-login",
+        yuanta_account: "synthetic-account",
+      },
+      fundDependencies(abortAfterCollect, cancelledItems, cancellation.signal),
+    ),
+    /abort/u,
+  );
+  assert.deepEqual(cancelledItems, []);
+  assert.deepEqual(await readdir(typedFundOutputDirectory), []);
+} finally {
+  process.chdir(typedFundOriginalCwd);
+  await rm(typedFundOutputDirectory, { recursive: true, force: true });
+}
