@@ -1,8 +1,3 @@
-import {
-  librettoAuthenticate,
-  pause,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceCompletionStatus,
@@ -12,10 +7,6 @@ import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
 } from "./human-assistance.ts";
-import {
-  YUANTA_DIALOG_OWNER_ENV,
-  yuantaHostDialogOwner,
-} from "../lib/automation/yuanta-captcha.ts";
 import {
   assembleStableSourceLoginScope,
   deriveSourceConnectionIdentityKey,
@@ -72,10 +63,7 @@ export function deriveYuantaSourceConnectionKey(
     "undefined",
   );
   if (!scope) return undefined;
-  return deriveSourceConnectionIdentityKey(
-    "yuanta",
-    scope,
-  );
+  return deriveSourceConnectionIdentityKey("yuanta", scope);
 }
 
 export type YuantaBankDialogCategory =
@@ -159,7 +147,7 @@ function requireCredential(
   const value = credentials[name]?.trim();
   if (!value) {
     throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
+      `Missing credential ${name}. Provide it through the App workflow input.`,
     );
   }
   return value;
@@ -481,97 +469,12 @@ async function waitForSignedInState(
   );
 }
 
-/**
- * The provider verification host owns post-submit dialogs only for the exact
- * solver retry session it launched. Direct/manual runs keep the workflow's
- * fail-fast fallback, and stale owners cannot suppress it.
- */
-export function yuantaPostSubmitDialogOwner(
-  session: string,
-  env: NodeJS.ProcessEnv = process.env,
-): "host" | "workflow" {
-  return env[YUANTA_DIALOG_OWNER_ENV]?.trim() === yuantaHostDialogOwner(session)
-    ? "host"
-    : "workflow";
-}
-
-export async function authenticateYuantaBank(
-  ctx: LibrettoWorkflowContext,
-  credentials: YuantaCredentials,
-  replaceActiveSession = true,
-) {
-  let lastBankDialogState: YuantaBankDialogState | null = null;
-  let replacedActiveSession = false;
-
-  const acceptBankDialog = async (dialog: Dialog) => {
-    lastBankDialogState = yuantaBankDialogState(dialog);
-    console.warn("bank-dialog", {
-      type: lastBankDialogState.type,
-      category: lastBankDialogState.category,
-    });
-    await dialog.accept();
-  };
-
-  const authResult = await librettoAuthenticate(ctx, {
-    credentials,
-    isSignedIn: async ({ page: authPage }) => isYuantaSignedIn(authPage),
-    signIn: async ({ page: authPage, session }, signInCredentials) => {
-      const typedCredentials = signInCredentials as YuantaCredentials;
-      const workflowOwnsDialog = yuantaPostSubmitDialogOwner(session) === "workflow";
-      if (workflowOwnsDialog) authPage.on("dialog", acceptBankDialog);
-      try {
-        await fillLoginForm(authPage, typedCredentials);
-        let loginFrame = await waitForMainFrame(authPage);
-        await dismissYuantaBankNotice(loginFrame, 5_000);
-        await emitHumanAssistanceStage(
-          yuantaBankCaptchaAssistanceStage(loginFrame),
-        );
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            session +
-            "`.",
-        );
-        await pause(session);
-
-        // The bank may navigate/recreate the main frame while assistance is open.
-        // Resolve the current frame after resume; never submit through a stale frame.
-        loginFrame = await waitForMainFrame(authPage);
-        const captcha = loginFrame.locator("#gcode");
-        if (!(await captcha.inputValue()).trim()) {
-          throw new Error(
-            "YuanTa Bank CAPTCHA is empty. Enter it in the browser before resuming.",
-          );
-        }
-        const loginButtonVisible = await loginFrame
-          .locator('a[href="javascript:doPreLogin();"]')
-          .isVisible()
-          .catch(() => false);
-        if (loginButtonVisible) {
-          await submitLogin(authPage, typedCredentials);
-        }
-        replacedActiveSession = await waitForSignedInState(
-          authPage,
-          () => lastBankDialogState,
-          replaceActiveSession,
-        );
-      } finally {
-        if (workflowOwnsDialog) authPage.off("dialog", acceptBankDialog);
-      }
-    },
-  });
-
-  const usedExistingSession = authResult.usedProfile;
-  return {
-    usedExistingSession,
-    // Keep the Libretto-era field available to product adapters while they
-    // converge on the provider-neutral `usedExistingSession` name.
-    usedProfile: usedExistingSession,
-    replacedActiveSession,
-  };
-}
-
-function withYuantaAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Workflow cancelled."));
+function withYuantaAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted)
+    return Promise.reject(signal.reason ?? new Error("Workflow cancelled."));
   return new Promise<T>((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
     const abort = () => {
@@ -580,8 +483,14 @@ function withYuantaAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
     };
     signal.addEventListener("abort", abort, { once: true });
     promise.then(
-      (value) => { cleanup(); resolve(value); },
-      (error: unknown) => { cleanup(); reject(error); },
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
     );
   });
 }
@@ -593,10 +502,20 @@ export async function authenticateYuantaBankWithAssistance(
   replaceActiveSession: boolean,
   options: Readonly<{
     signal: AbortSignal;
-    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
-    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+    request(
+      contract: HumanAssistanceContractInput,
+      signal: AbortSignal,
+    ): Promise<HumanAssistanceCompletionStatus>;
+    event?(
+      code:
+        | "human-assistance-requested"
+        | "human-assistance-completed"
+        | "human-assistance-failed",
+    ): Promise<void>;
   }>,
-): Promise<Readonly<{ usedExistingSession: boolean; replacedActiveSession: boolean }>> {
+): Promise<
+  Readonly<{ usedExistingSession: boolean; replacedActiveSession: boolean }>
+> {
   const { signal, request } = options;
   signal.throwIfAborted();
   if (await withYuantaAbort(isYuantaSignedIn(page), signal))
@@ -616,12 +535,18 @@ export async function authenticateYuantaBankWithAssistance(
     let loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
     await withYuantaAbort(dismissYuantaBankNotice(loginFrame, 5_000), signal);
     const contract = await withYuantaAbort(
-      emitHumanAssistanceStage(yuantaBankCaptchaAssistanceStage(loginFrame), (value) => value),
+      emitHumanAssistanceStage(
+        yuantaBankCaptchaAssistanceStage(loginFrame),
+        (value) => value,
+      ),
       signal,
     );
     signal.throwIfAborted();
     await event("human-assistance-requested");
-    const assistanceStatus = await withYuantaAbort(request(contract, signal), signal);
+    const assistanceStatus = await withYuantaAbort(
+      request(contract, signal),
+      signal,
+    );
     signal.throwIfAborted();
     if (assistanceStatus !== "entered" && assistanceStatus !== "verified") {
       await event("human-assistance-failed");
@@ -632,17 +557,31 @@ export async function authenticateYuantaBankWithAssistance(
     // Navigation may recreate the login frame while Assist is open. Rebind
     // before inspecting the answer or submitting.
     loginFrame = await withYuantaAbort(waitForMainFrame(page), signal);
-    if (!(await withYuantaAbort(loginFrame.locator("#gcode").inputValue(), signal)).trim())
-      throw new Error("Yuanta Bank CAPTCHA is empty. Enter it before resuming.");
+    if (
+      !(
+        await withYuantaAbort(loginFrame.locator("#gcode").inputValue(), signal)
+      ).trim()
+    )
+      throw new Error(
+        "Yuanta Bank CAPTCHA is empty. Enter it before resuming.",
+      );
     const loginButtonVisible = await withYuantaAbort(
-      loginFrame.locator('a[href="javascript:doPreLogin();"]').isVisible().catch(() => false),
+      loginFrame
+        .locator('a[href="javascript:doPreLogin();"]')
+        .isVisible()
+        .catch(() => false),
       signal,
     );
     if (loginButtonVisible) {
       await withYuantaAbort(submitLogin(page, credentials), signal);
     }
     replacedActiveSession = await withYuantaAbort(
-      waitForSignedInState(page, () => lastBankDialogState, replaceActiveSession, signal),
+      waitForSignedInState(
+        page,
+        () => lastBankDialogState,
+        replaceActiveSession,
+        signal,
+      ),
       signal,
     );
     return { usedExistingSession: false, replacedActiveSession };
