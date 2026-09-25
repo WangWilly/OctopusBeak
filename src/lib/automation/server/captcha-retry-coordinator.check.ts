@@ -111,3 +111,53 @@ test("CAPTCHA campaign finalizes its provider-owned run exactly once", async () 
     await store.close();
   }
 });
+
+test("SinoPac cancellation preserves an ambiguous commit and does not retry", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "sinopac-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    let executions = 0;
+    const result = await runCaptchaRetryCampaign({
+      taskId: "sinopac-statements",
+      appWorkflow: true,
+      provider,
+      launchVerificationSettings: readAutomationSettings(),
+      initialExecutionOptions: { taskRunId: created.taskRunId },
+      isCancellationRequested: () => true,
+      async execute() {
+        executions += 1;
+        return {
+          status: "failed" as const,
+          taskRunId: created.taskRunId,
+          executionId: "ambiguous-financial-commit",
+          result: {
+            exitCode: 1,
+            signal: null,
+            error: new Error("App workflow failed (commit-outcome-unknown)."),
+            statementSummary: null,
+            appWorkflowOutcome: { errorCode: "commit-outcome-unknown" as const, summary: null },
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          },
+        };
+      },
+    });
+
+    assert.deepEqual(result, { status: "failed" });
+    assert.equal(executions, 1);
+    const finalRun = await provider.automation.taskRunById(created.taskRunId);
+    assert.equal(finalRun?.status, "failed");
+    assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
+  } finally {
+    await store.close();
+  }
+});
