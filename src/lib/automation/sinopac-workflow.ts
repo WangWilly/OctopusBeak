@@ -4,7 +4,7 @@ import {
   type SinopacWorkflowOutput,
 } from "../../workflows/sinopac-statements.ts";
 
-/** Typed App-owned definition; the Libretto handler remains for the migration period. */
+/** Typed App-owned workflow definition for SinoPac statement collection. */
 export const sinopacStatementsWorkflow: WorkflowDefinition<unknown, SinopacWorkflowOutput> = {
   id: "sinopac-statements",
   requiresFinancialCommit: true,

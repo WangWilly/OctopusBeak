@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -149,6 +149,27 @@ const account = {
   DataValue: accountId,
   DisplayText: "TWD",
 };
+
+test("SinoPac production execution exposes only the typed App provider path", async () => {
+  const providerSource = await readFile(
+    new URL("../../workflows/sinopac-statements.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(providerSource, /runSinopacProviderWorkflow/u);
+  assert.match(providerSource, /financialCommit!?\.execute/u);
+  assert.doesNotMatch(
+    providerSource,
+    /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|LibrettoWorkflowContext/u,
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /node:fs\/promises|writeStatementFiles|writeFile\(|csvPath|jsonPath|downloadsDir/u,
+  );
+  assert.doesNotMatch(
+    providerSource,
+    /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client/u,
+  );
+});
 
 test("SinoPac source JSON is decoded strictly after terminal response checks", () => {
   const bytes = Buffer.from(JSON.stringify(payload), "utf8");
