@@ -262,6 +262,8 @@ export async function routeWaitingRunVerification(input: {
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   settings?: AutomationSettingsFile;
+  /** Keep an App-owned assistance stage open for manual entry when OCR is inconclusive. */
+  humanFallbackOnSolverExhausted?: boolean;
 }): Promise<VerificationRoutingOutcome> {
   const task = taskById(input.taskId);
   const group = task?.credentialGroupId
@@ -335,11 +337,19 @@ export async function routeWaitingRunVerification(input: {
     cleanupSession: input.cleanupSession,
     onChallengeCaptured: input.onChallengeCaptured,
   };
-  return routeVerificationActor({
+  const outcome = await routeVerificationActor({
     actor,
     contract,
     session,
     confidenceThreshold,
     dependencies,
   });
+  if (
+    input.humanFallbackOnSolverExhausted
+    && outcome.kind === "retryable"
+    && outcome.reason === "solver-exhausted"
+  ) {
+    return { kind: "human" };
+  }
+  return outcome;
 }

@@ -11,12 +11,42 @@ type PendingAssistance = Readonly<{
   resolve(status: Exclude<HumanAssistanceCompletionStatus, "pending">): void;
 }>;
 
+export type AppWorkflowHumanAssistanceRequest = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  contract: HumanAssistanceContractInput;
+  signal: AbortSignal;
+}>;
+
+type HumanAssistanceRequestHandler = (
+  request: AppWorkflowHumanAssistanceRequest,
+) => void | Promise<void>;
+
 const pendingAssistance = new Map<string, PendingAssistance>();
+const requestHandlers = new Map<string, HumanAssistanceRequestHandler>();
+
+/** Install the executor's verifier for the duration of one active task run. */
+export function registerAppWorkflowHumanAssistanceRequestHandler(
+  taskId: string,
+  handler: HumanAssistanceRequestHandler,
+) {
+  if (requestHandlers.has(taskId)) {
+    throw new Error("An App workflow human assistance route is already registered for this task.");
+  }
+  requestHandlers.set(taskId, handler);
+  return () => {
+    if (requestHandlers.get(taskId) === handler) requestHandlers.delete(taskId);
+  };
+}
 
 export function createAppWorkflowHumanAssistancePort(input: Readonly<{
   taskRunId: string;
   persistence: AutomationPersistencePort;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  onRequest?: (
+    contract: HumanAssistanceContractInput,
+    signal: AbortSignal,
+  ) => void | Promise<void>;
 }>): WorkflowHumanAssistancePort {
   return {
     async request(contract, signal) {
@@ -61,6 +91,22 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
         }
         await input.onRuntimeUpdate?.(input.taskRunId);
         signal.throwIfAborted();
+        const registeredHandler = requestHandlers.get(current.taskId);
+        if (input.onRequest || registeredHandler) {
+          void Promise.resolve()
+            .then(() => input.onRequest
+              ? input.onRequest(contract, signal)
+              : registeredHandler?.({
+                  taskId: current.taskId,
+                  taskRunId: input.taskRunId,
+                  contract,
+                  signal,
+                }))
+            .catch((error: unknown) => {
+              if (signal.aborted || pendingAssistance.get(input.taskRunId) !== waiter) return;
+              rejectCompletion(error instanceof Error ? error : new Error("App workflow verification route failed."));
+            });
+        }
         return await completion;
       } finally {
         signal.removeEventListener("abort", onAbort);
