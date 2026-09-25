@@ -153,8 +153,6 @@ async function collectYuantaDepositForApp(
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
     observedAt: context.now,
-    occurrenceDiagnosticDirectory: null,
-    collectOnly: true,
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,

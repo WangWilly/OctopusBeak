@@ -4,15 +4,13 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
-import { Worker } from "node:worker_threads";
 
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import { createPGliteChildRpcServer, type PGliteChildProvider } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -38,7 +36,6 @@ const {
   buildYuantaCapture,
   deriveYuantaDomesticDepositAccountNumberEvidence,
   deriveYuantaDomesticDepositQueryRange,
-  dismissYuantaBankNotice,
   readYuantaDepositAccountOptions,
   runYuantaStatements,
   statementRowsFromDownloadedCsv,
@@ -128,7 +125,13 @@ await assert.rejects(
         dateRange: "one_month",
         accountFilters: [],
         replaceActiveSession: true,
-        telemetry: false,
+      },
+      {
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: "invalid-source-connection-key",
+        deferredCommitItems: [],
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
       },
     ),
   /stable caller-supplied Source Connection scope and key/u,
@@ -178,15 +181,12 @@ const source = readFileSync(
   "utf8",
 );
 
-assert.match(
-  source,
-  /import \{\s*authenticateYuantaBank as sharedAuthenticateYuantaBank,\s*dismissYuantaBankNotice,\s*yuantaSourceConnectionScope,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
-);
-assert.match(source, /await sharedAuthenticateYuantaBank\(/);
-assert.match(
-  source,
-  /export \{\s*dismissYuantaBankNotice,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
-);
+assert.doesNotMatch(source, /from ["']libretto["']/u, "the domestic provider must not register a Libretto production workflow");
+assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u, "the domestic provider must return items to the App commit port");
+assert.doesNotMatch(source, /from ["']node:fs\/promises["']|writeBankTransactionsFile|downloads[\\/]yuanta-statements/u, "the domestic provider must not write statement source or output files");
+assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic provider must not write standalone logs or expose a legacy workflow entry");
+assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
+assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
 const popup = new DelayedVisibilityLocator(20);
 const dismissed = await dismissYuantaBankNotice(
@@ -343,7 +343,6 @@ const workflowDownload = {
     {
       accountLabel: workflowAccount.label,
       values: workflowValues.slice(1),
-      sortTime: Date.parse("2026-08-02T09:10:11+08:00"),
       sourceRowOrdinal: 0,
     },
   ],
@@ -411,7 +410,6 @@ const nextDayAccountingWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-06-19T09:10:11+08:00"),
     },
   ],
   source: {
@@ -454,7 +452,6 @@ const transactionOutsideWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-06-22T09:10:11+08:00"),
     },
   ],
   source: {
@@ -512,55 +509,49 @@ const secondWorkflowDownload = {
     rows: [{ rowOrdinal: 0, values: secondWorkflowValues }],
   },
 };
-const writeWorkflowFile = async () => ({
-  baseName: "yuanta-synthetic",
-  kind: "bank-transactions" as const,
-  rowCount: 1,
-  headers: ["帳戶名稱"],
-  accounts: [workflowAccount.label],
-  dateRange: "one_month" as const,
-  csvFilename: "yuanta-synthetic.csv",
-  jsonFilename: "yuanta-synthetic.json",
-  csvPath: "yuanta-synthetic.csv",
-  jsonPath: "yuanta-synthetic.json",
-  csvBytes: 1,
-  jsonBytes: 1,
-});
-
 const typedOutputDir = await mkdtemp(join(tmpdir(), "yuanta-deposit-typed-"));
 const originalCwd = process.cwd();
 process.chdir(typedOutputDir);
 try {
   const deferredItems: PGliteWorkflowRunItem[] = [];
+  let preparedDateRange: string | null = null;
   const typedResult = await runYuantaStatements(
     {} as never,
-    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
+    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
     {
+      preparePage: async (_page, dateRange) => {
+        preparedDateRange = dateRange;
+      },
       observedAt: stableConnectionIdentity.observedAt,
-      readDepositAccountOptions: async () => [workflowAccount],
+      readDepositAccountOptions: async () => {
+        assert.equal(preparedDateRange, "one_month", "the selected range must be prepared before account collection");
+        return [workflowAccount];
+      },
       queryAccount: async () => undefined,
       downloadStatementRows: async () => workflowDownload,
-      writeBankTransactionsFile: async () => { throw new Error("typed Yuanta deposit attempted file output"); },
-      occurrenceDiagnosticDirectory: null,
       sourceConnectionScope: stableConnectionScope,
       sourceConnectionKey: stableConnectionKey,
       readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
       deferredCommitItems: deferredItems,
-      collectOnly: true,
       sourceText: strictSourceText,
       signal: new AbortController().signal,
     },
   );
   assert.ok(typedResult.itemCount > 0);
+  assert.equal(preparedDateRange, "one_month", "the typed collector must apply the selected range before reading source data");
+  assert.equal(typedResult.sourceCount, 1);
+  assert.equal(typedResult.rowCount, 1);
   assert.equal(deferredItems.length, typedResult.itemCount);
+  assert.ok(deferredItems.every((item) => item.provider === "yuanta" && item.command));
   assert.deepEqual(await readdir(typedOutputDir), []);
 
   const rejectedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
     runYuantaStatements(
       {} as never,
-      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
+      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
       {
+        preparePage: async () => undefined,
         observedAt: stableConnectionIdentity.observedAt,
         readDepositAccountOptions: async () => [workflowAccount],
         queryAccount: async () => undefined,
@@ -568,12 +559,9 @@ try {
           strictSourceText.decode(Uint8Array.of(0x81), "big5");
           return workflowDownload;
         },
-        writeBankTransactionsFile: async () => { throw new Error("malformed source reached file output"); },
-        occurrenceDiagnosticDirectory: null,
         sourceConnectionScope: stableConnectionScope,
         sourceConnectionKey: stableConnectionKey,
         deferredCommitItems: rejectedItems,
-        collectOnly: true,
         sourceText: strictSourceText,
         signal: new AbortController().signal,
       },
@@ -581,51 +569,27 @@ try {
     /Source text integrity failed/u,
   );
   assert.deepEqual(rejectedItems, [], "malformed Big5 must fail before any source item is returned");
+
+  const canceledItems: PGliteWorkflowRunItem[] = [];
+  const cancellation = new AbortController();
+  cancellation.abort();
+  await assert.rejects(
+    runYuantaStatements(
+      {} as never,
+      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+      {
+        preparePage: async () => { throw new Error("canceled collection navigated the browser"); },
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: stableConnectionKey,
+        deferredCommitItems: canceledItems,
+        sourceText: strictSourceText,
+        signal: cancellation.signal,
+      },
+    ),
+    /abort/u,
+  );
+  assert.deepEqual(canceledItems, [], "cancellation must return no commit items");
 } finally {
   process.chdir(originalCwd);
   await rm(typedOutputDir, { recursive: true, force: true });
-}
-
-const pgliteRunDir = await mkdtemp(join(tmpdir(), "yuanta-pglite-workflow-"));
-const pgliteWorker = createPGliteViewWorkerClient(new Worker(
-  new URL("../../electron/pglite-view-worker.ts", import.meta.url),
-  { execArgv: ["--experimental-strip-types"], workerData: { dataDir: join(pgliteRunDir, "pglite") } },
-));
-const pgliteServer = createPGliteChildRpcServer({
-  provider: {
-    operational: pgliteWorker.operationalProvider,
-    financial: pgliteWorker.financial.registry,
-  } as PGliteChildProvider,
-});
-const priorWorkflowEnvironment = Object.fromEntries(
-  Object.keys(pgliteServer.env).map((key) => [key, process.env[key]]),
-);
-try {
-  await pgliteServer.ready;
-  Object.assign(process.env, pgliteServer.env);
-  const output = await runYuantaStatements(
-    {} as never,
-    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true, telemetry: false },
-    {
-      observedAt: stableConnectionIdentity.observedAt,
-      readDepositAccountOptions: async () => [workflowAccount],
-      queryAccount: async () => undefined,
-      downloadStatementRows: async () => workflowDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
-      sourceConnectionScope: stableConnectionScope,
-      sourceConnectionKey: stableConnectionKey,
-      readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
-    },
-  );
-  assert.equal(output.admissions[0]?.status, "financial-admitted");
-  assert.equal(output.relationResolution?.outcome, "no-admission");
-  assert.equal((await pgliteWorker.financial.registry.overviewCurrent()).availability, "available");
-} finally {
-  for (const [key, value] of Object.entries(priorWorkflowEnvironment)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteServer.close();
-  await pgliteWorker.close();
-  await rm(pgliteRunDir, { recursive: true, force: true });
 }
