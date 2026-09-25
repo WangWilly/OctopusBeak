@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { Worker } from "node:worker_threads";
-import { createPGliteChildRpcServer, type PGliteChildProvider } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import {
   assertYuantaLoanCaptureAccountNumberEvidence,
   buildYuantaLoanCapture,
@@ -121,13 +116,14 @@ const loanSource = await readFile(
   new URL("./yuanta-loan-statements.ts", import.meta.url),
   "utf8",
 );
+assert.doesNotMatch(
+  loanSource,
+  /from\s+["']libretto["']|LibrettoWorkflowContext|from\s+["']node:fs\/promises["']|writeFile\(|outputDir|requirePGliteChildRpcClient|executePGliteWorkflowRun|export\s+default\s+workflow/u,
+  "the App-owned provider must not retain a separate runner or persistence path",
+);
+assert.match(loanSource, /sourceText\??\.assertIntact/u);
 assert.match(loanSource, /await openStatementPage\(page\)/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
-assert.match(
-  loanSource,
-  /executePGliteWorkflowRun\(/u,
-  "loan persistence must run through the PGlite workflow client",
-);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
 assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
 assert.doesNotMatch(
@@ -190,68 +186,6 @@ assert.deepEqual(
   ],
 );
 
-test("Yuanta loan workflow commits through the authenticated PGlite child", async () => {
-  const runDir = await mkdtemp(join(tmpdir(), "yuanta-loan-pglite-"));
-  const worker = createPGliteViewWorkerClient(new Worker(
-    new URL("../../electron/pglite-view-worker.ts", import.meta.url),
-    { execArgv: ["--experimental-strip-types"], workerData: { dataDir: join(runDir, "pglite") } },
-  ));
-  const server = createPGliteChildRpcServer({
-    provider: { operational: worker.operationalProvider, financial: worker.financial.registry } as PGliteChildProvider,
-  });
-  const priorEnv = Object.fromEntries(Object.keys(server.env).map((key) => [key, process.env[key]]));
-  try {
-    await server.ready;
-    Object.assign(process.env, server.env);
-    const sourceConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
-    const sourceConnectionKey = deriveSourceConnectionIdentityKey("yuanta", sourceConnectionScope);
-    const output = await runYuantaLoanStatements(
-      {} as never,
-      {
-        dateRange: "one_year",
-        customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-        loanAccountFilters: [], replaceActiveSession: true,
-      },
-      {
-        sourceConnectionScope,
-        sourceConnectionKey,
-        observedAt: () => "2026-02-01T00:00:00.000Z",
-        openLoanStatementPage: async () => undefined,
-        readLoanAccountOptions: async () => [{ label: "房屋貸款 - 12345678901234", value: "12345678901234" }],
-        queryLoanAccount: async () => undefined,
-        traverseLoanStatementPages: async () => ({
-          rows: [{
-            accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
-            paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
-            transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
-            overpayment: "0.00", sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
-          }],
-          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
-          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
-        }),
-        writeLoanStatementsFile: (async () => ({
-          baseName: "yuanta-loan-pglite", kind: "loan-statements", rowCount: 1,
-          headers: [], accounts: ["房屋貸款"], dateRange: "2026/01/01-2026/01/31",
-          sourceTables: [{ account: "房屋貸款", rowCount: 1 }],
-          csvFilename: "yuanta-loan-pglite.csv", jsonFilename: "yuanta-loan-pglite.json",
-          csvPath: "yuanta-loan-pglite.csv", jsonPath: "yuanta-loan-pglite.json",
-          csvBytes: 0, jsonBytes: 0,
-        })) as never,
-      },
-    );
-    assert.equal(output.relationResolution?.outcome, "no-admission");
-    assert.equal((await worker.financial.registry.liabilitiesCurrent()).accounts.length, 1);
-  } finally {
-    for (const [key, value] of Object.entries(priorEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    await server.close();
-    await worker.close();
-    await rm(runDir, { recursive: true, force: true });
-  }
-});
-
 test("Yuanta loan typed collection admits complete source without writing or committing", async () => {
   const deferred: PGliteWorkflowRunItem[] = [];
   const testLoanAccount = "1234".repeat(3) + "12";
@@ -288,7 +222,6 @@ test("Yuanta loan typed collection admits complete source without writing or com
           pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
         };
       },
-      writeLoanStatementsFile: (async () => { throw new Error("typed loan collection attempted a file write"); }) as never,
       collectOnly: true,
       deferredCommitItems: deferred,
       sourceText: strictSourceText,

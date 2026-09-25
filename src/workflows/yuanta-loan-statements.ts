@@ -1,18 +1,13 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
 import type {
   PGliteCanonicalExplicitLoanRelationLink,
-  PGliteCanonicalLoanRelationResolutionResult,
 } from "../ledger/pglite/relations.ts";
 import {
   clickAndWaitForNavigation,
@@ -33,16 +28,8 @@ import type {
   YuantaLoanCaptureBuildInput,
   YuantaLoanStatementRow,
 } from "../ledger/canonical/yuanta-loan-admission.ts";
-import {
-  authenticateYuantaBank as sharedAuthenticateYuantaBank,
-  yuantaSourceConnectionScope,
-  type YuantaCredentials,
-} from "./yuanta-auth.ts";
 import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
-import {
-  deriveSourceConnectionIdentityKey,
-  requireSourceConnectionIdentity,
-} from "../ledger/canonical/source-connection-identity.ts";
+import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
 import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -98,51 +85,8 @@ const inputSchema = z.object({
   replaceActiveSession: z.boolean().default(true),
 });
 
-const sourceTableSchema = z.object({
-  account: z.string(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.literal("loan-statements"),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  accounts: z.array(z.string()),
-  dateRange: z.string(),
-  sourceTables: z.array(sourceTableSchema),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.string(),
-  usedExistingSession: z.boolean(),
-  replacedActiveSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  files: z.array(tableFileSchema),
-  relationResolution: z
-    .object({
-      status: z.literal("canonical-live"),
-      outcome: z.enum(["changed", "unchanged", "no-admission"]),
-      resolutionId: z.string().nullable(),
-      exactRelationIds: z.array(z.string()),
-      settlementGroupIds: z.array(z.string()),
-      reason: z.string().optional(),
-    })
-    .optional(),
-});
-
 type WorkflowInput = z.infer<typeof inputSchema>;
-type TableFile = z.infer<typeof tableFileSchema>;
-type SourceTable = z.infer<typeof sourceTableSchema>;
-type YuantaLoanStatementsOutput = z.infer<typeof outputSchema>;
-
-export type YuantaLoanStatementsRunDependencies = Partial<{
+export type YuantaLoanStatementsRunDependencies = Partial<Readonly<{
   sourceConnectionScope: string;
   sourceConnectionKey: string;
   observedAt: () => string;
@@ -159,7 +103,6 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
     accountLabel: string,
     options?: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal; silent?: boolean }>,
   ) => Promise<ReturnType<typeof assembleYuantaLoanStatement>>;
-  writeLoanStatementsFile: typeof writeLoanStatementsFile;
   /**
    * Optional live-page adapter for exact source-provided repayment-account or
    * mandate evidence.  The default Yuanta loan page exposes no such field,
@@ -179,7 +122,7 @@ export type YuantaLoanStatementsRunDependencies = Partial<{
   deferredCommitItems: PGliteWorkflowRunItem[];
   sourceText: SourceTextPort;
   signal: AbortSignal;
-}>;
+}>>;
 
 export type YuantaLoanWorkflowCollection = Readonly<{
   sourceCount: number;
@@ -192,18 +135,6 @@ const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
   six_months: "六個月",
   one_year: "一年",
 };
-
-const statementHeaders = [
-  "貸款帳戶",
-  "交易日",
-  "記帳日",
-  "繳款項目",
-  "提息起日",
-  "提息迄日",
-  "交易金額",
-  "交易後餘額",
-  "溢繳款",
-] as const;
 
 const sourceStatementColumnCount = 6;
 
@@ -600,13 +531,6 @@ function isUnavailableAccountOption(value: string, label: string): boolean {
   );
 }
 
-function describeDateRange(input: WorkflowInput): string {
-  if (input.customDateRange) {
-    return `${input.customDateRange.startDate}-${input.customDateRange.endDate}`;
-  }
-  return dateRangeLabels[input.dateRange];
-}
-
 function addMonthsClamped(date: Date, months: number): Date {
   const targetYear = date.getFullYear();
   const targetMonth = date.getMonth() + months;
@@ -636,24 +560,6 @@ function canonicalLoanDateRange(input: WorkflowInput): {
   const format = (date: Date) =>
     `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   return { startDate: format(startDate), endDate: format(endDate) };
-}
-
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
 }
 
 function splitDatePair(value: string): [string, string] {
@@ -721,85 +627,6 @@ function sortedStatementRows(rows: StatementRow[]): StatementRow[] {
     if (right.sortTime === null) return -1;
     return right.sortTime - left.sortTime;
   });
-}
-
-function statementRowsToCsv(rows: StatementRow[]): string {
-  return rowsToCsv([
-    [...statementHeaders],
-    ...sortedStatementRows(rows).map((row) => [
-      row.accountLabel,
-      row.transactionDate,
-      row.postingDate,
-      row.paymentItem,
-      row.interestStartDate,
-      row.interestEndDate,
-      row.transactionAmount,
-      row.balanceAfterTransaction,
-      row.overpayment,
-    ]),
-  ]);
-}
-
-async function writeLoanStatementsFile(
-  nextTimestamp: () => string,
-  dateRange: string,
-  rows: StatementRow[],
-  sourceTables: SourceTable[],
-): Promise<TableFile> {
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    "yuanta-loan-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `loan-statements-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const accounts = [...new Set(sourceTables.map((source) => source.account))];
-
-  await writeFile(csvPath, statementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "yuantaLoanStatements",
-        kind: "loan-statements",
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers: statementHeaders,
-        accounts,
-        dateRange,
-        sourceTables,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    baseName,
-    kind: "loan-statements",
-    rowCount: rows.length,
-    headers: [...statementHeaders],
-    accounts,
-    dateRange,
-    sourceTables,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
 }
 
 async function waitForFrame(
@@ -1278,24 +1105,19 @@ async function traverseYuantaLoanStatementPages(
   return assembleYuantaLoanStatement(pages);
 }
 
-export function runYuantaLoanStatements(
-  page: Page,
-  input: WorkflowInput,
-  overrides: YuantaLoanStatementsRunDependencies & Readonly<{
-    collectOnly: true;
-    deferredCommitItems: PGliteWorkflowRunItem[];
-  }>,
-): Promise<YuantaLoanWorkflowCollection>;
-export function runYuantaLoanStatements(
-  page: Page,
-  input: WorkflowInput,
-  overrides?: YuantaLoanStatementsRunDependencies,
-): Promise<Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">>;
 export async function runYuantaLoanStatements(
   page: Page,
   input: WorkflowInput,
   overrides: YuantaLoanStatementsRunDependencies = {},
-): Promise<YuantaLoanWorkflowCollection | Omit<YuantaLoanStatementsOutput, "usedExistingSession" | "replacedActiveSession">> {
+): Promise<YuantaLoanWorkflowCollection> {
+  const { sourceConnectionScope, sourceConnectionKey } =
+    requireSourceConnectionIdentity("yuanta", "Yuanta loan", overrides);
+  const { collectOnly, deferredCommitItems, sourceText, signal } = overrides;
+  if (collectOnly !== true || !deferredCommitItems || !sourceText || !signal) {
+    throw new Error("Yuanta loan App collection ports are unavailable.");
+  }
+  signal.throwIfAborted();
+
   const openStatementPage =
     overrides.openLoanStatementPage ?? openLoanStatementPage;
   const readAccounts =
@@ -1303,104 +1125,91 @@ export async function runYuantaLoanStatements(
   const queryAccount = overrides.queryLoanAccount ?? queryLoanAccount;
   const traversePages =
     overrides.traverseLoanStatementPages ?? traverseYuantaLoanStatementPages;
-  const write = overrides.writeLoanStatementsFile ?? writeLoanStatementsFile;
-  const { sourceConnectionScope, sourceConnectionKey } =
-    requireSourceConnectionIdentity("yuanta", "Yuanta loan", overrides);
   const observedAt = overrides.observedAt ?? (() => new Date().toISOString());
-  let relationResolution: PGliteCanonicalLoanRelationResolutionResult | null =
-    null;
-
-  await openStatementPage(page);
-  const accounts = await readAccounts(
-    page,
-    input.loanAccountFilters,
-  );
-  const rows: StatementRow[] = [];
-  const sourceTables: SourceTable[] = [];
-  const collectedItems: PGliteWorkflowRunItem[] = [];
-  const nextTimestamp = createTimestampGenerator();
-  const dateRange = describeDateRange(input);
   const canonicalRange = canonicalLoanDateRange(input);
 
+  await openStatementPage(page);
+  signal.throwIfAborted();
+  const accounts = await readAccounts(page, input.loanAccountFilters);
+  const rows: StatementRow[] = [];
+  const collectedItems: PGliteWorkflowRunItem[] = [];
+
   for (const account of accounts) {
-      overrides.signal?.throwIfAborted();
-      const maskedAccount = maskAccountLabel(account.label);
-      await queryAccount(page, input, account);
-      overrides.signal?.throwIfAborted();
-      const parsed = await traversePages(page, maskedAccount, {
-        ...(overrides.sourceText ? { sourceText: overrides.sourceText } : {}),
-        ...(overrides.signal ? { signal: overrides.signal } : {}),
-        ...(overrides.collectOnly ? { silent: true } : {}),
-      });
-      if (
-        !parsed.completeness ||
-        parsed.pages.length !== parsed.completeness.pageCount
-      ) {
-        throw new Error(
-          "Yuanta loan result lacks explicit complete terminal page evidence.",
-        );
-      }
-      const accountRows = parsed.rows;
-      overrides.sourceText?.assertIntact(JSON.stringify({ account: account.label, rows: accountRows }));
-      rows.push(...accountRows);
-      sourceTables.push({
-        account: maskedAccount,
-        rowCount: accountRows.length,
-      });
-      const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
-      const captureInput: YuantaLoanCaptureBuildInput = {
-        accountValue: account.value,
-        ...(accountNumber ? { accountNumber } : {}),
-        sourceConnectionScope,
-        observedAt: observedAt(),
+    signal.throwIfAborted();
+    const maskedAccount = maskAccountLabel(account.label);
+    await queryAccount(page, input, account);
+    signal.throwIfAborted();
+    const parsed = await traversePages(page, maskedAccount, {
+      sourceText,
+      signal,
+      silent: true,
+    });
+    if (
+      !parsed.completeness ||
+      parsed.pages.length !== parsed.completeness.pageCount
+    ) {
+      throw new Error(
+        "Yuanta loan result lacks explicit complete terminal page evidence.",
+      );
+    }
+    const accountRows = parsed.rows;
+    sourceText.assertIntact(
+      JSON.stringify({ account: account.label, rows: accountRows }),
+    );
+    rows.push(...accountRows);
+
+    const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
+    const captureInput: YuantaLoanCaptureBuildInput = {
+      accountValue: account.value,
+      ...(accountNumber ? { accountNumber } : {}),
+      sourceConnectionScope,
+      observedAt: observedAt(),
+      startDate: canonicalRange.startDate,
+      endDate: canonicalRange.endDate,
+      scope: {
         startDate: canonicalRange.startDate,
         endDate: canonicalRange.endDate,
-        scope: {
-          startDate: canonicalRange.startDate,
-          endDate: canonicalRange.endDate,
-          completeness: "complete-range",
-          completenessBasis: "source-declared-terminal-range",
-          completenessRuleVersion: "loan/canonical/v1.yuanta",
-          pageCount: parsed.completeness.pageCount,
-          terminal: parsed.completeness.terminal,
-        },
-        pages: parsed.pages,
-        // The loan result has no source-linked deposit-side transaction.
-        // Empty linkage arrays are therefore explicitly not asserted as
-        // complete relation coverage.
-        relationCoverage: "not-asserted",
-        counterpartTransactions: [],
-        relations: [],
-        rows: accountRows.map<YuantaLoanStatementRow>((row) => ({
-          transactionDate: row.transactionDate,
-          postingDate: row.postingDate,
-          paymentItem: row.paymentItem,
-          transactionAmount: row.transactionAmount,
-          balanceAfterTransaction: row.balanceAfterTransaction,
-        })),
-      };
-      // Build once before commit so optional source evidence can refer to the
-      // exact immutable source-record keys that the Yuanta adapter will
-      // persist.
-      const capture = buildYuantaLoanCapture(captureInput);
-      assertYuantaLoanCaptureAccountNumberEvidence(capture);
-      const sourceEvidence = overrides.readCounterpartyAccountEvidence
-        ? await overrides.readCounterpartyAccountEvidence(
-            page,
-            account,
-            accountRows,
-          )
-        : [yuantaLoanSelectorAccountEvidence(account)];
-      overrides.signal?.throwIfAborted();
-      collectedItems.push({
-        provider: "yuanta",
-        product: "loan",
-        itemKey: capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-          request: { capture },
-        },
-        relationCommands: () => [{
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: "loan/canonical/v1.yuanta",
+        pageCount: parsed.completeness.pageCount,
+        terminal: parsed.completeness.terminal,
+      },
+      pages: parsed.pages,
+      // The loan result has no source-linked deposit-side transaction.
+      // Empty linkage arrays are therefore explicitly not asserted as
+      // complete relation coverage.
+      relationCoverage: "not-asserted",
+      counterpartTransactions: [],
+      relations: [],
+      rows: accountRows.map<YuantaLoanStatementRow>((row) => ({
+        transactionDate: row.transactionDate,
+        postingDate: row.postingDate,
+        paymentItem: row.paymentItem,
+        transactionAmount: row.transactionAmount,
+        balanceAfterTransaction: row.balanceAfterTransaction,
+      })),
+    };
+    const capture = buildYuantaLoanCapture(captureInput);
+    assertYuantaLoanCaptureAccountNumberEvidence(capture);
+    const sourceEvidence = overrides.readCounterpartyAccountEvidence
+      ? await overrides.readCounterpartyAccountEvidence(
+          page,
+          account,
+          accountRows,
+        )
+      : [yuantaLoanSelectorAccountEvidence(account)];
+    signal.throwIfAborted();
+    collectedItems.push({
+      provider: "yuanta",
+      product: "loan",
+      itemKey: capture.captureId,
+      command: {
+        kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+        request: { capture },
+      },
+      relationCommands: () => [
+        {
           kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
           request: {
             sourceConnectionKey,
@@ -1408,99 +1217,19 @@ export async function runYuantaLoanStatements(
             observedAt: capture.observedAt,
             explicitLinks: overrides.explicitRelationLinks,
             counterpartyEvidence: sourceEvidence.map((evidence) =>
-              materializeYuantaLoanCounterpartyEvidence(capture, evidence)),
+              materializeYuantaLoanCounterpartyEvidence(capture, evidence),
+            ),
           },
-        }],
-        onRelationResult: (value: unknown) => {
-          relationResolution =
-            value as PGliteCanonicalLoanRelationResolutionResult;
         },
-      });
-  }
-
-  overrides.signal?.throwIfAborted();
-  if (overrides.collectOnly) {
-    if (!overrides.deferredCommitItems)
-      throw new Error("Yuanta loan collection requires a deferred commit sink.");
-    overrides.deferredCommitItems.push(...collectedItems);
-    return {
-      sourceCount: accounts.length,
-      rowCount: rows.length,
-      itemCount: collectedItems.length,
-    };
-  }
-
-  const client = requirePGliteChildRpcClientFromEnv();
-  let executionResult;
-  try {
-    await client.ready;
-    executionResult = await executePGliteWorkflowRun({
-      client: client.workflow,
-      items: collectedItems,
-      provider: "yuanta",
-      product: "loan",
+      ],
     });
-  } finally {
-    client.close();
   }
 
-  if (executionResult.status !== "completed")
-    throw new Error(
-      `Yuanta canonical financial commit ${executionResult.status}: ${executionResult.diagnostics.map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`).join(", ")}`,
-    );
-
-  const file = await write(
-    nextTimestamp,
-    dateRange,
-    rows,
-    sourceTables,
-  );
-  const resolvedRelation = relationResolution as
-    | PGliteCanonicalLoanRelationResolutionResult
-    | null;
-
+  signal.throwIfAborted();
+  deferredCommitItems.push(...collectedItems);
   return {
-    dateRange,
-    count: 1,
-    files: [file],
-    ...(resolvedRelation
-      ? {
-          relationResolution: {
-            ...resolvedRelation,
-            exactRelationIds: [...resolvedRelation.exactRelationIds],
-            settlementGroupIds: [...resolvedRelation.settlementGroupIds],
-          },
-        }
-      : {}),
+    sourceCount: accounts.length,
+    rowCount: rows.length,
+    itemCount: collectedItems.length,
   };
 }
-
-export default workflow("yuantaLoanStatements", {
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (
-      input as typeof input & { credentials: YuantaCredentials }
-    ).credentials;
-    const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
-    const authResult = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
-    );
-    const output = await runYuantaLoanStatements(page, input, {
-      sourceConnectionScope,
-      sourceConnectionKey: deriveSourceConnectionIdentityKey(
-        "yuanta",
-        sourceConnectionScope,
-      ),
-    });
-    return {
-      ...output,
-      usedExistingSession: authResult.usedProfile,
-      replacedActiveSession: authResult.replacedActiveSession,
-    };
-  },
-});
