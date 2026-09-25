@@ -1,36 +1,15 @@
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
-import {
-  statementRunSummaryLine,
-  type StatementRunSummary,
-} from "../statement-run-summary.ts";
+import type { StatementRunSummary } from "../statement-run-summary.ts";
 import { resolveTaskCommand } from "./desktop-command.ts";
 import {
-  appendLog,
-  automationSessionOwnerForRun,
-  errorMessage,
-  finalizeAutomationSessionForRun,
   forceQuitAutomationSessionForRun,
-  armAutomationSessionDispositionTimeout,
-  sessionFromRun,
-  tail,
-  type AutomationSessionCleanupResult,
-  type AutomationSessionDisposition,
   type ForceQuitFinalizationDependencies,
   type OwnedAutomationSession,
 } from "./automation-session-disposition.ts";
-import { sanitizeAutomationLogChunk } from "./log-sanitizer.ts";
 import type {
   TypedWorkflowErrorCode,
   TypedWorkflowOutcomeSummary,
 } from "./typed-workflow-outcome.ts";
-export {
-  appendCleanupError,
-  automationCleanupFailureDetails,
-  automationSessionFromLog,
-  errorMessage,
-  finalizeAutomationSession as finalizeTerminalAutomationSession,
-  resumeSessionFromLog,
-} from "./automation-session-disposition.ts";
 export type { ForceQuitFinalizationDependencies } from "./automation-session-disposition.ts";
 import {
   isActiveTaskRunStatus,
@@ -89,35 +68,9 @@ export type AutomationTaskProcessResult = {
   externalPrerequisiteIds: string[];
 };
 
-export function shouldRetainAutomationSession(status: AutomationTaskStatus) {
-  return status === "waiting_for_human";
-}
-
-export function shouldMarkWaitingForHuman(output: string) {
-  return /manual-(?:auth|otp)-required|workflow paused|resume --session|\benter\b[^\r\n]*(?:captcha|otp|verification|certificate)/i.test(output);
-}
-
-export function finalFailureMessage(logTail: string, exitCode: number | null) {
-  const message = logTail
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .toReversed()
-    .find((line) =>
-      !/^automation-progress:/i.test(line) &&
-      !/^automation-output-write-failed:/i.test(line) &&
-      !/^libretto run CDP patch/i.test(line) &&
-      !/^Running workflow /i.test(line) &&
-      !/^Browser is still open\./i.test(line)
-    );
-  return message ?? `Task exited with code ${exitCode}`;
-}
-
-export function isForceQuitRun(
-  run: Pick<AutomationTaskRun, "status" | "errorMessage" | "terminationMode"> | null | undefined,
-) {
-  return run?.terminationMode === "forced"
-    || (run?.status === "failed" && run.errorMessage?.startsWith("Browser session force quit") === true);
+/** Compatibility shim for the retired stdout-driven human-assistance protocol. */
+export function shouldMarkWaitingForHuman(_output: string) {
+  return false;
 }
 
 export function nextAttemptStatus(input: {
@@ -127,27 +80,12 @@ export function nextAttemptStatus(input: {
   exitCode: number | null;
   waitingForHuman?: boolean;
 }): AutomationTaskStatus {
-  if (input.exitCode === 0 && input.waitingForHuman) return "waiting_for_human";
+  // The typed App executor owns human-assistance pauses; process output is not
+  // an authority for moving a run into that state.
+  void input.waitingForHuman;
   if (input.exitCode === 0) return "completed";
   return "failed";
 }
-
-type TaskRunFinalizationIntent = {
-  status: AutomationTaskStatus;
-  sessionDisposition: AutomationSessionDisposition;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  errorMessage: string | null;
-  logTail: string;
-  appWorkflowOutcome?: AutomationTaskProcessResult["appWorkflowOutcome"];
-  terminationMode?: "forced";
-  statementSummary?: StatementRunSummary | null;
-};
-
-type TaskRunFinalizationImplementation = {
-  sessionFinalizationLog?: boolean;
-  sessionCleanup?: AutomationSessionCleanupResult | null;
-};
 
 export type AsyncTaskRunFinalizationIntent = {
   status: AutomationTaskStatus;
@@ -173,14 +111,6 @@ export async function finalizeTaskRunTransition(
   if (!isActiveTaskRunStatus(current.status) || current.status === "queued") {
     return { status: current.status, skipped: true } as const;
   }
-  if (
-    current.status === "waiting_for_human"
-    && intent.status !== "failed"
-    && intent.status !== "cancelled"
-    && intent.status !== "interrupted"
-  ) {
-    return { status: current.status, skipped: true } as const;
-  }
   if (intent.status === "waiting_for_human") {
     await persistence.updateTaskRun(run.taskRunId, {
       status: intent.status,
@@ -188,7 +118,7 @@ export async function finalizeTaskRunTransition(
       exitCode: intent.exitCode,
       signal: intent.signal,
       errorMessage: intent.errorMessage,
-      logTail: intent.logTail,
+      logTail: "",
       ...(intent.appWorkflowOutcome === undefined
         ? {}
         : { appWorkflowOutcome: intent.appWorkflowOutcome }),
@@ -206,7 +136,7 @@ export async function finalizeTaskRunTransition(
     exitCode: intent.exitCode,
     signal: intent.signal,
     errorMessage: intent.errorMessage,
-    logTail: intent.logTail,
+    logTail: "",
     ...(intent.appWorkflowOutcome === undefined
       ? {}
       : { appWorkflowOutcome: intent.appWorkflowOutcome }),
@@ -221,59 +151,50 @@ export async function finalizeTaskRunTransition(
 }
 
 /**
- * Finalize one worker-owned run with the same status and session semantics as
- * finalizeAutomationTaskRun.  All persistence reads and writes are awaited;
- * the function deliberately accepts only the injected port.
+ * Persist a typed App workflow outcome through the injected operational port.
+ * Provider exception text and process output are deliberately excluded from
+ * the durable run record.
  */
 export async function finalizeAutomationTaskRun(
   context: AutomationTaskRunFinalizationContext,
   result: AutomationTaskProcessResult,
 ) {
-  const resumeFailure = result.resumeFailure;
+  const outcome = result.appWorkflowOutcome;
   const cancelled = context.forceTerminated === true
     || result.signal === "SIGTERM"
-    || result.error?.message === "Automation task cancelled.";
-  let status: AutomationTaskStatus = cancelled
-    ? "cancelled"
-    : result.error || resumeFailure
-    ? "failed"
-    : nextAttemptStatus({
-      kind: context.taskKind,
-      attempt: 1,
-      maxAttempts: 1,
-      exitCode: result.exitCode,
-      waitingForHuman: shouldMarkWaitingForHuman(result.logTail),
-    });
-  if (status === "completed" && result.statementSummary) {
-    status = result.statementSummary.status;
-  }
-  const statementFailure = result.statementSummary?.status === "failed"
-    ? result.statementSummary.results
-      .filter((statement) => statement.status === "failed")
-      .map((statement) => `${statement.typeId}: ${statement.error ?? "Failed"}`)
-      .join("\n") || "No statement components completed."
-    : null;
-  let taskError = result.error?.message
-    ?? resumeFailure
-    ?? (status === "failed"
-      ? statementFailure || finalFailureMessage(result.logTail, result.exitCode)
+    || result.error?.message === "Automation task cancelled."
+    || outcome?.errorCode === "cancelled";
+  const partial = outcome?.summary?.status === "partial"
+    || result.statementSummary?.status === "partial";
+  const typedFailureCode = outcome?.errorCode
+    ?? (result.error || result.resumeFailure || (result.exitCode !== 0 && !partial)
+      ? "workflow-failed"
       : null);
-  taskError = [taskError, ...result.outputPersistenceWarnings].filter(Boolean).join("\n") || null;
+  let status: AutomationTaskStatus;
+  if (cancelled) {
+    status = "cancelled";
+  } else if (typedFailureCode !== null || outcome?.summary?.status === "failed") {
+    status = "failed";
+  } else if (partial) {
+    status = "partial";
+  } else {
+    status = result.exitCode === 0 ? "completed" : "failed";
+  }
+  const persistedOutcome = outcome === undefined
+    ? undefined
+    : {
+      errorCode: cancelled ? "cancelled" as const : outcome.errorCode ?? typedFailureCode,
+      summary: outcome.summary,
+    };
+  const taskError = cancelled
+    ? "Workflow cancelled."
+    : status === "failed"
+    ? `Workflow failed (${typedFailureCode ?? "workflow-failed"}).`
+    : null;
   const persistence = context.provider.automation;
   const currentRun = await persistence.taskRunById(context.taskRunId);
   if (!currentRun) throw new Error(`Missing automation task run: ${context.taskRunId}`);
   if (isTerminalTaskRunStatus(currentRun.status)) return { status: currentRun.status };
-  if (isForceQuitRun(currentRun)) return { status: "failed" as const };
-  let logTail = result.logTail;
-  if (result.statementSummary) {
-    logTail = tail(`${logTail}\n${statementRunSummaryLine(result.statementSummary.results)}\n`);
-  }
-  const sessionDisposition = shouldRetainAutomationSession(status) ? "retain" : "relinquish";
-  const sessionCleanup = sessionDisposition === "relinquish"
-    && !context.sessionAlreadyCleaned
-    && automationSessionOwnerForRun(currentRun)
-    ? await finalizeAutomationSessionForRun(currentRun, taskError, "exact")
-    : null;
   const transition = await finalizeTaskRunTransition(
     context.provider,
     { taskRunId: context.taskRunId, logPath: context.logPath },
@@ -281,24 +202,16 @@ export async function finalizeAutomationTaskRun(
       status,
       exitCode: result.exitCode,
       signal: result.signal,
-      errorMessage: sessionCleanup?.errorMessage ?? taskError,
-      logTail,
-      ...(result.appWorkflowOutcome === undefined
+      errorMessage: taskError,
+      logTail: "",
+      ...(persistedOutcome === undefined
         ? {}
-        : { appWorkflowOutcome: result.appWorkflowOutcome }),
+        : { appWorkflowOutcome: persistedOutcome }),
       ...(status === "cancelled" && context.forceTerminated
         ? { terminationMode: "forced" as const }
         : {}),
     },
   );
-  if (!transition.skipped && sessionDisposition === "retain") {
-    scheduleAutomationTaskRunTimeout({
-      provider: context.provider,
-      taskId: context.taskId,
-      taskRunId: context.taskRunId,
-      logPath: context.logPath,
-    });
-  }
   if (!transition.skipped) {
     if (transition.status === "completed" || transition.status === "partial") {
       (context.dataVersionStore ?? dataVersionStore).markStale("automation-completed");
@@ -335,40 +248,24 @@ export async function finalizeAutomationTaskRun(
 export async function finalizePersistedRun(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
-  reason: string,
+  _reason: string,
   status: Extract<AutomationTaskStatus, "failed" | "interrupted"> = "failed",
 ): Promise<void> {
   const current = await provider.automation.taskRunById(run.taskRunId);
   if (!current || isTerminalTaskRunStatus(current.status)) return;
-  const sessionCleanup = await finalizeAutomationSessionForRun(
-    current,
-    current.errorMessage ?? reason,
-    "recovery",
-  );
-  const finalizationLog = "automation-session-finalize: session="
-    + (sessionCleanup.session ?? "unknown")
-    + " pid=" + (sessionCleanup.pid ?? "unknown")
-    + " cleanup-error=" + (sessionCleanup.cleanupFailed ? "failed" : "none") + "\n";
-  let logTail = current.logTail;
-  let errorText = sessionCleanup.errorMessage;
-  if (!taskById(current.taskId)?.workflowId) {
-    try {
-      appendLog(current.logPath, finalizationLog);
-    } catch (error) {
-      const warning = sanitizeAutomationLogChunk(
-        "automation-output-write-failed: " + errorMessage(error),
-      );
-      console.error(warning);
-      errorText = [errorText, warning].filter(Boolean).join("\n") || null;
-      logTail = tail(logTail + "\n" + warning + "\n");
-    }
-  }
   await finalizeTaskRunTransition(provider, run, {
     status,
     exitCode: null,
     signal: null,
-    errorMessage: errorText,
-    logTail,
+    errorMessage: status === "interrupted"
+      ? "Workflow interrupted because the App closed."
+      : current.appWorkflowOutcome?.errorCode
+        ? `Workflow failed (${current.appWorkflowOutcome.errorCode}).`
+        : "Workflow failed (workflow-failed).",
+    logTail: "",
+    ...(current.appWorkflowOutcome === undefined || current.appWorkflowOutcome === null
+      ? {}
+      : { appWorkflowOutcome: current.appWorkflowOutcome }),
   });
 }
 
@@ -385,6 +282,13 @@ export async function finalizeForceQuitTaskRun(
     run,
     dependencies,
   );
+  const appWorkflowOutcome = current.appWorkflowOutcome === undefined
+    || current.appWorkflowOutcome === null
+    ? undefined
+    : {
+      errorCode: "cancelled" as const,
+      summary: current.appWorkflowOutcome.summary,
+    };
   await finalizeTaskRunTransition(provider, run, {
     status: "cancelled",
     exitCode: null,
@@ -392,6 +296,7 @@ export async function finalizeForceQuitTaskRun(
     errorMessage: sessionCleanup.errorMessage,
     logTail: run.logTail,
     terminationMode: "forced",
+    ...(appWorkflowOutcome === undefined ? {} : { appWorkflowOutcome }),
   });
   if (operationalError) throw operationalError;
   return { session: sessionCleanup.session };
@@ -400,21 +305,22 @@ export async function finalizeForceQuitTaskRun(
 export async function finalizeFailedWaitingRun(
   provider: AutomationPersistenceProvider,
   run: AutomationTaskRun,
-  workflowError: string,
+  _workflowError: string,
 ) {
   const current = await provider.automation.taskRunById(run.taskRunId);
   if (!current || current.status !== "waiting_for_human") return;
-  const sessionCleanup = await finalizeAutomationSessionForRun(
-    current,
-    workflowError,
-    "exact",
-  );
+  const currentOutcome = current.appWorkflowOutcome;
+  const appWorkflowOutcome = {
+    errorCode: currentOutcome?.errorCode ?? "workflow-failed" as const,
+    summary: currentOutcome?.summary ?? null,
+  };
   await finalizeTaskRunTransition(provider, run, {
     status: "failed",
     exitCode: null,
     signal: null,
-    errorMessage: sessionCleanup.errorMessage,
-    logTail: current.logTail,
+    errorMessage: `Workflow failed (${appWorkflowOutcome.errorCode ?? "workflow-failed"}).`,
+    logTail: "",
+    appWorkflowOutcome,
   });
 }
 
@@ -435,46 +341,4 @@ export async function finalizePersistedActiveRuns(
     errors.push(error);
   }
   if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
-}
-
-export type AutomationTaskRunTimeoutContext = {
-  provider: AutomationPersistenceProvider;
-  taskId: string;
-  taskRunId: string;
-  logPath: string;
-};
-
-/** Schedule the same waiting-session timeout using only async persistence. */
-export function scheduleAutomationTaskRunTimeout(
-  context: AutomationTaskRunTimeoutContext,
-) {
-  void context.provider.automation.taskRunById(context.taskRunId).then((initialRun) => {
-    if (!initialRun || !sessionFromRun(initialRun)) return;
-    armAutomationSessionDispositionTimeout(context.taskId, async () => {
-      try {
-        const run = await context.provider.automation.taskRunById(context.taskRunId);
-        if (!run || run.status !== "waiting_for_human") return;
-        const sessionCleanup = await finalizeAutomationSessionForRun(
-          run,
-          "等待人工操作超過 20 分鐘",
-          "exact",
-        );
-        await finalizeTaskRunTransition(
-          context.provider,
-          { taskRunId: context.taskRunId, logPath: context.logPath },
-          {
-            status: "failed",
-            exitCode: null,
-            signal: null,
-            errorMessage: sessionCleanup.errorMessage,
-            logTail: run.logTail,
-          },
-        );
-      } catch (error) {
-        console.error("automation-session-timeout-failed", error);
-      }
-    });
-  }).catch((error) => {
-    console.error("automation-session-timeout-schedule-failed", error);
-  });
 }
