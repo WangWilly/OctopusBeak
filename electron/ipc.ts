@@ -46,7 +46,6 @@ import {
   waitForProviderVerificationCompletion,
 } from "../src/lib/automation/server/provider-verification.ts";
 import {
-  forceQuitHumanSessionForTask,
   humanAssistanceContractForTask,
   humanSessionForTask,
   updateHumanAssistanceContractForTask,
@@ -595,10 +594,6 @@ export function registerOctopusBeakIpc({
       return { verified, contract: updatedContract };
     },
   );
-  ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
-    await forceQuitHumanSessionForTask(taskId, operationalProvider);
-    return { ok: true as const, closed: true };
-  });
   ipcMain.handle("automation:runtimeSnapshot", async () => {
     try {
       await ensureAutomationRuntimeReady("runtime-snapshot");

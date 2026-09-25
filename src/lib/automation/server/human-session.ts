@@ -1,7 +1,3 @@
-import {
-  finalizeForceQuitTaskRun,
-  type ForceQuitFinalizationDependencies,
-} from "./task-run-finalization.ts";
 import { resumeSessionFromLog } from "./automation-session-disposition.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type {
@@ -70,15 +66,4 @@ export async function updateHumanAssistanceContractForTask(
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);
   }
   return provider.automation.updateHumanAssistanceContract(run.taskRunId, input);
-}
-
-export async function forceQuitHumanSessionForTask(
-  taskId: string,
-  provider: AutomationPersistenceProvider,
-  dependencies: ForceQuitFinalizationDependencies = {},
-): Promise<{ session: string | null }> {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-  const run = (await provider.automation.latestTaskRuns())[taskId];
-  if (!run) throw new Error(`Automation task is not waiting for human input: ${taskId}`);
-  return finalizeForceQuitTaskRun(provider, run, dependencies);
 }

@@ -5,6 +5,8 @@ import { octopusBeakApiChannels } from "../src/lib/desktop/api.ts";
 assert.equal(octopusBeakApiChannels.includes("automation:run"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
+assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
@@ -31,6 +33,8 @@ for (const [method, channel] of [
 }
 assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
 assert.match(source, /acknowledgeVersion: .*ipcRenderer\.invoke\("data:acknowledgeVersion"/);
+assert.match(source, /forceTerminate: .*ipcRenderer\.invoke\("automation:forceTerminate"/);
+assert.doesNotMatch(source, /forceQuit:/);
 assert.match(source, /onInvalidated\(listener\)/);
 assert.match(source, /ipcRenderer\.on\("data:invalidated"/);
 assert.match(source, /const dataViews = \{/);

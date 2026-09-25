@@ -44,7 +44,6 @@ assert.deepEqual([...octopusBeakApiChannels], [
   "automation:viewerInspect",
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
-  "automation:forceQuit",
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",

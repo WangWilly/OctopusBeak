@@ -943,7 +943,7 @@
     if (!token) return;
     try {
       actionError = "";
-      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceQuit(task.id);
+      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceTerminate(task.id);
       else await window.octopusBeak.automation.cancel(task.id);
       await reload();
     } catch (error) {
@@ -1194,11 +1194,11 @@
     }
   }
 
-  async function forceQuitHumanViewer() {
+  async function forceTerminateHumanViewer() {
     if (!humanTask) return;
     if (!confirm($t.automation.confirmForceQuit)) return;
     try {
-      await window.octopusBeak.automation.forceQuit(humanTask.id);
+      await window.octopusBeak.automation.forceTerminate(humanTask.id);
       closeHumanViewer();
       await reload();
     } catch (error) {
@@ -2210,7 +2210,7 @@
           {/if}
         </div>
         <div class="viewer-actions">
-          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
+          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceTerminateHumanViewer}>
             {$t.automation.forceQuit}
           </button>
           {#if humanTask.humanAssistanceContract?.completion.mode === "independent"

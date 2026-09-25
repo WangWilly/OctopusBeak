@@ -295,7 +295,6 @@ export type OctopusBeakApi = {
     viewerInspect(taskId: string, point: { x: number; y: number }): Promise<ViewerInspectResult>;
     viewerInput(taskId: string, input: unknown): Promise<ViewerInputResult>;
     viewerCompletionCheck(taskId: string): Promise<{ verified: boolean; contract: HumanAssistanceContract | null }>;
-    forceQuit(taskId: string): Promise<{ ok: true; closed: boolean }>;
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
@@ -347,7 +346,6 @@ export const octopusBeakApiChannels = [
   "automation:viewerInspect",
   "automation:viewerInput",
   "automation:viewerCompletionCheck",
-  "automation:forceQuit",
   "automation:runtimeSnapshot",
   "automation:fatalRuntimeSnapshot",
   "automation:runtime-changed",
