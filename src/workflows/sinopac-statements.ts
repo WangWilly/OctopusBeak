@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  pause,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Dialog, Page, Response } from "playwright";
 import { z } from "zod";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import {
   SourceTextIntegrityError,
   strictSourceText,
@@ -28,9 +19,8 @@ import type {
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
@@ -48,7 +38,6 @@ import {
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-domestic-adapter.ts";
 import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-provider-admission.ts";
 import {
-  readSinopacCurrentDepositBalances,
   parseSinopacCurrentDepositBalanceSnapshot,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -112,14 +101,6 @@ export const sinopacIdentityValidationSchema = z.object({
   accountFilter: z.string().min(1).optional(),
 });
 
-const inputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
-  accountFilters: z.array(z.string()).default([]),
-  currencyFilters: z.array(z.string()).default([]),
-  identityValidation: sinopacIdentityValidationSchema.optional(),
-});
-
 const typedWorkflowInputSchema = z.object({
   credentials: z.object({
     sinopac_user_id: z.string().trim().min(1),
@@ -132,62 +113,14 @@ const typedWorkflowInputSchema = z.object({
   currencyFilters: z.array(z.string()).default([]),
 });
 
-const downloadSchema = z.object({
-  accountId: z.string(),
-  account: z.string(),
-  currency: z.string(),
-  kind: z.enum(["domestic", "foreign"]),
-  queryPeriods: z.array(z.string()),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.object({
-    startDate: dateSchema,
-    endDate: dateSchema,
-  }),
-  count: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-  downloads: z.array(downloadSchema),
-  skippedAccounts: z.array(
-    z.object({
-      accountId: z.string(),
-      currency: z.string(),
-      reason: z.literal("provider-explicit-no-data"),
-    }),
-  ),
-  status: z.enum(["source-only", "financial-admitted"]),
-});
-
-const workflowOutputSchema = z.union([
-  outputSchema,
-  z
-    .object({
-      mode: z.literal("identity-validation"),
-      evidenceVersion: z.literal("sinopac-identity-evidence-v2"),
-    })
-    .passthrough(),
-]);
-
 type SinopacCredentials = {
   sinopac_user_id?: string;
   sinopac_account?: string;
   sinopac_password?: string;
 };
 
-type Input = z.infer<typeof inputSchema> & {
-  credentials: SinopacCredentials;
-};
-
-export type SinopacIdentityValidationInput = NonNullable<
-  z.infer<typeof inputSchema>["identityValidation"]
+export type SinopacIdentityValidationInput = z.infer<
+  typeof sinopacIdentityValidationSchema
 >;
 
 export type DateRange = {
@@ -195,10 +128,11 @@ export type DateRange = {
   endDate: string;
 };
 
-export type SinopacDownload = z.infer<typeof downloadSchema>;
-type SinopacSkippedAccount = z.infer<
-  typeof outputSchema
->["skippedAccounts"][number];
+type SinopacSkippedAccount = Readonly<{
+  accountId: string;
+  currency: string;
+  reason: "provider-explicit-no-data";
+}>;
 
 export type SinopacAccount = {
   DataText?: string;
@@ -221,25 +155,20 @@ export type SinopacTransactionResponse = {
 };
 
 export type SinopacStatementsRunDependencies = {
-  inMemory?: boolean;
-  text?: SourceTextPort;
-  signal?: AbortSignal;
-  event?: WorkflowContext["event"];
-  financialCommit?: WorkflowFinancialCommitPort;
-  observedAt?: string;
-  readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
+  text: SourceTextPort;
+  signal: AbortSignal;
+  event: WorkflowContext["event"];
+  financialCommit: WorkflowFinancialCommitPort;
+  observedAt: string;
   queryTransactions?: (
     account: SinopacAccount,
     dateRange: DateRange,
     businessDate: string,
   ) => Promise<SinopacTransactionResponse>;
-  writeStatementFile?: (
-    account: SinopacAccount,
-    queryPeriods: string[],
-    rows: SinopacStatementRow[],
-  ) => Promise<SinopacDownload>;
-  /** Injected in checks; production passively reads the authenticated balance POST. */
-  readCurrentDepositBalances?: typeof readSinopacCurrentDepositBalances;
+  readCurrentDepositBalances: (
+    page: Page,
+    input: Readonly<{ observedAt: string; timeoutMs?: number }>,
+  ) => Promise<readonly SinopacCurrentDepositBalanceRow[]>;
 };
 
 export type SinopacRawTransactionRow = Partial<
@@ -268,10 +197,11 @@ export type SinopacWorkflowOutput = Readonly<{
   status: "source-only" | "financial-admitted";
 }>;
 
-export type SinopacProviderWorkflowOverrides = Readonly<Pick<
-  SinopacStatementsRunDependencies,
-  "readAccounts" | "queryTransactions" | "readCurrentDepositBalances"
->>;
+export type SinopacProviderWorkflowOverrides = Readonly<{
+  readAccounts?: (dateRange: DateRange) => Promise<SinopacAccount[]>;
+  queryTransactions?: SinopacStatementsRunDependencies["queryTransactions"];
+  readCurrentDepositBalances?: SinopacStatementsRunDependencies["readCurrentDepositBalances"];
+}>;
 
 type SinopacHumanAssistanceRequest = (
   contract: HumanAssistanceContractInput,
@@ -477,7 +407,7 @@ export function indexSinopacCurrentDepositFinancialCaptures(
 
 export const SINOPAC_LOGIN_URL = LOGIN_URL;
 
-/** Whether Libretto's preloaded startUrl is already the login entry page. */
+/** Whether the current browser page is already at SinoPac's sign-in entry. */
 export function sinopacLoginEntryUrl(href: string): boolean {
   try {
     const current = new URL(href);
@@ -490,8 +420,6 @@ export function sinopacLoginEntryUrl(href: string): boolean {
   }
 }
 
-let lastTimestamp = 0;
-
 function requireCredential(
   credentials: SinopacCredentials,
   name: keyof SinopacCredentials,
@@ -499,7 +427,7 @@ function requireCredential(
   const value = credentials[name]?.trim();
   if (!value) {
     throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
+      `Missing SinoPac sign-in detail: ${name}.`,
     );
   }
   return value;
@@ -516,16 +444,6 @@ function cleanText(value: string | null | undefined): string {
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
 }
 
 function csvCell(value: string): string {
@@ -579,7 +497,9 @@ function defaultEndDate(): string {
   ].join("");
 }
 
-function resolveDateRange(input: z.infer<typeof inputSchema>): DateRange {
+function resolveDateRange(
+  input: Pick<SinopacWorkflowInput, "startDate" | "endDate">,
+): DateRange {
   const endDate = input.endDate ?? defaultEndDate();
   const startDate =
     input.startDate ??
@@ -992,14 +912,6 @@ export async function runSinopacLoginAttempt(
   }
 }
 
-export function sinopacManualAuthMessage(session: string): string {
-  return (
-    "manual-auth-required: enter the SinoPac CAPTCHA in the browser, then run `npx libretto resume --session " +
-    session +
-    "`."
-  );
-}
-
 export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {
   return [
     'a:has-text("延用舊密碼"):visible',
@@ -1043,9 +955,8 @@ async function fillLoginForm(
   credentials: SinopacCredentials,
   signal?: AbortSignal,
 ): Promise<void> {
-  // Libretto preloads startUrl before the handler.  Only navigate when a CDP
-  // attachment or a signed-out page is elsewhere, avoiding duplicate login
-  // requests on normal workflow launches.
+  // The App may attach to an existing signed-out browser page. Navigate only
+  // when it is not already at the sign-in entry to avoid duplicate requests.
   if (!sinopacLoginEntryUrl(page.url())) {
     await waitForSinopacSignal(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
   } else {
@@ -1135,43 +1046,6 @@ export async function requestSinopacCaptchaAssistance(
   return status;
 }
 
-async function signInSinopac(
-  ctx: LibrettoWorkflowContext,
-  credentials: SinopacCredentials,
-): Promise<void> {
-  const { page, session } = ctx;
-  await fillLoginForm(page, credentials);
-  const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  try {
-    await emitHumanAssistanceStage(sinopacCaptchaAssistanceStage(page));
-  } catch (error) {
-    // A plain CLI run has no desktop host contract channel.  Keep the
-    // headed-browser CAPTCHA pause usable while preserving all other errors.
-    if (
-      !(error instanceof Error) ||
-      error.message !== "Human assistance host API is unavailable for this workflow run."
-    ) {
-      throw error;
-    }
-    console.warn("human-assistance-host-unavailable; use the headed browser directly");
-  }
-
-  console.log(sinopacManualAuthMessage(session));
-  await pause(session);
-  if (await isSignedIn(page)) return;
-
-  if (!(await captcha.inputValue()).trim()) {
-    throw new Error(
-      "SinoPac CAPTCHA is empty. Enter it in the browser before resuming.",
-    );
-  }
-  await runSinopacLoginAttempt(page, session, {
-    submit: () => clickLoginButton(page),
-    waitForSuccess: (signal) => waitForSignedInState(page, signal),
-  });
-  await dismissPasswordExpiryNotice(page);
-}
-
 async function signInSinopacForApp(
   page: Page,
   credentials: SinopacCredentials,
@@ -1190,14 +1064,17 @@ async function signInSinopacForApp(
   if (await isSignedIn(page, context.signal)) return;
 
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  if (!(await waitForSinopacSignal(captcha.inputValue(), context.signal)).trim()) {
+  const currentValue = await waitForSinopacSignal(
+    captcha.inputValue(),
+    context.signal,
+  );
+  if (!currentValue.trim()) {
     throw new Error(
       `SinoPac CAPTCHA assistance ended with ${status}, but no answer was entered.`,
     );
   }
   await runSinopacLoginAttempt(page, context.runId, {
-    // App-owned runs do not have the legacy Libretto dialog-retry host. Own
-    // the native dialog here so navigation waits cannot hang without an
+    // The App-owned provider handles native dialogs so navigation waits cannot hang without an
     // observer; App retry routing is handled as a separate host integration.
     dialogOwner: "workflow",
     signal: context.signal,
@@ -1598,62 +1475,7 @@ export async function runSinopacIdentityValidation(
   );
 }
 
-async function writeStatementFiles(
-  account: SinopacAccount,
-  queryPeriods: string[],
-  rows: SinopacStatementRow[],
-): Promise<SinopacDownload> {
-  const currency = accountCurrency(account);
-  const kind = currency === "TWD" ? "domestic" : "foreign";
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    kind === "domestic" ? "sinopac-statements" : "sinopac-foreign-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${safeFilename(accountId(account))}-${currency}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, sinopacStatementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: accountLabel(account),
-        查詢期間: queryPeriods,
-        分行名稱: "",
-        幣別: currency,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    accountId: accountId(account),
-    account: accountLabel(account),
-    currency,
-    kind,
-    queryPeriods,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-type PendingSinopacDownload = {
+type PendingSinopacSource = {
   account: SinopacAccount;
   queryPeriods: string[];
   rows: SinopacStatementRow[];
@@ -1667,7 +1489,7 @@ export function buildSinopacCapture(
   account: SinopacAccount,
   dateRange: DateRange,
   observedAt: string,
-  pending: PendingSinopacDownload,
+  pending: PendingSinopacSource,
   providerNoData: boolean,
 ): SinopacStatementCaptureEvidence {
   const currency = accountCurrency(account);
@@ -1784,29 +1606,20 @@ function sinopacCaptureId(observedAt: string): string {
     .slice(0, 24)}-${Date.now()}`;
 }
 
-export async function runSinopacStatements(
+async function collectAndCommitSinopacStatements(
   page: Page,
-  input: z.infer<typeof inputSchema>,
-  initialAccounts?: SinopacAccount[],
-  overrides: SinopacStatementsRunDependencies = {},
-): Promise<z.infer<typeof outputSchema>> {
-  const inMemory = overrides.inMemory === true;
-  if (inMemory && !overrides.financialCommit)
-    throw new Error("Canonical Financial Commit port is unavailable.");
+  input: SinopacWorkflowInput,
+  initialAccounts: SinopacAccount[],
+  overrides: SinopacStatementsRunDependencies,
+): Promise<Omit<SinopacWorkflowOutput, "usedExistingSession">> {
   const signal = overrides.signal;
-  const text = overrides.text ?? strictSourceText;
-  signal?.throwIfAborted();
+  const text = overrides.text;
+  signal.throwIfAborted();
   const dateRange = resolveDateRange(input);
   const windows = sinopacQueryWindows(dateRange);
   const apiClient = new SinopacApiClient(page, text, signal);
-  const readCurrent =
-    overrides.readCurrentDepositBalances ?? readSinopacCurrentDepositBalances;
   const accounts = sinopacFilterAccounts(
-    initialAccounts ??
-      (await waitForSinopacSignal(
-        (overrides.readAccounts ?? ((range) => apiClient.fetchAccounts(range)))(dateRange),
-        signal,
-      )),
+    initialAccounts,
     input.accountFilters,
     input.currencyFilters,
   );
@@ -1825,11 +1638,12 @@ export async function runSinopacStatements(
     );
   }
 
-  const observedAt = overrides.observedAt ?? new Date().toISOString();
+  const observedAt = overrides.observedAt;
+  const readCurrent = overrides.readCurrentDepositBalances;
   const captureOccurrenceId = sinopacCaptureId(observedAt);
   const captureInputs: Array<{
     capture: SinopacStatementValidatedCapture;
-    pending: PendingSinopacDownload;
+    pending: PendingSinopacSource;
   }> = [];
   const skippedAccounts: SinopacSkippedAccount[] = [];
   const financialCapturesForCurrent: Array<{
@@ -1887,7 +1701,7 @@ export async function runSinopacStatements(
         total: sourceTotal,
       });
     }
-    const pending: PendingSinopacDownload = {
+    const pending: PendingSinopacSource = {
       account,
       queryPeriods: windows.map(queryPeriod),
       rows: sortRows(rows),
@@ -2002,150 +1816,88 @@ export async function runSinopacStatements(
     });
   }
 
-  if (inMemory) {
-    const balanceItems: PGliteWorkflowRunItem[] = [];
-    if (financialCapturesForCurrent.length > 0) {
-      await overrides.event?.("collection", "current-balance-collection-started");
-      let currentRows: readonly SinopacCurrentDepositBalanceRow[];
-      try {
-        currentRows = await waitForSinopacSignal(
-          readCurrent(page, { observedAt }),
-          signal,
-        );
-      } catch (error) {
-        await overrides.event?.("validation", "current-balance-source-rejected");
-        throw error;
-      }
-      signal?.throwIfAborted();
-      const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
-        financialCapturesForCurrent.map(({ financialCapture }) => financialCapture),
+  const balanceItems: PGliteWorkflowRunItem[] = [];
+  if (financialCapturesForCurrent.length > 0) {
+    await overrides.event?.("collection", "current-balance-collection-started");
+    let currentRows: readonly SinopacCurrentDepositBalanceRow[];
+    try {
+      currentRows = await waitForSinopacSignal(
+        readCurrent(page, { observedAt }),
+        signal,
       );
-      for (const row of currentRows) {
-        const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
-        const matching = existingByIdentity.get(exactKey);
-        if (!matching) {
-          const prefix = `${row.stream}\u0000${row.sourceAccountKey}\u0000`;
-          if ([...existingByIdentity.keys()].some((key) => key.startsWith(prefix)))
-            throw new Error("SinoPac current deposit currency does not match the existing statement scope.");
-          continue;
-        }
-        try {
-          const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
-          balanceItems.push({
-            provider: "sinopac", product: "current-balance",
-            itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-            command: {
-              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-              request: currentDepositBalanceCommandRequest(
-                admitCurrentDepositBalanceCapture(balanceCapture),
-              ),
-            },
-          });
-        } catch (error) {
-          await overrides.event?.("validation", "current-balance-admission-rejected");
-          throw error;
-        }
-      }
-      await overrides.event?.("validation", "current-balance-validation-completed", {
-        completed: balanceItems.length,
-        total: currentRows.length,
-      });
+    } catch (error) {
+      await overrides.event?.("validation", "current-balance-source-rejected");
+      throw error;
     }
     signal?.throwIfAborted();
-    const commitItems = [...items, ...balanceItems];
-    await overrides.event?.("commit", "canonical-commit-started", {
-      completed: 0,
-      total: commitItems.length,
-    });
-    const committed = await overrides.financialCommit!.execute(commitItems, {
-      provider: "sinopac",
-      product: "financial",
-      ...(signal ? { signal } : {}),
-    });
-    if (committed.status !== "completed") {
-      await overrides.event?.("commit", "canonical-commit-rejected", {
-        completed: committed.committedCount,
-        total: commitItems.length,
-      });
-      throw new Error(
-        `SinoPac Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
-      );
-    }
-    await overrides.event?.("commit", "canonical-commit-completed", {
-      completed: committed.committedCount,
-      total: commitItems.length,
-    });
-    return {
-      dateRange,
-      count: captureInputs.filter(({ pending }) => pending.rows.length > 0).length,
-      rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
-      downloads: [],
-      skippedAccounts,
-      status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
-    };
-  }
-
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const statements = await executePGliteWorkflowRun({
-      client: client.workflow, provider: "sinopac", product: "financial", items,
-    });
-    if (statements.status !== "completed")
-      throw new Error(`SinoPac PGlite financial commit ${statements.status}: ${statements.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
-    if (financialCapturesForCurrent.length > 0) {
-      const currentRows = await readCurrent(page, { observedAt: new Date().toISOString() });
-      const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
-        financialCapturesForCurrent.map(({ financialCapture }) => financialCapture),
-      );
-      const balanceItems: PGliteWorkflowRunItem[] = [];
-      for (const row of currentRows) {
-        const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
-        const matching = existingByIdentity.get(exactKey);
-        if (!matching) {
-          const prefix = `${row.stream}\u0000${row.sourceAccountKey}\u0000`;
-          if ([...existingByIdentity.keys()].some((key) => key.startsWith(prefix)))
-            throw new Error("SinoPac current deposit currency does not match the existing statement scope.");
-          continue;
-        }
+    const existingByIdentity = indexSinopacCurrentDepositFinancialCaptures(
+      financialCapturesForCurrent.map(({ financialCapture }) => financialCapture),
+    );
+    for (const row of currentRows) {
+      const exactKey = `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`;
+      const matching = existingByIdentity.get(exactKey);
+      if (!matching) {
+        const prefix = `${row.stream}\u0000${row.sourceAccountKey}\u0000`;
+        if ([...existingByIdentity.keys()].some((key) => key.startsWith(prefix)))
+          throw new Error("SinoPac current deposit currency does not match the existing statement scope.");
+        continue;
+      }
+      try {
         const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
         balanceItems.push({
           provider: "sinopac", product: "current-balance",
           itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
           command: {
             kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(balanceCapture)),
+            request: currentDepositBalanceCommandRequest(
+              admitCurrentDepositBalanceCapture(balanceCapture),
+            ),
           },
         });
-      }
-      if (balanceItems.length > 0) {
-        const balances = await executePGliteWorkflowRun({
-          client: client.workflow, provider: "sinopac", product: "current-balance", items: balanceItems,
-        });
-        if (balances.status !== "completed")
-          throw new Error(`SinoPac PGlite current balance commit ${balances.status}: ${balances.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`);
+      } catch (error) {
+        await overrides.event?.("validation", "current-balance-admission-rejected");
+        throw error;
       }
     }
-  } finally {
-    client.close();
+    await overrides.event?.("validation", "current-balance-validation-completed", {
+      completed: balanceItems.length,
+      total: currentRows.length,
+    });
   }
-  const downloads: SinopacDownload[] = [];
-  for (const { pending } of captureInputs) {
-    if (pending.rows.length === 0) continue;
-    downloads.push(await (overrides.writeStatementFile ?? writeStatementFiles)(
-      pending.account, pending.queryPeriods, pending.rows,
-    ));
+  signal?.throwIfAborted();
+  const commitItems = [...items, ...balanceItems];
+  await overrides.event?.("commit", "canonical-commit-started", {
+    completed: 0,
+    total: commitItems.length,
+  });
+  const committed = await overrides.financialCommit.execute(commitItems, {
+    provider: "sinopac",
+    product: "financial",
+    signal,
+  });
+  if (committed.status !== "completed") {
+    await overrides.event?.("commit", "canonical-commit-rejected", {
+      completed: committed.committedCount,
+      total: commitItems.length,
+    });
+    throw new Error(
+      `SinoPac Canonical Financial Commit ${committed.status}: ${committed.diagnostics.map((item) => `${item.stage}/${item.errorCode}`).join(", ")}`,
+    );
   }
+  await overrides.event?.("commit", "canonical-commit-completed", {
+    completed: committed.committedCount,
+    total: commitItems.length,
+  });
   return {
-    dateRange, count: downloads.length,
-    rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-    downloads, skippedAccounts,
+    dateRange,
+    accountCount: captureInputs.length,
+    rowCount: captureInputs.reduce((count, { pending }) => count + pending.rows.length, 0),
+    skippedAccountCount: skippedAccounts.length,
     status: financialCapturesForCurrent.length > 0 ? "financial-admitted" : "source-only",
   };
-
 }
 
-/** App-owned entry point. The legacy Libretto handler remains available during migration. */
+/** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
   context: WorkflowContext,
   rawInput: unknown,
@@ -2156,6 +1908,7 @@ export async function runSinopacProviderWorkflow(
     throw new Error("SinoPac workflow credentials or input are missing or invalid.");
   if (!context.financialCommit)
     throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
   context.signal.throwIfAborted();
   await context.event("preparation", "input-validated");
 
@@ -2202,16 +1955,15 @@ export async function runSinopacProviderWorkflow(
       );
     }
 
-    const result = await runSinopacStatements(
+    const result = await collectAndCommitSinopacStatements(
       page,
       workflowInput,
       accounts,
       {
-        inMemory: true,
         text: context.text,
         signal: context.signal,
         event: context.event,
-        financialCommit: context.financialCommit,
+        financialCommit,
         observedAt: context.now(),
         ...(overrides.queryTransactions
           ? { queryTransactions: overrides.queryTransactions }
@@ -2228,53 +1980,7 @@ export async function runSinopacProviderWorkflow(
     context.signal.throwIfAborted();
     return {
       usedExistingSession,
-      dateRange: result.dateRange,
-      accountCount: result.count + result.skippedAccounts.length,
-      rowCount: result.rowCount,
-      skippedAccountCount: result.skippedAccounts.length,
-      status: result.status,
+      ...result,
     };
   });
 }
-
-export default workflow("sinopacStatements", {
-  startUrl: LOGIN_URL,
-  credentials: ["sinopac_user_id", "sinopac_account", "sinopac_password"],
-  input: inputSchema,
-  output: workflowOutputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page } = ctx;
-
-    await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await isSignedIn(page),
-      signIn: async () => {
-        await signInSinopac(ctx, input.credentials);
-      },
-    });
-    await dismissPasswordExpiryNotice(page);
-
-    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    const accounts = await openTransactionPage(page);
-    if (input.identityValidation) {
-      const evidence = await runSinopacIdentityValidation(
-        page,
-        input.identityValidation,
-        accounts,
-      );
-      console.log("sinopac-identity-validation-complete", {
-        mode: evidence.mode,
-        captureCount: evidence.captures.length,
-        accountCount: evidence.accountCount,
-        rawValuesReturned: evidence.sideEffects.rawValuesReturned,
-      });
-      console.log("sinopac-identity-validation-summary", evidence);
-      emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-      return evidence;
-    }
-    const result = await runSinopacStatements(page, input, accounts);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-    return result;
-  },
-});

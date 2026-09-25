@@ -1,15 +1,7 @@
 import assert from "node:assert/strict";
-import { PGlite } from "@electric-sql/pglite";
-import { createPGliteChildRpcServer } from "../../electron/pglite-child-rpc.ts";
-import { createPGliteFinancialRegistry } from "../../electron/pglite-financial-registry.ts";
-import { applyPgliteBaseline } from "../ledger/pglite/baseline.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../ledger/pglite/operational.ts";
-import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { EventEmitter } from "node:events";
 import {
-  runSinopacStatements,
   sinopacApiRowsToStatementRows,
-  sinopacManualAuthMessage,
   sinopacCaptchaAssistanceStage,
   sinopacPasswordExpiryNoticeDismissTargets,
   sinopacQueryWindows,
@@ -253,11 +245,6 @@ assert.deepEqual(
   ).map((account) => account.DataValue),
   ["001", "002"],
 );
-assert.equal(
-  sinopacManualAuthMessage("sinopac-demo"),
-  "manual-auth-required: enter the SinoPac CAPTCHA in the browser, then run `npx libretto resume --session sinopac-demo`.",
-);
-
 class FakeSinopacLoginPage extends EventEmitter {}
 
 const dialogLoginPage = new FakeSinopacLoginPage();
@@ -537,51 +524,3 @@ const redactedIdentitySummary = JSON.stringify(identitySummary);
 assert.equal(redactedIdentitySummary.includes("candidate-one"), false);
 assert.equal(redactedIdentitySummary.includes("USD account"), false);
 assert.equal(redactedIdentitySummary.includes("002"), false);
-
-const pgliteDatabase = await PGlite.create();
-const pgliteStore = new PGliteStore(pgliteDatabase);
-await applyPgliteBaseline(pgliteDatabase);
-await applyPgliteOperationalBaseline(pgliteStore);
-const pgliteOperational = createPgliteOperationalProvider(pgliteStore);
-const pgliteServer = createPGliteChildRpcServer({ provider: {
-  operational: pgliteOperational,
-  financial: createPGliteFinancialRegistry(pgliteStore, pgliteOperational.exchangeRates),
-} });
-const previousPgliteEnv = Object.fromEntries(Object.keys(pgliteServer.env).map((key) => [key, process.env[key]]));
-try {
-  await pgliteServer.ready;
-  Object.assign(process.env, pgliteServer.env);
-  const enabledResult = await runSinopacStatements(
-    {} as never,
-    { startDate: "20260801", endDate: "20260823", accountFilters: [], currencyFilters: [] },
-    [
-      { DataText: "TWD numeric account", DataValue: syntheticSinopacTwdAccount, DisplayText: "TWD" },
-      { DataText: "USD numeric account", DataValue: syntheticSinopacForeignAccount, DisplayText: "USD" },
-    ],
-    {
-      readCurrentDepositBalances: async () => [sinopacBalanceRow, sinopacForeignBalanceRow],
-      queryTransactions: async (account) => ({ Header: "SUCCESS", SubInfo: [{
-        DataText1: "2026/08/02<br />09:10", DataText2: "2026/08/02",
-        DataText3: `${account.DisplayText} financial transaction`,
-        DataText4: "-100", DataText5: "900",
-      }] }),
-      writeStatementFile: async (account, queryPeriods, rows) => ({
-        accountId: account.DataValue ?? "", account: account.DataText ?? "",
-        currency: account.DisplayText ?? "", kind: account.DisplayText === "TWD" ? "domestic" : "foreign",
-        queryPeriods, baseName: "synthetic", csvFilename: "synthetic.csv", csvPath: "synthetic.csv",
-        csvBytes: 1, jsonFilename: "synthetic.json", jsonPath: "synthetic.json",
-        jsonBytes: 1, rowCount: rows.length,
-      }),
-    },
-  );
-  assert.equal(enabledResult.status, "financial-admitted");
-  assert.equal((await pgliteStore.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
-  assert.equal((await pgliteStore.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM balance_observation_revisions")).rows[0]?.count, 2);
-} finally {
-  for (const [key, value] of Object.entries(previousPgliteEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteServer.close();
-  await pgliteStore.close();
-}
