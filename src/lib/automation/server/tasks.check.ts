@@ -33,15 +33,9 @@ assert.deepEqual(maicoinTask.command, []);
 const yuantaAllStatements = taskById("yuanta-all-statements");
 assert.ok(yuantaAllStatements);
 assert.equal(yuantaAllStatements.id, "yuanta-all-statements");
-assert.equal(yuantaAllStatements.script, "run:yuanta-all-statements");
-assert.deepEqual(yuantaAllStatements.command, [
-  "libretto",
-  "run",
-  "src/workflows/yuanta-all-statements.ts",
-  "--headless",
-  "--params",
-  '{"statements":{"telemetry":true}}',
-]);
+assert.equal(yuantaAllStatements.script, "workflow:yuanta-all-statements");
+assert.equal(yuantaAllStatements.workflowId, "yuanta-all-statements");
+assert.deepEqual(yuantaAllStatements.command, []);
 const cathayAllStatements = taskById("cathay-all-statements");
 assert.ok(cathayAllStatements);
 assert.equal(cathayAllStatements.id, "cathay-all-statements");
