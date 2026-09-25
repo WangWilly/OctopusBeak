@@ -36,15 +36,8 @@ const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
   "utf8",
 );
-const loginEntry = source.slice(
-  source.indexOf("async function openLoanLoginForm"),
-  source.indexOf("function loanForm"),
-);
-assert.match(loginEntry, /openFubonLoginForm\(page\)/);
-assert.doesNotMatch(
-  loginEntry,
-  /#menu_CLN|menu_CLN02|task_CLNQU001|landingFrame\.goto|txnFrame\.goto/,
-);
+assert.doesNotMatch(source, /from ["']libretto["']|export default workflow\(/u);
+assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin\(/u);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
 assert.doesNotMatch(source, /pageCount:\s*1/);
@@ -93,6 +86,7 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
         { downloadFormat: "EXCEL" } as Parameters<
           typeof runFubonLoanStatements
         >[1],
+        {} as Parameters<typeof runFubonLoanStatements>[2],
       ),
     /stable caller-supplied Source Connection scope and key/u,
   );
@@ -352,11 +346,10 @@ const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
 ) => string[][];
 const parseFubonLoanPaginationSignal =
   module.parseFubonLoanPaginationSignal as (html: string) => unknown;
-const writeLoanStatementFiles = module.writeLoanStatementFiles as (
+const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCollection as (
   page: Page,
   html: string,
   account: { label: string; value: string },
-  queryItem: "TRANSACTION_DETAIL_QUERY",
   input: {
     loanAccountLabels: string[];
     queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
@@ -364,8 +357,8 @@ const writeLoanStatementFiles = module.writeLoanStatementFiles as (
     downloadFormat: "EXCEL";
     dateRange: { startDate: string; endDate: string };
   },
-  options: { collectOnly: true; sourceText: { assertIntact(value: string): void } },
-) => Promise<{ parsed: unknown }>;
+  sourceText: { assertIntact(value: string): void },
+) => Promise<{ completeness: { terminal: true } | null }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   pages: ReadonlyArray<{
     accountType: string;
@@ -421,7 +414,7 @@ const deriveFubonLoanAccountNumberEvidence =
     }
     | null;
 
-test("typed Fubon loan source collection returns before CSV/JSON filesystem writes", async () => {
+test("typed Fubon loan parser returns complete evidence without CSV/JSON files", async () => {
   const temp = await mkdtemp(join(tmpdir(), "fubon-loan-typed-no-files-"));
   const originalCwd = process.cwd();
   process.chdir(temp);
@@ -444,14 +437,13 @@ test("typed Fubon loan source collection returns before CSV/JSON filesystem writ
       }),
     } as unknown as Page;
     const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
-    const result = await writeLoanStatementFiles(
+    const result = await parseFubonLoanStatementForCollection(
       page,
       fixtureHtml,
       {
         label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
         value: "opaque-synthetic-loan-option",
       },
-      "TRANSACTION_DETAIL_QUERY",
       {
         loanAccountLabels: [],
         queryItems: ["TRANSACTION_DETAIL_QUERY"],
@@ -459,11 +451,11 @@ test("typed Fubon loan source collection returns before CSV/JSON filesystem writ
         downloadFormat: "EXCEL",
         dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
       },
-      { collectOnly: true, sourceText: { assertIntact: (value) => assert.ok(value.length > 0) } },
+      { assertIntact: (value) => assert.ok(value.length > 0) },
     );
 
-    assert.deepEqual(await readdir(temp), [], "typed loan execution must not reach CSV/JSON writes");
-    assert.equal((result.parsed as { completeness?: { terminal: boolean } }).completeness?.terminal, true);
+    assert.deepEqual(await readdir(temp), [], "typed loan parsing must not create source, output, or log files");
+    assert.equal(result.completeness?.terminal, true);
   } finally {
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });

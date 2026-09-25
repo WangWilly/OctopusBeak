@@ -1,21 +1,16 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import {
   creditCardBalanceCommandRequest,
   fubonCreditCardCommandRequest,
 } from "../ledger/pglite/credit-card-adapters.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
 import {
   admitFubonCreditCardCapture,
   buildFubonCreditCardStatementEvidenceKey,
@@ -45,9 +40,7 @@ import {
   activateControlWithoutPointer,
   hasAttachedLocator,
 } from "./browser-interaction.ts";
-import { completeFubonHumanLogin, openFubonLoginForm } from "./fubon-auth.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-// completeFubonHumanLogin owns emitHumanAssistanceStage with initialZoom: 1.15.
 
 const BANK_ENTRY_URL =
   "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
@@ -59,12 +52,6 @@ export type FubonStatementPeriodProbe = {
   periodOffset: number;
   status: "available" | "no-record" | "temporarily-unavailable";
   scope: FubonBrowserScope;
-};
-
-type FubonCredentials = {
-  fubon_user_id?: string;
-  fubon_account?: string;
-  fubon_password?: string;
 };
 
 type CsvRow = Record<string, string>;
@@ -91,20 +78,17 @@ type CaptureMetadata =
     };
 
 const periodOffsetSchema = z.number().int().min(1).max(6);
-
 const canonicalHumanAttestationSchema = z.object({
   sourceConnectionKey: z.string().min(3).max(128),
   identityEpochKey: z.string().min(3).max(128),
   humanAttestedAccountKey: z.string().min(3).max(128),
 });
-
 const inputSchema = z.object({
   periodOffsets: z.array(periodOffsetSchema).min(1).default([1, 2, 3, 4, 5, 6]),
   statementCardLabels: z.array(z.string()).default([]),
   unbilledCardNumbers: z.array(z.string()).default([]),
   canonicalHumanAttestation: canonicalHumanAttestationSchema.optional(),
 });
-
 const paymentStatusSchema = z.object({
   statement_period: z.string(),
   payment_status: z.string(),
@@ -115,42 +99,8 @@ const paymentStatusSchema = z.object({
   payment_description: z.string().optional(),
 });
 
-const generatedCsvFileSchema = z.object({
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-  cardNumbers: z.array(z.string()),
-  periods: z.array(z.string()),
-  paymentStatuses: z.array(paymentStatusSchema),
-  generatedAt: z.string(),
-  workflow: z.literal("fubonCreditCardStatements"),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-});
-
-const outputSchema = z.object({
-  periodOffsets: z.array(periodOffsetSchema),
-  statementPeriods: z.array(z.string()),
-  statementCards: z.array(z.string()),
-  unbilledCards: z.array(z.string()),
-  csvFiles: z.object({
-    billedStatements: generatedCsvFileSchema,
-    unbilledStatements: generatedCsvFileSchema,
-  }),
-  canonicalAdmission: z.enum(["not-configured", "admitted"]),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-});
-
-export {
-  inputSchema as fubonCreditCardStatementsInputSchema,
-  outputSchema as fubonCreditCardStatementsOutputSchema,
-};
-
+export { inputSchema as fubonCreditCardStatementsInputSchema };
 export type FubonCreditCardStatementsInput = z.infer<typeof inputSchema>;
-export type FubonCreditCardStatementsOutput = z.infer<typeof outputSchema>;
 export type FubonCreditCardWorkflowCollection = Readonly<{
   sourceCount: number;
   rowCount: number;
@@ -161,7 +111,6 @@ type FubonCreditCardSourceSnapshot = Readonly<{
   currentUsedCredit?: FubonCurrentUsedCreditSnapshot;
   statementRows: readonly CsvRow[];
   statementPeriods: readonly string[];
-  paymentStatuses: readonly PaymentStatus[];
   summaries: readonly IssuerStatementSummary[];
   gridStates: readonly GridState[];
   unavailablePeriodOffsets: readonly number[];
@@ -169,10 +118,9 @@ type FubonCreditCardSourceSnapshot = Readonly<{
 }>;
 type FubonCreditCardRunOverrides = {
   panFingerprintKey?: FubonCreditCardPanFingerprintKey;
-  deferredCommitItems?: PGliteWorkflowRunItem[];
-  collectOnly?: true;
-  sourceText?: SourceTextPort;
-  signal?: AbortSignal;
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
   observedAt?: () => string;
   /** Injects a completely collected source snapshot for focused admission checks. */
   readSourceSnapshot?: (
@@ -181,11 +129,8 @@ type FubonCreditCardRunOverrides = {
   ) => Promise<FubonCreditCardSourceSnapshot>;
 };
 type PaymentStatus = z.infer<typeof paymentStatusSchema>;
-type GeneratedCsvFile = z.infer<typeof generatedCsvFileSchema>;
-
 type StatementRowsResult = {
   rows: CsvRow[];
-  paymentStatuses: PaymentStatus[];
   summaries: IssuerStatementSummary[];
 };
 
@@ -198,20 +143,13 @@ export type FubonCurrentUsedCreditSnapshot = Readonly<{
   httpDate?: string;
   cacheControl?: string;
 }>;
-
-/** Sanitized current-credit transport/parser evidence; never includes page
- * amounts, card masks, query values outside the public navigation contract, or
- * response bodies. */
 export type FubonCurrentUsedCreditDiagnostic = Readonly<{
   responseMatched: boolean;
   responseStatus: number | null;
   hostname: string | null;
   path: string | null;
   queryKeys: readonly string[];
-  publicQuery: Readonly<{
-    showLogin?: string;
-    menuId?: string;
-  }>;
+  publicQuery: Readonly<{ showLogin?: string; menuId?: string }>;
   hasHttpDate: boolean;
   hasCacheControl: boolean;
   tableCount: number;
@@ -226,12 +164,10 @@ export type FubonCurrentUsedCreditDiagnostic = Readonly<{
     | "missing-response-evidence"
     | "parse-error";
 }>;
-
 type FubonCurrentUsedCreditReadResult = Readonly<{
   snapshot?: FubonCurrentUsedCreditSnapshot;
   diagnostic: FubonCurrentUsedCreditDiagnostic;
 }>;
-
 export type StatementSummary = {
   period: string;
   cycleStart: string;
@@ -241,14 +177,10 @@ export type StatementSummary = {
   balance: string;
   minimumPayment?: string;
 };
-
 type IssuerStatementSummary = Omit<
   StatementSummary,
   "cycleStart" | "cycleEnd" | "dueDate"
-> & {
-  dueDate?: string;
-};
-
+> & { dueDate?: string };
 const periodTabs = [
   { offset: 1, label: "本期" },
   { offset: 2, label: "前一期" },
@@ -257,48 +189,6 @@ const periodTabs = [
   { offset: 5, label: "前四期" },
   { offset: 6, label: "前五期" },
 ] as const;
-
-const billedHeaders = [
-  "card_number",
-  "card_label",
-  "consume_date",
-  "description",
-  "posting_date",
-  "foreign_currency",
-  "foreign_amount",
-  "twd_amount",
-  "installment_action",
-  "payment_status",
-] as const;
-
-const unbilledHeaders = [
-  "statement_period",
-  "card_number",
-  "card_label",
-  "consume_date",
-  "description",
-  "posting_date",
-  "foreign_currency",
-  "foreign_amount",
-  "twd_amount",
-] as const;
-
-function requireCredential(
-  credentials: FubonCredentials,
-  name: keyof FubonCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
@@ -364,31 +254,6 @@ function matchesFilter(value: string, filters: string[]): boolean {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-const nextTimestamp = createTimestampGenerator();
-
-function csvCell(value: string): string {
-  if (!/[",\n\r]/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function toCsv(rows: CsvRow[], headers: readonly string[]): string {
-  const lines = [headers.map(csvCell).join(",")];
-  for (const row of rows) {
-    lines.push(headers.map((header) => csvCell(row[header] ?? "")).join(","));
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 function isDateLike(value: string): boolean {
@@ -460,87 +325,6 @@ function paymentStatusFromRows(
     payment_posting_date: paymentCells?.[2] || undefined,
     payment_amount: paymentCells?.[5] || undefined,
     payment_description: paymentDescription || undefined,
-  };
-}
-
-function metadataForRows(
-  rows: CsvRow[],
-  headers: readonly string[],
-  paymentStatuses: PaymentStatus[],
-  periods = unique(rows.map((row) => row.statement_period).filter(Boolean)),
-  capture: CaptureMetadata,
-  cardKeys: string[],
-) {
-  return {
-    cardNumbers: unique(rows.map((row) => row.card_number).filter(Boolean)),
-    periods,
-    paymentStatuses,
-    generatedAt: new Date().toISOString(),
-    workflow: "fubonCreditCardStatements" as const,
-    rowCount: rows.length,
-    headers: [...headers],
-    ...capture,
-    ...(capture.snapshotMode === "full"
-      ? {
-          cardRowCounts: captureCardRowCounts(
-            cardKeys,
-            rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
-          ),
-        }
-      : {}),
-  };
-}
-
-async function writeCsvWithMetadata(
-  baseName: string,
-  rows: CsvRow[],
-  headers: readonly string[],
-  paymentStatuses: PaymentStatus[] = [],
-  periods: string[] | undefined,
-  capture: CaptureMetadata,
-  cardKeys: string[],
-): Promise<GeneratedCsvFile> {
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    "fubon-credit-card-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const csvFilename = `${safeFilename(baseName)}-${nextTimestamp()}.csv`;
-  const jsonFilename = csvFilename.replace(/\.csv$/, ".json");
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const content = toCsv(rows, headers);
-  const metadata = metadataForRows(
-    rows,
-    headers,
-    paymentStatuses,
-    periods,
-    capture,
-    cardKeys,
-  );
-  const jsonContent = `${JSON.stringify(
-    {
-      ...metadata,
-      csvFilename,
-      jsonFilename,
-    },
-    null,
-    2,
-  )}\n`;
-
-  await writeFile(csvPath, content, "utf8");
-  await writeFile(jsonPath, jsonContent, "utf8");
-
-  return {
-    ...metadata,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: Buffer.byteLength(content, "utf8"),
-    jsonBytes: Buffer.byteLength(jsonContent, "utf8"),
   };
 }
 
@@ -927,10 +711,6 @@ function fubonCreditCurrentSnapshotCapture(
     })],
     observations: [observation],
   });
-}
-
-async function openCreditCardLoginForm(page: Page) {
-  await openFubonLoginForm(page);
 }
 
 async function openStatementDetailsPage(page: Page): Promise<BrowserScope> {
@@ -1609,11 +1389,7 @@ async function readStatementRows(
     row.payment_status = paymentStatusLabel;
   }
 
-  return {
-    rows: details,
-    paymentStatuses: paymentStatus ? [paymentStatus] : [],
-    summaries,
-  };
+  return { rows: details, summaries };
 }
 
 async function readUnbilledRows(
@@ -2609,24 +2385,11 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
   ];
 }
 
-export function runFubonCreditCardStatements(
-  page: Page,
-  input: FubonCreditCardStatementsInput,
-  overrides: FubonCreditCardRunOverrides & {
-    deferredCommitItems: PGliteWorkflowRunItem[];
-    collectOnly: true;
-  },
-): Promise<FubonCreditCardWorkflowCollection>;
-export function runFubonCreditCardStatements(
-  page: Page,
-  input: FubonCreditCardStatementsInput,
-  overrides?: FubonCreditCardRunOverrides,
-): Promise<FubonCreditCardStatementsOutput>;
 export async function runFubonCreditCardStatements(
   page: Page,
   input: FubonCreditCardStatementsInput,
-  overrides: FubonCreditCardRunOverrides = {},
-): Promise<FubonCreditCardStatementsOutput | FubonCreditCardWorkflowCollection> {
+  overrides: FubonCreditCardRunOverrides,
+): Promise<FubonCreditCardWorkflowCollection> {
   let sourceSnapshot: FubonCreditCardSourceSnapshot;
   if (overrides.readSourceSnapshot) {
     sourceSnapshot = await overrides.readSourceSnapshot(page, input);
@@ -2635,17 +2398,11 @@ export async function runFubonCreditCardStatements(
     try {
       const currentCreditRead = await readFubonCurrentUsedCredit(page, overrides.sourceText);
       currentUsedCredit = currentCreditRead.snapshot;
-      if (!overrides.collectOnly)
-        console.log("fubon-credit-current-used-credit-diagnostic", currentCreditRead.diagnostic);
-    } catch {
-      if (!overrides.collectOnly)
-        console.log("fubon-credit-current-used-credit-unavailable", { reason: "optional-current-credit-estimate" });
-    }
+    } catch {}
     await openStatementDetailsPage(page);
 
     const statementRows: CsvRow[] = [];
     const statementPeriods: string[] = [];
-    const paymentStatuses: PaymentStatus[] = [];
     const summaries: IssuerStatementSummary[] = [];
     const gridStates: GridState[] = [];
     const unavailablePeriodOffsets: number[] = [];
@@ -2653,7 +2410,7 @@ export async function runFubonCreditCardStatements(
       page,
       input.periodOffsets,
     )) {
-      overrides.signal?.throwIfAborted();
+      overrides.signal.throwIfAborted();
       const { periodOffset, scope, status } = probe;
       if (status === "temporarily-unavailable") {
         unavailablePeriodOffsets.push(periodOffset);
@@ -2670,7 +2427,6 @@ export async function runFubonCreditCardStatements(
         input.canonicalHumanAttestation !== undefined,
       );
       statementRows.push(...statementResult.rows);
-      paymentStatuses.push(...statementResult.paymentStatuses);
       summaries.push(...statementResult.summaries);
       gridStates.push(await gridState(scope));
     }
@@ -2685,22 +2441,22 @@ export async function runFubonCreditCardStatements(
       ...(currentUsedCredit ? { currentUsedCredit } : {}),
       statementRows,
       statementPeriods,
-      paymentStatuses,
       summaries,
       unbilledRows,
       gridStates,
       unavailablePeriodOffsets,
     };
   }
-  overrides.sourceText?.assertIntact(JSON.stringify(sourceSnapshot));
+  overrides.sourceText.assertIntact(JSON.stringify(sourceSnapshot));
   const currentUsedCredit = sourceSnapshot.currentUsedCredit;
   const statementRows = [...sourceSnapshot.statementRows];
   const statementPeriods = [...sourceSnapshot.statementPeriods];
-  const paymentStatuses = [...sourceSnapshot.paymentStatuses];
   const summaries = [...sourceSnapshot.summaries];
   const gridStates = [...sourceSnapshot.gridStates];
   const unavailablePeriodOffsets = [...sourceSnapshot.unavailablePeriodOffsets];
   const unbilledRows = [...sourceSnapshot.unbilledRows];
+  if (unavailablePeriodOffsets.length > 0)
+    throw new Error(`Fubon credit-card source is incomplete for period offsets ${unavailablePeriodOffsets.join(", ")}.`);
   const sortedStatementRows = statementRows
     .slice()
     .sort(compareRowsByConsumeDateDesc);
@@ -2768,9 +2524,9 @@ export async function runFubonCreditCardStatements(
             : {}),
       })
       : [];
-  if (overrides.collectOnly && capture.snapshotMode !== "full")
+  if (capture.snapshotMode !== "full")
     throw new Error("Fubon credit-card source is incomplete for the selected product scope.");
-  if (overrides.collectOnly && canonicalCaptures.length === 0 &&
+  if (canonicalCaptures.length === 0 &&
     statementRows.length + unbilledRows.length > 0)
     throw new Error("Fubon credit-card source has no admissible Canonical Financial Commit capture.");
   const items: PGliteWorkflowRunItem[] = [];
@@ -2795,100 +2551,14 @@ export async function runFubonCreditCardStatements(
     }
   }
 
-  overrides.signal?.throwIfAborted();
+  overrides.signal.throwIfAborted();
   for (const item of items)
-    overrides.sourceText?.assertIntact(JSON.stringify(item.command));
-  if (overrides.deferredCommitItems) {
-    if (!overrides.collectOnly)
-      throw new Error("Fubon deferred collection requires collectOnly mode.");
-    if (unavailablePeriodOffsets.length > 0)
-      throw new Error(`Fubon credit-card source is incomplete for period offsets ${unavailablePeriodOffsets.join(", ")}.`);
-    overrides.deferredCommitItems.push(...items);
-    return {
-      sourceCount: statementPeriods.length + 1,
-      rowCount: statementRows.length + unbilledRows.length,
-      itemCount: items.length,
-      financialAdmissionCount: canonicalCaptures.length,
-    };
-  }
-
-  let canonicalAdmission: "not-configured" | "admitted" = "not-configured";
-  if (items.length > 0) {
-    const client = requirePGliteChildRpcClientFromEnv();
-    try {
-      await client.ready;
-      const result = await executePGliteWorkflowRun({
-        client: client.workflow, items, provider: "fubon", product: "credit-card",
-      });
-      if (result.status !== "completed")
-        throw new Error(`Fubon credit-card PGlite commit ${result.status}: ${result.diagnostics.map((d) => d.errorCode).join(", ")}`);
-    } finally {
-      client.close();
-    }
-    canonicalAdmission = "admitted";
-  }
-
-  const billedStatements = await writeCsvWithMetadata(
-    "billed-statements",
-    sortedStatementRows,
-    billedHeaders,
-    paymentStatuses,
-    statementPeriods,
-    capture,
-    cardKeys,
-  );
-  const unbilledStatements = await writeCsvWithMetadata(
-    "unbilled-statements",
-    sortedUnbilledRows,
-    unbilledHeaders,
-    [],
-    ["unbilled"],
-    capture,
-    cardKeys,
-  );
-
-  if (unavailablePeriodOffsets.length > 0) {
-    throw new Error(
-      `Fubon credit-card statement details are temporarily unavailable for period offsets ${unavailablePeriodOffsets.join(", ")} while the current bill is being generated; available downloads were saved, retry after billing completes.`,
-    );
-  }
-
+    overrides.sourceText.assertIntact(JSON.stringify(item.command));
+  overrides.deferredCommitItems.push(...items);
   return {
-    periodOffsets: input.periodOffsets,
-    statementPeriods,
-    statementCards: unique(
-      statementRows.map((row) => row.card_label).filter(Boolean),
-    ),
-    unbilledCards: unique(
-      unbilledRows.map((row) => row.card_number).filter(Boolean),
-    ),
-    csvFiles: {
-      billedStatements,
-      unbilledStatements,
-    },
-    canonicalAdmission,
-    canonicalCaptureCount:
-      canonicalAdmission === "admitted" ? canonicalCaptures.length : 0,
+    sourceCount: statementPeriods.length + 1,
+    rowCount: statementRows.length + unbilledRows.length,
+    itemCount: items.length,
+    financialAdmissionCount: canonicalCaptures.length,
   };
 }
-
-export default workflow("fubonCreditCardStatements", {
-  credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page, session } = ctx;
-    const credentials = (
-      input as typeof input & { credentials: FubonCredentials }
-    ).credentials;
-
-    const values = {
-      userId: requireCredential(credentials, "fubon_user_id"),
-      account: requireCredential(credentials, "fubon_account"),
-      password: requireCredential(credentials, "fubon_password"),
-    };
-    await openCreditCardLoginForm(page);
-    await completeFubonHumanLogin(page, session, values);
-    return await runFubonCreditCardStatements(page, input);
-  },
-});

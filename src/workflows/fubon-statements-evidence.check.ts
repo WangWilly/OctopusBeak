@@ -637,8 +637,8 @@ assert.equal(
   "SYNTHETIC-OCCURRENCE",
 );
 
-assert.throws(
-  () => module.redactFubonDepositStatementEvidence(rawEvidence[0]),
-  /structural admission/,
+assert.equal(
+  "redactFubonDepositStatementEvidence" in module,
+  false,
+  "the retired file-output redactor is no longer part of the App provider contract",
 );
-

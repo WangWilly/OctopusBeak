@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { Worker } from "node:worker_threads";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
@@ -11,6 +10,7 @@ import {
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
   runFubonStatements,
+  type FubonStatementsRunDependencies,
   type FubonDepositStatementEvidence,
   type FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
@@ -27,20 +27,20 @@ import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  createPGliteChildRpcServer,
-  type PGliteChildProvider,
-} from "../../electron/pglite-child-rpc.ts";
-import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 
 const source = await readFile(
   new URL("./fubon-statements.ts", import.meta.url),
   "utf8",
 );
-assert.match(source, /completeFubonHumanLogin/);
+assert.doesNotMatch(source, /completeFubonHumanLogin|LibrettoWorkflowContext|workflow\(/u);
 assert.doesNotMatch(source, /#btnLogin2/);
 assert.doesNotMatch(source, /stageId: "fubon-login-captcha"/);
 assert.doesNotMatch(source, /async function waitForSignedInState/);
-assert.match(source, /executePGliteWorkflowRun\(/);
+assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 assert.match(source, /PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/);
@@ -201,7 +201,11 @@ assert.equal(relationEvidence[0]!.role, "beneficiary");
 assert.equal(relationEvidence[0]!.scope, "loan_contract");
 assert.equal(relationEvidence[0]!.sourceField, "附註");
 await assert.rejects(
-  () => runFubonStatements({} as never, { dateRanges: ["30"], downloadFormat: "EXCEL" }),
+  () => runFubonStatements(
+    {} as never,
+    { dateRanges: ["30"], downloadFormat: "EXCEL" },
+    {} as never,
+  ),
   /stable caller-supplied Source Connection scope and key/u,
 );
 
@@ -269,147 +273,96 @@ await assert.rejects(
   /unknown option read failure/u,
 );
 
-const pgliteRunDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fubon-pglite-workflow-"));
-const pgliteWorker = createPGliteViewWorkerClient(new Worker(
-  new URL("../../electron/pglite-view-worker.ts", import.meta.url),
-  {
-    execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir: join(pgliteRunDir, "pglite") },
-  },
-));
-const pgliteServer = createPGliteChildRpcServer({
-  provider: {
-    operational: pgliteWorker.operationalProvider,
-    financial: pgliteWorker.financial.registry,
-  } as PGliteChildProvider,
-});
-const previousEnvironment = Object.fromEntries(
-  Object.keys(pgliteServer.env).map((key) => [key, process.env[key]]),
-);
-try {
-  await pgliteServer.ready;
-  Object.assign(process.env, pgliteServer.env);
-
-  const fixture = FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2;
-  const selectedAccount = accountOption;
-  const statement: FubonParsedDepositStatement = {
-    account: selectedAccount.label,
-    accountId: selectedAccount.value,
-    queryPeriod: "synthetic",
-    branchName: selectedAccount.branchName,
-    rows: fixture.pages.flatMap((page) => page.rows.map((row) => {
-      const cells = [...row.cells];
+const fixture = FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2;
+const selectedAccount = accountOption;
+const statement: FubonParsedDepositStatement = {
+  account: selectedAccount.label,
+  accountId: selectedAccount.value,
+  queryPeriod: "synthetic",
+  branchName: selectedAccount.branchName,
+  rows: fixture.pages.flatMap((page) => page.rows.map((row) => {
+    const cells = [...row.cells];
+    if (row.rowOrdinal === 0) {
+      cells[2] = "放款繳款";
+      cells[6] = relationAccount;
+    }
+    return cells;
+  })),
+  pages: fixture.pages.map((page) => ({
+    ...page,
+    selectedAccount,
+    rows: page.rows.map((row) => {
+      const cells = [...row.cells] as [string, string, string, string, string, string, string];
       if (row.rowOrdinal === 0) {
         cells[2] = "放款繳款";
         cells[6] = relationAccount;
       }
-      return cells;
-    })),
-    pages: fixture.pages.map((page) => ({
-      ...page,
-      selectedAccount,
-      rows: page.rows.map((row) => {
-        const cells = [...row.cells] as [string, string, string, string, string, string, string];
-        if (row.rowOrdinal === 0) {
-          cells[2] = "放款繳款";
-          cells[6] = relationAccount;
-        }
-        return { ...row, cells };
-      }),
-    })),
-    accountOption: selectedAccount,
-  };
-  const stableLogin = {
-    fubon_user_id: "FUBON-USER-001",
-    fubon_account: "FUBON-LOGIN-001",
-  };
-  const sourceConnectionScope = fubonStableLoginScope(stableLogin)!;
-  const sourceConnectionKey = deriveFubonSourceConnectionKey(stableLogin)!;
-  const currentBalanceRow: FubonCurrentDepositBalanceRow = {
-    source: "fubon",
-    accountNumber,
-    accountNickname: "synthetic",
-    depositType: "活期",
-    branchName: "012",
-    currency: "TWD",
-    currencySourceLexeme: "台幣",
-    instantBalance: { coefficient: "10000", scale: 2, sourceLexeme: "100.00" },
-    availableBalance: { coefficient: "9000", scale: 2, sourceLexeme: "90.00" },
-    effectiveAt: "2026-01-31T12:00:00.000Z",
-    providerHttpDate: "Sat, 31 Jan 2026 12:00:00 GMT",
-    observedAt: "2026-01-31T12:00:00.000Z",
-    sourceEvidence: {
-      endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-      status: 200,
-      cacheControl: "no-store, no-cache",
-      contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-    },
-  };
-  const output = await runFubonStatements(
-    {} as never,
-    { dateRanges: ["30"], downloadFormat: "EXCEL" },
-    {
-      sourceConnectionScope,
-      sourceConnectionKey,
-      readCurrentDepositBalances: async () => [currentBalanceRow],
-      openTransactionDetailForAccountIndex: async () => "****0000",
-      readDepositAccountOptions: async () => [selectedAccount],
-      selectDepositAccount: async () => undefined,
-      fetchDepositStatement: async () => statement,
-      writeDepositStatementFiles: async () => ({
-        accountId: "****0000",
-        account: "****0000",
-        queryPeriods: ["synthetic"],
-        branchName: selectedAccount.branchName,
-        baseName: "synthetic",
-        csvFilename: "synthetic.csv",
-        csvPath: "synthetic.csv",
-        csvBytes: 0,
-        jsonFilename: "synthetic.json",
-        jsonPath: "synthetic.json",
-        jsonBytes: 0,
-        rowCount: statement.rows.length,
-      }),
-    },
-  );
-  assert.equal(output.admissions[0]?.status, "financial-admitted");
-  const overview = await pgliteWorker.financial.registry.overviewCurrent();
-  assert.equal(overview.accounts.length, 1);
-  assert.equal(overview.accounts[0]?.transactionCount, 1);
-  assert.equal(overview.accounts[0]?.valueAvailability, "available");
+      return { ...row, cells };
+    }),
+  })),
+  accountOption: selectedAccount,
+};
+const stableLogin = {
+  fubon_user_id: "FUBON-USER-001",
+  fubon_account: "FUBON-LOGIN-001",
+};
+const sourceConnectionScope = fubonStableLoginScope(stableLogin)!;
+const sourceConnectionKey = deriveFubonSourceConnectionKey(stableLogin)!;
+const currentBalanceRow: FubonCurrentDepositBalanceRow = {
+  source: "fubon",
+  accountNumber,
+  accountNickname: "synthetic",
+  depositType: "活期",
+  branchName: "012",
+  currency: "TWD",
+  currencySourceLexeme: "台幣",
+  instantBalance: { coefficient: "10000", scale: 2, sourceLexeme: "100.00" },
+  availableBalance: { coefficient: "9000", scale: 2, sourceLexeme: "90.00" },
+  effectiveAt: "2026-01-31T12:00:00.000Z",
+  providerHttpDate: "Sat, 31 Jan 2026 12:00:00 GMT",
+  observedAt: "2026-01-31T12:00:00.000Z",
+  sourceEvidence: {
+    endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    status: 200,
+    cacheControl: "no-store, no-cache",
+    contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+  },
+};
+const collectionInput = { dateRanges: ["30" as const], downloadFormat: "EXCEL" as const };
 
-  const typedOutputDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fubon-collect-only-"));
-  const originalCwd = process.cwd();
-  process.chdir(typedOutputDir);
-  try {
-    const deferredItems: PGliteWorkflowRunItem[] = [];
-    const typedResult = await runFubonStatements(
-      {} as never,
-      { dateRanges: ["30"], downloadFormat: "EXCEL" },
-      {
-        sourceConnectionScope,
-        sourceConnectionKey,
-        readCurrentDepositBalances: async () => [currentBalanceRow],
-        openTransactionDetailForAccountIndex: async () => "****0000",
-        readDepositAccountOptions: async () => [selectedAccount],
-        selectDepositAccount: async () => undefined,
-        fetchDepositStatement: async () => statement,
-        writeDepositStatementFiles: async () => {
-          throw new Error("collect-only workflow attempted file output");
-        },
-        deferredCommitItems: deferredItems,
-        collectOnly: true,
-        sourceText: strictSourceText,
-        signal: new AbortController().signal,
-      },
-    );
-    assert.ok(typedResult.itemCount > 0);
-    assert.equal(deferredItems.length, typedResult.itemCount);
-    assert.deepEqual(await readdir(typedOutputDir), [], "collect-only path must not write CSV/JSON/log files");
-  } finally {
-    process.chdir(originalCwd);
-    await rm(typedOutputDir, { recursive: true, force: true });
-  }
+function collectorOverrides(
+  deferredCommitItems: PGliteWorkflowRunItem[],
+  fetchDepositStatement: NonNullable<FubonStatementsRunDependencies["fetchDepositStatement"]> = async () => statement,
+) {
+  return {
+    sourceConnectionScope,
+    sourceConnectionKey,
+    deferredCommitItems,
+    sourceText: strictSourceText,
+    signal: new AbortController().signal,
+    readCurrentDepositBalances: async () => [currentBalanceRow],
+    openTransactionDetailForAccountIndex: async () => "****0000",
+    readDepositAccountOptions: async () => [selectedAccount],
+    selectDepositAccount: async () => undefined,
+    fetchDepositStatement,
+  };
+}
+
+const typedOutputDir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fubon-collect-only-"));
+const originalCwd = process.cwd();
+process.chdir(typedOutputDir);
+try {
+  const deferredItems: PGliteWorkflowRunItem[] = [];
+  const result = await runFubonStatements(
+    {} as never,
+    collectionInput,
+    collectorOverrides(deferredItems),
+  );
+  assert.ok(result.itemCount > 0);
+  assert.equal(deferredItems.length, result.itemCount);
+  assert.ok(deferredItems.some((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND));
+  assert.ok(deferredItems.some((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND));
+  assert.deepEqual(await readdir(typedOutputDir), [], "Fubon collection must not create source, output, or log files");
 
   const malformedStatement: FubonParsedDepositStatement = {
     ...statement,
@@ -425,29 +378,16 @@ try {
       }),
     })),
   };
+  const malformedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
     () => runFubonStatements(
       {} as never,
-      { dateRanges: ["30"], downloadFormat: "EXCEL" },
-      {
-        sourceConnectionScope,
-        sourceConnectionKey,
-        readCurrentDepositBalances: async () => [],
-        openTransactionDetailForAccountIndex: async () => "****0000",
-        readDepositAccountOptions: async () => [selectedAccount],
-        selectDepositAccount: async () => undefined,
-        fetchDepositStatement: async () => malformedStatement,
-        writeDepositStatementFiles: async () => ({
-          accountId: "****0000", account: "****0000", queryPeriods: ["synthetic"],
-          branchName: selectedAccount.branchName, baseName: "malformed",
-          csvFilename: "malformed.csv", csvPath: "malformed.csv", csvBytes: 0,
-          jsonFilename: "malformed.json", jsonPath: "malformed.json", jsonBytes: 0,
-          rowCount: malformedStatement.rows.length,
-        }),
-      },
+      collectionInput,
+      collectorOverrides(malformedItems, async () => malformedStatement),
     ),
     /amount-invalid|amount-sign-invalid|financial admission failed/iu,
   );
+  assert.deepEqual(malformedItems, [], "malformed amounts must be rejected before items reach the injected commit port");
 
   const incompleteAccount = {
     value: "SYNTHETIC-TWD-A",
@@ -475,78 +415,42 @@ try {
     }],
     accountOption: incompleteAccount,
   };
-  const incompleteOutput = await runFubonStatements(
+  const incompleteItems: PGliteWorkflowRunItem[] = [];
+  const incompleteResult = await runFubonStatements(
     {} as never,
     { dateRanges: ["1"], downloadFormat: "EXCEL" },
     {
-      sourceConnectionScope,
-      sourceConnectionKey,
-      readCurrentDepositBalances: async () => [],
-      openTransactionDetailForAccountIndex: async () => "********9012",
+      ...collectorOverrides(incompleteItems, async () => incompleteStatement),
       readDepositAccountOptions: async () => [incompleteAccount],
-      selectDepositAccount: async () => undefined,
-      fetchDepositStatement: async () => incompleteStatement,
-      writeDepositStatementFiles: async () => ({
-        accountId: "********9012", account: "********9012",
-        queryPeriods: [incompleteStatement.queryPeriod],
-        branchName: incompleteAccount.branchName, baseName: "incomplete",
-        csvFilename: "incomplete.csv", csvPath: "incomplete.csv", csvBytes: 0,
-        jsonFilename: "incomplete.json", jsonPath: "incomplete.json", jsonBytes: 0,
-        rowCount: incompleteStatement.rows.length,
-      }),
+      readCurrentDepositBalances: async () => [],
     },
   );
-  assert.equal(incompleteOutput.admissions[0]?.status, "source-only");
-  assert.match(incompleteOutput.admissions[0]?.reason ?? "", /incomplete-scope/u);
-  assert.equal(
-    (await pgliteWorker.financial.registry.overviewCurrent()).accounts[0]?.transactionCount,
-    1,
-    "source-only evidence is admitted without adding financial transactions",
-  );
+  assert.equal(incompleteResult.itemCount, 1);
+  assert.equal(incompleteItems[0]?.command.kind, PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
 
   const laterAccount = {
     value: "00987654321098",
     label: "00987654321098 (013)",
     branchName: "013",
   };
+  const partialItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
     () => runFubonStatements(
       {} as never,
-      { dateRanges: ["30"], downloadFormat: "EXCEL" },
+      collectionInput,
       {
-        sourceConnectionScope,
-        sourceConnectionKey,
-        readCurrentDepositBalances: async () => [],
-        openTransactionDetailForAccountIndex: async () => "****0000",
-        readDepositAccountOptions: async () => [selectedAccount, laterAccount],
-        selectDepositAccount: async () => undefined,
-        fetchDepositStatement: async (_page, _range, account) => {
+        ...collectorOverrides(partialItems, async (_page, _range, account) => {
           if (account.value === laterAccount.value)
             throw new Error("synthetic later-account fetch failure");
           return statement;
-        },
-        writeDepositStatementFiles: async () => ({
-          accountId: "****0000", account: "****0000", queryPeriods: ["synthetic"],
-          branchName: selectedAccount.branchName, baseName: "rollback",
-          csvFilename: "rollback.csv", csvPath: "rollback.csv", csvBytes: 0,
-          jsonFilename: "rollback.json", jsonPath: "rollback.json", jsonBytes: 0,
-          rowCount: statement.rows.length,
         }),
+        readDepositAccountOptions: async () => [selectedAccount, laterAccount],
       },
     ),
     /later-account fetch failure/iu,
   );
-  assert.equal(
-    (await pgliteWorker.financial.registry.overviewCurrent()).accounts[0]?.transactionCount,
-    1,
-    "a failure while preparing a later account does not commit an earlier account",
-  );
+  assert.deepEqual(partialItems, [], "a later source failure must not send earlier items to the commit port");
 } finally {
-  for (const [key, value] of Object.entries(previousEnvironment)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  await pgliteServer.close();
-  await pgliteWorker.close();
-  await rm(pgliteRunDir, { recursive: true, force: true });
+  process.chdir(originalCwd);
+  await rm(typedOutputDir, { recursive: true, force: true });
 }

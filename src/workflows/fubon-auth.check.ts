@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { Frame, Locator, Page } from "playwright";
 import {
@@ -66,13 +65,14 @@ test("duplicate-login terminal remains fail-closed without automatic recovery", 
     "utf8",
   );
   const completeLogin = source.slice(
-    source.indexOf("export async function completeFubonHumanLogin"),
+    source.indexOf("export async function completeFubonHumanLoginWithAssistance"),
   );
   assert.doesNotMatch(
     completeLogin,
     /runFubonDuplicateLoginRecovery|reopenLoginForm/,
   );
-  assert.match(completeLogin, /completeFubonHumanLoginAttempt/);
+  assert.match(completeLogin, /runFubonCaptchaAcquisition/);
+  assert.match(completeLogin, /request\(contract, signal\)/);
 });
 
 type FakeInput = {
@@ -701,17 +701,26 @@ for (const fileName of [
   "fubon-credit-card-statements.ts",
   "fubon-loan-statements.ts",
 ]) {
-  test(`${fileName} delegates all login behavior to the shared seam`, async () => {
+  test(`${fileName} contains no independent login behavior`, async () => {
     const source = await readFile(
       new URL(`./${fileName}`, import.meta.url),
       "utf8",
     );
-    assert.match(source, /await completeFubonHumanLogin\(/);
+    assert.doesNotMatch(source, /completeFubonHumanLogin|openFubonLoginForm/);
     assert.doesNotMatch(source, /stageId: "fubon-login-captcha"/);
     assert.doesNotMatch(source, /#btnLogin2/);
     assert.doesNotMatch(source, /visiblePasswordFields/);
   });
 }
+
+test("the App provider owns shared Fubon login and assistance", async () => {
+  const source = await readFile(
+    new URL("./fubon-all-statements.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /completeFubonHumanLoginWithAssistance/);
+  assert.match(source, /humanAssistance\.request/);
+});
 
 test("Fubon declares three distinct agreement-only OCR strategies", () => {
   const locator = {
@@ -747,30 +756,6 @@ test("Fubon declares three distinct agreement-only OCR strategies", () => {
     "fubon.login.captcha-image",
   );
 });
-
-// The strip-types repository runner cannot resolve Libretto's nested TSX
-// loader. Run this gate with the actual TSX loader command instead.
-if (!process.execArgv.includes("--experimental-strip-types")) {
-  test("the real Libretto loader resolves every Fubon workflow", async () => {
-    const runtime = await import(
-      pathToFileURL(
-        process.cwd() +
-          "/node_modules/libretto/dist/cli/core/workflow-runtime.js",
-      ).href
-    );
-    for (const fileName of [
-      "fubon-all-statements.ts",
-      "fubon-statements.ts",
-      "fubon-credit-card-statements.ts",
-      "fubon-loan-statements.ts",
-    ]) {
-      const workflow = await runtime.loadDefaultWorkflow(
-        process.cwd() + "/src/workflows/" + fileName,
-      );
-      assert.match(workflow.name, /^fubon/);
-    }
-  });
-}
 
 test("login source contains no credential or CAPTCHA values", async () => {
   const source = await readFile(
