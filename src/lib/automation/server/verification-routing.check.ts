@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   routeVerificationActor,
+  routeWaitingRunVerification,
   selectVerificationChallengeImage,
   type VerificationRoutingDependencies,
 } from "./verification-routing.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
 
@@ -57,7 +59,7 @@ function trackedDependencies(): { calls: string[]; dependencies: VerificationRou
       },
       injectSelections: async () => {},
       clickTarget: async () => {},
-      resume: async () => { calls.push("resume"); },
+      resumeAppWorkflow: async () => { calls.push("resume"); },
       finalizeFailed: async () => { calls.push("failed"); },
     },
   };
@@ -68,7 +70,7 @@ test("human verification actor leaves the challenge untouched", async () => {
   assert.deepEqual(await routeVerificationActor({
     actor: "human",
     contract: captchaContract(),
-    session: "ses-human",
+    taskRunId: "run-human",
     confidenceThreshold: 0.9,
     dependencies: tracked.dependencies,
   }), { kind: "human" });
@@ -80,7 +82,7 @@ test("solver route captures, validates, injects, and resumes through the declare
   assert.deepEqual(await routeVerificationActor({
     actor: "solver",
     contract: captchaContract(),
-    session: "ses-solver",
+    taskRunId: "run-solver",
     confidenceThreshold: 0.9,
     dependencies: tracked.dependencies,
   }), { kind: "resumed" });
@@ -106,4 +108,54 @@ test("a provider image owner never falls back to generic capture after failure",
   assert.equal(selection.providerOwned, true);
   assert.equal(await selection.captureChallengeImage("ses-owner", captchaContract()), null);
   assert.deepEqual(calls, ["provider"]);
+});
+
+test("App verification uses its task-run ID and ignores legacy session text", async () => {
+  const taskRunId = "typed-verification-run";
+  const routeIds: string[] = [];
+  const run = {
+    taskId: "sinopac-statements",
+    taskRunId,
+    kind: "crawler",
+    status: "waiting_for_human",
+    logPath: "",
+    logTail: "Workflow paused. libretto resume --session stale-session-id",
+    humanAssistanceContract: captchaContract(),
+    events: [],
+  };
+  const provider = {
+    automation: {
+      async taskRunById(id: string) { return id === taskRunId ? run : null; },
+    },
+  } as unknown as AutomationPersistenceProvider;
+  const outcome = await routeWaitingRunVerification({
+    taskId: "sinopac-statements",
+    taskRunId,
+    provider,
+    settings: { LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver" },
+    solver: { async solve() { return { answer: "1234", confidence: 0.99 }; } },
+    providerVerification: {
+      handlesChallengeImage: () => true,
+      async captureChallengeImage(viewerKey) {
+        routeIds.push(viewerKey);
+        return Buffer.from("challenge");
+      },
+      async isChallengeImageCurrent(viewerKey) {
+        routeIds.push(viewerKey);
+        return true;
+      },
+    },
+    injectAnswer: async (viewerKey) => { routeIds.push(viewerKey); },
+    providerProbePostSubmit: async (viewerKey, _contract, resume) => {
+      routeIds.push(viewerKey);
+      await resume();
+      return "none";
+    },
+    resumeAppWorkflow: async () => { routeIds.push(taskRunId); },
+    finalizeFailed: async () => { assert.fail("valid typed challenge should not fail"); },
+  });
+
+  assert.deepEqual(outcome, { kind: "resumed" });
+  assert.equal(routeIds.length, 4);
+  assert.ok(routeIds.every((viewerKey) => viewerKey === taskRunId));
 });

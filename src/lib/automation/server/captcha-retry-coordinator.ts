@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import {
   MAX_CAPTCHA_RETRY_ROUNDS,
@@ -7,13 +8,6 @@ import {
   CaptchaRetryCampaignTransitionError,
   type CaptchaRetryCampaign,
 } from "./captcha-retry-campaign.ts";
-import {
-  appendLog,
-  errorMessage,
-  finalizeAutomationSessionForRun,
-  sessionFromRun,
-  type OwnedAutomationSession,
-} from "./automation-session-disposition.ts";
 import {
   finalizeAutomationTaskRun,
   type AutomationTaskProcessResult,
@@ -34,20 +28,10 @@ import type {
   ProviderVerificationPostSubmitOutcome,
 } from "./provider-verification.ts";
 import {
-  SINOPAC_DIALOG_OWNER_ENV,
-  sinopacHostDialogOwner,
-} from "../sinopac-captcha.ts";
-import {
-  YUANTA_DIALOG_OWNER_ENV,
-  yuantaHostDialogOwner,
-} from "../yuanta-captcha.ts";
-import {
-  createAutomationSessionId,
   type AutomationTaskExecutionOptions,
 } from "./task-run-execution.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { verificationActorForSource } from "../verification-config.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
+import { taskById } from "./tasks.ts";
 
 type CaptchaRetryExecutionResult = Awaited<
   ReturnType<typeof runAutomationTaskExecution>
@@ -62,31 +46,13 @@ function persistenceTaskRunId(
     : undefined;
 }
 
-const CAPTCHA_RESUME_JOIN_TIMEOUT_MS = 5_000;
 const APP_SINOPAC_POST_SUBMIT_TIMEOUT_MS = 65_000;
 const APP_SINOPAC_POST_SUBMIT_POLL_MS = 50;
 
-async function settleCaptchaResume(
-  promise: Promise<unknown>,
-  timeoutMs = CAPTCHA_RESUME_JOIN_TIMEOUT_MS,
-) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = await Promise.race([
-    promise.then(
-      (value) => ({ timedOut: false as const, value }),
-      (error) => ({ timedOut: false as const, error }),
-    ),
-    new Promise<{ timedOut: true }>((resolve) => {
-      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-  return result;
-}
-
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
-  appWorkflow?: boolean;
+  /** Browser workflows and the two App-owned nonbrowser workflows route explicitly. */
+  appWorkflow: boolean;
   provider: AutomationPersistenceProvider;
   launchVerificationSettings: AutomationSettingsFile;
   initialExecutionOptions: AutomationTaskExecutionOptions;
@@ -94,13 +60,8 @@ export type CaptchaRetryCoordinatorDependencies = {
     options: AutomationTaskExecutionOptions,
   ) => Promise<CaptchaRetryExecutionResult>;
   isCancellationRequested: () => boolean;
-  /**
-   * Injection point for deterministic coordinator tests. Production callers
-   * use the verification router's normal implementation.
-   */
+  /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
-  /** Exact-session cleanup seam used by the coordinator and focused tests. */
-  finalizeSessionForRun?: typeof finalizeAutomationSessionForRun;
 };
 
 async function waitForAppSinopacPostSubmitOutcome(input: {
@@ -142,7 +103,7 @@ function appSinopacPostSubmitProbe(
   taskRunId: string,
   signal: AbortSignal,
 ): ProviderVerificationHost["probePostSubmit"] {
-  return async (_session, _contract, resume) => {
+  return async (_viewerKey, _contract, resume) => {
     const run = await provider.automation.taskRunById(taskRunId);
     const afterEventIndex = run?.events.length ?? 0;
     await resume();
@@ -208,133 +169,80 @@ function markCaptchaCampaignCancelled(campaign: CaptchaRetryCampaign) {
   });
 }
 
-async function finalizeCaptchaRetryCampaign(
+async function finalizeCaptchaRetryExecution(
   provider: AutomationPersistenceProvider,
   taskRunId: string,
   result: CaptchaRetryExecutionResult,
-  message: string,
-  sessionAlreadyCleaned = false,
+  message?: string,
 ) {
   const run = await provider.automation.taskRunById(taskRunId);
   if (!run) return { status: "failed" as const };
   const processResult = "result" in result ? result.result : null;
   const fallback: AutomationTaskProcessResult = {
-    exitCode: null,
+    exitCode: 1,
     signal: null,
-    error: new Error(message),
-    logTail: run.logTail,
+    error: new Error("Automation task execution failed."),
+    logTail: "",
     resumeFailure: null,
     statementSummary: null,
     outputPersistenceWarnings: [],
     externalPrerequisiteIds: [],
   };
+  const cancelled = message === "Automation task cancelled."
+    || result.status === "cancelled";
   return finalizeAutomationTaskRun(
     {
       provider,
       taskId: run.taskId,
       taskKind: run.kind,
       taskRunId,
-      logPath: run.logPath,
-      sessionAlreadyCleaned,
+      logPath: "",
     },
     {
       ...(processResult ?? fallback),
-      exitCode: null,
-      signal: null,
-      error: new Error(message),
-      logTail: run.logTail || processResult?.logTail || "",
+      ...(message
+        ? {
+          exitCode: cancelled ? null : 1,
+          signal: cancelled ? "SIGTERM" as const : null,
+          error: new Error(message),
+        }
+        : {}),
+      logTail: "",
+      resumeFailure: null,
     },
   );
 }
 
-async function finalizeCaptchaRetryExecution(
+async function prepareCaptchaRetryRound(
   provider: AutomationPersistenceProvider,
   taskRunId: string,
-  result: CaptchaRetryExecutionResult,
-  message?: string,
-  sessionAlreadyCleaned = false,
-) {
-  const processResult = "result" in result ? result.result : null;
-  if (!message && processResult) {
-    const run = await provider.automation.taskRunById(taskRunId);
-    if (!run) return { status: "failed" as const };
-    return finalizeAutomationTaskRun(
-      {
-        provider,
-        taskId: run.taskId,
-        taskKind: run.kind,
-        taskRunId,
-        logPath: run.logPath,
-      },
-      processResult,
-    );
-  }
-  return finalizeCaptchaRetryCampaign(
-    provider,
-    taskRunId,
-    result,
-    message ?? "Automation task failed.",
-    sessionAlreadyCleaned,
-  );
-}
-
-async function cleanUpCaptchaRetryRound(
-  provider: AutomationPersistenceProvider,
-  taskRunId: string,
-  reason: string,
-  activeOwner?: OwnedAutomationSession | null,
-  sessionAlreadyCleaned = false,
+  round: number,
 ) {
   const run = await provider.automation.taskRunById(taskRunId);
-  if (!run) return { ok: false as const, message: "Missing automation task run." };
-  const cleanup = !sessionAlreadyCleaned && (activeOwner ?? sessionFromRun(run))
-    ? await finalizeAutomationSessionForRun(run, null, "exact", activeOwner)
-    : null;
-  if (cleanup?.cleanupFailed) {
-    return {
-      ok: false as const,
-      message: cleanup.errorMessage ?? "CAPTCHA retry session cleanup failed.",
-    };
-  }
-  const marker = `captcha-retry: restarting workflow (${reason})`;
-  const appWorkflow = run.logPath.length === 0 || Boolean(taskById(run.taskId)?.workflowId);
-  if (!appWorkflow) {
-    try {
-      appendLog(run.logPath, marker + "\n");
-    } catch {
-      // The finalization path retains any existing log-tail warning.
-    }
-  }
+  if (!run) return false;
   await provider.automation.updateTaskRun(taskRunId, {
     status: "running",
     finishedAt: null,
     exitCode: null,
     signal: null,
     errorMessage: null,
-    ...(appWorkflow ? {} : { logTail: `${run.logTail}\n${marker}\n`.slice(-4_000) }),
+    attempt: round,
+    maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
+    logTail: "",
   });
-  return { ok: true as const };
+  return true;
 }
 
+const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
+
 /**
- * Own the stateful CAPTCHA retry campaign around otherwise ordinary workflow
- * executions. The caller only supplies a single-execution function; this
- * module owns routing, round transitions, cleanup, persistence, and serial
- * workflow restarts.
+ * Coordinate the typed App SinoPac CAPTCHA campaign around single workflow
+ * executions. Other browser workflows own their assistance handlers; the two
+ * nonbrowser workflows execute once and never enter verification routing.
  */
-export async function runCaptchaRetryCampaign(dependencies: {
-  taskId: string;
-  appWorkflow?: boolean;
-  provider: AutomationPersistenceProvider;
-  launchVerificationSettings: AutomationSettingsFile;
-  initialExecutionOptions: AutomationTaskExecutionOptions;
-  execute: (
-    options: AutomationTaskExecutionOptions,
-  ) => Promise<CaptchaRetryExecutionResult>;
-  isCancellationRequested: () => boolean;
-  routeWaitingRunVerification?: typeof routeWaitingRunVerification;
-  finalizeSessionForRun?: typeof finalizeAutomationSessionForRun;
-}) {
+export async function runCaptchaRetryCampaign(
+  dependencies: CaptchaRetryCoordinatorDependencies,
+) {
   const {
     taskId,
     provider,
@@ -342,21 +250,19 @@ export async function runCaptchaRetryCampaign(dependencies: {
     execute,
     isCancellationRequested,
   } = dependencies;
-  const appWorkflow = dependencies.appWorkflow ?? Boolean(taskById(taskId)?.workflowId);
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  const appWorkflow = Boolean(task.workflowId);
+  if (dependencies.appWorkflow !== appWorkflow) {
+    throw new Error(`Automation task routing does not match the App catalog: ${taskId}`);
+  }
+  if (!appWorkflow && !NON_BROWSER_APP_TASK_IDS.has(taskId)) {
+    throw new Error(`Automation task is not an App workflow or supported nonbrowser task: ${taskId}`);
+  }
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const finalizeSession = dependencies.finalizeSessionForRun
-    ?? finalizeAutomationSessionForRun;
+  const routesSinopacCaptcha = appWorkflow && taskId === "sinopac-statements";
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
-  const task = taskById(taskId);
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
-    (candidate) => candidate.id === task?.credentialGroupId,
-  );
-  const hostOwnedDialogProvider = !appWorkflow && taskId === "sinopac-statements"
-    && verificationActorForSource(group?.verificationActorKey, launchVerificationSettings) === "solver"
-    ? "sinopac" as const
-    : undefined;
-
   const executeAppSinopacAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
   ): Promise<{
@@ -365,7 +271,7 @@ export async function runCaptchaRetryCampaign(dependencies: {
   }> => {
     const appExecutionOptions = {
       ...executionOptions,
-      executionId: executionOptions.executionId ?? createAutomationSessionId(),
+      executionId: executionOptions.executionId ?? randomUUID(),
     };
     let routing: VerificationRoutingOutcome | undefined;
     let routePromise: Promise<void> | null = null;
@@ -383,9 +289,8 @@ export async function runCaptchaRetryCampaign(dependencies: {
               const routeOutcome = await route({
                 taskId,
                 taskRunId: request.taskRunId,
-                session: request.taskRunId,
                 provider,
-                scheduleResume: async () => {
+                resumeAppWorkflow: async () => {
                   const current = await provider.automation.taskRunById(request.taskRunId);
                   if (!current) throw new Error("App workflow run is unavailable for verification resume.");
                   const status = current.humanAssistanceContract?.completion.mode === "independent"
@@ -396,6 +301,10 @@ export async function runCaptchaRetryCampaign(dependencies: {
                   if (!resumedInPlace) {
                     throw new Error("App workflow verification stage is no longer active.");
                   }
+                },
+                finalizeFailed: async (message) => {
+                  request.signal.throwIfAborted();
+                  throw new Error(message);
                 },
                 providerProbePostSubmit: appSinopacPostSubmitProbe(
                   provider,
@@ -470,114 +379,22 @@ export async function runCaptchaRetryCampaign(dependencies: {
   ): Promise<{
     execution: CaptchaRetryExecutionResult;
     routing?: VerificationRoutingOutcome;
-    sessionCleaned?: boolean;
   }> => {
-    if (appWorkflow && taskId === "sinopac-statements") {
+    if (routesSinopacCaptcha) {
       return executeAppSinopacAndRoute(executionOptions);
     }
-    const execution = await execute(executionOptions);
-    if (!("taskRunId" in execution) || execution.status !== "waiting_for_human") {
-      return { execution };
-    }
-
-    let resumed: {
-      execution: CaptchaRetryExecutionResult;
-      routing?: VerificationRoutingOutcome;
-      sessionCleaned?: boolean;
-    } | null = null;
-    let resumePromise: Promise<void> | null = null;
-    let resumeSettled = false;
-    let routing: VerificationRoutingOutcome;
-    let sessionCleaned = false;
-    const cleanupResumedSession = async () => {
-      if (sessionCleaned) return;
-      const currentRun = await provider.automation.taskRunById(execution.taskRunId);
-      if (!currentRun) return;
-      const cleanup = await finalizeSession(currentRun, null, "exact");
-      if (cleanup.cleanupFailed) {
-        throw new Error(
-          cleanup.errorMessage ?? "CAPTCHA retry session cleanup failed.",
-        );
-      }
-      sessionCleaned = true;
-    };
-    try {
-      routing = await route({
-        taskId,
-        taskRunId: execution.taskRunId,
-        session: execution.session ?? undefined,
-        provider,
-        scheduleResume: (session) => {
-          const nextResume = executeAndRoute({
-            ...executionOptions,
-            taskRunId: execution.taskRunId,
-            resumeSession: session,
-            launchEnv: {
-              ...(executionOptions.launchEnv ?? {}),
-              [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner(session),
-              [YUANTA_DIALOG_OWNER_ENV]: yuantaHostDialogOwner(session),
-            },
-          });
-          resumePromise = nextResume.then((result) => {
-            resumed = result;
-          }).finally(() => {
-            resumeSettled = true;
-          });
-          return resumePromise;
-        },
-        cleanupSession: cleanupResumedSession,
-        onChallengeCaptured: async () => {
-          const executionId = "executionId" in execution
-            ? execution.executionId
-            : null;
-          if (!executionId) return;
-          campaign = recordCapturedChallenge(campaign, executionId);
-          if (campaign.status === "awaiting-outcome") {
-            await provider.automation.updateTaskRun(execution.taskRunId, {
-              attempt: campaign.activeRound,
-              maxAttempts: campaign.maxRounds,
-            });
-          }
-        },
-        settings: launchVerificationSettings,
-      });
-      if (resumePromise && !resumeSettled) {
-        let cleanupError: unknown = null;
-        try {
-          await cleanupResumedSession();
-        } catch (error) {
-          cleanupError = error;
-        }
-        const joined = await settleCaptchaResume(resumePromise);
-        if (cleanupError) throw cleanupError;
-        if (joined.timedOut) {
-          throw new Error("CAPTCHA retry resume did not settle after cleanup.");
-        }
-        if ("error" in joined) throw joined.error;
-      } else if (resumePromise) {
-        await resumePromise;
-      }
-    } catch (error) {
-      await finalizeCaptchaRetryExecution(
-        provider,
-        execution.taskRunId,
-        execution,
-        errorMessage(error),
-      );
-      return { execution, routing: { kind: "failed" }, sessionCleaned };
-    }
-    if (routing.kind === "resumed" && resumed) return resumed;
-    return { execution, routing, sessionCleaned };
+    return { execution: await execute(executionOptions) };
   };
 
   let executionOptions: AutomationTaskExecutionOptions = {
     ...dependencies.initialExecutionOptions,
-    hostOwnedDialogProvider,
   };
   while (true) {
     const routed = await executeAndRoute(executionOptions);
     const execution = routed.execution;
     const taskRunId = persistenceTaskRunId(execution);
+    // The typed assistance callback can advance the campaign during execute.
+    // Re-widen the callback-mutated state after the await for TypeScript.
     campaign = campaign as CaptchaRetryCampaign;
     if (campaign.consumedRounds > 0 && taskRunId !== undefined) {
       await provider.automation.updateTaskRun(taskRunId, {
@@ -592,15 +409,11 @@ export async function runCaptchaRetryCampaign(dependencies: {
 
     if (routed.routing?.kind === "failed") {
       if (taskRunId !== undefined) {
-        const failureMessage =
-          (await provider.automation.taskRunById(taskRunId))?.errorMessage
-          ?? "Verification route failed closed.";
         await finalizeCaptchaRetryExecution(
           provider,
           taskRunId,
           execution,
-          failureMessage,
-          routed.sessionCleaned ?? false,
+          "Verification route failed closed.",
         );
       }
       return { status: "failed" as const };
@@ -626,15 +439,19 @@ export async function runCaptchaRetryCampaign(dependencies: {
       );
       return { status: "failed" as const };
     }
-    if (routed.routing?.kind === "human") {
-      if (campaign.status === "awaiting-outcome") {
-        campaign = transitionCaptchaRetryCampaign(campaign, {
-          kind: "round-outcome",
-          executionId: campaign.activeExecutionId,
-          outcome: { kind: "succeeded" },
-        });
+    if (
+      execution.status === "waiting_for_human"
+      && (!appWorkflow || taskRunId === undefined)
+    ) {
+      if (taskRunId !== undefined) {
+        await finalizeCaptchaRetryExecution(
+          provider,
+          taskRunId,
+          execution,
+          "Nonbrowser workflow cannot pause for human assistance.",
+        );
       }
-      return { status: "waiting_for_human" as const };
+      return { status: "failed" as const };
     }
 
     const routeRetry = routed.routing?.kind === "retryable"
@@ -648,7 +465,7 @@ export async function runCaptchaRetryCampaign(dependencies: {
           executionId: campaign.activeExecutionId,
           outcome: { kind: "retryable", reason: routeRetry },
         });
-      } else if (campaign.status !== "ready" && campaign.status !== "exhausted") {
+      } else if (campaign.status !== "exhausted") {
         await finalizeCaptchaRetryExecution(
           provider,
           taskRunId,
@@ -669,19 +486,27 @@ export async function runCaptchaRetryCampaign(dependencies: {
         }
         return { status: "failed" as const };
       }
-      const cleanup = await cleanUpCaptchaRetryRound(
-        provider,
-        taskRunId,
-        routeRetry,
-        "owner" in execution ? execution.owner : null,
-        routed.sessionCleaned ?? false,
-      );
-      if (!cleanup.ok) {
+      const nextRound = campaign.nextRound;
+      if (nextRound === undefined) {
         await finalizeCaptchaRetryExecution(
           provider,
           taskRunId,
           execution,
-          cleanup.message,
+          "CAPTCHA retry campaign has no admitted next round.",
+        );
+        return { status: "failed" as const };
+      }
+      const prepared = await prepareCaptchaRetryRound(
+        provider,
+        taskRunId,
+        nextRound,
+      );
+      if (!prepared) {
+        await finalizeCaptchaRetryExecution(
+          provider,
+          taskRunId,
+          execution,
+          "CAPTCHA retry could not prepare the existing App workflow run.",
         );
         return { status: "failed" as const };
       }
@@ -696,11 +521,11 @@ export async function runCaptchaRetryCampaign(dependencies: {
         return { status: "failed" as const };
       }
       executionOptions = {
-        scheduledAtUtc: dependencies.initialExecutionOptions.scheduledAtUtc,
+        ...dependencies.initialExecutionOptions,
         taskRunId,
-        attempt: campaign.nextRound,
+        attempt: nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
-        hostOwnedDialogProvider,
+        executionId: randomUUID(),
       };
       continue;
     }

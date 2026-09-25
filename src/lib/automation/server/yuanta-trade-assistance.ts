@@ -47,7 +47,7 @@ export type YuantaTradeAppAssistanceDependencies = Readonly<{
   verificationHost?: ProviderVerificationHost;
   route?: typeof routeWaitingRunVerification;
   waitForImageChallengeSubmission?: (
-    session: string,
+    viewerKey: string,
     signal: AbortSignal,
   ) => Promise<boolean>;
   routeOptions?: YuantaTradeVerificationRouteOptions;
@@ -116,12 +116,11 @@ function guardedHost(host: ProviderVerificationHost, signal: AbortSignal): Provi
     refreshTarget: guardedAsync(signal, host.refreshTarget),
     sendInput: guardedAsync(signal, host.sendInput),
     injectAnswer: guardedAsync(signal, host.injectAnswer),
-    probePostSubmit: guardedAsync(signal, async (session, contract, resume, cleanupSession) => (
+    probePostSubmit: guardedAsync(signal, async (viewerKey, contract, resume) => (
       host.probePostSubmit(
-        session,
+        viewerKey,
         contract,
         guardedAsync(signal, async () => resume()),
-        cleanupSession ? guardedAsync(signal, cleanupSession) : undefined,
       )
     )),
     inspectCompletion: guardedAsync(signal, host.inspectCompletion),
@@ -190,7 +189,7 @@ async function routeAssistanceRequest(
     ?? clickVerificationTarget;
   let assistanceResumed = false;
   const waitForImageSubmit = dependencies.waitForImageChallengeSubmission
-    ?? (async (session: string, signal: AbortSignal) => withViewerPage(session, async (page) => {
+    ?? (async (viewerKey: string, signal: AbortSignal) => withViewerPage(viewerKey, async (page) => {
       signal.throwIfAborted();
       try {
         await page.locator(YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR)
@@ -213,7 +212,6 @@ async function routeAssistanceRequest(
       : {}),
     taskId: YUANTA_TRADE_APP_TASK_ID,
     taskRunId: request.taskRunId,
-    session: request.taskRunId,
     provider: dependencies.provider,
     settings: dependencies.settings,
     humanFallbackOnSolverExhausted: true,
@@ -226,23 +224,23 @@ async function routeAssistanceRequest(
     ...(routeOptions.validateChallengeImage
       ? { validateChallengeImage: guardedAsync(request.signal, routeOptions.validateChallengeImage) }
       : {}),
-    injectAnswer: guardedAsync(request.signal, async (session, contract, answer) => {
-      await answerInjection(session, contract, answer);
+    injectAnswer: guardedAsync(request.signal, async (viewerKey, contract, answer) => {
+      await answerInjection(viewerKey, contract, answer);
       if (contract.stageId === "yuanta-trade-audio-verification") audioAnswerInjected = true;
     }),
-    providerInjectAnswer: guardedAsync(request.signal, async (session, contract, answer) => {
-      await answerInjection(session, contract, answer);
+    providerInjectAnswer: guardedAsync(request.signal, async (viewerKey, contract, answer) => {
+      await answerInjection(viewerKey, contract, answer);
       if (contract.stageId === "yuanta-trade-audio-verification") audioAnswerInjected = true;
     }),
-    injectSelections: guardedAsync(request.signal, async (session, contract, selections) => {
-      await selectionInjection(session, contract, selections);
+    injectSelections: guardedAsync(request.signal, async (viewerKey, contract, selections) => {
+      await selectionInjection(viewerKey, contract, selections);
       if (contract.stageId === "yuanta-trade-challenge") imageSelectionsInjected = true;
     }),
-    clickTarget: guardedAsync(request.signal, async (session, contract, targetId) => {
-      await targetClick(session, contract, targetId);
+    clickTarget: guardedAsync(request.signal, async (viewerKey, contract, targetId) => {
+      await targetClick(viewerKey, contract, targetId);
       if (
         contract.stageId === "yuanta-trade-captcha-checkbox"
-        && !await host.inspectCompletion(session, contract)
+        && !await host.inspectCompletion(viewerKey, contract)
       ) {
         throw new Error("Yuanta Trade CAPTCHA checkbox did not reach its verified state.");
       }
@@ -258,7 +256,7 @@ async function routeAssistanceRequest(
       : {}),
     providerProbePostSubmit: guardedAsync(
       request.signal,
-      async (session, contract, resume, cleanupSession) => {
+      async (viewerKey, contract, resume) => {
         if (
           contract.stageId === "yuanta-trade-audio-verification"
           && !audioAnswerInjected
@@ -278,24 +276,23 @@ async function routeAssistanceRequest(
           if (!submit) {
             throw new Error("Yuanta Trade image challenge has no declared submit target.");
           }
-          await host.sendInput(session, {
+          await host.sendInput(viewerKey, {
             type: "click",
             targetId: submit.id,
             contractVersion: contract.version,
           }, contract);
-          if (!await waitForImageSubmit(session, request.signal)) {
+          if (!await waitForImageSubmit(viewerKey, request.signal)) {
             return "none";
           }
         }
         return host.probePostSubmit(
-          session,
+          viewerKey,
           contract,
           async () => { await resume(); },
-          cleanupSession,
         );
       },
     ),
-    scheduleResume: async () => {
+    resumeAppWorkflow: async () => {
       await resumeCurrentAssistance(request, dependencies.provider);
       assistanceResumed = true;
     },
