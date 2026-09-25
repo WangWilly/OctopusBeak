@@ -225,7 +225,7 @@ assert.deepEqual(
     async waitForResponse() {
       return {
         status: () => 200,
-        json: async () => populatedListResponse,
+        body: async () => Buffer.from(JSON.stringify(populatedListResponse), "utf8"),
       };
     },
   } as unknown as Page),
