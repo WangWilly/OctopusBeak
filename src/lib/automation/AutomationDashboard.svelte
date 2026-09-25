@@ -1471,7 +1471,7 @@
                   class:failed={task.status === "failed"}
                   class:sync-task={task.kind === "sync"}
                   type="button"
-                  aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
+                  aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
                   title={taskLabel(task, $t)}
                   data-onboarding-task={task.id}
@@ -1712,8 +1712,8 @@
                       class="button secondary task-control"
                       class:active-log={expandedLogTaskId === task.id}
                       type="button"
-                      aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
-                      title={$t.automation.logs}
+                      aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
+                      title={$t.automation.runDetails}
                       aria-expanded={expandedLogTaskId === task.id}
                       aria-controls={`${task.id}-inline-log`}
                       data-onboarding-task={task.id}
@@ -1722,7 +1722,7 @@
                       onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
                     >
                       <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
-                      <span class="visually-hidden">{$t.automation.logs}</span>
+                      <span class="visually-hidden">{$t.automation.runDetails}</span>
                     </button>
                   </div>
                 </td>
@@ -1749,11 +1749,36 @@
                   <td colspan="5">
                     <div class="inline-log-panel" tabindex="-1" transition:disclosureSlide>
                       <div class="inline-log-head">
-                        <strong>{$t.automation.inlineLogTitle(taskLabel(task, $t))}</strong>
+                        <strong>{task.eventDisplayMode === "structured"
+                          ? $t.automation.workflowEventTitle(taskLabel(task, $t))
+                          : $t.automation.inlineLogTitle(taskLabel(task, $t))}</strong>
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
-                      <p class="mono inline-log-path">{task.logPath ?? $t.automation.noLogFile}</p>
-                      <pre class="log-output">{task.errorMessage ?? (task.logTail || $t.automation.noLogs)}</pre>
+                      {#if task.eventDisplayMode === "structured"}
+                        {#if task.events.length}
+                          <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
+                            {#each task.events as event, index (index)}
+                              <li class="workflow-event-row">
+                                <div class="workflow-event-main">
+                                  <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
+                                  <code>{event.code}</code>
+                                </div>
+                                <div class="workflow-event-meta">
+                                  <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
+                                  {#if event.completed !== undefined || event.total !== undefined}
+                                    <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
+                                  {/if}
+                                </div>
+                              </li>
+                            {/each}
+                          </ol>
+                        {:else}
+                          <p class="workflow-event-empty">{$t.automation.workflowEventEmpty}</p>
+                        {/if}
+                      {:else}
+                        <p class="mono inline-log-path">{task.logPath ?? $t.automation.noLogFile}</p>
+                        <pre class="log-output">{task.errorMessage ?? (task.logTail || $t.automation.noLogs)}</pre>
+                      {/if}
                     </div>
                   </td>
                 </tr>
@@ -2931,6 +2956,65 @@
     gap: var(--space-3);
   }
 
+  .workflow-event-list {
+    max-height: 280px;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    list-style: none;
+  }
+
+  .workflow-event-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-height: 42px;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .workflow-event-row:last-child {
+    border-bottom: 0;
+  }
+
+  .workflow-event-main,
+  .workflow-event-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .workflow-event-stage,
+  .workflow-event-meta {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .workflow-event-row code {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-event-meta {
+    justify-content: flex-end;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .workflow-event-empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
   .inline-log-path {
     margin: 0;
     overflow: hidden;
@@ -4059,6 +4143,17 @@
     .inline-log-head {
       align-items: flex-start;
       flex-direction: column;
+    }
+
+    .workflow-event-row {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: var(--space-1);
+    }
+
+    .workflow-event-meta {
+      justify-content: flex-start;
+      text-align: left;
     }
 
     .credential-section-head {

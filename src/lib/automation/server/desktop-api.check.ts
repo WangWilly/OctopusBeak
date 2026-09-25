@@ -41,6 +41,74 @@ test("desktop automation model and history are read from the provider", async ()
   }
 });
 
+test("desktop model refreshes ordered workflow events and honors retention pruning", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "exchange-rates",
+      script: "run:exchange-rates",
+      kind: "sync",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: "2026-09-22T00:00:00.000Z",
+      logPath: "",
+      logTail: "",
+    });
+    const beforeEvents = await loadAutomationDesktopModel(provider);
+    assert.deepEqual(
+      beforeEvents.automation.tasks.find((task) => task.id === "exchange-rates")?.events,
+      [],
+    );
+    await provider.automation.appendRunEvent({
+      runId: created.taskRunId,
+      stage: "authentication",
+      code: "authentication-completed",
+      occurredAt: "2026-09-22T00:00:01.000Z",
+    });
+    await provider.automation.appendRunEvent({
+      runId: created.taskRunId,
+      stage: "collection",
+      code: "source-collected",
+      occurredAt: "2026-09-22T00:00:02.000Z",
+      completed: 2,
+      total: 2,
+    });
+
+    const current = await loadAutomationDesktopModel(provider);
+    const currentTask = current.automation.tasks.find(
+      (task) => task.id === "exchange-rates",
+    );
+    assert.equal(currentTask?.eventDisplayMode, "structured");
+    assert.deepEqual(currentTask?.events.map((event) => event.code), [
+      "authentication-completed",
+      "source-collected",
+    ]);
+    assert.equal(currentTask?.events[1]?.completed, 2);
+    assert.equal(currentTask?.events[1]?.total, 2);
+    assert.equal(currentTask?.logPath, "");
+    assert.equal(currentTask?.logTail, "");
+
+    assert.equal(
+      await provider.automation.pruneRunEvents("2026-09-26T00:00:00.000Z"),
+      2,
+    );
+    const expired = await loadAutomationDesktopModel(provider);
+    const expiredTask = expired.automation.tasks.find(
+      (task) => task.id === "exchange-rates",
+    );
+    assert.equal(expiredTask?.eventDisplayMode, "legacy");
+    assert.deepEqual(expiredTask?.events, []);
+    assert.equal(expiredTask?.logPath, "");
+    assert.equal(expiredTask?.logTail, "");
+  } finally {
+    await store.close();
+  }
+});
+
 test("automation setup links remain stable without loading the ledger", () => {
   assert.equal(
     automationSetupGuideLink("maicoin", "api-guide", "en")?.url,

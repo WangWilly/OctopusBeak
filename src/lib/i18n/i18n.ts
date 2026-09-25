@@ -543,7 +543,27 @@ const en = {
     syncStage: "Sync data",
     expandStage: (stage: string) => `Expand ${stage}`,
     collapseStage: (stage: string) => `Collapse ${stage}`,
+    runDetails: "Run details",
     inlineLogTitle: (task: string) => `${task} · Live logs`,
+    workflowEventTitle: (task: string) => `${task} · Workflow events`,
+    workflowEventEmpty: "No recent workflow events remain.",
+    workflowEventCounts: (completed: number | undefined, total: number | undefined) =>
+      completed !== undefined && total !== undefined
+        ? `${completed} / ${total}`
+        : completed !== undefined
+          ? `${completed} completed`
+          : total !== undefined
+            ? `${total} total`
+            : "",
+    workflowStages: {
+      preparation: "Preparation",
+      authentication: "Authentication",
+      collection: "Collection",
+      decoding: "Decoding",
+      validation: "Validation",
+      commit: "Commit",
+      finalization: "Finalization",
+    } as Record<string, string>,
     credentialsTitle: "Sign-in details",
     credentialsDescription: "Your sign-in details stay on this device.",
     cathayGmailOtpTitle: "Cathay Gmail OTP",
@@ -1403,7 +1423,27 @@ const zh: typeof en = {
     syncStage: "同步資料",
     expandStage: (stage) => `展開${stage}`,
     collapseStage: (stage) => `收合${stage}`,
+    runDetails: "執行明細",
     inlineLogTitle: (task) => `${task}・即時日誌`,
+    workflowEventTitle: (task) => `${task}・工作流程事件`,
+    workflowEventEmpty: "目前沒有保留中的工作流程事件。",
+    workflowEventCounts: (completed, total) =>
+      completed !== undefined && total !== undefined
+        ? `${completed} / ${total}`
+        : completed !== undefined
+          ? `已完成 ${completed}`
+          : total !== undefined
+            ? `共 ${total}`
+            : "",
+    workflowStages: {
+      preparation: "準備",
+      authentication: "驗證身分",
+      collection: "收集資料",
+      decoding: "解碼",
+      validation: "檢查資料",
+      commit: "寫入資料庫",
+      finalization: "完成",
+    } as Record<string, string>,
     credentialsTitle: "登入資料",
     credentialsDescription: "登入資料只儲存在這台裝置上。",
     cathayGmailOtpTitle: "國泰 Gmail 驗證碼",
