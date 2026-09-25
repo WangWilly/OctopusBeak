@@ -1,19 +1,10 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
-import { emitAutomationProgress } from "../lib/automation/progress.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -227,26 +218,7 @@ export function normalizeLineBankFinancialCapture(
   });
 }
 
-const statementHeaders = [
-  "帳務日期",
-  "交易日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-  "匯率",
-];
-
 const dateSchema = z.string().regex(/^\d{8}$/);
-
-const inputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
-  accountFilters: z.array(z.string()).default([]),
-  currencyFilters: z.array(z.string()).default([]),
-});
 
 const typedInputSchema = z.object({
   credentials: z.object({
@@ -258,33 +230,6 @@ const typedInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-});
-
-const downloadSchema = z.object({
-  accountId: z.string(),
-  account: z.string(),
-  currency: z.string(),
-  kind: z.enum(["domestic", "foreign"]),
-  queryPeriods: z.array(z.string()),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.object({
-    startDate: dateSchema,
-    endDate: dateSchema,
-  }),
-  count: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-  downloads: z.array(downloadSchema),
 });
 
 type DateRange = {
@@ -424,7 +369,7 @@ export type LineBankTransactionsResponse = {
 };
 
 /** A page preserves the source response envelope instead of reducing it to
- * rendered CSV rows. The canonical contract uses these counts to prove that
+ * rendered statement rows. The canonical contract uses these counts to prove that
  * the requested range was completely collected before admitting any record. */
 export type LineBankTransactionPage = {
   pageNbr: number;
@@ -437,37 +382,15 @@ export type LineBankTransactionPage = {
   responseMessage?: string;
 };
 
-type LineBankDownload = z.infer<typeof downloadSchema>;
-
 export type LineBankStatementRow = {
   sortKey: string;
   values: string[];
 };
 
-let lastTimestamp = 0;
-
 function cleanText(value: unknown): string {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 function dateFromYYYYMMDD(value: string): Date {
@@ -517,7 +440,7 @@ function defaultEndDate(): string {
   ].join("");
 }
 
-function resolveDateRange(input: z.infer<typeof inputSchema>): DateRange {
+function resolveDateRange(input: LineBankProviderWorkflowInput): DateRange {
   const endDate = input.endDate ?? defaultEndDate();
   const startDate =
     input.startDate ??
@@ -707,19 +630,6 @@ function amountColumns(row: LineBankTransactionRow): [string, string] {
   const amount = rawAmount.replace(/^-/, "");
   if (!amount) return ["", ""];
   return row.dpstWdrwDsCd === "1" ? ["", amount] : [amount, ""];
-}
-
-function compareRowsDesc(
-  left: LineBankStatementRow,
-  right: LineBankStatementRow,
-) {
-  return right.sortKey.localeCompare(left.sortKey);
-}
-
-export function linebankSortStatementRows(
-  rows: LineBankStatementRow[],
-): LineBankStatementRow[] {
-  return [...rows].sort(compareRowsDesc);
 }
 
 function linebankSourceEnvelope(
@@ -937,12 +847,6 @@ export function linebankValidateTransactionPageSequence(
   }
 }
 
-export function linebankStatementRowsToCsv(
-  rows: LineBankStatementRow[],
-): string {
-  return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
-}
-
 function exactLinebankAmount(value: number | string | undefined, label: string): string {
   if (typeof value === "number")
     throw new Error(`LINE Bank foreign ${label} must remain an exact decimal string.`);
@@ -1088,10 +992,6 @@ function filterAccounts(
   });
 }
 
-function queryPeriod(dateRange: DateRange): string {
-  return `${formatSlashDate(dateRange.startDate)} ~ ${formatSlashDate(dateRange.endDate)}`;
-}
-
 function transactionLinkLocator(page: Page): Locator {
   return page.getByRole("link", { name: "帳戶交易明細查詢" });
 }
@@ -1176,46 +1076,6 @@ function requireLineBankCredential(
   return value;
 }
 
-/** Sign in from a clean headless session using the declared device-local credentials. */
-export async function linebankSignIn(
-  page: Page,
-  credentials: LineBankCredentials,
-): Promise<void> {
-  if (await linebankIsSignedIn(page)) return;
-
-  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
-  const userId = requireLineBankCredential(credentials, "linebank_account");
-  const password = requireLineBankCredential(credentials, "linebank_password");
-  if (new URL(page.url()).pathname !== "/login") {
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-  }
-
-  await page.locator("#nationalId").fill(nationalId);
-  await page.locator("#userId").fill(userId);
-  await page.locator("#pw").fill(password);
-
-  const loginButtons = page.getByRole("button", {
-    name: "登入友善網路銀行",
-    exact: true,
-  });
-  if ((await loginButtons.count()) !== 1) {
-    throw new Error("LINE Bank login requires exactly one submit button.");
-  }
-  const loginButton = loginButtons.first();
-  if (!(await loginButton.isVisible().catch(() => false))) {
-    throw new Error("LINE Bank login submit button is not visible.");
-  }
-  await loginButton.click();
-
-  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await linebankAutoDismissApprovedAlert(page);
-    if (await linebankIsSignedIn(page)) return;
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Timed out waiting for LINE Bank signed-in state.");
-}
-
 /** Enter the transaction stage only after authentication has completed. */
 export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/transaction") {
@@ -1253,12 +1113,12 @@ function responseCharset(headers: Readonly<Record<string, string>>): string {
 
 export class LineBankApiClient {
   private page: Page;
-  private text?: SourceTextPort;
+  private text: SourceTextPort;
   private signal?: AbortSignal;
 
   constructor(
     page: Page,
-    options: { text?: SourceTextPort; signal?: AbortSignal } = {},
+    options: { text: SourceTextPort; signal?: AbortSignal },
   ) {
     this.page = page;
     this.text = options.text;
@@ -1276,14 +1136,13 @@ export class LineBankApiClient {
     headers: Record<string, string>;
   }> {
     const response = await withAbort(this.page.evaluate<{
-      body?: string;
       bodyBytes?: number[];
       url: string;
       status: number;
       method: string;
       headers: Record<string, string>;
-    }, { path: string; body?: unknown; includeBytes: boolean }>(
-      async ({ path, body, includeBytes }) => {
+    }, { path: string; body?: unknown }>(
+      async ({ path, body }) => {
         const headers = {
           accept: "application/json",
           chnldscd: "IBK",
@@ -1307,22 +1166,15 @@ export class LineBankApiClient {
           responseHeaders[key] = value;
         });
         return {
-          ...(includeBytes
-            ? { bodyBytes: Array.from(new Uint8Array(await response.arrayBuffer())) }
-            : { body: await response.text() }),
+          bodyBytes: Array.from(new Uint8Array(await response.arrayBuffer())),
           url: response.url,
           status: response.status,
           method: init.method ?? "GET",
           headers: responseHeaders,
         };
       },
-      { path, body: options?.body, includeBytes: Boolean(this.text) },
+      { path, body: options?.body },
     ), this.signal);
-    if (!this.text) {
-      if (typeof response.body !== "string")
-        throw new Error("LINE Bank API response body is unavailable.");
-      return { ...response, body: response.body };
-    }
     if (!Array.isArray(response.bodyBytes))
       throw new Error("LINE Bank source response bytes are unavailable.");
     const body = this.text.decode(
@@ -1341,7 +1193,7 @@ export class LineBankApiClient {
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${path}`);
     const value = parseLinebankApiJson<T>(response.body);
-    this.text?.assertIntact(JSON.stringify(value));
+    this.text.assertIntact(JSON.stringify(value));
     return value;
   }
 
@@ -1354,7 +1206,7 @@ export class LineBankApiClient {
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
     const payload = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
-    this.text?.assertIntact(JSON.stringify(payload));
+    this.text.assertIntact(JSON.stringify(payload));
     if (payload.code !== "200") {
       throw new Error(
         `LINE Bank account list failed: ${payload.message ?? "unknown"}`,
@@ -1462,73 +1314,11 @@ export class LineBankApiClient {
     return pages;
   }
 
-  async fetchTransactions(
-    account: LineBankAccount,
-    dateRange: DateRange,
-  ): Promise<LineBankTransactionRow[]> {
-    const pages = await this.fetchTransactionPages(account, dateRange);
-    return pages.flatMap((page) => page.rows);
-  }
-}
-
-async function writeStatementFiles(
-  account: LineBankAccount,
-  queryPeriods: string[],
-  rows: LineBankStatementRow[],
-): Promise<LineBankDownload> {
-  const currency = linebankAccountCurrency(account);
-  const kind = currency === "TWD" ? "domestic" : "foreign";
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    kind === "domestic" ? "linebank-statements" : "linebank-foreign-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${safeFilename(accountId(account))}-${currency}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, linebankStatementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: `${accountId(account)} ${accountLabel(account)}`.trim(),
-        查詢期間: queryPeriods,
-        分行名稱: "LINE Bank",
-        幣別: currency,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    accountId: accountId(account),
-    account: accountLabel(account),
-    currency,
-    kind,
-    queryPeriods,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
 }
 
 /** Build the privacy-bounded v13 canonical capture for one personal TWD
  * account/range. Shared-member captures remain outside the first admission
- * contract and are skipped without affecting statement downloads. */
+ * contract and are rejected during typed source admission. */
 export async function linebankHumanAttestedCapture(input: {
   account: LineBankAccount;
   dateRange: DateRange;
@@ -1567,140 +1357,6 @@ export async function linebankHumanAttestedCapture(input: {
     );
   }
   return validation.capture;
-}
-
-async function downloadLineBankStatements(
-  page: Page,
-  input: z.infer<typeof inputSchema>,
-): Promise<z.infer<typeof outputSchema>> {
-  const dateRange = resolveDateRange(input);
-  const windows = linebankQueryWindows(dateRange);
-  const apiClient = new LineBankApiClient(page);
-  const accountSnapshot = await apiClient.fetchAccountSnapshot();
-  const accounts = filterAccounts(
-    accountSnapshot.accounts,
-    input.accountFilters,
-    input.currencyFilters,
-  );
-
-  if (accounts.length === 0) {
-    throw new Error(
-      "No LINE Bank accounts matched accountFilters/currencyFilters.",
-    );
-  }
-  const selectedAccountKeys = new Set(
-    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
-  );
-  const currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
-    selectedAccountKeys.has(linebankAccountKey(row.account)),
-  );
-
-  const downloads: LineBankDownload[] = [];
-  const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-  const foreignCanonicalCaptures: ForeignCurrencyDepositCaptureInput[] = [];
-  const captureOccurrenceId = randomUUID();
-  for (const account of accounts) {
-    const rows: LineBankStatementRow[] = [];
-    for (const window of windows) {
-      const pages = await apiClient.fetchTransactionPages(account, window);
-      rows.push(
-        ...linebankApiRowsToStatementRows(pages.flatMap((page) => page.rows)),
-      );
-      if (linebankAccountCurrency(account) === "TWD") {
-        const capture = await linebankHumanAttestedCapture({
-          account,
-          dateRange: window,
-          pages,
-          captureId: `linebank-${randomUUID()}`,
-          observedAt: new Date().toISOString(),
-        });
-        if (capture) canonicalCaptures.push(capture);
-      } else {
-        foreignCanonicalCaptures.push(
-          buildLinebankForeignCurrencyCaptureInput({
-            account,
-            dateRange: window,
-            pages,
-            captureOccurrenceId,
-          }),
-        );
-      }
-    }
-    downloads.push(
-      await writeStatementFiles(
-        account,
-        windows.map(queryPeriod),
-        linebankSortStatementRows(rows),
-      ),
-    );
-  }
-
-  const client = requirePGliteChildRpcClientFromEnv();
-  try {
-    await client.ready;
-    const statementItems = [
-      ...canonicalCaptures.map((capture) => ({
-        provider: "linebank", product: "domestic-deposit", itemKey: capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-          request: { capture: normalizeLineBankFinancialCapture(capture) },
-        },
-      } as const)),
-      ...foreignCanonicalCaptures.map((capture, index) => ({
-        provider: "linebank", product: "foreign-currency",
-        itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
-        command: {
-          kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-          request: { capture: admitForeignCurrencyDepositCapture(capture) },
-        },
-      } as const)),
-    ];
-    const statements = await executePGliteWorkflowRun({
-      client: client.workflow, items: statementItems,
-      provider: "linebank", product: "financial",
-    });
-    if (statements.status !== "completed")
-      throw new Error(`LINE Bank PGlite commit ${statements.status}: ${statements.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-    let balanceItems: PGliteWorkflowRunItem[] = [];
-    if (currentBalanceRows.length > 0 && canonicalCaptures.length > 0) {
-      const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
-        currentBalanceRows,
-        canonicalCaptures.map((capture) => ({
-          accountKey: capture.accountKey,
-          sourceConnection: capture.sourceConnection,
-          identityEpoch: capture.identityEpoch,
-          observedAt: capture.observedAt,
-        })),
-      );
-      balanceItems = currentBalanceCaptures.map((capture, index) => ({
-        provider: "linebank", product: "current-balance",
-        itemKey: `current-balance:${index}`,
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(capture)),
-        },
-      }));
-    }
-    const balances = await executePGliteWorkflowRun({
-      client: client.workflow, items: balanceItems,
-      provider: "linebank", product: "current-balance",
-    });
-    if (balances.status !== "completed")
-      throw new Error(`LINE Bank PGlite balance commit ${balances.status}: ${balances.diagnostics.map((d) => `${d.stage}/${d.errorCode}`).join(", ")}`);
-    const canonicalCaptureCount = [...statements.items, ...balances.items].reduce(
-      (count, item) => count + (item.status === "committed" ? item.admissionSummaries.length : 0), 0,
-    );
-    return {
-      dateRange,
-      count: downloads.length,
-      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-      canonicalCaptureCount,
-      downloads,
-    };
-  } finally {
-    client.close();
-  }
-
 }
 
 function linebankHumanVerificationStage(page: Page) {
@@ -2100,31 +1756,3 @@ export async function runLineBankProviderWorkflow(
     };
   });
 }
-
-export default workflow("linebankStatements", {
-  startUrl: LOGIN_URL,
-  credentials: ["linebank_user_id", "linebank_account", "linebank_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as z.infer<typeof inputSchema> & {
-      credentials: LineBankCredentials;
-    };
-    const { page } = ctx;
-
-    await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await linebankIsSignedIn(page),
-      signIn: async (signInContext) => {
-        await linebankSignIn(signInContext.page, input.credentials);
-      },
-    });
-
-    await linebankAutoDismissApprovedAlert(page);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 25, total: 100, percent: 25 });
-    await linebankEnsureTransactionPage(page);
-    const result = await downloadLineBankStatements(page, input);
-    emitAutomationProgress({ phaseCode: "workflow", completed: 100, total: 100, percent: 100 });
-    return result;
-  },
-});
