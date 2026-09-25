@@ -10,7 +10,23 @@ assert.match(
 assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.match(source, /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)/);
 assert.match(source, /hydrateAutomationRuntimeState\(operationalRuntime\.provider\)/);
-assert.match(source, /automationRuntimeReady\.then\(\(\) => scheduler\?\.start\(\)\)/);
+assert.match(
+  source,
+  /recoverAbandonedAutomationSessions\(operationalRuntime\.provider\)[\s\S]*?\.then\(\(\) => hydrateAutomationRuntimeState\(operationalRuntime\.provider\)\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/,
+);
+assert.match(
+  source,
+  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*\}\)/,
+);
+assert.match(
+  source,
+  /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*scheduler\?\.stop\(\);/,
+);
+assert.match(source, /app\.on\("before-quit", handleBeforeQuit\)/);
+assert.match(
+  source,
+  /hasOccurrenceBeenAttempted:\s*\(occurrenceUtc\)\s*=>\s*operationalRuntime\.provider\.automation\.hasOccurrenceBeenAttempted\(\s*"exchange-rates",\s*occurrenceUtc,?\s*\)/,
+);
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
 assert.match(source, /if \(!cdpFixture\)/);
 assert.doesNotMatch(
