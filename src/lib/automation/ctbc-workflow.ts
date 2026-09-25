@@ -4,7 +4,7 @@ import {
   type CtbcProviderWorkflowOutput,
 } from "../../workflows/ctbc-statements.ts";
 
-/** Typed App-owned CTBC definition; the Libretto command remains during migration. */
+/** Typed App-owned definition for CTBC statement collection. */
 export const ctbcStatementsWorkflow: WorkflowDefinition<unknown, CtbcProviderWorkflowOutput> = {
   id: "ctbc-statements",
   requiresFinancialCommit: true,

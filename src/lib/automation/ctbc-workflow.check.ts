@@ -299,7 +299,7 @@ test("CTBC typed workflow supports injected human assistance and cancellation", 
   let runError: unknown;
   await runCtbcProviderWorkflow(context.context, input, {
     collectStatements: async () => ({
-      output: { count: 1, rowCount: 0, downloads: [] },
+      output: { count: 1, rowCount: 0 },
       captures: [],
     }),
   }).catch((error: unknown) => { runError = error; });
