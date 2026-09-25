@@ -1,5 +1,6 @@
 import { einvoicePersonalInvoicesWorkflow } from "../einvoice-workflow.ts";
 import { esunCreditCardStatementsWorkflow } from "../esun-credit-card-workflow.ts";
+import { hncbDomesticDepositWorkflow } from "../hncb-workflow.ts";
 import { ctbcStatementsWorkflow } from "../ctbc-workflow.ts";
 import { linebankStatementsWorkflow } from "../linebank-workflow.ts";
 import { postDomesticDepositWorkflow } from "../post-workflow.ts";
@@ -168,6 +169,19 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
         provider,
         settings: readAutomationSettings(),
       });
+    },
+  },
+  {
+    definition: hncbDomesticDepositWorkflow,
+    startUrl: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private",
+    inputFromEnvironment(environment) {
+      return {
+        credentials: {
+          hncb_user_id: environment.LIBRETTO_CLOUD_HNCB_USER_ID ?? "",
+          hncb_account: environment.LIBRETTO_CLOUD_HNCB_ACCOUNT ?? "",
+          hncb_password: environment.LIBRETTO_CLOUD_HNCB_PASSWORD ?? "",
+        },
+      };
     },
   },
   {

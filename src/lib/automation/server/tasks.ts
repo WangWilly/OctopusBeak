@@ -1009,13 +1009,9 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "hncb-statements",
     label: "HNCB statements",
-    script: "run:hncb-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/hncb-statements.ts",
-      "--headless",
-    ],
+    script: "workflow:hncb-statements",
+    command: [],
+    workflowId: "hncb-statements",
     kind: "crawler",
     credentialGroupId: "hncb",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[5].credentialKeys,

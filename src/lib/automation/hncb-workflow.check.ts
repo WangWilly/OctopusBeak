@@ -56,7 +56,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
         <form method="POST" action="/netbank/servlet/TrxDispatcher?export=1">
           <input name="excel_download" value="52">
         </form>
-        <script>window.doSubmit = () => document.forms[0].submit();</script>
+        <script>window.doSubmit = () => { console.info("hncb-export-submit"); setTimeout(() => document.forms[0].submit(), 0); };</script>
       </body></html>`);
       return;
     }
@@ -81,10 +81,21 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   const origin = `http://127.0.0.1:${address.port}`;
   const browser = await chromium.launch();
   let downloadEvents = 0;
+  let browserSubmissions = 0;
+  let submitInvocations = 0;
   const outputDir = await mkdtemp(join(tmpdir(), "hncb-memory-workflow-"));
   try {
     const page = await browser.newPage();
-    page.on("popup", (popup) => popup.on("download", () => { downloadEvents += 1; }));
+    page.on("popup", (popup) => {
+      popup.on("download", () => { downloadEvents += 1; });
+      popup.on("console", (message) => {
+        if (message.text() === "hncb-export-submit") submitInvocations += 1;
+      });
+      popup.on("request", (request) => {
+        if (request.method() === "POST" && request.url().includes("/netbank/servlet/TrxDispatcher"))
+          browserSubmissions += 1;
+      });
+    });
     await page.goto(`${origin}/start`);
     const openExportLink = async () => {
       await page.setContent(`<a target="_blank" href="${origin}/popup?doSubmit=5">匯出</a>`);
@@ -152,6 +163,8 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     assert.equal(statementResponse?.status, 200);
     assert.equal(statementResponse?.contentType, "application/vnd.ms-excel; charset=big5");
     assert.equal(postCount, 1);
+    assert.equal(browserSubmissions, 1, "the export form is submitted once in the browser");
+    assert.equal(submitInvocations, 1, "the provider's export submit action is invoked once");
     assert.equal(commitItems.length, 1);
     assert.equal(commitItems[0]?.length, 1);
     assert.ok(events.some((event) => event.stage === "commit" && event.code === "canonical-commit-completed"));
