@@ -18,6 +18,7 @@ import {
 } from "./yuanta-auth.ts";
 import {
   runYuantaStatements,
+  yuantaObservedAt,
   yuantaStatementsInputSchema,
   type YuantaDepositWorkflowCollection,
 } from "./yuanta-statements.ts";
@@ -152,7 +153,7 @@ async function collectYuantaDepositForApp(
   return await runYuantaStatements(page, parsedInput, {
     sourceConnectionScope: identity.sourceConnectionScope,
     sourceConnectionKey: identity.sourceConnectionKey,
-    observedAt: context.now,
+    observedAt: () => yuantaObservedAt(new Date(context.now())),
     deferredCommitItems: items,
     sourceText: context.text,
     signal: context.signal,

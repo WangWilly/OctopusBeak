@@ -609,12 +609,36 @@ async function readBig5CsvFromAnchor(
       async (element, maxBytes): Promise<BrowserCsvResponse> => {
         const anchor = element as HTMLAnchorElement;
         const href = anchor.getAttribute("href")?.trim();
-        if (!href || /^(?:javascript|data):/iu.test(href)) {
-          throw new Error("Yuanta domestic CSV link has no fetchable URL.");
-        }
         const documentUrl = new URL(anchor.ownerDocument.baseURI);
         const pageOrigin = anchor.ownerDocument.location.origin;
-        const url = new URL(href, documentUrl);
+        let url: URL;
+        let requestBody: URLSearchParams | undefined;
+        if (
+          /^javascript:void\(0\);?$/iu.test(href ?? "") &&
+          /^\s*getDownload\(\s*['"]csv['"]\s*\)\s*;?\s*$/iu.test(anchor.getAttribute("onclick") ?? "")
+        ) {
+          const form = anchor.ownerDocument.querySelector('form[name="jform"]') as HTMLFormElement | null;
+          if (!form || form.method.toLowerCase() !== "post") {
+            throw new Error("Yuanta domestic CSV export form is unavailable.");
+          }
+          url = new URL(form.action, documentUrl);
+          if (!/\/transactiondetails$/iu.test(url.pathname)) {
+            throw new Error("Yuanta domestic CSV export form has an unexpected action.");
+          }
+          url.searchParams.set("method", "downloadcsv");
+          requestBody = new URLSearchParams();
+          for (const [name, value] of new FormData(form)) {
+            if (typeof value !== "string") {
+              throw new Error("Yuanta domestic CSV export form contains a file input.");
+            }
+            requestBody.append(name, value);
+          }
+        } else {
+          if (!href || /^(?:javascript|data):/iu.test(href)) {
+            throw new Error("Yuanta domestic CSV link has no fetchable URL.");
+          }
+          url = new URL(href, documentUrl);
+        }
         if (
           !["http:", "https:"].includes(url.protocol) ||
           url.username.length > 0 ||
@@ -625,6 +649,7 @@ async function readBig5CsvFromAnchor(
         }
 
         const fetched = await fetch(url.href, {
+          ...(requestBody ? { method: "POST", body: requestBody } : {}),
           mode: "same-origin",
           credentials: "same-origin",
           cache: "no-store",
