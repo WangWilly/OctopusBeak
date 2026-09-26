@@ -105,6 +105,7 @@ function context(
 }
 
 const input = {
+  managedIdentitySecret: "synthetic-fubon-managed-secret",
   credentials: {
     fubon_user_id: "synthetic-id",
     fubon_account: "synthetic-account",

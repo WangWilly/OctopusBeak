@@ -147,6 +147,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
     startUrl: "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces",
     inputFromEnvironment(environment) {
       return {
+        managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
         credentials: {
           fubon_user_id: environment.LIBRETTO_CLOUD_FUBON_USER_ID ?? "",
           fubon_account: environment.LIBRETTO_CLOUD_FUBON_ACCOUNT ?? "",
