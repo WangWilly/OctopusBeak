@@ -404,6 +404,7 @@ export async function runCaptchaRetryCampaign(
 
   let executionOptions: AutomationTaskExecutionOptions = {
     ...dependencies.initialExecutionOptions,
+    launchVerificationSettings,
   };
   while (true) {
     const routed = await executeAndRoute(executionOptions);
@@ -547,6 +548,7 @@ export async function runCaptchaRetryCampaign(
       }
       executionOptions = {
         ...dependencies.initialExecutionOptions,
+        launchVerificationSettings,
         taskRunId,
         attempt: nextRound,
         maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,

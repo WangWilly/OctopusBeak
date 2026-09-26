@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { automationConfigEnv } from "./config-files.ts";
+import { automationConfigEnv, type AutomationSettingsFile } from "./config-files.ts";
 import {
   finalizeAutomationTaskRun,
   type AutomationTaskExecutionResult,
@@ -9,6 +9,7 @@ import {
   type AutomationPersistencePort,
 } from "./store.ts";
 import { taskById } from "./tasks.ts";
+import { automationGroupVerificationActors } from "./settings.ts";
 import type { AutomationTaskProgress } from "../types.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowExecutor } from "../workflow-executor.ts";
@@ -56,6 +57,7 @@ export type AutomationTaskExecutionOptions = {
   taskRunId?: string;
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
+  launchVerificationSettings?: AutomationSettingsFile;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
   attempt?: number;
@@ -84,6 +86,15 @@ export type AutomationTaskExecutionOptions = {
     startUrl?: string;
   }) => WorkflowBrowserPort;
 };
+
+function requiresSolverRoute(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+) {
+  const groupId = execution.task.credentialGroupId;
+  return groupId !== undefined
+    && automationGroupVerificationActors(options.launchVerificationSettings)[groupId] === "solver";
+}
 
 async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
@@ -169,6 +180,7 @@ async function executeInlineAppWorkflow(
           taskRunId: execution.run.taskRunId,
           persistence: execution.persistence,
           onRuntimeUpdate: execution.onRuntimeUpdate,
+          requireSolverRoute: requiresSolverRoute(execution, options),
         }),
       ...(financialCommit ? { financialCommit } : {}),
       events: injectedPorts.events ?? {
@@ -386,6 +398,7 @@ async function executeSupervisedAppWorkflow(
       taskRunId: execution.run.taskRunId,
       persistence: execution.persistence,
       onRuntimeUpdate: execution.onRuntimeUpdate,
+      requireSolverRoute: requiresSolverRoute(execution, options),
     });
     unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
       workflowId,

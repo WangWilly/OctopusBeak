@@ -3,6 +3,7 @@ import type {
   HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { WorkflowHumanAssistancePort } from "../workflow-executor.ts";
+import { isSolverChallengeKind } from "../verification-config.ts";
 import type { AutomationPersistencePort } from "./store.ts";
 
 type PendingAssistance = Readonly<{
@@ -43,6 +44,7 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
   taskRunId: string;
   persistence: AutomationPersistencePort;
   onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  requireSolverRoute?: boolean;
   onRequest?: (
     contract: HumanAssistanceContractInput,
     signal: AbortSignal,
@@ -81,6 +83,15 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
         if (!current || current.status !== "running") {
           throw new Error("App workflow is not active for human assistance.");
         }
+        const registeredHandler = requestHandlers.get(current.taskId);
+        if (
+          input.requireSolverRoute
+          && isSolverChallengeKind(contract.challengeKind)
+          && !input.onRequest
+          && !registeredHandler
+        ) {
+          throw new Error("App workflow solver route is unavailable for this challenge.");
+        }
         await input.persistence.updateHumanAssistanceContract(input.taskRunId, contract);
         const transition = await input.persistence.transitionTaskRunToActive(
           input.taskRunId,
@@ -91,7 +102,6 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
         }
         await input.onRuntimeUpdate?.(input.taskRunId);
         signal.throwIfAborted();
-        const registeredHandler = requestHandlers.get(current.taskId);
         if (input.onRequest || registeredHandler) {
           void Promise.resolve()
             .then(() => input.onRequest

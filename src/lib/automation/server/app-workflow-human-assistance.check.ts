@@ -107,6 +107,41 @@ test("App workflow assistance rejects a failed host route instead of leaving a d
   }
 });
 
+test("solver challenges fail when the App has no registered route", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  const controller = new AbortController();
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const assistance = createAppWorkflowHumanAssistancePort({
+      taskRunId: created.taskRunId,
+      persistence: provider.automation,
+      requireSolverRoute: true,
+    });
+    await assert.rejects(
+      Promise.race([
+        assistance.request(contract, controller.signal),
+        new Promise<never>((_resolve, reject) => setTimeout(
+          () => reject(new Error("Unrouted solver challenge did not fail")),
+          1_000,
+        )),
+      ]),
+      /solver route is unavailable/u,
+    );
+  } finally {
+    controller.abort();
+    await store.close();
+  }
+});
+
 test("App workflow assistance dispatches the registered route by task and live run ID", async () => {
   const store = new PGliteStore(await PGlite.create());
   try {
