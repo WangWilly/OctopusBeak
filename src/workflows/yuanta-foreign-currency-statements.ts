@@ -16,6 +16,7 @@ import {
   type DefaultTreeAdapterTypes,
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { readYuantaBig5CsvFromAnchor } from "./yuanta-statements.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -2497,42 +2498,15 @@ async function downloadTransactionRowsInMemory(
   if (!control)
     throw new Error("Yuanta foreign-currency export control changed before in-memory retrieval.");
 
-  const response = await control.evaluate(
-    async (element, expectedOrigin) => {
-      const href = element.getAttribute("href")?.trim();
-      if (!href || href.toLowerCase().startsWith("javascript:"))
-        throw new Error("Yuanta foreign-currency export has no fetchable same-origin URL.");
-      const url = new URL(href, element.ownerDocument.baseURI);
-      if (url.origin !== expectedOrigin)
-        throw new Error("Yuanta foreign-currency export left the bank origin.");
-      const result = await fetch(url, {
-        credentials: "same-origin",
-        cache: "no-store",
-        redirect: "follow",
-      });
-      if (new URL(result.url).origin !== expectedOrigin)
-        throw new Error("Yuanta foreign-currency export redirected outside the bank origin.");
-      if (!result.ok)
-        throw new Error("Yuanta foreign-currency export request failed.");
-      const bytes = new Uint8Array(await result.arrayBuffer());
-      if (bytes.byteLength > 25 * 1024 * 1024)
-        throw new Error("Yuanta foreign-currency export exceeded the in-memory size limit.");
-      let binary = "";
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-      }
-      return {
-        status: result.status,
-        contentType: result.headers.get("content-type") ?? "",
-        base64: btoa(binary),
-      };
-    },
-    new URL(YUANTA_ENTRY_URL).origin,
-  );
+  const controlOrigin = await control.evaluate((element) => element.ownerDocument.location.origin);
+  if (controlOrigin !== new URL(YUANTA_ENTRY_URL).origin)
+    throw new Error("Yuanta foreign-currency export left the bank origin.");
   signal?.throwIfAborted();
-  if (response.status !== 200)
-    throw new Error("Yuanta foreign-currency export returned an unexpected status.");
-  const content = sourceText.decode(Buffer.from(response.base64, "base64"), "big5");
+  const content = (await readYuantaBig5CsvFromAnchor(
+    control,
+    sourceText,
+    signal ?? new AbortController().signal,
+  )).content;
   sourceText.assertIntact(content);
   const rows = transactionRowsFromDownloadedCsv(
     content,

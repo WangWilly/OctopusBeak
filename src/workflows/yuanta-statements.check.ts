@@ -617,6 +617,7 @@ type FixtureBodyMode =
   | "slow";
 let fixtureHref: string | null = "/export.csv";
 let fixtureJavaScriptExport = false;
+let fixtureForeignJavaScriptExport = false;
 let fixturePostCount = 0;
 let fixtureBaseHref: string | null = null;
 let fixtureBodyMode: FixtureBodyMode = "success";
@@ -635,7 +636,9 @@ const browserFixtureServer = createServer((request, response) => {
     const href = fixtureHref === null
       ? ""
       : ` href="${fixtureHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}"`;
-    response.end(fixtureJavaScriptExport
+    response.end(fixtureForeignJavaScriptExport
+      ? '<form name="mform" method="post" action="/fxtransactiondetails"><input id="txntype" name="txntype" type="hidden" value="query"><input type="hidden" name="cid" value="synthetic-cid"></form><a class="order_2 m_color_check" href="javascript:void(0);" onclick="getDownload(\'csv\');">下載CSV檔</a>'
+      : fixtureJavaScriptExport
       ? '<form name="jform" method="post" action="/transactiondetails"><input type="hidden" name="cid" value="synthetic-cid"></form><a class="order_2 m_color_check" href="javascript:void(0);" onclick="getDownload(\'csv\');">下載CSV檔</a>'
       : `${base}<a class="order_2 m_color_check"${href}>下載CSV檔</a>`);
     return;
@@ -647,6 +650,18 @@ const browserFixtureServer = createServer((request, response) => {
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
       assert.match(Buffer.concat(chunks).toString("utf8"), /cid=synthetic-cid/u);
+      response.writeHead(200, { "content-type": "text/csv; charset=big5" });
+      response.end(browserFixtureBytes);
+    });
+    return;
+  }
+  if (request.url === "/fxtransactiondetails" && request.method === "POST") {
+    fixturePostCount += 1;
+    fixtureCookie = request.headers.cookie;
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      assert.match(Buffer.concat(chunks).toString("utf8"), /txntype=downloadcsv/u);
       response.writeHead(200, { "content-type": "text/csv; charset=big5" });
       response.end(browserFixtureBytes);
     });
@@ -858,6 +873,12 @@ try {
     assert.equal(fixtureCookie, "yuanta-fixture-session=present");
     assert.equal(observedBrowserDownload, false);
     fixtureJavaScriptExport = false;
+    fixtureForeignJavaScriptExport = true;
+    const foreignFormExport = await collectFixture();
+    assert.equal(foreignFormExport.result.sourceCount, 1);
+    assert.equal(fixturePostCount, 2);
+    assert.equal(observedBrowserDownload, false);
+    fixtureForeignJavaScriptExport = false;
 
     for (const testCase of [
       { href: null, mode: "success" as const, error: /no fetchable URL/u },
