@@ -211,7 +211,7 @@ assert.equal(
   "sinopac.login.captcha-image",
 );
 assert.deepEqual(captchaSelectors, [
-  'input[id$="sino_keyword3"]',
+  'input[id$="sino_keyword3"], input[id$="_captcha"]',
   "#imgCode",
 ]);
 assert.equal(
