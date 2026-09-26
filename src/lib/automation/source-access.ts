@@ -5,3 +5,11 @@ export class SourceAccessChallengeError extends Error {
     this.name = "SourceAccessChallengeError";
   }
 }
+
+/** A provider explicitly reported that its source page is temporarily unavailable. */
+export class SourceUnavailableError extends Error {
+  constructor() {
+    super("Source login page is temporarily unavailable.");
+    this.name = "SourceUnavailableError";
+  }
+}
