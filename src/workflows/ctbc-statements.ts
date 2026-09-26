@@ -39,6 +39,7 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 
@@ -377,10 +378,29 @@ async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
     .catch(() => false), signal);
 }
 
-async function waitForLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
-  await withAbort(page.locator("form input[type=text]").first().waitFor({
+async function waitForLoginForm(
+  page: Page,
+  signal?: AbortSignal,
+  initialHttpStatus?: number,
+): Promise<void> {
+  const firstField = page.locator("form input[type=text]").first();
+  const unavailable = page.getByText(/系統忙碌中，請稍後再試/u).first();
+  const startedAt = Date.now();
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    if (await withAbort(unavailable.isVisible().catch(() => false), signal)) {
+      throw new SourceUnavailableError();
+    }
+    if (await withAbort(firstField.isVisible().catch(() => false), signal)) break;
+    if (initialHttpStatus === 202 && Date.now() - startedAt >= 10_000) {
+      throw new SourceUnavailableError();
+    }
+    await withAbort(page.waitForTimeout(200), signal);
+  }
+  await withAbort(firstField.waitFor({
     state: "visible",
-    timeout: 60_000,
+    timeout: Math.max(1, deadline - Date.now()),
   }), signal);
   await withAbort(page.locator("form input[type=password]").nth(1).waitFor({
     state: "visible",
@@ -427,8 +447,14 @@ async function signInCtbcForApp(
   const account = requireCredential(credentials, "ctbc_account");
   const password = requireCredential(credentials, "ctbc_password");
 
-  await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
-  await waitForLoginForm(page, context.signal);
+  const loginResponse = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
+  try {
+    await waitForLoginForm(page, context.signal, loginResponse?.status());
+  } catch (error) {
+    if (error instanceof SourceUnavailableError)
+      await context.event("authentication", "source-unavailable");
+    throw error;
+  }
   await withAbort(page.locator("form input[type=text]").first().fill(userId), context.signal);
   const passwordFields = page.locator("form input[type=password]");
   await withAbort(passwordFields.nth(0).fill(account), context.signal);

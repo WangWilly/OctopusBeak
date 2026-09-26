@@ -74,7 +74,8 @@ function createPage(options: {
     last() { return locator(selector, 0); },
     nth(value: number) { return locator(selector, value); },
     filter() { return this; },
-    isVisible: async () => selector === "#btnHeaderLogout" && signedIn,
+    isVisible: async () => selector === "form input[type=text]"
+      || (selector === "#btnHeaderLogout" && signedIn),
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? 1 : 0,
     textContent: async () => selector === "a.nav-link" ? "2026/08" : "帳戶餘額 0000314540554100",
@@ -96,7 +97,14 @@ function createPage(options: {
         if (index < 0) throw new Error("No synthetic CTBC App response matched.");
         return responses.splice(index, 1)[0]!;
       },
-      getByText: () => ({ click: async () => undefined, isVisible: async () => false }),
+      getByText: () => {
+        const textLocator = {
+          first() { return textLocator; },
+          click: async () => undefined,
+          isVisible: async () => false,
+        };
+        return textLocator;
+      },
       getByRole: () => ({ click: async () => undefined, waitFor: async () => undefined }),
       url: () => LOGIN_URL,
     }, { setSignedIn(value: boolean) { signedIn = value; } }) as unknown as Page & {

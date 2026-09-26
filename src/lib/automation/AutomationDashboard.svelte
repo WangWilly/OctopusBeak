@@ -1737,6 +1737,10 @@
                             <span>{$locale === "zh-TW"
                               ? "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。"
                               : "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying."}</span>
+                          {:else if task.appWorkflowOutcome.errorCode === "source-unavailable"}
+                            <span>{$locale === "zh-TW"
+                              ? "來源網站未提供可用的登入表單（系統忙碌或空白回應）。請稍後重試。"
+                              : "The provider did not return a usable login form (busy or blank response). Try again later."}</span>
                           {/if}
                         </p>
                       {/if}
@@ -2173,6 +2177,10 @@
                         <small>{$locale === "zh-TW"
                           ? "網站安全驗證阻擋登入"
                           : "Site verification blocked sign-in"}</small>
+                      {:else if run.appWorkflowOutcome.errorCode === "source-unavailable"}
+                        <small>{$locale === "zh-TW"
+                          ? "來源網站登入頁不可用"
+                          : "Provider login unavailable"}</small>
                       {/if}
                     {:else}--{/if}
                   </td>

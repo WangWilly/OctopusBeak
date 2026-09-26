@@ -49,6 +49,7 @@ const failureCodes = new Set([
   "source-integrity-failed",
   "source-validation-failed",
   "source-access-challenged",
+  "source-unavailable",
   "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
