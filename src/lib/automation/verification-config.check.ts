@@ -8,13 +8,13 @@ import {
   verificationActorForSource,
 } from "./verification-config.ts";
 
-test("a source without a configured actor defaults to human", () => {
-  assert.equal(DEFAULT_VERIFICATION_ACTOR, "human");
+test("an App source with a verification actor key defaults to solver", () => {
+  assert.equal(DEFAULT_VERIFICATION_ACTOR, "solver");
   assert.equal(
     verificationActorForSource("LIBRETTO_CLOUD_FUBON_VERIFICATION_ACTOR", {}),
-    "human",
+    "solver",
   );
-  assert.equal(verificationActorForSource(undefined, {}), "human");
+  assert.equal(verificationActorForSource(undefined, {}), "solver");
 });
 
 test("an explicitly configured actor is read back", () => {
@@ -28,10 +28,10 @@ test("an explicitly configured actor is read back", () => {
   );
 });
 
-test("an unrecognized actor value falls back to human", () => {
+test("an unrecognized actor value falls back to solver", () => {
   assert.equal(
     verificationActorForSource("KEY", { KEY: "robot" }),
-    "human",
+    "solver",
   );
   assert.equal(
     verificationActorForSource("KEY", { KEY: "SOLVER" }),

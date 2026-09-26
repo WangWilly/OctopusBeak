@@ -788,7 +788,7 @@ A workflow-declared browser control or verification modal area that a Verificati
 _Avoid_: Generic editable target, nearest input target
 
 **Verification actor**:
-The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `human`; the two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
+The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `solver`; an explicit `human` setting is preserved. The two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
 _Avoid_: Viewer mode, interaction mode, fallback actor
 
 **Verification completion**:
