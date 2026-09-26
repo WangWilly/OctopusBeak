@@ -81,6 +81,7 @@ function context(
 }
 
 const input = {
+  managedIdentitySecret: "synthetic-yuanta-managed-secret",
   credentials: {
     yuanta_user_id: "synthetic-id",
     yuanta_account: "synthetic-account",

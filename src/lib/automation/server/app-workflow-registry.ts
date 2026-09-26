@@ -186,6 +186,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
     startUrl: "https://ebank.yuantabank.com.tw/nib/ibanc.jsp",
     inputFromEnvironment(environment) {
       return {
+        managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
         credentials: {
           yuanta_user_id: environment.LIBRETTO_CLOUD_YUANTA_USER_ID ?? "",
           yuanta_account: environment.LIBRETTO_CLOUD_YUANTA_ACCOUNT ?? "",

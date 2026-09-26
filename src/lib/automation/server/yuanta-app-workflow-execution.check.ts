@@ -11,6 +11,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -40,6 +41,7 @@ const syntheticEnvironment = () => ({
   [credentialKey("USER_ID")]: "synthetic-user-id",
   [credentialKey("ACCOUNT")]: "synthetic-account",
   [credentialKey("PASSWORD")]: "synthetic-password",
+  [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "synthetic-yuanta-managed-secret",
 });
 
 test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in details", async () => {
@@ -52,6 +54,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForTask(task.workflowId), YUANTA_ENTRY_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+    managedIdentitySecret: "synthetic-yuanta-managed-secret",
     credentials: {
       yuanta_user_id: "synthetic-user-id",
       yuanta_account: "synthetic-account",
