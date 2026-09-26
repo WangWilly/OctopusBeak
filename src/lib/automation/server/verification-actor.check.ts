@@ -16,21 +16,21 @@ import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.t
 
 const nonSecretKeys = AUTOMATION_NON_SECRET_KEYS as readonly string[];
 
-test("every supported source defaults its verification actor to human", () => {
+test("every supported source defaults its verification actor to solver", () => {
   const actors = automationGroupVerificationActors({});
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
-    assert.equal(actors[group.id], "human");
+    assert.equal(actors[group.id], "solver");
   }
 });
 
-test("a per-source actor override is read back while others stay human", () => {
+test("a per-source human override is read back while others stay solver", () => {
   const fubon = AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "fubon");
   assert.ok(fubon?.verificationActorKey);
   const actors = automationGroupVerificationActors({
-    [fubon.verificationActorKey!]: "solver",
+    [fubon.verificationActorKey!]: "human",
   });
-  assert.equal(actors.fubon, "solver");
-  assert.equal(actors.esun, "human");
+  assert.equal(actors.fubon, "human");
+  assert.equal(actors.esun, "solver");
 });
 
 test("verification actor and confidence threshold keys are operational settings", () => {
