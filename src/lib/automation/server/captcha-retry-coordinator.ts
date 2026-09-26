@@ -227,11 +227,18 @@ async function prepareCaptchaRetryRound(
 }
 
 const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
+const TEXT_CAPTCHA_APP_TASK_IDS = new Set([
+  "fubon-all-statements",
+  "yuanta-all-statements",
+  "hncb-statements",
+  "post-statements",
+  "einvoice-personal-invoices",
+  "sinopac-statements",
+]);
 
 /**
- * Coordinate the typed App SinoPac CAPTCHA campaign around single workflow
- * executions. Other browser workflows own their assistance handlers; the two
- * nonbrowser workflows execute once and never enter verification routing.
+ * Coordinate App text-CAPTCHA campaigns around single workflow executions.
+ * The two nonbrowser workflows execute once and never enter verification routing.
  */
 export async function runCaptchaRetryCampaign(
   dependencies: CaptchaRetryCoordinatorDependencies,
@@ -254,9 +261,10 @@ export async function runCaptchaRetryCampaign(
   }
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const routesSinopacCaptcha = appWorkflow && taskId === "sinopac-statements";
+  const routesTextCaptcha = appWorkflow && TEXT_CAPTCHA_APP_TASK_IDS.has(taskId);
+  const routesSinopacCaptcha = taskId === "sinopac-statements";
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
-  const executeAppSinopacAndRoute = async (
+  const executeAppCaptchaAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
   ): Promise<{
     execution: CaptchaRetryExecutionResult;
@@ -299,12 +307,16 @@ export async function runCaptchaRetryCampaign(
                   request.signal.throwIfAborted();
                   throw new Error(message);
                 },
-                providerProbePostSubmit: appSinopacPostSubmitProbe(
-                  provider,
-                  request.taskRunId,
-                  request.signal,
-                ),
-                humanFallbackOnSolverExhausted: true,
+                providerProbePostSubmit: routesSinopacCaptcha
+                  ? appSinopacPostSubmitProbe(
+                      provider,
+                      request.taskRunId,
+                      request.signal,
+                    )
+                  : async (_viewerKey, _contract, resume) => {
+                      await resume();
+                      return "none";
+                    },
                 onChallengeCaptured: async () => {
                   const executionId = appExecutionOptions.executionId;
                   campaign = recordCapturedChallenge(campaign, executionId);
@@ -318,7 +330,10 @@ export async function runCaptchaRetryCampaign(
                 settings: launchVerificationSettings,
               });
               routing = routeOutcome;
-              if (routeOutcome.kind === "human" || routeOutcome.kind === "resumed") {
+              if (
+                routesSinopacCaptcha
+                && (routeOutcome.kind === "human" || routeOutcome.kind === "resumed")
+              ) {
                 routing = await waitForAppSinopacPostSubmitOutcome({
                   provider,
                   taskRunId: request.taskRunId,
@@ -344,8 +359,16 @@ export async function runCaptchaRetryCampaign(
               if (routing.kind === "failed") {
                 throw new Error("App workflow verification route failed closed.");
               }
+              if (
+                routing.kind === "retryable"
+                && routing.reason === "solver-exhausted"
+              ) {
+                // Reject the worker's pending assistance stage. The worker
+                // cleans up its browser before the coordinator opens a new round.
+                throw new Error("App workflow solver exhausted this challenge.");
+              }
             } catch (error) {
-              if (!request.signal.aborted) routing = { kind: "failed" };
+              if (!request.signal.aborted && !routing) routing = { kind: "failed" };
               throw error;
             }
           })();
@@ -373,8 +396,8 @@ export async function runCaptchaRetryCampaign(
     execution: CaptchaRetryExecutionResult;
     routing?: VerificationRoutingOutcome;
   }> => {
-    if (routesSinopacCaptcha) {
-      return executeAppSinopacAndRoute(executionOptions);
+    if (routesTextCaptcha) {
+      return executeAppCaptchaAndRoute(executionOptions);
     }
     return { execution: await execute(executionOptions) };
   };
