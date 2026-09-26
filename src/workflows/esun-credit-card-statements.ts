@@ -1118,6 +1118,7 @@ export type EsunProviderWorkflowOutput = Readonly<{
 }>;
 
 const typedInputSchema = z.object({
+  managedIdentitySecret: z.string().trim().min(1),
   credentials: z.object({
     esun_user_id: z.string().trim().min(1),
     esun_account: z.string().trim().min(1),
@@ -1312,8 +1313,7 @@ export async function runEsunCreditCardProviderWorkflow(
       total: rows.length,
     });
 
-    const managedSecret = optionalEsunManagedSecret();
-    if (!managedSecret) throw new Error("E.SUN managed identity secret is unavailable.");
+    const managedSecret = parsed.data.managedIdentitySecret;
     const identity = deriveEsunCanonicalHumanAttestation(credentials, managedSecret);
     if (!identity) throw new Error("E.SUN canonical identity could not be established.");
     const capture: CaptureMetadata = {

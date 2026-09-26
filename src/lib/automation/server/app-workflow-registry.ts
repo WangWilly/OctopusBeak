@@ -28,6 +28,7 @@ import {
   type YuantaTradeProviderWorkflowOutput,
 } from "../../../workflows/yuanta-trade-statements.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
+import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
@@ -170,6 +171,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
     startUrl: "https://ebank.esunbank.com.tw/index.jsp",
     inputFromEnvironment(environment) {
       return {
+        managedIdentitySecret: environment[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] ?? "",
         credentials: {
           esun_user_id: environment.LIBRETTO_CLOUD_ESUN_USER_ID ?? "",
           esun_account: environment.LIBRETTO_CLOUD_ESUN_ACCOUNT ?? "",
