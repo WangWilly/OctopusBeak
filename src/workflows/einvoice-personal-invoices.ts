@@ -709,14 +709,26 @@ async function signInEinvoice(
     await reportAccessChallenge?.();
     throw new SourceAccessChallengeError();
   }
-  await retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone").waitFor({ state: "visible" }));
-  await retryEinvoiceLoginNavigation(() => page
-    .locator("#mobile_phone")
-    .fill(requireCredential(credentials, "einvoice_phone_number")));
-  await retryEinvoiceLoginNavigation(() => page
-    .locator("#password")
-    .fill(requireCredential(credentials, "einvoice_password")));
-  await retryEinvoiceLoginNavigation(() => page.locator("#captcha").focus());
+  try {
+    const ready = await Promise.any([
+      retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone")
+        .waitFor({ state: "visible", timeout: 30_000 })).then(() => "form" as const),
+      page.waitForURL((url) => url.pathname.startsWith("/portal/btc/mobile/"), {
+        timeout: 30_000,
+      }).then(() => "session" as const),
+    ]);
+    if (ready === "session" || await isSignedIn(page)) return;
+    await retryEinvoiceLoginNavigation(() => page
+      .locator("#mobile_phone")
+      .fill(requireCredential(credentials, "einvoice_phone_number")));
+    await retryEinvoiceLoginNavigation(() => page
+      .locator("#password")
+      .fill(requireCredential(credentials, "einvoice_password")));
+    await retryEinvoiceLoginNavigation(() => page.locator("#captcha").focus());
+  } catch (error) {
+    if (await isSignedIn(page)) return;
+    throw error;
+  }
   const assistanceStatus = await requestHumanAssistance(
     einvoiceCaptchaAssistanceStage(page),
     signal,
@@ -1208,7 +1220,15 @@ export async function runEinvoiceProviderWorkflow(
       completed: 0,
       total: result.invoiceCount,
     });
-    const commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
+    let commit: PGliteCanonicalEInvoiceCommitResult;
+    try {
+      commit = await commitCanonicalCapture(capture, financialCommit, context.signal);
+    } catch (error) {
+      if (error instanceof EInvoiceCommitRejectedError) {
+        await context.event("commit", "canonical-commit-failed");
+      }
+      throw error;
+    }
     await context.event("commit", "canonical-commit-completed", {
       completed: commit.invoiceCount,
       total: result.invoiceCount,
@@ -1225,6 +1245,8 @@ export async function runEinvoiceProviderWorkflow(
     });
   });
 }
+
+export class EInvoiceCommitRejectedError extends Error {}
 
 export async function commitCanonicalCapture(
   capture: CanonicalEInvoiceCaptureInput,
@@ -1246,9 +1268,14 @@ export async function commitCanonicalCapture(
     ...(signal === undefined ? {} : { signal }),
   });
   const committed = result.items[0];
-  if (committed?.status !== "committed")
-    throw new Error(`E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
+  if (committed?.status !== "committed") {
+    const message = `E-Invoice PGlite persistence ${result.status}: ${result.diagnostics
       .map((diagnostic) => `${diagnostic.stage}/${diagnostic.errorCode}`)
-      .join(", ")}`);
+      .join(", ")}`;
+    if (committed?.status === "failed" && committed.failureKind === "item") {
+      throw new EInvoiceCommitRejectedError(message);
+    }
+    throw new Error(message);
+  }
   return committed.value as PGliteCanonicalEInvoiceCommitResult;
 }
