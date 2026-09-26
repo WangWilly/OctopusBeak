@@ -30,7 +30,6 @@ import {
 } from "./fubon-statements.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { completeFubonHumanLoginWithAssistance, openFubonLoginForm } from "./fubon-auth.ts";
-import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -39,6 +38,7 @@ import {
 export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
 const appInputSchema = z.object({
+  managedIdentitySecret: z.string().trim().min(1),
   credentials: z.object({
     fubon_user_id: z.string().trim().min(1),
     fubon_account: z.string().trim().min(1),
@@ -91,12 +91,6 @@ export function deriveFubonCanonicalHumanAttestation(
     identityEpochKey: FUBON_CREDIT_CARD_IDENTITY_EPOCH,
     humanAttestedAccountKey,
   };
-}
-
-function optionalFubonManagedSecret(): string | undefined {
-  const secret =
-    process.env[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
-  return secret || undefined;
 }
 
 async function keepFubonSessionAlive(page: Page): Promise<void> {
@@ -299,14 +293,12 @@ export async function runFubonAllStatementsWorkflow(
   if (!sourceConnectionScope || !sourceConnectionKey)
     throw new Error("Fubon all-statements requires a stable login identity for its Source Connection.");
 
-  const managedSecret = optionalFubonManagedSecret();
+  const managedSecret = parsed.data.managedIdentitySecret;
   const identity: FubonWorkflowIdentity = {
     sourceConnectionScope,
     sourceConnectionKey,
-    ...(managedSecret ? { managedSecret } : {}),
-    ...(managedSecret
-      ? { canonicalHumanAttestation: deriveFubonCanonicalHumanAttestation(parsed.data.credentials, managedSecret) }
-      : {}),
+    managedSecret,
+    canonicalHumanAttestation: deriveFubonCanonicalHumanAttestation(parsed.data.credentials, managedSecret),
   };
   const authenticate = overrides.authenticate ?? authenticateFubonForApp;
   const collectDeposit = overrides.collectDeposit ?? collectFubonDepositForApp;

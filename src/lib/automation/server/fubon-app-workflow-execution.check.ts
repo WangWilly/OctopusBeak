@@ -11,6 +11,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -40,6 +41,7 @@ const syntheticEnvironment = () => ({
   [credentialKey("USER_ID")]: "synthetic-user-id",
   [credentialKey("ACCOUNT")]: "synthetic-account",
   [credentialKey("PASSWORD")]: "synthetic-password",
+  [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "synthetic-fubon-managed-secret",
 });
 
 test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in details", async () => {
@@ -52,6 +54,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
   assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+    managedIdentitySecret: "synthetic-fubon-managed-secret",
     credentials: {
       fubon_user_id: "synthetic-user-id",
       fubon_account: "synthetic-account",
