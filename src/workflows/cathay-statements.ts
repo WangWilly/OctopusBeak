@@ -760,22 +760,50 @@ async function isSignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function fillLoginForm(
+export async function fillLoginForm(
   page: Page,
   credentials: CathayCredentials,
+  event?: (code: string) => Promise<void>,
 ): Promise<void> {
   const userId = requireCredential(credentials, "cathay_user_id");
   const account = requireCredential(credentials, "cathay_account");
   const password = requireCredential(credentials, "cathay_password");
 
   await navigateToCathayLoginForm(page);
-  await dismissStartupAnnouncements(page);
+  await event?.("authentication-login-form-ready");
+  const duplicateSessionPrompt = page.locator(".modal.show")
+    .filter({ hasText: /貼心提醒/u })
+    .filter({ hasText: /重複登入|前次未正常登出/u })
+    .first();
 
-  await page.locator("#CustID").fill(userId);
-  await page.locator("#UserIdKeyin").fill(account);
-  await page.locator("#PasswordKeyin").fill(password);
-  await dismissStartupAnnouncements(page, 5_000);
-  await page.locator("button.js-login").click();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await dismissStartupAnnouncements(page);
+    await event?.("authentication-login-announcements-dismissed");
+
+    await page.locator("#CustID").fill(userId);
+    await page.locator("#UserIdKeyin").fill(account);
+    await page.locator("#PasswordKeyin").fill(password);
+    await event?.("authentication-login-fields-entered");
+    await dismissStartupAnnouncements(page, 5_000);
+    await duplicateSessionPrompt.waitFor({ state: "visible", timeout: 1_500 }).catch(() => undefined);
+    if (await duplicateSessionPrompt.isVisible().catch(() => false)) {
+      if (attempt > 0) {
+        await event?.("authentication-duplicate-session-repeated");
+        throw new Error("Cathay duplicate-session prompt remained after one automatic logout.");
+      }
+      await event?.("authentication-duplicate-session-detected");
+      await duplicateSessionPrompt.getByRole("button", { name: "登出", exact: true }).click();
+      await duplicateSessionPrompt.waitFor({ state: "hidden", timeout: 10_000 });
+      await event?.("authentication-duplicate-session-cleared");
+      await page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 });
+      continue;
+    }
+
+    await event?.("authentication-login-submit-started");
+    await page.locator("button.js-login").click();
+    await event?.("authentication-login-submitted");
+    return;
+  }
 }
 
 export function cathayEmailOtpSubmissionValue(value: unknown): string | null {
@@ -1083,7 +1111,7 @@ export async function signInCathayForApp(
   dependencies.signal.throwIfAborted();
   if (await isSignedIn(page)) return { usedExistingSession: true };
   await waitForCathaySignal(
-    fillLoginForm(page, credentials),
+    fillLoginForm(page, credentials, dependencies.event),
     dependencies.signal,
   );
   await completeCathayEmailOtpForApp(page, dependencies);
