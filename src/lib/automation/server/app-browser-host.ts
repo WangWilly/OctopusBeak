@@ -16,7 +16,7 @@ export type AppWorkflowBrowserConnection = Readonly<{
 export type AppWorkflowBrowserLaunchOptions = Readonly<{
   acceptDownloads: false;
   args: string[];
-  headless: false;
+  headless: true;
   locale: "zh-TW";
   viewport: { width: 1280; height: 900 };
 }>;
@@ -88,7 +88,7 @@ function registerHostedPage(
 }
 
 const launchOptions: AppWorkflowBrowserLaunchOptions = {
-  headless: false,
+  headless: true,
   acceptDownloads: false,
   args: remoteDebuggingArgs,
   locale: "zh-TW",
@@ -101,7 +101,7 @@ async function defaultPersistentContext(
 ) {
   return await chromium.launchPersistentContext(userDataDirectory, {
     ...options,
-    headless: false,
+    headless: true,
   });
 }
 

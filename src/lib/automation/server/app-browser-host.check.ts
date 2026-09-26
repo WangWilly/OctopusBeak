@@ -11,6 +11,27 @@ import {
   withAppWorkflowBrowserPage,
 } from "./app-browser-host.ts";
 
+test("the production App browser launches headlessly with a worker CDP target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-headless-"));
+  const runId = "run-headless-browser-check";
+  try {
+    await createAppWorkflowBrowserPort({
+      taskId: "browser-headless-check",
+      taskRunId: runId,
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+    }).withPage(async (page) => {
+      await page.setContent("<title>headless-ready</title>");
+      assert.equal(await page.title(), "headless-ready");
+      assert.ok(appWorkflowBrowserConnectionForSession(runId));
+    });
+    assert.equal(appWorkflowBrowserConnectionForSession(runId), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("App worker attaches to its exact hosted page without creating workflow files", async () => {
   const root = await mkdtemp(join(tmpdir(), "app-browser-host-cdp-"));
   const runId = "run-app-browser-host-cdp-check";
@@ -30,6 +51,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     userDataDirectory: root,
     credentialCodec,
     launchPersistentContext: async (userDataDirectory, options) => {
+      assert.equal(options.headless, true, "App workflow browser must default to headless");
       runtimeProfile = userDataDirectory;
       return await chromium.launchPersistentContext(userDataDirectory, {
         ...options,
