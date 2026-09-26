@@ -616,6 +616,8 @@ type FixtureBodyMode =
   | "unsafe-filename"
   | "slow";
 let fixtureHref: string | null = "/export.csv";
+let fixtureJavaScriptExport = false;
+let fixturePostCount = 0;
 let fixtureBaseHref: string | null = null;
 let fixtureBodyMode: FixtureBodyMode = "success";
 let crossOriginRequestCount = 0;
@@ -633,7 +635,21 @@ const browserFixtureServer = createServer((request, response) => {
     const href = fixtureHref === null
       ? ""
       : ` href="${fixtureHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}"`;
-    response.end(`${base}<a class="order_2 m_color_check"${href}>下載CSV檔</a>`);
+    response.end(fixtureJavaScriptExport
+      ? '<form name="jform" method="post" action="/transactiondetails"><input type="hidden" name="cid" value="synthetic-cid"></form><a class="order_2 m_color_check" href="javascript:void(0);" onclick="getDownload(\'csv\');">下載CSV檔</a>'
+      : `${base}<a class="order_2 m_color_check"${href}>下載CSV檔</a>`);
+    return;
+  }
+  if (request.url === "/transactiondetails?method=downloadcsv" && request.method === "POST") {
+    fixturePostCount += 1;
+    fixtureCookie = request.headers.cookie;
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      assert.match(Buffer.concat(chunks).toString("utf8"), /cid=synthetic-cid/u);
+      response.writeHead(200, { "content-type": "text/csv; charset=big5" });
+      response.end(browserFixtureBytes);
+    });
     return;
   }
   if (request.url === "/export.csv" || request.url === "/export-final.csv") {
@@ -834,6 +850,14 @@ try {
       [],
       "no cookie or export file is retained without a credential codec",
     );
+
+    fixtureJavaScriptExport = true;
+    const formExport = await collectFixture();
+    assert.equal(formExport.result.sourceCount, 1);
+    assert.equal(fixturePostCount, 1);
+    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
+    assert.equal(observedBrowserDownload, false);
+    fixtureJavaScriptExport = false;
 
     for (const testCase of [
       { href: null, mode: "success" as const, error: /no fetchable URL/u },
