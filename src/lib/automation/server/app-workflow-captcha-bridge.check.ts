@@ -10,7 +10,7 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { createAppWorkflowHumanAssistancePort, resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
+import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
@@ -49,7 +49,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   assert.fail("Timed out waiting for App workflow test state.");
 }
 
-test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries rejection, and finishes", async () => {
+test("App SinoPac CAPTCHA route keeps one run and retries solver exhaustion and rejection", async () => {
   const artifactRoot = await mkdtemp(join(tmpdir(), "sinopac-app-captcha-"));
   const originalCwd = process.cwd();
   const store = new PGliteStore(await PGlite.create());
@@ -113,8 +113,28 @@ test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries r
           taskRunId: created.taskRunId,
           persistence: provider.automation,
         });
-        await assistance.request(sinopacContract, controller.signal);
-        const rejected = attempt === 1;
+        try {
+          await assistance.request(sinopacContract, controller.signal);
+        } catch {
+          assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
+          return {
+            status: "failed" as const,
+            taskRunId: created.taskRunId,
+            executionId: options.executionId!,
+            session: null,
+            owner: null,
+            result: {
+              exitCode: 1,
+              signal: null,
+              error: new Error("Solver exhausted"),
+              resumeFailure: null,
+              statementSummary: null,
+              outputPersistenceWarnings: [],
+              externalPrerequisiteIds: [],
+            },
+          };
+        }
+        const rejected = attempt === 2;
         await provider.automation.appendRunEvent({
           runId: created.taskRunId,
           stage: "authentication",
@@ -141,21 +161,14 @@ test("App SinoPac CAPTCHA route keeps one run, exposes human fallback, retries r
       },
     });
 
-    await waitFor(async () => solverCalls >= 3);
-    const waiting = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(waiting?.status, "waiting_for_human");
-    assert.equal(waiting?.humanAssistanceContract?.stageId, "sinopac-login-captcha");
-    await provider.automation.updateHumanAssistanceCompletion(created.taskRunId, "entered");
-    assert.equal(await resumeAppWorkflowHumanAssistance(created.taskRunId, "entered"), true);
-
     assert.deepEqual(await campaign, { status: "completed" });
-    assert.deepEqual(executeAttempts, [1, 2]);
-    assert.equal(captureSessions.length, 4);
-    assert.deepEqual(captureSessions, Array.from({ length: 4 }, () => created.taskRunId));
-    assert.deepEqual(injectedAnswers, ["123456"]);
+    assert.deepEqual(executeAttempts, [1, 2, 3]);
+    assert.equal(captureSessions.length, 5);
+    assert.deepEqual(captureSessions, Array.from({ length: 5 }, () => created.taskRunId));
+    assert.deepEqual(injectedAnswers, ["123456", "123456"]);
     const finalRun = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(finalRun?.status, "completed");
-    assert.equal(finalRun?.attempt, 2);
+    assert.equal(finalRun?.attempt, 3);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
     assert.ok(finalRun?.events.some((event) => event.code === "captcha-rejected"));
@@ -232,5 +245,86 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
   } finally {
     await store.close();
+  }
+});
+
+test("every text CAPTCHA workflow routes solver exhaustion into one bounded App retry", async () => {
+  const taskIds = [
+    "fubon-all-statements",
+    "yuanta-all-statements",
+    "hncb-statements",
+    "post-statements",
+    "einvoice-personal-invoices",
+  ];
+  for (const taskId of taskIds) {
+    const store = new PGliteStore(await PGlite.create());
+    const controller = new AbortController();
+    try {
+      await applyPgliteOperationalBaseline(store);
+      const provider = createPgliteOperationalProvider(store);
+      const created = await provider.automation.createTaskRun({
+        taskId,
+        kind: "crawler",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+      });
+      const attempts: number[] = [];
+      let routeCalls = 0;
+      const campaign = runCaptchaRetryCampaign({
+        taskId,
+        appWorkflow: true,
+        provider,
+        launchVerificationSettings: {},
+        initialExecutionOptions: { taskRunId: created.taskRunId },
+        isCancellationRequested: () => false,
+        routeWaitingRunVerification: async (input) => {
+          routeCalls += 1;
+          await input.onChallengeCaptured?.();
+          return { kind: "retryable", reason: "solver-exhausted" };
+        },
+        async execute(options) {
+          attempts.push(options.attempt ?? 1);
+          if ((options.attempt ?? 1) === 1) {
+            const assistance = createAppWorkflowHumanAssistancePort({
+              taskRunId: created.taskRunId,
+              persistence: provider.automation,
+            });
+            try {
+              await assistance.request(sinopacContract, controller.signal);
+            } catch {
+              // The App route rejects the active worker stage to restart it.
+            }
+          }
+          return {
+            status: (options.attempt ?? 1) === 1 ? "failed" as const : "completed" as const,
+            taskRunId: created.taskRunId,
+            executionId: options.executionId!,
+            result: {
+              exitCode: (options.attempt ?? 1) === 1 ? 1 : 0,
+              signal: null,
+              error: (options.attempt ?? 1) === 1 ? new Error("Challenge rejected") : null,
+              statementSummary: null,
+              outputPersistenceWarnings: [],
+              externalPrerequisiteIds: [],
+            },
+          };
+        },
+      });
+      const result = await Promise.race([
+        campaign,
+        new Promise<never>((_resolve, reject) => setTimeout(
+          () => reject(new Error(`${taskId} did not route its CAPTCHA`)),
+          2_000,
+        )),
+      ]);
+      assert.deepEqual(result, { status: "completed" }, taskId);
+      assert.deepEqual(attempts, [1, 2], taskId);
+      assert.equal(routeCalls, 1, taskId);
+    } finally {
+      controller.abort();
+      await store.close();
+    }
   }
 });
