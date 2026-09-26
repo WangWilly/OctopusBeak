@@ -75,6 +75,14 @@ assert.equal(parsedStatement.account, "123-456");
 assert.equal(parsedStatement.accountId, "123456");
 assert.equal(parsedStatement.queryPeriod, "2025/01/01-2025/01/31");
 assert.equal(parsedStatement.currency, "TWD");
+const splitMetadataStatement = parseStatementExport(`
+  <table><tr><td>華南銀行交易明細</td></tr></table>
+  <table><tr><td>帳號</td><td>123-456</td></tr><tr><td>資料起訖日</td><td>2025/01/01-2025/01/31</td></tr><tr><td>幣別</td><td>TWD</td></tr></table>
+  <table><tr><td>交易日期</td><td>交易時間</td></tr></table>
+`, "fallback");
+assert.equal(splitMetadataStatement.account, "123-456");
+assert.equal(splitMetadataStatement.queryPeriod, "2025/01/01-2025/01/31");
+assert.equal(splitMetadataStatement.currency, "TWD");
 assert.deepEqual(parsedStatement.rows, [
   [
     "2025/01/02",

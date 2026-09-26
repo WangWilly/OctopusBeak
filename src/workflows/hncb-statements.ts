@@ -542,7 +542,12 @@ export function parseStatementExport(
   fallbackAccount: string,
 ): ParsedStatement {
   const sheets = workbookSheetsFromHtml(content);
-  const metadataRows = sheets[0] ?? [];
+  const metadataSheets = sheets.filter((rows) =>
+    metadataValue(rows, "資料起訖日") && metadataValue(rows, "幣別")
+  );
+  if (metadataSheets.length > 1)
+    throw new Error("HNCB export workbook has ambiguous metadata tables.");
+  const metadataRows = metadataSheets[0] ?? [];
   const transactionRows = findTransactionSheet(sheets);
   const account = metadataValue(metadataRows, "帳號") || fallbackAccount;
 
