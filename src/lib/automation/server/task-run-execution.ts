@@ -102,9 +102,10 @@ async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  // Provider fixtures still inject executor ports to exercise each workflow
-  // without a worker. Production supplies none and always uses the supervisor.
-  if (options.workflowPorts !== undefined) {
+  // Firefox does not expose a Chromium CDP target to the supervised worker.
+  // Keep the same typed executor and injected ports while the App owns its
+  // headless Firefox page and verification viewer in one process.
+  if (options.workflowPorts !== undefined || execution.task.workflowId === "einvoice-personal-invoices") {
     return await executeInlineAppWorkflow(execution, options);
   }
   return await executeSupervisedAppWorkflow(execution, options);
@@ -173,6 +174,9 @@ async function executeInlineAppWorkflow(
         signal: controller.signal,
         userDataDirectory,
         startUrl,
+        ...(execution.task.workflowId === "einvoice-personal-invoices"
+          ? { browserEngine: "firefox" as const }
+          : {}),
       });
     const ports: WorkflowExecutorPorts = {
       browser,

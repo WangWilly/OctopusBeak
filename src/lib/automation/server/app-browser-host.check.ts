@@ -32,6 +32,37 @@ test("the production App browser launches headlessly with a worker CDP target", 
   }
 });
 
+test("an App-owned Firefox page stays headless and available to the viewer without CDP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-firefox-"));
+  const runId = "run-firefox-browser-check";
+  const page = { url: () => "https://www.einvoice.nat.gov.tw/accounts/login/mw" } as never;
+  try {
+    await createAppWorkflowBrowserPort({
+      taskId: "einvoice-personal-invoices",
+      taskRunId: runId,
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserEngine: "firefox",
+      launchPersistentContext: async (_directory, options) => {
+        assert.equal(options.headless, true);
+        assert.deepEqual(options.args, []);
+        return {
+          pages: () => [page],
+          close: async () => {},
+        } as never;
+      },
+    }).withPage(async (activePage) => {
+      assert.equal(activePage, page);
+      assert.equal(appWorkflowPageForSession(runId), page);
+      assert.throws(() => appWorkflowBrowserConnectionForSession(runId), /connection is unavailable/u);
+    });
+    assert.equal(appWorkflowPageForSession(runId), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("App worker attaches to its exact hosted page without creating workflow files", async () => {
   const root = await mkdtemp(join(tmpdir(), "app-browser-host-cdp-"));
   const runId = "run-app-browser-host-cdp-check";

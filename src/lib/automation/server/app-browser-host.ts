@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, firefox, type BrowserContext, type Page } from "playwright";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import {
   getAutomationCredentialCodec,
@@ -28,6 +28,7 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   userDataDirectory: string;
   credentialCodec?: AutomationCredentialCodec | null;
   startUrl?: string;
+  browserEngine?: "chromium" | "firefox";
   launchPersistentContext?: (
     userDataDirectory: string,
     options: AppWorkflowBrowserLaunchOptions,
@@ -329,7 +330,7 @@ export async function withAppWorkflowBrowserPage<T>(
 }
 
 /**
- * Opens one App-managed, visible Playwright page. Browser state is confined to
+ * Opens one App-managed, headless Playwright page. Browser state is confined to
  * the existing 30-day cleanup root and is never exposed as a workflow file.
  */
 export function createAppWorkflowBrowserPort(
@@ -352,7 +353,11 @@ export function createAppWorkflowBrowserPort(
   const credentialCodec = input.credentialCodec === undefined
     ? getAutomationCredentialCodec()
     : input.credentialCodec;
-  const launch = input.launchPersistentContext ?? defaultPersistentContext;
+  const browserEngine = input.browserEngine ?? "chromium";
+  const launch = input.launchPersistentContext ?? (browserEngine === "firefox"
+    ? (directory: string, options: AppWorkflowBrowserLaunchOptions) =>
+        firefox.launchPersistentContext(directory, { ...options, headless: true })
+    : defaultPersistentContext);
 
   return {
     async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
@@ -374,7 +379,7 @@ export function createAppWorkflowBrowserPort(
         await ensureDirectory(browserRuntimeDirectory);
         context = await launch(browserRuntimeDirectory, {
           ...launchOptions,
-          args: [...launchOptions.args],
+          args: browserEngine === "firefox" ? [] : [...launchOptions.args],
         });
         input.signal.throwIfAborted();
         const page = context.pages()[0] ?? await context.newPage();
@@ -386,12 +391,14 @@ export function createAppWorkflowBrowserPort(
           }
         }
         let connection: AppWorkflowBrowserConnection | null = null;
-        const endpoint = await loopbackDevToolsEndpoint(
-          browserRuntimeDirectory,
-          input.signal,
-          !input.launchPersistentContext,
-        );
-        if (!endpoint && !input.launchPersistentContext) {
+        const endpoint = browserEngine === "chromium"
+          ? await loopbackDevToolsEndpoint(
+              browserRuntimeDirectory,
+              input.signal,
+              !input.launchPersistentContext,
+            )
+          : null;
+        if (!endpoint && !input.launchPersistentContext && browserEngine === "chromium") {
           throw new Error("The App browser did not expose its required loopback worker endpoint.");
         }
         if (endpoint) {
