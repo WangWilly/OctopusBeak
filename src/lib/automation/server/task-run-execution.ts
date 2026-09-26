@@ -58,6 +58,8 @@ export type AutomationTaskExecutionOptions = {
   /** Snapshot of process configuration captured at campaign launch. */
   launchEnv?: NodeJS.ProcessEnv;
   launchVerificationSettings?: AutomationSettingsFile;
+  /** The surrounding CAPTCHA campaign installs this task's App route. */
+  verificationRouteOwnedByCampaign?: boolean;
   /** Identity used to correlate host-side CAPTCHA routing with this execution. */
   executionId?: string;
   attempt?: number;
@@ -194,10 +196,12 @@ async function executeInlineAppWorkflow(
         ?? (() => console.error("workflow-event-persistence-failed")),
     };
     const executor = createWorkflowExecutor([definition], ports);
-    unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
-      execution.task.workflowId,
-      { automation: execution.persistence },
-    );
+    if (!options.verificationRouteOwnedByCampaign) {
+      unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
+        execution.task.workflowId,
+        { automation: execution.persistence },
+      );
+    }
     const workflowOutput = await executor.run(
       execution.task.workflowId,
       execution.run.taskRunId,
@@ -255,6 +259,7 @@ const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
+  "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
   "workflow-failed",
@@ -400,10 +405,12 @@ async function executeSupervisedAppWorkflow(
       onRuntimeUpdate: execution.onRuntimeUpdate,
       requireSolverRoute: requiresSolverRoute(execution, options),
     });
-    unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
-      workflowId,
-      { automation: execution.persistence },
-    );
+    if (!options.verificationRouteOwnedByCampaign) {
+      unregisterHumanAssistance = await registerWorkflowHumanAssistanceForTask(
+        workflowId,
+        { automation: execution.persistence },
+      );
+    }
 
     const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
       controller.signal.throwIfAborted();

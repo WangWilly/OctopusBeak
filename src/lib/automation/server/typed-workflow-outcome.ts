@@ -5,6 +5,7 @@ export type TypedWorkflowErrorCode =
   | "cancelled"
   | "source-integrity-failed"
   | "source-validation-failed"
+  | "verification-configuration-failed"
   | "canonical-commit-failed"
   | "commit-outcome-unknown"
   | "workflow-failed";
@@ -71,6 +72,7 @@ const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
+  "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
   "workflow-failed",
@@ -143,6 +145,12 @@ export function classifyTypedWorkflowFailure(
   if (commitStarted && !commitCompleted) return "commit-outcome-unknown";
 
   if (signalAborted) return "cancelled";
+  if (events.some((event) => event.stage === "authentication" && (
+    event.code === "solver-route-unavailable"
+    || event.code === "solver-challenge-unsupported"
+  ))) {
+    return "verification-configuration-failed";
+  }
   if (events.some((event) => event.stage === "decoding" && /(?:rejected|failed|malformed)$/u.test(event.code))) {
     return "source-integrity-failed";
   }

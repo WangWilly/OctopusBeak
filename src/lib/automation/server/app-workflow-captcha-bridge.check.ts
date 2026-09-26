@@ -40,6 +40,29 @@ const sinopacContract: HumanAssistanceContractInput = {
   focus: { targetId: "captcha-input", contextRegionIds: [] },
 };
 
+const yuantaTradeAudioContract: HumanAssistanceContractInput = {
+  stageId: "yuanta-trade-audio-verification",
+  title: "YuanTa Trade audio CAPTCHA",
+  challengeKind: "audio-captcha",
+  challengeAudioSource: {
+    id: "audio-challenge",
+    label: "Audio challenge",
+    semanticId: "yuanta-trade.login.audio-challenge",
+  },
+  charset: "digits",
+  expectedAnswerLength: 6,
+  targets: [{
+    id: "audio-code-input",
+    label: "Audio answer",
+    semanticId: "yuanta-trade.login.audio-code-input",
+    modes: ["type"],
+    rect: { x: 1, y: 1, width: 10, height: 10 },
+  }],
+  contextRegions: [],
+  completion: { mode: "inline", targetIds: ["audio-code-input"] },
+  focus: { targetId: "audio-code-input", contextRegionIds: [] },
+};
+
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -326,5 +349,71 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
       controller.abort();
       await store.close();
     }
+  }
+});
+
+test("Yuanta Trade audio solver exhaustion restarts through the App campaign", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  const controller = new AbortController();
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "yuanta-trade-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const attempts: number[] = [];
+    let routeCalls = 0;
+    const campaign = runCaptchaRetryCampaign({
+      taskId: "yuanta-trade-statements",
+      appWorkflow: true,
+      provider,
+      launchVerificationSettings: {},
+      initialExecutionOptions: { taskRunId: created.taskRunId },
+      isCancellationRequested: () => false,
+      routeWaitingRunVerification: async (input) => {
+        routeCalls += 1;
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable", reason: "solver-exhausted" };
+      },
+      async execute(options) {
+        attempts.push(options.attempt ?? 1);
+        assert.equal(options.verificationRouteOwnedByCampaign, true);
+        if ((options.attempt ?? 1) === 1) {
+          const assistance = createAppWorkflowHumanAssistancePort({
+            taskRunId: created.taskRunId,
+            persistence: provider.automation,
+          });
+          try {
+            await assistance.request(yuantaTradeAudioContract, controller.signal);
+          } catch {
+            // The campaign requests a fresh challenge after the worker exits.
+          }
+        }
+        return {
+          status: (options.attempt ?? 1) === 1 ? "failed" as const : "completed" as const,
+          taskRunId: created.taskRunId,
+          executionId: options.executionId!,
+          result: {
+            exitCode: (options.attempt ?? 1) === 1 ? 1 : 0,
+            signal: null,
+            error: (options.attempt ?? 1) === 1 ? new Error("Solver exhausted") : null,
+            statementSummary: null,
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          },
+        };
+      },
+    });
+    assert.deepEqual(await campaign, { status: "completed" });
+    assert.deepEqual(attempts, [1, 2]);
+    assert.equal(routeCalls, 1);
+  } finally {
+    controller.abort();
+    await store.close();
   }
 });

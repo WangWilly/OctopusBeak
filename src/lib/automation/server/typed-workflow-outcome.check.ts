@@ -63,5 +63,11 @@ test("typed failures use stable privacy-safe categories", () => {
     occurredAt: "2026-09-25T00:00:00.000Z",
   }]), "commit-outcome-unknown");
   assert.equal(classifyTypedWorkflowFailure(new Error("user stopped"), [], true), "cancelled");
+  assert.equal(classifyTypedWorkflowFailure(new Error("private details"), [{
+    runId: "run-1",
+    stage: "authentication",
+    code: "solver-route-unavailable",
+    occurredAt: "2026-09-25T00:00:00.000Z",
+  }]), "verification-configuration-failed");
   assert.equal(classifyTypedWorkflowFailure(new Error("private response body"), []), "workflow-failed");
 });

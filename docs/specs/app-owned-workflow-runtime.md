@@ -24,7 +24,7 @@ Each row is an App production task routed through the typed runtime. The eleven 
 | `hncb-statements` | HNCB browser flow; bank export is consumed in memory |
 | `ctbc-statements` | CTBC browser workflow |
 | `post-statements` | Chunghwa Post browser workflow |
-| `sinopac-statements` | SinoPac browser workflow with human verification assistance |
+| `sinopac-statements` | SinoPac browser workflow with App-owned CAPTCHA verification |
 | `linebank-statements` | LINE Bank browser workflow |
 | `einvoice-personal-invoices` | E-Invoice browser workflow |
 | `exchange-rates` | Typed exchange-rate synchronization workflow |
@@ -37,6 +37,8 @@ The task catalog and executor wiring establish which path the App starts; fixtur
 Provider exports may arrive as browser downloads or HTTP responses, but the workflow consumes them as bounded byte streams or in-memory values. Production workflows do not save original exports, generated CSV/JSON, raw response bodies, file logs, or Libretto session telemetry. Charset handling and strict decoding go through the text port. Invalid encodings, critical replacement characters, incomplete pages, and failed source admission stop the source before Canonical Financial Commit. A commit failure receives a stable category; an ambiguous commit outcome is not replayed automatically.
 
 The App runs production browser workflows in headless Chromium while its viewer and worker attach to the exact live page through CDP. It retains only validated browser cookies, encrypted with Electron safeStorage, in its dedicated browser-state directory. It never falls back to plaintext when encryption is unavailable. Each run uses a private temporary Chromium profile for the App viewer and worker CDP connection; that profile is removed when the run ends. Startup and daily cleanup remove abandoned temporary profiles for inactive tasks and retained cookies older than the default 30 days. A task that needs localStorage to preserve login may require a fresh login on its next run. The development CLI uses a temporary, non-persistent browser context and does not share App-managed authentication state.
+
+The App defaults to the `solver` Verification Actor for challenge contracts and preserves an explicit per-source `human` setting. Fubon, Yuanta Bank, HNCB, Chunghwa Post, E-Invoice, and SinoPac text CAPTCHAs, plus Yuanta Trade audio CAPTCHA, are routed through the App-owned ten-round campaign. Each provider keeps its declared OCR, speech, confidence, and answer-shape profile; the executor injects the local solver and provider verification adapter. Solver exhaustion opens a new browser execution within the same run. A submitted answer is retried only when the provider-specific probe proves rejection. The run fails if a solver challenge has no App route; it never silently changes actor. Yuanta Trade's image-selection challenge has no supported local vision solver: solver mode fails explicitly if it appears after switching to audio, while an explicitly selected human actor may use Assist. Native ServiSign certificate selection remains an explicit assistance stage.
 
 ## Run lifecycle and scheduling
 

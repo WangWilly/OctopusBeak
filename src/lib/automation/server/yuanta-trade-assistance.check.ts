@@ -19,7 +19,6 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
-import { routeWaitingRunVerification } from "./verification-routing.ts";
 import {
   registerYuantaTradeAppAssistanceHandler,
 } from "./yuanta-trade-assistance.ts";
@@ -207,7 +206,7 @@ const solverSettings: AutomationSettingsFile = {
   VERIFICATION_IMAGE_SELECTION_CONFIDENCE_THRESHOLD: "0.7",
 };
 
-test("Yuanta Trade audio, checkbox, and image stages continue through one App run and submit image picks", async () => {
+test("Yuanta Trade audio and checkbox stages continue through one App run", async () => {
   const artifactRoot = await mkdtemp(join(tmpdir(), "yuanta-trade-assistance-"));
   const originalCwd = process.cwd();
   const { store, provider, run } = await createRun();
@@ -216,37 +215,24 @@ test("Yuanta Trade audio, checkbox, and image stages continue through one App ru
   let solverCalls = 0;
   const host = verificationHost({
     onAudio(session) { sessions.push(session); actions.push("capture-audio"); },
-    onImage(session) { sessions.push(session); actions.push("capture-image"); },
-    onInput(session, targetId) { sessions.push(session); actions.push(`submit:${targetId}`); },
     onResume(session, stageId) { sessions.push(session); actions.push(`resume:${stageId}`); },
   });
   const unregister = registerYuantaTradeAppAssistanceHandler({
     provider,
     settings: solverSettings,
     verificationHost: host,
-    waitForImageChallengeSubmission: async (session) => {
-      sessions.push(session);
-      actions.push("wait:image-submit");
-      return true;
-    },
     routeOptions: {
       solver: {
         async solve(input) {
           solverCalls += 1;
           actions.push(`solve:${input.challengeKind}`);
-          if (input.challengeKind === "audio-captcha") {
-            return { answer: "123456", confidence: 0.99 };
-          }
-          return { selections: [{ x: 28, y: 36 }], confidence: 0.99 };
+          assert.equal(input.challengeKind, "audio-captcha");
+          return { answer: "123456", confidence: 0.99 };
         },
       } satisfies VerificationSolver,
       providerInjectAnswer: async (session, _contract, answer) => {
         sessions.push(session);
         actions.push(`answer:${answer}`);
-      },
-      injectSelections: async (session, _contract, selections) => {
-        sessions.push(session);
-        actions.push(`select:${selections.length}`);
       },
       clickTarget: async (session, _contract, targetId) => {
         sessions.push(session);
@@ -261,7 +247,7 @@ test("Yuanta Trade audio, checkbox, and image stages continue through one App ru
       taskRunId: run.taskRunId,
       persistence: provider.automation,
     });
-    for (const contract of [audioContract(), audioContract(), checkboxContract(), imageContract()]) {
+    for (const contract of [audioContract(), audioContract(), checkboxContract()]) {
       await assistance.request(contract, new AbortController().signal);
     }
     const finalRun = await provider.automation.taskRunById(run.taskRunId);
@@ -278,16 +264,10 @@ test("Yuanta Trade audio, checkbox, and image stages continue through one App ru
         "answer:123456",
         "resume:yuanta-trade-audio-verification",
         "click:captcha-checkbox",
-        "capture-image",
-        "solve:image-selection",
-        "select:1",
-        "submit:challenge-submit",
-        "wait:image-submit",
-        "resume:yuanta-trade-challenge",
       ],
     );
-    assert.equal(solverCalls, 3);
-    assert.equal(sessions.length, 12);
+    assert.equal(solverCalls, 2);
+    assert.equal(sessions.length, 7);
     assert.ok(sessions.every((session) => session === run.taskRunId));
     assert.deepEqual(await readdir(artifactRoot), [], "App assistance writes no workflow files");
   } finally {
@@ -298,8 +278,9 @@ test("Yuanta Trade audio, checkbox, and image stages continue through one App ru
   }
 });
 
-test("Yuanta Trade solver exhaustion leaves the original contract available for same-run human fallback", async () => {
+test("Yuanta Trade solver exhaustion rejects the active stage without switching to human", async () => {
   const { store, provider, run } = await createRun();
+  const controller = new AbortController();
   let solverCalls = 0;
   const unregister = registerYuantaTradeAppAssistanceHandler({
     provider,
@@ -317,12 +298,63 @@ test("Yuanta Trade solver exhaustion leaves the original contract available for 
   });
 
   try {
-    const controller = new AbortController();
     const assistance = createAppWorkflowHumanAssistancePort({
       taskRunId: run.taskRunId,
       persistence: provider.automation,
     });
-    const request = assistance.request(audioContract(), controller.signal);
+    await assert.rejects(
+      Promise.race([
+        assistance.request(audioContract(), controller.signal),
+        new Promise<never>((_resolve, reject) => setTimeout(
+          () => reject(new Error("Yuanta Trade solver silently waited for human")),
+          1_000,
+        )),
+      ]),
+      /new CAPTCHA round required/u,
+    );
+    assert.equal(solverCalls, 1);
+  } finally {
+    controller.abort();
+    unregister();
+    await store.close();
+  }
+});
+
+test("Yuanta Trade image challenge fails explicitly in solver mode", async () => {
+  const { store, provider, run } = await createRun();
+  const unregister = registerYuantaTradeAppAssistanceHandler({
+    provider,
+    settings: solverSettings,
+    verificationHost: verificationHost(),
+  });
+  try {
+    const assistance = createAppWorkflowHumanAssistancePort({
+      taskRunId: run.taskRunId,
+      persistence: provider.automation,
+    });
+    await assert.rejects(
+      assistance.request(imageContract(), new AbortController().signal),
+      /image challenge has no supported local solver/u,
+    );
+  } finally {
+    unregister();
+    await store.close();
+  }
+});
+
+test("Yuanta Trade image challenge stays in Assist after an explicit human setting", async () => {
+  const { store, provider, run } = await createRun();
+  const unregister = registerYuantaTradeAppAssistanceHandler({
+    provider,
+    settings: { LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR: "human" },
+    verificationHost: verificationHost(),
+  });
+  try {
+    const assistance = createAppWorkflowHumanAssistancePort({
+      taskRunId: run.taskRunId,
+      persistence: provider.automation,
+    });
+    const request = assistance.request(imageContract(), new AbortController().signal);
     const deadline = Date.now() + 3_000;
     let waiting = await provider.automation.taskRunById(run.taskRunId);
     while (waiting?.status !== "waiting_for_human" && Date.now() < deadline) {
@@ -330,67 +362,9 @@ test("Yuanta Trade solver exhaustion leaves the original contract available for 
       waiting = await provider.automation.taskRunById(run.taskRunId);
     }
     assert.equal(waiting?.status, "waiting_for_human");
-    assert.equal(waiting?.humanAssistanceContract?.stageId, audioContract().stageId);
-    assert.equal(waiting?.humanAssistanceContract?.completion.status, "pending");
-    assert.equal(solverCalls, 1);
-
     await provider.automation.updateHumanAssistanceCompletion(run.taskRunId, "entered");
     assert.equal(await resumeAppWorkflowHumanAssistance(run.taskRunId, "entered"), true);
     await request;
-    assert.equal((await provider.automation.taskRunById(run.taskRunId))?.status, "running");
-  } finally {
-    unregister();
-    await store.close();
-  }
-});
-
-test("Yuanta Trade keeps a still-open image challenge in Assist for a same-run human retry", async () => {
-  const { store, provider, run } = await createRun();
-  let submitClicked = false;
-  let routeFinished!: () => void;
-  const routed = new Promise<void>((resolve) => { routeFinished = resolve; });
-  const unregister = registerYuantaTradeAppAssistanceHandler({
-    provider,
-    settings: solverSettings,
-    verificationHost: verificationHost({
-      onInput(_session, targetId) { submitClicked = targetId === "challenge-submit"; },
-    }),
-    route: async (input) => {
-      try {
-        return await routeWaitingRunVerification(input);
-      } finally {
-        routeFinished();
-      }
-    },
-    routeOptions: {
-      solver: {
-        async solve() {
-          return { selections: [{ x: 28, y: 36 }], confidence: 0.99 };
-        },
-      },
-      injectSelections: async () => undefined,
-    },
-    waitForImageChallengeSubmission: async () => false,
-  });
-
-  try {
-    const assistance = createAppWorkflowHumanAssistancePort({
-      taskRunId: run.taskRunId,
-      persistence: provider.automation,
-    });
-    const request = assistance.request(imageContract(), new AbortController().signal);
-    await routed;
-    assert.equal(submitClicked, true);
-    let waiting = await provider.automation.taskRunById(run.taskRunId);
-    assert.equal(waiting?.status, "waiting_for_human");
-    assert.equal(waiting?.humanAssistanceContract?.stageId, imageContract().stageId);
-    assert.equal(waiting?.humanAssistanceContract?.completion.status, "pending");
-
-    await provider.automation.updateHumanAssistanceCompletion(run.taskRunId, "entered");
-    assert.equal(await resumeAppWorkflowHumanAssistance(run.taskRunId, "entered"), true);
-    await request;
-    waiting = await provider.automation.taskRunById(run.taskRunId);
-    assert.equal(waiting?.status, "running");
   } finally {
     unregister();
     await store.close();

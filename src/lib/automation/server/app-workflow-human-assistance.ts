@@ -90,6 +90,13 @@ export function createAppWorkflowHumanAssistancePort(input: Readonly<{
           && !input.onRequest
           && !registeredHandler
         ) {
+          await input.persistence.appendRunEvent({
+            runId: input.taskRunId,
+            stage: "authentication",
+            code: "solver-route-unavailable",
+            occurredAt: new Date().toISOString(),
+          });
+          await input.onRuntimeUpdate?.(input.taskRunId);
           throw new Error("App workflow solver route is unavailable for this challenge.");
         }
         await input.persistence.updateHumanAssistanceContract(input.taskRunId, contract);

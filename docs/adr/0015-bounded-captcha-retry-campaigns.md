@@ -4,16 +4,16 @@ Status: accepted
 
 ## Decision
 
-A user-initiated automation that uses a solver-backed `text-captcha` or
-`image-selection` challenge runs as one CAPTCHA Retry Campaign. The campaign is
+A user-initiated automation that uses a solver-backed `text-captcha`,
+`audio-captcha`, or supported `image-selection` challenge runs as one CAPTCHA Retry Campaign. The campaign is
 shown and persisted as one task run even if its provider workflow is restarted
 internally. Checkbox challenges and human-operated verification are outside this
 mechanism.
 
 Each campaign permits at most ten CAPTCHA Challenge Rounds. A round starts only
-after the workflow successfully captures a challenge image. It may run one to
-three distinct provider-declared OCR strategies against that image and may
-submit at most one accepted answer. A captured image that violates its declared
+after the workflow successfully captures challenge media. It may run one to
+three distinct provider-declared solve strategies against that media and may
+submit at most one accepted answer. Captured media that violates its declared
 challenge contract consumes the round without submission. A missing challenge,
 or a failure to load, locate, or capture it, does not consume the retry budget
 and follows the workflow's normal outcome.

@@ -136,6 +136,9 @@ test("solver challenges fail when the App has no registered route", async () => 
       ]),
       /solver route is unavailable/u,
     );
+    assert.ok((await provider.automation.taskRunById(created.taskRunId))?.events.some(
+      (event) => event.code === "solver-route-unavailable",
+    ));
   } finally {
     controller.abort();
     await store.close();

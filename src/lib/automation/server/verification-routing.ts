@@ -192,9 +192,16 @@ export async function routeVerificationActor(input: {
         }
         return image;
       },
-      captureChallengeAudio: deps.captureChallengeAudio
-        ? () => deps.captureChallengeAudio!(input.taskRunId, contract!)
-        : undefined,
+    captureChallengeAudio: deps.captureChallengeAudio
+      ? async () => {
+          const audio = await deps.captureChallengeAudio!(input.taskRunId, contract!);
+          if (audio !== null && !challengeCaptured) {
+            challengeCaptured = true;
+            await deps.onChallengeCaptured?.();
+          }
+          return audio;
+        }
+      : undefined,
       injectAnswer: (answer) =>
         deps.injectAnswer(input.taskRunId, contract!, answer),
       injectSelections: (selections) =>
@@ -252,8 +259,6 @@ export async function routeWaitingRunVerification(input: {
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   settings?: AutomationSettingsFile;
-  /** Keep an App-owned assistance stage open for manual entry when OCR is inconclusive. */
-  humanFallbackOnSolverExhausted?: boolean;
 }): Promise<VerificationRoutingOutcome> {
   const task = taskById(input.taskId);
   if (!task?.workflowId) {
@@ -336,12 +341,5 @@ export async function routeWaitingRunVerification(input: {
     confidenceThreshold,
     dependencies,
   });
-  if (
-    input.humanFallbackOnSolverExhausted
-    && outcome.kind === "retryable"
-    && outcome.reason === "solver-exhausted"
-  ) {
-    return { kind: "human" };
-  }
   return outcome;
 }

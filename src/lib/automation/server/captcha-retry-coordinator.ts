@@ -27,11 +27,14 @@ import type {
   ProviderVerificationHost,
   ProviderVerificationPostSubmitOutcome,
 } from "./provider-verification.ts";
+import { probeProviderVerificationPostSubmit } from "./provider-verification.ts";
+import { appWorkflowPageForSession } from "./app-browser-host.ts";
 import {
   type AutomationTaskExecutionOptions,
 } from "./task-run-execution.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { taskById } from "./tasks.ts";
+import { routeYuantaTradeAppAssistanceRequest } from "./yuanta-trade-assistance.ts";
 
 type CaptchaRetryExecutionResult = Awaited<
   ReturnType<typeof runAutomationTaskExecution>
@@ -119,6 +122,20 @@ function appSinopacPostSubmitProbe(
     if (outcome.kind === "resumed") return "none";
     return "unrecognized-dialog";
   };
+}
+
+function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
+  return async (viewerKey, contract, resume) =>
+    await probeProviderVerificationPostSubmit(
+      viewerKey,
+      contract,
+      resume,
+      async () => {
+        const page = appWorkflowPageForSession(viewerKey);
+        if (!page) throw new Error("App verification browser session is unavailable for cleanup.");
+        await page.context().close();
+      },
+    );
 }
 
 function processResultOf(execution: CaptchaRetryExecutionResult) {
@@ -237,7 +254,7 @@ const TEXT_CAPTCHA_APP_TASK_IDS = new Set([
 ]);
 
 /**
- * Coordinate App text-CAPTCHA campaigns around single workflow executions.
+ * Coordinate App CAPTCHA campaigns around single workflow executions.
  * The two nonbrowser workflows execute once and never enter verification routing.
  */
 export async function runCaptchaRetryCampaign(
@@ -261,7 +278,10 @@ export async function runCaptchaRetryCampaign(
   }
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const routesTextCaptcha = appWorkflow && TEXT_CAPTCHA_APP_TASK_IDS.has(taskId);
+  const routesYuantaTradeCaptcha = taskId === "yuanta-trade-statements";
+  const routesCaptcha = appWorkflow && (
+    TEXT_CAPTCHA_APP_TASK_IDS.has(taskId) || routesYuantaTradeCaptcha
+  );
   const routesSinopacCaptcha = taskId === "sinopac-statements";
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
   const executeAppCaptchaAndRoute = async (
@@ -273,6 +293,7 @@ export async function runCaptchaRetryCampaign(
     const appExecutionOptions = {
       ...executionOptions,
       executionId: executionOptions.executionId ?? randomUUID(),
+      ...(routesYuantaTradeCaptcha ? { verificationRouteOwnedByCampaign: true } : {}),
     };
     let routing: VerificationRoutingOutcome | undefined;
     let routePromise: Promise<void> | null = null;
@@ -287,7 +308,24 @@ export async function runCaptchaRetryCampaign(
             const initialRun = await provider.automation.taskRunById(request.taskRunId);
             const afterEventIndex = initialRun?.events.length ?? 0;
             try {
-              const routeOutcome = await route({
+              const onChallengeCaptured = async () => {
+                const executionId = appExecutionOptions.executionId;
+                campaign = recordCapturedChallenge(campaign, executionId);
+                if (campaign.status === "awaiting-outcome") {
+                  await provider.automation.updateTaskRun(request.taskRunId, {
+                    attempt: campaign.activeRound,
+                    maxAttempts: campaign.maxRounds,
+                  });
+                }
+              };
+              const routeOutcome = routesYuantaTradeCaptcha
+                ? await routeYuantaTradeAppAssistanceRequest(request, {
+                    provider,
+                    settings: launchVerificationSettings,
+                    route,
+                    routeOptions: { onChallengeCaptured },
+                  }) ?? { kind: "human" as const }
+                : await route({
                 taskId,
                 taskRunId: request.taskRunId,
                 provider,
@@ -313,20 +351,8 @@ export async function runCaptchaRetryCampaign(
                       request.taskRunId,
                       request.signal,
                     )
-                  : async (_viewerKey, _contract, resume) => {
-                      await resume();
-                      return "none";
-                    },
-                onChallengeCaptured: async () => {
-                  const executionId = appExecutionOptions.executionId;
-                  campaign = recordCapturedChallenge(campaign, executionId);
-                  if (campaign.status === "awaiting-outcome") {
-                    await provider.automation.updateTaskRun(request.taskRunId, {
-                      attempt: campaign.activeRound,
-                      maxAttempts: campaign.maxRounds,
-                    });
-                  }
-                },
+                  : appProviderPostSubmitProbe(),
+                onChallengeCaptured,
                 settings: launchVerificationSettings,
               });
               routing = routeOutcome;
@@ -396,7 +422,7 @@ export async function runCaptchaRetryCampaign(
     execution: CaptchaRetryExecutionResult;
     routing?: VerificationRoutingOutcome;
   }> => {
-    if (routesTextCaptcha) {
+    if (routesCaptcha) {
       return executeAppCaptchaAndRoute(executionOptions);
     }
     return { execution: await execute(executionOptions) };
