@@ -113,6 +113,32 @@ function pageRunner(page: never): ProviderVerificationPageRunner {
   return async (_session, action) => action(page);
 }
 
+test("LINE Bank verification completes only with a visible authenticated marker", async () => {
+  const verification = contract("linebank.login.page", {
+    stageId: "linebank-login-verification",
+    completion: {
+      mode: "independent",
+      targetIds: ["verification-target"],
+      status: "pending",
+    },
+  });
+  let signedIn = false;
+  const host = createProviderVerificationHost({
+    withPage: pageRunner({
+      url: () => signedIn
+        ? "https://accessibility.linebank.com.tw/"
+        : "https://accessibility.linebank.com.tw/login",
+      locator: (selector: string) => {
+        assert.equal(selector, 'a[href="/transaction"]:visible');
+        return fakeLocator({ count: signedIn ? 1 : 0, visible: signedIn });
+      },
+    } as never),
+  });
+  assert.equal(await host.inspectCompletion("session", verification), false);
+  signedIn = true;
+  assert.equal(await host.inspectCompletion("session", verification), true);
+});
+
 function yuantaBankCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
   return contract("yuanta-bank.login.captcha-input", {
     challengeKind: "text-captcha",

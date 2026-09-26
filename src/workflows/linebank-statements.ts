@@ -1422,9 +1422,15 @@ async function linebankSignInForApp(
   if (!(await withAbort(loginButton.isVisible().catch(() => false), context.signal)))
     throw new Error("LINE Bank login submit button is not visible.");
   await withAbort(loginButton.click(), context.signal);
-  await withAbort(page.waitForTimeout(250), context.signal);
-  await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
-  if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+  // The bank can navigate first and render its sign-in confirmation dialog
+  // shortly afterwards. Give that normal transition a bounded chance to
+  // settle before treating the page as requiring human verification.
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    context.signal.throwIfAborted();
+    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+    if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+    await withAbort(page.waitForTimeout(250), context.signal);
+  }
 
   const contract = await withAbort(
     emitHumanAssistanceStage(linebankHumanVerificationStage(page), () => undefined),

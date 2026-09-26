@@ -695,6 +695,32 @@ async function inspectYuantaCompletion(
   });
 }
 
+async function inspectLineBankCompletion(
+  withPage: ProviderVerificationPageRunner,
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<boolean> {
+  if (contract.stageId !== "linebank-login-verification"
+    || contract.completion.mode !== "independent") return false;
+  return withPage(session, async (page) => {
+    const rawUrl = page.url?.();
+    if (!rawUrl) return false;
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return false;
+    }
+    if (url.origin !== "https://accessibility.linebank.com.tw" || url.pathname === "/login") {
+      return false;
+    }
+    const marker = url.pathname === "/transaction"
+      ? page.locator("#account-dropdown:visible")
+      : page.locator('a[href="/transaction"]:visible');
+    return (await marker.count().catch(() => 0)) > 0;
+  });
+}
+
 async function refreshYuantaChallengeSubmitTarget(
   withPage: ProviderVerificationPageRunner,
   session: string,
@@ -758,6 +784,15 @@ function createAdapters(
     resolveImage: resolveYuantaCaptchaImage,
   });
   return [
+    {
+      id: "linebank",
+      owns: (contract) => contract.stageId === "linebank-login-verification"
+        && contract.targets.some((target) => target.semanticId === "linebank.login.page"),
+      refreshTarget: async () => null,
+      inspectCompletion: (session, contract) => inspectLineBankCompletion(withPage, session, contract),
+      shouldCheckCompletion: () => false,
+      shouldAutoResume: () => false,
+    },
     {
       id: "fubon",
       capabilityOwner: {
