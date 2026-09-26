@@ -17,7 +17,7 @@ The Yuanta Trade login offers several selectable verification modes, and its def
 - The local solver gains a speech-recognition runtime (`sherpa-onnx-node` + `sherpa-onnx` and the paraformer-zh-small int8 model), whose model ships via Git LFS. The MPEG clip is decoded with `mpg123-decoder`, resampled to 16 kHz, and transcribed; the Chinese output is mapped to decimal digits with the "開始播放" prompt dropped.
 - Audio capture, like image capture, is on-device and memory-only; the solver answer is held only for the live injection.
 - The Yuanta Trade workflow switches to audio verification and declares the audio challenge with `expectedAnswerLength: 6` and `charset: "digits"`.
-- The retry budget reuses the CAPTCHA retry campaign; refreshing the challenge is the first-party `RenewVerificationCodeSound` call rather than a new screenshot.
+- The retry budget reuses the App-owned ten-round CAPTCHA campaign. A solver-exhausted round ends its browser execution; the next execution switches to the first-party audio mode and obtains fresh challenge media. The first-party `RenewVerificationCodeSound` endpoint remains part of the bank's audio capability, but the App campaign does not depend on an in-page refresh.
 
 ## Follow-up options
 

@@ -5,12 +5,14 @@ import {
   type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
+import { verificationActorForSource } from "../verification-config.ts";
 import {
   createProviderVerificationHost,
   type ProviderVerificationHost,
 } from "./provider-verification.ts";
 import {
   routeWaitingRunVerification,
+  type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
 import {
   clickVerificationTarget,
@@ -157,15 +159,30 @@ async function resumeCurrentAssistance(
   }
 }
 
-async function routeAssistanceRequest(
+export async function routeYuantaTradeAppAssistanceRequest(
   request: AppWorkflowHumanAssistanceRequest,
   dependencies: YuantaTradeAppAssistanceDependencies,
-) {
+): Promise<VerificationRoutingOutcome | undefined> {
   request.signal.throwIfAborted();
 
   // ServiSign certificate selection is a native prerequisite and stays in the
   // live Assist session. Other undeclared stages also fail safe to the user.
-  if (!isSupportedAutomaticStage(request.contract)) return;
+  if (!isSupportedAutomaticStage(request.contract)) return undefined;
+  if (
+    request.contract.stageId === "yuanta-trade-challenge"
+    && verificationActorForSource(
+      "LIBRETTO_CLOUD_YUANTA_TRADE_VERIFICATION_ACTOR",
+      dependencies.settings,
+    ) === "solver"
+  ) {
+    await dependencies.provider.automation.appendRunEvent({
+      runId: request.taskRunId,
+      stage: "authentication",
+      code: "solver-challenge-unsupported",
+      occurredAt: new Date().toISOString(),
+    });
+    throw new Error("Yuanta Trade image challenge has no supported local solver.");
+  }
 
   const host = guardedHost(
     dependencies.verificationHost ?? createProviderVerificationHost(),
@@ -214,7 +231,6 @@ async function routeAssistanceRequest(
     taskRunId: request.taskRunId,
     provider: dependencies.provider,
     settings: dependencies.settings,
-    humanFallbackOnSolverExhausted: true,
     providerVerification: host,
     ...(routeOptions.captureChallengeImage
       ? { captureChallengeImage: guardedAsync(request.signal, routeOptions.captureChallengeImage) }
@@ -308,12 +324,11 @@ async function routeAssistanceRequest(
   if (outcome.kind === "failed") {
     throw new Error("Yuanta Trade verification assistance failed closed.");
   }
-  if (outcome.kind === "retryable") {
-    throw new Error("Yuanta Trade verification was rejected; a new human-assisted stage is required.");
-  }
+  if (outcome.kind === "retryable") return outcome;
   // A missing audio/image source or a still-visible image challenge is a
   // handoff to the user's current Assist stage, not permission to resume.
-  if (outcome.kind === "resumed" && !assistanceResumed) return;
+  if (outcome.kind === "resumed" && !assistanceResumed) return { kind: "human" };
+  return outcome;
 }
 
 /** Register the task-scoped handler while an App-owned Yuanta Trade run is active. */
@@ -326,7 +341,10 @@ export function registerYuantaTradeAppAssistanceHandler(
       if (request.taskId !== YUANTA_TRADE_APP_TASK_ID) {
         throw new Error("Yuanta Trade assistance received a request for another App task.");
       }
-      await routeAssistanceRequest(request, dependencies);
+      const outcome = await routeYuantaTradeAppAssistanceRequest(request, dependencies);
+      if (outcome?.kind === "retryable") {
+        throw new Error("Yuanta Trade verification failed; new CAPTCHA round required.");
+      }
     },
   );
 }

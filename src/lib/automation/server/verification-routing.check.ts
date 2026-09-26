@@ -89,6 +89,35 @@ test("solver route captures, validates, injects, and resumes through the declare
   assert.deepEqual(tracked.calls, ["capture", "solve", "inject", "resume"]);
 });
 
+test("audio capture opens exactly one CAPTCHA campaign round", async () => {
+  const tracked = trackedDependencies();
+  let captures = 0;
+  const contract: HumanAssistanceContract = {
+    ...captchaContract(),
+    challengeKind: "audio-captcha",
+    challengeImageRegion: undefined,
+    challengeAudioSource: {
+      id: "audio",
+      label: "Audio challenge",
+      semanticId: "provider.login.audio",
+    },
+    expectedAnswerLength: 6,
+  };
+  assert.deepEqual(await routeVerificationActor({
+    actor: "solver",
+    contract,
+    taskRunId: "audio-run",
+    confidenceThreshold: 0.9,
+    dependencies: {
+      ...tracked.dependencies,
+      solver: { async solve() { return { answer: "123456", confidence: 0.1 }; } },
+      captureChallengeAudio: async () => Buffer.from("audio bytes"),
+      onChallengeCaptured: async () => { captures += 1; },
+    },
+  }), { kind: "retryable", reason: "solver-exhausted" });
+  assert.equal(captures, 1);
+});
+
 test("a provider image owner never falls back to generic capture after failure", async () => {
   const calls: string[] = [];
   const selection = selectVerificationChallengeImage(captchaContract(), {
