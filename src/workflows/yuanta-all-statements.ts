@@ -8,7 +8,6 @@ import {
   BANK_STATEMENT_CAPABILITIES,
   allSupportedStatementTypeIds,
 } from "../lib/automation/statement-selection.js";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   authenticateYuantaBankWithAssistance,
@@ -33,7 +32,7 @@ import {
 } from "./yuanta-loan-statements.ts";
 import {
   runYuantaCreditCardStatements,
-  yuantaCanonicalHumanAttestationFromEnvironment,
+  deriveYuantaCanonicalHumanAttestation,
   yuantaCreditCardStatementsInputSchema,
   type YuantaCreditCardWorkflowCollection,
 } from "./yuanta-credit-card-statements.ts";
@@ -86,6 +85,7 @@ async function readCurrentCid(page: Page): Promise<string | null> {
 }
 
 const appInputSchema = z.object({
+  managedIdentitySecret: z.string().trim().min(1),
   credentials: z.object({
     yuanta_user_id: z.string().trim().min(1),
     yuanta_account: z.string().trim().min(1),
@@ -115,8 +115,8 @@ type YuantaWorkflowCollectionSummary = Readonly<{
 type YuantaWorkflowIdentity = Readonly<{
   sourceConnectionScope: string;
   sourceConnectionKey: string;
-  canonicalHumanAttestation?: ReturnType<typeof yuantaCanonicalHumanAttestationFromEnvironment>;
-  managedSecret?: string;
+  canonicalHumanAttestation: NonNullable<ReturnType<typeof deriveYuantaCanonicalHumanAttestation>>;
+  managedSecret: string;
 }>;
 
 export type YuantaAllWorkflowDependencies = Readonly<{
@@ -188,10 +188,9 @@ async function collectYuantaCreditCardForApp(
 ): Promise<YuantaCreditCardWorkflowCollection> {
   const parsedInput = yuantaCreditCardStatementsInputSchema.parse(rawInput);
   const credentials = (rawInput as { credentials?: YuantaCredentials }).credentials ?? {};
-  const secret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
   return await runYuantaCreditCardStatements(page, { ...parsedInput, credentials }, {
     canonicalHumanAttestation: identity.canonicalHumanAttestation,
-    instrumentFingerprintSecret: secret,
+    instrumentFingerprintSecret: identity.managedSecret,
     collectOnly: true,
     deferredCommitItems: items,
     sourceText: context.text,
@@ -254,14 +253,15 @@ export async function runYuantaAllStatementsWorkflow(
   const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);
   if (!sourceConnectionKey)
     throw new Error("Yuanta all-statements requires a stable Source Connection identity.");
-  const secret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
+  const secret = parsed.data.managedIdentitySecret;
+  const canonicalHumanAttestation = deriveYuantaCanonicalHumanAttestation(credentials, secret);
+  if (!canonicalHumanAttestation)
+    throw new Error("Yuanta canonical identity could not be established.");
   const identity: YuantaWorkflowIdentity = {
     sourceConnectionScope,
     sourceConnectionKey,
-    ...(secret ? { managedSecret: secret } : {}),
-    ...(secret
-      ? { canonicalHumanAttestation: yuantaCanonicalHumanAttestationFromEnvironment(credentials) }
-      : {}),
+    managedSecret: secret,
+    canonicalHumanAttestation,
   };
   const authenticate = overrides.authenticate ?? authenticateYuantaForApp;
   const collectDeposit = overrides.collectDeposit ?? collectYuantaDepositForApp;
