@@ -1,10 +1,12 @@
 import { SourceTextIntegrityError } from "../source-text.ts";
+import { SourceAccessChallengeError } from "../source-access.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 
 export type TypedWorkflowErrorCode =
   | "cancelled"
   | "source-integrity-failed"
   | "source-validation-failed"
+  | "source-access-challenged"
   | "verification-configuration-failed"
   | "canonical-commit-failed"
   | "commit-outcome-unknown"
@@ -72,6 +74,7 @@ const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
+  "source-access-challenged",
   "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
@@ -135,6 +138,7 @@ export function classifyTypedWorkflowFailure(
   signalAborted = false,
 ): TypedWorkflowErrorCode {
   if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
+  if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
 
   const commitEvents = events.filter((event) => event.stage === "commit");
   const commitFailed = commitEvents.some((event) => /(?:canonical-)?commit-failed$/u.test(event.code));

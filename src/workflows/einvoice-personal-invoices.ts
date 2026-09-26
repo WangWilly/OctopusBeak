@@ -6,6 +6,7 @@ import type {
   WorkflowFinancialCommitPort,
 } from "../lib/automation/workflow-executor.ts";
 import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
+import { SourceAccessChallengeError } from "../lib/automation/source-access.ts";
 import {
   emitHumanAssistanceStage,
   type WorkflowHumanAssistanceStage,
@@ -693,11 +694,20 @@ async function signInEinvoice(
   credentials: EinvoiceCredentials,
   requestHumanAssistance: EinvoiceHumanAssistanceRequest,
   signal?: AbortSignal,
+  reportAccessChallenge?: () => Promise<void>,
 ): Promise<void> {
   signal?.throwIfAborted();
 
+  let loginStatus: number | undefined;
   if (!page.url().startsWith(LOGIN_URL)) {
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+    loginStatus = (await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }))?.status();
+  }
+  const externalChallenge = await page.locator(
+    'input[name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"]',
+  ).count() > 0;
+  if (loginStatus === 403 || externalChallenge) {
+    await reportAccessChallenge?.();
+    throw new SourceAccessChallengeError();
   }
   await retryEinvoiceLoginNavigation(() => page.locator("#mobile_phone").waitFor({ state: "visible" }));
   await retryEinvoiceLoginNavigation(() => page
@@ -1170,6 +1180,7 @@ export async function runEinvoiceProviderWorkflow(
           );
         },
         context.signal,
+        () => context.event("authentication", "source-access-challenged"),
       );
     }
     context.signal.throwIfAborted();

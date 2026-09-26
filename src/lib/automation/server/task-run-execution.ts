@@ -259,6 +259,7 @@ const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
+  "source-access-challenged",
   "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
