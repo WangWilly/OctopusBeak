@@ -229,6 +229,69 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
     assert.equal((await readdir(join(root, "data", "automation", "browser-state"))).includes(task.id), true);
 
+    const rejectedRun = await createRun(provider);
+    const rejectedCommit: WorkflowFinancialCommitPort = {
+      async execute(items) {
+        let itemKey: string | undefined;
+        for await (const candidate of items) {
+          itemKey = candidate.itemKey;
+          break;
+        }
+        assert.ok(itemKey);
+        const problem = {
+          itemKey,
+          provider: "einvoice",
+          product: "personal-invoice",
+          stage: "commit" as const,
+          errorCode: "conflict",
+          message: "conflict",
+        };
+        return {
+          status: "failed",
+          items: [{
+            itemKey,
+            provider: "einvoice",
+            product: "personal-invoice",
+            status: "failed",
+            failureKind: "item",
+            diagnostics: [problem],
+          }],
+          diagnostics: [problem],
+          committedCount: 0,
+          failedCount: 1,
+        };
+      },
+    };
+    const rejectedPromise = runAutomationTaskExecution(task, provider.automation, {
+      taskRunId: rejectedRun.taskRunId,
+      launchEnv: testCredentialEnvironment(),
+      launchVerificationSettings: humanVerificationSettings,
+      workflowPorts: { financialCommit: rejectedCommit },
+      workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
+        createAppWorkflowBrowserPort({
+          taskId,
+          taskRunId,
+          signal,
+          userDataDirectory: root,
+          launchPersistentContext: async () => await launchContext(taskRunId),
+        }),
+    }, async () => {});
+    const rejectedWaiting = await waitForStatus(provider, rejectedRun.taskRunId, "waiting_for_human");
+    assert.ok(rejectedWaiting.humanAssistanceContract);
+    await sendHumanVerificationInput(rejectedRun.taskRunId, {
+      type: "type",
+      text: "12345",
+      targetId: "captcha-input",
+      contractVersion: rejectedWaiting.humanAssistanceContract.version,
+    }, rejectedWaiting.humanAssistanceContract);
+    await updateHumanAssistanceCompletionForTask(task.id, "entered", provider);
+    await resumeAppWorkflowHumanAssistance(rejectedRun.taskRunId, "entered");
+    const rejectedResult = await rejectedPromise;
+    assert.equal(rejectedResult.status, "failed");
+    const rejectedRecord = await provider.automation.taskRunById(rejectedRun.taskRunId);
+    assert.equal(rejectedRecord?.appWorkflowOutcome?.errorCode, "canonical-commit-failed");
+    assert.ok(rejectedRecord?.events.some((event) => event.code === "canonical-commit-failed"));
+
     const cancelRun = await createRun(provider);
     let cancellationRequested = false;
     const cancelled = runAutomationTaskExecution(task, provider.automation, {

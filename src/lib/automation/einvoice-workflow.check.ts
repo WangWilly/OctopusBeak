@@ -66,10 +66,17 @@ const browser = await chromium.launch();
 try {
   const page = await browser.newPage();
   let malformedList = false;
+  let loginRedirectOnLoad = false;
   await page.route("https://www.einvoice.nat.gov.tw/**", async (route) => {
     const url = route.request().url();
     if (url === loginUrl) {
-      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: loginPage });
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html; charset=utf-8",
+        body: loginRedirectOnLoad
+          ? '<html><body><script>setTimeout(() => location.href="/portal/btc/mobile/btc502w/search", 100)</script></body></html>'
+          : loginPage,
+      });
       return;
     }
     if (url === homeUrl) {
@@ -157,6 +164,13 @@ try {
   assert.ok(events.some((event) => event.code === "canonical-commit-completed"));
   assert.equal(commits.length, 1);
 
+  loginRedirectOnLoad = true;
+  await opened.goto(loginUrl);
+  const resumedSession = await einvoicePersonalInvoicesWorkflow.run(context, { credentials });
+  assert.equal(resumedSession.invoiceCount, 0);
+  assert.deepEqual(contractIds, ["einvoice-login-captcha"], "a session redirect needs no CAPTCHA");
+  assert.equal(commits.length, 2);
+
   malformedList = true;
   const badPage = await browser.newPage();
   await badPage.route("https://www.einvoice.nat.gov.tw/**", async (route) => {
@@ -182,7 +196,7 @@ try {
     einvoicePersonalInvoicesWorkflow.run(malformedContext, { credentials }),
     /Source text integrity failed: invalid-encoding/u,
   );
-  assert.equal(commits.length, 1, "malformed source must be rejected before Canonical Financial Commit");
+  assert.equal(commits.length, 2, "malformed source must be rejected before Canonical Financial Commit");
 
   const incompleteCapture = buildCanonicalEInvoiceCapture({
     records: [{
