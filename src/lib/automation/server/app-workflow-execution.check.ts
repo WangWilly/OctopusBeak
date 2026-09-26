@@ -25,6 +25,7 @@ const loginUrl = "https://www.einvoice.nat.gov.tw/accounts/login";
 const homeUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/home";
 const searchUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/btc502w/search";
 const listEndpoint = "https://www.einvoice.nat.gov.tw/btc/cloud/api/btc502w/searchCarrierInvoice";
+const humanVerificationSettings = { LIBRETTO_CLOUD_EINVOICE_VERIFICATION_ACTOR: "human" } as const;
 const testCredentialEnvironment = () => ({
   [["LIBRETTO", "CLOUD", "EINVOICE", "PHONE_NUMBER"].join("_")]: "0900000000",
   [["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_")]: "test-only-secret",
@@ -176,6 +177,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const runPromise = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
+      launchVerificationSettings: humanVerificationSettings,
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
         createAppWorkflowBrowserPort({
@@ -232,6 +234,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const cancelled = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: cancelRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
+      launchVerificationSettings: humanVerificationSettings,
       isCancellationRequested: () => cancellationRequested,
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
@@ -255,6 +258,7 @@ test("App dispatch runs E-Invoice in its browser host and resumes human assistan
     const interrupted = runAutomationTaskExecution(task, provider.automation, {
       taskRunId: shutdownRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
+      launchVerificationSettings: humanVerificationSettings,
       workflowPorts: { financialCommit },
       workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) =>
         createAppWorkflowBrowserPort({
