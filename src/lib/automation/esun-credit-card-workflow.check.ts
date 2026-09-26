@@ -206,6 +206,7 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
   try {
     const harness = createContext(createPage());
     const output = await esunCreditCardStatementsWorkflow.run(harness.context, {
+      managedIdentitySecret: "synthetic-esun-managed-secret",
       credentials: {
         esun_user_id: "synthetic-user",
         esun_account: "synthetic-account",
@@ -251,6 +252,7 @@ test("E.SUN typed workflow rejects malformed text and incomplete timelines befor
       const harness = createContext(page);
       await assert.rejects(
         esunCreditCardStatementsWorkflow.run(harness.context, {
+          managedIdentitySecret: "synthetic-esun-managed-secret",
           credentials: {
             esun_user_id: "synthetic-user",
             esun_account: "synthetic-account",
@@ -273,6 +275,7 @@ test("E.SUN typed workflow honors cancellation before opening a page or committi
   const context = { ...harness.context, signal: controller.signal };
   await assert.rejects(
     esunCreditCardStatementsWorkflow.run(context, {
+      managedIdentitySecret: "synthetic-esun-managed-secret",
       credentials: {
         esun_user_id: "synthetic-user",
         esun_account: "synthetic-account",
@@ -292,6 +295,7 @@ test("E.SUN typed workflow routes a sign-in challenge through injected human ass
     const page = createPage({ initialSignedIn: false });
     const harness = createContext(page, () => page.finishSignIn());
     await esunCreditCardStatementsWorkflow.run(harness.context, {
+      managedIdentitySecret: "synthetic-esun-managed-secret",
       credentials: {
         esun_user_id: "synthetic-user",
         esun_account: "synthetic-account",

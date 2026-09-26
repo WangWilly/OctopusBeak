@@ -24,6 +24,7 @@ const testEnvironment = () => ({
   [["LIBRETTO", "CLOUD", "ESUN", "USER", "ID"].join("_")]: "synthetic-user-id",
   [["LIBRETTO", "CLOUD", "ESUN", "ACCOUNT"].join("_")]: "synthetic-account",
   [["LIBRETTO", "CLOUD", "ESUN", "PASSWORD"].join("_")]: "synthetic-password",
+  [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "synthetic-esun-managed-secret",
 });
 
 function monthAtOffset(now: Date, offset: number) {
@@ -184,11 +185,12 @@ test("E.SUN App task dispatch maps credentials, hosted URL, human assistance, ev
       esun_account: "synthetic-account",
       esun_password: "synthetic-password",
     },
+    managedIdentitySecret: "synthetic-esun-managed-secret",
   });
 
   const root = await mkdtemp(join(tmpdir(), "esun-app-workflow-"));
   const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = "synthetic-esun-managed-secret";
+  delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   const now = new Date("2026-09-25T12:00:00.000Z");
