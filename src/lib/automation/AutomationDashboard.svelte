@@ -1731,7 +1731,14 @@
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
                       {#if task.appWorkflowOutcome?.errorCode}
-                        <p class="workflow-outcome-error"><code>{task.appWorkflowOutcome.errorCode}</code></p>
+                        <p class="workflow-outcome-error">
+                          <code>{task.appWorkflowOutcome.errorCode}</code>
+                          {#if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
+                            <span>{$locale === "zh-TW"
+                              ? "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。"
+                              : "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying."}</span>
+                          {/if}
+                        </p>
                       {/if}
                       {#if task.appWorkflowOutcome?.summary}
                         <div class="workflow-outcome-summary" aria-label="Workflow outcome summary">
@@ -2162,6 +2169,11 @@
                   <td class="history-error">
                     {#if run.appWorkflowOutcome?.errorCode}
                       <code>{run.appWorkflowOutcome.errorCode}</code>
+                      {#if run.appWorkflowOutcome.errorCode === "source-access-challenged"}
+                        <small>{$locale === "zh-TW"
+                          ? "網站安全驗證阻擋登入"
+                          : "Site verification blocked sign-in"}</small>
+                      {/if}
                     {:else}--{/if}
                   </td>
                 </tr>

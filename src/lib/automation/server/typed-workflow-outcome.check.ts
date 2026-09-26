@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { SourceTextIntegrityError } from "../source-text.ts";
+import { SourceAccessChallengeError } from "../source-access.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
@@ -43,6 +44,10 @@ test("typed failures use stable privacy-safe categories", () => {
   assert.equal(
     classifyTypedWorkflowFailure(new SourceTextIntegrityError("invalid-encoding"), []),
     "source-integrity-failed",
+  );
+  assert.equal(
+    classifyTypedWorkflowFailure(new SourceAccessChallengeError(), []),
+    "source-access-challenged",
   );
   assert.equal(classifyTypedWorkflowFailure(new Error("contains private account 123"), [{
     runId: "run-1",

@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Page } from "playwright";
+import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildCanonicalEInvoiceCapture,
@@ -12,6 +15,7 @@ import {
   einvoiceCaptchaAssistanceStage,
   mapCanonicalEInvoiceRecord,
   retryEinvoiceLoginNavigation,
+  runEinvoiceProviderWorkflow,
   type InvoiceCaptureRecord,
   validatePaginationEnvelope,
   waitForEinvoiceLoginOutcome,
@@ -45,6 +49,41 @@ assert.equal(unrelatedAttempts, 1);
 
 const browser = await chromium.launch();
 try {
+  const blockedPage = await browser.newPage();
+  blockedPage.setDefaultTimeout(500);
+  await blockedPage.route("https://www.einvoice.nat.gov.tw/accounts/login", async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "text/html; charset=utf-8",
+      body: '<html><body>正在執行安全驗證<input type="hidden" name="cf-turnstile-response"></body></html>',
+    });
+  });
+  const blockedEvents: WorkflowRunEvent[] = [];
+  const blockedContext: WorkflowContext = {
+    runId: "blocked-login-fixture",
+    signal: new AbortController().signal,
+    now: () => "2026-09-26T00:00:00.000Z",
+    browser: { withPage: (run) => run(blockedPage) },
+    text: strictSourceText,
+    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
+    event: async (stage, code) => {
+      blockedEvents.push({ runId: "blocked-login-fixture", stage, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    },
+  };
+  let blockedError: unknown;
+  try {
+    await runEinvoiceProviderWorkflow(blockedContext, {
+      credentials: { einvoice_phone_number: "0900000000", einvoice_password: "fixture-only" },
+    });
+  } catch (error) {
+    blockedError = error;
+  }
+  assert.ok(blockedError);
+  assert.ok(blockedEvents.some((event) => event.code === "source-access-challenged"));
+  assert.equal(classifyTypedWorkflowFailure(blockedError, blockedEvents), "source-access-challenged");
+  await blockedPage.close();
+
   const captchaPage = await browser.newPage();
   await captchaPage.setContent(`
     <input id="captcha" style="width: 120px; height: 32px" />
