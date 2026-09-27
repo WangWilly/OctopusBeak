@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import type { Page } from "playwright";
+import { errors, type Page, type Request } from "playwright";
 import { z } from "zod";
 import type {
   WorkflowContext,
@@ -24,6 +24,7 @@ import {
   type CanonicalEInvoiceItemInput,
   type CanonicalEInvoiceOccurrence,
 } from "../ledger/canonical/einvoice-contract.ts";
+import { stableCanonicalSourceJson } from "../ledger/canonical/canonical-source-evidence.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import {
   PGLITE_CANONICAL_EINVOICE_COMMIT_COMMAND,
@@ -872,6 +873,49 @@ async function ensureSearchPage(page: Page): Promise<void> {
   await page.locator("#dp-input-searchInvoiceDate").waitFor({ state: "visible" });
 }
 
+export async function retryEinvoiceReadQueryWithoutRequest<T>(
+  page: Page,
+  prepare: () => Promise<void>,
+  execute: () => Promise<T>,
+  matchesRequest: (request: Request) => boolean,
+): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await prepare();
+    let requestSent = false;
+    const onRequest = (request: Request): void => {
+      if (matchesRequest(request)) requestSent = true;
+    };
+    page.on("request", onRequest);
+    try {
+      return await execute();
+    } catch (error) {
+      if (attempt > 0 || !(error instanceof errors.TimeoutError) || requestSent) {
+        throw error;
+      }
+    } finally {
+      page.off("request", onRequest);
+    }
+  }
+  throw new Error("E-Invoice read query retry ended without a result.");
+}
+
+export class EInvoiceDetailRequestNotSentError extends Error {
+  constructor() {
+    super("E-Invoice detail view sent no header or item request.");
+  }
+}
+
+export async function retryEinvoiceMonthOnUnsentDetail<T>(attempt: () => Promise<T>): Promise<T> {
+  for (let index = 0; index < 2; index += 1) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (index > 0 || !(error instanceof EInvoiceDetailRequestNotSentError)) throw error;
+    }
+  }
+  throw new Error("E-Invoice month retry ended without a result.");
+}
+
 async function searchMonth(
   page: Page,
   month: YearMonth,
@@ -879,16 +923,24 @@ async function searchMonth(
   signal?: AbortSignal,
 ): Promise<InvoiceListResponse> {
   signal?.throwIfAborted();
-  await ensureSearchPage(page);
-  await selectDateRange(page, month);
-  await page.locator("#carrier").selectOption("all");
-  await page.locator("#status").selectOption("all");
-  await page.locator("#buyerBan").fill("");
-  await page.locator("#productName").fill("");
-
-  const listPromise = waitForListResponse(page, text, signal);
-  await page.locator('button[aria-label="查詢"], button[title="查詢"]').last().click();
-  return await listPromise;
+  return retryEinvoiceReadQueryWithoutRequest(
+    page,
+    async () => {
+      signal?.throwIfAborted();
+      await ensureSearchPage(page);
+      await selectDateRange(page, month);
+      await page.locator("#carrier").selectOption("all");
+      await page.locator("#status").selectOption("all");
+      await page.locator("#buyerBan").fill("");
+      await page.locator("#productName").fill("");
+    },
+    async () => {
+      const listPromise = waitForListResponse(page, text, signal);
+      await page.locator('button[aria-label="查詢"], button[title="查詢"]').last().click();
+      return await listPromise;
+    },
+    (request) => request.url().includes(LIST_ENDPOINT) && request.method() === "POST",
+  );
 }
 
 async function setResultPageSize100(
@@ -941,6 +993,13 @@ async function readInvoiceRows(
 ): Promise<{ header: InvoiceHeader; items: readonly InvoiceItem[]; itemCompleteness: "complete" | "incomplete" }> {
   signal?.throwIfAborted();
   await closeInvoiceDetailModal(page);
+  let detailRequestSent = false;
+  const onRequest = (request: Request): void => {
+    if (request.method() === "POST" && (request.url().includes(HEADER_ENDPOINT) || request.url().includes(ITEMS_ENDPOINT))) {
+      detailRequestSent = true;
+    }
+  };
+  page.on("request", onRequest);
   const responses = waitForInvoiceResponses(page, text, signal);
   try {
     await page.locator(`a[title="${entry.invoiceNumber}"]`).first().click();
@@ -981,7 +1040,13 @@ async function readInvoiceRows(
       }
     }) ? "complete" : "incomplete";
     return { header, items, itemCompleteness: completeness };
+  } catch (error) {
+    if (error instanceof errors.TimeoutError && !detailRequestSent) {
+      throw new EInvoiceDetailRequestNotSentError();
+    }
+    throw error;
   } finally {
+    page.off("request", onRequest);
     await closeInvoiceDetailModal(page);
   }
 }
@@ -1023,31 +1088,43 @@ async function readAllInvoices(
 
   for (const [monthIndex, month] of months.entries()) {
     signal?.throwIfAborted();
-    let list = await searchMonth(page, month, text, signal);
-    validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
-    if (list.totalElements > list.content.length) {
-      list = await setResultPageSize100(page, text, signal);
-      validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
-    }
+    await retryEinvoiceMonthOnUnsentDetail(async () => {
+      const initialRecords = records.length;
+      const initialPages = pages.length;
+      const initialInvoiceCount = invoiceCount;
+      try {
+        let list = await searchMonth(page, month, text, signal);
+        validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
+        if (list.totalElements > list.content.length) {
+          list = await setResultPageSize100(page, text, signal);
+          validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list`, list);
+        }
 
-    const totalPages = Math.max(1, list.totalPages);
-    pages.push({ month, pageIndex: 0, list });
-    invoiceCount += list.totalElements;
-    records.push(...(await readVisibleListRows(page, month, 0, list, text, signal)));
+        const totalPages = Math.max(1, list.totalPages);
+        pages.push({ month, pageIndex: 0, list });
+        invoiceCount += list.totalElements;
+        records.push(...(await readVisibleListRows(page, month, 0, list, text, signal)));
 
-    let fetchedCount = list.content.length;
-    for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
-      const pageList = await selectResultPage(page, pageIndex, text, signal);
-      validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list page ${pageIndex}`, pageList);
-      if (pageList.totalElements !== list.totalElements || pageList.totalPages !== list.totalPages)
-        throw new Error(`E-Invoice ${monthLabel(month)} list pagination changed during collection.`);
-      pages.push({ month, pageIndex, list: pageList });
-      fetchedCount += pageList.content.length;
-      records.push(...(await readVisibleListRows(page, month, pageIndex, pageList, text, signal)));
-    }
-    if (fetchedCount !== list.totalElements)
-      throw new Error(`E-Invoice ${monthLabel(month)} list pagination was incomplete.`);
-    await onMonthComplete?.(monthIndex + 1, months.length);
+        let fetchedCount = list.content.length;
+        for (let pageIndex = 1; pageIndex < totalPages; pageIndex += 1) {
+          const pageList = await selectResultPage(page, pageIndex, text, signal);
+          validatePaginationEnvelope(`E-Invoice ${monthLabel(month)} list page ${pageIndex}`, pageList);
+          if (pageList.totalElements !== list.totalElements || pageList.totalPages !== list.totalPages)
+            throw new Error(`E-Invoice ${monthLabel(month)} list pagination changed during collection.`);
+          pages.push({ month, pageIndex, list: pageList });
+          fetchedCount += pageList.content.length;
+          records.push(...(await readVisibleListRows(page, month, pageIndex, pageList, text, signal)));
+        }
+        if (fetchedCount !== list.totalElements)
+          throw new Error(`E-Invoice ${monthLabel(month)} list pagination was incomplete.`);
+        await onMonthComplete?.(monthIndex + 1, months.length);
+      } catch (error) {
+        records.length = initialRecords;
+        pages.length = initialPages;
+        invoiceCount = initialInvoiceCount;
+        throw error;
+      }
+    });
   }
 
   return { records, pages, months: months.map(monthLabel), invoiceCount };
@@ -1093,21 +1170,41 @@ export function buildCanonicalEInvoiceCapture(
   );
   const observedAt = options.observedAt ?? new Date().toISOString();
   const captureId = options.captureId ?? `einvoice-capture:${randomUUID()}`;
+  const pageKey = (month: YearMonth, pageIndex: number): string => `${monthLabel(month)}:${pageIndex}`;
+  const sourcePageKeys = new Set(result.pages.map((page) => pageKey(page.month, page.pageIndex)));
+  const admittedRowCounts = new Map<string, number>();
+  const revisions = new Map<string, string>();
+  const invoices: CanonicalEInvoiceInput[] = [];
+  for (const record of result.records) {
+    const key = pageKey(record.month, record.listPageIndex);
+    if (!sourcePageKeys.has(key)) throw new Error("E-Invoice record has no source list page.");
+    const invoice = mapCanonicalEInvoiceRecord(record);
+    const revisionKey = `${invoice.stableInvoiceKey}\u0000${invoice.sourceRevisionKey}`;
+    const facts = stableCanonicalSourceJson({ invoice });
+    const prior = revisions.get(revisionKey);
+    if (prior !== undefined) {
+      if (prior !== facts) throw new Error("E-Invoice same invoice revision has different facts in one capture.");
+      continue;
+    }
+    revisions.set(revisionKey, facts);
+    invoices.push(invoice);
+    admittedRowCounts.set(key, (admittedRowCounts.get(key) ?? 0) + 1);
+  }
   const pages = result.pages.map((page, pageOrdinal) => ({
     pageOrdinal,
     responseCode: String(page.list.httpStatus) as "200" | "204",
-    rowCount: page.list.content.length,
+    rowCount: admittedRowCounts.get(pageKey(page.month, page.pageIndex)) ?? 0,
     terminal: pageOrdinal === result.pages.length - 1,
     metadata: {
       provider: "einvoice.nat.gov.tw",
       month: monthLabel(page.month),
       pageIndex: page.pageIndex,
+      providerRowCount: page.list.content.length,
       totalElements: page.list.totalElements,
       totalPages: page.list.totalPages,
       size: page.list.size,
     },
   }));
-  const invoices = result.records.map(mapCanonicalEInvoiceRecord);
   const itemCompleteness = invoices.every((invoice) =>
     invoice.items.every((item) => item.completeness === "complete"),
   ) ? "complete" : "incomplete";
@@ -1209,16 +1306,17 @@ export async function runEinvoiceProviderWorkflow(
         await context.event("collection", "month-completed", { completed, total });
       },
     );
+    const admittedInvoiceCount = capture.invoices.length;
     await context.event("decoding", "source-decoding-completed");
     await context.event("validation", "source-validation-completed", {
-      completed: result.invoiceCount,
-      total: result.invoiceCount,
+      completed: admittedInvoiceCount,
+      total: admittedInvoiceCount,
     });
     context.signal.throwIfAborted();
 
     await context.event("commit", "canonical-commit-started", {
       completed: 0,
-      total: result.invoiceCount,
+      total: admittedInvoiceCount,
     });
     let commit: PGliteCanonicalEInvoiceCommitResult;
     try {
@@ -1231,12 +1329,12 @@ export async function runEinvoiceProviderWorkflow(
     }
     await context.event("commit", "canonical-commit-completed", {
       completed: commit.invoiceCount,
-      total: result.invoiceCount,
+      total: admittedInvoiceCount,
     });
 
     return outputSchema.parse({
       usedExistingSession,
-      invoiceCount: result.invoiceCount,
+      invoiceCount: admittedInvoiceCount,
       itemCount: commit.itemCount,
       months: result.months,
       captureId: commit.captureId,
