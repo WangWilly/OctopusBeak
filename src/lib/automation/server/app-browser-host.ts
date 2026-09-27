@@ -13,7 +13,7 @@ export type AppWorkflowBrowserConnection = Readonly<{
   targetId: string;
 }>;
 
-export type AppWorkflowBrowserProfile = "ctbc-login";
+export type AppWorkflowBrowserProfile = "ctbc-login" | "cathay-login";
 
 export type AppWorkflowBrowserLaunchOptions = Readonly<{
   acceptDownloads: false;
@@ -53,7 +53,12 @@ export function cookiesForAppWorkflowBrowserProfile(
   cookies: readonly AppBrowserCookie[],
   profile?: AppWorkflowBrowserProfile,
 ): AppBrowserCookie[] {
-  if (profile !== "ctbc-login") return [...cookies];
+  const resetDomain = profile === "ctbc-login"
+    ? "ctbcbank.com"
+    : profile === "cathay-login"
+    ? "cathaybk.com.tw"
+    : null;
+  if (!resetDomain) return [...cookies];
   return cookies.filter((cookie) => {
     let domain = cookie.domain;
     if (!domain && cookie.url) {
@@ -61,7 +66,7 @@ export function cookiesForAppWorkflowBrowserProfile(
     }
     if (!domain) return false;
     domain = domain.replace(/^\./u, "").toLowerCase();
-    return domain !== "ctbcbank.com" && !domain.endsWith(".ctbcbank.com");
+    return domain !== resetDomain && !domain.endsWith(`.${resetDomain}`);
   });
 }
 const remoteDebuggingArgs = [
