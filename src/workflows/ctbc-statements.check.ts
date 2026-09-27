@@ -1,13 +1,72 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { Page } from "playwright";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailRowsToStatementRows,
+  handleCtbcConcurrentLoginPrompt,
   indexCtbcCurrentDepositFinancialCaptures,
+  handleCtbcPasswordReminder,
+  openCtbcLoginForm,
   resolveCtbcAccountScope,
 } from "./ctbc-statements.ts";
+
+let ctbcLoginNavigations = 0;
+const readyLocator = {
+  first() { return this; },
+  nth() { return this; },
+  isVisible: async () => ctbcLoginNavigations > 1,
+  waitFor: async () => undefined,
+};
+const busyLocator = {
+  first() { return this; },
+  isVisible: async () => ctbcLoginNavigations === 1,
+};
+const ctbcLoginPage = {
+  goto: async () => {
+    ctbcLoginNavigations += 1;
+    return { status: () => ctbcLoginNavigations === 1 ? 202 : 200 };
+  },
+  locator: () => readyLocator,
+  getByText: () => busyLocator,
+  getByRole: () => readyLocator,
+  waitForTimeout: async () => undefined,
+} as unknown as Page;
+await openCtbcLoginForm(ctbcLoginPage);
+assert.equal(ctbcLoginNavigations, 2, "a transient CTBC 202 is retried in the same headless page");
+
+let reminderClicked = false;
+const reminderPage = {
+  getByText: (name: string) => ({
+    isVisible: async () => name === "密碼變更提醒",
+    click: async () => { reminderClicked = true; },
+  }),
+  waitForTimeout: async () => undefined,
+} as unknown as Page;
+assert.equal(await handleCtbcPasswordReminder(reminderPage), true);
+assert.equal(reminderClicked, true, "the reminder is dismissed with the user's chosen next-time option");
+reminderClicked = false;
+const ordinaryPage = {
+  getByText: () => ({ isVisible: async () => false, click: async () => { reminderClicked = true; } }),
+} as unknown as Page;
+assert.equal(await handleCtbcPasswordReminder(ordinaryPage), false);
+assert.equal(reminderClicked, false, "an unrelated page is not clicked");
+
+let concurrentLoginConfirmed = false;
+const concurrentLoginPage = {
+  getByText: (name: string) => ({
+    isVisible: async () => name === "其他位置將會自動登出",
+    click: async () => { concurrentLoginConfirmed = true; },
+  }),
+  waitForTimeout: async () => undefined,
+} as unknown as Page;
+assert.equal(await handleCtbcConcurrentLoginPrompt(concurrentLoginPage), true);
+assert.equal(concurrentLoginConfirmed, true);
+concurrentLoginConfirmed = false;
+assert.equal(await handleCtbcConcurrentLoginPrompt(ordinaryPage), false);
+assert.equal(concurrentLoginConfirmed, false, "an unrelated confirmation is not clicked");
 
 const providerSource = readFileSync(new URL("./ctbc-statements.ts", import.meta.url), "utf8");
 assert.doesNotMatch(providerSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u);

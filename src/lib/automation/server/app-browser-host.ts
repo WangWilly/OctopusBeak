@@ -13,6 +13,8 @@ export type AppWorkflowBrowserConnection = Readonly<{
   targetId: string;
 }>;
 
+export type AppWorkflowBrowserProfile = "ctbc-login";
+
 export type AppWorkflowBrowserLaunchOptions = Readonly<{
   acceptDownloads: false;
   args: string[];
@@ -29,6 +31,7 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   credentialCodec?: AutomationCredentialCodec | null;
   startUrl?: string;
   browserEngine?: "chromium" | "firefox";
+  browserProfile?: AppWorkflowBrowserProfile;
   launchPersistentContext?: (
     userDataDirectory: string,
     options: AppWorkflowBrowserLaunchOptions,
@@ -45,6 +48,22 @@ const COOKIE_STATE_FORMAT = "octopusbeak.browser-auth.cookies.safeStorage.v1";
 const COOKIE_STATE_MAX_BYTES = 1_048_576;
 const COOKIE_STATE_MAX_COUNT = 512;
 type AppBrowserCookie = Parameters<BrowserContext["addCookies"]>[0][number];
+
+export function cookiesForAppWorkflowBrowserProfile(
+  cookies: readonly AppBrowserCookie[],
+  profile?: AppWorkflowBrowserProfile,
+): AppBrowserCookie[] {
+  if (profile !== "ctbc-login") return [...cookies];
+  return cookies.filter((cookie) => {
+    let domain = cookie.domain;
+    if (!domain && cookie.url) {
+      try { domain = new URL(cookie.url).hostname; } catch { return false; }
+    }
+    if (!domain) return false;
+    domain = domain.replace(/^\./u, "").toLowerCase();
+    return domain !== "ctbcbank.com" && !domain.endsWith(".ctbcbank.com");
+  });
+}
 const remoteDebuggingArgs = [
   "--remote-debugging-address=127.0.0.1",
   "--remote-debugging-port=0",
@@ -354,6 +373,12 @@ export function createAppWorkflowBrowserPort(
     ? getAutomationCredentialCodec()
     : input.credentialCodec;
   const browserEngine = input.browserEngine ?? "chromium";
+  if (input.browserProfile && browserEngine !== "chromium") {
+    throw new Error("The selected App browser profile requires Chromium.");
+  }
+  const profileArgs = input.browserProfile === "ctbc-login"
+    ? ["--disable-blink-features=AutomationControlled"]
+    : [];
   const launch = input.launchPersistentContext ?? (browserEngine === "firefox"
     ? (directory: string, options: AppWorkflowBrowserLaunchOptions) =>
         firefox.launchPersistentContext(directory, { ...options, headless: true })
@@ -379,13 +404,14 @@ export function createAppWorkflowBrowserPort(
         await ensureDirectory(browserRuntimeDirectory);
         context = await launch(browserRuntimeDirectory, {
           ...launchOptions,
-          args: browserEngine === "firefox" ? [] : [...launchOptions.args],
+          args: browserEngine === "firefox" ? [] : [...launchOptions.args, ...profileArgs],
         });
         input.signal.throwIfAborted();
         const page = context.pages()[0] ?? await context.newPage();
-        if (retainedCookies.length > 0) {
+        const cookiesToRestore = cookiesForAppWorkflowBrowserProfile(retainedCookies, input.browserProfile);
+        if (cookiesToRestore.length > 0) {
           try {
-            await context.addCookies(retainedCookies);
+            await context.addCookies(cookiesToRestore);
           } catch {
             // A rejected cookie jar is discarded for this run; the workflow may log in again.
           }

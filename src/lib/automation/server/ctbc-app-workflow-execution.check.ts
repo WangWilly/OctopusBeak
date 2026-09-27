@@ -13,7 +13,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { workflowBrowserProfileForTask, workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const RESOURCE_URL = "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource";
@@ -163,6 +163,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
+  assert.equal(workflowBrowserProfileForTask(task.workflowId), "ctbc-login");
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
       ctbc_user_id: "synthetic-user-id",
@@ -179,6 +180,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   const committed: unknown[][] = [];
   const financialCommit = createCommitPort(committed);
   let observedStartUrl: string | undefined;
+  let observedBrowserProfile: string | undefined;
   try {
     process.chdir(root);
     await applyPgliteOperationalBaseline(store);
@@ -204,8 +206,9 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
           },
         },
       },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
+        observedBrowserProfile = browserProfile;
         return browser;
       },
     }, async () => {});
@@ -219,6 +222,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       ["count", "rowCount", "sourceCaptureCount"],
     );
     assert.equal(observedStartUrl, LOGIN_URL);
+    assert.equal(observedBrowserProfile, "ctbc-login");
     assert.equal(app.credential("form input[type=text]"), "synthetic-user-id");
     assert.equal(app.credential("form input[type=password]", 0), "synthetic-account");
     assert.equal(app.credential("form input[type=password]", 1), "synthetic-password");

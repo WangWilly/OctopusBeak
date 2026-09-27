@@ -8,8 +8,46 @@ import {
   appWorkflowBrowserConnectionForSession,
   appWorkflowPageForSession,
   createAppWorkflowBrowserPort,
+  cookiesForAppWorkflowBrowserProfile,
   withAppWorkflowBrowserPage,
 } from "./app-browser-host.ts";
+
+test("CTBC profile drops retained CTBC cookies but preserves unrelated browser state", () => {
+  const cookies = [
+    { name: "bank-session", value: "one", domain: "www.ctbcbank.com", path: "/" },
+    { name: "bank-root", value: "two", domain: ".ctbcbank.com", path: "/" },
+    { name: "other", value: "three", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "ctbc-login"), [cookies[2]]);
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies), cookies);
+});
+
+test("CTBC headless profile adds only the verified browser compatibility flag", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctbc-browser-profile-"));
+  const observed: string[][] = [];
+  try {
+    for (const browserProfile of [undefined, "ctbc-login"] as const) {
+      await createAppWorkflowBrowserPort({
+        taskId: "ctbc-statements",
+        taskRunId: browserProfile ? "ctbc-profile" : "default-profile",
+        signal: new AbortController().signal,
+        userDataDirectory: root,
+        credentialCodec: null,
+        ...(browserProfile ? { browserProfile } : {}),
+        launchPersistentContext: async (_directory, options) => {
+          observed.push(options.args);
+          return { pages: () => [{}], close: async () => {} } as never;
+        },
+      }).withPage(async () => undefined);
+    }
+    assert.equal(observed.length, 2);
+    assert.equal(observed[0].includes("--disable-blink-features=AutomationControlled"), false);
+    assert.equal(observed[1].includes("--disable-blink-features=AutomationControlled"), true);
+    assert.equal(observed[1].filter((arg) => arg === "--disable-blink-features=AutomationControlled").length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("the production App browser launches headlessly with a worker CDP target", async () => {
   const root = await mkdtemp(join(tmpdir(), "app-browser-headless-"));
