@@ -311,6 +311,9 @@ export async function runFubonAllStatementsWorkflow(
   await context.event("preparation", "input-validated");
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
+    // A retained Fubon session cookie can route the next run straight to
+    // NotAuth.jsp?type=dupLogin before credentials are entered.
+    await page.context().clearCookies({ domain: /(?:^|\.)taipeifubon\.com\.tw$/u });
     await context.event("authentication", "authentication-started");
     await authenticate(page, parsed.data.credentials, context);
     context.signal.throwIfAborted();

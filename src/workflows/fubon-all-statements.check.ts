@@ -55,3 +55,40 @@ assert.notEqual(
     "rotated-managed-secret",
   )?.humanAttestedAccountKey,
 );
+
+const retainedCookies = [
+  { domain: ".taipeifubon.com.tw", name: "stale-bank-session" },
+  { domain: ".ctbcbank.com", name: "unrelated-session" },
+];
+const page = {
+  context: () => ({
+    clearCookies: async ({ domain }: { domain: RegExp }) => {
+      for (let index = retainedCookies.length - 1; index >= 0; index -= 1) {
+        if (domain.test(retainedCookies[index].domain)) retainedCookies.splice(index, 1);
+      }
+    },
+  }),
+};
+await assert.rejects(
+  module.runFubonAllStatementsWorkflow(
+    {
+      signal: new AbortController().signal,
+      browser: { withPage: async (run: (value: typeof page) => Promise<unknown>) => run(page) },
+      financialCommit: { execute: async () => { throw new Error("commit must not run"); } },
+      event: async () => undefined,
+    },
+    {
+      managedIdentitySecret: "synthetic-managed-secret",
+      credentials: { ...credentials, fubon_password: "synthetic-password" },
+    },
+    {
+      authenticate: async () => {
+        assert.deepEqual(retainedCookies, [
+          { domain: ".ctbcbank.com", name: "unrelated-session" },
+        ], "Fubon stale cookies are cleared before authentication without touching other banks");
+        throw new Error("authentication fixture reached");
+      },
+    },
+  ),
+  /authentication fixture reached/u,
+);
