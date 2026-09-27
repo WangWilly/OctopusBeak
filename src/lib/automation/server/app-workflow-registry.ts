@@ -29,11 +29,13 @@ import {
 } from "../../../workflows/yuanta-trade-statements.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
+import type { AppWorkflowBrowserProfile } from "./app-browser-host.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
   startUrl?: string;
+  browserProfile?: AppWorkflowBrowserProfile;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
   registerHumanAssistance?: (
     provider: AutomationPersistenceProvider,
@@ -236,6 +238,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
   {
     definition: ctbcStatementsWorkflow,
     startUrl: "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010",
+    browserProfile: "ctbc-login",
     inputFromEnvironment(environment) {
       return {
         credentials: {
@@ -338,6 +341,10 @@ export function workflowInputForTask(
 
 export function workflowStartUrlForTask(workflowId: string | undefined) {
   return workflowRegistration(workflowId)?.startUrl;
+}
+
+export function workflowBrowserProfileForTask(workflowId: string | undefined) {
+  return workflowRegistration(workflowId)?.browserProfile;
 }
 
 /** Register any task-scoped App assistance route for the lifetime of one run. */

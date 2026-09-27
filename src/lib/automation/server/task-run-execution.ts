@@ -28,6 +28,7 @@ import {
   appWorkflowBrowserConnectionForSession,
   createAppWorkflowBrowserPort,
   type AppWorkflowBrowserConnection,
+  type AppWorkflowBrowserProfile,
 } from "./app-browser-host.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import {
@@ -37,6 +38,7 @@ import {
 import {
   workflowDefinitionForTask,
   workflowInputForTask,
+  workflowBrowserProfileForTask,
   workflowStartUrlForTask,
   registerWorkflowHumanAssistanceForTask,
 } from "./app-workflow-registry.ts";
@@ -86,6 +88,7 @@ export type AutomationTaskExecutionOptions = {
     signal: AbortSignal;
     userDataDirectory: string;
     startUrl?: string;
+    browserProfile?: AppWorkflowBrowserProfile;
   }) => WorkflowBrowserPort;
 };
 
@@ -160,6 +163,7 @@ async function executeInlineAppWorkflow(
     }
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const startUrl = workflowStartUrlForTask(execution.task.workflowId);
+    const browserProfile = workflowBrowserProfileForTask(execution.task.workflowId);
     const browser = injectedPorts.browser
       ?? options.workflowBrowserPortFactory?.({
         taskId: execution.task.id,
@@ -167,6 +171,7 @@ async function executeInlineAppWorkflow(
         signal: controller.signal,
         userDataDirectory,
         startUrl,
+        browserProfile,
       })
       ?? createAppWorkflowBrowserPort({
         taskId: execution.task.id,
@@ -174,6 +179,7 @@ async function executeInlineAppWorkflow(
         signal: controller.signal,
         userDataDirectory,
         startUrl,
+        browserProfile,
         ...(execution.task.workflowId === "einvoice-personal-invoices"
           ? { browserEngine: "firefox" as const }
           : {}),
@@ -392,18 +398,21 @@ async function executeSupervisedAppWorkflow(
       : undefined;
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const startUrl = workflowStartUrlForTask(workflowId);
+    const browserProfile = workflowBrowserProfileForTask(workflowId);
     const browser = nonbrowser ? undefined : options.workflowBrowserPortFactory?.({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
       startUrl,
+      browserProfile,
     }) ?? (nonbrowser ? undefined : createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
       signal: controller.signal,
       userDataDirectory,
       startUrl,
+      browserProfile,
     }));
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: execution.run.taskRunId,

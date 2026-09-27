@@ -232,13 +232,6 @@ export function decodeCtbcSourceJson<T>(
   return value as T;
 }
 
-function actionByText(page: Page, text: string): Locator {
-  return page
-    .locator("a, button, input[type=button], input[type=submit]")
-    .filter({ hasText: text })
-    .last();
-}
-
 function requireCredential(
   credentials: CtbcCredentials,
   name: keyof CtbcCredentials,
@@ -335,25 +328,12 @@ function rowWithinDateRange(
   return true;
 }
 
-async function clickVisibleNow(locator: Locator, signal?: AbortSignal): Promise<boolean> {
-  if (!(await withAbort(locator.isVisible().catch(() => false), signal))) return false;
-  await withAbort(locator.click(), signal);
-  return true;
-}
-
 async function finishCtbcSignIn(page: Page, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    if (await clickVisibleNow(actionByText(page, "確認登入"), signal)) {
-      await withAbort(page.waitForTimeout(1_000), signal);
-      continue;
-    }
-
-    if (await clickVisibleNow(actionByText(page, "下次再提醒"), signal)) {
-      await withAbort(page.waitForTimeout(1_000), signal);
-      continue;
-    }
+    if (await handleCtbcConcurrentLoginPrompt(page, signal)) continue;
+    if (await handleCtbcPasswordReminder(page, signal)) continue;
 
     if (await withAbort(
       page
@@ -393,7 +373,7 @@ async function waitForLoginForm(
       throw new SourceUnavailableError();
     }
     if (await withAbort(firstField.isVisible().catch(() => false), signal)) break;
-    if (initialHttpStatus === 202 && Date.now() - startedAt >= 10_000) {
+    if (initialHttpStatus === 202 && Date.now() - startedAt >= 1_000) {
       throw new SourceUnavailableError();
     }
     await withAbort(page.waitForTimeout(200), signal);
@@ -411,6 +391,36 @@ async function waitForLoginForm(
     timeout: 60_000,
   }), signal);
   await withAbort(page.waitForTimeout(1_000), signal);
+}
+
+export async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted();
+    const response = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+    try {
+      await waitForLoginForm(page, signal, response?.status());
+      return;
+    } catch (error) {
+      if (!(error instanceof SourceUnavailableError) || attempt === 2) throw error;
+      await withAbort(page.waitForTimeout(1_000), signal);
+    }
+  }
+}
+
+export async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Promise<boolean> {
+  const reminder = page.getByText("密碼變更提醒", { exact: true });
+  if (!await withAbort(reminder.isVisible().catch(() => false), signal)) return false;
+  await withAbort(page.getByText("下次再提醒", { exact: true }).click(), signal);
+  await withAbort(page.waitForTimeout(1_000), signal);
+  return true;
+}
+
+export async function handleCtbcConcurrentLoginPrompt(page: Page, signal?: AbortSignal): Promise<boolean> {
+  const prompt = page.getByText("其他位置將會自動登出");
+  if (!await withAbort(prompt.isVisible().catch(() => false), signal)) return false;
+  await withAbort(page.getByText("確認登入", { exact: true }).click(), signal);
+  await withAbort(page.waitForTimeout(1_000), signal);
+  return true;
 }
 
 function ctbcManualSignInStage(page: Page): WorkflowHumanAssistanceStage {
@@ -447,9 +457,8 @@ async function signInCtbcForApp(
   const account = requireCredential(credentials, "ctbc_account");
   const password = requireCredential(credentials, "ctbc_password");
 
-  const loginResponse = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
   try {
-    await waitForLoginForm(page, context.signal, loginResponse?.status());
+    await openCtbcLoginForm(page, context.signal);
   } catch (error) {
     if (error instanceof SourceUnavailableError)
       await context.event("authentication", "source-unavailable");
@@ -461,7 +470,12 @@ async function signInCtbcForApp(
   await withAbort(passwordFields.nth(1).fill(password), context.signal);
   await withAbort(page.getByRole("button", { name: "登入" }).click(), context.signal);
   await withAbort(page.waitForTimeout(1_000), context.signal);
-  if (await isSignedIn(page, context.signal)) return;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (await handleCtbcConcurrentLoginPrompt(page, context.signal)) continue;
+    if (await handleCtbcPasswordReminder(page, context.signal)) continue;
+    if (await isSignedIn(page, context.signal)) return;
+    await withAbort(page.waitForTimeout(500), context.signal);
+  }
 
   const contract = await emitHumanAssistanceStage(
     ctbcManualSignInStage(page),
