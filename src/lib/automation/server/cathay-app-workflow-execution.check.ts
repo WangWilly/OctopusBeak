@@ -27,6 +27,7 @@ registerHooks({
 
 const [{ taskById }, { runAutomationTaskExecution }, {
   workflowDefinitionForTask,
+  workflowBrowserProfileForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
 }] = await Promise.all([
@@ -62,6 +63,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   assert.equal(injectedDefinition?.id, definition?.id);
   assert.notEqual(injectedDefinition, definition, "the worker registry binds the supplied host OTP port per run");
   assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
+  assert.equal(workflowBrowserProfileForTask(task.workflowId), "cathay-login");
   assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
     credentials: {
       cathay_user_id: "synthetic-user-id",
@@ -75,6 +77,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   const previousDirectory = process.cwd();
   const store = new PGliteStore(await PGlite.create());
   let observedStartUrl: string | undefined;
+  let observedBrowserProfile: string | undefined;
   let browserDispatches = 0;
   let commitCalls = 0;
   let otpPortCreations = 0;
@@ -110,14 +113,16 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
         otpPortCreations += 1;
         return otpPort;
       },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
+        observedBrowserProfile = browserProfile;
         return browser;
       },
     }, async () => {});
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, LOGIN_URL);
+    assert.equal(observedBrowserProfile, "cathay-login");
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
     assert.equal(commitCalls, 0);
     assert.equal(otpPortCreations, 1, "the inline App host binds one Gmail OTP port per Cathay run");

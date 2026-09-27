@@ -22,6 +22,15 @@ test("CTBC profile drops retained CTBC cookies but preserves unrelated browser s
   assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies), cookies);
 });
 
+test("Cathay login starts without retained Cathay cookies", () => {
+  const cookies = [
+    { name: "old-session", value: "one", domain: "www.cathaybk.com.tw", path: "/" },
+    { name: "shared-bank", value: "two", domain: ".cathaybk.com.tw", path: "/" },
+    { name: "unrelated", value: "three", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "cathay-login"), [cookies[2]]);
+});
+
 test("CTBC headless profile adds only the verified browser compatibility flag", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctbc-browser-profile-"));
   const observed: string[][] = [];

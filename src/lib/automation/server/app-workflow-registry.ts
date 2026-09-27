@@ -292,6 +292,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: cathayAllStatementsWorkflow,
+    browserProfile: "cathay-login",
     definitionForDependencies(dependencies) {
       return dependencies.cathayGmailOtpPort
         ? createCathayRegistryDefinition(dependencies.cathayGmailOtpPort)
