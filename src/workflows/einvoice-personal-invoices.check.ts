@@ -509,6 +509,46 @@ const firstCapture = captureInput(
   "einvoice-workflow-normal",
   "2026-09-10T05:00:00Z",
 );
+const duplicateCapture = captureInput(
+  [completeRecord, {
+    ...completeRecord,
+    entry: { ...completeRecord.entry, token: "another-provider-row-token" },
+  }],
+  "einvoice-workflow-identical-duplicate",
+  "2026-09-10T05:00:01Z",
+);
+assert.equal(duplicateCapture.invoices.length, 1, "identical provider rows represent one invoice revision");
+assert.equal(duplicateCapture.pages[0]?.rowCount, 1, "source page row count tracks admitted unique records");
+assert.equal(duplicateCapture.pages[0]?.metadata.providerRowCount, 2, "raw provider row count remains auditable");
+const duplicateAcrossPages = buildCanonicalEInvoiceCapture({
+  records: [completeRecord, { ...completeRecord, listPageIndex: 1 }],
+  pages: [0, 1].map((pageIndex) => ({
+    month,
+    pageIndex,
+    list: {
+      httpStatus: 200 as const,
+      totalElements: 2,
+      totalPages: 2,
+      size: 1,
+      content: [completeRecord.entry],
+    },
+  })),
+  months: ["2026-09"],
+}, credentials, {
+  captureId: "einvoice-workflow-identical-duplicate-pages",
+  observedAt: "2026-09-10T05:00:03Z",
+  today: new Date("2026-09-10T00:00:00Z"),
+});
+assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.rowCount), [1, 0]);
+assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.metadata.providerRowCount), [1, 1]);
+assert.throws(() => captureInput(
+  [completeRecord, {
+    ...completeRecord,
+    header: { ...completeRecord.header, sellerName: "Different seller name" },
+  }],
+  "einvoice-workflow-conflicting-duplicate",
+  "2026-09-10T05:00:02Z",
+), /same invoice revision.*different facts/u);
 assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
 assert.match(firstCapture.subjectDigest, /^sha256:/u);
 assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
