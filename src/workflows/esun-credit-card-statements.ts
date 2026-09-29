@@ -723,6 +723,33 @@ export function rowsFromTimelineResponse(raw: unknown): {
   return { rows, months };
 }
 
+export async function loadNextEsunTimelineResponse(
+  popup: Page,
+  signal?: AbortSignal,
+  timeoutMs = 15_000,
+): Promise<Response> {
+  signal?.throwIfAborted();
+  const response = popup.waitForResponse(
+    (candidate) => candidate.url().includes("/GW/creditLastYear/getFilterResult") &&
+      candidate.request().method() === "POST",
+    { timeout: timeoutMs },
+  );
+  void response.catch(() => undefined);
+  // Timeline content can grow after the response but before layout settles.
+  // Follow the current bottom until the bank emits the next page response.
+  while (true) {
+    signal?.throwIfAborted();
+    await withAbort(popup.locator(".timeline-query-continer").evaluate(
+      (element) => { element.scrollTop = element.scrollHeight; },
+    ), signal);
+    const next = await withAbort(Promise.race([
+      response,
+      popup.waitForTimeout(150).then(() => null),
+    ]), signal);
+    if (next) return next;
+  }
+}
+
 async function queryStatements(
   page: Page,
   input: Readonly<{ startDate?: string; endDate?: string }>,
@@ -769,15 +796,7 @@ async function queryStatements(
       rows.push(...parsed.rows);
       pageCount += 1;
       if (months.at(-1)! <= targetMonth) break;
-      const nextResponse = popup.waitForResponse(
-        (candidate) => candidate.url().includes("/GW/creditLastYear/getFilterResult") &&
-          candidate.request().method() === "POST",
-        { timeout: 15_000 },
-      );
-      await popup.locator(".timeline-query-continer").evaluate(
-        (element) => { element.scrollTop = element.scrollHeight; },
-      );
-      response = await withAbort(nextResponse, options.signal);
+      response = await loadNextEsunTimelineResponse(popup, options.signal);
     }
     if (!months.length || months.at(-1)! > targetMonth)
       throw new Error("E.SUN timeline did not cover the requested start month.");

@@ -13,7 +13,7 @@ export type AppWorkflowBrowserConnection = Readonly<{
   targetId: string;
 }>;
 
-export type AppWorkflowBrowserProfile = "ctbc-login" | "cathay-login";
+export type AppWorkflowBrowserProfile = "ctbc-login" | "cathay-login" | "esun-login";
 
 export type AppWorkflowBrowserLaunchOptions = Readonly<{
   acceptDownloads: false;
@@ -59,6 +59,8 @@ export function cookiesForAppWorkflowBrowserProfile(
     ? "ctbcbank.com"
     : profile === "cathay-login"
     ? "cathaybk.com.tw"
+    : profile === "esun-login"
+    ? "esunbank.com.tw"
     : null;
   if (!resetDomain) return [...cookies];
   return cookies.filter((cookie) => {
