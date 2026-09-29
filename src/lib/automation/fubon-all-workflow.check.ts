@@ -66,7 +66,15 @@ function context(
     signal,
     now: () => "2026-09-25T00:00:00.000Z",
     browser: {
-      withPage: async <T>(run: (page: Page) => Promise<T>) => run({} as Page),
+      withPage: async <T>(run: (page: Page) => Promise<T>) => run({
+        context: () => ({
+          clearCookies: async ({ domain }: { domain: RegExp }) => {
+            assert.equal(domain.test("ebank.taipeifubon.com.tw"), true);
+            assert.equal(domain.test("unrelated.example"), false);
+            calls.push("cookies-cleared");
+          },
+        }),
+      } as unknown as Page),
     },
     text,
     humanAssistance: {
@@ -166,6 +174,8 @@ try {
       "the single commit receives the fully materialized collection from every selected product",
     );
     assert.ok(calls.indexOf("commit") < calls.indexOf("signed-out"));
+    assert.ok(calls.indexOf("cookies-cleared") >= 0);
+    assert.ok(calls.indexOf("cookies-cleared") < calls.indexOf("authenticated"));
     assert.ok(calls.includes("human:fubon-login-captcha"));
     assert.ok(calls.includes("event:authentication:authentication-started"));
     assert.ok(calls.includes("event:authentication:authentication-completed"));

@@ -16,7 +16,8 @@ try {
     });
   });
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1_000);
+  // Three unavailable-page attempts include two one-second retry waits.
+  const timeout = setTimeout(() => controller.abort(), 12_000);
   const events: WorkflowRunEvent[] = [];
   const context: WorkflowContext = {
     runId: "ctbc-busy-fixture",
