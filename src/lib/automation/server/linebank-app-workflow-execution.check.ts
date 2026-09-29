@@ -85,9 +85,12 @@ function createPage(options: {
   malformedTransactions?: boolean;
   incompleteTransactions?: boolean;
   onSourceRead?: () => void;
+  signInAfterPolls?: number;
+  onPoll?: () => Promise<void>;
 } = {}) {
   let signedIn = options.signedIn ?? true;
   let currentUrl = signedIn ? TRANSACTION_URL : LOGIN_URL;
+  let polls = 0;
   const accountBody = JSON.stringify({
     code: "200",
     message: "success",
@@ -126,7 +129,14 @@ function createPage(options: {
     getByRole: (_role: string, roleOptions?: { name?: string }) =>
       locator(`role:${roleOptions?.name ?? ""}`),
     async goto(url: string) { currentUrl = url; },
-    async waitForTimeout() { return undefined; },
+    async waitForTimeout() {
+      polls += 1;
+      await options.onPoll?.();
+      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
+        signedIn = true;
+        currentUrl = TRANSACTION_URL;
+      }
+    },
     async waitForURL() { return undefined; },
     async evaluate(
       _expression: unknown,
@@ -226,6 +236,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   let sourceReadBeforeCommit = true;
   const page = createPage({
     signedIn: false,
+    signInAfterPolls: 20,
     onSourceRead() { sourceReadBeforeCommit &&= committed.length === 0; },
   });
   const financialCommit = commitPort(committed);
@@ -245,11 +256,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
         humanAssistance: {
-          async request(contract) {
-            assert.equal(contract.stageId, "linebank-login-verification");
-            assert.equal(contract.targets[0]?.id, "sign-in-page");
-            page.setSignedIn(true);
-            return "verified";
+          async request() {
+            assert.fail("LINE Bank automatic sign-in must not request human assistance");
           },
         },
       },
@@ -271,7 +279,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.equal(run?.status, "completed");
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
+    assert.equal(run?.events.some((event) => event.code === "human-assistance-requested"), false);
     assert.ok(run?.events.some((event) => event.code === "source-validation-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "App dispatch writes no source, output, or log files");
@@ -303,7 +311,13 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.ok(incompleteRun?.events.some((event) => event.code === "source-validation-rejected"));
 
     let cancellationRequested = false;
-    const cancellationPage = createPage({ signedIn: false });
+    const cancellationPage = createPage({
+      signedIn: false,
+      async onPoll() {
+        cancellationRequested = true;
+        await new Promise((resolve) => setTimeout(resolve, 75));
+      },
+    });
     const cancellationRunId = await createRun(provider);
     const cancelled = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: cancellationRunId,
@@ -312,11 +326,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       workflowPorts: {
         financialCommit,
         humanAssistance: {
-          async request(contract) {
-            assert.equal(contract.stageId, "linebank-login-verification");
-            cancellationRequested = true;
-            await new Promise((resolve) => setTimeout(resolve, 75));
-            return "verified";
+          async request() {
+            assert.fail("LINE Bank automatic sign-in must not request human assistance");
           },
         },
       },

@@ -286,7 +286,8 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
 });
 
 test("browser tasks use the supervised App worker, persist events before ACK, and classify an interrupted commit as unknown", async () => {
-  const task = taskById("einvoice-personal-invoices");
+  // E-Invoice uses the inline Firefox executor; CTBC still exercises CDP workers.
+  const task = taskById("ctbc-statements");
   assert.ok(task);
   const database = await PGlite.create();
   const store = new PGliteStore(database);
@@ -301,7 +302,9 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     };
 
     const launchEnv = {
-      LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "0900000000",
+      [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
+      [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+      [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
       [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
       [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
     };
