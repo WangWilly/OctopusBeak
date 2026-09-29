@@ -62,6 +62,7 @@ import {
   SinopacCaptchaRejectedError,
   SINOPAC_DIALOG_OWNER_ENV,
   isSinopacCaptchaRejectionDialog,
+  isSinopacDuplicateLoginDialog,
   sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
@@ -792,14 +793,27 @@ async function waitForSinopacSignal<T>(
   }
 }
 
-async function waitForSignedInState(
+export async function waitForSignedInState(
   page: Page,
   signal?: AbortSignal,
+  onServiceUnavailable?: () => Promise<void>,
 ): Promise<void> {
-  await page.waitForURL((url) => sinopacSignedInPageUrl(url.href), {
+  const isServiceError = (url: URL) => url.protocol === "https:"
+    && url.hostname === "mma.sinopac.com"
+    && url.pathname === "/Errors/GenericErrorPage.aspx";
+  await page.waitForURL((url) => sinopacSignedInPageUrl(url.href) || isServiceError(url), {
     timeout: 300_000,
+    waitUntil: "domcontentloaded",
     signal,
   });
+  if (isServiceError(new URL(page.url()))) {
+    try {
+      await onServiceUnavailable?.();
+    } catch {
+      // Operational events must not hide the observed provider failure.
+    }
+    throw new Error("SinoPac service is temporarily unavailable.");
+  }
   await waitForSinopacSignal(
     page.waitForLoadState("domcontentloaded", { timeout: 60_000 }),
     signal,
@@ -819,6 +833,7 @@ export type SinopacLoginAttemptDependencies = {
   signal?: AbortSignal;
   dialogOwner?: "host" | "workflow";
   onDialog?: (captchaRejected: boolean) => void | Promise<void>;
+  onDuplicateLoginConfirmed?: () => void | Promise<void>;
 };
 
 /**
@@ -865,18 +880,44 @@ export async function runSinopacLoginAttempt(
     rejectDialog = reject;
   });
   let dialogHandled = false;
+  let duplicateLoginConfirmed = false;
   const dialogHandler = async (dialog: Dialog): Promise<void> => {
     if (dialogHandled) return;
     dialogHandled = true;
     let type = "unknown";
+    let message = "";
     let captchaRejected = false;
     try {
       type = dialog.type();
+      message = dialog.message();
       // Only the exact provider warning admits a typed CAPTCHA rejection.
-      captchaRejected = isSinopacCaptchaRejectionDialog(type, dialog.message());
+      captchaRejected = isSinopacCaptchaRejectionDialog(type, message);
     } catch {
       // Keep the fail-fast path usable if the browser closes the dialog while
       // it is being inspected.
+    }
+    if (!duplicateLoginConfirmed && isSinopacDuplicateLoginDialog(type, message)) {
+      duplicateLoginConfirmed = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const accepted = await Promise.race([
+        Promise.resolve().then(() => dialog.accept()).then(() => true, () => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (accepted) {
+        dialogHandled = false;
+        try {
+          await dependencies.onDuplicateLoginConfirmed?.();
+        } catch {
+          // Operational events must not change the authentication outcome.
+        }
+        return;
+      }
+      rejectDialog(new Error("SinoPac duplicate login confirmation failed."));
+      probeAbortController.abort();
+      return;
     }
     try {
       await dependencies.onDialog?.(captchaRejected);
@@ -1079,6 +1120,7 @@ async function signInSinopacForApp(
     // The provider dismisses dialogs and returns a typed rejection to the App.
     dialogOwner: "workflow",
     signal: context.signal,
+    onDuplicateLoginConfirmed: () => context.event("authentication", "duplicate-login-confirmed"),
     onDialog: async (captchaRejected) => {
       await context.event(
         "authentication",
@@ -1086,7 +1128,8 @@ async function signInSinopacForApp(
       );
     },
     submit: () => clickLoginButton(page, context.signal),
-    waitForSuccess: (signal) => waitForSignedInState(page, signal),
+    waitForSuccess: (signal) => waitForSignedInState(page, signal,
+      () => context.event("authentication", "provider-service-unavailable")),
   });
   await dismissPasswordExpiryNotice(page, context.signal);
   if (!(await isSignedIn(page, context.signal))) {

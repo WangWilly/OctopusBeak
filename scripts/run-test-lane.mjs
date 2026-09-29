@@ -8,6 +8,8 @@ const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 /** Browser checks own Chromium/Vite resources and must not share a worker lane. */
 export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/app-browser-host.check.ts",
+  "src/lib/automation/server/captcha-source-loading.check.ts",
+  "src/lib/automation/server/sinopac-login-page.check.ts",
   "scripts/spending-browser-harness.check.mjs",
   "scripts/spending-chart-alternatives.check.mjs",
   "scripts/spending-ledger-review.check.mjs",

@@ -42,3 +42,10 @@ export class SinopacCaptchaRejectedError extends Error {
     this.name = "SinopacCaptchaRejectedError";
   }
 }
+
+/** Live bank notice; the user authorized confirming only this exact prompt. */
+export function isSinopacDuplicateLoginDialog(type: string, message: string): boolean {
+  return type === "confirm"
+    && message.normalize("NFKC").replace(/\s+/g, "").replace(/。$/, "")
+    === "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態".normalize("NFKC");
+}
