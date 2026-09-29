@@ -10,6 +10,8 @@ Browser providers register a `WorkflowDefinition` with an ID, financial-commit r
 
 The executor emits typed events with a run ID, stage, code, timestamp, and optional bounded counts. Events are not reconstructed from stdout. The operational database keeps a bounded number per run and prunes events older than 30 days at startup and daily. A sanitized outcome, stable error code, and compact count summary stay with the run record; raw exception text and process output are not persisted.
 
+Failure classification also preserves the last operation stage when a provider throws an otherwise unclassified exception: authentication timeout, interrupted login dialog, incomplete verification, authentication execution failure, or source collection failure. The worker protocol, outcome sanitizer, and App explanations use the same finite error-code vocabulary. These categories describe observed execution, not an inferred bank rejection or a new CAPTCHA retry trigger; cancellation, integrity checks, and uncertain commit outcomes retain their existing precedence. Historical `workflow-failed` records are not backfilled with guessed causes.
+
 ## App task catalog
 
 Each row is an App production task routed through the typed runtime. The eleven statement and invoice tasks use browser provider definitions and the injected Canonical Financial Commit. The exchange-rate and MaiCoin tasks use typed non-browser workflows.

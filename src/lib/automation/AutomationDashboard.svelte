@@ -54,6 +54,7 @@
     AutomationTaskRow,
   } from "./types.ts";
   import { mergeAutomationRuntime } from "./runtime-sync.ts";
+  import { workflowFailureExplanation } from "./workflow-failures.ts";
   import {
     automationStageTasks,
     dispatchAutomationStageSync,
@@ -1741,6 +1742,8 @@
                             <span>{$locale === "zh-TW"
                               ? "來源網站未提供可用的登入表單（系統忙碌或空白回應）。請稍後重試。"
                               : "The provider did not return a usable login form (busy or blank response). Try again later."}</span>
+                          {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
+                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
                           {/if}
                         </p>
                       {/if}
@@ -2181,6 +2184,8 @@
                         <small>{$locale === "zh-TW"
                           ? "來源網站登入頁不可用"
                           : "Provider login unavailable"}</small>
+                      {:else if workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}
+                        <small>{workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}</small>
                       {/if}
                     {:else}--{/if}
                   </td>
