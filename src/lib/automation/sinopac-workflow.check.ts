@@ -11,6 +11,7 @@ import {
   type SinopacJsonSourceResponse,
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
+import { SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 
@@ -47,7 +48,7 @@ const input: SinopacWorkflowInput = {
   currencyFilters: [],
 };
 
-function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean } = {}) {
+function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean; dialogMessage?: string; dismissalFails?: boolean } = {}) {
   let signedIn = options.signedIn ?? true;
   let captchaValue = "";
   const emitter = new EventEmitter();
@@ -61,8 +62,8 @@ function pageFixture(options: { signedIn?: boolean; submitDialog?: boolean } = {
       if (options.submitDialog && selector === 'input[alt="登入"]') {
         emitter.emit("dialog", {
           type: () => "alert",
-          message: () => "驗證碼失效或輸入錯誤，請重新輸入。",
-          dismiss: async () => undefined,
+          message: () => options.dialogMessage ?? "驗證碼失效或輸入錯誤，請重新輸入。",
+          dismiss: async () => { if (options.dismissalFails) throw new Error("closed dialog"); },
         });
       }
     },
@@ -327,7 +328,7 @@ test("typed SinoPac login owns and dismisses post-submit dialogs instead of hang
       queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
       readCurrentDepositBalances: async () => [],
     }),
-    /SinoPac login was interrupted by a browser dialog/u,
+    SinopacCaptchaRejectedError,
   );
   assert.equal(accountReads, 0);
   assert.equal(calls.length, 0);
@@ -357,4 +358,22 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
   await assert.rejects(running, /cancelled by test/u);
   assert.equal(readAccountsCalls, 0);
   assert.equal(calls.length, 0);
+});
+
+test("SinoPac unknown dialogs and failed dismissals cannot produce a retryable rejection", async () => {
+  for (const options of [{ dialogMessage: "帳號已被鎖定" }, { dismissalFails: true }]) {
+    const page = pageFixture({ signedIn: false, submitDialog: true, ...options });
+    const calls: unknown[][] = [];
+    const context = makeContext({
+      page,
+      financialCommit: financialCommitStub(calls),
+      assistance: async () => { page.enterCaptcha("123456"); return "entered"; },
+    });
+    await assert.rejects(runSinopacProviderWorkflow(context, input), (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error instanceof SinopacCaptchaRejectedError, false);
+      return true;
+    });
+    assert.equal(calls.length, 0);
+  }
 });

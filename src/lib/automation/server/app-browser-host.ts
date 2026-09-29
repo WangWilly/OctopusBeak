@@ -32,6 +32,8 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   startUrl?: string;
   browserEngine?: "chromium" | "firefox";
   browserProfile?: AppWorkflowBrowserProfile;
+  /** Suppress Playwright auto-dismiss in the host connection when a worker owns dialogs. */
+  nativeDialogOwner?: "worker";
   launchPersistentContext?: (
     userDataDirectory: string,
     options: AppWorkflowBrowserLaunchOptions,
@@ -434,6 +436,11 @@ export function createAppWorkflowBrowserPort(
         }
         if (endpoint) {
           connection = { endpoint, targetId: await targetIdForPage(context, page) };
+        }
+        if (connection && input.nativeDialogOwner === "worker") {
+          // Each CDP connection otherwise independently auto-dismisses dialogs.
+          // The worker/provider observer supplies classification and dismissal.
+          page.on("dialog", () => {});
         }
         unregister = registerHostedPage(input.taskRunId, page, connection);
         input.signal.addEventListener("abort", closeOnAbort, { once: true });

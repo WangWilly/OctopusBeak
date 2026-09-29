@@ -59,6 +59,7 @@ import {
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
+  SinopacCaptchaRejectedError,
   SINOPAC_DIALOG_OWNER_ENV,
   isSinopacCaptchaRejectionDialog,
   sinopacHostDialogOwner,
@@ -871,13 +872,12 @@ export async function runSinopacLoginAttempt(
     let captchaRejected = false;
     try {
       type = dialog.type();
-      // Diagnostic only: the host probe, not workflow logs, owns retry routing.
+      // Only the exact provider warning admits a typed CAPTCHA rejection.
       captchaRejected = isSinopacCaptchaRejectionDialog(type, dialog.message());
     } catch {
       // Keep the fail-fast path usable if the browser closes the dialog while
       // it is being inspected.
     }
-    console.warn("sinopac-login-dialog", { type, captchaRejected });
     try {
       await dependencies.onDialog?.(captchaRejected);
     } catch {
@@ -886,15 +886,17 @@ export async function runSinopacLoginAttempt(
     const dismissal = Promise.resolve().then(() => dialog.dismiss());
     void dismissal.catch(() => undefined);
     let dismissalTimer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      dismissal.catch(() => undefined),
-      new Promise<void>((resolve) => {
-        dismissalTimer = setTimeout(resolve, SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
+    const dismissed = await Promise.race([
+      dismissal.then(() => true, () => false),
+      new Promise<boolean>((resolve) => {
+        dismissalTimer = setTimeout(() => resolve(false), SINOPAC_DIALOG_DISMISS_TIMEOUT_MS);
       }),
     ]);
     if (dismissalTimer) clearTimeout(dismissalTimer);
+    rejectDialog(captchaRejected && dismissed
+      ? new SinopacCaptchaRejectedError()
+      : new Error("SinoPac login was interrupted by a browser dialog."));
     probeAbortController.abort();
-    rejectDialog(new Error("SinoPac login was interrupted by a browser dialog."));
   };
 
   page.on("dialog", dialogHandler);
@@ -1074,8 +1076,7 @@ async function signInSinopacForApp(
     );
   }
   await runSinopacLoginAttempt(page, context.runId, {
-    // The App-owned provider handles native dialogs so navigation waits cannot hang without an
-    // observer; App retry routing is handled as a separate host integration.
+    // The provider dismisses dialogs and returns a typed rejection to the App.
     dialogOwner: "workflow",
     signal: context.signal,
     onDialog: async (captchaRejected) => {

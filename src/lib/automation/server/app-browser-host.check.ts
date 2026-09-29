@@ -308,3 +308,24 @@ test("invalid retained cookies are ignored and cookie symlinks are never followe
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("App connection leaves native dialogs to the attached worker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-dialog-owner-"));
+  const runId = "worker-dialog-owner";
+  try {
+    await createAppWorkflowBrowserPort({
+      taskId: "sinopac-statements", taskRunId: runId,
+      signal: new AbortController().signal, userDataDirectory: root, credentialCodec: null,
+      nativeDialogOwner: "worker",
+    }).withPage(async () => {
+      const connection = appWorkflowBrowserConnectionForSession(runId);
+      assert.ok(connection);
+      await withAppWorkflowBrowserPage(connection, async (page) => {
+        let dismissal!: Promise<void>;
+        page.once("dialog", (dialog) => { dismissal = dialog.dismiss(); });
+        await page.evaluate(() => alert("驗證碼失效或輸入錯誤，請重新輸入。"));
+        await assert.doesNotReject(dismissal, "the host must not dismiss the worker's dialog first");
+      });
+    });
+  } finally { await rm(root, {recursive: true, force: true}); }
+});

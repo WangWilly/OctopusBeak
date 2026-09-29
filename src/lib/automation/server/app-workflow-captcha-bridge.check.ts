@@ -72,7 +72,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   assert.fail("Timed out waiting for App workflow test state.");
 }
 
-test("App SinoPac CAPTCHA route keeps one run and retries solver exhaustion and rejection", async () => {
+test("App SinoPac retries typed rejection after worker cleanup aborts assistance and without retained events", async () => {
   const artifactRoot = await mkdtemp(join(tmpdir(), "sinopac-app-captcha-"));
   const originalCwd = process.cwd();
   const store = new PGliteStore(await PGlite.create());
@@ -158,17 +158,15 @@ test("App SinoPac CAPTCHA route keeps one run and retries solver exhaustion and 
           };
         }
         const rejected = attempt === 2;
-        await provider.automation.appendRunEvent({
-          runId: created.taskRunId,
-          stage: "authentication",
-          code: rejected ? "captcha-rejected" : "authentication-completed",
-          occurredAt: new Date().toISOString(),
-        });
+        // Worker cleanup aborts the request before the host joins execution.
+        // Progress events are deliberately absent: they must not drive retries.
+        controller.abort(new Error("Worker finished"));
         const processResult = {
           exitCode: rejected ? 1 : 0,
           signal: null,
           error: rejected ? new Error("App workflow failed (workflow-failed).") : null,
           resumeFailure: null,
+          appWorkflowOutcome: { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null },
           statementSummary: null,
           outputPersistenceWarnings: [],
           externalPrerequisiteIds: [],
@@ -194,8 +192,7 @@ test("App SinoPac CAPTCHA route keeps one run and retries solver exhaustion and 
     assert.equal(finalRun?.attempt, 3);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
-    assert.ok(finalRun?.events.some((event) => event.code === "captcha-rejected"));
-    assert.ok(finalRun?.events.some((event) => event.code === "authentication-completed"));
+    assert.equal(finalRun?.events.some((event) => event.code === "captcha-rejected"), false);
     assert.deepEqual(await readdir(artifactRoot), [], "typed retry writes no CLI log, assistance JSONL, source, or output files");
   } finally {
     process.chdir(originalCwd);
