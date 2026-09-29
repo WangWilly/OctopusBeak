@@ -516,6 +516,37 @@ test("SinoPac selector-backed fill fails when the field does not retain the answ
   );
 });
 
+test("Post solver fills its semantic CAPTCHA field despite stale coordinates over the user-code field", async () => {
+  const fills: string[] = [];
+  const captcha = fakeLocator({ onFill: value => fills.push(value) });
+  const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': captcha }));
+  const host = createProviderVerificationHost({
+    withPage,
+    sendInput: async (session, rawInput, verificationContract, handler) => {
+      const input = normalizeHumanVerificationInput(rawInput, verificationContract);
+      assert.ok(handler, "Post requires semantic input ownership, never coordinate fallback");
+      return withPage(session, page => handler(page, input, verificationContract.targets[0]!));
+    },
+  });
+  const verification = contract("post.login.captcha-input", { stageId: "ipost-login-captcha" });
+  await host.injectAnswer("post-session", verification, "1234");
+  assert.deepEqual(fills, ["1234"]);
+});
+
+test("Post input ownership rejects missing, ambiguous and non-retaining CAPTCHA fields", async () => {
+  for (const options of [{ count: 0 }, { count: 2 }, { inputValue: () => "" }]) {
+    const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': fakeLocator(options) }));
+    const host = createProviderVerificationHost({
+      withPage,
+      sendInput: async (session, rawInput, verificationContract, handler) => {
+        assert.ok(handler);
+        return withPage(session, page => handler(page, normalizeHumanVerificationInput(rawInput, verificationContract), verificationContract.targets[0]!));
+      },
+    });
+    await assert.rejects(host.injectAnswer("post-session", contract("post.login.captcha-input", { stageId: "ipost-login-captcha" }), "1234"), /Post CAPTCHA/u);
+  }
+});
+
 test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", async () => {
   const dialogs = new EventEmitter();
   const host = createProviderVerificationHost({

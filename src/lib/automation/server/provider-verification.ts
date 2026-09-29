@@ -15,6 +15,7 @@ import {
   isSinopacCaptchaRejectionDialog,
 } from "../sinopac-captcha.ts";
 import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
+import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../post-captcha.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
@@ -784,6 +785,34 @@ function createAdapters(
     resolveImage: resolveYuantaCaptchaImage,
   });
   return [
+    {
+      id: "post",
+      owns: contract => contract.stageId === "ipost-login-captcha"
+        && contract.targets.some(target => target.semanticId === POST_CAPTCHA_INPUT_SEMANTIC_ID),
+      refreshTarget: async () => null,
+      inspectCompletion: async () => false,
+      handleInput: async (page, operation, target) => {
+        if (target.semanticId !== POST_CAPTCHA_INPUT_SEMANTIC_ID) return false;
+        const input = page.locator(POST_CAPTCHA_INPUT_SELECTOR);
+        if (await input.count() !== 1 || !await input.isVisible()) {
+          throw new Error("Post CAPTCHA field is missing or ambiguous.");
+        }
+        if (operation.type === "click") {
+          await input.click();
+          return true;
+        }
+        if (operation.type === "type") {
+          await input.fill(operation.text);
+          if (await input.inputValue() !== operation.text) {
+            throw new Error("Post CAPTCHA field did not retain the solver answer.");
+          }
+          return true;
+        }
+        return false;
+      },
+      shouldCheckCompletion: () => false,
+      shouldAutoResume: () => false,
+    },
     {
       id: "linebank",
       owns: (contract) => contract.stageId === "linebank-login-verification"
