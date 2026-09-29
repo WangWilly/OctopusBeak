@@ -17,7 +17,9 @@ export const BROWSER_CHECK_FILES = Object.freeze([
 ]);
 
 /** These are explicit performance lanes, not ordinary functional tests. */
-export const HARD_PERFORMANCE_FILES = Object.freeze([]);
+export const HARD_PERFORMANCE_FILES = Object.freeze([
+  "src/ledger/pglite/overview-lifecycle-performance.check.ts",
+]);
 
 /** Electron/CDP checks need an isolated process because Electron's macOS
  * NSApplication lifecycle is not safe to run inside the broad test lane. */
@@ -78,6 +80,13 @@ export function discoverElectronCdpTestFiles() {
   return [...ELECTRON_CDP_FILES].sort();
 }
 
+export function discoverPerformanceTestFiles() {
+  for (const file of HARD_PERFORMANCE_FILES) {
+    if (!existsSync(join(ROOT, file))) throw new Error(`Performance test is missing: ${file}`);
+  }
+  return [...HARD_PERFORMANCE_FILES].sort();
+}
+
 function runNodeTests(files, options = {}) {
   const args = ["--no-warnings", "--experimental-strip-types"];
   if (options.coverage) args.push("--experimental-test-coverage");
@@ -120,10 +129,12 @@ function combineCiReports() {
     readReport("reports/test-summary-electron-cdp.txt"),
     "\n# Serial browser lane\n",
     readReport("reports/test-summary-browser.txt"),
+    "\n# Serial performance lane\n",
+    readReport("reports/test-summary-performance.txt"),
   ];
   writeFileSync(join(ROOT, "reports/test-summary.txt"), summaries.join(""));
 
-  const suites = ["unit", "electron-cdp", "browser"].map((lane) => {
+  const suites = ["unit", "electron-cdp", "browser", "performance"].map((lane) => {
     const xml = readReport(`reports/junit-${lane}.xml`);
     const match = xml.match(/<testsuites(?:\s[^>]*)?>([\s\S]*?)<\/testsuites>/u);
     return match?.[1] ?? "";
@@ -137,28 +148,32 @@ async function runLane(lane, options = {}) {
       ? discoverBrowserTestFiles()
       : lane === "electron-cdp"
         ? discoverElectronCdpTestFiles()
-        : discoverUnitTestFiles();
+        : lane === "performance"
+          ? discoverPerformanceTestFiles()
+          : discoverUnitTestFiles();
   return runNodeTests(files, {
     ...options,
-    serial: lane === "browser" || lane === "electron-cdp",
+    serial: lane === "browser" || lane === "electron-cdp" || lane === "performance",
     forceExit: lane === "electron-cdp",
   });
 }
 
 async function main() {
   const lane = process.argv[2] ?? "all";
-  if (!["all", "unit", "electron-cdp", "browser", "ci"].includes(lane)) {
+  if (!["all", "unit", "electron-cdp", "browser", "performance", "ci"].includes(lane)) {
     throw new Error(`Unknown test lane: ${lane}`);
   }
 
   if (lane === "unit") process.exitCode = await runLane("unit");
   else if (lane === "electron-cdp") process.exitCode = await runLane("electron-cdp");
   else if (lane === "browser") process.exitCode = await runLane("browser");
+  else if (lane === "performance") process.exitCode = await runLane("performance");
   else if (lane === "all") {
     const unitStatus = await runLane("unit");
     const electronCdpStatus = await runLane("electron-cdp");
     const browserStatus = await runLane("browser");
-    process.exitCode = unitStatus || electronCdpStatus || browserStatus;
+    const performanceStatus = await runLane("performance");
+    process.exitCode = unitStatus || electronCdpStatus || browserStatus || performanceStatus;
   } else {
     mkdirSync(join(ROOT, "reports"), { recursive: true });
     const unitStatus = await runLane("unit", { coverage: true, reportPrefix: "unit" });
@@ -167,8 +182,12 @@ async function main() {
       reportPrefix: "electron-cdp",
     });
     const browserStatus = await runLane("browser", { coverage: true, reportPrefix: "browser" });
+    const performanceStatus = await runLane("performance", {
+      coverage: true,
+      reportPrefix: "performance",
+    });
     combineCiReports();
-    process.exitCode = unitStatus || electronCdpStatus || browserStatus;
+    process.exitCode = unitStatus || electronCdpStatus || browserStatus || performanceStatus;
   }
 }
 

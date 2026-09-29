@@ -673,8 +673,20 @@ async function readProjection(
        FROM candidates WHERE selection_rank = 1`,
     [knowledgeAt, financialAt ?? null],
   );
+  // Resolve lifecycle history once; correlated lookups can repeatedly scan the
+  // commit history when planner statistics lag behind a source import.
   const transactionsQuery = store.query<TransactionRow>(
-    `WITH candidates AS (
+    `WITH latest_lifecycle AS MATERIALIZED (
+       SELECT DISTINCT ON (assertion.revision_id)
+              assertion.revision_id, transition.event_kind
+         FROM assertions assertion
+         JOIN assertion_transitions transition ON transition.assertion_id = assertion.assertion_id
+         JOIN canonical_commits lifecycle_commit ON lifecycle_commit.commit_id = transition.commit_id
+        WHERE assertion.revision_id IS NOT NULL
+          AND lifecycle_commit.commit_sequence <= $1
+        ORDER BY assertion.revision_id, lifecycle_commit.commit_sequence DESC,
+                 encode(transition.event_id, 'hex') DESC
+     ), candidates AS (
        SELECT encode(transaction.transaction_id, 'hex') AS transaction_id,
               encode(transaction.account_id, 'hex') AS account_id,
               revision.revision_id,
@@ -695,20 +707,12 @@ async function readProjection(
         WHERE commit_row.commit_sequence <= $1
           AND ($2::text IS NULL OR revision.effective_on <= $2)
      )
-     SELECT transaction_id, account_id, amount_coefficient, amount_scale,
-            currency, direction, posting_status, effective_on, description
+     SELECT candidate.transaction_id, candidate.account_id, candidate.amount_coefficient, candidate.amount_scale,
+            candidate.currency, candidate.direction, candidate.posting_status, candidate.effective_on, candidate.description
        FROM candidates candidate
+       LEFT JOIN latest_lifecycle lifecycle ON lifecycle.revision_id = candidate.revision_id
       WHERE selection_rank = 1
-        AND COALESCE((
-          SELECT transition.event_kind
-            FROM assertion_transitions transition
-            JOIN assertions assertion ON assertion.assertion_id = transition.assertion_id
-            JOIN canonical_commits lifecycle_commit ON lifecycle_commit.commit_id = transition.commit_id
-           WHERE assertion.revision_id = candidate.revision_id
-             AND lifecycle_commit.commit_sequence <= $1
-           ORDER BY lifecycle_commit.commit_sequence DESC, encode(transition.event_id, 'hex') DESC
-           LIMIT 1
-        ), 'observed') <> 'withdrawn'
+        AND COALESCE(lifecycle.event_kind, 'observed') <> 'withdrawn'
       ORDER BY effective_on, transaction_id`,
     [knowledgeAt, financialAt ?? null],
   );

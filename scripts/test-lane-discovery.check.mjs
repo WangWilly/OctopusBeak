@@ -8,6 +8,7 @@ import {
   HARD_PERFORMANCE_FILES,
   discoverBrowserTestFiles,
   discoverElectronCdpTestFiles,
+  discoverPerformanceTestFiles,
   discoverUnitTestFiles,
 } from "./run-test-lane.mjs";
 
@@ -18,6 +19,7 @@ test("test lanes include each browser check exactly once and exclude hard perfor
   const browser = discoverBrowserTestFiles();
   const electronCdp = discoverElectronCdpTestFiles();
   const unit = discoverUnitTestFiles();
+  const performance = discoverPerformanceTestFiles();
   const all = [...unit, ...electronCdp, ...browser];
 
   assert.match(packageJson.scripts.test, /run-test-lane\.mjs all/u);
@@ -26,11 +28,13 @@ test("test lanes include each browser check exactly once and exclude hard perfor
   assert.match(packageJson.scripts["pretest:ci"], /build:electron/u);
   assert.deepEqual(browser, [...BROWSER_CHECK_FILES].sort());
   assert.deepEqual(electronCdp, [...ELECTRON_CDP_FILES].sort());
+  assert.deepEqual(performance, [...HARD_PERFORMANCE_FILES].sort());
   for (const file of BROWSER_CHECK_FILES) {
     assert.equal(all.filter((candidate) => candidate === file).length, 1, `${file} must be scheduled once`);
   }
   for (const file of HARD_PERFORMANCE_FILES) {
     assert.equal(all.includes(file), false, `${file} must remain outside ordinary test lanes`);
+    assert.equal(performance.filter((candidate) => candidate === file).length, 1, `${file} must be scheduled once`);
   }
   for (const file of ELECTRON_CDP_FILES) {
     assert.equal(unit.includes(file), false, `${file} must remain outside the concurrent unit lane`);
