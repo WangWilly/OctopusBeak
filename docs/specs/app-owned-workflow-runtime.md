@@ -4,7 +4,7 @@ This is the production contract for automation and the implementation baseline f
 
 ## Production boundary
 
-Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. Twelve production tasks run in App-supervised workers, including exchange rates and MaiCoin. E-Invoice runs the same typed executor inside the App main process to use headless Firefox; it remains App-owned but does not gain worker process fault isolation.
+Browser providers register a `WorkflowDefinition` with an ID, financial-commit requirement, and `run(context, input)` handler. The shared type does not currently carry a runtime input schema; each provider validates its input before browser activity. The App owns task listing, run creation, scheduling, cancellation, observation, worker supervision, and dependency construction. UI requests and scheduled starts use the same task runner. All thirteen production tasks run in App-supervised workers, including exchange rates, MaiCoin, and E-Invoice. Every browser workflow uses the same headless Chromium worker path.
 
 `WorkflowContext` injects narrow ports for browser access, strict source-text decoding and integrity checks, human assistance, stage events, cancellation, and the existing Canonical Financial Commit. The App's browser host supplies the Playwright page. Financial workflows receive only a typed commit capability; they cannot open the financial database or select an alternate persistence route. MaiCoin uses its own injected operational-persistence port.
 
@@ -32,11 +32,32 @@ Each row is an App production task routed through the typed runtime. The eleven 
 
 The task catalog and executor wiring establish which path the App starts; fixture tests establish behavior for the inputs they exercise. Neither proves that a bank's current live login or export page still matches those fixtures. In particular, HNCB checks use synthetic CP950/Big5 export bytes and a local HTTP/browser fixture to exercise in-memory collection, parsing, and injected commit behavior. They do not constitute a live HNCB login or export acceptance run. This document does not claim live-bank acceptance for any provider based solely on repository tests.
 
+## Live source acceptance
+
+On 2026-09-29, all eleven browser workflows completed live App runs through the typed Chromium worker path, with successful Canonical Financial Commit completion events. E-Invoice completed twice; each run committed 328 of 328 records. Yuanta Bank all-statements admitted 15 items with 186 rows and 33 captures. The run IDs below are sanitized execution identifiers; no transaction values, source files, or raw responses are retained here.
+
+| Browser workflow | App run ID | Live result |
+| --- | --- | --- |
+| Taipei Fubon | `3f5cac7e-5ccf-4424-9f1e-05ed3d464d53` | Canonical commit completed |
+| E.SUN | `c482afa2-3c65-40cf-bc78-fbf14c9a6bd5` | Canonical commit completed |
+| Yuanta Bank all-statements | `1e774555-99a1-4d1a-8e8e-a6db06ada6e5` | Commit completed: 15 items, 186 rows, 33 captures |
+| Yuanta Trade | `9c837349-29eb-47c3-b16a-d3049b2a5778` | Canonical commit completed |
+| Cathay United | `747d2bcb-fb92-4898-a0c4-18bf455690c7` | Canonical commit completed |
+| HNCB | `97e209c5-66f0-4461-b562-8d2d7f20558e` | Canonical commit completed |
+| CTBC | `2c37a44d-9c42-4421-86a9-783e04e0fe9e` | Canonical commit completed |
+| Chunghwa Post | `506fbb27-9634-4747-a0f6-d9d0bdc518c8` | Canonical commit completed |
+| SinoPac | `c5ae6722-0725-4860-bdf0-782b677dc49d` | Canonical commit completed |
+| LINE Bank | `68d65203-ea81-43f1-a1ff-3c765fbab28e` | Canonical commit completed |
+| E-Invoice — first run | `1cc30e3d-e102-4677-a0b0-ec36ca83cec9` | Commit completed: 328 of 328 records |
+| E-Invoice — repeat run | `c213ae4f-a92f-4194-b7e5-758d1c2d6444` | Commit completed: 328 of 328 records |
+
+This table records live App evidence, not a guarantee that an external site's future behavior will remain unchanged. Packaged-App browser payload and worker-fixture acceptance remains pending.
+
 ## Source, files, and failure rules
 
 Provider exports may arrive as browser downloads or HTTP responses, but the workflow consumes them as bounded byte streams or in-memory values. Production workflows do not save original exports, generated CSV/JSON, raw response bodies, file logs, or Libretto session telemetry. Charset handling and strict decoding go through the text port. Invalid encodings, critical replacement characters, incomplete pages, and failed source admission stop the source before Canonical Financial Commit. A commit failure receives a stable category; an ambiguous commit outcome is not replayed automatically.
 
-The App runs production browser workflows in headless Chromium by default while its viewer and worker attach to the exact live page through CDP. E-Invoice uses headless Firefox because its login page rejects headless Chromium in live checks; the App main process owns that page and exposes it to the same viewer without a CDP worker connection. The desktop package includes both browser engines. The App retains only validated browser cookies, encrypted with Electron safeStorage, in its dedicated browser-state directory. It never falls back to plaintext when encryption is unavailable. Each run uses a private temporary browser profile, removed when the run ends. Startup and daily cleanup remove abandoned temporary profiles for inactive tasks and retained cookies older than the default 30 days. A task that needs localStorage to preserve login may require a fresh login on its next run. The development CLI uses a temporary, non-persistent browser context and does not share App-managed authentication state.
+The App runs production browser workflows in headless Chromium while its viewer and worker attach to the exact live page through CDP. All eleven browser workflows, including E-Invoice, use the same Chromium worker path. The App retains only validated browser cookies, encrypted with Electron safeStorage, in its dedicated browser-state directory. It never falls back to plaintext when encryption is unavailable. Each run uses a private temporary browser profile, removed when the run ends. Startup and daily cleanup remove abandoned temporary profiles for inactive tasks and retained cookies older than the default 30 days. A task that needs localStorage to preserve login may require a fresh login on its next run. The development CLI uses a temporary, non-persistent browser context and does not share App-managed authentication state.
 
 The App defaults to the `solver` Verification Actor for challenge contracts and preserves an explicit per-source `human` setting. Fubon, Yuanta Bank, HNCB, Chunghwa Post, E-Invoice, and SinoPac text CAPTCHAs, plus Yuanta Trade audio CAPTCHA, are routed through the App-owned ten-round campaign. Each provider keeps its declared OCR, speech, confidence, and answer-shape profile; the executor injects the local solver and provider verification adapter. Solver exhaustion opens a new browser execution within the same run. A submitted answer is retried only when the provider-specific probe proves rejection. The run fails if a solver challenge has no App route; it never silently changes actor. Yuanta Trade's image-selection challenge has no supported local vision solver: solver mode fails explicitly if it appears after switching to audio, while an explicitly selected human actor may use Assist. Native ServiSign certificate selection remains an explicit assistance stage.
 
