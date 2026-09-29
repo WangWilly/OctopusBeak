@@ -857,7 +857,7 @@ export async function decodeYuantaTradeReportResponse(
   return parseReportPage(html, response.url(), reportType);
 }
 
-async function captureTypedReport(
+export async function captureTypedReport(
   page: Page,
   reportType: string,
   params: Record<string, string | number>,
@@ -868,11 +868,15 @@ async function captureTypedReport(
     waitUntil: "domcontentloaded",
     timeout: 60_000,
   });
+  const reportUrl = new URL(
+    `/NexusWebTrade/AssetReport/${reportType}`,
+    YUANTA_TRADE_LOGIN_URL,
+  ).href;
   await page.evaluate(
-    ({ reportType, params }) => {
+    ({ reportUrl, params }) => {
       const form = document.createElement("form");
       form.method = "POST";
-      form.action = reportType;
+      form.action = reportUrl;
       for (const [key, value] of Object.entries(params)) {
         const input = document.createElement("input");
         input.type = "hidden";
@@ -883,7 +887,7 @@ async function captureTypedReport(
       document.body.appendChild(form);
       window.setTimeout(() => form.submit(), 0);
     },
-    { reportType, params },
+    { reportUrl, params },
   );
   const response = await navigation;
   context.signal.throwIfAborted();
