@@ -82,8 +82,11 @@ function createPage(options: {
   malformedTransactions?: boolean;
   incompleteTransactions?: boolean;
   onSourceRead?: () => void;
+  signInAfterPolls?: number;
+  onPoll?: () => void;
 } = {}): Page & { setSignedIn(value: boolean): void } {
   let signedIn = options.signedIn ?? true;
+  let polls = 0;
   let currentUrl = signedIn
     ? "https://accessibility.linebank.com.tw/transaction"
     : "https://accessibility.linebank.com.tw/login";
@@ -128,7 +131,14 @@ function createPage(options: {
     async goto(url: string) {
       currentUrl = url;
     },
-    async waitForTimeout() { return undefined; },
+    async waitForTimeout() {
+      polls += 1;
+      options.onPoll?.();
+      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) {
+        signedIn = true;
+        currentUrl = "https://accessibility.linebank.com.tw/transaction";
+      }
+    },
     async waitForURL() { return undefined; },
     async evaluate(
       _expression: unknown,
@@ -276,19 +286,19 @@ test("LINE Bank rejects malformed and incomplete sources before any commit", asy
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
 });
 
-test("LINE Bank typed authentication requests human help and honors cancellation", async () => {
-  const page = createPage({ signedIn: false });
-  const assisted = createContext({
+test("LINE Bank waits for delayed automatic sign-in without human fallback and honors cancellation", async () => {
+  const page = createPage({ signedIn: false, signInAfterPolls: 16 });
+  const automatic = createContext({
     page,
     onAssistance: () => page.setSignedIn?.(true),
   });
-  const result = await linebankStatementsWorkflow.run(assisted.context, input);
+  const result = await linebankStatementsWorkflow.run(automatic.context, input);
   assert.equal(result.status, "financial-admitted");
-  assert.deepEqual(assisted.assistance, ["linebank-login-verification"]);
-  assert.ok(assisted.events.some((event) => event.code === "human-assistance-requested"));
+  assert.deepEqual(automatic.assistance, []);
+  assert.ok(!automatic.events.some((event) => event.code === "human-assistance-requested"));
 
   const controller = new AbortController();
-  const cancelledPage = createPage({ signedIn: false });
+  const cancelledPage = createPage({ signedIn: false, onPoll: () => controller.abort(new Error("cancelled by test")) });
   const cancelled = createContext({
     page: cancelledPage,
     signal: controller.signal,
@@ -308,4 +318,20 @@ test("LINE Bank typed authentication requests human help and honors cancellation
   );
   assert.equal(cancelled.commits.length, 0);
   assert.ok(cancelledEvents.some((event) => event.code === "run-cancelled"));
+});
+
+
+test("LINE Bank ends an unfinished login at its deadline without requesting human assistance", async (t) => {
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => elapsed);
+  const pending = createContext({
+    page: createPage({ signedIn: false, onPoll: () => { elapsed += 30_000; } }),
+  });
+  await assert.rejects(
+    linebankStatementsWorkflow.run(pending.context, input),
+    /Timed out waiting for LINE Bank signed-in state/u,
+  );
+  assert.equal(elapsed, 120_000);
+  assert.deepEqual(pending.assistance, []);
+  assert.equal(pending.commits.length, 0);
 });

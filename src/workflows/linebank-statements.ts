@@ -31,7 +31,6 @@ import {
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
-import { emitHumanAssistanceStage } from "./human-assistance.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -1359,30 +1358,6 @@ export async function linebankHumanAttestedCapture(input: {
   return validation.capture;
 }
 
-function linebankHumanVerificationStage(page: Page) {
-  const body = page.locator("body");
-  return {
-    stageId: "linebank-login-verification",
-    title: "Complete LINE Bank sign-in or verification",
-    targets: [{
-      id: "sign-in-page",
-      label: "LINE Bank sign-in page",
-      semanticId: "linebank.login.page",
-      modes: ["click", "type", "press"] as const,
-      locator: body,
-    }],
-    contextRegions: [{
-      id: "sign-in-context",
-      label: "LINE Bank sign-in and verification",
-      semanticId: "linebank.login.context",
-      locator: body,
-    }],
-    completion: { mode: "independent" as const, targetIds: ["sign-in-page"] },
-    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
-    prompt: "Complete any LINE Bank verification in the open page, then wait for sign-in to finish.",
-  };
-}
-
 async function waitForLineBankSignIn(
   page: Page,
   context: WorkflowContext,
@@ -1422,32 +1397,10 @@ async function linebankSignInForApp(
   if (!(await withAbort(loginButton.isVisible().catch(() => false), context.signal)))
     throw new Error("LINE Bank login submit button is not visible.");
   await withAbort(loginButton.click(), context.signal);
-  // The bank can navigate first and render its sign-in confirmation dialog
-  // shortly afterwards. Give that normal transition a bounded chance to
-  // settle before treating the page as requiring human verification.
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    context.signal.throwIfAborted();
-    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
-    if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
-    await withAbort(page.waitForTimeout(250), context.signal);
-  }
-
-  const contract = await withAbort(
-    emitHumanAssistanceStage(linebankHumanVerificationStage(page), () => undefined),
-    context.signal,
-  );
-  await context.event("authentication", "human-assistance-requested");
-  const status = await withAbort(
-    context.humanAssistance.request(contract, context.signal),
-    context.signal,
-  );
-  context.signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    await context.event("authentication", "human-assistance-failed");
-    throw new Error(`LINE Bank human assistance ended with status ${status}.`);
-  }
+  // Login/navigation and its bank confirmation can take longer than three
+  // seconds under Sync All. Observe the authenticated marker within the normal
+  // deadline; an unfinished login is not a declared human challenge.
   await waitForLineBankSignIn(page, context);
-  await context.event("authentication", "human-assistance-completed");
 }
 
 function sourceDecodeError(error: unknown): boolean {
