@@ -42,6 +42,8 @@ The App defaults to the `solver` Verification Actor for challenge contracts and 
 
 ## Run lifecycle and scheduling
 
+One App-owned FIFO queue limits all manual, Sync all, and scheduled workflow runs to three concurrent executions. Verification waits and internal retry rounds retain a slot. Additional runs are persisted as `queued`; their browsers and workers start only after admission. Queued runs can be cancelled or force-terminated without provider activity. Shutdown stops dispatch and finalizes queued runs as interrupted, preserving the restart-from-beginning policy. No separate batch or scheduler can bypass this queue.
+
 Cancellation and App shutdown abort active typed work. Persisted active or human-waiting runs that are abandoned at shutdown are reconciled as interrupted on the next App start; the App does not reconnect to their old browser process. A retry creates a new run from the beginning of source collection.
 
 The App does not run schedules while closed. The current scheduled task is `exchange-rates`; after App startup its scheduler considers at most the latest missed occurrence. The exact scheduled UTC occurrence is persisted to prevent that occurrence from being launched twice, including after a restart. This is a catch-up policy for scheduled workflows, not a loop over every missed clock tick.

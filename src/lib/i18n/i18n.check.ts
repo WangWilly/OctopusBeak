@@ -74,8 +74,8 @@ assert.equal(translations["zh-TW"].automation.historyStartedTime("Asia/Taipei"),
 assert.equal(translations["zh-TW"].automation.historyFinishedTime("Asia/Taipei"), "完成（Asia/Taipei）");
 assert.equal(translations.en.automation.runningTaskHeading(1), "1 task is running");
 assert.equal(translations.en.automation.runningTaskHeading(2), "2 tasks are running");
-assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent task will run in sequence.");
-assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will run in sequence.");
+assert.equal(translations.en.automation.syncDialogDescription(1), "1 independent task will run, up to 3 at a time; the rest will wait in the queue.");
+assert.equal(translations.en.automation.syncDialogDescription(2), "2 independent tasks will run, up to 3 at a time; the rest will wait in the queue.");
 assert.equal(translations.en.automation.startSyncHeading, "Start sync");
 assert.equal(translations["zh-TW"].automation.startSyncHeading, "開始同步");
 assert.deepEqual(translations.en.automation.taskLabels, {

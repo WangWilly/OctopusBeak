@@ -1,3 +1,4 @@
+import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import type { OverviewPageDto } from "../../overview/types.ts";
 import {
@@ -40,6 +41,9 @@ export async function hydrateAutomationRuntimeState(
   return automationRuntimeState.snapshot();
 }
 
+const workflowRunQueue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
+const queuedTaskControllers = new Map<string, AbortController>();
+let appWorkflowShuttingDown = false;
 const activeTaskRunIds = new Map<string, string>();
 const activeTaskRunCompletions = new Map<string, Promise<void>>();
 const cancellationRequestedTaskIds = new Set<string>();
@@ -255,7 +259,7 @@ async function startPreparedTaskWithPersistence(
   }).catch(async () => {
     console.error("automation-task-run-failed");
     const failed = await provider.automation.taskRunById(run.taskRunId);
-    if (!failed) return;
+    if (!failed || isTerminalTaskRunStatus(failed.status)) return;
     try {
       await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
         status: "failed",
@@ -278,6 +282,7 @@ export async function startAutomationTask(
   provider: AutomationPersistenceProvider,
   options: StartAutomationTaskOptions = {},
 ): Promise<StartedAutomationTask> {
+  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   assertAppExecutorTask(task);
@@ -346,9 +351,7 @@ export async function runAutomationBatch(
 ) {
   const selectedTaskIds = [...new Set(taskIds)];
   const errors: unknown[] = [];
-  // Keep App workflows on one slot while they use the shared browser host and
-  // authenticated financial-commit service.
-  await runWithConcurrency(selectedTaskIds, 1, execute).catch((error) => {
+  await runWithConcurrency(selectedTaskIds, APP_WORKFLOW_CONCURRENCY, execute).catch((error) => {
     errors.push(error);
   });
   if (errors.length) throw errors[0];
@@ -380,27 +383,7 @@ async function cancelAutomationTaskWithPersistence(
       updatedAt: cancellationRequestedAt,
     });
   }
-  if (activeTaskRunIds.get(taskId) === "queued") {
-    const queuedRunId = activeTaskRunIds.get(taskId);
-    const cancelledRun = queuedRunId && queuedRunId !== "queued"
-      ? await persistCancellationTransitionForRunWithPersistence(
-          provider,
-          queuedRunId,
-          "cancelled",
-          new Date().toISOString(),
-        )
-      : null;
-    if (cancelledRun) {
-      automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancelledRun, "cancelled"));
-    }
-    activeTaskRunIds.delete(taskId);
-    cancellationRequestedTaskIds.delete(taskId);
-    forceTerminationRequestedTaskIds.delete(taskId);
-    const queuedTimer = cancellationForceTimers.get(taskId);
-    if (queuedTimer) clearTimeout(queuedTimer);
-    cancellationForceTimers.delete(taskId);
-    return { cancelled: taskId };
-  }
+  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue cancelled."));
   const previousTimer = cancellationForceTimers.get(taskId);
   if (previousTimer) clearTimeout(previousTimer);
   cancellationForceTimers.set(taskId, setTimeout(() => {
@@ -474,6 +457,7 @@ async function forceTerminateAutomationTaskWithPersistence(
       updatedAt: new Date().toISOString(),
     });
   }
+  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue force-cancelled."));
   await activeTaskRunCompletions.get(taskId);
   return { cancelled: taskId };
 }
@@ -520,6 +504,10 @@ export async function shutdownAppAutomationWorkflows(
     finalizePersistedRuns: typeof finalizePersistedActiveRuns;
   }> = {},
 ): Promise<void> {
+  appWorkflowShuttingDown = true;
+  for (const controller of queuedTaskControllers.values()) {
+    controller.abort(new Error("App closed before queued workflow started."));
+  }
   const errors: unknown[] = [];
   try {
     await interruptActiveAppWorkflows(provider.automation);
@@ -545,6 +533,7 @@ export async function runAutomationTask(
   provider: AutomationPersistenceProvider,
   options: PersistenceRunOptions = {},
 ) {
+  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
   assertAppExecutorTask(task);
@@ -553,7 +542,36 @@ export async function runAutomationTask(
   let completeRun!: () => void;
   const runCompletion = new Promise<void>((resolve) => { completeRun = resolve; });
   activeTaskRunCompletions.set(taskId, runCompletion);
+  let releaseSlot: (() => void) | undefined;
+  let slotReady: Promise<() => void> | undefined;
+  const queueController = new AbortController();
+  queuedTaskControllers.set(taskId, queueController);
   try {
+    const ticket = workflowRunQueue.enter(queueController.signal);
+    slotReady = ticket.ready;
+    // Observe rejection before awaiting persistence to avoid an unhandled abort.
+    void ticket.ready.catch(() => undefined);
+    if (ticket.queued && options.taskRunId) {
+      await provider.automation.transitionTaskRunToActive(options.taskRunId, { status: "queued" });
+      const queued = await provider.automation.taskRunById(options.taskRunId);
+      if (queued) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(queued));
+    }
+    try {
+      releaseSlot = await ticket.ready;
+      queueController.signal.throwIfAborted();
+    } catch (error) {
+      if (options.taskRunId) {
+        await provider.automation.transitionTaskRunToTerminal(options.taskRunId, {
+          status: appWorkflowShuttingDown ? "interrupted" : "cancelled",
+          finishedAt: new Date().toISOString(),
+          appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+        });
+        const ended = await provider.automation.taskRunById(options.taskRunId);
+        if (ended) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(ended));
+      }
+      throw error;
+    }
+    queuedTaskControllers.delete(taskId);
     const workflowEnvironment = {
       ...workflowEnvironmentFromSettings(),
       ...pgliteWorkflowRuntimeEnv(provider),
@@ -598,6 +616,10 @@ export async function runAutomationTask(
     }
     return result;
   } finally {
+    queuedTaskControllers.delete(taskId);
+    queueController.abort();
+    if (releaseSlot) releaseSlot();
+    else await slotReady?.then((release) => release(), () => undefined);
     activeTaskRunIds.delete(taskId);
     if (activeTaskRunCompletions.get(taskId) === runCompletion) {
       activeTaskRunCompletions.delete(taskId);
