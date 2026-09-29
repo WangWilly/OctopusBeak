@@ -73,10 +73,10 @@ function synchronizationStart(
     const last = rows.at(-1)?.rateDate;
     if (!first || first > requiredFrom) return coverageDate;
     if (last && last >= to) return [];
-    const next = new Date(`${last}T00:00:00.000Z`);
-    next.setUTCDate(next.getUTCDate() + 1);
-    const nextDate = next.toISOString().slice(0, 10);
-    return nextDate < coverageDate ? coverageDate : nextDate;
+    // Include the latest published day. Before today's publication a one-day
+    // request can return the prior quote; keep that quote inside the requested
+    // range while retaining strict response-date validation.
+    return last < coverageDate ? coverageDate : last;
   }).sort()[0] ?? null;
 }
 
