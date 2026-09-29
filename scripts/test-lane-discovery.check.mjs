@@ -24,8 +24,8 @@ test("test lanes include each browser check exactly once and exclude hard perfor
 
   assert.match(packageJson.scripts.test, /run-test-lane\.mjs all/u);
   assert.match(packageJson.scripts["test:ci"], /run-test-lane\.mjs ci/u);
-  assert.match(packageJson.scripts.pretest, /build:electron/u);
-  assert.match(packageJson.scripts["pretest:ci"], /build:electron/u);
+  assert.equal(packageJson.scripts.pretest, "npm run build");
+  assert.equal(packageJson.scripts["pretest:ci"], "npm run build");
   assert.deepEqual(browser, [...BROWSER_CHECK_FILES].sort());
   assert.deepEqual(electronCdp, [...ELECTRON_CDP_FILES].sort());
   assert.deepEqual(performance, [...HARD_PERFORMANCE_FILES].sort());
