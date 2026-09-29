@@ -392,3 +392,32 @@ test("HNCB CAPTCHA assistance receives the injected cancellation signal", async 
     await browser.close();
   }
 });
+
+
+test("HNCB export deadline also bounds a blocked submit evaluation", async () => {
+  let releaseSubmit!: () => void;
+  let closed = false;
+  const blockedSubmit = new Promise<void>(resolve => { releaseSubmit = resolve; });
+  const popup = {
+    async waitForLoadState() {},
+    async route() {},
+    async evaluate() { await blockedSubmit; },
+    async unroute() {},
+    async close() { closed = true; releaseSubmit(); },
+  };
+  const page = { async waitForEvent() { return popup; } } as never;
+  const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
+  const run = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, 20);
+  let watchdog: ReturnType<typeof setTimeout>;
+  try {
+    await assert.rejects(Promise.race([
+      run,
+      new Promise<never>((_, reject) => { watchdog = setTimeout(() => reject(new Error("test watchdog: export did not stop")), 200); }),
+    ]), /Timed out waiting for the HNCB export response/u);
+    assert.equal(closed, true);
+  } finally {
+    clearTimeout(watchdog!);
+    releaseSubmit();
+    await run.catch(() => undefined);
+  }
+});

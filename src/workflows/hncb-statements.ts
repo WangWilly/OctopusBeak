@@ -1070,16 +1070,21 @@ export async function downloadCurrentStatementInMemory(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
   try {
-    await popup
-      .waitForLoadState("domcontentloaded", { timeout: 10_000 })
-      .catch(() => undefined);
-    await popup.route("**/*", handleRoute);
-    await popup.evaluate(() => {
-      const popupWindow = window as typeof window & { doSubmit?: () => void };
-      if (typeof popupWindow.doSubmit !== "function")
-        throw new Error("HNCB export popup did not expose doSubmit().");
-      popupWindow.doSubmit();
-    });
+    // Include setup and doSubmit() in the deadline: a native dialog or
+    // stalled renderer can leave evaluate pending before response capture.
+    const collection = (async () => {
+      await popup
+        .waitForLoadState("domcontentloaded", { timeout: 10_000 })
+        .catch(() => undefined);
+      await popup.route("**/*", handleRoute);
+      await popup.evaluate(() => {
+        const popupWindow = window as typeof window & { doSubmit?: () => void };
+        if (typeof popupWindow.doSubmit !== "function")
+          throw new Error("HNCB export popup did not expose doSubmit().");
+        popupWindow.doSubmit();
+      });
+      return await capturePromise;
+    })();
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error("Timed out waiting for the HNCB export response.")),
@@ -1088,7 +1093,7 @@ export async function downloadCurrentStatementInMemory(
       timer.unref?.();
     });
     const outcomes: Array<Promise<HncbStatementDownload | never>> = [
-      capturePromise,
+      collection,
       timeout,
     ];
     if (signal) {
