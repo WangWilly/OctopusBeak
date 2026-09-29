@@ -66,6 +66,8 @@ function createPage(options: {
   expectedRanges?: number;
   detailResponse?: Response;
   signedIn?: boolean;
+  signInAfterPolls?: number;
+  onPoll?: () => void;
 } = {}): Page {
   const ranges = Array.from({ length: options.expectedRanges ?? 1 }, (_, index) => ({
     firstDateYYYYMMDD: `202608${String(index * 31 + 1).padStart(2, "0")}`,
@@ -97,12 +99,13 @@ function createPage(options: {
     }),
   ];
   let signedIn = options.signedIn ?? true;
+  let polls = 0;
   const locator = (selector: string) => ({
     first() { return this; },
     last() { return this; },
     nth() { return this; },
     filter() { return this; },
-    isVisible: async () => selector === "#btnHeaderLogout" && signedIn,
+    isVisible: async () => selector.startsWith("form input") || (selector === "#btnHeaderLogout" && signedIn),
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? 1 : 0,
     textContent: async () => "2026/08",
@@ -117,13 +120,17 @@ function createPage(options: {
     keyboard: { press: async () => undefined },
     goto: async () => undefined,
     waitForURL: async () => undefined,
-    waitForTimeout: async () => undefined,
+    waitForTimeout: async () => {
+      polls += 1;
+      options.onPoll?.();
+      if (options.signInAfterPolls !== undefined && polls >= options.signInAfterPolls) signedIn = true;
+    },
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
       const index = responses.findIndex(predicate);
       if (index < 0) throw new Error("No synthetic CTBC response matched.");
       return responses.splice(index, 1)[0]!;
     },
-    getByText: () => ({ click: async () => undefined, isVisible: async () => false }),
+    getByText: () => locator("unavailable-prompt"),
     getByRole: () => ({
       click: async () => undefined,
       waitFor: async () => undefined,
@@ -289,9 +296,9 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
 });
 
-test("CTBC typed workflow supports injected human assistance and cancellation", async () => {
+test("CTBC delayed automatic login does not request human assistance and honors cancellation", async () => {
   let signedIn = false;
-  const page = createPage({ signedIn }) as Page & { setSignedIn(value: boolean): void };
+  const page = createPage({ signedIn, signInAfterPolls: 20 }) as Page & { setSignedIn(value: boolean): void };
   const context = createContext({
     page,
     onAssistance: () => { signedIn = true; page.setSignedIn(true); },
@@ -304,7 +311,7 @@ test("CTBC typed workflow supports injected human assistance and cancellation", 
     }),
   }).catch((error: unknown) => { runError = error; });
   assert.ok(runError instanceof Error, "An empty CTBC source must not be admitted.");
-  assert.equal(context.assistanceCalls, 1, String(runError));
+  assert.equal(context.assistanceCalls, 0, String(runError));
   assert.equal(context.committed.length, 0);
 
   const controller = new AbortController();
