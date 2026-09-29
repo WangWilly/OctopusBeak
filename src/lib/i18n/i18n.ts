@@ -536,7 +536,7 @@ const en = {
       `${count} ${count === 1 ? "task is" : "tasks are"} running`,
     syncDialogTitle: "Run tasks together",
     syncDialogDescription: (count: number) =>
-      `${count} independent ${count === 1 ? "task" : "tasks"} will run in sequence.`,
+      `${count} independent ${count === 1 ? "task" : "tasks"} will run, up to 3 at a time; the rest will wait in the queue.`,
     credentialsReady: (ready: number, total: number) =>
       `${ready} / ${total} sign-in details ready`,
     confirmStopAll: "Stop all running tasks?",
@@ -1416,7 +1416,7 @@ const zh: typeof en = {
     startSyncHeading: "開始同步",
     runningTaskHeading: (count) => `${count} 個任務正在同步執行`,
     syncDialogTitle: "同步執行",
-    syncDialogDescription: (count) => `將依序執行 ${count} 個互不依賴的任務。`,
+    syncDialogDescription: (count) => `將執行 ${count} 個互不依賴的任務，一次最多 3 個，其餘排隊。`,
     credentialsReady: (ready, total) => `${ready} / ${total} 登入資料已設定`,
     confirmStopAll: "要停止所有執行中的任務嗎？",
     syncStage: "同步資料",

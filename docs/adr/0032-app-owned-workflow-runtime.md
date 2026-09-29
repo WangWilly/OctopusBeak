@@ -8,6 +8,8 @@ Production source exports are consumed in memory and validated as a complete sou
 
 The App task catalog routes twelve production tasks through supervised typed workers. E-Invoice runs its typed provider definition in the App main process with headless Firefox because its login page rejected headless Chromium in live checks. This preserves the App-owned ports and verification viewer but does not isolate an E-Invoice browser fault in a worker process. The App does not launch a provider-owned production command. New provider work starts at the same typed interface. The project-specific `workflow:dev` interface is documented separately; generic Libretto `run` commands are not the workflow development contract.
 
+The App admits at most three workflow runs concurrently through one FIFO queue shared by manual starts, Sync all, and scheduled starts. A run retains its slot during verification and internal CAPTCHA retry rounds. Runs waiting for a slot persist as queued and can be cancelled without opening a browser. App shutdown interrupts queued runs without dispatching them; the existing restart policy applies. LINE Bank and CTBC normal login transitions are observed until their bounded deadlines rather than creating an undeclared whole-page human challenge after a few seconds.
+
 The existing Canonical Financial Commit module remains the sole financial admission authority. The executor injects a typed commit port whose worker adapter forwards to that module; this decision does not introduce a second commit policy or a workflow-owned database handle.
 
 ## Implementation status and evidence
