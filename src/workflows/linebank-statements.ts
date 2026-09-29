@@ -1238,12 +1238,12 @@ export class LineBankApiClient {
     return snapshot.accounts;
   }
 
-  async fetchAccountSnapshot(observedAt?: string): Promise<{
+  async fetchAccountSnapshot(now: () => string = () => new Date().toISOString()): Promise<{
     accounts: LineBankAccount[];
     currentBalances: readonly LineBankCurrentDepositBalanceRow[];
   }> {
     const snapshot = await this.accountResponse();
-    const effectiveObservedAt = observedAt ?? new Date().toISOString();
+    const effectiveObservedAt = now();
     const currentBalances = parseLinebankCurrentDepositBalanceSnapshot({
       response: snapshot.response,
       rawBody: snapshot.rawBody,
@@ -1451,7 +1451,7 @@ export async function runLineBankProviderWorkflow(
     let accounts: LineBankAccount[];
     let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
     try {
-      accountSnapshot = await client.fetchAccountSnapshot(context.now());
+      accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
       accounts = filterAccounts(
         accountSnapshot.accounts,
         parsed.data.accountFilters,
