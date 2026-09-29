@@ -10,6 +10,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/app-browser-host.check.ts",
   "src/lib/automation/server/captcha-source-loading.check.ts",
   "src/lib/automation/server/sinopac-login-page.check.ts",
+  "src/lib/automation/server/esun-timeline-page.check.ts",
   "scripts/spending-browser-harness.check.mjs",
   "scripts/spending-chart-alternatives.check.mjs",
   "scripts/spending-ledger-review.check.mjs",

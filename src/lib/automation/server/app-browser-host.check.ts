@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { chromium } from "playwright";
+import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
 import {
   appWorkflowBrowserConnectionForSession,
   appWorkflowPageForSession,
@@ -29,6 +30,16 @@ test("Cathay login starts without retained Cathay cookies", () => {
     { name: "unrelated", value: "three", domain: "example.com", path: "/" },
   ];
   assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "cathay-login"), [cookies[2]]);
+});
+
+test("E.SUN App execution starts without stale E.SUN session cookies", () => {
+  const profile = workflowBrowserProfileForTask("esun-credit-card-statements");
+  const cookies = [
+    { name: "old-session", value: "synthetic", domain: "ebank.esunbank.com.tw", path: "/" },
+    { name: "shared-session", value: "synthetic", domain: ".esunbank.com.tw", path: "/" },
+    { name: "unrelated", value: "synthetic", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, profile), [cookies[2]]);
 });
 
 test("CTBC headless profile adds only the verified browser compatibility flag", async () => {

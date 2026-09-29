@@ -71,7 +71,7 @@ function synchronizationStart(
     const rows = cached.filter((row) => row.currency === currency);
     const first = rows[0]?.rateDate;
     const last = rows.at(-1)?.rateDate;
-    if (!first || first > requiredFrom) return coverageDate;
+    if (!first || !last || first > requiredFrom) return coverageDate;
     if (last && last >= to) return [];
     // Include the latest published day. Before today's publication a one-day
     // request can return the prior quote; keep that quote inside the requested

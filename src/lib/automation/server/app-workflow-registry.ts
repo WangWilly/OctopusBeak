@@ -171,6 +171,7 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
   },
   {
     definition: esunCreditCardStatementsWorkflow,
+    browserProfile: "esun-login",
     startUrl: "https://ebank.esunbank.com.tw/index.jsp",
     inputFromEnvironment(environment) {
       return {
