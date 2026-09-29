@@ -39,7 +39,7 @@ async function waitForCdpEndpoint(cdpUrl: string, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${cdpUrl}/json/version`);
+      const response = await fetch(`${cdpUrl}/json/version`, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) {
         const metadata = await response.json() as { webSocketDebuggerUrl?: unknown };
         if (typeof metadata.webSocketDebuggerUrl === "string") {
@@ -232,7 +232,7 @@ test("isolated Electron/CDP typed App run records and renders a safe failure", a
       }
       assert.fail(`Electron fixture exited before CDP was ready; stdout=${redacted(output, directory)} stderr=${redacted(errorOutput, directory)}`);
     }
-    browser = await chromium.connectOverCDP(cdpUrl);
+    browser = await chromium.connectOverCDP(cdpUrl, { timeout: 5_000 });
     const page = await waitForRendererPage(browser, 10_000);
     await navigateToAutomation(page);
     const row = page.locator(`#${TASK_ID}-task-row`);
