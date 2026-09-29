@@ -29,6 +29,11 @@ import {
   createPGliteFinancialPageClient,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
+import {
+  PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX,
+  packagedBrowserFixtureEnabled,
+} from "../src/lib/automation/server/packaged-browser-fixture.ts";
+import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -50,6 +55,7 @@ const devRemoteDebuggingPort = Number.isInteger(requestedDevRemoteDebuggingPort)
 
 const unknownActiveRuntimeFixture =
   process.env.OCTOPUSBEAK_CDP_FATAL_FIXTURE === "unknown-active";
+const packagedBrowserFixture = packagedBrowserFixtureEnabled(process.env);
 
 if (!app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", String(devRemoteDebuggingPort));
@@ -287,7 +293,7 @@ async function start() {
         : {}),
     });
   });
-  if (!cdpFixture) {
+  if (!cdpFixture && !packagedBrowserFixture) {
     scheduler = createExchangeRateScheduler({
       now: () => new Date(),
       setTimer: (callback, ms) => setTimeout(callback, ms),
@@ -343,6 +349,23 @@ async function start() {
   }).catch(() => {
     // The shared readiness rejection already reports the fatal runtime error.
   });
+  if (packagedBrowserFixture) {
+    void automationRuntimeReady
+      .then(async () => await runPackagedBrowserWorkerFixture(
+        operationalRuntime.provider,
+        userData,
+        process.env,
+      ))
+      .then((result) => {
+        process.stdout.write(`${PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX}${JSON.stringify(result)}\n`);
+        app.quit();
+      })
+      .catch(() => {
+        process.stdout.write(`${PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX}{"status":"failed"}\n`);
+        app.exit(1);
+      });
+    return;
+  }
   currentRendererUrl = rendererEntry(appRoot);
   currentPreloadPath = path.join(__dirname, "preload.cjs");
   if (automationRuntimeFatalHandled) return;

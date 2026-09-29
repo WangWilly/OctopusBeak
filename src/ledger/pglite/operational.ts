@@ -742,17 +742,22 @@ export class PGliteOperationalStore
     `,
       [limit],
     );
-    return result.rows.map((row) => ({
-      taskRunId: String(row.task_run_id),
-      taskId: String(row.task_id),
-      kind: row.kind as AutomationTaskKind,
-      status: row.status as AutomationTaskStatus,
-      startedAt: String(row.started_at),
-      finishedAt: nullableString(row.finished_at),
-      exitCode: nullableNumber(row.exit_code),
-      signal: nullableString(row.signal),
-      appWorkflowOutcome: recordAppWorkflowOutcome(String(row.record_json)),
-    }));
+    return result.rows.map((row) => {
+      const recordJson = String(row.record_json);
+      const browserRuntime = recordBrowserRuntimeIdentity(recordJson);
+      return {
+        taskRunId: String(row.task_run_id),
+        taskId: String(row.task_id),
+        kind: row.kind as AutomationTaskKind,
+        status: row.status as AutomationTaskStatus,
+        startedAt: String(row.started_at),
+        finishedAt: nullableString(row.finished_at),
+        exitCode: nullableNumber(row.exit_code),
+        signal: nullableString(row.signal),
+        appWorkflowOutcome: recordAppWorkflowOutcome(recordJson),
+        ...(browserRuntime ? { browserRuntime } : {}),
+      };
+    });
   }
 
   async upsertTaskPrerequisiteNotice(input: {

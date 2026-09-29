@@ -14,7 +14,7 @@ The existing Canonical Financial Commit module remains the sole financial admiss
 
 ## Implementation status and evidence
 
-On 2026-09-29, all eleven browser task workflows completed live App runs through the typed worker path and emitted successful Canonical Financial Commit completion events. E-Invoice completed twice; both runs committed 328 of 328 records. The run IDs, sanitized outcomes, and remaining packaged-App gate are recorded in the [runtime contract](../specs/app-owned-workflow-runtime.md#live-source-acceptance). These runs establish this migration's live-source acceptance; repository fixtures alone do not.
+On 2026-09-29, all eleven browser task workflows completed live App runs through the typed worker path and emitted successful Canonical Financial Commit completion events. E-Invoice completed twice; both runs committed 328 of 328 records. The run IDs, sanitized outcomes, and packaged macOS arm64 fixture result are recorded in the [runtime contract](../specs/app-owned-workflow-runtime.md#live-source-acceptance). These runs establish this migration's live-source acceptance; repository fixtures alone do not.
 
 The current operational PGlite schema is fresh baseline version 2. Runtime startup does not migrate or silently drop a version 1 store: it fails closed with a reset-required error. After closing the App, the local PGlite directory must be reset to create a fresh v2 baseline; this discards its prior contents, which are rebuilt through supported App collection and sync paths.
 

@@ -7,6 +7,10 @@ import type {
 } from "../types.ts";
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.ts";
+import {
+  PACKAGED_BROWSER_FIXTURE_TASKS,
+  packagedBrowserFixtureEnabled,
+} from "./packaged-browser-fixture.ts";
 
 export type {
   AutomationCredentialGroup,
@@ -943,7 +947,7 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     }),
   ];
 
-export const AUTOMATION_TASKS: readonly AutomationTask[] = [
+const coreAutomationTasks: readonly AutomationTask[] = [
   {
     id: "fubon-all-statements",
     label: "Fubon all statements",
@@ -1075,6 +1079,28 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
 ];
+
+export function automationTasksForEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): readonly AutomationTask[] {
+  const packagedBrowserFixtureTasks: readonly AutomationTask[] =
+    packagedBrowserFixtureEnabled(environment)
+    ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ taskId, workflowId }, index) => ({
+      id: taskId,
+      label: index === 0
+        ? "Packaged browser fixture success"
+        : "Packaged browser fixture cancellation",
+      workflowId,
+      kind: "crawler",
+      credentialKeys: [],
+      dependencies: [],
+      maxAttempts: 1,
+    }))
+    : [];
+  return [...coreAutomationTasks, ...packagedBrowserFixtureTasks];
+}
+
+export const AUTOMATION_TASKS: readonly AutomationTask[] = automationTasksForEnvironment();
 
 export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
   new Set(

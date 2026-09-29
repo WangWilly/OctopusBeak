@@ -2,6 +2,8 @@
 
 All 13 production tasks currently run through the desktop App's typed execution path. Use the project-owned `workflow:dev` command while building a browser provider; it loads the same `WorkflowDefinition` used by the App and injects development ports. Do not use generic Libretto `run` commands as the workflow development contract.
 
+For headed development browser sessions, install full Chromium into Playwright's default user cache with `npx playwright install chromium` while `PLAYWRIGHT_BROWSERS_PATH` is unset. Desktop packaging uses a separate project-local cache and installs only Chromium headless shell; the packaging cleanup never removes the developer's default cache.
+
 See [ADR 0032](../adr/0032-app-owned-workflow-runtime.md) and the [App-owned workflow runtime contract](../specs/app-owned-workflow-runtime.md) for production behavior and migration gates.
 
 ## Commands
