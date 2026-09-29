@@ -162,17 +162,37 @@ test("synchronization validates and upserts the requested Frankfurter rates", as
     currencies: ["USD"],
   }, {
     fetchImpl: async (input) => {
-      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-13");
+      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-12");
       return new Response(JSON.stringify([
         { date: "2026-07-14", base: "TWD", quote: "USD", rate: 0.03125 },
       ]), { status: 200, headers: { "content-type": "application/json" } });
     },
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
-  assert.equal(missingRange.from, "2026-07-13");
+  assert.equal(missingRange.from, "2026-07-12");
 });
 
-test("unequal currency cache coverage resumes at the earliest missing date", async () => {
+test("sync before today's publication reuses the last published date without inventing today's rate", async () => {
+  const fetchedAt = "2026-09-28T12:00:00.000Z";
+  const persistence = memoryPersistence([
+    { rateDate: "2026-09-01", currency: "USD", twdPerUnit: 32, source: "frankfurter-v2", fetchedAt },
+    { rateDate: "2026-09-28", currency: "USD", twdPerUnit: 32, source: "frankfurter-v2", fetchedAt },
+  ]);
+  const result = await syncExchangeRates(persistence, {
+    requiredFrom: "2026-09-01",
+    currencies: ["USD"],
+  }, {
+    now: () => new Date("2026-09-29T02:00:00.000Z"),
+    fetchImpl: async () => new Response(JSON.stringify([
+      { date: "2026-09-28", base: "TWD", quote: "USD", rate: 0.03125 },
+    ]), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  assert.equal(result.from, "2026-09-28");
+  assert.equal(result.written, 1);
+  assert.equal((await readExchangeRates(persistence)).some((row) => row.rateDate === "2026-09-29"), false);
+});
+
+test("unequal currency cache coverage overlaps the earliest last published date", async () => {
   const fetchedAt = "2026-07-12T12:00:00.000Z";
   const persistence = memoryPersistence([
     { rateDate: "2026-01-03", currency: "USD", twdPerUnit: 32, source: "frankfurter-v2", fetchedAt },
@@ -188,7 +208,7 @@ test("unequal currency cache coverage resumes at the earliest missing date", asy
     currencies: ["USD", "JPY"],
   }, {
     fetchImpl: async (input) => {
-      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-09");
+      assert.equal(new URL(input.toString()).searchParams.get("from"), "2026-07-08");
       return new Response(JSON.stringify([
         { date: "2026-07-11", base: "TWD", quote: "JPY", rate: 4.5 },
         { date: "2026-07-11", base: "TWD", quote: "USD", rate: 0.03125 },
@@ -196,5 +216,5 @@ test("unequal currency cache coverage resumes at the earliest missing date", asy
     },
     now: () => new Date("2026-07-15T12:00:00.000Z"),
   });
-  assert.equal(result.from, "2026-07-09");
+  assert.equal(result.from, "2026-07-08");
 });
