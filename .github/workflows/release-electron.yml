@@ -137,7 +137,7 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: Run tests
-        run: npm run test:ci
+        run: xvfb-run --auto-servernum npm run test:ci
 
       - name: Typecheck
         run: npm run typecheck
