@@ -1,6 +1,7 @@
 import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
+import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 
 export type TypedWorkflowErrorCode =
@@ -10,6 +11,7 @@ export type TypedWorkflowErrorCode =
   | "source-validation-failed"
   | "source-access-challenged"
   | "source-unavailable"
+  | "browser-runtime-config-failed"
   | "verification-configuration-failed"
   | "canonical-commit-failed"
   | "commit-outcome-unknown"
@@ -80,6 +82,7 @@ const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "source-validation-failed",
   "source-access-challenged",
   "source-unavailable",
+  "browser-runtime-config-failed",
   "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
@@ -142,6 +145,7 @@ export function classifyTypedWorkflowFailure(
   events: readonly WorkflowRunEvent[],
   signalAborted = false,
 ): TypedWorkflowErrorCode {
+  if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
   if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
   if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
   if (error instanceof SourceUnavailableError) return "source-unavailable";

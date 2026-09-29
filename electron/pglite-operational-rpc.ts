@@ -170,6 +170,7 @@ const CREATE_TASK_RUN_FIELDS = [
 const TASK_RUN_UPDATE_FIELDS = [
   "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
   "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
+  "browserRuntime",
 ] as const;
 
 function validOperationalArgs(operation: PGliteOperationalOperation, args: readonly unknown[]): boolean {
