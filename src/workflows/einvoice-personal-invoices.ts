@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { errors, type Page, type Request } from "playwright";
 import { z } from "zod";
 import type {
@@ -749,7 +750,7 @@ async function signInEinvoice(
   const outcome = await waitForEinvoiceLoginOutcome(page, 120_000, signal);
   if (outcome === "authenticated") return;
   if (outcome === "captcha-rejected")
-    throw new Error("E-invoice CAPTCHA was rejected; a new human-assisted attempt is required.");
+    throw new CaptchaProviderRejectedError();
   if (outcome === "credentials-rejected")
     throw new Error("E-invoice sign-in credentials were rejected; no automatic resubmission was made.");
   if (outcome === "form-rejected")

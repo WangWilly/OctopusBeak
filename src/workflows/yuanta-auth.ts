@@ -1,4 +1,5 @@
 import type { Dialog, Frame, Locator, Page } from "playwright";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContractInput,
@@ -454,6 +455,9 @@ async function waitForSignedInState(
         .catch(() => false));
     const dialogState = getLastDialogState();
     if (stillOnLogin && dialogState) {
+      if (dialogState.type === "alert" && dialogState.category === "captcha-rejected") {
+        throw new CaptchaProviderRejectedError();
+      }
       throw new Error(yuantaBankDialogFailureMessage(dialogState.category));
     }
 

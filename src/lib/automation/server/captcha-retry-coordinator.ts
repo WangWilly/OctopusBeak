@@ -221,7 +221,11 @@ export async function runCaptchaRetryCampaign(
   const routesCaptcha = appWorkflow && (
     TEXT_CAPTCHA_APP_TASK_IDS.has(taskId) || routesYuantaTradeCaptcha
   );
-  const routesSinopacCaptcha = taskId === "sinopac-statements";
+  // These providers classify submission results inside the workflow. Join the
+  // completed execution instead of racing a second owner of browser dialogs.
+  const workflowOwnsCaptchaOutcome = new Set([
+    "sinopac-statements", "post-statements", "einvoice-personal-invoices", "yuanta-all-statements",
+  ]).has(taskId);
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
   const executeAppCaptchaAndRoute = async (
     executionOptions: AutomationTaskExecutionOptions,
@@ -286,7 +290,7 @@ export async function runCaptchaRetryCampaign(
                   request.signal.throwIfAborted();
                   throw new Error(message);
                 },
-                providerProbePostSubmit: routesSinopacCaptcha
+                providerProbePostSubmit: workflowOwnsCaptchaOutcome
                   ? async (_session, _contract, resume) => {
                     await resume();
                     // Join the worker and browser cleanup before starting another round.

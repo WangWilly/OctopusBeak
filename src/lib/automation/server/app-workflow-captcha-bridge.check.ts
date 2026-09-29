@@ -72,134 +72,146 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   assert.fail("Timed out waiting for App workflow test state.");
 }
 
-test("App SinoPac retries typed rejection after worker cleanup aborts assistance and without retained events", async () => {
-  const artifactRoot = await mkdtemp(join(tmpdir(), "sinopac-app-captcha-"));
-  const originalCwd = process.cwd();
-  const store = new PGliteStore(await PGlite.create());
-  try {
-    await applyPgliteOperationalBaseline(store);
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "sinopac-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const settings: AutomationSettingsFile = {
-      LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
-      VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD: "0.9",
-    };
-    process.chdir(artifactRoot);
-    const captureSessions: string[] = [];
-    const injectedAnswers: string[] = [];
-    const executeAttempts: number[] = [];
-    let solverCalls = 0;
+for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const) {
+  const taskId = providerId === "einvoice" ? "einvoice-personal-invoices"
+    : providerId === "yuanta-bank" ? "yuanta-all-statements" : `${providerId}-statements`;
+  const answer = providerId === "post" ? "1234" : providerId === "einvoice" ? "12345" : "123456";
+  const providerContract = {
+    ...sinopacContract,
+    stageId: providerId === "post" ? "ipost-login-captcha" : `${providerId}-login-captcha`,
+    expectedAnswerLength: answer.length,
+    targets: sinopacContract.targets.map(target => ({ ...target, semanticId: `${providerId}.login.captcha-input` })),
+    challengeImageRegion: { ...sinopacContract.challengeImageRegion!, semanticId: `${providerId}.login.captcha-image` },
+  };
+  test(`App ${providerId} retries typed rejection after execution cleanup aborts assistance and without retained events`, async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), `${providerId}-app-captcha-`));
+    const originalCwd = process.cwd();
+    const store = new PGliteStore(await PGlite.create());
+    try {
+      await applyPgliteOperationalBaseline(store);
+      const provider = createPgliteOperationalProvider(store);
+      const created = await provider.automation.createTaskRun({
+        taskId,
+        kind: "crawler",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 1,
+        startedAt: new Date().toISOString(),
+      });
+      const settings: AutomationSettingsFile = {
+        LIBRETTO_CLOUD_SINOPAC_VERIFICATION_ACTOR: "solver",
+        VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD: "0.9",
+      };
+      process.chdir(artifactRoot);
+      const captureSessions: string[] = [];
+      const injectedAnswers: string[] = [];
+      const executeAttempts: number[] = [];
+      let solverCalls = 0;
 
-    const campaign = runCaptchaRetryCampaign({
-      taskId: "sinopac-statements",
-      appWorkflow: true,
-      provider,
-      launchVerificationSettings: settings,
-      initialExecutionOptions: { taskRunId: created.taskRunId },
-      isCancellationRequested: () => false,
-      routeWaitingRunVerification: (input) => routeWaitingRunVerification({
-        ...input,
-        solver: {
-          async solve() {
-            solverCalls += 1;
+      const campaign = runCaptchaRetryCampaign({
+        taskId,
+        appWorkflow: true,
+        provider,
+        launchVerificationSettings: settings,
+        initialExecutionOptions: { taskRunId: created.taskRunId },
+        isCancellationRequested: () => false,
+        routeWaitingRunVerification: (input) => routeWaitingRunVerification({
+          ...input,
+          solver: {
+            async solve() {
+              solverCalls += 1;
+              return {
+                answer,
+                confidence: solverCalls <= 3 ? 0.1 : 0.99,
+              };
+            },
+          },
+          providerVerification: {
+            handlesChallengeImage: () => true,
+            async captureChallengeImage(session) {
+              captureSessions.push(session);
+              return Buffer.from("mock captcha image");
+            },
+            async isChallengeImageCurrent() { return true; },
+          },
+          injectAnswer: async (session, _contract, answer) => {
+            assert.equal(session, created.taskRunId);
+            injectedAnswers.push(answer);
+          },
+        }),
+        async execute(options: AutomationTaskExecutionOptions) {
+          const attempt = options.attempt ?? 1;
+          executeAttempts.push(attempt);
+          const controller = new AbortController();
+          const assistance = createAppWorkflowHumanAssistancePort({
+            taskRunId: created.taskRunId,
+            persistence: provider.automation,
+          });
+          try {
+            await assistance.request(providerContract, controller.signal);
+          } catch {
+            assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
             return {
-              answer: "123456",
-              confidence: solverCalls <= 3 ? 0.1 : 0.99,
+              status: "failed" as const,
+              taskRunId: created.taskRunId,
+              executionId: options.executionId!,
+              session: null,
+              owner: null,
+              result: {
+                exitCode: 1,
+                signal: null,
+                error: new Error("Solver exhausted"),
+                resumeFailure: null,
+                statementSummary: null,
+                outputPersistenceWarnings: [],
+                externalPrerequisiteIds: [],
+              },
             };
-          },
-        },
-        providerVerification: {
-          handlesChallengeImage: () => true,
-          async captureChallengeImage(session) {
-            captureSessions.push(session);
-            return Buffer.from("mock captcha image");
-          },
-          async isChallengeImageCurrent() { return true; },
-        },
-        injectAnswer: async (session, _contract, answer) => {
-          assert.equal(session, created.taskRunId);
-          injectedAnswers.push(answer);
-        },
-      }),
-      async execute(options: AutomationTaskExecutionOptions) {
-        const attempt = options.attempt ?? 1;
-        executeAttempts.push(attempt);
-        const controller = new AbortController();
-        const assistance = createAppWorkflowHumanAssistancePort({
-          taskRunId: created.taskRunId,
-          persistence: provider.automation,
-        });
-        try {
-          await assistance.request(sinopacContract, controller.signal);
-        } catch {
-          assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
+          }
+          const rejected = attempt === 2;
+          // Worker cleanup aborts the request before the host joins execution.
+          // Progress events are deliberately absent: they must not drive retries.
+          controller.abort(new Error("Worker finished"));
+          const processResult = {
+            exitCode: rejected ? 1 : 0,
+            signal: null,
+            error: rejected ? new Error("App workflow failed (workflow-failed).") : null,
+            resumeFailure: null,
+            appWorkflowOutcome: { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null },
+            statementSummary: null,
+            outputPersistenceWarnings: [],
+            externalPrerequisiteIds: [],
+          };
           return {
-            status: "failed" as const,
+            status: rejected ? "failed" as const : "completed" as const,
             taskRunId: created.taskRunId,
             executionId: options.executionId!,
             session: null,
             owner: null,
-            result: {
-              exitCode: 1,
-              signal: null,
-              error: new Error("Solver exhausted"),
-              resumeFailure: null,
-              statementSummary: null,
-              outputPersistenceWarnings: [],
-              externalPrerequisiteIds: [],
-            },
+            result: processResult,
           };
-        }
-        const rejected = attempt === 2;
-        // Worker cleanup aborts the request before the host joins execution.
-        // Progress events are deliberately absent: they must not drive retries.
-        controller.abort(new Error("Worker finished"));
-        const processResult = {
-          exitCode: rejected ? 1 : 0,
-          signal: null,
-          error: rejected ? new Error("App workflow failed (workflow-failed).") : null,
-          resumeFailure: null,
-          appWorkflowOutcome: { errorCode: rejected ? "captcha-provider-rejected" as const : null, summary: null },
-          statementSummary: null,
-          outputPersistenceWarnings: [],
-          externalPrerequisiteIds: [],
-        };
-        return {
-          status: rejected ? "failed" as const : "completed" as const,
-          taskRunId: created.taskRunId,
-          executionId: options.executionId!,
-          session: null,
-          owner: null,
-          result: processResult,
-        };
-      },
-    });
+        },
+      });
 
-    assert.deepEqual(await campaign, { status: "completed" });
-    assert.deepEqual(executeAttempts, [1, 2, 3]);
-    assert.equal(captureSessions.length, 5);
-    assert.deepEqual(captureSessions, Array.from({ length: 5 }, () => created.taskRunId));
-    assert.deepEqual(injectedAnswers, ["123456", "123456"]);
-    const finalRun = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(finalRun?.status, "completed");
-    assert.equal(finalRun?.attempt, 3);
-    assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
-    assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
-    assert.equal(finalRun?.events.some((event) => event.code === "captcha-rejected"), false);
-    assert.deepEqual(await readdir(artifactRoot), [], "typed retry writes no CLI log, assistance JSONL, source, or output files");
-  } finally {
-    process.chdir(originalCwd);
-    await store.close();
-    await rm(artifactRoot, { recursive: true, force: true });
-  }
-});
+      assert.deepEqual(await campaign, { status: "completed" });
+      assert.deepEqual(executeAttempts, [1, 2, 3]);
+      assert.equal(captureSessions.length, 5);
+      assert.deepEqual(captureSessions, Array.from({ length: 5 }, () => created.taskRunId));
+      assert.deepEqual(injectedAnswers, [answer, answer]);
+      const finalRun = await provider.automation.taskRunById(created.taskRunId);
+      assert.equal(finalRun?.status, "completed");
+      assert.equal(finalRun?.attempt, 3);
+      assert.equal(Object.hasOwn(finalRun ?? {}, "logPath"), false);
+      assert.equal(Object.hasOwn(finalRun ?? {}, "logTail"), false);
+      assert.equal(finalRun?.events.some((event) => event.code === "captcha-rejected"), false);
+      assert.deepEqual(await readdir(artifactRoot), [], "typed retry writes no CLI log, assistance JSONL, source, or output files");
+    } finally {
+      process.chdir(originalCwd);
+      await store.close();
+      await rm(artifactRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 test("App SinoPac CAPTCHA assistance aborts its route when the live run is cancelled", async () => {
   const store = new PGliteStore(await PGlite.create());

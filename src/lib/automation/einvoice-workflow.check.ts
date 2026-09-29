@@ -11,6 +11,7 @@ import {
   requestEinvoiceCaptchaAssistance,
 } from "../../workflows/einvoice-personal-invoices.ts";
 import type { HumanAssistanceContractInput } from "./human-assistance.ts";
+import { classifyTypedWorkflowFailure } from "./server/typed-workflow-outcome.ts";
 
 const loginUrl = "https://www.einvoice.nat.gov.tw/accounts/login";
 const homeUrl = "https://www.einvoice.nat.gov.tw/portal/btc/mobile/home";
@@ -67,6 +68,7 @@ try {
   const page = await browser.newPage();
   let malformedList = false;
   let loginRedirectOnLoad = false;
+  let loginRejection: "captcha" | "credentials" | undefined;
   await page.route("https://www.einvoice.nat.gov.tw/**", async (route) => {
     const url = route.request().url();
     if (url === loginUrl) {
@@ -75,7 +77,9 @@ try {
         contentType: "text/html; charset=utf-8",
         body: loginRedirectOnLoad
           ? '<html><body><script>setTimeout(() => location.href="/portal/btc/mobile/btc502w/search", 100)</script></body></html>'
-          : loginPage,
+          : loginRejection
+            ? loginPage.replace("location.href='/portal/btc/mobile/home'", `this.dataset.submissions = String(Number(this.dataset.submissions ?? 0) + 1); document.querySelector('[role=alert]').textContent = '${loginRejection === "captcha" ? "圖形驗證碼錯誤" : "手機號碼或密碼錯誤"}'`).replace("</body>", '<div role="alert"></div></body>')
+            : loginPage,
       });
       return;
     }
@@ -163,6 +167,21 @@ try {
   assert.ok(events.some((event) => event.code === "month-completed" && event.total && event.total > 1));
   assert.ok(events.some((event) => event.code === "canonical-commit-completed"));
   assert.equal(commits.length, 1);
+
+  for (const rejection of ["captcha", "credentials"] as const) {
+    loginRejection = rejection;
+    await opened.goto(loginUrl);
+    await assert.rejects(
+      einvoicePersonalInvoicesWorkflow.run(context, { credentials }),
+      (error: unknown) => classifyTypedWorkflowFailure(error, [])
+        === (rejection === "captcha" ? "captcha-provider-rejected" : "workflow-failed"),
+      "only an explicit CAPTCHA rejection is retryable",
+    );
+    assert.equal(await opened.locator("#submitBtn").getAttribute("data-submissions"), "1");
+    assert.equal(commits.length, 1, "login rejection cannot commit financial data");
+  }
+  loginRejection = undefined;
+  contractIds.splice(1);
 
   loginRedirectOnLoad = true;
   await opened.goto(loginUrl);
