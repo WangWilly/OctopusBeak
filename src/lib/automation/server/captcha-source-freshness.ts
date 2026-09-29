@@ -123,9 +123,26 @@ function imageFromDataUrl(dataUrl: unknown): Buffer | null {
  */
 async function inspectCaptchaImageSource(
   descriptor: CaptchaImageDescriptor,
+  waitForLoad = false,
 ): Promise<CaptchaImageSource | null> {
-  return descriptor.image.evaluate((node, key) => {
+  return descriptor.image.evaluate(async (node, { key, waitForLoad }) => {
     if (!(node instanceof HTMLImageElement)) return null;
+    // A visible, CSS-sized image can still have no decoded pixels. Wait only
+    // while it is loading; broken/unsupported sources continue to fail closed.
+    if (waitForLoad && !node.complete) {
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          node.removeEventListener("load", finish);
+          node.removeEventListener("error", finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, 5_000);
+        node.addEventListener("load", finish, { once: true });
+        node.addEventListener("error", finish, { once: true });
+        if (node.complete) finish();
+      });
+    }
     const windowRecord = window as typeof window & Record<string, unknown>;
     const existingMarker = windowRecord[key];
     const frameMarker = typeof existingMarker === "string"
@@ -171,7 +188,7 @@ async function inspectCaptchaImageSource(
       naturalWidth: node.naturalWidth,
       naturalHeight: node.naturalHeight,
     };
-  }, descriptor.markerKey).catch(() => null) as Promise<CaptchaImageSource | null>;
+  }, { key: descriptor.markerKey, waitForLoad }).catch(() => null) as Promise<CaptchaImageSource | null>;
 }
 
 function fingerprintForCaptchaCapture(input: {
@@ -224,10 +241,11 @@ export function createLoadedCaptchaSourceOwner(
   const inspect = async (
     session: string,
     contract: HumanAssistanceContract,
+    waitForLoad = false,
   ) => options.withPage(session, async (page) => {
     const descriptor = await options.resolveImage(page, contract);
     if (!descriptor) return null;
-    const source = await inspectCaptchaImageSource(descriptor);
+    const source = await inspectCaptchaImageSource(descriptor, waitForLoad);
     return { descriptor, source };
   });
 
@@ -235,7 +253,7 @@ export function createLoadedCaptchaSourceOwner(
     session: string,
     contract: HumanAssistanceContract,
   ): Promise<CaptchaSourceCapture | null> => {
-    const inspected = await inspect(session, contract);
+    const inspected = await inspect(session, contract, true);
     if (!inspected?.source || !geometryMatches(inspected.source, options)) return null;
     const sourceImage = imageFromDataUrl(inspected.source.dataUrl);
     if (!sourceImage) return null;

@@ -7,11 +7,12 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 import {
   decodeSinopacJsonSource,
+  runSinopacLoginAttempt,
   runSinopacProviderWorkflow,
   type SinopacJsonSourceResponse,
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
-import { SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
+import { isSinopacDuplicateLoginDialog, SinopacCaptchaRejectedError } from "./sinopac-captcha.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 
@@ -376,4 +377,54 @@ test("SinoPac unknown dialogs and failed dismissals cannot produce a retryable r
     });
     assert.equal(calls.length, 0);
   }
+});
+
+test("SinoPac accepts the authorized duplicate-login confirm and keeps observing CAPTCHA dialogs", async () => {
+  const emitter = new EventEmitter();
+  const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
+  let accepted = 0;
+  await assert.rejects(runSinopacLoginAttempt(page, "duplicate-login-fixture", {
+    dialogOwner: "workflow",
+    submit: async () => {
+      emitter.emit("dialog", {
+        type: () => "confirm",
+        message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",
+        accept: async () => { accepted += 1; },
+        dismiss: async () => undefined,
+      });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      emitter.emit("dialog", {type: () => "alert", message: () => "驗證碼失效或輸入錯誤，請重新輸入。", dismiss: async () => undefined});
+    },
+    waitForSuccess: async (signal) => await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), {once:true})),
+  }), SinopacCaptchaRejectedError);
+  assert.equal(accepted, 1);
+  assert.equal(emitter.listenerCount("dialog"), 0);
+});
+
+test("SinoPac duplicate-login authorization only matches the exact confirmation", () => {
+  const notice = "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態";
+  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice), true);
+  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice + "。"), true);
+  assert.equal(isSinopacDuplicateLoginDialog("alert", notice), false);
+  assert.equal(isSinopacDuplicateLoginDialog("confirm", notice + "，並變更密碼"), false);
+  assert.equal(isSinopacDuplicateLoginDialog("confirm", "系統將強制關閉他處登入狀態"), false);
+});
+
+test("SinoPac failed duplicate-login confirmation fails without a CAPTCHA retry", async () => {
+  const emitter = new EventEmitter();
+  const page = { on: emitter.on.bind(emitter), off: emitter.off.bind(emitter) } as unknown as Page;
+  let confirmations = 0;
+  await assert.rejects(runSinopacLoginAttempt(page, "failed-confirm-fixture", {
+    dialogOwner: "workflow",
+    submit: async () => { emitter.emit("dialog", {
+      type: () => "confirm",
+      message: () => "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態",
+      accept: async () => { throw new Error("closed dialog"); },
+      dismiss: async () => undefined,
+    }); },
+    onDuplicateLoginConfirmed: async () => { confirmations += 1; },
+    waitForSuccess: async (signal) => await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+  }), /duplicate login confirmation failed/);
+  assert.equal(confirmations, 0);
+  assert.equal(emitter.listenerCount("dialog"), 0);
 });
