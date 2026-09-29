@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../lib/automation/post-captcha.ts";
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
@@ -390,7 +391,7 @@ export async function submitPostLoginAndWait(
 export function postCaptchaAssistanceStage(
   page: Page,
 ): WorkflowHumanAssistanceStage {
-  const captchaInput = page.locator('input[name="captcha"]:visible').first();
+  const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
   return {
     stageId: "ipost-login-captcha",
     title: "Enter the iPost CAPTCHA",
@@ -398,7 +399,7 @@ export function postCaptchaAssistanceStage(
       {
         id: "captcha-input",
         label: "CAPTCHA input",
-        semanticId: "post.login.captcha-input",
+        semanticId: POST_CAPTCHA_INPUT_SEMANTIC_ID,
         modes: ["click", "type"],
         locator: captchaInput,
       },
@@ -516,7 +517,7 @@ async function signInPostWithAssistance(
   await waitForSignal(page.locator("#userID_1_Input").fill(userCode), signal);
   await waitForSignal(page.locator("#userPWD_1_Input").fill(password), signal);
   await dismissPostNoticeIfPresent(page, signal);
-  const captchaInput = page.locator('input[name="captcha"]:visible').first();
+  const captchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
   await waitForSignal(captchaInput.focus(), signal);
   const assistanceUrl = page.url();
   const assistedCaptchaElement = await waitForSignal(
@@ -534,7 +535,7 @@ async function signInPostWithAssistance(
     );
     signal.throwIfAborted();
     if (await isSignedIn(page)) return;
-    const currentCaptchaInput = page.locator('input[name="captcha"]').first();
+    const currentCaptchaInput = page.locator(POST_CAPTCHA_INPUT_SELECTOR).first();
     const sameCaptchaElement = await waitForSignal(
       currentCaptchaInput
         .evaluate(

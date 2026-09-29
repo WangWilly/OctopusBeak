@@ -42,6 +42,8 @@ The App defaults to the `solver` Verification Actor for challenge contracts and 
 
 ## Run lifecycle and scheduling
 
+Providers that observe submission results inside the workflow return a typed CAPTCHA rejection through the existing allowlisted execution outcome. The App waits for that execution and its browser cleanup before starting the next round; it does not race a second dialog handler against the workflow. E-Invoice's explicit CAPTCHA rejection and Yuanta Bank's exact CAPTCHA alert use this path alongside SinoPac. Other authentication failures remain non-retryable. Post resolves its declared CAPTCHA input by a provider-owned selector and verifies retained text, so layout changes cannot redirect a solver answer into a sign-in identifier field. The workflow's document freshness check still applies after assistance.
+
 One App-owned FIFO queue limits all manual, Sync all, and scheduled workflow runs to three concurrent executions. Verification waits and internal retry rounds retain a slot. Additional runs are persisted as `queued`; their browsers and workers start only after admission. Queued runs can be cancelled or force-terminated without provider activity. Shutdown stops dispatch and finalizes queued runs as interrupted, preserving the restart-from-beginning policy. No separate batch or scheduler can bypass this queue.
 
 Cancellation and App shutdown abort active typed work. Persisted active or human-waiting runs that are abandoned at shutdown are reconciled as interrupted on the next App start; the App does not reconnect to their old browser process. A retry creates a new run from the beginning of source collection.
