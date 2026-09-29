@@ -3,19 +3,9 @@ import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 
-export type TypedWorkflowErrorCode =
-  | "captcha-provider-rejected"
-  | "cancelled"
-  | "source-integrity-failed"
-  | "source-validation-failed"
-  | "source-access-challenged"
-  | "source-unavailable"
-  | "browser-runtime-config-failed"
-  | "verification-configuration-failed"
-  | "canonical-commit-failed"
-  | "commit-outcome-unknown"
-  | "workflow-failed";
+export type { TypedWorkflowErrorCode } from "../workflow-failures.ts";
 
 export type TypedWorkflowOutcome = Readonly<{
   errorCode: TypedWorkflowErrorCode | null;
@@ -75,19 +65,7 @@ const SAFE_COUNT_NAMES = [
 ] as const satisfies readonly TypedWorkflowCountName[];
 const MAX_COUNT = 1_000_000_000;
 const MAX_SUMMARY_BYTES = 512;
-const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
-  "captcha-provider-rejected",
-  "cancelled",
-  "source-integrity-failed",
-  "source-validation-failed",
-  "source-access-challenged",
-  "source-unavailable",
-  "browser-runtime-config-failed",
-  "verification-configuration-failed",
-  "canonical-commit-failed",
-  "commit-outcome-unknown",
-  "workflow-failed",
-]);
+const ERROR_CODES = new Set<TypedWorkflowErrorCode>(TYPED_WORKFLOW_ERROR_CODES);
 
 /** Keep only known aggregate fields; provider output may contain financial data. */
 export function summarizeTypedWorkflowOutput(
@@ -171,6 +149,18 @@ export function classifyTypedWorkflowFailure(
   }
   if (events.some((event) => event.stage === "validation" && /(?:rejected|failed)$/u.test(event.code))) {
     return "source-validation-failed";
+  }
+  // Finalization reports the terminal state; the preceding stage records the
+  // operation that actually failed. No exception text enters the diagnosis.
+  const operation = events.findLast((event) => event.stage !== "finalization");
+  if (operation?.stage === "authentication") {
+    if (error instanceof Error && error.name === "TimeoutError") return "authentication-timeout";
+    if (operation.code === "login-dialog-interrupted") return "authentication-dialog-interrupted";
+    if (operation.code === "human-assistance-failed") return "verification-failed";
+    return "authentication-failed";
+  }
+  if (operation?.stage === "collection" || operation?.stage === "decoding") {
+    return "source-collection-failed";
   }
   return "workflow-failed";
 }

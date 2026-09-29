@@ -369,6 +369,55 @@ test("worker failures cross the boundary only as a stable error code", async () 
   }
 });
 
+test("worker keeps the observed failure stage across the validated IPC boundary", async () => {
+  const cases = [
+    { stage: "authentication", code: "authentication-started", name: "TimeoutError", expected: "authentication-timeout" },
+    { stage: "authentication", code: "login-dialog-interrupted", name: "Error", expected: "authentication-dialog-interrupted" },
+    { stage: "authentication", code: "human-assistance-failed", name: "Error", expected: "verification-failed" },
+    { stage: "authentication", code: "human-assistance-completed", name: "Error", expected: "authentication-failed" },
+    { stage: "collection", code: "current-balance-collection-failed", name: "Error", expected: "source-collection-failed" },
+  ] as const;
+  for (const scenario of cases) {
+    const channel = new MessageChannel();
+    let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
+    const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
+    const frames: AppWorkflowWorkerOutboundFrame[] = [];
+    channel.port2.on("message", (value: unknown) => {
+      const frame = parseAppWorkflowWorkerOutboundFrame(value);
+      frames.push(frame);
+      if (frame.kind === "event") {
+        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
+        resolveTerminal(frame);
+      }
+    });
+    const definition: WorkflowDefinition = {
+      id: "fixture-protocol",
+      requiresFinancialCommit: false,
+      async run(context) {
+        await context.event(scenario.stage, scenario.code);
+        const error = new Error("private-authentication-material must not cross the boundary");
+        error.name = scenario.name;
+        throw error;
+      },
+    };
+    try {
+      await runAppWorkflowWorker({
+        port: channel.port1,
+        workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
+        resolveDefinition: () => definition,
+        browser: { async withPage() { throw new Error("unused"); } },
+      });
+      const terminal = await terminalReceived;
+      assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected);
+      assert.doesNotMatch(JSON.stringify(frames), /private-authentication-material/u);
+    } finally {
+      channel.port1.close();
+      channel.port2.close();
+    }
+  }
+});
+
 test("SinoPac rejection crosses the worker boundary as an allowlisted typed terminal outcome", async () => {
   const channel = new MessageChannel();
   let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;

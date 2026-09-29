@@ -18,7 +18,7 @@ import type {
   WorkflowExecutorPorts,
   WorkflowRunEvent,
 } from "../workflow-executor.ts";
-import type { TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
+import { TYPED_WORKFLOW_ERROR_CODES as WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
@@ -321,19 +321,7 @@ async function executeInlineAppWorkflow(
   return result;
 }
 
-const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
-  "captcha-provider-rejected",
-  "cancelled",
-  "source-integrity-failed",
-  "source-validation-failed",
-  "source-access-challenged",
-  "source-unavailable",
-  "browser-runtime-config-failed",
-  "verification-configuration-failed",
-  "canonical-commit-failed",
-  "commit-outcome-unknown",
-  "workflow-failed",
-]);
+const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>(WORKFLOW_ERROR_CODES);
 
 function typedWorkerFailureCode(code: string): TypedWorkflowErrorCode | null {
   return TYPED_WORKFLOW_ERROR_CODES.has(code as TypedWorkflowErrorCode)

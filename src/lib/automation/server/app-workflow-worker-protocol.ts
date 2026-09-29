@@ -6,6 +6,7 @@ import {
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcomeSummary } from "./typed-workflow-outcome.ts";
 import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
+import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 
 export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 2 as const;
 export const APP_WORKFLOW_WORKER_MAX_FRAME_BYTES = 1_048_576;
@@ -45,16 +46,7 @@ const completionStatuses = new Set<Exclude<HumanAssistanceCompletionStatus, "pen
   "entered", "verified", "failed",
 ]);
 const failureCodes = new Set([
-  "captcha-provider-rejected",
-  "cancelled",
-  "source-integrity-failed",
-  "source-validation-failed",
-  "source-access-challenged",
-  "source-unavailable",
-  "verification-configuration-failed",
-  "canonical-commit-failed",
-  "commit-outcome-unknown",
-  "workflow-failed",
+  ...TYPED_WORKFLOW_ERROR_CODES,
   "worker-start-failed",
   "protocol-invalid",
 ]);
