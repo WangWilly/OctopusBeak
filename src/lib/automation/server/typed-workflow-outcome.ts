@@ -1,8 +1,10 @@
+import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 
 export type TypedWorkflowErrorCode =
+  | "captcha-provider-rejected"
   | "cancelled"
   | "source-integrity-failed"
   | "source-validation-failed"
@@ -72,6 +74,7 @@ const SAFE_COUNT_NAMES = [
 const MAX_COUNT = 1_000_000_000;
 const MAX_SUMMARY_BYTES = 512;
 const ERROR_CODES = new Set<TypedWorkflowErrorCode>([
+  "captcha-provider-rejected",
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
@@ -152,6 +155,7 @@ export function classifyTypedWorkflowFailure(
   if (commitStarted && !commitCompleted) return "commit-outcome-unknown";
 
   if (signalAborted) return "cancelled";
+  if (error instanceof SinopacCaptchaRejectedError) return "captcha-provider-rejected";
   if (events.some((event) => event.stage === "authentication" && (
     event.code === "solver-route-unavailable"
     || event.code === "solver-challenge-unsupported"

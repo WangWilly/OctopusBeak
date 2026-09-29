@@ -45,6 +45,7 @@ const completionStatuses = new Set<Exclude<HumanAssistanceCompletionStatus, "pen
   "entered", "verified", "failed",
 ]);
 const failureCodes = new Set([
+  "captcha-provider-rejected",
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",

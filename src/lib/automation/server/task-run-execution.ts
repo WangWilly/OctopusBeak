@@ -266,6 +266,7 @@ async function executeInlineAppWorkflow(
 }
 
 const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
+  "captcha-provider-rejected",
   "cancelled",
   "source-integrity-failed",
   "source-validation-failed",
@@ -413,6 +414,7 @@ async function executeSupervisedAppWorkflow(
       userDataDirectory,
       startUrl,
       browserProfile,
+      nativeDialogOwner: "worker",
     }));
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       taskRunId: execution.run.taskRunId,

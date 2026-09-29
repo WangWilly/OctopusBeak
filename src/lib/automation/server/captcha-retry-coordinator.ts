@@ -25,7 +25,6 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import type {
   ProviderVerificationHost,
-  ProviderVerificationPostSubmitOutcome,
 } from "./provider-verification.ts";
 import { probeProviderVerificationPostSubmit } from "./provider-verification.ts";
 import { appWorkflowPageForSession } from "./app-browser-host.ts";
@@ -49,9 +48,6 @@ function persistenceTaskRunId(
     : undefined;
 }
 
-const APP_SINOPAC_POST_SUBMIT_TIMEOUT_MS = 65_000;
-const APP_SINOPAC_POST_SUBMIT_POLL_MS = 50;
-
 export type CaptchaRetryCoordinatorDependencies = {
   taskId: string;
   /** Browser workflows and the two App-owned nonbrowser workflows route explicitly. */
@@ -66,63 +62,6 @@ export type CaptchaRetryCoordinatorDependencies = {
   /** Injection point for deterministic coordinator tests. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
 };
-
-async function waitForAppSinopacPostSubmitOutcome(input: {
-  provider: AutomationPersistenceProvider;
-  taskRunId: string;
-  afterEventIndex: number;
-  signal: AbortSignal;
-  timeoutMs?: number | null;
-}): Promise<VerificationRoutingOutcome> {
-  const deadline = input.timeoutMs === null
-    ? null
-    : Date.now() + (input.timeoutMs ?? APP_SINOPAC_POST_SUBMIT_TIMEOUT_MS);
-  while (deadline === null || Date.now() < deadline) {
-    input.signal.throwIfAborted();
-    const run = await input.provider.automation.taskRunById(input.taskRunId);
-    if (!run) return { kind: "failed" };
-    for (const event of run.events.slice(input.afterEventIndex)) {
-      if (event.stage !== "authentication" && event.stage !== "finalization") continue;
-      if (event.stage === "authentication" && event.code === "captcha-rejected") {
-        return { kind: "retryable", reason: "provider-rejected" };
-      }
-      if (event.stage === "authentication" && event.code === "unrecognized-login-dialog") {
-        return { kind: "failed" };
-      }
-      if (event.stage === "authentication" && event.code === "authentication-completed") {
-        return { kind: "resumed" };
-      }
-      if (event.stage === "finalization" && (event.code === "run-failed" || event.code === "run-cancelled")) {
-        return { kind: "failed" };
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, APP_SINOPAC_POST_SUBMIT_POLL_MS));
-  }
-  return { kind: "failed" };
-}
-
-function appSinopacPostSubmitProbe(
-  provider: AutomationPersistenceProvider,
-  taskRunId: string,
-  signal: AbortSignal,
-): ProviderVerificationHost["probePostSubmit"] {
-  return async (_viewerKey, _contract, resume) => {
-    const run = await provider.automation.taskRunById(taskRunId);
-    const afterEventIndex = run?.events.length ?? 0;
-    await resume();
-    const outcome = await waitForAppSinopacPostSubmitOutcome({
-      provider,
-      taskRunId,
-      afterEventIndex,
-      signal,
-    });
-    if (outcome.kind === "retryable" && outcome.reason === "provider-rejected") {
-      return "provider-rejected";
-    }
-    if (outcome.kind === "resumed") return "none";
-    return "unrecognized-dialog";
-  };
-}
 
 function appProviderPostSubmitProbe(): ProviderVerificationHost["probePostSubmit"] {
   return async (viewerKey, contract, resume) =>
@@ -296,6 +235,10 @@ export async function runCaptchaRetryCampaign(
       ...(routesYuantaTradeCaptcha ? { verificationRouteOwnedByCampaign: true } : {}),
     };
     let routing: VerificationRoutingOutcome | undefined;
+    let settleExecution!: (execution: CaptchaRetryExecutionResult) => void;
+    const executionSettled = new Promise<CaptchaRetryExecutionResult>((resolve) => {
+      settleExecution = resolve;
+    });
     let routePromise: Promise<void> | null = null;
     let routeSignal: AbortSignal | undefined;
     let unregister: (() => void) | undefined;
@@ -305,8 +248,6 @@ export async function runCaptchaRetryCampaign(
         (request) => {
           routeSignal = request.signal;
           routePromise = (async () => {
-            const initialRun = await provider.automation.taskRunById(request.taskRunId);
-            const afterEventIndex = initialRun?.events.length ?? 0;
             try {
               const onChallengeCaptured = async () => {
                 const executionId = appExecutionOptions.executionId;
@@ -346,28 +287,22 @@ export async function runCaptchaRetryCampaign(
                   throw new Error(message);
                 },
                 providerProbePostSubmit: routesSinopacCaptcha
-                  ? appSinopacPostSubmitProbe(
-                      provider,
-                      request.taskRunId,
-                      request.signal,
-                    )
+                  ? async (_session, _contract, resume) => {
+                    await resume();
+                    // Join the worker and browser cleanup before starting another round.
+                    // Cleanup normally aborts the assistance request signal.
+                    const execution = await executionSettled;
+                    if (execution.result?.appWorkflowOutcome?.errorCode === "captcha-provider-rejected") {
+                      return "provider-rejected";
+                    }
+                    return execution.status === "completed" || execution.status === "partial"
+                      ? "none" : "unrecognized-dialog";
+                  }
                   : appProviderPostSubmitProbe(),
                 onChallengeCaptured,
                 settings: launchVerificationSettings,
               });
               routing = routeOutcome;
-              if (
-                routesSinopacCaptcha
-                && (routeOutcome.kind === "human" || routeOutcome.kind === "resumed")
-              ) {
-                routing = await waitForAppSinopacPostSubmitOutcome({
-                  provider,
-                  taskRunId: request.taskRunId,
-                  afterEventIndex,
-                  signal: request.signal,
-                  ...(routeOutcome.kind === "human" ? { timeoutMs: null } : {}),
-                });
-              }
               if (
                 routing.kind === "retryable"
                 && routing.reason === "provider-rejected"
@@ -403,6 +338,7 @@ export async function runCaptchaRetryCampaign(
       );
 
       const execution = await execute(appExecutionOptions);
+      settleExecution(execution);
       if (routePromise) {
         try {
           await routePromise;

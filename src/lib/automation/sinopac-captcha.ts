@@ -34,3 +34,11 @@ export function isSinopacCaptchaRejectionDialog(type: string, message: string): 
   return message.normalize("NFKC").replace(/\s+/g, "").replace(/。$/, "")
     === "驗證碼失效或輸入錯誤，請重新輸入".normalize("NFKC");
 }
+
+/** Exact provider rejection after its dialog has been dismissed. */
+export class SinopacCaptchaRejectedError extends Error {
+  constructor() {
+    super("SinoPac rejected the submitted CAPTCHA.");
+    this.name = "SinopacCaptchaRejectedError";
+  }
+}

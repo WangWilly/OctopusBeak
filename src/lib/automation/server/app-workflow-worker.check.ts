@@ -1,3 +1,4 @@
+import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { MessageChannel, Worker } from "node:worker_threads";
@@ -360,6 +361,43 @@ test("worker failures cross the boundary only as a stable error code", async () 
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
     assert.equal(terminal.kind === "failed" ? terminal.errorCode : null, "workflow-failed");
+    assert.equal(JSON.stringify(terminal).includes("123-456-789"), false);
+    assert.equal(JSON.stringify(terminal).includes("raw invoice text"), false);
+  } finally {
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+test("SinoPac rejection crosses the worker boundary as an allowlisted typed terminal outcome", async () => {
+  const channel = new MessageChannel();
+  let resolveTerminal!: (frame: AppWorkflowWorkerOutboundFrame) => void;
+  const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
+  channel.port2.on("message", (value: unknown) => {
+    const frame = parseAppWorkflowWorkerOutboundFrame(value);
+    if (frame.kind === "event") {
+      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
+      resolveTerminal(frame);
+    }
+  });
+  const definition: WorkflowDefinition = {
+    id: "fixture-protocol",
+    requiresFinancialCommit: false,
+    async run() {
+      throw new SinopacCaptchaRejectedError();
+    },
+  };
+  try {
+    await runAppWorkflowWorker({
+      port: channel.port1,
+      workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
+      resolveDefinition: () => definition,
+      browser: { async withPage() { throw new Error("unused"); } },
+    });
+    const terminal = await terminalReceived;
+    assert.equal(terminal.kind, "failed");
+    assert.equal(terminal.kind === "failed" ? terminal.errorCode : null, "captcha-provider-rejected");
     assert.equal(JSON.stringify(terminal).includes("123-456-789"), false);
     assert.equal(JSON.stringify(terminal).includes("raw invoice text"), false);
   } finally {
