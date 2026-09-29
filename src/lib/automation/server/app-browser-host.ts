@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium, firefox, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import {
   getAutomationCredentialCodec,
@@ -9,7 +9,6 @@ import {
 } from "./config-files.ts";
 import {
   browserRuntime,
-  BrowserRuntimeConfigurationError,
   cookieResetDomainForBrowserProfile,
   type BrowserRuntime,
   type BrowserRuntimeIdentity,
@@ -44,7 +43,6 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   userDataDirectory: string;
   credentialCodec?: AutomationCredentialCodec | null;
   startUrl?: string;
-  browserEngine?: "chromium" | "firefox";
   browserProfile?: AppWorkflowBrowserProfile;
   browserRuntime?: BrowserRuntime;
   onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
@@ -391,14 +389,7 @@ export function createAppWorkflowBrowserPort(
   const credentialCodec = input.credentialCodec === undefined
     ? getAutomationCredentialCodec()
     : input.credentialCodec;
-  const browserEngine = input.browserEngine ?? "chromium";
-  if (input.browserProfile && browserEngine !== "chromium") {
-    throw new BrowserRuntimeConfigurationError("profile-requires-chromium");
-  }
-  const launch = input.launchPersistentContext ?? (browserEngine === "firefox"
-    ? (directory: string, options: AppWorkflowBrowserLaunchOptions) =>
-        firefox.launchPersistentContext(directory, { ...options, headless: true })
-    : defaultPersistentContext);
+  const launch = input.launchPersistentContext ?? defaultPersistentContext;
   const runtime = input.browserRuntime ?? browserRuntime;
 
   return {
@@ -423,8 +414,8 @@ export function createAppWorkflowBrowserPort(
         await ensureDirectory(browserRuntimeDirectory);
         context = await launch(browserRuntimeDirectory, {
           ...launchOptions,
-          args: browserEngine === "firefox" ? [] : [...launchOptions.args, ...profileConfiguration.args],
-          ...(browserEngine === "chromium" ? { userAgent: profileConfiguration.userAgent } : {}),
+          args: [...launchOptions.args, ...profileConfiguration.args],
+          userAgent: profileConfiguration.userAgent,
         });
         input.signal.throwIfAborted();
         const page = context.pages()[0] ?? await context.newPage();
@@ -437,14 +428,12 @@ export function createAppWorkflowBrowserPort(
           }
         }
         let connection: AppWorkflowBrowserConnection | null = null;
-        const endpoint = browserEngine === "chromium"
-          ? await loopbackDevToolsEndpoint(
-              browserRuntimeDirectory,
-              input.signal,
-              !input.launchPersistentContext,
-            )
-          : null;
-        if (!endpoint && !input.launchPersistentContext && browserEngine === "chromium") {
+        const endpoint = await loopbackDevToolsEndpoint(
+          browserRuntimeDirectory,
+          input.signal,
+          !input.launchPersistentContext,
+        );
+        if (!endpoint && !input.launchPersistentContext) {
           throw new Error("The App browser did not expose its required loopback worker endpoint.");
         }
         if (endpoint) {

@@ -1,6 +1,6 @@
 # Browser Runtime design interview
 
-Status: design accepted; implementation and migration acceptance remain pending.
+Status: design accepted; App implementation and live source acceptance complete; packaged App acceptance pending.
 
 ## Requested outcome
 
@@ -29,11 +29,15 @@ Fresh, credential-free E-Invoice login-entry probes produced:
 
 The final comparison crossed the real App browser module and changed only User-Agent, with all contexts fresh. Interleaved default/custom/custom/default runs returned 403/200/200/403. The normal Chrome User-Agent retained the actual Chromium 151 version. This establishes the configuration difference responsible for this reproducible entry failure; it does not reveal the remote challenge system's internal policy.
 
-Chromium login-form visibility is not complete workflow acceptance. Authentication, CAPTCHA solving, collection, validation, commit, cancellation, worker supervision, and artifact cleanup still require verification before removing the Firefox implementation.
+### Pre-migration inspection — 2026-09-29
 
-The App's latest E-Invoice run observed through CDP was completed under the existing Firefox route. That route uses the App main process because Firefox does not expose the Chromium CDP connection used by supervised workers.
+Before the migration, the latest E-Invoice run observed through CDP completed under the inline Firefox route. Firefox did not expose the Chromium CDP connection used by supervised workers, which is why E-Invoice was temporarily owned by the App main process. The old installer also installed full Chromium, headless shell, and Firefox; this was the pre-migration package state, not the final architecture.
 
-Local unpacked browser directories measured approximately 356 MiB for full Chromium, 196 MiB for Chromium headless shell, and 282 MiB for Firefox. These are local directory sizes, not compressed installer-size estimates. The current install command installs both Chromium variants and Firefox; production Chromium launches use headless shell.
+After correcting the default User-Agent and completing the shared Chromium worker path, all eleven browser workflows passed live App collection, validation, and Canonical Financial Commit. E-Invoice passed twice, with both runs committing 328 of 328 records. Sanitized run IDs and outcomes are in the [live source acceptance table](app-owned-workflow-runtime.md#live-source-acceptance). Packaged-App payload and worker-fixture acceptance remain pending.
+
+E-Invoice now uses the common headless Chromium worker and its CDP viewer path. The earlier Firefox route and inline main-process exception have been removed after live acceptance.
+
+Local unpacked browser directories measured approximately 356 MiB for full Chromium, 196 MiB for Chromium headless shell, and 282 MiB for Firefox. These are local directory sizes, not compressed installer-size estimates. The production browser installer now requests Chromium headless shell only and prunes stale local full-Chromium and Firefox payloads; an actual packaged-App build and worker fixture smoke remain to verify the shipped contents.
 
 ## Design tree
 
@@ -49,20 +53,20 @@ Local unpacked browser directories measured approximately 356 MiB for full Chrom
 - Q3: a run uses its selected profile and fails explicitly for an unsupported source-access challenge or incompatible configuration. It does not automatically rotate profiles or User-Agents. Existing declared CAPTCHA retry contracts remain unchanged.
 - Q4: the production App ships only Chromium headless shell. Full Chromium is installed separately for developer use. Packaging explicitly excludes leftover full Chromium and Firefox directories rather than relying only on the installation command.
 - Q5: initially support only observed User-Agent strategies, tested Chromium compatibility switches, and cookie retention/source-domain reset policies. New source needs require evidence before extending the controlled settings. Headless execution, the single engine, artifact restrictions, and worker supervision remain module-owned invariants.
-- Q6: require one complete App run for each of the eleven browser sources and an additional E-Invoice repeat run. A temporarily unavailable external source remains pending acceptance; fixture checks do not substitute for its live acceptance.
+- Q6: require one complete App run for each of the eleven browser sources and an additional E-Invoice repeat run. This live gate passed on 2026-09-29; fixture checks remain separate from live acceptance.
 - Q7: run summaries retain profile ID/revision, Chromium version, and sanitized failure code, without full User-Agent, raw flags, cookies, or network responses. Existing operational event retention remains 30 days.
 - Q8: the App and `workflow:dev` share Browser Runtime profile resolution and defaults. Only development mode permits headed/headless selection; live-source opt-in and dry-run financial commit remain unchanged.
-- Q9: after development-App live acceptance, verify the packaged App with local fixtures for workers, bundled headless shell, profile application, cancellation, and cleanup, and confirm the absence of full Chromium/Firefox. Do not repeat all real-source logins solely for packaging acceptance.
+- Q9: after development-App live acceptance, verify the packaged App with local fixtures for workers, bundled headless shell, profile application, cancellation, and cleanup, and confirm the absence of full Chromium/Firefox. This package gate remains pending. Do not repeat all real-source logins solely for packaging acceptance.
 
 ### Round 1 — settled
 
 All three decisions are captured above.
 
-### Additional facts
+### Pre-migration additional facts — 2026-09-29
 
-The development `workflow:dev` CLI deliberately uses headed Chromium. Its developer runtime need does not require shipping full Chromium in the production App. Package preparation currently does not prune previously installed browser directories, so changing the install command alone would not reliably exclude leftover full Chromium or Firefox.
+The development `workflow:dev` CLI deliberately uses headed Chromium. Its developer runtime need does not require shipping full Chromium in the production App. Before this migration, package preparation did not prune previously installed browser directories, so changing the install command alone would not reliably exclude leftover full Chromium or Firefox.
 
-Browser choices currently live in the host, catalog, and execution dispatcher. The E-Invoice exception forces inline execution; routing it through the common Chromium worker requires removing this exception as well as the Firefox launch implementation.
+Before this migration, browser choices lived in the host, catalog, and execution dispatcher. The E-Invoice exception forced inline execution; routing it through the common Chromium worker required removing this exception as well as the Firefox launch implementation.
 
 ### Round 2 — settled
 
@@ -74,15 +78,15 @@ All three decisions are captured above.
 
 ### Final confirmation
 
-The user confirmed the complete design on 2026-09-29. Production implementation may proceed under the agreed sequence below; implementation acceptance remains open until its evidence gates pass.
+The user confirmed the complete design on 2026-09-29. The App implementation and all required live source runs completed on 2026-09-29. Packaged-App acceptance remains open until the actual package contains only the selected browser payload and passes the local worker fixture.
 
 ## Intended implementation sequence
 
 Preserve the user's existing one-commit-per-phase requirement:
 
-1. Record the confirmed design and vocabulary. Introduce the deep runtime module, shared defaults, controlled/versioned profiles, and diagnostic identification; wire App and developer composition through the same resolution. Retain `WorkflowBrowserPort.withPage(...)` as the provider interface and verify it through deterministic tests.
-2. Move E-Invoice to Chromium headless shell and the common supervised worker path. Complete authentication, source collection, validation, and Canonical Financial Commit twice. Remove Firefox launch support and the E-Invoice inline exception after acceptance; do not keep a compatibility fallback.
-3. Verify one complete App run for each remaining browser source, correcting explicit profiles if evidence requires it. Change package installation and payload selection to shell-only, document separate developer installation, and run the packaged App fixture acceptance. Remove obsolete browser-specific code, tests, documentation, and dependencies. Mark overall acceptance complete only when every required gate passes.
+1. **Complete.** Record the confirmed design and vocabulary; introduce the deep runtime module, shared defaults, controlled/versioned profiles, and diagnostic identification; wire App and developer composition through the same resolution. Retain `WorkflowBrowserPort.withPage(...)` as the provider interface and verify it through deterministic tests.
+2. **Complete.** E-Invoice uses Chromium headless shell and the common supervised worker path. Two complete live runs passed authentication, source collection, validation, and Canonical Financial Commit; Firefox launch support and the inline E-Invoice exception were removed without a compatibility fallback.
+3. **Live-source portion complete; packaging pending.** All eleven browser sources passed a complete App run. The shell-only installer and deterministic payload exclusions are implemented, separate developer installation is documented, and the packaged App fixture harness is ready. Build the actual package and run the worker/profile/cancellation/cleanup fixture before marking overall acceptance complete.
 
 No runtime fallback to an alternative engine or profile is introduced during migration. Source access failures remain explicit; an unavailable external source is reported and left pending acceptance.
 
@@ -100,10 +104,10 @@ No runtime fallback to an alternative engine or profile is introduced during mig
 ## Acceptance evidence
 
 - Deterministic checks: profile/default resolution, User-Agent version derivation, supported overrides, configuration rejection, cookie-domain isolation, identical App/developer resolution, worker/viewer ownership, cancellation, and cleanup.
-- Live App: all eleven browser sources complete collection, validation, and financial commit under the selected profile; E-Invoice completes twice. Record sanitized run outcomes as evidence without retaining source files or raw responses.
+- Live App: all eleven browser sources completed collection, validation, and financial commit under the selected profile; E-Invoice completed twice, with 328 of 328 records committed in each run. See the [sanitized run table](app-owned-workflow-runtime.md#live-source-acceptance).
 - Packaged App: confirm only the intended browser payload is included and launch the actual packaged browser through the actual worker path using local fixtures; verify profile identification, cancellation, and cleanup.
 - Final repository gates: required checks, typecheck, clean temporary diagnostics, updated runtime/developer/package documentation, and phase commits. Fixture success never substitutes for an outstanding live-source gate.
 
 ## Documentation work
 
-Update ADR 0032's Firefox exception only after a replacement has passed acceptance. Record the final architectural choice in a new ADR. Add project-specific profile terminology to `CONTEXT.md` when its meaning is agreed; general programming terms and launch implementation details do not belong in that glossary.
+ADR 0032's Firefox exception was removed after the replacement passed live acceptance. This decision is recorded in ADR 0033, and the agreed profile terminology is in `CONTEXT.md`; the packaged-App gate remains pending.

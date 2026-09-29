@@ -32,7 +32,6 @@ export type BrowserRuntime = Readonly<{
 
 export type BrowserRuntimeConfigurationErrorCode =
   | "unsupported-profile"
-  | "profile-requires-chromium"
   | "chromium-version-unavailable"
   | "unsupported-platform";
 
