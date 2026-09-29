@@ -51,7 +51,9 @@ On 2026-09-29, all eleven browser workflows completed live App runs through the 
 | E-Invoice — first run | `1cc30e3d-e102-4677-a0b0-ec36ca83cec9` | Commit completed: 328 of 328 records |
 | E-Invoice — repeat run | `c213ae4f-a92f-4194-b7e5-758d1c2d6444` | Commit completed: 328 of 328 records |
 
-This table records live App evidence, not a guarantee that an external site's future behavior will remain unchanged. Packaged-App browser payload and worker-fixture acceptance remains pending.
+This table records live App evidence, not a guarantee that an external site's future behavior will remain unchanged.
+
+On 2026-09-29, the packaged macOS arm64 App passed the local browser smoke. The packaged payload contained only the manifest-selected Chromium headless shell and FFmpeg directories. A host-Node check loaded Playwright from the packaged app root and launched the actual shell executable inside the packaged browser root; the normal packaged Electron launch then completed one fixture workflow and cancelled a second through the App worker without an injected `PLAYWRIGHT_BROWSERS_PATH`. Both runs reported profile `default` revision 1 and Chromium 151.0.7922.34 matching the live browser and navigator versions. Browser context, host page, temporary profile, and isolated user-data root were removed, and the persisted fixture records passed the sanitization check. This verifies the macOS arm64 artifact only; other OS package targets were not built.
 
 ## Source, files, and failure rules
 

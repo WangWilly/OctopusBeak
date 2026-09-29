@@ -27,7 +27,10 @@ assert.match(
   /hasOccurrenceBeenAttempted:\s*\(occurrenceUtc\)\s*=>\s*operationalRuntime\.provider\.automation\.hasOccurrenceBeenAttempted\(\s*"exchange-rates",\s*occurrenceUtc,?\s*\)/,
 );
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
-assert.match(source, /if \(!cdpFixture\)/);
+assert.match(source, /if \(!cdpFixture && !packagedBrowserFixture\)/);
+assert.match(source, /const packagedBrowserFixture = packagedBrowserFixtureEnabled\(process\.env\)/);
+assert.match(source, /runPackagedBrowserWorkerFixture\(\s*operationalRuntime\.provider,\s*userData,\s*process\.env,\s*\)/);
+assert.match(source, /PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX/);
 assert.doesNotMatch(
   source,
   /openLedgerDatabase|migrateLedgerBeforeWindow|initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/,

@@ -106,6 +106,13 @@ try {
     },
   });
   assert.doesNotMatch(safeOutcome?.recordJson ?? "", /sensitive-account-number|must-not-persist/u);
+  const browserRuntime = {
+    profileId: "default",
+    profileRevision: 1,
+    chromiumVersion: "151.0.7922.34",
+  } as const;
+  await operational.updateTaskRun(created.taskRunId, { browserRuntime });
+  assert.deepEqual((await operational.taskRunById(created.taskRunId))?.browserRuntime, browserRuntime);
   await operational.appendRunEvent({
     runId: created.taskRunId,
     stage: "validation",
@@ -239,6 +246,11 @@ try {
     (await operational.recentTaskRuns(5)).find((run) => run.taskRunId === created.taskRunId)
       ?.appWorkflowOutcome,
     safeOutcome?.appWorkflowOutcome,
+  );
+  assert.deepEqual(
+    (await operational.recentTaskRuns(5)).find((run) => run.taskRunId === created.taskRunId)
+      ?.browserRuntime,
+    browserRuntime,
   );
 
   await operational.upsertTaskPrerequisiteNotice({

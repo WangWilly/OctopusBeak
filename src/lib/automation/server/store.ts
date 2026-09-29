@@ -48,6 +48,7 @@ export type AutomationTaskHistoryRow = Pick<
   | "finishedAt"
   | "exitCode"
   | "signal"
+  | "browserRuntime"
 > & {
   /** Null for legacy runs without an App typed outcome. */
   appWorkflowOutcome: TypedWorkflowOutcome | null;

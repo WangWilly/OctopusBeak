@@ -1,5 +1,6 @@
 const { existsSync, statSync } = require("node:fs");
 const { join } = require("node:path");
+const { packagedBrowserArtifactIgnore } = require("./scripts/desktop-browser-payload.cjs");
 
 const shouldSign = process.env.OCTOPUSBEAK_SIGN === "1";
 const notaryProfile = process.env.OCTOPUSBEAK_NOTARY_PROFILE || "OctopusBeakNotary";
@@ -39,6 +40,7 @@ module.exports = {
       /^\/site($|\/)/,
       /^\/data\/(?!google-oauth(?:$|\/))/,
       /^\/data\/google-oauth\/(?!google-oauth-desktop-client\.json$)/,
+      packagedBrowserArtifactIgnore,
       /^\/docs($|\/)/,
       /^\/downloads($|\/)/,
       /^\/playground($|\/)/,

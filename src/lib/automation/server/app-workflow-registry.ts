@@ -30,6 +30,12 @@ import {
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import type { AppWorkflowBrowserProfile } from "./app-browser-host.ts";
+import {
+  PACKAGED_BROWSER_FIXTURE_TASKS,
+  packagedBrowserFixtureDefinition,
+  packagedBrowserFixtureEnabled,
+  packagedBrowserFixtureStartUrl,
+} from "./packaged-browser-fixture.ts";
 
 type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
@@ -115,7 +121,7 @@ const yuantaTradeStatementsWorkflow: WorkflowDefinition<
 };
 
 /** One registration catalog for workflows activated on the App executor. */
-export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
+const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   {
     definition: createExchangeRateWorkflow(
       async () => { throw new Error("Exchange-rate service is unavailable."); },
@@ -316,6 +322,23 @@ export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = [
     },
   },
 ];
+
+export function appWorkflowCatalogForEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): readonly AppWorkflowRegistration[] {
+  const packagedBrowserFixtureRegistrations: readonly AppWorkflowRegistration[] =
+    packagedBrowserFixtureEnabled(environment)
+    ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
+      definition: packagedBrowserFixtureDefinition(workflowId),
+      startUrl: packagedBrowserFixtureStartUrl(environment),
+      inputFromEnvironment() { return null; },
+    }))
+    : [];
+  return [...appWorkflowCatalog, ...packagedBrowserFixtureRegistrations];
+}
+
+/** Test-only local workflow registrations are absent during ordinary App startup. */
+export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = appWorkflowCatalogForEnvironment();
 
 export const APP_WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] =
   APP_WORKFLOW_CATALOG.map(({ definition }) => definition);
