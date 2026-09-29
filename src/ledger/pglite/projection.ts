@@ -1080,6 +1080,14 @@ export async function refreshPGliteCurrentProjectionInTransaction(
 ): Promise<void> {
   if (!Number.isSafeInteger(context.cutoffSequence) || context.cutoffSequence < 0)
     throw new Error("PGlite projection cutoff must be a non-negative safe integer.");
+  // Keep planner statistics current at the source-commit boundary. Imports
+  // append lifecycle and enrichment history in bursts;
+  // stale estimates can turn these joins into minutes of nested-loop scans.
+  // Analyze the selector tables inside the owning transaction, before planning
+  // projections. This changes optimizer metadata, not canonical facts.
+  await query(transaction, `ANALYZE canonical_commits, transaction_revisions,
+    assertions, assertion_transitions, enrichment_run_outputs, enrichment_runs,
+    enrichment_taxonomy_assertion_values, automatic_enrichment_authority_routes`);
   const generationId = await ensureActiveGeneration(transaction, context);
   const affected = await resolveAffectedTransactionIds(transaction, context);
   const affectedAccounts = await resolveAffectedAccountIds(transaction, context, affected);
