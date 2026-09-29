@@ -74,7 +74,7 @@ const delayedAccountSnapshotPage = {
       headers: accountSnapshotHeaders,
     };
   },
-} as never;
+};
 
 const OriginalDate = Date;
 class SequencedDate extends OriginalDate {
@@ -95,7 +95,7 @@ SequencedDate.noArgumentValues = [
 ];
 globalThis.Date = SequencedDate as unknown as DateConstructor;
 try {
-  const snapshot = await new LineBankApiClient(delayedAccountSnapshotPage, {
+  const snapshot = await new LineBankApiClient(delayedAccountSnapshotPage as never, {
     text: strictSourceText,
   }).fetchAccountSnapshot();
   assert.equal(snapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
@@ -103,11 +103,24 @@ try {
   globalThis.Date = OriginalDate;
 }
 
+let snapshotClock = "1970-01-01T10:00:00.000Z";
+const workflowClockPage = {
+  async evaluate(...args: Parameters<typeof delayedAccountSnapshotPage.evaluate>) {
+    const response = await delayedAccountSnapshotPage.evaluate(...args);
+    snapshotClock = "1970-01-01T10:00:02.000Z";
+    return response;
+  },
+} as never;
+const workflowSnapshot = await new LineBankApiClient(workflowClockPage, {
+  text: strictSourceText,
+}).fetchAccountSnapshot(() => snapshotClock);
+assert.equal(workflowSnapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
+
 await assert.rejects(
   () =>
-    new LineBankApiClient(delayedAccountSnapshotPage, {
+    new LineBankApiClient(delayedAccountSnapshotPage as never, {
       text: strictSourceText,
-    }).fetchAccountSnapshot("1970-01-01T10:00:00.000Z"),
+    }).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z"),
   /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
 );
 
