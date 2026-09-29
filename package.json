@@ -18,6 +18,7 @@
     "test:ci": "node scripts/run-test-lane.mjs ci",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
+    "prebuild:electron": "svelte-kit sync",
     "build:electron": "vite build --config electron.vite.config.ts",
     "site:dev": "vite site --host 127.0.0.1 --port 4173",
     "preview": "vite preview",
