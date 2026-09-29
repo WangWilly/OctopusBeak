@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../lib/automation/post-captcha.ts";
 import type { Dialog, Locator, Page, Response } from "playwright";
 import { z } from "zod";
@@ -291,9 +292,8 @@ const postLoginDialogError = () =>
  * iPost may optionally open a browser dialog immediately after the click. A
  * Playwright dialog blocks the page until it is handled, so keep the handler
  * scoped to this login attempt and race it against the normal success probe.
- * The dialog is intentionally not classified as a CAPTCHA rejection here:
- * the first version only prevents the browser session from hanging and lets
- * the caller report a normal login failure.
+ * Only the observed exact CAPTCHA rejection enters the finite campaign;
+ * all other dialogs remain terminal without persisting provider messages.
  */
 export async function runPostLoginAttempt(
   page: Page,
@@ -313,17 +313,25 @@ export async function runPostLoginAttempt(
     } catch {
       // Keep dialog cleanup fail-closed if the browser closes it concurrently.
     }
+    let rejection: Error = postLoginDialogError();
+    try {
+      if (type === "alert" && dialog.message().trim() === "圖形驗證錯誤") {
+        rejection = new CaptchaProviderRejectedError();
+      }
+    } catch {
+      // An unreadable or unfamiliar dialog never authorizes a retry.
+    }
     if (onDialog) {
       void Promise.resolve(onDialog(type)).catch(() => undefined);
     }
     void dialog.dismiss().then(
       () => {
         probeAbortController.abort();
-        rejectDialog(postLoginDialogError());
+        rejectDialog(rejection);
       },
       () => {
         probeAbortController.abort();
-        rejectDialog(postLoginDialogError());
+        rejectDialog(rejection);
       },
     );
   };

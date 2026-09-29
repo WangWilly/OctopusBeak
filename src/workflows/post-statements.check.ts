@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { EventEmitter } from "node:events";
 import { chromium } from "playwright";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
@@ -180,6 +181,20 @@ assert.equal(fakeProbeStarted, true);
 assert.equal(fakeProbeSettled, true);
 assert.equal(fakeDialogDismissed, true);
 assert.equal(fakeDialogPage.listenerCount("dialog"), 0);
+
+for (const message of ["圖形驗證錯誤", " 帳號或密碼錯誤 ", "圖形驗證錯誤，帳號已鎖定"]) {
+  const page = new FakeDialogPage();
+  await assert.rejects(runPostLoginAttempt(page as never, {
+    submit: async () => {
+      page.emit("dialog", { type: () => "alert", message: () => message, dismiss: async () => undefined });
+    },
+    waitForSuccess: () => new Promise<void>(() => undefined),
+  }), (error: unknown) => {
+    assert.equal(error instanceof CaptchaProviderRejectedError, message === "圖形驗證錯誤");
+    return true;
+  });
+  assert.equal(page.listenerCount("dialog"), 0);
+}
 
 const fakeSuccessPage = new FakeDialogPage();
 let fakeSuccessSubmitted = false;
