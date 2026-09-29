@@ -10,6 +10,7 @@ import {
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
+import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
 
@@ -33,6 +34,8 @@ export type AutomationTaskRun = {
   appWorkflowOutcome?: TypedWorkflowOutcome | null;
   /** Canonical schedule occurrence identity, persisted in record_json. */
   scheduledAtUtc?: string;
+  /** Sanitized browser runtime identity, persisted independently of workflow summary. */
+  browserRuntime?: BrowserRuntimeIdentity;
 };
 
 export type AutomationTaskHistoryRow = Pick<
@@ -147,6 +150,7 @@ export type AutomationTaskRunUpdate = Partial<
     | "terminationMode"
     | "humanAssistanceContract"
     | "appWorkflowOutcome"
+    | "browserRuntime"
   >
 >;
 

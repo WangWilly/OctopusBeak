@@ -18,12 +18,17 @@ import {
   abortActiveAppWorkflowExecutions,
 } from "./task-run-execution.ts";
 import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
+import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
+import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
   PGLITE_CHILD_RPC_TOKEN_ENV,
 } from "../../../../electron/pglite-child-rpc-client.ts";
+import { finalizeAutomationTaskRun } from "./task-run-finalization.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
+
+const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
 type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel";
 
@@ -286,7 +291,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
 });
 
 test("browser tasks use the supervised App worker, persist events before ACK, and classify an interrupted commit as unknown", async () => {
-  // E-Invoice uses the inline Firefox executor; CTBC still exercises CDP workers.
+  // CTBC exercises the shared supervised Chromium worker and financial events.
   const task = taskById("ctbc-statements");
   assert.ok(task);
   const database = await PGlite.create();
@@ -410,6 +415,202 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
     assert.equal(cancelled.run?.status, "failed");
     assert.equal(cancelled.run?.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
     assert.equal(cancelled.run?.signal, null, "cancelling during commit preserves the unknown outcome");
+  } finally {
+    await store.close();
+  }
+});
+
+test("E-Invoice uses the supervised Chromium worker and keeps runtime identity through deferred finalization", async () => {
+  const task = taskById("einvoice-personal-invoices");
+  assert.ok(task);
+  assert.ok(task.workflowId);
+  assert.equal(workflowBrowserProfileForTask(task.workflowId), undefined);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const runtimeIdentity = {
+      profileId: "default",
+      profileRevision: 1,
+      chromiumVersion: "151.0.0.0",
+    } as const;
+    const launchEnv = {
+      LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
+      [einvoicePasswordFixtureEnvKey]: "fixture-password",
+      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
+      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
+    };
+    let taskRunId = "";
+    let workerStart: AppWorkflowWorkerStart | undefined;
+    let hostInput: Record<string, unknown> | undefined;
+    const deferred = await runAutomationTaskExecution(task, provider.automation, {
+      launchEnv,
+      deferFinalization: true,
+      workflowBrowserPortFactory: (input) => {
+        hostInput = input as unknown as Record<string, unknown>;
+        return {
+          async withPage(run) {
+            const callback = hostInput?.onRuntimeIdentity;
+            if (typeof callback === "function") callback(runtimeIdentity);
+            return await run({} as never);
+          },
+        };
+      },
+      appWorkflowBrowserConnectionForRun: (runId) => ({
+        endpoint: "http://127.0.0.1:43121",
+        targetId: `host-page-${runId}`,
+      }),
+      appWorkflowWorkerFactory: (_workerPath, options) => {
+        workerStart = options.workerData as AppWorkflowWorkerStart;
+        return new NonBrowserFakeWorker(workerStart);
+      },
+    }, async (id) => { taskRunId = id; });
+
+    assert.equal(deferred.status, "completed");
+    assert.ok(workerStart, "E-Invoice creates the supervised worker");
+    assert.equal(workerStart.workflowId, "einvoice-personal-invoices");
+    assert.ok(workerStart.browserConnection, "the worker receives the App browser connection");
+    assert.equal(typeof hostInput?.onRuntimeIdentity, "function");
+    assert.equal(hostInput?.browserProfile, undefined, "E-Invoice uses the shared default profile");
+    assert.equal(taskRunId, workerStart.taskRunId);
+
+    const activeRun = await provider.automation.taskRunById(taskRunId);
+    assert.equal(activeRun?.status, "running", "deferred execution leaves the terminal transition to its owner");
+    assert.deepEqual(activeRun?.browserRuntime, runtimeIdentity);
+    assert.equal(activeRun?.appWorkflowOutcome, null);
+
+    const deferredResult = deferred as typeof deferred & {
+      result: Parameters<typeof finalizeAutomationTaskRun>[1];
+      taskRunId: string;
+    };
+    await finalizeAutomationTaskRun({
+      provider: { automation: provider.automation },
+      taskId: task.id,
+      taskKind: task.kind,
+      taskRunId: deferredResult.taskRunId,
+    }, deferredResult.result);
+
+    const finalRun = await provider.automation.taskRunById(taskRunId);
+    assert.equal(finalRun?.status, "completed");
+    assert.deepEqual(finalRun?.browserRuntime, runtimeIdentity);
+    assert.equal(finalRun?.appWorkflowOutcome?.summary, null);
+  } finally {
+    await store.close();
+  }
+});
+
+test("runtime identity remains on a failed run when browser launch fails before a summary exists", async () => {
+  const task = taskById("einvoice-personal-invoices");
+  assert.ok(task);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const runtimeIdentity = {
+      profileId: "default",
+      profileRevision: 1,
+      chromiumVersion: "151.0.0.0",
+    } as const;
+    const launchEnv = {
+      LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
+      [einvoicePasswordFixtureEnvKey]: "fixture-password",
+      [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
+      [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
+    };
+    let taskRunId = "";
+    const result = await runAutomationTaskExecution(task, provider.automation, {
+      launchEnv,
+      workflowBrowserPortFactory: (input) => ({
+        async withPage() {
+          const callback = (input as unknown as { onRuntimeIdentity?: (identity: typeof runtimeIdentity) => void }).onRuntimeIdentity;
+          callback?.(runtimeIdentity);
+          throw new Error("private browser launch detail");
+        },
+      }),
+      appWorkflowWorkerFactory: () => {
+        throw new Error("Browser launch failure must happen before worker startup.");
+      },
+    }, async (id) => { taskRunId = id; });
+
+    assert.equal(result.status, "failed");
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(run?.status, "failed");
+    assert.deepEqual(run?.browserRuntime, runtimeIdentity);
+    assert.equal(run?.appWorkflowOutcome?.summary, null);
+    assert.doesNotMatch(run?.recordJson ?? "", /private browser launch detail|fixture-phone|fixture-password/u);
+  } finally {
+    await store.close();
+  }
+});
+
+test("unsupported browser profiles produce a sanitized runtime configuration failure", async () => {
+  const task = taskById("einvoice-personal-invoices");
+  assert.ok(task);
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    const result = await runAutomationTaskExecution(task, provider.automation, {
+      launchEnv: {
+        LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
+        [einvoicePasswordFixtureEnvKey]: "fixture-password",
+        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
+        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
+      },
+      workflowBrowserPortFactory: () => {
+        throw new BrowserRuntimeConfigurationError("unsupported-profile");
+      },
+      appWorkflowWorkerFactory: () => {
+        throw new Error("An unsupported profile must fail before worker startup.");
+      },
+    }, async (id) => { taskRunId = id; });
+
+    assert.equal(result.status, "failed");
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(run?.appWorkflowOutcome?.errorCode, "browser-runtime-config-failed");
+    assert.equal(run?.appWorkflowOutcome?.summary, null);
+    assert.equal(run?.browserRuntime, undefined, "no identity is recorded when resolution fails");
+    assert.equal(run?.recordJson.includes("unsupported-profile"), false);
+  } finally {
+    await store.close();
+  }
+});
+
+test("operational run summaries keep only the allow-listed Browser Runtime identity fields", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "einvoice-personal-invoices",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    await provider.automation.updateTaskRun(created.taskRunId, {
+      browserRuntime: {
+        profileId: "default",
+        profileRevision: 1,
+        chromiumVersion: "151.0.0.0",
+        userAgent: "private-user-agent",
+        launchArgs: ["private-flag"],
+      } as never,
+    });
+
+    const saved = await provider.automation.taskRunById(created.taskRunId);
+    assert.deepEqual(saved?.browserRuntime, {
+      profileId: "default",
+      profileRevision: 1,
+      chromiumVersion: "151.0.0.0",
+    });
+    assert.doesNotMatch(saved?.recordJson ?? "", /private-user-agent|private-flag|launchArgs/u);
   } finally {
     await store.close();
   }

@@ -6,6 +6,10 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
 import {
+  BrowserRuntimeConfigurationError,
+  createBrowserRuntime,
+} from "./browser-runtime.ts";
+import {
   appWorkflowBrowserConnectionForSession,
   appWorkflowPageForSession,
   createAppWorkflowBrowserPort,
@@ -45,6 +49,12 @@ test("E.SUN App execution starts without stale E.SUN session cookies", () => {
 test("CTBC headless profile adds only the verified browser compatibility flag", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctbc-browser-profile-"));
   const observed: string[][] = [];
+  const userAgents: string[] = [];
+  const identities: unknown[] = [];
+  const runtime = createBrowserRuntime({
+    getChromiumVersion: async () => "151.0.7922.34",
+    platform: "darwin",
+  });
   try {
     for (const browserProfile of [undefined, "ctbc-login"] as const) {
       await createAppWorkflowBrowserPort({
@@ -53,9 +63,12 @@ test("CTBC headless profile adds only the verified browser compatibility flag", 
         signal: new AbortController().signal,
         userDataDirectory: root,
         credentialCodec: null,
+        browserRuntime: runtime,
+        onRuntimeIdentity: (identity) => identities.push(identity),
         ...(browserProfile ? { browserProfile } : {}),
         launchPersistentContext: async (_directory, options) => {
           observed.push(options.args);
+          userAgents.push(options.userAgent ?? "");
           return { pages: () => [{}], close: async () => {} } as never;
         },
       }).withPage(async () => undefined);
@@ -64,6 +77,71 @@ test("CTBC headless profile adds only the verified browser compatibility flag", 
     assert.equal(observed[0].includes("--disable-blink-features=AutomationControlled"), false);
     assert.equal(observed[1].includes("--disable-blink-features=AutomationControlled"), true);
     assert.equal(observed[1].filter((arg) => arg === "--disable-blink-features=AutomationControlled").length, 1);
+    assert.equal(userAgents[0], userAgents[1]);
+    assert.match(userAgents[0], /Chrome\/151\.0\.7922\.34/u);
+    assert.deepEqual(identities, [
+      { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+      { profileId: "ctbc-login", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("App runtime identity is available before browser launch fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-runtime-launch-fail-"));
+  const identities: unknown[] = [];
+  try {
+    const port = createAppWorkflowBrowserPort({
+      taskId: "browser-runtime-launch-fail",
+      taskRunId: "run-browser-runtime-launch-fail",
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserRuntime: createBrowserRuntime({
+        getChromiumVersion: async () => "151.0.7922.34",
+        platform: "darwin",
+      }),
+      onRuntimeIdentity: (identity) => identities.push(identity),
+      launchPersistentContext: async () => { throw new Error("synthetic launch failure"); },
+    });
+
+    await assert.rejects(port.withPage(async () => undefined), /synthetic launch failure/u);
+    assert.deepEqual(identities, [
+      { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unsupported App browser profiles fail before launch with a sanitized code", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-runtime-unsupported-"));
+  let launchCalls = 0;
+  let identityCalls = 0;
+  try {
+    const port = createAppWorkflowBrowserPort({
+      taskId: "browser-runtime-unsupported",
+      taskRunId: "run-browser-runtime-unsupported",
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserProfile: "future-login" as never,
+      onRuntimeIdentity: () => { identityCalls += 1; },
+      launchPersistentContext: async () => {
+        launchCalls += 1;
+        throw new Error("launch should not run");
+      },
+    });
+
+    await assert.rejects(port.withPage(async () => undefined), (error: unknown) => {
+      assert.ok(error instanceof BrowserRuntimeConfigurationError);
+      assert.equal(error.code, "unsupported-profile");
+      assert.equal(error.message, "browser-runtime/unsupported-profile");
+      return true;
+    });
+    assert.equal(launchCalls, 0);
+    assert.equal(identityCalls, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

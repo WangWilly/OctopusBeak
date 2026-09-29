@@ -7,6 +7,11 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, type Browser, type Page } from "playwright";
 import {
+  browserRuntime,
+  type BrowserRuntime,
+  type BrowserRuntimeProfileId,
+} from "../src/lib/automation/server/browser-runtime.ts";
+import {
   createWorkflowExecutor,
   type WorkflowDefinition,
   type WorkflowExecutorPorts,
@@ -16,6 +21,7 @@ import {
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
 import {
   APP_WORKFLOW_DEFINITIONS,
+  workflowBrowserProfileForTask,
   workflowDefinitionForTask,
   workflowInputForTask,
   workflowStartUrlForTask,
@@ -47,11 +53,11 @@ function helpText() {
     "  npm run workflow:dev -- list",
     "  npm run workflow:dev -- validate <module.ts> <exportName> [--input-env JSON_ENV_NAME]",
     "  npm run workflow:dev -- fixture",
-    "  npm run workflow:dev -- inspect <url> [--allow-live-source]",
-    "  npm run workflow:dev -- run <module.ts> <exportName> --input-env JSON_ENV_NAME [--start-url URL] --allow-live-source",
-    "  npm run workflow:dev -- run-app <workflow-id> --allow-live-source",
+    "  npm run workflow:dev -- inspect <url> [--headless] [--browser-profile PROFILE] [--allow-live-source]",
+    "  npm run workflow:dev -- run <module.ts> <exportName> --input-env JSON_ENV_NAME [--start-url URL] [--headless] [--browser-profile PROFILE] --allow-live-source",
+    "  npm run workflow:dev -- run-app <workflow-id> [--headless] [--browser-profile PROFILE] --allow-live-source",
     "",
-    "Production collection starts in the desktop App. CLI runs use an ephemeral visible browser and a dry-run financial commit port; they never write to the financial database or save workflow files.",
+    "Production collection starts in the desktop App. CLI runs use an ephemeral browser and a dry-run financial commit port; they never write to the financial database or save workflow files.",
   ].join("\n");
 }
 
@@ -122,7 +128,7 @@ function validateFlags(args: readonly string[], allowed: readonly string[]) {
     const flag = args[index];
     if (!flag?.startsWith("--") || !allowedSet.has(flag) || seen.has(flag)) fail("usage");
     seen.add(flag);
-    if (flag === "--input-env" || flag === "--start-url") {
+    if (flag === "--input-env" || flag === "--start-url" || flag === "--browser-profile") {
       if (!args[index + 1] || args[index + 1]?.startsWith("--")) fail("usage");
       index += 1;
     }
@@ -170,17 +176,32 @@ export function createDryRunFinancialCommitPort(
 export function createDevelopmentBrowserPort(
   signal: AbortSignal,
   startUrl?: string,
-  launch: () => Promise<Browser> = () => chromium.launch({ headless: false }),
+  launch: (options: Readonly<{ headless: boolean; args: string[] }>) => Promise<Browser> = (options) =>
+    chromium.launch(options),
+  options: Readonly<{
+    headless?: boolean;
+    profile?: BrowserRuntimeProfileId;
+    runtime?: BrowserRuntime;
+  }> = {},
 ): WorkflowExecutorPorts["browser"] {
+  const runtime = options.runtime ?? browserRuntime;
   return {
     async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
       signal.throwIfAborted();
-      const browser = await launch();
+      const profile = await runtime.resolve(options.profile);
+      const browser = await launch({
+        headless: options.headless ?? false,
+        args: [...profile.args],
+      });
       const closeOnAbort = () => { void browser.close().catch(() => {}); };
       signal.addEventListener("abort", closeOnAbort, { once: true });
       try {
         signal.throwIfAborted();
-        const context = await browser.newContext({ acceptDownloads: false, locale: "zh-TW" });
+        const context = await browser.newContext({
+          acceptDownloads: false,
+          locale: "zh-TW",
+          userAgent: profile.userAgent,
+        });
         const page = await context.newPage();
         if (startUrl) {
           await page.goto(startUrl, { waitUntil: "domcontentloaded" });
@@ -220,9 +241,14 @@ export function createTerminalHumanAssistancePort(
   };
 }
 
-function makePorts(signal: AbortSignal, startUrl?: string, commitPort?: WorkflowFinancialCommitPort): WorkflowExecutorPorts {
+function makePorts(
+  signal: AbortSignal,
+  startUrl?: string,
+  commitPort?: WorkflowFinancialCommitPort,
+  browserOptions: Readonly<{ headless?: boolean; profile?: BrowserRuntimeProfileId }> = {},
+): WorkflowExecutorPorts {
   return {
-    browser: createDevelopmentBrowserPort(signal, startUrl),
+    browser: createDevelopmentBrowserPort(signal, startUrl, undefined, browserOptions),
     text: strictSourceText,
     humanAssistance: createTerminalHumanAssistancePort(signal),
     ...(commitPort ? { financialCommit: commitPort } : {}),
@@ -284,13 +310,18 @@ async function runFixture() {
   return { result, events, dryRunCount };
 }
 
-async function inspect(url: string, allowLiveSource: boolean, signal: AbortSignal) {
+async function inspect(
+  url: string,
+  allowLiveSource: boolean,
+  signal: AbortSignal,
+  browserOptions: Readonly<{ headless?: boolean; profile?: BrowserRuntimeProfileId }> = {},
+) {
   const normalized = safeUrl(url);
   if (!normalized) fail("usage");
   const host = new URL(normalized).hostname;
   const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
   if (!isLoopback && !allowLiveSource) fail("live-source-confirmation-required");
-  const port = createDevelopmentBrowserPort(signal, normalized);
+  const port = createDevelopmentBrowserPort(signal, normalized, undefined, browserOptions);
   await port.withPage(async () => {
     stdout.write("Page is open in the ephemeral development browser. Press Enter to close it.\n");
     const readline = createInterface({ input: stdin, output: stdout });
@@ -341,10 +372,13 @@ async function main(args = process.argv.slice(2)) {
   }
   if (command === "inspect") {
     const [url, ...flags] = rest;
-    validateFlags(flags, ["--allow-live-source"]);
+    validateFlags(flags, ["--allow-live-source", "--headless", "--browser-profile"]);
     const interrupt = abortOnInterrupt();
     try {
-      await inspect(url ?? "", hasFlag(flags, "--allow-live-source"), interrupt.controller.signal);
+      await inspect(url ?? "", hasFlag(flags, "--allow-live-source"), interrupt.controller.signal, {
+        headless: hasFlag(flags, "--headless"),
+        profile: flagValue(flags, "--browser-profile") as BrowserRuntimeProfileId | undefined,
+      });
     } finally {
       interrupt.dispose();
     }
@@ -355,16 +389,18 @@ async function main(args = process.argv.slice(2)) {
     const exportName = command === "run" ? rest[1] : undefined;
     const workflowId = command === "run-app" ? rest[0] : undefined;
     const flags = rest.slice(command === "run" ? 2 : 1);
-    validateFlags(flags, ["--input-env", "--start-url", "--allow-live-source"]);
+    validateFlags(flags, ["--input-env", "--start-url", "--allow-live-source", "--headless", "--browser-profile"]);
     if (!hasFlag(flags, "--allow-live-source")) fail("live-source-confirmation-required");
     let definition: WorkflowDefinition | null;
     let input: unknown;
     let startUrl = safeUrl(flagValue(flags, "--start-url"));
+    let browserProfile = flagValue(flags, "--browser-profile") as BrowserRuntimeProfileId | undefined;
     if (command === "run-app") {
       if (!workflowId || !SAFE_WORKFLOW_ID.test(workflowId)) fail("usage");
       definition = workflowDefinitionForTask(workflowId);
       input = workflowInputForTask(workflowId, process.env);
       startUrl = safeUrl(startUrl ?? workflowStartUrlForTask(workflowId));
+      browserProfile ??= workflowBrowserProfileForTask(workflowId);
     } else {
       definition = await loadDefinition(modulePath ?? "", exportName ?? "");
       input = jsonInputFromEnvironment(flagValue(flags, "--input-env"));
@@ -377,7 +413,12 @@ async function main(args = process.argv.slice(2)) {
     const commitPort = definition.requiresFinancialCommit
       ? createDryRunFinancialCommitPort((count) => { dryRunCount = count; })
       : undefined;
-    const executor = createWorkflowExecutor([definition], makePorts(interrupt.controller.signal, startUrl, commitPort));
+    const executor = createWorkflowExecutor([definition], makePorts(
+      interrupt.controller.signal,
+      startUrl,
+      commitPort,
+      { headless: hasFlag(flags, "--headless"), profile: browserProfile },
+    ));
     try {
       await executor.run(definition.id, randomUUID(), input, interrupt.controller.signal);
       stdout.write(`workflow completed; canonical financial dry-run items=${dryRunCount}; database writes=0; files=0\n`);

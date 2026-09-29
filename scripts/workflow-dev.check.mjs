@@ -10,6 +10,7 @@ import {
   createDevelopmentBrowserPort,
   createTerminalHumanAssistancePort,
 } from "./workflow-dev.ts";
+import { createBrowserRuntime } from "../src/lib/automation/server/browser-runtime.ts";
 import { APP_WORKFLOW_DEFINITIONS } from "../src/lib/automation/server/app-workflow-registry.ts";
 
 const cli = fileURLToPath(new URL("./workflow-dev.ts", import.meta.url));
@@ -39,6 +40,8 @@ test("workflow development CLI explains the project-owned typed interface", () =
   assert.match(result.stdout, /WorkflowDefinition/u);
   assert.match(result.stdout, /dry-run/u);
   assert.match(result.stdout, /production/iu);
+  assert.match(result.stdout, /--headless/u);
+  assert.match(result.stdout, /--browser-profile PROFILE/u);
 });
 
 test("workflow development CLI lists only typed definitions enabled by the App", () => {
@@ -141,12 +144,55 @@ test("development browser uses an ephemeral context and closes it after the work
     },
     close: async () => { calls.push(["close"]); },
   };
-  const port = createDevelopmentBrowserPort(new AbortController().signal, "http://127.0.0.1:4173", async () => browser);
+  const runtime = createBrowserRuntime({
+    getChromiumVersion: async () => "151.0.7922.34",
+    platform: "darwin",
+  });
+  const port = createDevelopmentBrowserPort(
+    new AbortController().signal,
+    "http://127.0.0.1:4173",
+    async (options) => { calls.push(["launch", options]); return browser; },
+    { runtime },
+  );
   const received = await port.withPage(async (receivedPage) => receivedPage);
   assert.equal(received, page);
   assert.deepEqual(calls, [
-    ["context", { acceptDownloads: false, locale: "zh-TW" }],
+    ["launch", { headless: false, args: [] }],
+    ["context", {
+      acceptDownloads: false,
+      locale: "zh-TW",
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36",
+    }],
     ["goto", "http://127.0.0.1:4173"],
     ["close"],
   ]);
+});
+
+test("development headless mode applies the same named runtime profile to launch and context", async () => {
+  const runtime = createBrowserRuntime({
+    getChromiumVersion: async () => "151.0.7922.34",
+    platform: "darwin",
+  });
+  const launches = [];
+  const contexts = [];
+  const browser = {
+    newContext: async (options) => {
+      contexts.push(options);
+      return { newPage: async () => ({}) };
+    },
+    close: async () => {},
+  };
+  const port = createDevelopmentBrowserPort(
+    new AbortController().signal,
+    undefined,
+    async (options) => { launches.push(options); return browser; },
+    { headless: true, profile: "ctbc-login", runtime },
+  );
+
+  await port.withPage(async () => undefined);
+  assert.deepEqual(launches, [{
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  }]);
+  assert.equal(contexts[0].userAgent, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36");
 });

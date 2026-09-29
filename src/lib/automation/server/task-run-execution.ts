@@ -30,6 +30,7 @@ import {
   type AppWorkflowBrowserConnection,
   type AppWorkflowBrowserProfile,
 } from "./app-browser-host.ts";
+import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 import { createAppWorkflowHumanAssistancePort } from "./app-workflow-human-assistance.ts";
 import {
   runSupervisedAppWorkflow,
@@ -89,6 +90,7 @@ export type AutomationTaskExecutionOptions = {
     userDataDirectory: string;
     startUrl?: string;
     browserProfile?: AppWorkflowBrowserProfile;
+    onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
   }) => WorkflowBrowserPort;
 };
 
@@ -101,14 +103,58 @@ function requiresSolverRoute(
     && automationGroupVerificationActors(options.launchVerificationSettings)[groupId] === "solver";
 }
 
+type BrowserRuntimeIdentityRecorder = Readonly<{
+  record(identity: BrowserRuntimeIdentity): void;
+  flush(): Promise<void>;
+}>;
+
+function createBrowserRuntimeIdentityRecorder(
+  execution: AutomationTaskRunExecution,
+): BrowserRuntimeIdentityRecorder {
+  let pendingWrite: Promise<void> | undefined;
+  let writeFailed = false;
+  return {
+    record(identity) {
+      pendingWrite = execution.persistence.updateTaskRun(execution.run.taskRunId, {
+        browserRuntime: {
+          profileId: identity.profileId,
+          profileRevision: identity.profileRevision,
+          chromiumVersion: identity.chromiumVersion,
+        },
+      }).catch(() => {
+        writeFailed = true;
+      });
+    },
+    async flush() {
+      await pendingWrite;
+      if (writeFailed) throw new Error("Browser runtime identity persistence failed.");
+    },
+  };
+}
+
+function browserPortWithIdentityPersistence(
+  browser: WorkflowBrowserPort,
+  recorder: BrowserRuntimeIdentityRecorder,
+): WorkflowBrowserPort {
+  return {
+    async withPage(run) {
+      return await browser.withPage(async (page) => {
+        // The host reports identity before launch. Persist it before the
+        // workflow worker or inline provider can touch the source.
+        await recorder.flush();
+        return await run(page);
+      });
+    },
+  };
+}
+
 async function executeAppWorkflow(
   execution: AutomationTaskRunExecution,
   options: AutomationTaskExecutionOptions,
 ): Promise<AutomationTaskExecutionResult> {
-  // Firefox does not expose a Chromium CDP target to the supervised worker.
-  // Keep the same typed executor and injected ports while the App owns its
-  // headless Firefox page and verification viewer in one process.
-  if (options.workflowPorts !== undefined || execution.task.workflowId === "einvoice-personal-invoices") {
+  // Explicit port overrides are an inline composition seam. Production browser
+  // workflows, including E-Invoice, use the supervised App worker.
+  if (options.workflowPorts !== undefined) {
     return await executeInlineAppWorkflow(execution, options);
   }
   return await executeSupervisedAppWorkflow(execution, options);
@@ -149,6 +195,7 @@ async function executeInlineAppWorkflow(
   let childRpc: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
   let unregisterHumanAssistance: (() => void) | undefined;
   let result: AutomationTaskExecutionResult;
+  const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
     if (options.isCancellationRequested?.()) {
@@ -164,7 +211,7 @@ async function executeInlineAppWorkflow(
     const userDataDirectory = launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd();
     const startUrl = workflowStartUrlForTask(execution.task.workflowId);
     const browserProfile = workflowBrowserProfileForTask(execution.task.workflowId);
-    const browser = injectedPorts.browser
+    const browser: WorkflowBrowserPort = injectedPorts.browser
       ?? options.workflowBrowserPortFactory?.({
         taskId: execution.task.id,
         taskRunId: execution.run.taskRunId,
@@ -172,6 +219,7 @@ async function executeInlineAppWorkflow(
         userDataDirectory,
         startUrl,
         browserProfile,
+        onRuntimeIdentity: browserRuntimeIdentity.record,
       })
       ?? createAppWorkflowBrowserPort({
         taskId: execution.task.id,
@@ -180,12 +228,14 @@ async function executeInlineAppWorkflow(
         userDataDirectory,
         startUrl,
         browserProfile,
-        ...(execution.task.workflowId === "einvoice-personal-invoices"
-          ? { browserEngine: "firefox" as const }
-          : {}),
+        onRuntimeIdentity: browserRuntimeIdentity.record,
       });
-    const ports: WorkflowExecutorPorts = {
+    const browserWithIdentityPersistence = browserPortWithIdentityPersistence(
       browser,
+      browserRuntimeIdentity,
+    );
+    const ports: WorkflowExecutorPorts = {
+      browser: browserWithIdentityPersistence,
       text: strictSourceText,
       humanAssistance: injectedPorts.humanAssistance
         ?? createAppWorkflowHumanAssistancePort({
@@ -218,6 +268,7 @@ async function executeInlineAppWorkflow(
       workflowInputForTask(execution.task.workflowId, launchEnv),
       controller.signal,
     );
+    await browserRuntimeIdentity.flush();
     result = {
       exitCode: 0,
       signal: null,
@@ -231,6 +282,11 @@ async function executeInlineAppWorkflow(
       externalPrerequisiteIds: [],
     };
   } catch (error) {
+    try {
+      await browserRuntimeIdentity.flush();
+    } catch {
+      // Preserve only a stable workflow failure; persistence errors are opaque.
+    }
     const cancelled = controller.signal.aborted
       || options.isCancellationRequested?.() === true;
     let events: readonly WorkflowRunEvent[] = [];
@@ -272,6 +328,7 @@ const TYPED_WORKFLOW_ERROR_CODES = new Set<TypedWorkflowErrorCode>([
   "source-validation-failed",
   "source-access-challenged",
   "source-unavailable",
+  "browser-runtime-config-failed",
   "verification-configuration-failed",
   "canonical-commit-failed",
   "commit-outcome-unknown",
@@ -380,6 +437,7 @@ async function executeSupervisedAppWorkflow(
   let result: AutomationTaskExecutionResult;
   const observedEvents: WorkflowRunEvent[] = [];
   let priorEventCount: number | null = null;
+  const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(execution);
   try {
     const launchEnv = options.launchEnv ?? automationProcessEnv();
     if (options.isCancellationRequested?.() || options.isForceTerminationRequested?.()) {
@@ -407,6 +465,7 @@ async function executeSupervisedAppWorkflow(
       userDataDirectory,
       startUrl,
       browserProfile,
+      onRuntimeIdentity: browserRuntimeIdentity.record,
     }) ?? (nonbrowser ? undefined : createAppWorkflowBrowserPort({
       taskId: execution.task.id,
       taskRunId: execution.run.taskRunId,
@@ -414,6 +473,7 @@ async function executeSupervisedAppWorkflow(
       userDataDirectory,
       startUrl,
       browserProfile,
+      onRuntimeIdentity: browserRuntimeIdentity.record,
       nativeDialogOwner: "worker",
     }));
     const humanAssistance = createAppWorkflowHumanAssistancePort({
@@ -479,6 +539,7 @@ async function executeSupervisedAppWorkflow(
     };
     const outcome = browser
       ? await browser.withPage(async () => {
+        await browserRuntimeIdentity.flush();
         const browserConnection = (options.appWorkflowBrowserConnectionForRun
           ?? appWorkflowBrowserConnectionForSession)(execution.run.taskRunId);
         if (!browserConnection) {
@@ -487,6 +548,7 @@ async function executeSupervisedAppWorkflow(
         return await runWorker(browserConnection);
       })
       : await runWorker();
+    await browserRuntimeIdentity.flush();
 
     let eventsForExecution = observedEvents;
     try {
@@ -516,7 +578,12 @@ async function executeSupervisedAppWorkflow(
           );
       result = sanitizedWorkerResult(outcome, errorCode);
     }
-  } catch {
+  } catch (error) {
+    try {
+      await browserRuntimeIdentity.flush();
+    } catch {
+      // Preserve only a stable workflow failure; persistence errors are opaque.
+    }
     const cancelled = controller.signal.aborted
       || options.isCancellationRequested?.() === true
       || options.isForceTerminationRequested?.() === true;
@@ -533,7 +600,7 @@ async function executeSupervisedAppWorkflow(
       // Do not include provider error text in the task outcome.
     }
     const errorCode = classifyTypedWorkflowFailure(
-      new Error("App workflow worker failed."),
+      error,
       eventsForExecution,
       cancelled,
     );

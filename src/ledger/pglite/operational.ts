@@ -22,6 +22,7 @@ import {
 } from "../../lib/automation/server/store.ts";
 import type { AutomationTaskKind, AutomationTaskProgress } from "../../lib/automation/types.ts";
 import type { WorkflowRunEvent } from "../../lib/automation/workflow-executor.ts";
+import type { BrowserRuntimeIdentity } from "../../lib/automation/server/browser-runtime.ts";
 import { sanitizeTypedWorkflowOutcome } from "../../lib/automation/server/typed-workflow-outcome.ts";
 import type {
   ExchangeRatePersistencePort,
@@ -105,6 +106,35 @@ function recordScheduledAtUtc(recordJson: string): string | undefined {
   }
 }
 
+function sanitizeBrowserRuntimeIdentity(value: unknown): BrowserRuntimeIdentity | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.profileId !== "string"
+    || !/^[a-z][a-z0-9-]{0,63}$/u.test(candidate.profileId)
+    || typeof candidate.profileRevision !== "number"
+    || !Number.isSafeInteger(candidate.profileRevision)
+    || candidate.profileRevision < 1
+    || candidate.profileRevision > 1_000_000
+    || typeof candidate.chromiumVersion !== "string"
+    || !/^\d{2,3}\.\d+\.\d+\.\d+$/u.test(candidate.chromiumVersion)
+  ) return undefined;
+  return {
+    profileId: candidate.profileId,
+    profileRevision: candidate.profileRevision,
+    chromiumVersion: candidate.chromiumVersion,
+  };
+}
+
+function recordBrowserRuntimeIdentity(recordJson: string): BrowserRuntimeIdentity | undefined {
+  try {
+    const value = JSON.parse(recordJson) as { browserRuntime?: unknown };
+    return sanitizeBrowserRuntimeIdentity(value.browserRuntime);
+  } catch {
+    return undefined;
+  }
+}
+
 function recordAppWorkflowOutcome(recordJson: string) {
   try {
     const value = JSON.parse(recordJson) as { appWorkflowOutcome?: unknown };
@@ -183,6 +213,7 @@ function assertRunEvent(event: WorkflowRunEvent): void {
 
 function rowToTaskRun(row: Row): AutomationTaskRun {
   const recordJson = String(row.record_json);
+  const browserRuntime = recordBrowserRuntimeIdentity(recordJson);
   return {
     taskRunId: String(row.task_run_id),
     taskId: String(row.task_id),
@@ -201,6 +232,7 @@ function rowToTaskRun(row: Row): AutomationTaskRun {
     progress: recordProgress(recordJson),
     terminationMode: recordTerminationMode(recordJson),
     humanAssistanceContract: parseHumanAssistanceContract(recordJson),
+    ...(browserRuntime ? { browserRuntime } : {}),
   };
 }
 
@@ -217,6 +249,7 @@ const CREATE_TASK_RUN_FIELDS = new Set([
 const TASK_RUN_UPDATE_FIELDS = new Set([
   "status", "attempt", "maxAttempts", "finishedAt", "exitCode", "signal",
   "progress", "terminationMode", "humanAssistanceContract", "appWorkflowOutcome",
+  "browserRuntime",
 ]);
 
 function assertKnownFields(value: unknown, fields: ReadonlySet<string>, label: string): void {
@@ -268,12 +301,16 @@ function noticeRecordJson(
 }
 
 function sanitizeRun(run: AutomationTaskRun): AutomationTaskRun {
-  return {
+  const sanitized: AutomationTaskRun = {
     ...run,
     ...(run.appWorkflowOutcome === undefined
       ? {}
       : { appWorkflowOutcome: sanitizeTypedWorkflowOutcome(run.appWorkflowOutcome) }),
   };
+  const browserRuntime = sanitizeBrowserRuntimeIdentity(run.browserRuntime);
+  if (browserRuntime) sanitized.browserRuntime = browserRuntime;
+  else delete sanitized.browserRuntime;
+  return sanitized;
 }
 
 function statusPlaceholders(start: number, statuses: readonly string[]) {

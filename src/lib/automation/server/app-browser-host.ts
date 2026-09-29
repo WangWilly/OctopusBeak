@@ -7,13 +7,26 @@ import {
   getAutomationCredentialCodec,
   type AutomationCredentialCodec,
 } from "./config-files.ts";
+import {
+  browserRuntime,
+  BrowserRuntimeConfigurationError,
+  cookieResetDomainForBrowserProfile,
+  type BrowserRuntime,
+  type BrowserRuntimeIdentity,
+  type BrowserRuntimeProfileId,
+} from "./browser-runtime.ts";
+
+export type {
+  BrowserRuntimeIdentity,
+  BrowserRuntimeProfileId,
+} from "./browser-runtime.ts";
 
 export type AppWorkflowBrowserConnection = Readonly<{
   endpoint: string;
   targetId: string;
 }>;
 
-export type AppWorkflowBrowserProfile = "ctbc-login" | "cathay-login" | "esun-login";
+export type AppWorkflowBrowserProfile = BrowserRuntimeProfileId;
 
 export type AppWorkflowBrowserLaunchOptions = Readonly<{
   acceptDownloads: false;
@@ -21,6 +34,7 @@ export type AppWorkflowBrowserLaunchOptions = Readonly<{
   headless: true;
   locale: "zh-TW";
   viewport: { width: 1280; height: 900 };
+  userAgent?: string;
 }>;
 
 export type AppWorkflowBrowserHostInput = Readonly<{
@@ -32,6 +46,8 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   startUrl?: string;
   browserEngine?: "chromium" | "firefox";
   browserProfile?: AppWorkflowBrowserProfile;
+  browserRuntime?: BrowserRuntime;
+  onRuntimeIdentity?: (identity: BrowserRuntimeIdentity) => void;
   /** Suppress Playwright auto-dismiss in the host connection when a worker owns dialogs. */
   nativeDialogOwner?: "worker";
   launchPersistentContext?: (
@@ -55,13 +71,7 @@ export function cookiesForAppWorkflowBrowserProfile(
   cookies: readonly AppBrowserCookie[],
   profile?: AppWorkflowBrowserProfile,
 ): AppBrowserCookie[] {
-  const resetDomain = profile === "ctbc-login"
-    ? "ctbcbank.com"
-    : profile === "cathay-login"
-    ? "cathaybk.com.tw"
-    : profile === "esun-login"
-    ? "esunbank.com.tw"
-    : null;
+  const resetDomain = cookieResetDomainForBrowserProfile(profile);
   if (!resetDomain) return [...cookies];
   return cookies.filter((cookie) => {
     let domain = cookie.domain;
@@ -383,15 +393,13 @@ export function createAppWorkflowBrowserPort(
     : input.credentialCodec;
   const browserEngine = input.browserEngine ?? "chromium";
   if (input.browserProfile && browserEngine !== "chromium") {
-    throw new Error("The selected App browser profile requires Chromium.");
+    throw new BrowserRuntimeConfigurationError("profile-requires-chromium");
   }
-  const profileArgs = input.browserProfile === "ctbc-login"
-    ? ["--disable-blink-features=AutomationControlled"]
-    : [];
   const launch = input.launchPersistentContext ?? (browserEngine === "firefox"
     ? (directory: string, options: AppWorkflowBrowserLaunchOptions) =>
         firefox.launchPersistentContext(directory, { ...options, headless: true })
     : defaultPersistentContext);
+  const runtime = input.browserRuntime ?? browserRuntime;
 
   return {
     async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
@@ -402,6 +410,8 @@ export function createAppWorkflowBrowserPort(
       };
       try {
         input.signal.throwIfAborted();
+        const profileConfiguration = await runtime.resolve(input.browserProfile);
+        input.onRuntimeIdentity?.(profileConfiguration.identity);
         await ensureDirectory(browserStateDirectory);
         await removeDirectoryEntriesExcept(browserStateDirectory, "authentication");
         await ensureDirectory(authenticationDirectory);
@@ -413,7 +423,8 @@ export function createAppWorkflowBrowserPort(
         await ensureDirectory(browserRuntimeDirectory);
         context = await launch(browserRuntimeDirectory, {
           ...launchOptions,
-          args: browserEngine === "firefox" ? [] : [...launchOptions.args, ...profileArgs],
+          args: browserEngine === "firefox" ? [] : [...launchOptions.args, ...profileConfiguration.args],
+          ...(browserEngine === "chromium" ? { userAgent: profileConfiguration.userAgent } : {}),
         });
         input.signal.throwIfAborted();
         const page = context.pages()[0] ?? await context.newPage();

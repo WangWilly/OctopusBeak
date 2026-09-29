@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
+import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
@@ -42,6 +43,10 @@ test("typed workflow summary ignores unsupported and invalid count fields", () =
 });
 
 test("typed failures use stable privacy-safe categories", () => {
+  assert.equal(
+    classifyTypedWorkflowFailure(new BrowserRuntimeConfigurationError("unsupported-profile"), []),
+    "browser-runtime-config-failed",
+  );
   assert.equal(
     classifyTypedWorkflowFailure(new SourceTextIntegrityError("invalid-encoding"), []),
     "source-integrity-failed",
