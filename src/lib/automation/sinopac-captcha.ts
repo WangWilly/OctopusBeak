@@ -1,3 +1,5 @@
+import { CaptchaProviderRejectedError } from "./captcha-rejection.ts";
+
 /** The MMA and NextWeb login forms use distinct CAPTCHA field suffixes.
  * Keep both suffixes exact so unrelated visible inputs are not selected. */
 export const SINOPAC_CAPTCHA_INPUT_SELECTOR =
@@ -36,9 +38,9 @@ export function isSinopacCaptchaRejectionDialog(type: string, message: string): 
 }
 
 /** Exact provider rejection after its dialog has been dismissed. */
-export class SinopacCaptchaRejectedError extends Error {
+export class SinopacCaptchaRejectedError extends CaptchaProviderRejectedError {
   constructor() {
-    super("SinoPac rejected the submitted CAPTCHA.");
+    super();
     this.name = "SinopacCaptchaRejectedError";
   }
 }

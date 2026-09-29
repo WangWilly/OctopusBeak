@@ -1,4 +1,4 @@
-import { SinopacCaptchaRejectedError } from "../sinopac-captcha.ts";
+import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
@@ -155,7 +155,7 @@ export function classifyTypedWorkflowFailure(
   if (commitStarted && !commitCompleted) return "commit-outcome-unknown";
 
   if (signalAborted) return "cancelled";
-  if (error instanceof SinopacCaptchaRejectedError) return "captcha-provider-rejected";
+  if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
   if (events.some((event) => event.stage === "authentication" && (
     event.code === "solver-route-unavailable"
     || event.code === "solver-challenge-unsupported"
