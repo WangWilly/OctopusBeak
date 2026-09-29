@@ -44,6 +44,7 @@ function sourceResponse(resource: string, value: unknown): Response {
 function createPage(options: {
   expectedRanges?: number;
   signedIn?: boolean;
+  onPoll?: () => Promise<void>;
   malformedSource?: boolean;
 } = {}) {
   const ranges = options.expectedRanges === 2
@@ -69,6 +70,7 @@ function createPage(options: {
   ];
   const credentialValues = new Map<string, string>();
   let signedIn = options.signedIn ?? false;
+  let loginPolls = 0;
   const locator = (selector: string, index = 0) => ({
     first() { return locator(selector, 0); },
     last() { return locator(selector, 0); },
@@ -91,7 +93,11 @@ function createPage(options: {
       keyboard: { press: async () => undefined },
       goto: async () => undefined,
       waitForURL: async () => undefined,
-      waitForTimeout: async () => undefined,
+      waitForTimeout: async () => {
+        await options.onPoll?.();
+        loginPolls += 1;
+        if (loginPolls >= 20) signedIn = true;
+      },
       waitForResponse: async (predicate: (candidate: Response) => boolean) => {
         const index = responses.findIndex(predicate);
         if (index < 0) throw new Error("No synthetic CTBC App response matched.");
@@ -199,10 +205,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         now: () => "2026-09-25T12:00:00.000Z",
         humanAssistance: {
           async request(contract) {
-            assert.equal(contract.stageId, "ctbc-login-verification");
-            assert.equal(contract.targets[0]?.id, "sign-in-page");
-            app.finishSignIn();
-            return "verified";
+            assert.fail("A delayed CTBC login must not become human assistance.");
           },
         },
       },
@@ -232,7 +235,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.deepEqual(run?.appWorkflowOutcome, result.result.appWorkflowOutcome);
     assert.equal(Object.hasOwn(run ?? {}, "logPath"), false);
     assert.equal(Object.hasOwn(run ?? {}, "logTail"), false);
-    assert.ok(run?.events.some((event) => event.code === "human-assistance-requested"));
+    assert.ok(!run?.events.some((event) => event.code === "human-assistance-requested"));
     assert.ok(run?.events.some((event) => event.code === "canonical-admission-completed"));
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no statement files or logs");
@@ -279,13 +282,16 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
     assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
 
-    const cancellationPage = createPage();
+    let cancellationRequested = false;
+    const cancellationPage = createPage({ onPoll: async () => {
+      cancellationRequested = true;
+      await new Promise((resolve) => setTimeout(resolve, 75));
+    } });
     const cancellationBrowser: WorkflowBrowserPort = {
       async withPage(runPage) {
         return runPage(cancellationPage.page);
       },
     };
-    let cancellationRequested = false;
     const cancellationRunId = await createRun(provider);
     const cancelled = await runAutomationTaskExecution(task, provider.automation, {
       taskRunId: cancellationRunId,
@@ -296,10 +302,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         now: () => "2026-09-25T12:00:00.000Z",
         humanAssistance: {
           async request(contract) {
-            assert.equal(contract.stageId, "ctbc-login-verification");
-            cancellationRequested = true;
-            await new Promise((resolve) => setTimeout(resolve, 75));
-            return "verified";
+            assert.fail("Cancellation during normal login must not request human assistance.");
           },
         },
       },

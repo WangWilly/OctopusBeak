@@ -41,7 +41,6 @@ import {
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -423,30 +422,6 @@ export async function handleCtbcConcurrentLoginPrompt(page: Page, signal?: Abort
   return true;
 }
 
-function ctbcManualSignInStage(page: Page): WorkflowHumanAssistanceStage {
-  const body = page.locator("body");
-  return {
-    stageId: "ctbc-login-verification",
-    title: "Complete CTBC sign-in or verification",
-    targets: [{
-      id: "sign-in-page",
-      label: "CTBC sign-in page",
-      semanticId: "ctbc.login.page",
-      modes: ["click", "type", "press"],
-      locator: body,
-    }],
-    contextRegions: [{
-      id: "sign-in-context",
-      label: "CTBC sign-in and verification",
-      semanticId: "ctbc.login.context",
-      locator: body,
-    }],
-    completion: { mode: "independent", targetIds: ["sign-in-page"] },
-    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
-    prompt: "Complete any provider verification in the open CTBC page, then wait for sign-in to finish.",
-  };
-}
-
 async function signInCtbcForApp(
   page: Page,
   credentials: CtbcCredentials,
@@ -469,27 +444,9 @@ async function signInCtbcForApp(
   await withAbort(passwordFields.nth(0).fill(account), context.signal);
   await withAbort(passwordFields.nth(1).fill(password), context.signal);
   await withAbort(page.getByRole("button", { name: "登入" }).click(), context.signal);
-  await withAbort(page.waitForTimeout(1_000), context.signal);
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (await handleCtbcConcurrentLoginPrompt(page, context.signal)) continue;
-    if (await handleCtbcPasswordReminder(page, context.signal)) continue;
-    if (await isSignedIn(page, context.signal)) return;
-    await withAbort(page.waitForTimeout(500), context.signal);
-  }
-
-  const contract = await emitHumanAssistanceStage(
-    ctbcManualSignInStage(page),
-    () => undefined,
-  );
-  await context.event("authentication", "human-assistance-requested");
-  const status = await context.humanAssistance.request(contract, context.signal);
-  context.signal.throwIfAborted();
-  if (status !== "entered" && status !== "verified") {
-    await context.event("authentication", "human-assistance-failed");
-    throw new Error(`CTBC human assistance ended with status ${status}.`);
-  }
+  // A slow normal login is not a declared verification challenge. Continue
+  // observing the authenticated marker and the already approved bank prompts.
   await finishCtbcSignIn(page, context.signal);
-  await context.event("authentication", "human-assistance-completed");
 }
 
 function requireCtbcOk<T>(
