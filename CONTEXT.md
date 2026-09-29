@@ -771,6 +771,10 @@ _Avoid_: Log file, raw stdout, source record, financial fact
 The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
+**Browser execution profile**:
+A named, versioned browser environment required by an automation source, applied consistently throughout an Automation Task Run. A run uses its selected profile without silently trying alternative profiles when the source rejects access.
+_Avoid_: Solver profile, browser engine selection, arbitrary launch settings
+
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session.
 
