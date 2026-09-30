@@ -65,12 +65,18 @@ export function mapCanonicalProduct(
     rows.push({
       date: transaction.effectiveOn,
       occurredAtUtc: null,
-      label: transaction.description ?? "",
-      type: transaction.direction,
+      label: transaction.description ?? transaction.investment?.securityName ?? "",
+      type: transaction.investment?.action ?? transaction.direction,
       amount: exactAmountToNumber(amountExact),
       amountExact,
       currency: transaction.currency,
       note: transaction.postingStatus,
+      ...(transaction.investment ? {
+        investment: {
+          securityName: transaction.investment.securityName,
+          quantity: transaction.investment.quantity,
+        },
+      } : {}),
     });
     transactionsByAccount[transaction.accountId] = rows;
   }

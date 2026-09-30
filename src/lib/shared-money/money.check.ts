@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatMoney } from "./money.ts";
+import { formatExactQuantity, formatMoney } from "./money.ts";
 
 test("formatMoney preserves exact canonical values beyond JavaScript precision", () => {
   assert.equal(
@@ -19,4 +19,10 @@ test("formatMoney preserves exact canonical values beyond JavaScript precision",
     }, { signed: true }),
     "USD -1.01",
   );
+});
+
+test("formatExactQuantity preserves fractional quantity without currency rounding", () => {
+  assert.equal(formatExactQuantity({ coefficient: "1234567890123456789012300", scale: 4 }), "123,456,789,012,345,678,901.23");
+  assert.equal(formatExactQuantity({ coefficient: "-5000", scale: 3 }), "-5");
+  assert.equal(formatExactQuantity({ coefficient: "2500", scale: 0 }), "2,500");
 });

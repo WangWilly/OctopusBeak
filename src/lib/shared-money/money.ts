@@ -44,6 +44,15 @@ function formatExactAmount(
   return `${negative ? "-" : ""}${groupedInteger}${fraction}`;
 }
 
+export function formatExactQuantity(
+  exact: { coefficient: string; scale: number },
+  locale = "en-US",
+): string | null {
+  const formatted = formatExactAmount(exact, exact.scale, locale);
+  if (formatted === null || exact.scale === 0) return formatted;
+  return formatted.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
 export function formatAmountLines(amounts: CurrencyAmountDto[]) {
   if (amounts.length === 0) return "--";
   return amounts.map((amount) => formatMoney(amount)).join(" / ");

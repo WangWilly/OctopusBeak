@@ -2,7 +2,7 @@
   import { locale, t, translateKnownLabel } from "$lib/i18n/i18n.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
-  import { formatMoney } from "$lib/shared-money/money.ts";
+  import { formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
   import { formatUtcDate } from "$lib/time/timezone.ts";
 
   type SortKey = "date" | "label" | "type" | "amount" | "note";
@@ -22,7 +22,7 @@
     { key: "date", label: $t.transactions.date },
     { key: "label", label: $t.transactions.description },
     { key: "type", label: $t.transactions.type },
-    { key: "amount", label: $t.transactions.amount, right: true },
+    { key: "amount", label: rows.some((row) => row.investment) ? $t.transactions.cashEffect : $t.transactions.amount, right: true },
     { key: "note", label: $t.transactions.note, right: true },
   ] satisfies SortColumn[];
 
@@ -66,6 +66,11 @@
       { currency: row.currency, value: row.amount, exact: row.amountExact },
       { signed: true },
     );
+  }
+
+  function transactionType(row: TransactionRowDto) {
+    if (!row.investment) return translateKnownLabel($t, row.type);
+    return $t.transactions.investmentActions[row.type as keyof typeof $t.transactions.investmentActions] ?? row.type;
   }
 </script>
 
@@ -114,8 +119,18 @@
             {#each sortedRows as row}
               <tr>
                 <td>{formatUtcDate(row.occurredAtUtc ?? row.date, $systemTimezone, $locale)}</td>
-                <td>{row.label}</td>
-                <td>{translateKnownLabel($t, row.type)}</td>
+                <td>
+                  {#if row.investment}
+                    <strong>{row.investment.securityName}</strong>
+                    <span class="investment-detail">{$t.transactions.quantity}: {formatExactQuantity(row.investment.quantity, $locale) ?? "--"}</span>
+                    {#if row.label && row.label !== row.investment.securityName}
+                      <span class="investment-detail">{row.label}</span>
+                    {/if}
+                  {:else}
+                    {row.label}
+                  {/if}
+                </td>
+                <td>{transactionType(row)}</td>
                 <td
                   class="right money"
                   class:amount-positive={row.amount > 0}
@@ -137,6 +152,12 @@
 {/if}
 
 <style>
+  .investment-detail {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 0.85em;
+  }
   .sort-button {
     width: 100%;
     min-height: 52px;

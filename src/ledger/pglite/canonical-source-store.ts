@@ -1402,14 +1402,9 @@ function validateFinancialRequest(
       "invalid-financial-fact",
       "Financial commit timestamp must be a non-negative safe integer.",
     );
-  for (const fact of request.transactions) {
-    validatePGliteCanonicalFinancialFact(fact);
-    if (request.account.currency !== null && fact.currency !== request.account.currency)
-      throw new PGliteCanonicalSourceAdmissionError(
-        "invalid-financial-fact",
-        "Financial fact currency does not match its declared account currency.",
-      );
-  }
+  // A transaction's booked denomination is source evidence; the account
+  // currency is a reporting/default value and cannot override it (ADR 0006).
+  for (const fact of request.transactions) validatePGliteCanonicalFinancialFact(fact);
 }
 
 async function commitFinancialRequestInTransaction(
