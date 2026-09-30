@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
-  runSinopacStatements,
   sinopacApiRowsToStatementRows,
-  sinopacManualAuthMessage,
   sinopacCaptchaAssistanceStage,
   sinopacPasswordExpiryNoticeDismissTargets,
   sinopacQueryWindows,
@@ -24,11 +19,14 @@ import {
 } from "./sinopac-statements.ts";
 import { parseSinopacCurrentDepositBalanceSnapshot } from "./sinopac-current-deposit-balances.ts";
 import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
 import {
   SINOPAC_DIALOG_OWNER_ENV,
   sinopacHostDialogOwner,
 } from "../lib/automation/sinopac-captcha.ts";
+
+const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
+const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
+const syntheticSinopacForeignAccount = ["1990", "1800", "5959", "24"].join("");
 
 const sinopacBalanceResponse = {
   url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
@@ -46,7 +44,7 @@ const sinopacBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       SubInfo: [
         {
           AcctText: "新店分行活期儲蓄存款",
-          AcctValue: "14101800082221",
+          AcctValue: syntheticSinopacTwdAccount,
           AcctValueFormat: "###-###-#######-#",
           Curr: "TWD",
           CurText: "新台幣",
@@ -73,7 +71,7 @@ const sinopacForeignBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       SubInfo: [
         {
           AcctText: "外幣活期存款",
-          AcctValue: "19901800595924",
+          AcctValue: syntheticSinopacForeignAccount,
           AcctValueFormat: "###-###-#######-#",
           Curr: "USD",
           CurText: "美元",
@@ -100,8 +98,8 @@ const sinopacBalanceIdentity = {
     sourceConnectionKey: "sha256:sinopac-connection",
     identityEpochKey: "sha256:sinopac-epoch",
     subjectDigest: "sha256:sinopac-subject",
-    accountNo: "14101800082221",
-    sourceAccountKey: "14101800082221",
+    accountNo: syntheticSinopacTwdAccount,
+    sourceAccountKey: syntheticSinopacTwdAccount,
     stream: "domestic-deposit",
   },
   sourceCurrency: "TWD",
@@ -130,8 +128,8 @@ assert.throws(
       ...sinopacBalanceIdentity,
       identity: {
         ...sinopacBalanceIdentity.identity,
-        accountNo: "14101800082222",
-        sourceAccountKey: "14101800082222",
+        accountNo: conflictingSinopacTwdAccount,
+        sourceAccountKey: conflictingSinopacTwdAccount,
       },
     }),
   /does not match/i,
@@ -142,8 +140,8 @@ assert.throws(
       ...sinopacBalanceIdentity,
       identity: {
         ...sinopacBalanceIdentity.identity,
-        accountNo: "19901800595924",
-        sourceAccountKey: "19901800595924",
+        accountNo: syntheticSinopacForeignAccount,
+        sourceAccountKey: syntheticSinopacForeignAccount,
         stream: "foreign-currency-deposit",
       },
       sourceCurrency: "EUR",
@@ -213,7 +211,7 @@ assert.equal(
   "sinopac.login.captcha-image",
 );
 assert.deepEqual(captchaSelectors, [
-  'input[id$="sino_keyword3"]',
+  'input[id$="sino_keyword3"], input[id$="_captcha"]',
   "#imgCode",
 ]);
 assert.equal(
@@ -247,11 +245,6 @@ assert.deepEqual(
   ).map((account) => account.DataValue),
   ["001", "002"],
 );
-assert.equal(
-  sinopacManualAuthMessage("sinopac-demo"),
-  "manual-auth-required: enter the SinoPac CAPTCHA in the browser, then run `npx libretto resume --session sinopac-demo`.",
-);
-
 class FakeSinopacLoginPage extends EventEmitter {}
 
 const dialogLoginPage = new FakeSinopacLoginPage();
@@ -357,657 +350,6 @@ try {
 assert.equal(staleOwnerDialogDismissed, true);
 assert.equal(staleOwnerLoginPage.listenerCount("dialog"), 0);
 
-const sourceDir = await mkdtemp(join(tmpdir(), "sinopac-workflow-source-"));
-try {
-  const accounts = [
-    { DataText: "TWD account", DataValue: "001", DisplayText: "TWD" },
-    { DataText: "USD account", DataValue: "002", DisplayText: "USD" },
-  ];
-  let writeCount = 0;
-  const result = await runSinopacStatements(
-    {} as never,
-    {
-      startDate: "20260801",
-      endDate: "20260823",
-      accountFilters: [],
-      currencyFilters: [],
-    },
-    accounts,
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async (account) => ({
-        Header: "SUCCESS",
-        SubInfo: [
-          {
-            DataText1: "2026/08/02<br />09:10",
-            DataText2: "2026/08/02",
-            DataText3: `${account.DisplayText} transaction`,
-            DataText4: "-100",
-            DataText5: "900",
-          },
-        ],
-      }),
-      writeStatementFile: async (account, queryPeriods, rows) => {
-        writeCount += 1;
-        return {
-          accountId: account.DataValue ?? "",
-          account: account.DataText ?? "",
-          currency: account.DisplayText ?? "",
-          kind:
-            account.DisplayText === "TWD"
-              ? ("domestic" as const)
-              : ("foreign" as const),
-          queryPeriods,
-          baseName: "synthetic",
-          csvFilename: "synthetic.csv",
-          csvPath: "synthetic.csv",
-          csvBytes: 1,
-          jsonFilename: "synthetic.json",
-          jsonPath: "synthetic.json",
-          jsonBytes: 1,
-          rowCount: rows.length,
-        };
-      },
-    },
-  );
-  assert.equal(result.status, "source-only");
-  assert.equal(result.count, 2);
-  assert.equal(result.skippedAccounts.length, 0);
-  assert.equal(writeCount, 2);
-  const financialDir = await mkdtemp(
-    join(tmpdir(), "sinopac-workflow-financial-"),
-  );
-  try {
-    const numericAccounts = [
-      { DataText: "TWD numeric account", DataValue: "14101800082221", DisplayText: "TWD" },
-      { DataText: "USD numeric account", DataValue: "19901800595924", DisplayText: "USD" },
-    ];
-    const financialResult = await runSinopacStatements(
-      {} as never,
-      {
-        startDate: "20260801",
-        endDate: "20260823",
-        accountFilters: [],
-        currencyFilters: [],
-      },
-      numericAccounts,
-      {
-        canonicalSourceLedgerDir: sourceDir,
-        canonicalFinancialLedgerDir: financialDir,
-        readCurrentDepositBalances: async () => [
-          sinopacBalanceRow,
-          sinopacForeignBalanceRow,
-        ],
-        queryTransactions: async (account) => ({
-          Header: "SUCCESS",
-          SubInfo: [
-            {
-              DataText1: "2026/08/02<br />09:10",
-              DataText2: "2026/08/02",
-              DataText3: `${account.DisplayText} financial transaction`,
-              DataText4: "-100",
-              DataText5: "900",
-            },
-          ],
-        }),
-        writeStatementFile: async (account, queryPeriods, rows) => ({
-          accountId: account.DataValue ?? "",
-          account: account.DataText ?? "",
-          currency: account.DisplayText ?? "",
-          kind: account.DisplayText === "TWD" ? "domestic" : "foreign",
-          queryPeriods,
-          baseName: "financial",
-          csvFilename: "financial.csv",
-          csvPath: "financial.csv",
-          csvBytes: 1,
-          jsonFilename: "financial.json",
-          jsonPath: "financial.json",
-          jsonBytes: 1,
-          rowCount: rows.length,
-        }),
-      },
-    );
-    assert.equal(financialResult.status, "financial-admitted");
-    const financialStore = createCanonicalSourceStore(
-      join(financialDir, "canonical.sqlite"),
-    );
-    try {
-      assert.equal(
-        Number(
-          (
-            financialStore.db
-              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        2,
-        "domestic and human-attested foreign SinoPac rows are admitted",
-      );
-      const foreignSourceCaptures = financialStore.db
-        .prepare(
-          `SELECT authority_route, COUNT(*) AS count
-             FROM source_captures
-            WHERE stream = 'foreign-currency-deposit'
-            GROUP BY authority_route
-            ORDER BY authority_route`,
-        )
-        .all() as Array<{
-        authority_route?: unknown;
-        count?: number;
-      }>;
-      assert.deepEqual(
-        foreignSourceCaptures.map((capture) => [
-          String(capture.authority_route ?? ""),
-          Number(capture.count ?? 0),
-        ]),
-        [
-          ["sinopac/foreign-currency/current-balance-v1", 1],
-          ["sinopac/foreign-currency/deposit/human-attested-v1", 1],
-        ],
-        "SinoPac foreign currency retains separate transaction and current-balance authority routes",
-      );
-      const financialAccounts = financialStore.db
-        .prepare(
-          "SELECT source_account_key, account_no FROM financial_accounts ORDER BY source_account_key",
-        )
-        .all() as Array<{ source_account_key: string; account_no: string }>;
-      assert.deepEqual(
-        financialAccounts.map((account) => [
-          account.source_account_key,
-          account.account_no,
-        ]),
-        [
-          ["14101800082221", "14101800082221"],
-          ["19901800595924", "19901800595924"],
-        ],
-      );
-      assert.equal(
-        Number(
-          (
-            financialStore.db
-              .prepare("SELECT COUNT(*) AS count FROM balance_observations")
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        2,
-        "SinoPac current balance rows attach to the admitted domestic and FX identities",
-      );
-    } finally {
-      financialStore.close();
-    }
-  } finally {
-    await rm(financialDir, { recursive: true, force: true });
-  }
-  const foreignOnlyFinancialDir = await mkdtemp(
-    join(tmpdir(), "sinopac-workflow-foreign-source-only-"),
-  );
-  try {
-    const foreignOnlyResult = await runSinopacStatements(
-      {} as never,
-      {
-        startDate: "20260801",
-        endDate: "20260823",
-        accountFilters: [],
-        currencyFilters: [],
-      },
-      [accounts[1]!],
-      {
-        canonicalSourceLedgerDir: sourceDir,
-        canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
-        readCurrentDepositBalances: async () => [],
-        queryTransactions: async () => ({
-          Header: "SUCCESS",
-          SubInfo: [
-            {
-              DataText1: "2026/08/02<br />09:10",
-              DataText2: "2026/08/02",
-              DataText3: "foreign source-only transaction",
-              DataText4: "-100",
-              DataText5: "900",
-            },
-          ],
-        }),
-        writeStatementFile: async (account, queryPeriods, rows) => ({
-          accountId: account.DataValue ?? "",
-          account: account.DataText ?? "",
-          currency: account.DisplayText ?? "",
-          kind: "foreign",
-          queryPeriods,
-          baseName: "foreign-source-only",
-          csvFilename: "foreign-source-only.csv",
-          csvPath: "foreign-source-only.csv",
-          csvBytes: 1,
-          jsonFilename: "foreign-source-only.json",
-          jsonPath: "foreign-source-only.json",
-          jsonBytes: 1,
-          rowCount: rows.length,
-        }),
-      },
-    );
-    assert.equal(foreignOnlyResult.status, "financial-admitted");
-    let foreignOnlyStore = createCanonicalSourceStore(
-      join(foreignOnlyFinancialDir, "canonical.sqlite"),
-    );
-    try {
-      assert.equal(
-        Number(
-          (
-            foreignOnlyStore.db
-              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        1,
-      );
-      assert.equal(
-        Number(
-          (
-            foreignOnlyStore.db
-              .prepare(
-                "SELECT COUNT(*) AS count FROM source_captures WHERE stream = 'foreign-currency-deposit'",
-              )
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        1,
-      );
-      const firstForeignPayload = JSON.parse(
-        String(
-          (
-            foreignOnlyStore.db
-              .prepare(
-                "SELECT payload_json FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
-              )
-              .get() as { payload_json?: unknown }
-          ).payload_json ?? "",
-        ),
-      ) as { sourceKey?: string };
-      assert.equal(
-        firstForeignPayload.sourceKey,
-        "002:USD:2026-08-02T09:10:-100:900",
-      );
-      foreignOnlyStore.close();
-      const repeatedForeignResult = await runSinopacStatements(
-        {} as never,
-        {
-          startDate: "20260801",
-          endDate: "20260823",
-          accountFilters: [],
-          currencyFilters: [],
-        },
-        [accounts[1]!],
-        {
-          canonicalSourceLedgerDir: sourceDir,
-          canonicalFinancialLedgerDir: foreignOnlyFinancialDir,
-          readCurrentDepositBalances: async () => [],
-          queryTransactions: async () => ({
-            Header: "SUCCESS",
-            SubInfo: [
-              {
-                DataText1: "2026/08/02<br />09:10",
-                DataText2: "2026/08/02",
-                DataText3: "foreign source-only transaction",
-                DataText4: "-100.00",
-                DataText5: "900.0",
-                DataText9: "different display-only value",
-              },
-            ],
-          }),
-          writeStatementFile: async (account, queryPeriods, rows) => ({
-            accountId: account.DataValue ?? "",
-            account: account.DataText ?? "",
-            currency: account.DisplayText ?? "",
-            kind: "foreign",
-            queryPeriods,
-            baseName: "foreign-repeat",
-            csvFilename: "foreign-repeat.csv",
-            csvPath: "foreign-repeat.csv",
-            csvBytes: 1,
-            jsonFilename: "foreign-repeat.json",
-            jsonPath: "foreign-repeat.json",
-            jsonBytes: 1,
-            rowCount: rows.length,
-          }),
-        },
-      );
-      assert.equal(repeatedForeignResult.status, "financial-admitted");
-      foreignOnlyStore = createCanonicalSourceStore(
-        join(foreignOnlyFinancialDir, "canonical.sqlite"),
-      );
-      assert.equal(
-        Number(
-          (
-            foreignOnlyStore.db
-              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        1,
-        "normalized amount and balance lexemes keep one authority transaction",
-      );
-      assert.equal(
-        Number(
-          (
-            foreignOnlyStore.db
-              .prepare(
-                "SELECT COUNT(*) AS count FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
-              )
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        2,
-        "the repeated capture adds provenance without duplicating authority",
-      );
-      const foreignPayloads = foreignOnlyStore.db
-        .prepare(
-          "SELECT payload_json FROM source_records WHERE record_kind = 'sinopac-foreign-currency-deposit'",
-        )
-        .all() as Array<{ payload_json?: unknown }>;
-      assert.equal(
-        foreignPayloads.some((row) =>
-          String(row.payload_json ?? "").includes(
-            "different display-only value",
-          ),
-        ),
-        false,
-        "DataText9 never enters identity or canonical payload",
-      );
-    } finally {
-      foreignOnlyStore.close();
-    }
-  } finally {
-    await rm(foreignOnlyFinancialDir, { recursive: true, force: true });
-  }
-  const foreignCollisionDir = await mkdtemp(
-    join(tmpdir(), "sinopac-workflow-foreign-collision-"),
-  );
-  try {
-    await assert.rejects(
-      () =>
-        runSinopacStatements(
-          {} as never,
-          {
-            startDate: "20260801",
-            endDate: "20260823",
-            accountFilters: [],
-            currencyFilters: [],
-          },
-          [accounts[1]!],
-          {
-            canonicalSourceLedgerDir: sourceDir,
-            canonicalFinancialLedgerDir: foreignCollisionDir,
-            readCurrentDepositBalances: async () => [],
-            queryTransactions: async () => ({
-              Header: "SUCCESS",
-              SubInfo: [
-                {
-                  DataText1: "2026/08/02<br />09:10",
-                  DataText2: "2026/08/02",
-                  DataText3: "first indistinguishable row",
-                  DataText4: "-100",
-                  DataText5: "900",
-                },
-                {
-                  DataText1: "2026/08/02<br />09:10",
-                  DataText2: "2026/08/02",
-                  DataText3: "second indistinguishable row",
-                  DataText4: "-100.00",
-                  DataText5: "900.0",
-                },
-              ],
-            }),
-            writeStatementFile: async () => {
-              throw new Error("collision must fail before statement writing");
-            },
-          },
-        ),
-      /human-attested source identity collision/i,
-    );
-    const collisionStore = createCanonicalSourceStore(
-      join(foreignCollisionDir, "canonical.sqlite"),
-    );
-    try {
-      assert.equal(
-        Number(
-          (
-            collisionStore.db
-              .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-              .get() as { count?: number }
-          ).count ?? 0,
-        ),
-        0,
-      );
-    } finally {
-      collisionStore.close();
-    }
-  } finally {
-    await rm(foreignCollisionDir, { recursive: true, force: true });
-  }
-  const duplicateResult = await runSinopacStatements(
-    {} as never,
-    {
-      startDate: "20260801",
-      endDate: "20260823",
-      accountFilters: [],
-      currencyFilters: [],
-    },
-    [{ DataText: "duplicate account", DataValue: "003", DisplayText: "TWD" }],
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async () => ({
-        Header: "SUCCESS",
-        SubInfo: [
-          {
-            DataText1: "2026/08/02<br />09:10",
-            DataText2: "2026/08/02",
-            DataText3: "same transaction",
-            DataText4: "100",
-            DataText5: "900",
-          },
-          {
-            DataText1: "2026/08/02<br />09:10",
-            DataText2: "2026/08/02",
-            DataText3: "same transaction",
-            DataText4: "100",
-            DataText5: "900",
-          },
-        ],
-      }),
-      writeStatementFile: async (account, queryPeriods, rows) => ({
-        accountId: account.DataValue ?? "",
-        account: account.DataText ?? "",
-        currency: account.DisplayText ?? "",
-        kind: "domestic",
-        queryPeriods,
-        baseName: "synthetic-duplicates",
-        csvFilename: "synthetic-duplicates.csv",
-        csvPath: "synthetic-duplicates.csv",
-        csvBytes: 1,
-        jsonFilename: "synthetic-duplicates.json",
-        jsonPath: "synthetic-duplicates.json",
-        jsonBytes: 1,
-        rowCount: rows.length,
-      }),
-    },
-  );
-  assert.equal(duplicateResult.downloads[0]?.rowCount, 2);
-  const absentResult = await runSinopacStatements(
-    {} as never,
-    {
-      startDate: "20260801",
-      endDate: "20260823",
-      accountFilters: [],
-      currencyFilters: [],
-    },
-    [accounts[0]!],
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async () => ({
-        Header: "FAIL",
-        Message: "查無資料",
-      }),
-      writeStatementFile: async () => {
-        throw new Error("provider no-data must not write a file");
-      },
-    },
-  );
-  assert.equal(absentResult.status, "source-only");
-  assert.equal(absentResult.downloads.length, 0);
-  assert.deepEqual(absentResult.skippedAccounts, [
-    { accountId: "001", currency: "TWD", reason: "provider-explicit-no-data" },
-  ]);
-  const foreignAbsentResult = await runSinopacStatements(
-    {} as never,
-    {
-      startDate: "20260801",
-      endDate: "20260823",
-      accountFilters: [],
-      currencyFilters: [],
-    },
-    [accounts[1]!],
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async () => ({
-        Header: "FAIL",
-        Message: "查無資料",
-      }),
-      writeStatementFile: async () => {
-        throw new Error("provider no-data must not write a file");
-      },
-    },
-  );
-  assert.deepEqual(foreignAbsentResult.skippedAccounts, [
-    { accountId: "002", currency: "USD", reason: "provider-explicit-no-data" },
-  ]);
-  const noDataStore = createCanonicalSourceStore(
-    join(sourceDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      Number(
-        (
-          noDataStore.db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM capture_scopes WHERE absence_authority = 'provider-explicit-no-data'",
-            )
-            .get() as { count?: number }
-        ).count ?? 0,
-      ),
-      2,
-    );
-  } finally {
-    noDataStore.close();
-  }
-  const mixedResult = await runSinopacStatements(
-    {} as never,
-    {
-      startDate: "20260701",
-      endDate: "20260823",
-      accountFilters: [],
-      currencyFilters: [],
-    },
-    [{ DataText: "mixed account", DataValue: "004", DisplayText: "TWD" }],
-    {
-      canonicalSourceLedgerDir: sourceDir,
-      queryTransactions: async (_account, window) =>
-        window.endDate === "20260823"
-          ? {
-              Header: "SUCCESS",
-              SubInfo: [
-                {
-                  DataText1: "2026/08/02<br />09:10",
-                  DataText2: "2026/08/02",
-                  DataText3: "mixed-window transaction",
-                  DataText4: "100",
-                  DataText5: "900",
-                },
-              ],
-            }
-          : { Header: "FAIL", Message: "查無資料" },
-      writeStatementFile: async (account, queryPeriods, rows) => ({
-        accountId: account.DataValue ?? "",
-        account: account.DataText ?? "",
-        currency: account.DisplayText ?? "",
-        kind: "domestic",
-        queryPeriods,
-        baseName: "mixed-window",
-        csvFilename: "mixed-window.csv",
-        csvPath: "mixed-window.csv",
-        csvBytes: 1,
-        jsonFilename: "mixed-window.json",
-        jsonPath: "mixed-window.json",
-        jsonBytes: 1,
-        rowCount: rows.length,
-      }),
-    },
-  );
-  assert.equal(mixedResult.rowCount, 1);
-  assert.deepEqual(mixedResult.skippedAccounts, []);
-  const mixedStore = createCanonicalSourceStore(
-    join(sourceDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      Number(
-        (
-          mixedStore.db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM capture_scopes WHERE scope_start = '20260701' AND scope_end = '20260823' AND absence_authority IS NULL",
-            )
-            .get() as { count?: number }
-        ).count ?? 0,
-      ),
-      1,
-    );
-  } finally {
-    mixedStore.close();
-  }
-  await assert.rejects(
-    () =>
-      runSinopacStatements(
-        {} as never,
-        {
-          startDate: "20260801",
-          endDate: "20260823",
-          accountFilters: [],
-          currencyFilters: [],
-        },
-        [accounts[0]!],
-        {
-          canonicalSourceLedgerDir: sourceDir,
-          queryTransactions: async () => ({ Header: "SUCCESS" }),
-        },
-      ),
-    /source admission blocked|zero-result-authority-unproven/i,
-  );
-} finally {
-  await rm(sourceDir, { recursive: true, force: true });
-}
-
-assert.deepEqual(sinopacPasswordExpiryNoticeDismissTargets().slice(0, 2), [
-  'a:has-text("延用舊密碼"):visible',
-  'button:has-text("延用舊密碼"):visible',
-]);
-
-assert.equal(
-  sinopacSignedInPageUrl(
-    "https://mma.sinopac.com/mma/mymma/myasset/mma_assets_summary.aspx",
-  ),
-  true,
-);
-assert.equal(
-  sinopacSignedInPageUrl(
-    "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx",
-  ),
-  true,
-);
-assert.equal(
-  sinopacSignedInPageUrl(
-    "https://mma.sinopac.com/MemberPortal/Member/Trade.aspx",
-  ),
-  false,
-);
-
 const rows = sinopacApiRowsToStatementRows([
   {
     DataText1: "2025/09/29<br />06:01",
@@ -1109,7 +451,7 @@ const identityPage = {
     count: async () => 0,
   }),
   getByText: () => ({ count: async () => 0 }),
-  evaluate: async (expression: unknown) => {
+  evaluate: async (expression: unknown, options?: unknown) => {
     if (typeof expression === "string") {
       return {
         botGlobal: false,
@@ -1118,7 +460,17 @@ const identityPage = {
       };
     }
     identityQueryCount += 1;
-    return [identityResponse];
+    const requestOptions = options as { path?: string } | undefined;
+    return {
+      url: new URL(
+        requestOptions?.path ?? "/ws/bank/transdetail/ws_transdetailMerge.ashx",
+        "https://mma.sinopac.com",
+      ).toString(),
+      status: 200,
+      method: "POST",
+      contentType: "application/json; charset=utf-8",
+      bytes: Array.from(new TextEncoder().encode(JSON.stringify([identityResponse]))),
+    };
   },
 } as never;
 const identitySummary = await runSinopacIdentityValidation(

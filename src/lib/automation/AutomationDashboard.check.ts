@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
+import type { DashboardBlockValueMap } from "$lib/shared-shell/dashboard-blocks.ts";
+import {
+  automationStageTasks,
+  dispatchAutomationStageSync,
+} from "./progressive-automation-actions.ts";
 
 const source = readFileSync(
   new URL("./AutomationDashboard.svelte", import.meta.url),
@@ -14,11 +20,11 @@ const runParallelTasksSource = source.slice(
   source.indexOf("async function stopAllTasks"),
 );
 
-assert.doesNotMatch(runTaskSource, /expandedLogTaskId\s*=/);
-assert.doesNotMatch(runParallelTasksSource, /expandedLogTaskId\s*=/);
+assert.doesNotMatch(runTaskSource, /expandedRunDetailsTaskId\s*=/);
+assert.doesNotMatch(runParallelTasksSource, /expandedRunDetailsTaskId\s*=/);
 assert.match(
   runParallelTasksSource,
-  /automation\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/,
+  /automation\.runMany\((?:tasks\.map\(\(task\) => task\.id\)|actionTokens\.map\(\(token\) => token\.taskId\))\)/,
 );
 assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
@@ -28,7 +34,7 @@ assert.match(
   /matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches \? 0 : 220/,
 );
 assert.match(source, /class="stage-body"[^>]*transition:disclosureSlide/);
-assert.match(source, /class="inline-log-panel"[^>]*transition:disclosureSlide/);
+assert.match(source, /class="inline-run-details"[^>]*transition:disclosureSlide/);
 assert.match(source, /class="table-reveal"/);
 assert.doesNotMatch(source, /container\.animate\(/);
 assert.doesNotMatch(source, /class="task-row"[^>]*transition:disclosureSlide/);
@@ -52,11 +58,19 @@ assert.match(
   source,
   /shouldDispatchViewerClickBeforeType\(modes\) && !await sendViewerInput\(/,
 );
-assert.match(source, /class="inline-task-log"/);
+assert.match(source, /class="inline-run-details-row"/);
+assert.match(
+  source,
+  /\$: if \(\(automation\.active[\s\S]*?pollTimer = setInterval\(\(\) => \{\s*void reload\(\);\s*\}, 2_000\)/,
+);
 assert.doesNotMatch(source, /activeLogsOpen/);
 assert.doesNotMatch(source, /openActiveLogs/);
 assert.doesNotMatch(source, /aria-labelledby="active-logs-title"/);
 assert.doesNotMatch(source, /\$t\.automation\.viewLogs/);
+assert.match(source, /function blockState\(\s*source: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,\s*key: string,/u);
+assert.match(source, /state=\{blockState\(blocks, "summary"\)\}/u);
+assert.match(source, /state=\{blockState\(blocks, "details"\)\}/u);
+assert.match(source, /state=\{blockState\(blocks, "list"\)\}/u);
 assert.match(source, /from "@lucide\/svelte"/);
 assert.match(source, /ArrowLeftRight/);
 assert.match(source, /CircleEllipsis/);
@@ -74,8 +88,18 @@ assert.match(source, /class="active-task-jump"/);
 assert.match(source, /class:failed=\{task\.status === "failed"\}/);
 assert.match(
   source,
-  /aria-label=\{`\$\{\$t\.automation\.logs\} · \$\{taskLabel\(task, \$t\)\}`\}/,
+  /aria-label=\{`\$\{\$t\.automation\.runDetails\} · \$\{taskLabel\(task, \$t\)\}`\}/,
 );
+assert.match(source, /\{#each task\.events as event, index/);
+assert.match(source, /\$t\.automation\.workflowStages\[event\.stage\]/);
+assert.match(source, /\{event\.code\}/);
+assert.match(source, /formatTime\(event\.occurredAt\)/);
+assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
+assert.match(source, /task\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /Object\.entries\(task\.appWorkflowOutcome\.summary\.counts\)/);
+assert.doesNotMatch(source, /eventDisplayMode/);
+assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
+assert.doesNotMatch(source, /inline-log-path|task\.logPath|task\.logTail/);
 assert.match(source, /title=\{taskLabel\(task, \$t\)\}/);
 assert.match(source, /onclick=\{\(\) => handleActiveTaskClick\(task\)\}/);
 assert.match(
@@ -87,8 +111,8 @@ assert.match(
   /task\.status === "waiting_for_human" && task\.humanSession/,
 );
 assert.match(source, /openHumanViewer\(task\)/);
-assert.match(source, /async function revealTaskLog\(task: AutomationTaskRow\)/);
-assert.match(source, /expandedLogTaskId = task\.id/);
+assert.match(source, /async function revealTaskDetails\(task: AutomationTaskRow\)/);
+assert.match(source, /expandedRunDetailsTaskId = task\.id/);
 assert.match(
   source,
   /<tr class="task-row"[^>]*id=\{`\$\{task\.id\}-task-row`\}/,
@@ -123,8 +147,13 @@ const resumeHumanViewerSource = source.slice(
   source.indexOf("async function resumeHumanViewer"),
   source.indexOf("function pointerPoint"),
 );
-assert.match(resumeHumanViewerSource, /automation\.resume\(task\.id\)/);
+assert.match(
+  resumeHumanViewerSource,
+  /automation\.resumeHumanAssistance\(task\.id\)/,
+);
 assert.doesNotMatch(resumeHumanViewerSource, /runTask\(task\)/);
+assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
+assert.match(runTaskSource, /automation\.run\(task\.id\)/);
 const viewerPointerUpSource = source.slice(
   source.indexOf("function handleViewerPointerUp"),
   source.indexOf("async function submitViewerDrag"),
@@ -137,14 +166,27 @@ assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
 assert.match(source, /class="progress-cell"/);
+assert.match(source, /<ProgressiveBlock label="details"[^>]*showSpinner=\{false\}/);
+assert.match(source, /<ProgressiveBlock label="list"[^>]*showSpinner=\{false\}/);
+assert.doesNotMatch(source, /<ProgressiveBlock label="summary"[^>]*showSpinner=\{false\}/);
+assert.match(source, /role="progressbar"/);
+assert.match(source, /aria-valuenow=\{task\.progressPercent/);
 assert.match(
   source,
   /\$: activeTasks = automation\.tasks\.filter\(\(task\) => task\.isActive\);/,
 );
-assert.match(
-  source,
-  /task\.status === "waiting_for_human"[\s\S]*?automation\.forceQuit\(task\.id\)/,
+const primaryTaskActionSource = source.slice(
+  source.indexOf("async function primaryTaskAction"),
+  source.indexOf("async function openRunHistory"),
 );
+assert.match(primaryTaskActionSource, /task\.status === "waiting_for_human"[\s\S]*?automation\.forceTerminate\(task\.id\)/);
+assert.match(primaryTaskActionSource, /else await window\.octopusBeak\.automation\.cancel\(task\.id\)/);
+const forceTerminateHumanViewerSource = source.slice(
+  source.indexOf("async function forceTerminateHumanViewer"),
+  source.indexOf("async function resumeHumanViewer"),
+);
+assert.match(forceTerminateHumanViewerSource, /automation\.forceTerminate\(humanTask\.id\)/);
+assert.doesNotMatch(source, /automation\.forceQuit\(/);
 assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
 assert.match(source, /class="stage-toggle-action"/);
 assert.match(source, /aria-expanded=\{stageOpen\[stage\.id\]\}/);
@@ -152,24 +194,30 @@ assert.doesNotMatch(source, /<details class="stage-section"/);
 assert.doesNotMatch(source, /\$t\.automation\.independentTasks/);
 assert.doesNotMatch(source, /\$: parallelTasks =/);
 assert.match(source, /class="button primary stage-sync-action"/);
-assert.match(source, /onclick=\{\(\) => openSyncSheet\(stage\.tasks\)\}/);
-assert.match(
-  source,
-  /\$: taskStages = \[\s*\{\s*id: "sync",\s*title: \$t\.automation\.syncStage,\s*tasks: automation\.tasks,\s*\},\s*\];/,
-);
 assert.match(source, /\{#each stage\.tasks as task \(task\.id\)\}/);
-assert.match(
-  source,
-  /class:muted=\{!stageRunnableTasks\(stage\.tasks\)\.length\}/,
-);
+assert.match(source, /stageRunnableTasks\(stage\.tasks, listParallelTaskIds\)/);
+assert.match(source, /dispatchAutomationStageSync\(/);
+assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)[\s\S]*?runtimeSnapshot/);
+assert.match(source, /function applyAuthoritativeRuntimeSnapshot\(snapshot: AutomationRuntimeSnapshot\)/);
+assert.match(source, /runtimeController\.acceptSnapshot\(snapshot\)/);
+assert.match(source, /runtimeSnapshot\(\)\s*\.then\(\(snapshot\) => applyAuthoritativeRuntimeSnapshot\(snapshot\)\)/);
+assert.doesNotMatch(runTaskSource, /applyRuntimeSnapshot\(result\.runtime\)/);
+assert.doesNotMatch(runParallelTasksSource, /applyRuntimeSnapshot\(result\.runtime\)/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
+assert.match(
+  source,
+  /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*renderedPendingActions\)/,
+);
 assert.match(source, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);
 assert.match(source, /class="sync-sheet"/);
 assert.doesNotMatch(source, /\$t\.automation\.commandId/);
 assert.doesNotMatch(source, /class="task-command"/);
+assert.doesNotMatch(source, /(?:task|run)\.script/);
+assert.doesNotMatch(source, /run\.errorMessage/);
+assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
 assert.match(
   source,
   /<colgroup>[\s\S]*width: 32%[\s\S]*width: 14%[\s\S]*width: 22%[\s\S]*width: 12%[\s\S]*width: 20%[\s\S]*<\/colgroup>/,
@@ -237,11 +285,8 @@ assert.match(
 );
 assert.match(source, /class="modal-body history-layout"/);
 assert.match(source, /class="history-filters"/);
-assert.match(source, /class="history-error-detail"/);
-assert.match(
-  source,
-  /\.history-table \.task-name span\s*\{[\s\S]*display: block/,
-);
+assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /<code>\{run\.appWorkflowOutcome\.errorCode\}<\/code>/);
 assert.match(source, /historySearch/);
 assert.match(source, /historyFilter/);
 assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, automation\.tasks\)/);
@@ -252,14 +297,36 @@ assert.match(source, /historyCounts\.completed/);
 assert.doesNotMatch(source, /historyFinishedTime/);
 assert.doesNotMatch(source, /class="modal-footer"/);
 
+const fallbackTask = { id: "fallback-task" } as unknown as AutomationTaskRow;
+const blockTask = { id: "block-task" } as unknown as AutomationTaskRow;
+const fallbackAutomation = {
+  tasks: [fallbackTask],
+} as unknown as AutomationPageModel;
+const blockAutomation = {
+  ...fallbackAutomation,
+  tasks: [blockTask],
+} as unknown as AutomationPageModel;
+const listBlock = {
+  automation: blockAutomation,
+  credentialGroups: [],
+} as unknown as DashboardBlockValueMap["automation"]["list"];
+let syncedTasks: AutomationTaskRow[] | undefined;
+const displayedBlockTasks = automationStageTasks(fallbackAutomation, listBlock);
+dispatchAutomationStageSync(displayedBlockTasks, (tasks) => { syncedTasks = tasks; });
+assert.strictEqual(syncedTasks, blockAutomation.tasks);
+syncedTasks = undefined;
+const displayedFallbackTasks = automationStageTasks(fallbackAutomation);
+dispatchAutomationStageSync(displayedFallbackTasks, (tasks) => { syncedTasks = tasks; });
+assert.strictEqual(syncedTasks, fallbackAutomation.tasks);
+
 const currentTaskIds = new Set(["source-task"]);
 const historyRowsForCheck = [
-  { taskId: "source-task", script: "run:source-task" },
-  { taskId: "retired-source", script: "run:retired-source" },
+  { taskId: "source-task" },
+  { taskId: "retired-source" },
 ];
 assert.deepEqual(
   historyRowsForCheck.filter((run) => currentTaskIds.has(run.taskId)),
-  [{ taskId: "source-task", script: "run:source-task" }],
+  [{ taskId: "source-task" }],
 );
 
 assert.match(source, /statementSelectionDrafts/);

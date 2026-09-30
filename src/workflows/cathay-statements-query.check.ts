@@ -5,7 +5,7 @@ import {
   classifyCathayDomesticAccountScope,
   classifyCathayRowDateShapes,
   classifyCathayDateScopeMismatch,
-  downloadCathayStatements,
+  collectCathayDomesticFinancialRequests,
   prepareCathayDomesticStatementQuery,
   resolveCathayDomesticQueryPlan,
 } from "./cathay-statements.ts";
@@ -714,41 +714,14 @@ assert.deepEqual(controlInteractions, [
   "period:click",
 ]);
 
-let emittedScopeTelemetry: unknown = null;
-const originalWarn = console.warn;
-console.warn = (label: unknown, payload: unknown) => {
-  if (label === "cathay-domestic-account-scope-telemetry") {
-    emittedScopeTelemetry = payload;
-  }
-};
-try {
-  await assert.rejects(
-    () =>
-      prepareCathayDomesticStatementQuery(
-        page as never,
-        [firstAccount],
-        "one_year",
-      ),
-    /account scope does not match/,
-  );
-} finally {
-  console.warn = originalWarn;
-}
-assert.deepEqual(emittedScopeTelemetry, {
-  providerAccountCount: 1,
-  uiNonPlaceholderOptionCount: 2,
-  matchClasses: {
-    exact: 1,
-    suffix: 0,
-    masked: 0,
-    singletonUnique: 0,
-    unmatched: 1,
-    duplicates: 0,
-  },
-});
-assert.doesNotMatch(
-  JSON.stringify(emittedScopeTelemetry),
-  /0001|20002|活期存款/,
+await assert.rejects(
+  () =>
+    prepareCathayDomesticStatementQuery(
+      page as never,
+      [firstAccount],
+      "one_year",
+    ),
+  /account scope does not match/,
 );
 
 function delayedDomesticQueryPage(
@@ -857,17 +830,18 @@ const delayedPage = delayedDomesticQueryPage(
 let transferReads = 0;
 await assert.rejects(
   () =>
-    downloadCathayStatements(
+    collectCathayDomesticFinancialRequests(
       delayedPage.page as never,
       "one_year",
       [],
       { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {},
       {
-        fetchDomesticAccounts: async () => [firstAccount],
-        fetchTransferDetailsRaw: async () => {
-          transferReads += 1;
-          throw new Error("stop after Cathay UI query preparation");
+        client: {
+          fetchDomesticAccounts: async () => [firstAccount],
+          fetchTransferDetailsRaw: async () => {
+            transferReads += 1;
+            throw new Error("stop after Cathay UI query preparation");
+          },
         },
       },
     ),
@@ -882,18 +856,19 @@ const alreadyOpenPage = delayedDomesticQueryPage(
 );
 await assert.rejects(
   () =>
-    downloadCathayStatements(
+    collectCathayDomesticFinancialRequests(
       alreadyOpenPage.page as never,
       "one_year",
       [],
       { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {},
       {
-        fetchDomesticAccounts: async () => [firstAccount],
-        fetchTransferDetailsRaw: async () => {
-          throw new Error(
-            "stop after already-open Cathay UI query preparation",
-          );
+        client: {
+          fetchDomesticAccounts: async () => [firstAccount],
+          fetchTransferDetailsRaw: async () => {
+            throw new Error(
+              "stop after already-open Cathay UI query preparation",
+            );
+          },
         },
       },
     ),
@@ -942,17 +917,18 @@ for (const [label, unavailablePage, expectedError] of [
   let unavailableTransferReads = 0;
   await assert.rejects(
     () =>
-      downloadCathayStatements(
+      collectCathayDomesticFinancialRequests(
         unavailablePage.page as never,
         "one_year",
         [],
         { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-        {},
         {
-          fetchDomesticAccounts: async () => [firstAccount],
-          fetchTransferDetailsRaw: async () => {
-            unavailableTransferReads += 1;
-            return "unreachable";
+          client: {
+            fetchDomesticAccounts: async () => [firstAccount],
+            fetchTransferDetailsRaw: async () => {
+              unavailableTransferReads += 1;
+              return "unreachable";
+            },
           },
         },
       ),

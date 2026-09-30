@@ -27,6 +27,12 @@ const sharedProviderAssistanceWorkflows = new Set([
   "yuanta-foreign-currency-statements.ts",
 ]);
 
+const sharedFubonAssistanceWorkflows = new Set([
+  "fubon-statements.ts",
+  "fubon-credit-card-statements.ts",
+  "fubon-loan-statements.ts",
+]);
+
 const solverBackedCaptchaWorkflows = [
   { provider: "Fubon", source: "../workflows/fubon-auth.ts" },
   { provider: "Yuanta Bank", source: "../workflows/yuanta-auth.ts" },
@@ -86,10 +92,16 @@ test("all modelable human-assisted workflows publish a contract-backed stage", a
     new URL("./yuanta-auth.ts", import.meta.url),
     "utf8",
   );
+  const sharedFubonAuth = await readFile(
+    new URL("./fubon-auth.ts", import.meta.url),
+    "utf8",
+  );
   for (const [file, source] of sources) {
     const focusSource = sharedProviderAssistanceWorkflows.has(file)
       ? sharedYuantaAuth
-      : source;
+      : sharedFubonAssistanceWorkflows.has(file)
+        ? sharedFubonAuth
+        : source;
     assert.match(
       focusSource,
       /emitHumanAssistanceStage/,
@@ -199,11 +211,17 @@ test("provider verification focus keeps the challenge readable", async () => {
     new URL("./yuanta-auth.ts", import.meta.url),
     "utf8",
   );
+  const sharedFubonAuth = await readFile(
+    new URL("./fubon-auth.ts", import.meta.url),
+    "utf8",
+  );
   const violations: string[] = [];
   for (const [file, source] of sources) {
     const focusSource = sharedProviderAssistanceWorkflows.has(file)
       ? sharedYuantaAuth
-      : source;
+      : sharedFubonAssistanceWorkflows.has(file)
+        ? sharedFubonAuth
+        : source;
     const zooms = [
       ...focusSource.matchAll(/initialZoom:\s*([0-9]+(?:\.[0-9]+)?)/g),
     ].map((match) => Number(match[1]));

@@ -3,6 +3,13 @@
   import { slide } from "svelte/transition";
   import { ArrowLeftRight, CircleEllipsis, CloudDownload, Landmark, Search, X } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
+  import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
+  import { isActiveAutomationRuntimeStatus } from "$lib/automation/runtime-status.ts";
+  import type {
+    AutomationActionKind,
+    AutomationActionToken,
+    createAutomationRuntimeController,
+  } from "$lib/automation/runtime-controller.ts";
   import type {
     CathayGmailOtpConnectionError,
     CathayGmailOtpStatus,
@@ -31,6 +38,13 @@
   import type { CredentialSetupResult, OnboardingStep } from "$lib/onboarding/progression.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type {
+    DashboardBlockPayload,
+    DashboardBlockValueMap,
+  } from "$lib/shared-shell/dashboard-blocks.ts";
+  import { resolveAutomationBlock } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
@@ -39,9 +53,21 @@
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
   } from "./types.ts";
+  import { mergeAutomationRuntime } from "./runtime-sync.ts";
+  import { workflowFailureExplanation } from "./workflow-failures.ts";
+  import {
+    automationStageTasks,
+    dispatchAutomationStageSync,
+  } from "./progressive-automation-actions.ts";
 
   export let automation: AutomationPageModel;
   export let credentialGroups: CredentialGroupDto[];
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
+  export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
+  export let runtimeController: ReturnType<typeof createAutomationRuntimeController> | null = null;
+  export let appPendingTaskIds: ReadonlySet<string> = new Set<string>();
+  export let appPendingActions: readonly AutomationActionToken[] = [];
+  export let retryBlock: (key: string) => void = () => {};
   export let reload: () => Promise<void>;
   export let onboardingSourceSelection = false;
   export let onboardingSingleSource = false;
@@ -49,10 +75,26 @@
   export let onboardingSelectedCredentialGroupId: string | null = null;
   export let onOnboardingSourceSaved: (result: CredentialSetupResult) => void = () => {};
 
+  function blockState(
+    source: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
+    key: string,
+  ): BlockState<DashboardBlockPayload> {
+    return source[key] ?? { status: "loading" };
+  }
+
+  function automationBlockData<Key extends "summary" | "list" | "details">(
+    key: Key,
+    payload: DashboardBlockPayload | undefined,
+  ): DashboardBlockValueMap["automation"][Key] | undefined {
+    return payload?.route === "automation" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["automation"][Key]
+      : undefined;
+  }
+
   let credentialsOpen = false;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
-  let expandedLogTaskId: string | null = null;
+  let expandedRunDetailsTaskId: string | null = null;
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
@@ -60,10 +102,13 @@
   let historyRows: AutomationTaskHistoryRow[] = [];
   let historySearch = "";
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
-  let expandedHistoryRunId: string | null = null;
   let humanTask: AutomationTaskRow | null = null;
   let assistInteracted = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
+  let pendingTaskIds = new Set<string>();
+  let localPendingActions: AutomationActionToken[] = [];
+  let preparingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   let viewerTimer: ReturnType<typeof setInterval> | null = null;
   let viewerRequestId = 0;
   let viewerImageUrl = "";
@@ -116,26 +161,9 @@
   $: credentialReadyCount = syncTasks.filter((task) =>
     task.credentialKeys.every((key) => automation.credentials[key]),
   ).length;
-  $: taskStages = [
-    {
-      id: "sync",
-      title: $t.automation.syncStage,
-      tasks: automation.tasks,
-    },
-  ];
-  $: prerequisiteNoticeGroups = [...automation.externalPrerequisiteNotices.reduce(
-    (groups, notice) => {
-      const notices = groups.get(notice.prerequisiteId) ?? [];
-      notices.push(notice);
-      groups.set(notice.prerequisiteId, notices);
-      return groups;
-    },
-    new Map<string, AutomationTaskPrerequisiteNotice[]>(),
-  )].map(([prerequisiteId, notices]) => ({
-    prerequisiteId,
-    prerequisite: notices[0].prerequisite,
-    notices,
-  }));
+  $: taskStages = taskStagesFor(automation);
+  $: renderedPendingActions = mergePendingActions(appPendingActions, localPendingActions);
+  $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
   $: credentialInputDirty = Object.values(credentialDrafts).some((value) => value.trim().length > 0);
   $: credentialToggleDirty = credentialGroups.some((group) => (groupEnabled[group.id] !== false) !== group.enabled);
   $: cathayGmailOtpStatus = automation.cathayGmailOtp ?? defaultCathayGmailOtpStatus;
@@ -208,7 +236,7 @@
   $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
-      && (!term || `${taskIdLabel(run.taskId, $t)} ${run.script}`.toLowerCase().includes(term));
+      && (!term || taskIdLabel(run.taskId, $t).toLowerCase().includes(term));
   });
   $: historyCounts = catalogHistoryRows.reduce(
     (counts, run) => {
@@ -218,7 +246,7 @@
     { running: 0, completed: 0, failed: 0 },
   );
 
-  $: if (automation.active && !pollTimer) {
+  $: if ((automation.active || pendingTaskIds.size > 0 || appPendingTaskIds.size > 0) && !pollTimer) {
     pollTimer = setInterval(() => {
       void reload();
     }, 2_000);
@@ -226,8 +254,15 @@
     stopPolling();
   }
 
+  $: if (runtimeSnapshot && runtimeSnapshot !== appliedRuntimeSnapshot) {
+    appliedRuntimeSnapshot = runtimeSnapshot;
+    applyRuntimeSnapshot(runtimeSnapshot);
+  }
+
   onDestroy(() => {
     stopPolling();
+    for (const timeout of preparingTimeouts.values()) clearTimeout(timeout);
+    preparingTimeouts.clear();
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
     if (viewerTimer) clearInterval(viewerTimer);
     if (viewerImageUrl) URL.revokeObjectURL(viewerImageUrl);
@@ -265,12 +300,41 @@
     }
   }
 
-  function stageRunnableTasks(tasks: AutomationTaskRow[]) {
-    return tasks.filter((task) => parallelTaskIds.has(task.id));
+  function taskStagesFor(
+    sourceAutomation: AutomationPageModel,
+    block?: Parameters<typeof automationStageTasks>[1],
+    liveRuntime?: AutomationRuntimeSnapshot | null,
+    liveActions: readonly AutomationActionToken[] = appPendingActions,
+  ) {
+    return [{
+      id: "sync",
+      title: $t.automation.syncStage,
+      tasks: automationStageTasks(sourceAutomation, block, liveRuntime, liveActions),
+    }];
   }
 
-  function openSyncSheet(tasks: AutomationTaskRow[]) {
-    syncTasks = stageRunnableTasks(tasks);
+  function prerequisiteNoticeGroupsFor(sourceAutomation: AutomationPageModel) {
+    return [...sourceAutomation.externalPrerequisiteNotices.reduce(
+      (groups, notice) => {
+        const notices = groups.get(notice.prerequisiteId) ?? [];
+        notices.push(notice);
+        groups.set(notice.prerequisiteId, notices);
+        return groups;
+      },
+      new Map<string, AutomationTaskPrerequisiteNotice[]>(),
+    )].map(([prerequisiteId, notices]) => ({
+      prerequisiteId,
+      prerequisite: notices[0].prerequisite,
+      notices,
+    }));
+  }
+
+  function stageRunnableTasks(tasks: AutomationTaskRow[], runnableTaskIds = parallelTaskIds) {
+    return tasks.filter((task) => runnableTaskIds.has(task.id));
+  }
+
+  function openSyncSheet(tasks: AutomationTaskRow[], runnableTaskIds = parallelTaskIds) {
+    syncTasks = stageRunnableTasks(tasks, runnableTaskIds);
     if (syncTasks.length) syncOpen = true;
   }
 
@@ -282,8 +346,98 @@
     return formatTime(task.latestFinishedAt ?? task.latestStartedAt);
   }
 
-  function taskCredentialsReady(task: AutomationTaskRow) {
-    return task.status !== "needs_setup" && task.credentialKeys.every((key) => automation.credentials[key]);
+  function taskCredentialsReady(task: AutomationTaskRow, sourceAutomation = automation) {
+    return task.status !== "needs_setup" && task.credentialKeys.every((key) =>
+      (sourceAutomation.credentialStates?.[key] ?? (sourceAutomation.credentials[key] ? "ready" : "missing")) === "ready",
+    );
+  }
+
+  function credentialState(key: string, sourceAutomation = automation): AutomationCredentialStatus {
+    return sourceAutomation.credentialStates?.[key]
+      ?? (sourceAutomation.credentials[key] ? "ready" : "missing");
+  }
+
+  function allCredentialsLoading(task: AutomationTaskRow, sourceAutomation = automation) {
+    const states = task.credentialKeys.map((key) => credentialState(key, sourceAutomation));
+    return states.length > 0 && states.every((state) => state === "loading");
+  }
+
+  function anyCredentialReadFailed(task: AutomationTaskRow, sourceAutomation = automation) {
+    return task.credentialKeys.some((key) => credentialState(key, sourceAutomation) === "read_failed");
+  }
+
+  function schedulePreparingTimeout(taskId: string) {
+    const timeout = setTimeout(() => {
+      void window.octopusBeak.automation.runtimeSnapshot()
+        .then((snapshot) => applyAuthoritativeRuntimeSnapshot(snapshot))
+        .catch((error) => {
+          console.error("automation-runtime-preparing-timeout", error);
+          void window.octopusBeak.automation.fatalRuntimeSnapshot();
+        });
+    }, 5_000);
+    preparingTimeouts.set(taskId, timeout);
+  }
+
+  /** Component IPC responses must pass the shell's session/revision gate. */
+  function applyAuthoritativeRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
+    const accepted = runtimeController
+      ? runtimeController.acceptSnapshot(snapshot)
+      : { accepted: true, sessionChanged: false, hadGap: false, snapshot };
+    if (!accepted.accepted) return false;
+    runtimeSnapshot = accepted.snapshot;
+    appliedRuntimeSnapshot = accepted.snapshot;
+    applyRuntimeSnapshot(accepted.snapshot);
+    if (accepted.hadGap || accepted.sessionChanged) void reload();
+    return true;
+  }
+
+  function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
+    const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
+    // Keep the component on the same pure merge contract as list/details and
+    // let the authoritative runtime status derive terminal actions and
+    // partial summaries. This also means every task row receives the exact
+    // progress belonging to the current runId in the snapshot.
+    automation = mergeAutomationRuntime(automation, snapshot);
+    for (const taskId of [...pendingTaskIds]) {
+      if (byTaskId.has(taskId)) {
+        pendingTaskIds.delete(taskId);
+        const timeout = preparingTimeouts.get(taskId);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(taskId);
+      }
+    }
+    localPendingActions = localPendingActions.filter((action) => !byTaskId.has(action.taskId));
+  }
+
+  function mergePendingActions(
+    appActions: readonly AutomationActionToken[],
+    localActions: readonly AutomationActionToken[],
+  ) {
+    const actions = new Map(appActions.map((action) => [action.taskId, action]));
+    for (const action of localActions) actions.set(action.taskId, action);
+    return [...actions.values()];
+  }
+
+  function beginActionToken(taskId: string, kind: AutomationActionKind) {
+    const token = runtimeController
+      ? runtimeController.beginAction(taskId, kind)
+      : {
+        token: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        taskId,
+        kind,
+        runId: null,
+        startedAt: performance.now(),
+      } satisfies AutomationActionToken;
+    if (!token) return null;
+    pendingTaskIds = new Set([...pendingTaskIds, taskId]);
+    localPendingActions = [...localPendingActions.filter((action) => action.taskId !== taskId), token];
+    return token;
+  }
+
+  function failActionToken(token: AutomationActionToken) {
+    runtimeController?.failAction(token);
+    pendingTaskIds = new Set([...pendingTaskIds].filter((taskId) => taskId !== token.taskId));
+    localPendingActions = localPendingActions.filter((action) => action.token !== token.token);
   }
 
   function localizedText(value: { en: string; "zh-TW": string }) {
@@ -591,14 +745,42 @@
   }
 
   async function runTask(task: AutomationTaskRow) {
+    if (pendingTaskIds.has(task.id) || appPendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
+    const token = beginActionToken(task.id, "run");
+    if (!token) return;
+    applyLocalPreparing(task.id);
+    schedulePreparingTimeout(task.id);
     try {
       actionError = "";
-      if (task.primaryAction === "Resume") await window.octopusBeak.automation.resume(task.id);
-      else await window.octopusBeak.automation.run(task.id);
+      const result = await window.octopusBeak.automation.run(task.id);
+      runtimeController?.bindRun(token, result.runId);
+      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
     } catch (error) {
+      failActionToken(token);
+      const pending = preparingTimeouts.get(task.id);
+      if (pending) clearTimeout(pending);
+      preparingTimeouts.delete(task.id);
       actionError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function applyLocalPreparing(taskId: string) {
+    automation = {
+      ...automation,
+      active: true,
+      activeTaskCount: Math.max(automation.activeTaskCount, 1),
+      tasks: automation.tasks.map((task) => task.id === taskId
+        ? {
+          ...task,
+          status: "preparing",
+          isActive: true,
+          primaryAction: "Cancel",
+          canRun: true,
+          progressText: "0%",
+        }
+        : task),
+    };
   }
 
   async function openExternalPrerequisite(prerequisiteId: string) {
@@ -623,11 +805,46 @@
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
+    const actionTokens: AutomationActionToken[] = [];
+    for (const task of tasks) {
+      const token = beginActionToken(task.id, "run");
+      if (!token) continue;
+      actionTokens.push(token);
+      applyLocalPreparing(task.id);
+      schedulePreparingTimeout(task.id);
+    }
+    if (!actionTokens.length) return;
     try {
       actionError = "";
-      await window.octopusBeak.automation.runMany(tasks.map((task) => task.id));
+      const result = await window.octopusBeak.automation.runMany(actionTokens.map((token) => token.taskId));
+      if (result.errors && Object.keys(result.errors).length) {
+        actionError = Object.entries(result.errors)
+          .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $t)}: ${message}`)
+          .join("\n");
+      }
+      for (const task of tasks) {
+        if (result.results[task.id]?.status !== "error") continue;
+        const token = actionTokens.find((candidate) => candidate.taskId === task.id);
+        if (token) failActionToken(token);
+        const timeout = preparingTimeouts.get(task.id);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(task.id);
+      }
+      for (const token of actionTokens) {
+        const resultTask = result.results[token.taskId];
+        if (resultTask?.runId) runtimeController?.bindRun(token, resultTask.runId);
+      }
+      if (result.runtime) applyAuthoritativeRuntimeSnapshot(result.runtime);
       await reload();
     } catch (error) {
+      for (const token of actionTokens) {
+        failActionToken(token);
+        const task = tasks.find((candidate) => candidate.id === token.taskId);
+        if (!task) continue;
+        const timeout = preparingTimeouts.get(task.id);
+        if (timeout) clearTimeout(timeout);
+        preparingTimeouts.delete(task.id);
+      }
       actionError = error instanceof Error ? error.message : String(error);
     }
   }
@@ -643,19 +860,33 @@
     await reload();
   }
 
-  async function revealTaskLog(task: AutomationTaskRow) {
+  async function forceTerminateTask(task: AutomationTaskRow) {
+    if (!confirm($t.automation.confirmForceQuit)) return;
+    const token = beginActionToken(task.id, "force-terminate");
+    if (!token) return;
+    try {
+      actionError = "";
+      await window.octopusBeak.automation.forceTerminate(task.id);
+      await reload();
+    } catch (error) {
+      failActionToken(token);
+      actionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function revealTaskDetails(task: AutomationTaskRow) {
     const stageId = "sync";
     stageOpen = { ...stageOpen, [stageId]: true };
-    expandedLogTaskId = task.id;
+    expandedRunDetailsTaskId = task.id;
     jumpHighlightTaskId = task.id;
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
 
     await tick();
     const target = document.getElementById(`${task.id}-task-row`);
-    const inlineLog = document.getElementById(`${task.id}-inline-log`);
+    const detailsRow = document.getElementById(`${task.id}-run-details`);
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     target?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
-    inlineLog?.querySelector<HTMLElement>(".inline-log-panel")?.focus({ preventScroll: true });
+    detailsRow?.querySelector<HTMLElement>(".inline-run-details")?.focus({ preventScroll: true });
     jumpHighlightTimer = setTimeout(() => {
       jumpHighlightTaskId = null;
       jumpHighlightTimer = null;
@@ -667,7 +898,7 @@
       openHumanViewer(task);
       return;
     }
-    void revealTaskLog(task);
+    void revealTaskDetails(task);
   }
 
   function scrollActiveTasks(event: WheelEvent) {
@@ -708,12 +939,15 @@
       return;
     }
     if (!confirm($t.automation.confirmCancel(taskLabel(task, $t)))) return;
+    const token = beginActionToken(task.id, "cancel");
+    if (!token) return;
     try {
       actionError = "";
-      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceQuit(task.id);
+      if (task.status === "waiting_for_human") await window.octopusBeak.automation.forceTerminate(task.id);
       else await window.octopusBeak.automation.cancel(task.id);
       await reload();
     } catch (error) {
+      failActionToken(token);
       actionError = error instanceof Error ? error.message : String(error);
     }
   }
@@ -723,7 +957,6 @@
     historyLoading = true;
     historySearch = "";
     historyFilter = "all";
-    expandedHistoryRunId = null;
     try {
       actionError = "";
       historyRows = await window.octopusBeak.automation.runHistory();
@@ -960,11 +1193,11 @@
     }
   }
 
-  async function forceQuitHumanViewer() {
+  async function forceTerminateHumanViewer() {
     if (!humanTask) return;
     if (!confirm($t.automation.confirmForceQuit)) return;
     try {
-      await window.octopusBeak.automation.forceQuit(humanTask.id);
+      await window.octopusBeak.automation.forceTerminate(humanTask.id);
       closeHumanViewer();
       await reload();
     } catch (error) {
@@ -982,7 +1215,7 @@
     closeHumanViewer();
     try {
       actionError = "";
-      await window.octopusBeak.automation.resume(task.id);
+      await window.octopusBeak.automation.resumeHumanAssistance(task.id);
       await reload();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
@@ -1208,14 +1441,16 @@
   </svelte:fragment>
 
   <div class:sync-sheet-open={syncOpen} class="content automation-content">
-    <section class:active={automation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
+    <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
+    {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, renderedPendingActions)}
+    <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
-        {#if automation.active}
+        {#if summaryAutomation.active}
           <span class="running-kicker"><CloudDownload size={16} strokeWidth={2.2} aria-hidden="true" />{$t.automation.syncInProgress}</span>
         {/if}
         <h2>
-          {automation.active
-            ? $t.automation.runningTaskHeading(automation.activeTaskCount)
+          {summaryAutomation.active
+            ? $t.automation.runningTaskHeading(summaryAutomation.activeTaskCount)
             : $t.automation.startSyncHeading}
         </h2>
         {#if iconTasks.length}
@@ -1232,7 +1467,7 @@
                   class:failed={task.status === "failed"}
                   class:sync-task={task.kind === "sync"}
                   type="button"
-                  aria-label={`${$t.automation.logs} · ${taskLabel(task, $t)}`}
+                  aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
                   aria-describedby={hoveredTask?.id === task.id ? "active-task-tooltip" : undefined}
                   title={taskLabel(task, $t)}
                   data-onboarding-task={task.id}
@@ -1265,8 +1500,12 @@
         </div>
       {/if}
     </section>
+    </ProgressiveBlock>
 
-    {#if prerequisiteNoticeGroups.length}
+    <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
+    {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, renderedPendingActions)}
+    {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
+    {#if detailsNoticeGroups.length}
       <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
         <div class="prerequisite-notices-head">
           <div>
@@ -1276,7 +1515,7 @@
           </div>
         </div>
         <div class="prerequisite-notice-list">
-          {#each prerequisiteNoticeGroups as group (group.prerequisiteId)}
+          {#each detailsNoticeGroups as group (group.prerequisiteId)}
             <article class="prerequisite-notice" role="alert">
               <div class="prerequisite-notice-copy">
                 <span class="prerequisite-provider">{group.prerequisite.provider}</span>
@@ -1291,7 +1530,7 @@
               <div class="prerequisite-affected-tasks">
                 <strong>{$t.automation.prerequisiteAffectedTasks}</strong>
                 {#each group.notices as notice (notice.noticeId)}
-                  {@const task = automation.tasks.find((candidate) => candidate.id === notice.taskId)}
+                  {@const task = detailsAutomation.tasks.find((candidate) => candidate.id === notice.taskId)}
                   <div class="prerequisite-task-row">
                     <span>{task ? taskLabel(task, $t) : notice.taskId}</span>
                     {#if task}
@@ -1316,13 +1555,18 @@
         </div>
       </section>
     {/if}
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="list" state={blockState(blocks, "list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
+    {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
+    {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, renderedPendingActions)}
+    {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     <section class="card workflow-card" aria-label={$t.automation.taskQueue}>
-      {#each taskStages as stage, stageIndex}
+      {#each listTaskStages as stage, stageIndex}
         <section class="stage-section">
           <div class="stage-head">
             <div class="stage-head-content">
-              <span class:muted={!stageRunnableTasks(stage.tasks).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
+              <span class:muted={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length} class="stage-number" aria-hidden="true">{stageIndex + 1}</span>
               <span class="stage-copy">
                 <span class="stage-title-row">
                   <h2 id={`${stage.id}-stage-title`}>{stage.title}</h2>
@@ -1332,8 +1576,11 @@
                 <button
                   class="button primary stage-sync-action"
                   type="button"
-                  disabled={!stageRunnableTasks(stage.tasks).length}
-                  onclick={() => openSyncSheet(stage.tasks)}
+                  disabled={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length}
+                  onclick={() => dispatchAutomationStageSync(
+                    stage.tasks,
+                    (tasks) => openSyncSheet(tasks, listParallelTaskIds),
+                  )}
                 >
                   {$t.automation.syncAll}
                 </button>
@@ -1381,18 +1628,37 @@
                   </div>
                 </td>
                 <td>
-                  <span class={`credential-state ${taskCredentialsReady(task) ? "good" : "bad"}`}>
-                    {taskCredentialsReady(task) ? $t.common.ready : $t.common.missing}
+                  <span class={`credential-state ${taskCredentialsReady(task, listAutomation) ? "good" : anyCredentialReadFailed(task, listAutomation) ? "bad" : ""}`}>
+                    {#if allCredentialsLoading(task, listAutomation)}
+                      <span class="spinner" aria-label={$t.common.loading}></span>
+                    {:else if anyCredentialReadFailed(task, listAutomation)}
+                      {$locale === "zh-TW" ? "讀取失敗" : "Read failed"}
+                    {:else if taskCredentialsReady(task, listAutomation)}
+                      {$t.common.ready}
+                    {:else}
+                      {$t.common.missing}
+                    {/if}
                   </span>
                 </td>
                 <td class="mono latest-time">{latestTaskTime(task)}</td>
                 <td>
-                  {#if task.isActive}
+                  {#if task.isActive || (task.progressPercent !== null && !["cancelled", "failed", "interrupted"].includes(task.status))}
                   <div class="progress-cell">
-                    <div class="progress-bar" aria-hidden="true">
+                    <div
+                      class="progress-bar"
+                      role="progressbar"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={task.progressPercent ?? undefined}
+                      aria-valuetext={progressLabel(task, $t)}
+                      aria-label={taskLabel(task, $t)}
+                    >
                       <span style={`width: ${task.progressPercent ?? 0}%`}></span>
                     </div>
                     <span class="mono">{progressLabel(task, $t)}</span>
+                    {#if task.status === "completed" || task.status === "partial"}
+                      <span class={`chip ${statusClass(task.status)}`}>{$t.automation.statusLabels[task.status]}</span>
+                    {/if}
                   </div>
                   {:else}
                   <span class={`chip ${statusClass(task.status)}`}>
@@ -1415,6 +1681,15 @@
                       {#if task.isActive}<span class="spinner" aria-hidden="true"></span>{/if}
                       <span>{$t.automation.actionLabels[task.primaryAction]}</span>
                     </button>
+                    {#if task.status === "cancelling" && task.forceTerminateAvailable}
+                      <button
+                        class="button danger task-control"
+                        type="button"
+                        onclick={() => void forceTerminateTask(task)}
+                      >
+                        {$t.automation.forceQuit}
+                      </button>
+                    {/if}
                     {#if task.status === "waiting_for_human" && task.humanSession}
                       <button
                         class="button secondary task-control"
@@ -1431,47 +1706,77 @@
                     {/if}
                     <button
                       class="button secondary task-control"
-                      class:active-log={expandedLogTaskId === task.id}
+                      class:active-details={expandedRunDetailsTaskId === task.id}
                       type="button"
-                      aria-expanded={expandedLogTaskId === task.id}
-                      aria-controls={`${task.id}-inline-log`}
+                      aria-label={`${$t.automation.runDetails} · ${taskLabel(task, $t)}`}
+                      title={$t.automation.runDetails}
+                      aria-expanded={expandedRunDetailsTaskId === task.id}
+                      aria-controls={`${task.id}-run-details`}
                       data-onboarding-task={task.id}
                       data-onboarding-group={task.credentialGroupId}
-                      data-onboarding-action="logs"
-                      onclick={() => (expandedLogTaskId = expandedLogTaskId === task.id ? null : task.id)}
+                      data-onboarding-action="run-details"
+                      onclick={() => (expandedRunDetailsTaskId = expandedRunDetailsTaskId === task.id ? null : task.id)}
                     >
-                      {$t.automation.logs}
+                      <CircleEllipsis size={16} strokeWidth={2.2} aria-hidden="true" />
+                      <span class="visually-hidden">{$t.automation.runDetails}</span>
                     </button>
                   </div>
                 </td>
               </tr>
-              {#if task.status === "partial" && task.statementFailures.length}
-                <tr class="partial-task-detail">
+              {#if expandedRunDetailsTaskId === task.id}
+                <tr class="inline-run-details-row" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-run-details`}>
                   <td colspan="5">
-                    <details>
-                      <summary>{$t.automation.partialSyncWarning}</summary>
-                      <ul>
-                        {#each task.statementFailures as failure}
-                          <li>
-                            <strong>{$t.automation.statementTypeLabels[failure.typeId] ?? failure.typeId}</strong>
-                            {#if failure.error}<span>{failure.error}</span>{/if}
-                          </li>
-                        {/each}
-                      </ul>
-                    </details>
-                  </td>
-                </tr>
-              {/if}
-              {#if expandedLogTaskId === task.id}
-                <tr class="inline-task-log" class:jump-highlight={jumpHighlightTaskId === task.id} id={`${task.id}-inline-log`}>
-                  <td colspan="5">
-                    <div class="inline-log-panel" tabindex="-1" transition:disclosureSlide>
-                      <div class="inline-log-head">
-                        <strong>{$t.automation.inlineLogTitle(taskLabel(task, $t))}</strong>
+                    <div class="inline-run-details" tabindex="-1" transition:disclosureSlide>
+                      <div class="inline-run-details-head">
+                        <strong>{$t.automation.workflowEventTitle(taskLabel(task, $t))}</strong>
                         <span class={`chip ${statusClass(task.status)}`}>{progressLabel(task, $t)}</span>
                       </div>
-                      <p class="mono inline-log-path">{task.logPath ?? $t.automation.noLogFile}</p>
-                      <pre class="log-output">{task.errorMessage ?? (task.logTail || $t.automation.noLogs)}</pre>
+                      {#if task.appWorkflowOutcome?.errorCode}
+                        <p class="workflow-outcome-error">
+                          <code>{task.appWorkflowOutcome.errorCode}</code>
+                          {#if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
+                            <span>{$locale === "zh-TW"
+                              ? "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。"
+                              : "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying."}</span>
+                          {:else if task.appWorkflowOutcome.errorCode === "source-unavailable"}
+                            <span>{$locale === "zh-TW"
+                              ? "來源網站未提供可用的登入表單（系統忙碌或空白回應）。請稍後重試。"
+                              : "The provider did not return a usable login form (busy or blank response). Try again later."}</span>
+                          {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
+                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                          {/if}
+                        </p>
+                      {/if}
+                      {#if task.appWorkflowOutcome?.summary}
+                        <div class="workflow-outcome-summary" aria-label="Workflow outcome summary">
+                          {#if task.appWorkflowOutcome.summary.status}
+                            <span>{task.appWorkflowOutcome.summary.status}</span>
+                          {/if}
+                          {#each Object.entries(task.appWorkflowOutcome.summary.counts) as count}
+                            <span>{count[0]}: {count[1]}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if task.events.length}
+                        <ol class="workflow-event-list" aria-label={$t.automation.workflowEventTitle(taskLabel(task, $t))}>
+                          {#each task.events as event, index (index)}
+                            <li class="workflow-event-row">
+                              <div class="workflow-event-main">
+                                <span class="workflow-event-stage">{$t.automation.workflowStages[event.stage]}</span>
+                                <code>{event.code}</code>
+                              </div>
+                              <div class="workflow-event-meta">
+                                <time datetime={event.occurredAt}>{formatTime(event.occurredAt)}</time>
+                                {#if event.completed !== undefined || event.total !== undefined}
+                                  <span>{$t.automation.workflowEventCounts(event.completed, event.total)}</span>
+                                {/if}
+                              </div>
+                            </li>
+                          {/each}
+                        </ol>
+                      {:else}
+                        <p class="workflow-event-empty">{$t.automation.workflowEventEmpty}</p>
+                      {/if}
                     </div>
                   </td>
                 </tr>
@@ -1486,6 +1791,7 @@
         </section>
       {/each}
     </section>
+    </ProgressiveBlock>
 
     {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
   </div>
@@ -1521,7 +1827,6 @@
           {#each syncTasks as task}
             <li>
               <span>{taskLabel(task, $t)}</span>
-              <code>{task.script}</code>
             </li>
           {/each}
         </ul>
@@ -1864,19 +2169,27 @@
               {/if}
               {#each visibleHistoryRows as run}
                 <tr>
-                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong><span>{run.script}</span></div></td>
+                  <td><div class="task-name"><strong>{taskIdLabel(run.taskId, $t)}</strong></div></td>
                   <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
                   <td class="mono">{formatTime(run.startedAt)}</td>
                   <td class="mono">{formatDuration(run)}</td>
                   <td class="history-error">
-                    {#if run.errorMessage}
-                      <button type="button" onclick={() => (expandedHistoryRunId = expandedHistoryRunId === run.taskRunId ? null : run.taskRunId)}>{run.errorMessage}</button>
+                    {#if run.appWorkflowOutcome?.errorCode}
+                      <code>{run.appWorkflowOutcome.errorCode}</code>
+                      {#if run.appWorkflowOutcome.errorCode === "source-access-challenged"}
+                        <small>{$locale === "zh-TW"
+                          ? "網站安全驗證阻擋登入"
+                          : "Site verification blocked sign-in"}</small>
+                      {:else if run.appWorkflowOutcome.errorCode === "source-unavailable"}
+                        <small>{$locale === "zh-TW"
+                          ? "來源網站登入頁不可用"
+                          : "Provider login unavailable"}</small>
+                      {:else if workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}
+                        <small>{workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}</small>
+                      {/if}
                     {:else}--{/if}
                   </td>
                 </tr>
-                {#if run.errorMessage && expandedHistoryRunId === run.taskRunId}
-                  <tr class="history-error-detail"><td colspan="5"><strong>{$t.automation.historyError}</strong><code>{run.errorMessage}</code></td></tr>
-                {/if}
               {/each}
             </tbody>
           </table>
@@ -1905,7 +2218,7 @@
           {/if}
         </div>
         <div class="viewer-actions">
-          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceQuitHumanViewer}>
+          <button class="button danger fixed-action force-quit-action" type="button" onclick={forceTerminateHumanViewer}>
             {$t.automation.forceQuit}
           </button>
           {#if humanTask.humanAssistanceContract?.completion.mode === "independent"
@@ -2525,7 +2838,8 @@
   }
 
   .progress-bar {
-    width: 100%;
+    flex: 1 0 40px;
+    min-width: 40px;
     height: 6px;
     overflow: hidden;
     border-radius: 999px;
@@ -2566,7 +2880,7 @@
     font-size: 12px;
   }
 
-  .task-control.active-log {
+  .task-control.active-details {
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-soft);
@@ -2587,45 +2901,13 @@
     color: var(--danger);
   }
 
-  .inline-task-log td {
+  .inline-run-details-row td {
     padding: 0;
     background: color-mix(in oklch, var(--accent-soft) 38%, var(--surface));
     scroll-margin-top: 88px;
   }
 
-  .partial-task-detail td {
-    padding: 0 var(--space-4) var(--space-4);
-    border-top: 0;
-    color: var(--fg);
-    background: color-mix(in oklch, var(--warn) 3%, var(--surface));
-  }
-
-  .partial-task-detail details {
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid color-mix(in oklch, var(--warn) 28%, var(--border));
-    border-radius: var(--radius);
-  }
-
-  .partial-task-detail summary {
-    color: var(--warn);
-    font-size: 12px;
-    font-weight: 720;
-    cursor: pointer;
-  }
-
-  .partial-task-detail ul {
-    margin: var(--space-3) 0 0;
-    padding-left: var(--space-5);
-  }
-
-  .partial-task-detail li span {
-    display: block;
-    margin-top: var(--space-1);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .inline-log-panel {
+  .inline-run-details {
     display: grid;
     gap: var(--space-3);
     padding: var(--space-5);
@@ -2635,30 +2917,91 @@
     transition: background 240ms ease, box-shadow 240ms ease;
   }
 
-  .inline-task-log.jump-highlight .inline-log-panel {
+  .inline-run-details-row.jump-highlight .inline-run-details {
     background: color-mix(in oklch, var(--accent-soft) 76%, var(--surface));
     box-shadow: inset 4px 0 0 var(--accent);
   }
 
-  .inline-log-head {
+  .inline-run-details-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
   }
 
-  .inline-log-path {
+  .workflow-event-list {
+    max-height: 280px;
     margin: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    padding: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-soft);
+    list-style: none;
+  }
+
+  .workflow-event-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-height: 42px;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .workflow-event-row:last-child {
+    border-bottom: 0;
+  }
+
+  .workflow-event-main,
+  .workflow-event-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .workflow-event-stage,
+  .workflow-event-meta {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .workflow-event-row code {
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-event-meta {
+    justify-content: flex-end;
+    text-align: right;
     white-space: nowrap;
   }
 
-  .inline-log-panel .log-output {
-    min-height: 120px;
-    max-height: 280px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+  .workflow-event-empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .workflow-outcome-error {
+    margin: 0;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-outcome-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .sync-sheet {
@@ -2724,11 +3067,6 @@
 
   .sync-task-list li:last-child {
     border-bottom: 0;
-  }
-
-  .sync-task-list code {
-    color: var(--muted);
-    font-size: 12px;
   }
 
   .sync-modal-actions {
@@ -2850,61 +3188,10 @@
     vertical-align: middle;
   }
 
-  .history-table .task-name span {
-    display: block;
-    margin-top: 4px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    overflow-wrap: anywhere;
-  }
-
   .history-error {
     max-width: 0;
     color: var(--muted);
     font-size: 12px;
-  }
-
-  .history-error button {
-    width: 100%;
-    overflow: hidden;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .history-error-detail td {
-    padding: 0 var(--space-4) var(--space-4);
-    border-top: 0;
-  }
-
-  .history-error-detail td > strong,
-  .history-error-detail code {
-    display: block;
-    padding: var(--space-3) var(--space-4);
-    color: var(--danger);
-    background: color-mix(in oklch, var(--danger) 5%, var(--surface));
-  }
-
-  .history-error-detail td > strong {
-    padding-bottom: 0;
-    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
-    border-bottom: 0;
-    border-radius: var(--radius) var(--radius) 0 0;
-    font-size: 12px;
-  }
-
-  .history-error-detail code {
-    padding-top: var(--space-2);
-    border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--border));
-    border-top: 0;
-    border-radius: 0 0 var(--radius) var(--radius);
-    white-space: pre-wrap;
   }
 
   .spinner {
@@ -3707,18 +3994,6 @@
     background: color-mix(in oklch, var(--danger) 5%, var(--surface));
   }
 
-  .log-output {
-    min-height: 240px;
-    margin: 0;
-    padding: var(--space-5);
-    overflow: auto;
-    color: var(--fg);
-    background: var(--surface-soft);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    white-space: pre-wrap;
-  }
-
   @media (max-width: 1100px) {
     .automation-content.sync-sheet-open {
       margin-right: 0;
@@ -3772,9 +4047,20 @@
       flex-basis: 36px;
     }
 
-    .inline-log-head {
+    .inline-run-details-head {
       align-items: flex-start;
       flex-direction: column;
+    }
+
+    .workflow-event-row {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: var(--space-1);
+    }
+
+    .workflow-event-meta {
+      justify-content: flex-start;
+      text-align: left;
     }
 
     .credential-section-head {

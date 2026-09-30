@@ -136,8 +136,11 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
+      - name: Install Electron Secret Service dependencies
+        run: sudo apt-get install --yes gnome-keyring dbus-x11 libsecret-1-0
+
       - name: Run tests
-        run: npm run test:ci
+        run: dbus-run-session -- xvfb-run --auto-servernum bash scripts/run-linux-ci-tests.sh
 
       - name: Typecheck
         run: npm run typecheck

@@ -1,15 +1,4 @@
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import {
-  finalizeForceQuitTaskRun,
-  type ForceQuitFinalizationDependencies,
-} from "./task-run-finalization.ts";
-import { resumeSessionFromLog } from "./automation-session-disposition.ts";
-import {
-  latestTaskRuns,
-  updateHumanAssistanceContract,
-  updateHumanAssistanceCompletion,
-  type AutomationTaskRun,
-} from "./store.ts";
+import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type {
   HumanAssistanceCompletionStatus,
   HumanAssistanceContract,
@@ -18,94 +7,73 @@ import type {
 import { taskById } from "./tasks.ts";
 
 export function humanSessionFromRun(
-  run: Pick<AutomationTaskRun, "status" | "logTail"> | undefined,
+  run: (Pick<AutomationTaskRun, "status">
+    & Partial<Pick<AutomationTaskRun, "taskRunId">>) | undefined,
   taskId: string,
 ) {
   if (run?.status !== "waiting_for_human") {
     throw new Error(`Automation task is not waiting for human input: ${taskId}`);
   }
 
-  const session = resumeSessionFromLog(run.logTail);
-  if (!session) throw new Error(`Missing Libretto resume session for automation task: ${taskId}`);
-  return session;
-}
-
-export function humanSessionForTask(taskId: string, ledgerDir = process.env.LEDGER_DIR ?? "data/ledger") {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-
-  const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-  try {
-    return humanSessionFromRun(latestTaskRuns(db)[taskId], taskId);
-  } finally {
-    db.close();
+  const task = taskById(taskId);
+  if (!task?.workflowId || task.kind !== "crawler") {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
+  if (run.taskRunId) return run.taskRunId;
+  throw new Error(`Missing App workflow run ID for automation task: ${taskId}`);
 }
 
-export function humanAssistanceContractForTask(
+export async function humanSessionForTask(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-): HumanAssistanceContract | null {
+  provider: AutomationPersistenceProvider,
+): Promise<string> {
   if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-
-  const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-  try {
-    return latestTaskRuns(db)[taskId]?.humanAssistanceContract ?? null;
-  } finally {
-    db.close();
-  }
+  const latest = await provider.automation.latestTaskRuns();
+  return humanSessionFromRun(latest[taskId], taskId);
 }
 
-export function updateHumanAssistanceCompletionForTask(
+export async function humanAssistanceContractForTask(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
+): Promise<HumanAssistanceContract | null> {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId || task.kind !== "crawler") {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
+  }
+  return (await provider.automation.latestTaskRuns())[taskId]?.humanAssistanceContract ?? null;
+}
+
+export async function updateHumanAssistanceCompletionForTask(
   taskId: string,
   status: HumanAssistanceCompletionStatus,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-): HumanAssistanceContract {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const run = latestTaskRuns(db)[taskId];
-    if (run?.status !== "waiting_for_human") {
-      throw new Error(`Automation task is not waiting for human input: ${taskId}`);
-    }
-    return updateHumanAssistanceCompletion(db, run.taskRunId, status);
-  } finally {
-    db.close();
+  provider: AutomationPersistenceProvider,
+): Promise<HumanAssistanceContract> {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId || task.kind !== "crawler") {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
+  const run = (await provider.automation.latestTaskRuns())[taskId];
+  if (run?.status !== "waiting_for_human") {
+    throw new Error(`Automation task is not waiting for human input: ${taskId}`);
+  }
+  return provider.automation.updateHumanAssistanceCompletion(run.taskRunId, status);
 }
 
-export function updateHumanAssistanceContractForTask(
+export async function updateHumanAssistanceContractForTask(
   taskId: string,
   input: HumanAssistanceContractInput,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-): HumanAssistanceContract {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const run = latestTaskRuns(db)[taskId];
-    if (run?.status !== "waiting_for_human") {
-      throw new Error(`Automation task is not waiting for human input: ${taskId}`);
-    }
-    return updateHumanAssistanceContract(db, run.taskRunId, input);
-  } finally {
-    db.close();
+  provider: AutomationPersistenceProvider,
+): Promise<HumanAssistanceContract> {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  if (!task.workflowId || task.kind !== "crawler") {
+    throw new Error(`Human assistance requires an App browser workflow: ${taskId}`);
   }
-}
-
-export async function forceQuitHumanSessionForTask(
-  taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  dependencies: ForceQuitFinalizationDependencies = {},
-) {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const run = latestTaskRuns(db)[taskId];
-    if (!run) throw new Error(`Automation task is not waiting for human input: ${taskId}`);
-    return await finalizeForceQuitTaskRun(db, run, dependencies);
-  } finally {
-    db.close();
+  const run = (await provider.automation.latestTaskRuns())[taskId];
+  if (run?.status !== "waiting_for_human") {
+    throw new Error(`Automation task is not waiting for human input: ${taskId}`);
   }
+  return provider.automation.updateHumanAssistanceContract(run.taskRunId, input);
 }

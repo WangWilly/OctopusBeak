@@ -1,13 +1,6 @@
 export function createBeforeQuitHandler(options: {
   cleanup(): Promise<void>;
   quit(): void;
-  timeoutMs: number;
-}, timerDeps: {
-  setTimer(callback: () => void, ms: number): NodeJS.Timeout | number;
-  clearTimer(timer: NodeJS.Timeout | number): void;
-} = {
-  setTimer: (callback: () => void, ms: number) => setTimeout(callback, ms),
-  clearTimer: (timer: NodeJS.Timeout | number) => clearTimeout(timer as NodeJS.Timeout),
 }) {
   let quittingAllowed = false;
   let cleanupStarted = false;
@@ -18,14 +11,10 @@ export function createBeforeQuitHandler(options: {
     if (cleanupStarted) return;
     cleanupStarted = true;
 
-    let timer: NodeJS.Timeout | number | undefined;
-    const deadline = new Promise<void>((resolve) => {
-      timer = timerDeps.setTimer(resolve, options.timeoutMs);
-    });
-    void Promise.race([options.cleanup(), deadline]).catch(() => {}).finally(() => {
-      if (timer !== undefined) timerDeps.clearTimer(timer);
-      quittingAllowed = true;
-      options.quit();
-    });
+    // Child trees are terminated best-effort by the cleanup hook. Closing the
+    // app must never wait for a browser daemon or a stuck child process.
+    void options.cleanup().catch(() => {});
+    quittingAllowed = true;
+    options.quit();
   };
 }

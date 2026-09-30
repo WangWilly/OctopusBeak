@@ -1,39 +1,89 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Page } from "playwright";
+import type { WorkflowContext, WorkflowRunEvent } from "../lib/automation/workflow-executor.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { classifyTypedWorkflowFailure } from "../lib/automation/server/typed-workflow-outcome.ts";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildCanonicalEInvoiceCapture,
   canonicalOccurrence,
   closeInvoiceDetailModal,
-  commitCanonicalCapture,
   einvoiceCaptchaAssistanceStage,
   mapCanonicalEInvoiceRecord,
+  retryEinvoiceLoginNavigation,
+  runEinvoiceProviderWorkflow,
   type InvoiceCaptureRecord,
   validatePaginationEnvelope,
+  waitForEinvoiceLoginOutcome,
   waitForListResponse,
 } from "./einvoice-personal-invoices.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { queryCanonicalEInvoiceCurrent } from "../ledger/canonical/einvoice.ts";
 
 const workflowSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "einvoice-personal-invoices.ts"),
   "utf8",
 );
-assert.doesNotMatch(workflowSource, /writeInvoicesFile|purchased_invoice|rowsToCsv|csvPath/u);
-assert.match(workflowSource, /const commit = await commitCanonicalCapture/u);
-assert.match(workflowSource, /startUrl: LOGIN_URL/u);
+assert.doesNotMatch(workflowSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(/u);
+assert.doesNotMatch(workflowSource, /librettoAuthenticate|\bpause\(|npx libretto|emitAutomationProgress/u);
+assert.doesNotMatch(workflowSource, /requirePGliteChildRpcClientFromEnv|pglite-child-rpc-client|createPGliteChildRpc/u);
+assert.doesNotMatch(workflowSource, /node:fs|writeFile|appendFile|createWriteStream|process\.env|console\.(?:log|error)|logPath/u);
+assert.match(workflowSource, /runEinvoiceProviderWorkflow/u);
+assert.match(workflowSource, /financialCommit\.execute/u);
+
+let redirectAttempts = 0;
+assert.equal(await retryEinvoiceLoginNavigation(async () => {
+  redirectAttempts += 1;
+  if (redirectAttempts === 1) throw new Error("Execution context was destroyed");
+  return "login-form-ready";
+}), "login-form-ready");
+assert.equal(redirectAttempts, 2);
+let unrelatedAttempts = 0;
+await assert.rejects(retryEinvoiceLoginNavigation(async () => {
+  unrelatedAttempts += 1;
+  throw new Error("Invalid form field");
+}), /Invalid form field/);
+assert.equal(unrelatedAttempts, 1);
 
 const browser = await chromium.launch();
 try {
+  const blockedPage = await browser.newPage();
+  blockedPage.setDefaultTimeout(500);
+  await blockedPage.route("https://www.einvoice.nat.gov.tw/accounts/login", async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "text/html; charset=utf-8",
+      body: '<html><body>正在執行安全驗證<input type="hidden" name="cf-turnstile-response"></body></html>',
+    });
+  });
+  const blockedEvents: WorkflowRunEvent[] = [];
+  const blockedContext: WorkflowContext = {
+    runId: "blocked-login-fixture",
+    signal: new AbortController().signal,
+    now: () => "2026-09-26T00:00:00.000Z",
+    browser: { withPage: (run) => run(blockedPage) },
+    text: strictSourceText,
+    humanAssistance: { request: async () => { throw new Error("unexpected assistance"); } },
+    financialCommit: { execute: async () => { throw new Error("unexpected commit"); } },
+    event: async (stage, code) => {
+      blockedEvents.push({ runId: "blocked-login-fixture", stage, code, occurredAt: "2026-09-26T00:00:00.000Z" });
+    },
+  };
+  let blockedError: unknown;
+  try {
+    await runEinvoiceProviderWorkflow(blockedContext, {
+      credentials: { einvoice_phone_number: "0900000000", einvoice_password: "fixture-only" },
+    });
+  } catch (error) {
+    blockedError = error;
+  }
+  assert.ok(blockedError);
+  assert.ok(blockedEvents.some((event) => event.code === "source-access-challenged"));
+  assert.equal(classifyTypedWorkflowFailure(blockedError, blockedEvents), "source-access-challenged");
+  await blockedPage.close();
+
   const captchaPage = await browser.newPage();
   await captchaPage.setContent(`
     <input id="captcha" style="width: 120px; height: 32px" />
@@ -73,6 +123,17 @@ try {
   assert.equal(captchaContract.challengeImageRegion?.rect?.width, 150);
   assert.equal(captchaContract.challengeImageRegion?.rect?.height, 40);
   await captchaPage.close();
+
+  const outcomePage = await browser.newPage();
+  await outcomePage.setContent('<div role="alert">圖形驗證碼錯誤，請重新輸入</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "captcha-rejected");
+  await outcomePage.setContent('<div role="alert">密碼不正確</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "credentials-rejected");
+  await outcomePage.setContent('<div>會員專區</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 50), "authenticated");
+  await outcomePage.setContent('<div>登入中</div>');
+  assert.equal(await waitForEinvoiceLoginOutcome(outcomePage, 25), "unconfirmed");
+  await outcomePage.close();
 } finally {
   await browser.close();
 }
@@ -191,7 +252,7 @@ assert.deepEqual(
     async waitForResponse() {
       return {
         status: () => 200,
-        json: async () => populatedListResponse,
+        body: async () => Buffer.from(JSON.stringify(populatedListResponse), "utf8"),
       };
     },
   } as unknown as Page),
@@ -443,224 +504,51 @@ assert.deepEqual(
   ["4", "9"],
 );
 
-const workflowLedgerDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-canonical-"));
-try {
-  const firstCapture = captureInput(
-    [completeRecord],
-    "einvoice-workflow-normal",
-    "2026-09-10T05:00:00Z",
-  );
-  assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
-  assert.match(firstCapture.subjectDigest, /^sha256:/u);
-  assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);
-  const committed = await commitCanonicalCapture(firstCapture, workflowLedgerDir);
-  assert.equal(committed.status, "committed");
-  assert.equal(committed.invoiceCount, 1);
-  assert.equal(committed.itemCount, 1);
-
-  const renewedRowTokenCapture = captureInput(
-    [{
-      ...completeRecord,
-      entry: {
-        ...completeRecord.entry,
-        token: "opaque-provider-row-a-renewed",
-      },
-    }],
-    "einvoice-workflow-renewed-row-token",
-    "2026-09-10T05:00:15Z",
-  );
-  const renewedRowTokenCommit = await commitCanonicalCapture(
-    renewedRowTokenCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(
-    renewedRowTokenCommit.insertedRevisionCount,
-    0,
-    "a refreshed list-row token must not create or overwrite an invoice revision",
-  );
-  assert.equal(renewedRowTokenCommit.observedDuplicateCount, 1);
-
-  const fractionalStringRecord = {
+const firstCapture = captureInput(
+  [completeRecord],
+  "einvoice-workflow-normal",
+  "2026-09-10T05:00:00Z",
+);
+const duplicateCapture = captureInput(
+  [completeRecord, {
     ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-fractional-string",
-      invoiceNumber: "AA00000003",
+    entry: { ...completeRecord.entry, token: "another-provider-row-token" },
+  }],
+  "einvoice-workflow-identical-duplicate",
+  "2026-09-10T05:00:01Z",
+);
+assert.equal(duplicateCapture.invoices.length, 1, "identical provider rows represent one invoice revision");
+assert.equal(duplicateCapture.pages[0]?.rowCount, 1, "source page row count tracks admitted unique records");
+assert.equal(duplicateCapture.pages[0]?.metadata.providerRowCount, 2, "raw provider row count remains auditable");
+const duplicateAcrossPages = buildCanonicalEInvoiceCapture({
+  records: [completeRecord, { ...completeRecord, listPageIndex: 1 }],
+  pages: [0, 1].map((pageIndex) => ({
+    month,
+    pageIndex,
+    list: {
+      httpStatus: 200 as const,
+      totalElements: 2,
+      totalPages: 2,
+      size: 1,
+      content: [completeRecord.entry],
     },
-    items: [{
-      ...completeRecord.items[0]!,
-      quantity: "0.5",
-      unitPrice: "240",
-    }],
-  };
-  const fractionalStringCapture = captureInput(
-    [fractionalStringRecord],
-    "einvoice-workflow-fractional-string",
-    "2026-09-10T05:00:30Z",
-  );
-  const fractionalStringCommit = await commitCanonicalCapture(
-    fractionalStringCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(fractionalStringCommit.itemCount, 1);
-  assert.deepEqual(
-    fractionalStringCapture.invoices[0]?.items[0]?.quantity,
-    { coefficient: "5", scale: 1 },
-    "fractional string quantities retain exact decimal scale without a leading zero",
-  );
-
-  const fractionalNumberRecord = {
+  })),
+  months: ["2026-09"],
+}, credentials, {
+  captureId: "einvoice-workflow-identical-duplicate-pages",
+  observedAt: "2026-09-10T05:00:03Z",
+  today: new Date("2026-09-10T00:00:00Z"),
+});
+assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.rowCount), [1, 0]);
+assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.metadata.providerRowCount), [1, 1]);
+assert.throws(() => captureInput(
+  [completeRecord, {
     ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-fractional-number",
-      invoiceNumber: "AA00000004",
-    },
-    items: [{
-      ...completeRecord.items[0]!,
-      quantity: 0.5,
-      unitPrice: "240",
-    }],
-  };
-  const fractionalNumberCapture = captureInput(
-    [fractionalNumberRecord],
-    "einvoice-workflow-fractional-number",
-    "2026-09-10T05:00:31Z",
-  );
-  const fractionalNumberCommit = await commitCanonicalCapture(
-    fractionalNumberCapture,
-    workflowLedgerDir,
-  );
-  assert.equal(fractionalNumberCommit.itemCount, 1);
-  assert.deepEqual(
-    fractionalNumberCapture.invoices[0]?.items[0]?.quantity,
-    { coefficient: "5", scale: 1 },
-    "fractional numeric quantities use the same exact decimal normalization",
-  );
-
-  const incompleteRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-b",
-      invoiceNumber: "AA00000002",
-      totalAmount: "75",
-    },
-    header: {
-      ...completeRecord.header,
-      totalAmount: "75",
-    },
-    items: [{ sequenceNumber: "1", item: "Partial item" }],
-    itemCompleteness: "incomplete" as const,
-  };
-  const incompleteCapture = buildCanonicalEInvoiceCapture({
-    records: [incompleteRecord],
-    pages: [{
-      month,
-      pageIndex: 0,
-      list: { httpStatus: 200, totalElements: 1, totalPages: 1, size: 1, content: [incompleteRecord.entry] },
-    }],
-    months: ["2026-09"],
-  }, credentials, {
-    captureId: "einvoice-workflow-incomplete",
-    observedAt: "2026-09-10T05:01:00Z",
-    today: new Date("2026-09-10T00:00:00Z"),
-  });
-  assert.equal(incompleteCapture.scope.itemCompleteness, "incomplete");
-  await commitCanonicalCapture(incompleteCapture, workflowLedgerDir);
-
-  const revokedRecord = {
-    ...completeRecord,
-    entry: {
-      ...completeRecord.entry,
-      token: "opaque-provider-row-a-revoked",
-      invoiceStrStatus: "4",
-    },
-    header: {
-      ...completeRecord.header,
-      invoiceStrStatus: "4",
-    },
-    items: [],
-  };
-  const revokedCapture = buildCanonicalEInvoiceCapture({
-    records: [revokedRecord],
-    pages: [{
-      month,
-      pageIndex: 0,
-      list: { httpStatus: 200, totalElements: 1, totalPages: 1, size: 1, content: [revokedRecord.entry] },
-    }],
-    months: ["2026-09"],
-  }, credentials, {
-    captureId: "einvoice-workflow-revoked",
-    observedAt: "2026-09-10T05:02:00Z",
-    today: new Date("2026-09-10T00:00:00Z"),
-  });
-  assert.equal(revokedCapture.invoices[0]?.revisionKind, "revoked");
-  assert.equal(revokedCapture.invoices[0]?.total, null);
-  await commitCanonicalCapture(revokedCapture, workflowLedgerDir);
-
-  const store = createCanonicalSourceStore(canonicalSqlitePath(workflowLedgerDir));
-  try {
-    const current = queryCanonicalEInvoiceCurrent(store);
-    const revoked = current.invoices.find((invoice) => invoice.stableInvoiceKey === mapped.stableInvoiceKey);
-    assert.equal(revoked?.revision.state, "revoked");
-    const fractionalString = current.invoices.find(
-      (invoice) => invoice.revision.invoiceNumber === "AA00000003",
-    );
-    assert.deepEqual(fractionalString?.revision.items[0]?.quantity, {
-      coefficient: "5",
-      scale: 1,
-    });
-    const fractionalNumber = current.invoices.find(
-      (invoice) => invoice.revision.invoiceNumber === "AA00000004",
-    );
-    assert.deepEqual(fractionalNumber?.revision.items[0]?.quantity, {
-      coefficient: "5",
-      scale: 1,
-    });
-    const incomplete = current.invoices.find((invoice) => invoice.revision.invoiceNumber === "AA00000002");
-    assert.equal(incomplete?.revision.items[0]?.completeness, "incomplete");
-    assert.equal(incomplete?.revision.items[0]?.amount, null);
-  } finally {
-    store.close();
-  }
-
-  const emptyDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-empty-"));
-  try {
-    const emptyCommit = await commitCanonicalCapture(
-      captureInput([], "einvoice-workflow-empty", "2026-09-10T05:03:00Z"),
-      emptyDir,
-    );
-    assert.equal(emptyCommit.invoiceCount, 0);
-    assert.equal(emptyCommit.itemCount, 0);
-  } finally {
-    await rm(emptyDir, { recursive: true, force: true });
-  }
-
-  const failingDir = await mkdtemp(join(tmpdir(), "einvoice-workflow-failure-"));
-  try {
-    const missingTotal = {
-      ...completeRecord,
-      entry: { ...completeRecord.entry, totalAmount: null },
-      header: { ...completeRecord.header, totalAmount: null },
-    };
-    await assert.rejects(
-      commitCanonicalCapture(
-        captureInput([missingTotal], "einvoice-workflow-missing-total", "2026-09-10T05:04:00Z"),
-        failingDir,
-      ),
-      /requires a total/,
-      "workflow success must not be reported when canonical admission fails",
-    );
-    const failedStore = createCanonicalSourceStore(canonicalSqlitePath(failingDir));
-    try {
-      assert.equal(queryCanonicalEInvoiceCurrent(failedStore).invoices.length, 0);
-    } finally {
-      failedStore.close();
-    }
-  } finally {
-    await rm(failingDir, { recursive: true, force: true });
-  }
-} finally {
-  await rm(workflowLedgerDir, { recursive: true, force: true });
-}
+    header: { ...completeRecord.header, sellerName: "Different seller name" },
+  }],
+  "einvoice-workflow-conflicting-duplicate",
+  "2026-09-10T05:00:02Z",
+), /same invoice revision.*different facts/u);
+assert.match(firstCapture.sourceConnectionKey, /^sha256:/u);
+assert.match(firstCapture.subjectDigest, /^sha256:/u);
+assert.doesNotMatch(JSON.stringify(firstCapture), /0900000000|test-only-secret/);

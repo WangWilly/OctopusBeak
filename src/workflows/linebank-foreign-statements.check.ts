@@ -1,17 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import {
   buildLinebankForeignCurrencyCaptureInput,
   linebankEpochMillisecondsFromSourceDateTime,
 } from "./linebank-statements.ts";
-import {
-  commitForeignCurrencyDepositCapture,
-  admitForeignCurrencyDepositCapture,
-  queryForeignCurrencyDepositCurrent,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 
 const account = {
   acctNbr: "14101800082221",
@@ -143,16 +135,6 @@ function inputPagesWithoutEpoch() {
   };
 }
 
-const directory = await mkdtemp(join(tmpdir(), "linebank-foreign-133-"));
-try {
-  const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
-  await commitForeignCurrencyDepositCapture(store, input);
-  assert.equal(queryForeignCurrencyDepositCurrent(store).transactions.length, 1);
-  store.close();
-} finally {
-  await rm(directory, { recursive: true, force: true });
-}
-
 const emptyLinebankPage = {
   pageNbr: 1,
   pageCnt: 1000,
@@ -180,23 +162,3 @@ assert.throws(
     }),
   /total|complete|empty|terminal/i,
 );
-const emptyLinebankDirectory = await mkdtemp(join(tmpdir(), "linebank-foreign-empty-133-"));
-try {
-  const store = createCanonicalSourceStore(join(emptyLinebankDirectory, "canonical.sqlite"));
-  const result = await commitForeignCurrencyDepositCapture(
-    store,
-    admitForeignCurrencyDepositCapture(emptyLinebankInput),
-  );
-  assert.equal(result.transactionCount, 0);
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_captures").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  assert.equal(
-    Number((store.db.prepare("SELECT COUNT(*) AS count FROM source_sync_states").get() as { count?: number }).count ?? 0),
-    1,
-  );
-  store.close();
-} finally {
-  await rm(emptyLinebankDirectory, { recursive: true, force: true });
-}

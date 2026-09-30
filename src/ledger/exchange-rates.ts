@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { openLedgerDatabase, type LedgerDatabase } from "./db/client.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
 import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 
@@ -23,6 +22,12 @@ export type ExchangeRateRecord = {
   fetchedAt: string;
 };
 
+/** Async exchange-rate seam backed by the worker-owned PGlite database. */
+export interface ExchangeRatePersistencePort {
+  readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]>;
+  upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void>;
+}
+
 export type ExchangeRateSyncResult = {
   requestedCurrencies: string[];
   from: string | null;
@@ -33,9 +38,12 @@ export type ExchangeRateSyncResult = {
 type SyncOptions = {
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  signal?: AbortSignal;
 };
 
-export function requiredExchangeRateCurrencies(history: DailyHistoryRowDto[]) {
+export type ExchangeRateSyncOptions = SyncOptions;
+
+export function requiredExchangeRateCurrencies(history: readonly DailyHistoryRowDto[]) {
   return [...new Set(history.flatMap((row) =>
     AMOUNT_KEYS.flatMap((key) => row[key].map((amount) => amount.currency)),
   ))]
@@ -44,22 +52,10 @@ export function requiredExchangeRateCurrencies(history: DailyHistoryRowDto[]) {
 }
 
 export function readExchangeRates(
-  db: LedgerDatabase,
+  persistence: ExchangeRatePersistencePort,
   currencies?: string[],
-): ExchangeRateRecord[] {
-  if (currencies?.length === 0) return [];
-  const placeholders = currencies?.map(() => "?").join(", ");
-  return (db.prepare(`
-    SELECT
-      rate_date AS rateDate,
-      currency,
-      twd_per_unit AS twdPerUnit,
-      source,
-      fetched_at AS fetchedAt
-    FROM exchange_rates
-    ${placeholders ? `WHERE currency IN (${placeholders})` : ""}
-    ORDER BY currency, rate_date
-  `).all(...(currencies ?? [])) as ExchangeRateRecord[]).map((row) => ({ ...row }));
+): Promise<ExchangeRateRecord[]> {
+  return persistence.readExchangeRates(currencies);
 }
 
 function synchronizationStart(
@@ -75,48 +71,30 @@ function synchronizationStart(
     const rows = cached.filter((row) => row.currency === currency);
     const first = rows[0]?.rateDate;
     const last = rows.at(-1)?.rateDate;
-    if (!first || first > requiredFrom) return coverageDate;
+    if (!first || !last || first > requiredFrom) return coverageDate;
     if (last && last >= to) return [];
-    const next = new Date(`${last}T00:00:00.000Z`);
-    next.setUTCDate(next.getUTCDate() + 1);
-    const nextDate = next.toISOString().slice(0, 10);
-    return nextDate < coverageDate ? coverageDate : nextDate;
+    // Include the latest published day. Before today's publication a one-day
+    // request can return the prior quote; keep that quote inside the requested
+    // range while retaining strict response-date validation.
+    return last < coverageDate ? coverageDate : last;
   }).sort()[0] ?? null;
 }
 
-function upsertExchangeRates(db: LedgerDatabase, rows: ExchangeRateRecord[]) {
-  const statement = db.prepare(`
-    INSERT INTO exchange_rates
-      (rate_date, currency, twd_per_unit, source, fetched_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(rate_date, currency) DO UPDATE SET
-      twd_per_unit = excluded.twd_per_unit,
-      source = excluded.source,
-      fetched_at = excluded.fetched_at
-  `);
-  db.exec("BEGIN");
-  try {
-    for (const row of rows) {
-      statement.run(
-        row.rateDate,
-        row.currency,
-        row.twdPerUnit,
-        row.source,
-        row.fetchedAt,
-      );
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-export async function syncExchangeRates(
-  ledgerDir: string,
+export function syncExchangeRates(
+  persistence: ExchangeRatePersistencePort,
   request: ExchangeRateRequest,
   options: SyncOptions = {},
 ): Promise<ExchangeRateSyncResult> {
+  return syncExchangeRatesWithPersistence(persistence, request, options);
+}
+
+/** Run exchange-rate synchronization against the injected persistence port. */
+export async function syncExchangeRatesWithPersistence(
+  persistence: ExchangeRatePersistencePort,
+  request: ExchangeRateRequest,
+  options: SyncOptions = {},
+): Promise<ExchangeRateSyncResult> {
+  options.signal?.throwIfAborted();
   const now = (options.now ?? (() => new Date()))();
   const to = now.toISOString().slice(0, 10);
   const currencies = [...new Set(request.currencies)]
@@ -126,55 +104,56 @@ export async function syncExchangeRates(
     return { requestedCurrencies: currencies, from: null, to, written: 0 };
   }
 
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const from = synchronizationStart(
-      request.requiredFrom,
-      to,
-      currencies,
-      readExchangeRates(db, currencies),
-    );
-    if (!from || from > to) {
-      return { requestedCurrencies: currencies, from, to, written: 0 };
-    }
-    const url = new URL(API_URL);
-    url.searchParams.set("base", "TWD");
-    url.searchParams.set("quotes", currencies.join(","));
-    url.searchParams.set("from", from);
-    url.searchParams.set("to", to);
-    const response = await (options.fetchImpl ?? fetch)(url, {
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      throw new Error(`Frankfurter request failed: ${response.status}`);
-    }
-    const parsed = apiResponseSchema.parse(await response.json())
-      .filter((row) => currencies.includes(row.quote));
-    if (parsed.some((row) => row.date < from || row.date > to)) {
-      throw new Error(`Frankfurter response date outside ${from}..${to}`);
-    }
-    for (const currency of currencies) {
-      if (!parsed.some((row) => row.quote === currency)) {
-        throw new Error(`Frankfurter response missing ${currency}`);
-      }
-    }
-    const fetchedAt = now.toISOString();
-    const rows = parsed.map((row): ExchangeRateRecord => {
-      const twdPerUnit = 1 / row.rate;
-      if (!Number.isFinite(twdPerUnit) || twdPerUnit <= 0) {
-        throw new Error(`Frankfurter response has invalid inverse rate for ${row.quote}`);
-      }
-      return {
-        rateDate: row.date,
-        currency: row.quote,
-        twdPerUnit,
-        source: SOURCE,
-        fetchedAt,
-      };
-    });
-    upsertExchangeRates(db, rows);
-    return { requestedCurrencies: currencies, from, to, written: rows.length };
-  } finally {
-    db.close();
+  const from = synchronizationStart(
+    request.requiredFrom,
+    to,
+    currencies,
+    await persistence.readExchangeRates(currencies),
+  );
+  options.signal?.throwIfAborted();
+  if (!from || from > to) {
+    return { requestedCurrencies: currencies, from, to, written: 0 };
   }
+  const url = new URL(API_URL);
+  url.searchParams.set("base", "TWD");
+  url.searchParams.set("quotes", currencies.join(","));
+  url.searchParams.set("from", from);
+  url.searchParams.set("to", to);
+  const timeoutSignal = AbortSignal.timeout(10_000);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
+  const response = await (options.fetchImpl ?? fetch)(url, { signal });
+  options.signal?.throwIfAborted();
+  if (!response.ok) {
+    throw new Error(`Frankfurter request failed: ${response.status}`);
+  }
+  const parsed = apiResponseSchema.parse(await response.json())
+    .filter((row) => currencies.includes(row.quote));
+  options.signal?.throwIfAborted();
+  if (parsed.some((row) => row.date < from || row.date > to)) {
+    throw new Error(`Frankfurter response date outside ${from}..${to}`);
+  }
+  for (const currency of currencies) {
+    if (!parsed.some((row) => row.quote === currency)) {
+      throw new Error(`Frankfurter response missing ${currency}`);
+    }
+  }
+  const fetchedAt = now.toISOString();
+  const rows = parsed.map((row): ExchangeRateRecord => {
+    const twdPerUnit = 1 / row.rate;
+    if (!Number.isFinite(twdPerUnit) || twdPerUnit <= 0) {
+      throw new Error(`Frankfurter response has invalid inverse rate for ${row.quote}`);
+    }
+    return {
+      rateDate: row.date,
+      currency: row.quote,
+      twdPerUnit,
+      source: SOURCE,
+      fetchedAt,
+    };
+  });
+  options.signal?.throwIfAborted();
+  await persistence.upsertExchangeRates(rows);
+  return { requestedCurrencies: currencies, from, to, written: rows.length };
 }

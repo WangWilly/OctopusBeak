@@ -1,20 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import {
+  assertYuantaLoanCaptureAccountNumberEvidence,
+  buildYuantaLoanCapture,
+} from "../ledger/canonical/yuanta-loan-admission.ts";
 import {
   YUANTA_LOAN_PAGINATION_FIXTURES_V1,
   YUANTA_LOAN_PAGINATION_FIXTURES_V2,
 } from "./yuanta-loan-statements.fixtures.ts";
-import type {
-  LoanRepaymentRelationResolutionRequest,
-  LoanRepaymentRelationResolutionResult,
-} from "../ledger/canonical/loan-repayment-relations.ts";
-import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repayment-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
-import { createCanonicalSourceStore } from "../ledger/canonical/canonical-source-store.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -113,16 +111,26 @@ const { assembleYuantaLoanStatement } = await import(
 );
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
-const { persistYuantaLoanCapture } = await import(
-  "../ledger/canonical/yuanta-loan.ts"
-);
 
 const loanSource = await readFile(
   new URL("./yuanta-loan-statements.ts", import.meta.url),
   "utf8",
 );
+assert.doesNotMatch(
+  loanSource,
+  /from\s+["']libretto["']|LibrettoWorkflowContext|from\s+["']node:fs\/promises["']|writeFile\(|outputDir|requirePGliteChildRpcClient|executePGliteWorkflowRun|export\s+default\s+workflow/u,
+  "the App-owned provider must not retain a separate runner or persistence path",
+);
+assert.match(loanSource, /sourceText\??\.assertIntact/u);
 assert.match(loanSource, /await openStatementPage\(page\)/);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
+assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
+assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
+assert.doesNotMatch(
+  loanSource,
+  /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
+  "the workflow must not coordinate internal loan spines or low-level deposit batches",
+);
 
 function loanOptionsPage(
   options: Array<{ value: string; label: string }>,
@@ -178,224 +186,142 @@ assert.deepEqual(
   ],
 );
 
-test("commits one canonical capture for a parsed Yuanta loan result", async () => {
-  let commitCount = 0;
-  const admittedCaptures: unknown[] = [];
-  await persistYuantaLoanCapture(
-    null as never,
+test("Yuanta loan typed collection admits complete source without writing or committing", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  const testLoanAccount = "1234".repeat(3) + "12";
+  const account = { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount };
+  const controller = new AbortController();
+  const collection = await runYuantaLoanStatements(
+    {} as never,
     {
-      accountValue: "yuanta-option-test",
-      accountNumber: {
-        value: "12345678901234",
-        kind: "loan-account",
-        evidenceVersion: "yuanta/loan/account-number-v1",
-        sourceField: "#acctno option.value",
-      } as const,
-      sourceConnectionScope: "yuanta-connection-test",
-      observedAt: "2026-02-01T00:00:00.000Z",
+      dateRange: "one_year",
+      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+      loanAccountFilters: [],
+      replaceActiveSession: true,
+    },
+    {
+      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      sourceConnectionKey: deriveSourceConnectionIdentityKey(
+        "yuanta",
+        "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      ),
+      observedAt: () => "2026-02-01T00:00:00.000Z",
+      openLoanStatementPage: async () => undefined,
+      readLoanAccountOptions: async () => [account],
+      queryLoanAccount: async () => undefined,
+      traverseLoanStatementPages: async (_page, _label, options) => {
+        assert.equal(options?.silent, true);
+        return {
+          rows: [{
+            accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
+            paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+            transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
+            overpayment: "0.00", sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
+          }],
+          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+        };
+      },
+      collectOnly: true,
+      deferredCommitItems: deferred,
+      sourceText: strictSourceText,
+      signal: controller.signal,
+    },
+  );
+  assert.deepEqual(collection, { sourceCount: 1, rowCount: 1, itemCount: 1 });
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0]?.product, "loan");
+});
+
+test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(
+    runYuantaLoanStatements(
+      {} as never,
+      { dateRange: "one_year", loanAccountFilters: [], replaceActiveSession: true },
+      {
+        sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+        sourceConnectionKey: deriveSourceConnectionIdentityKey(
+          "yuanta",
+          "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+        ),
+        openLoanStatementPage: async () => undefined,
+        readLoanAccountOptions: async () => [
+          { label: "房屋貸款 - 12345678901234", value: "12345678901234" },
+        ],
+        queryLoanAccount: async () => undefined,
+        traverseLoanStatementPages: async () => ({
+          rows: [],
+          completeness: null,
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 0, proofKind: "source-declared-terminal-range" }],
+        }),
+        collectOnly: true,
+        deferredCommitItems: deferred,
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
+      },
+    ),
+    /explicit complete terminal page evidence/u,
+  );
+  assert.deepEqual(deferred, []);
+});
+
+test("builds and validates a canonical Yuanta loan capture from source rows", () => {
+  const capture = buildYuantaLoanCapture({
+    accountValue: "yuanta-option-test",
+    accountNumber: {
+      value: "12345678901234",
+      kind: "loan-account",
+      evidenceVersion: "yuanta/loan/account-number-v1",
+      sourceField: "#acctno option.value",
+    } as const,
+    sourceConnectionScope: "yuanta-connection-test",
+    observedAt: "2026-02-01T00:00:00.000Z",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+    scope: {
       startDate: "2026-01-01",
       endDate: "2026-01-31",
-      scope: {
-        startDate: "2026-01-01",
-        endDate: "2026-01-31",
-        completeness: "complete-range",
-        completenessBasis: "source-declared-terminal-range",
-        completenessRuleVersion: "loan/canonical/v1.yuanta",
-        pageCount: 1,
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [
+      {
+        pageOrdinal: 0,
+        responseCode: "200",
         terminal: true,
+        rowCount: 1,
+        proofKind: "source-declared-terminal-range",
       },
-      pages: [
-        {
-          pageOrdinal: 0,
-          responseCode: "200",
-          terminal: true,
-          rowCount: 1,
-          proofKind: "source-declared-terminal-range",
-        },
-      ],
-      relationCoverage: "not-asserted",
-      counterpartTransactions: [],
-      relations: [],
-      rows: [
-        {
-          transactionDate: "2026/01/05",
-          postingDate: "2026/01/06",
-          paymentItem: "LOAN-DISBURSEMENT",
-          transactionAmount: "100000.00",
-          balanceAfterTransaction: "100000.00",
-        },
-      ],
-    },
-    {
-      commit: async (_store, admitted) => {
-        commitCount += 1;
-        admittedCaptures.push(admitted);
-        return {} as never;
+    ],
+    relationCoverage: "not-asserted",
+    counterpartTransactions: [],
+    relations: [],
+    rows: [
+      {
+        transactionDate: "2026/01/05",
+        postingDate: "2026/01/06",
+        paymentItem: "LOAN-DISBURSEMENT",
+        transactionAmount: "100000.00",
+        balanceAfterTransaction: "100000.00",
       },
-    },
-  );
+    ],
+  });
 
-  assert.equal(commitCount, 1);
-  assert.equal(admittedCaptures.length, 1);
-  assert.equal(
-    (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
-    "not-asserted",
-  );
-  const identity = (
-    admittedCaptures[0] as {
-      identity: {
-        accountNo: string;
-        accountNumber?: unknown;
-      };
-    }
-  ).identity;
-  assert.match(identity.accountNo, /^sha256:/u);
-  assert.deepEqual(identity.accountNumber, {
+  assertYuantaLoanCaptureAccountNumberEvidence(capture);
+  assert.equal(capture.sourceId, "yuanta");
+  assert.equal(capture.relationCoverage, "not-asserted");
+  assert.equal(capture.records.length, 1);
+  assert.match(capture.identity.accountNo, /^sha256:/u);
+  assert.deepEqual(capture.identity.accountNumber, {
     value: "12345678901234",
     kind: "loan-account",
     evidenceVersion: "yuanta/loan/account-number-v1",
     sourceField: "#acctno option.value",
   });
-});
-
-test("Yuanta resolves only after a complete committed capture and preserves it when resolution fails", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "yuanta-loan-relation-workflow-"));
-  const relationRequests: LoanRepaymentRelationResolutionRequest[] = [];
-  const eventOrder: string[] = [];
-  const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
-  const stableConnectionKey = deriveSourceConnectionIdentityKey(
-    "yuanta",
-    stableConnectionScope,
-  );
-  const sourceRow = {
-    accountLabel: "房屋貸款",
-    transactionDate: "2026/01/15",
-    postingDate: "2026/01/15",
-    paymentItem: "LOAN-PAYMENT",
-    interestStartDate: "",
-    interestEndDate: "",
-    transactionAmount: "12500.00",
-    balanceAfterTransaction: "87500.00",
-    overpayment: "0.00",
-    sortTime: Date.parse("2026-01-15T00:00:00+08:00"),
-  };
-  const parsed = {
-    rows: [sourceRow],
-    completeness: {
-      pageCount: 1,
-      terminal: true as const,
-      proofKind: "source-declared-terminal-range" as const,
-    },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200" as const,
-        terminal: true as const,
-        rowCount: 1,
-        proofKind: "source-declared-terminal-range" as const,
-      },
-    ],
-  };
-  try {
-    const output = await runYuantaLoanStatements(
-      {} as never,
-      {
-        dateRange: "one_year",
-        customDateRange: {
-          startDate: "2026/01/01",
-          endDate: "2026/01/31",
-        },
-        loanAccountFilters: [],
-        replaceActiveSession: true,
-      },
-      {
-        canonicalLedgerDir: directory,
-        sourceConnectionScope: stableConnectionScope,
-        sourceConnectionKey: stableConnectionKey,
-        observedAt: () => "2026-02-01T00:00:00.000Z",
-        openLoanStatementPage: async () => undefined,
-        readLoanAccountOptions: async () => [
-          {
-            label: "房屋貸款 - 12345678901234",
-            value: "12345678901234",
-          },
-        ],
-        queryLoanAccount: async () => undefined,
-        traverseLoanStatementPages: async () => parsed,
-        persistLoanCapture: async (store, input) => {
-          const result = await persistYuantaLoanCapture(store, input);
-          eventOrder.push("capture-committed");
-          return result;
-        },
-        resolveRelations: async (store, request) => {
-          relationRequests.push(request);
-          eventOrder.push(
-            `resolver-after-${
-              Number(
-                (
-                  store.db
-                    .prepare("SELECT COUNT(*) AS count FROM source_captures")
-                    .get() as { count?: number }
-                ).count ?? 0,
-              )
-            }-captures`,
-          );
-          throw new Error("synthetic relation resolver failure");
-        },
-        writeLoanStatementsFile: (async () => ({
-          baseName: "yuanta-loan-relation-check",
-          kind: "loan-statements",
-          rowCount: 1,
-          headers: [],
-          accounts: ["房屋貸款"],
-          dateRange: "2026/01/01-2026/01/31",
-          sourceTables: [{ account: "房屋貸款", rowCount: 1 }],
-          csvFilename: "yuanta-loan-relation-check.csv",
-          jsonFilename: "yuanta-loan-relation-check.json",
-          csvPath: "yuanta-loan-relation-check.csv",
-          jsonPath: "yuanta-loan-relation-check.json",
-          csvBytes: 0,
-          jsonBytes: 0,
-        })) as never,
-      },
-    );
-
-    // No date/amount candidate is emitted as a fallback. The resolver failed
-    // independently, so the committed financial fact remains usable and the
-    // workflow still returns its table output.
-    assert.equal(output.relationResolution, undefined);
-    assert.deepEqual(eventOrder, ["capture-committed", "resolver-after-1-captures"]);
-    assert.equal(relationRequests.length, 1);
-    assert.equal(relationRequests[0]?.sourceConnectionKey, stableConnectionKey);
-    assert.deepEqual(relationRequests[0]?.requiredCoverage, { complete: true });
-    assert.equal("explicitLinks" in relationRequests[0]!, false);
-
-    const store = createCanonicalSourceStore(join(directory, "canonical.sqlite"));
-    try {
-      assert.equal(
-        (
-          store.db
-            .prepare("SELECT COUNT(*) AS count FROM source_captures")
-            .get() as { count?: number }
-        ).count,
-        1,
-      );
-      const evidence = queryCounterpartyAccountEvidence(store);
-      assert.equal(evidence.length, 1);
-      assert.equal(evidence[0]?.sourceValue, "12345678901234");
-      assert.equal(evidence[0]?.normalizedValue, "12345678901234");
-      assert.equal(evidence[0]?.sourceField, "貸款帳號");
-      assert.equal(evidence[0]?.evidenceKind, "repayment-mandate");
-      assert.equal(evidence[0]?.effectiveStartDate, "2026-01-01");
-      assert.equal(evidence[0]?.effectiveEndDate, "2026-01-31");
-      assert.notEqual(evidence[0]?.accountId, null);
-      assert.equal(evidence[0]?.transactionId, null);
-    } finally {
-      store.close();
-    }
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
 });
 
 test("fails closed when a Yuanta result row does not have six source cells", () => {

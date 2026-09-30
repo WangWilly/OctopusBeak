@@ -1,16 +1,16 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import { canonicalSqlitePath } from "../ledger/canonical/canonical-source-store.ts";
+import {
+  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
   admitCanonicalInvestmentCapture,
-  commitCanonicalInvestmentCaptureBatch,
-  createCanonicalInvestmentStore,
   CanonicalInvestmentAdmissionError,
   type InvestmentValidatedCapture,
-} from "../ledger/canonical/investment-financial.ts";
+} from "../ledger/canonical/investment-financial-admission.ts";
 import {
   buildYuantaInvestmentCapture,
   type YuantaCanonicalInvestmentRow,
@@ -18,13 +18,8 @@ import {
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import {
-  authenticateYuantaBank as sharedAuthenticateYuantaBank,
-  type YuantaCredentials,
-  YUANTA_ENTRY_URL,
-} from "./yuanta-auth.ts";
+import type { YuantaCredentials } from "./yuanta-auth.ts";
 
-const BANK_LOGOUT_URL = "https://ebank.yuantabank.com.tw/nib/tx/logout";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const FUND_TABLE_SELECTOR =
   "table.rwdTable, table.normalTable, table.formTable";
@@ -60,22 +55,9 @@ type NormalizedRow = {
 };
 
 type TableOutputConfig = {
-  kind: string;
   rawColumns: string[];
   headers: string[];
   normalize: (columns: Record<string, string>) => string[];
-};
-
-type OutputTableGroup = {
-  kind: string;
-  headers: string[];
-  categories: Set<string>;
-  funds: Set<string>;
-  periods: Set<string>;
-  sourceTableLabels: Set<string>;
-  sourceTableCount: number;
-  noDataSourceTableCount: number;
-  rows: NormalizedRow[];
 };
 
 const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
@@ -85,7 +67,7 @@ const customDateRangeSchema = z.object({
   endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
 });
 
-const inputSchema = z.object({
+export const yuantaFundStatementsInputSchema = z.object({
   dateRange: quickDateRangeSchema.default("one_year"),
   customDateRange: customDateRangeSchema.optional(),
   fundFilters: z.array(z.string()).default([]),
@@ -94,39 +76,10 @@ const inputSchema = z.object({
   includeHistoricalTransactions: z.boolean().default(true),
   includeOffHourOrders: z.boolean().default(false),
   replaceActiveSession: z.boolean().default(true),
-  canonicalLedgerDir: z.string().default("data/ledger"),
 });
-
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.string(),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  categories: z.array(z.string()),
-  funds: z.array(z.string()),
-  periods: z.array(z.string()),
-  sourceTableLabels: z.array(z.string()),
-  sourceTableCount: z.number().int().nonnegative(),
-  noDataSourceTableCount: z.number().int().nonnegative(),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.string(),
-  usedExistingSession: z.boolean(),
-  replacedActiveSession: z.boolean(),
-  fundCount: z.number().int().nonnegative(),
-  count: z.number().int().nonnegative(),
-  files: z.array(tableFileSchema),
-});
+const inputSchema = yuantaFundStatementsInputSchema;
 
 type WorkflowInput = z.infer<typeof inputSchema>;
-type TableFile = z.infer<typeof tableFileSchema>;
 
 const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   three_months: 92,
@@ -134,10 +87,8 @@ const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
   one_year: 364,
 };
 
-const rowMetadataHeaders = ["資料類別", "基金識別", "查詢期間"];
-
 const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
-  "portfolio-summary": simpleTableConfig("fund-holdings", [
+  "portfolio-summary": simpleTableConfig([
     "基金名稱",
     "基金類型",
     "投資幣別",
@@ -149,7 +100,7 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     "含息參考報酬率",
     "狀態",
   ]),
-  "currency-total": simpleTableConfig("fund-currency-totals", [
+  "currency-total": simpleTableConfig([
     "幣別總計",
     "投資金額",
     "不含息參考市值",
@@ -159,7 +110,6 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     "含息參考報酬率",
   ]),
   "investment-detail": {
-    kind: "fund-position-lots",
     rawColumns: [
       "投資日期",
       "幣別",
@@ -235,13 +185,13 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       ];
     },
   },
-  "reference-nav": simpleTableConfig("fund-valuation-basis", [
+  "reference-nav": simpleTableConfig([
     "參考項目",
     "參考基準日",
     "參考淨值",
     "最新淨值查詢",
   ]),
-  "buy-details": simpleTableConfig("fund-buy-transactions", [
+  "buy-details": simpleTableConfig([
     "投資日期",
     "基金名稱",
     "交易編號",
@@ -253,7 +203,6 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     "申購單位數",
   ]),
   "redemption-details": {
-    kind: "fund-redemption-transactions",
     rawColumns: [
       "贖回日期 分配日期",
       "基金名稱 交易編號",
@@ -327,7 +276,6 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     },
   },
   "conversion-details": {
-    kind: "fund-conversion-transactions",
     rawColumns: [
       "轉出日期 轉入日期",
       "交易編號",
@@ -393,7 +341,6 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     },
   },
   "cash-dividend-details": {
-    kind: "fund-cash-dividends",
     rawColumns: [
       "入帳日期",
       "基金名稱 交易編號",
@@ -442,7 +389,7 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
       ];
     },
   },
-  "unit-dividend-details": simpleTableConfig("fund-unit-dividends", [
+  "unit-dividend-details": simpleTableConfig([
     "分配日期",
     "基金名稱",
     "交易編號",
@@ -451,7 +398,7 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     "分配率",
     "分配單位數",
   ]),
-  "offhour-buy-orders": simpleTableConfig("fund-offhour-buy-orders", [
+  "offhour-buy-orders": simpleTableConfig([
     "申購基金",
     "投資類型",
     "申購日期",
@@ -468,76 +415,50 @@ const tableOutputConfigsByLabel: Record<string, TableOutputConfig> = {
     "介紹人編號",
     "公開說明書交付方式",
   ]),
-  "offhour-conversion-orders": simpleTableConfig(
-    "fund-offhour-conversion-orders",
-    [
-      "轉出基金",
-      "轉換方式",
-      "轉換幣別",
-      "申請日期",
-      "轉換生效日期",
-      "轉入基金",
-      "轉換金額",
-      "轉換單位數",
-      "風險等級",
-      "扣繳手續費帳號",
-      "轉換手續費",
-      "客戶風險等級",
-      "介紹人編號",
-      "公開說明書交付方式",
-    ],
-  ),
-  "offhour-redemption-orders": simpleTableConfig(
-    "fund-offhour-redemption-orders",
-    [
-      "贖回基金",
-      "贖回方式",
-      "申請日期",
-      "贖回生效日期",
-      "贖回轉入帳號",
-      "贖回投資金額",
-      "贖回單位數",
-    ],
-  ),
-  "offhour-redemption-rebuy-orders": simpleTableConfig(
-    "fund-offhour-redemption-rebuy-orders",
-    [
-      "贖回基金",
-      "贖回方式",
-      "申請日期",
-      "贖回生效日期",
-      "贖回投資金額",
-      "贖回單位數",
-      "贖回轉入帳號",
-      "再申購基金",
-      "預估再申購手續費率",
-      "保留金額",
-    ],
-  ),
-  "offhour-change-orders": simpleTableConfig("fund-offhour-change-orders", [
+  "offhour-conversion-orders": simpleTableConfig([
+    "轉出基金",
+    "轉換方式",
+    "轉換幣別",
+    "申請日期",
+    "轉換生效日期",
+    "轉入基金",
+    "轉換金額",
+    "轉換單位數",
+    "風險等級",
+    "扣繳手續費帳號",
+    "轉換手續費",
+    "客戶風險等級",
+    "介紹人編號",
+    "公開說明書交付方式",
+  ]),
+  "offhour-redemption-orders": simpleTableConfig([
+    "贖回基金",
+    "贖回方式",
+    "申請日期",
+    "贖回生效日期",
+    "贖回轉入帳號",
+    "贖回投資金額",
+    "贖回單位數",
+  ]),
+  "offhour-redemption-rebuy-orders": simpleTableConfig([
+    "贖回基金",
+    "贖回方式",
+    "申請日期",
+    "贖回生效日期",
+    "贖回投資金額",
+    "贖回單位數",
+    "贖回轉入帳號",
+    "再申購基金",
+    "預估再申購手續費率",
+    "保留金額",
+  ]),
+  "offhour-change-orders": simpleTableConfig([
     "異動基金",
     "申請日期",
     "生效日期",
     "異動種類",
     "變更後設定值",
   ]),
-};
-
-const bookingOutputKinds = new Set([
-  "fund-holdings",
-  "fund-position-lots",
-  "fund-valuation-basis",
-  "fund-buy-transactions",
-  "fund-redemption-transactions",
-  "fund-cash-dividends",
-  "fund-conversion-transactions",
-]);
-
-const sortDateHeaderByKind: Record<string, string> = {
-  "fund-buy-transactions": "投資日期",
-  "fund-redemption-transactions": "贖回日期",
-  "fund-cash-dividends": "入帳日期",
-  "fund-conversion-transactions": "轉出日期",
 };
 
 function cleanText(value: string | null | undefined): string {
@@ -553,27 +474,8 @@ function toAsciiDigits(value: string): string {
   );
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-function simpleTableConfig(kind: string, headers: string[]): TableOutputConfig {
+function simpleTableConfig(headers: string[]): TableOutputConfig {
   return {
-    kind,
     rawColumns: headers,
     headers,
     normalize: (columns) => headers.map((header) => columns[header] ?? ""),
@@ -592,38 +494,6 @@ function splitFundNameAndTransactionNo(value: string): [string, string] {
   const match = text.match(/^(.+?)\s+([A-Z]{1,8}\d[\w-]*)$/);
   if (!match) return [text, ""];
   return [match[1] ?? "", match[2] ?? ""];
-}
-
-function categoryDisplayLabel(category: string): string {
-  const labels: Record<string, string> = {
-    "portfolio-summary": "投資總覽",
-    "investment-overview": "投資明細",
-    "historical-transactions": "歷史交易",
-    "offhour-orders": "預約交易",
-  };
-
-  return labels[category] ?? category;
-}
-
-function parseDateSortValue(value: string): number | null {
-  const text = toAsciiDigits(cleanText(value));
-  const match = text.match(/(\d{2,4})[\/.-](\d{1,2})[\/.-](\d{1,2})/);
-  if (!match) return null;
-
-  const rawYear = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (
-    !Number.isFinite(rawYear) ||
-    !Number.isFinite(month) ||
-    !Number.isFinite(day)
-  ) {
-    return null;
-  }
-
-  const year = rawYear < 1911 ? rawYear + 1911 : rawYear;
-  const time = Date.UTC(year, month - 1, day);
-  return Number.isFinite(time) ? time : null;
 }
 
 function formatDate(date: Date): string {
@@ -1195,21 +1065,16 @@ async function submitForm(
     );
 }
 
-async function logoutFromYuanTa(page: Page): Promise<void> {
-  await page.goto(BANK_LOGOUT_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 15_000,
-  });
-  await settleAfterNavigation(page);
-}
-
 async function parseFundTables(
   page: Page,
   category: string,
   fund: string | null,
   period: string | null,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
 ): Promise<ParsedTable[]> {
+  options.signal?.throwIfAborted();
   const scope = await findScopeWithSelector(page, FUND_TABLE_SELECTOR);
+  options.sourceText?.assertIntact(await scope.locator("body").innerHTML());
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();
   const parsed: ParsedTable[] = [];
@@ -1233,6 +1098,8 @@ async function parseFundTables(
   if (parsed.length === 0) {
     throw new Error(`No YuanTa fund tables found for ${category}.`);
   }
+
+  options.sourceText?.assertIntact(JSON.stringify(parsed));
 
   return parsed;
 }
@@ -1328,10 +1195,6 @@ function classifyTable(
   if (/查詢起迄日/.test(text)) return "offhour-query-form";
 
   return `${category}-table-${tableIndex + 1}`;
-}
-
-function fundDownloadsDir(): string {
-  return join(process.cwd(), "downloads", "yuanta-fund-statements");
 }
 
 function headerScore(row: string[]): number {
@@ -1480,158 +1343,15 @@ function addIfPresent(values: Set<string>, value: string | null): void {
   if (value) values.add(value);
 }
 
-function groupedOutputTables(tables: ParsedTable[]): OutputTableGroup[] {
-  const groups = new Map<string, OutputTableGroup>();
-
-  for (const table of tables) {
-    const config = tableOutputConfigsByLabel[table.tableLabel];
-    if (!config) continue;
-    if (!bookingOutputKinds.has(config.kind)) continue;
-
-    const group = groups.get(config.kind) ?? {
-      kind: config.kind,
-      headers: config.headers,
-      categories: new Set<string>(),
-      funds: new Set<string>(),
-      periods: new Set<string>(),
-      sourceTableLabels: new Set<string>(),
-      sourceTableCount: 0,
-      noDataSourceTableCount: 0,
-      rows: [],
-    };
-
-    group.sourceTableCount += 1;
-    group.sourceTableLabels.add(table.tableLabel);
-    group.categories.add(table.category);
-    addIfPresent(group.funds, table.fund);
-    addIfPresent(group.periods, table.period);
-    if (tableHasNoData(table)) group.noDataSourceTableCount += 1;
-    group.rows.push(...normalizedRowsForTable(table));
-    groups.set(config.kind, group);
-  }
-
-  return [...groups.values()];
-}
-
-function sortedOutputRows(group: OutputTableGroup): NormalizedRow[] {
-  const sortHeader = sortDateHeaderByKind[group.kind];
-  if (!sortHeader) return group.rows;
-
-  const sortIndex = group.headers.indexOf(sortHeader);
-  if (sortIndex < 0) return group.rows;
-
-  return [...group.rows].sort((left, right) => {
-    const leftTime = parseDateSortValue(left.values[sortIndex] ?? "");
-    const rightTime = parseDateSortValue(right.values[sortIndex] ?? "");
-
-    if (leftTime === null && rightTime === null) return 0;
-    if (leftTime === null) return 1;
-    if (rightTime === null) return -1;
-    return rightTime - leftTime;
-  });
-}
-
-function outputTableRowsToCsv(group: OutputTableGroup): string {
-  const csvRows = [
-    [...rowMetadataHeaders, ...group.headers],
-    ...sortedOutputRows(group).map((row) => [
-      categoryDisplayLabel(row.category),
-      row.fund ?? "",
-      row.period ?? "",
-      ...row.values,
-    ]),
-  ];
-
-  return rowsToCsv(csvRows);
-}
-
-async function writeOutputTableFile(
-  nextTimestamp: () => string,
-  group: OutputTableGroup,
-): Promise<TableFile> {
-  const downloadsDir = fundDownloadsDir();
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${group.kind}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const headers = [...rowMetadataHeaders, ...group.headers];
-  const categories = [...group.categories];
-  const funds = [...group.funds];
-  const periods = [...group.periods];
-  const sourceTableLabels = [...group.sourceTableLabels];
-
-  await writeFile(csvPath, outputTableRowsToCsv(group), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "yuantaFundStatements",
-        kind: group.kind,
-        csvFilename,
-        jsonFilename,
-        rowCount: group.rows.length,
-        headers,
-        categories,
-        funds,
-        periods,
-        sourceTableLabels,
-        sourceTableCount: group.sourceTableCount,
-        noDataSourceTableCount: group.noDataSourceTableCount,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    baseName,
-    kind: group.kind,
-    rowCount: group.rows.length,
-    headers,
-    categories,
-    funds,
-    periods,
-    sourceTableLabels,
-    sourceTableCount: group.sourceTableCount,
-    noDataSourceTableCount: group.noDataSourceTableCount,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
-}
-
-async function writeOutputTableFiles(
-  nextTimestamp: () => string,
-  tables: ParsedTable[],
-): Promise<TableFile[]> {
-  const files: TableFile[] = [];
-
-  for (const group of groupedOutputTables(tables)) {
-    files.push(await writeOutputTableFile(nextTimestamp, group));
-  }
-
-  return files;
-}
-
 async function captureTables(
   page: Page,
   parsedTables: ParsedTable[],
   category: string,
   fund: string | null,
   period: string | null,
+  options: Readonly<{ sourceText?: SourceTextPort; signal?: AbortSignal }> = {},
 ): Promise<void> {
-  const tables = await parseFundTables(page, category, fund, period);
+  const tables = await parseFundTables(page, category, fund, period, options);
   for (const table of tables) {
     parsedTables.push(table);
   }
@@ -1719,7 +1439,9 @@ export function parseYuantaFundValuationBasis(
   table: ParsedTable,
 ): YuantaFundValuationBasis {
   if (table.tableLabel !== "reference-nav" || !table.fund) {
-    throw new Error("YuanTa fund valuation basis table is not position-scoped.");
+    throw new Error(
+      "YuanTa fund valuation basis table is not position-scoped.",
+    );
   }
   const rows = normalizedColumnRecords(table);
   const nav = rows.find((row) => row["參考項目"]?.trim() === "贖回");
@@ -1834,8 +1556,7 @@ function yuantaFundTransactionRows(
       );
       const quantityValue =
         row[action === "buy" ? "申購單位數" : "贖回單位數"] ?? "";
-      const cashValue =
-        row[action === "buy" ? "投資金額" : "入帳淨額"] ?? "";
+      const cashValue = row[action === "buy" ? "投資金額" : "入帳淨額"] ?? "";
       transactions.push({
         sourceRecordKey: deriveSourceConnectionIdentityKey(
           "yuanta-fund-transaction-record",
@@ -1966,27 +1687,29 @@ export function assertYuantaFundCanonicalAdmission(
         : "the source did not report a holding effective date";
     throw new CanonicalInvestmentAdmissionError(
       `Yuanta fund canonical admission partial: ${admission.reason}. ` +
-        `${admission.transactionCount} dated transaction row(s) were committed; ` +
-        `current holding observations were not committed because ${holdingEvidenceMessage}.`,
+        `${admission.transactionCount} dated transaction row(s) were rejected; ` +
+        `the complete source was not admitted because ${holdingEvidenceMessage}.`,
     );
   }
   throw new CanonicalInvestmentAdmissionError(
     `Yuanta fund canonical admission failed: ${admission.reason}. ` +
-      "Raw statement files were saved; canonical investment data was not committed.",
+      "Canonical Financial Commit was not opened.",
   );
 }
 
-async function commitYuantaFundCanonicalIfComplete(
-  input: WorkflowInput,
+function collectYuantaFundCanonicalItems(
   credentials: YuantaCredentials,
   positions: readonly FundPosition[],
   tables: readonly ParsedTable[],
-): Promise<void> {
+  options: Readonly<{
+    deferredCommitItems: PGliteWorkflowRunItem[];
+    sourceText: SourceTextPort;
+    signal: AbortSignal;
+    now(): string;
+  }>,
+): number {
   const admission = evaluateYuantaFundCanonicalAdmission(tables, positions);
-  if (admission.status === "not-admitted") {
-    console.warn("yuanta-fund-canonical-not-admitted", admission);
-    return;
-  }
+  assertYuantaFundCanonicalAdmission(admission);
 
   const overviewRows = tables
     .filter(
@@ -1995,105 +1718,92 @@ async function commitYuantaFundCanonicalIfComplete(
         table.category === "investment-overview",
     )
     .flatMap(normalizedColumnRecords);
-  const currencyByPosition = fundCurrencyByPositionKey(
-    overviewRows,
-    positions,
+  const currencyByPosition = fundCurrencyByPositionKey(overviewRows, positions);
+  const basisByFund = new Map(
+    tables
+      .filter((table) => table.tableLabel === "reference-nav")
+      .map(parseYuantaFundValuationBasis)
+      .map((basis) => [basis.fundKey, basis]),
   );
-  const basisByFund =
-    admission.status === "admitted"
-      ? new Map(
-          tables
-            .filter((table) => table.tableLabel === "reference-nav")
-            .map(parseYuantaFundValuationBasis)
-            .map((basis) => [basis.fundKey, basis]),
-        )
-      : new Map<string, YuantaFundValuationBasis>();
-  const holdings: YuantaCanonicalInvestmentRow[] =
-    admission.status === "admitted"
-      ? overviewRows.map((row) => {
-          const position = positionForTransactionNumber(
-            positions,
-            `${row["交易編號"] ?? ""} ${row["基金名稱"] ?? ""}`,
-          );
-          if (!position) {
-            throw new Error(
-              "YuanTa fund holding has no stable producer position.",
-            );
-          }
-          const basis = basisByFund.get(fundPositionKey(position));
-          if (!basis) {
-            throw new Error(
-              "YuanTa fund holding has no valuation basis evidence.",
-            );
-          }
-          const currency = currencyByPosition.get(fundPositionKey(position));
-          if (!currency) {
-            throw new Error("YuanTa fund holding has no source currency.");
-          }
-          const usesReferenceFx = currency === "TWD";
-          const effectiveOn = usesReferenceFx
-            ? [basis.navEffectiveOn, basis.fxEffectiveOn].sort().at(-1)!
-            : basis.navEffectiveOn;
-          const sourceRecordKey = deriveSourceConnectionIdentityKey(
-            "yuanta-fund-holding-record",
-            [
-              position.paperNo,
-              position.trustNo,
-              effectiveOn,
-              row["單位數"] ?? "",
-              row["不含息參考市值"] ?? "",
-            ],
-          );
-          return {
-            sourceRecordKey,
-            producerSecurityId: position.paperNo,
-            securityName: row["基金名稱"]?.trim() || undefined,
-            currency,
-            effectiveOn,
-            quantity: canonicalExactAmount(row["單位數"] ?? ""),
-            valuation: {
-              ...canonicalExactAmount(row["不含息參考市值"] ?? ""),
-              currency,
-            },
-            effectiveTimeEvidence: {
-              sourceField: usesReferenceFx
-                ? "reference-nav-and-fx-basis-date"
-                : "reference-nav-basis-date",
-              components: [
+  const holdings: YuantaCanonicalInvestmentRow[] = overviewRows.map((row) => {
+    const position = positionForTransactionNumber(
+      positions,
+      `${row["交易編號"] ?? ""} ${row["基金名稱"] ?? ""}`,
+    );
+    if (!position) {
+      throw new Error("YuanTa fund holding has no stable producer position.");
+    }
+    const basis = basisByFund.get(fundPositionKey(position));
+    if (!basis) {
+      throw new Error("YuanTa fund holding has no valuation basis evidence.");
+    }
+    const currency = currencyByPosition.get(fundPositionKey(position));
+    if (!currency) {
+      throw new Error("YuanTa fund holding has no source currency.");
+    }
+    const usesReferenceFx = currency === "TWD";
+    const effectiveOn = usesReferenceFx
+      ? [basis.navEffectiveOn, basis.fxEffectiveOn].sort().at(-1)!
+      : basis.navEffectiveOn;
+    const sourceRecordKey = deriveSourceConnectionIdentityKey(
+      "yuanta-fund-holding-record",
+      [
+        position.paperNo,
+        position.trustNo,
+        effectiveOn,
+        row["單位數"] ?? "",
+        row["不含息參考市值"] ?? "",
+      ],
+    );
+    return {
+      sourceRecordKey,
+      producerSecurityId: position.paperNo,
+      securityName: row["基金名稱"]?.trim() || undefined,
+      currency,
+      effectiveOn,
+      quantity: canonicalExactAmount(row["單位數"] ?? ""),
+      valuation: {
+        ...canonicalExactAmount(row["不含息參考市值"] ?? ""),
+        currency,
+      },
+      effectiveTimeEvidence: {
+        sourceField: usesReferenceFx
+          ? "reference-nav-and-fx-basis-date"
+          : "reference-nav-basis-date",
+        components: [
+          {
+            role: "reference-nav" as const,
+            sourceField: "贖回/參考基準日",
+            value: basis.navEffectiveOn,
+          },
+          ...(usesReferenceFx
+            ? [
                 {
-                  role: "reference-nav" as const,
-                  sourceField: "贖回/參考基準日",
-                  value: basis.navEffectiveOn,
+                  role: "reference-fx" as const,
+                  sourceField: "匯率/參考基準日",
+                  value: basis.fxEffectiveOn,
                 },
-                ...(usesReferenceFx
-                  ? [
-                      {
-                        role: "reference-fx" as const,
-                        sourceField: "匯率/參考基準日",
-                        value: basis.fxEffectiveOn,
-                      },
-                    ]
-                  : []),
-              ],
-            },
-          };
-        })
-      : [];
+              ]
+            : []),
+        ],
+      },
+    };
+  });
   const transactions = yuantaFundTransactionRows(
     tables,
     positions,
     currencyByPosition,
   );
 
-  const sourceConnectionKey = deriveSourceConnectionIdentityKey(
-    "yuanta-fund",
-    [credentials.yuanta_user_id ?? "", credentials.yuanta_account ?? ""],
-  );
-  const accountKey = deriveSourceConnectionIdentityKey(
-    "yuanta-fund-account",
-    [sourceConnectionKey, credentials.yuanta_account ?? ""],
-  );
-  const observedAt = new Date().toISOString();
+  const sourceConnectionKey = deriveSourceConnectionIdentityKey("yuanta-fund", [
+    credentials.yuanta_user_id ?? "",
+    credentials.yuanta_account ?? "",
+  ]);
+  const accountKey = deriveSourceConnectionIdentityKey("yuanta-fund-account", [
+    sourceConnectionKey,
+    credentials.yuanta_account ?? "",
+  ]);
+  const observedAt = options.now();
   const captureGroups = new Map<
     string,
     {
@@ -2111,7 +1821,10 @@ async function commitYuantaFundCanonicalIfComplete(
   }
   if (holdings.length > 0) {
     const firstGroup = captureGroups.values().next().value as
-      | { holdings: YuantaCanonicalInvestmentRow[]; transactions: YuantaCanonicalInvestmentRow[] }
+      | {
+          holdings: YuantaCanonicalInvestmentRow[];
+          transactions: YuantaCanonicalInvestmentRow[];
+        }
       | undefined;
     if (firstGroup) firstGroup.transactions = transactions;
   } else {
@@ -2130,10 +1843,10 @@ async function commitYuantaFundCanonicalIfComplete(
       sourceId: "yuanta-fund",
       captureId: `yuanta-fund-investment:${deriveSourceConnectionIdentityKey("yuanta-fund-capture", [sourceConnectionKey, accountKey, sourceEffectiveOn, observedAt])}`,
       sourceConnectionKey,
-      identityEpochKey: deriveSourceConnectionIdentityKey(
-        "yuanta-fund-epoch",
-        [sourceConnectionKey, credentials.yuanta_account ?? ""],
-      ),
+      identityEpochKey: deriveSourceConnectionIdentityKey("yuanta-fund-epoch", [
+        sourceConnectionKey,
+        credentials.yuanta_account ?? "",
+      ]),
       accountKey,
       reportingCurrency: "TWD",
       observedAt,
@@ -2143,187 +1856,167 @@ async function commitYuantaFundCanonicalIfComplete(
     });
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
-  if (captures.length === 0) return;
-  const store = createCanonicalInvestmentStore(
-    canonicalSqlitePath(input.canonicalLedgerDir),
-  );
-  try {
-    await commitCanonicalInvestmentCaptureBatch(store, captures);
-  } finally {
-    store.close();
-  }
+  if (captures.length === 0)
+    throw new Error("Yuanta fund admission produced no canonical captures.");
+  const items: PGliteWorkflowRunItem[] = captures.map((capture) => ({
+    provider: "yuanta-fund",
+    product: "investment",
+    itemKey: capture.captureId,
+    command: {
+      kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
+      request: { capture },
+    },
+    relationCommands: () => [
+      {
+        kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+        request: {
+          sourceConnectionKey: capture.identity.sourceConnectionKey,
+          observedAt: capture.observedAt,
+        },
+      },
+    ],
+  }));
+  options.signal.throwIfAborted();
+  for (const item of items)
+    options.sourceText.assertIntact(JSON.stringify(item.command));
+  options.signal.throwIfAborted();
+  options.deferredCommitItems.push(...items);
+  return items.length;
 }
 
-export default workflow("yuantaFundStatements", {
-  startUrl: YUANTA_ENTRY_URL,
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (
-      input as typeof input & { credentials: YuantaCredentials }
-    ).credentials;
-    const authResult = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
+export type YuantaFundWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+}>;
+
+type YuantaFundSourceTables = Readonly<{
+  positions: readonly FundPosition[];
+  tables: readonly ParsedTable[];
+}>;
+
+type YuantaFundSourceCollector = (
+  page: Page,
+  input: WorkflowInput,
+  context: Readonly<{ sourceText: SourceTextPort; signal: AbortSignal }>,
+) => Promise<YuantaFundSourceTables>;
+
+export type YuantaFundWorkflowDependencies = Readonly<{
+  collectOnly: true;
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
+  now(): string;
+  collectSourceTables?: YuantaFundSourceCollector;
+}>;
+
+async function collectYuantaFundSourceTables(
+  page: Page,
+  input: WorkflowInput,
+  context: Readonly<{ sourceText: SourceTextPort; signal: AbortSignal }>,
+): Promise<YuantaFundSourceTables> {
+  const dateRange = resolveDateRange(input);
+  const tables: ParsedTable[] = [];
+  let positions: FundPosition[] = [];
+  const checkCancelled = () => context.signal.throwIfAborted();
+
+  if (input.includePortfolioSummary) {
+    checkCancelled();
+    await openPortfolioSummary(page);
+    await captureTables(page, tables, "portfolio-summary", null, null, context);
+  }
+
+  if (input.includeInvestmentDetails || input.includeHistoricalTransactions) {
+    checkCancelled();
+    await openInvestmentOverview(page);
+    positions = await extractFundPositions(page);
+    await captureTables(
+      page,
+      tables,
+      "investment-overview",
+      null,
+      null,
+      context,
     );
-    const replacedActiveSession = authResult.replacedActiveSession;
+    if (positions.length === 0)
+      throw new Error("Could not find matching YuanTa fund positions.");
 
-    try {
-      const dateRange = resolveDateRange(input);
-      const parsedTables: ParsedTable[] = [];
-      const nextTimestamp = createTimestampGenerator();
-      let selectedFunds: FundPosition[] = [];
-      let completedFundSteps = 0;
-      let fundStepCount = 0;
-      const fundProgress = () => {
-        if (fundStepCount === 0) return;
-        console.log(
-          `automation-progress: ${
-            75 +
-            Math.min(24, Math.round((completedFundSteps / fundStepCount) * 24))
-          }`,
-        );
-      };
-
-      if (input.includePortfolioSummary) {
-        await openPortfolioSummary(page);
-        await captureTables(
-          page,
-          parsedTables,
-          "portfolio-summary",
-          null,
-          null,
-        );
-      }
-
-      if (
-        input.includeInvestmentDetails ||
-        input.includeHistoricalTransactions
-      ) {
-        const overviewStartedAt = Date.now();
-        await openInvestmentOverview(page);
-        const fundPositions = await extractFundPositions(page);
-        // Fund filters are legacy persisted UI state. Yuanta captures every
-        // visible position; provider absence is handled by the position
-        // reader and remains the only skip condition.
-        selectedFunds = fundPositions;
-        console.log("yuanta-fund-positions-found", {
-          available: fundPositions.length,
-          selected: selectedFunds.length,
-          durationMs: Date.now() - overviewStartedAt,
-        });
-
-        await captureTables(
-          page,
-          parsedTables,
-          "investment-overview",
-          null,
-          null,
-        );
-
-        if (selectedFunds.length === 0) {
-          throw new Error("Could not find matching YuanTa fund positions.");
-        }
-
-        fundStepCount = selectedFunds.length;
-        for (
-          let fundIndex = 0;
-          fundIndex < selectedFunds.length;
-          fundIndex += 1
-        ) {
-          const position = selectedFunds[fundIndex];
-          const tableCountBefore = parsedTables.length;
-          const historyStartedAt = Date.now();
-          console.log("yuanta-fund-history-start", {
-            index: fundIndex + 1,
-            total: selectedFunds.length,
-            startedAt: new Date(historyStartedAt).toISOString(),
-          });
-          await openInvestmentOverview(page);
-          await openFundDetail(page, position);
-          await captureTables(
-            page,
-            parsedTables,
-            "investment-source-evidence",
-            fundPositionKey(position),
-            null,
-          );
-          if (input.includeHistoricalTransactions) {
-            await queryFundTransactions(
-              page,
-              dateRange.startDate,
-              dateRange.endDate,
-            );
-            await captureTables(
-              page,
-              parsedTables,
-              "historical-transactions",
-              fundPositionKey(position),
-              dateRange.label,
-            );
-          }
-          completedFundSteps += 1;
-          console.log("yuanta-fund-history-complete", {
-            index: fundIndex + 1,
-            total: selectedFunds.length,
-            tableCount: parsedTables.length - tableCountBefore,
-            durationMs: Date.now() - historyStartedAt,
-          });
-          fundProgress();
-        }
-      }
-
-      if (input.includeOffHourOrders) {
-        await openOffHourOrders(page);
-        await queryOffHourOrders(page, dateRange.startDate, dateRange.endDate);
-        await captureTables(
-          page,
-          parsedTables,
-          "offhour-orders",
-          null,
-          dateRange.label,
-        );
-      }
-
-      const canonicalAdmission = evaluateYuantaFundCanonicalAdmission(
-        parsedTables,
-        selectedFunds,
+    for (const position of positions) {
+      checkCancelled();
+      await openInvestmentOverview(page);
+      await openFundDetail(page, position);
+      await captureTables(
+        page,
+        tables,
+        "investment-source-evidence",
+        fundPositionKey(position),
+        null,
+        context,
       );
-      if (canonicalAdmission.status !== "not-admitted") {
-        await commitYuantaFundCanonicalIfComplete(
-          input,
-          credentials,
-          selectedFunds,
-          parsedTables,
+      if (input.includeHistoricalTransactions) {
+        await queryFundTransactions(
+          page,
+          dateRange.startDate,
+          dateRange.endDate,
         );
-        if (canonicalAdmission.status === "admitted") {
-          console.log("yuanta-fund-canonical-admitted", canonicalAdmission);
-        } else {
-          console.warn("yuanta-fund-canonical-partial", canonicalAdmission);
-        }
-      } else {
-        console.warn("yuanta-fund-canonical-not-admitted", canonicalAdmission);
+        await captureTables(
+          page,
+          tables,
+          "historical-transactions",
+          fundPositionKey(position),
+          dateRange.label,
+          context,
+        );
       }
-      const files = await writeOutputTableFiles(nextTimestamp, parsedTables);
-      assertYuantaFundCanonicalAdmission(canonicalAdmission);
-
-      return {
-        dateRange: dateRange.label,
-        usedExistingSession: authResult.usedProfile,
-        replacedActiveSession,
-        fundCount: selectedFunds.length,
-        count: files.length,
-        files,
-      };
-    } finally {
-      await logoutFromYuanTa(page).catch((error: unknown) => {
-        console.warn("yuanta-logout-failed", {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
     }
-  },
-});
+  }
+
+  if (input.includeOffHourOrders) {
+    checkCancelled();
+    await openOffHourOrders(page);
+    await queryOffHourOrders(page, dateRange.startDate, dateRange.endDate);
+    await captureTables(
+      page,
+      tables,
+      "offhour-orders",
+      null,
+      dateRange.label,
+      context,
+    );
+  }
+
+  checkCancelled();
+  return { positions, tables };
+}
+
+export async function runYuantaFundStatements(
+  page: Page,
+  input: WorkflowInput,
+  credentials: YuantaCredentials,
+  dependencies: YuantaFundWorkflowDependencies,
+): Promise<YuantaFundWorkflowCollection> {
+  dependencies.signal.throwIfAborted();
+  const sourceCollection = await (
+    dependencies.collectSourceTables ?? collectYuantaFundSourceTables
+  )(page, input, {
+    sourceText: dependencies.sourceText,
+    signal: dependencies.signal,
+  });
+  dependencies.signal.throwIfAborted();
+  dependencies.sourceText.assertIntact(JSON.stringify(sourceCollection.tables));
+
+  const itemCount = collectYuantaFundCanonicalItems(
+    credentials,
+    sourceCollection.positions,
+    sourceCollection.tables,
+    dependencies,
+  );
+  return {
+    sourceCount: sourceCollection.tables.length,
+    rowCount: sourceCollection.tables.reduce(
+      (count, table) => count + table.rows.length,
+      0,
+    ),
+    itemCount,
+  };
+}

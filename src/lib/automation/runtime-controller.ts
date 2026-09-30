@@ -1,0 +1,184 @@
+import type { AutomationRuntimeSnapshot } from "../desktop/api.ts";
+
+export type AutomationActionKind = "run" | "cancel" | "force-terminate";
+
+export type AutomationActionToken = {
+  token: string;
+  taskId: string;
+  kind: AutomationActionKind;
+  runId: string | null;
+  startedAt: number;
+};
+
+export type AutomationRuntimeAcceptResult = {
+  accepted: boolean;
+  sessionChanged: boolean;
+  hadGap: boolean;
+  snapshot: AutomationRuntimeSnapshot;
+};
+
+function tokenId() {
+  return `automation-action-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * App-shell-owned runtime coordination. It survives route unmounts and is
+ * deliberately independent of Svelte so all automation entry points can use
+ * the same revision gate and pending-action semantics.
+ */
+export function createAutomationRuntimeController() {
+  let current: AutomationRuntimeSnapshot | null = null;
+  const pending = new Map<string, AutomationActionToken>();
+  const listeners = new Set<() => void>();
+
+  function emit() {
+    for (const listener of [...listeners]) listener();
+  }
+
+  function acceptSnapshot(snapshot: AutomationRuntimeSnapshot): AutomationRuntimeAcceptResult {
+    const previous = current;
+    const sessionChanged = Boolean(previous && previous.sessionId !== snapshot.sessionId);
+    const hadGap = Boolean(
+      previous
+      && previous.sessionId === snapshot.sessionId
+      && snapshot.revision > previous.revision + 1,
+    );
+    if (
+      previous
+      && previous.sessionId === snapshot.sessionId
+      && snapshot.revision <= previous.revision
+    ) {
+      return { accepted: false, sessionChanged: false, hadGap: false, snapshot: previous };
+    }
+    current = snapshot;
+    reconcilePending(snapshot);
+    emit();
+    return { accepted: true, sessionChanged, hadGap, snapshot };
+  }
+
+  function beginAction(taskId: string, kind: AutomationActionKind): AutomationActionToken | null {
+    if (pending.has(taskId)) return null;
+    const token: AutomationActionToken = {
+      token: tokenId(),
+      taskId,
+      kind,
+      runId: null,
+      startedAt: performance.now(),
+    };
+    pending.set(taskId, token);
+    emit();
+    return token;
+  }
+
+  function bindRun(token: AutomationActionToken, runId: string | null | undefined) {
+    const currentToken = pending.get(token.taskId);
+    if (!currentToken || currentToken.token !== token.token) return false;
+    currentToken.runId = runId ?? null;
+    emit();
+    return true;
+  }
+
+  function failAction(token: AutomationActionToken) {
+    const currentToken = pending.get(token.taskId);
+    if (!currentToken || currentToken.token !== token.token) return false;
+    pending.delete(token.taskId);
+    emit();
+    return true;
+  }
+
+  function reconcilePending(snapshot: AutomationRuntimeSnapshot) {
+    const byTaskId = new Map(snapshot.tasks.map((task) => [task.taskId, task]));
+    for (const [taskId, token] of pending) {
+      const task = byTaskId.get(taskId);
+      if (!task) continue;
+      if (token.kind === "run") {
+        if (task.runId && ["preparing", "running", "retrying", "waiting_for_human", "cancelling", "completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
+          pending.delete(taskId);
+        }
+      } else if (token.kind === "cancel" || token.kind === "force-terminate") {
+        if (["cancelling", "completed", "partial", "failed", "cancelled", "interrupted"].includes(task.status)) {
+          pending.delete(taskId);
+        }
+      }
+    }
+  }
+
+  function pendingTaskIds() {
+    return new Set(pending.keys());
+  }
+
+  function pendingActions() {
+    return [...pending.values()].map((token) => ({ ...token }));
+  }
+
+  function subscribe(listener: () => void) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  function snapshot() {
+    return current;
+  }
+
+  return {
+    acceptSnapshot,
+    beginAction,
+    bindRun,
+    failAction,
+    pendingTaskIds,
+    pendingActions,
+    subscribe,
+    snapshot,
+  };
+}
+
+export type AutomationBlockRefreshReason =
+  | "overtaken"
+  | "route-entry"
+  | "manual"
+  | "session-resync";
+
+export type AutomationBlockRefreshLoader<T> =
+  (isTrailing: boolean) => Promise<T>;
+
+/** Single-flight refresh with one trailing request for a newer trigger. */
+export function createAutomationBlockRefreshCoordinator<T>(
+  load: AutomationBlockRefreshLoader<T>,
+) {
+  let inFlight: Promise<T> | null = null;
+  let trailingLoad: AutomationBlockRefreshLoader<T> | null = null;
+  let phase: "idle" | "primary" | "trailing" = "idle";
+
+  function refresh(
+    _reason: AutomationBlockRefreshReason,
+    requestedLoad: AutomationBlockRefreshLoader<T> = load,
+  ): Promise<T> {
+    if (inFlight) {
+      // A primary request may be followed by exactly one trailing request.
+      // If the trailing request is itself overtaken, keep its result as the
+      // authoritative overlay and wait for the next explicit trigger rather
+      // than chasing a moving runtime revision forever.
+      if (phase === "primary" && !trailingLoad) trailingLoad = requestedLoad;
+      return inFlight;
+    }
+    phase = "primary";
+    const work = requestedLoad(false);
+    inFlight = work.then(async (value) => {
+      const next = trailingLoad;
+      trailingLoad = null;
+      if (!next) return value;
+      phase = "trailing";
+      return next(true);
+    }).finally(() => {
+      inFlight = null;
+      trailingLoad = null;
+      phase = "idle";
+    });
+    return inFlight;
+  }
+
+  return {
+    refresh,
+    isRefreshing: () => inFlight !== null,
+  };
+}

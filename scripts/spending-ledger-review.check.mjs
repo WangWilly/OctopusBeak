@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { createServer } from "vite";
 import {
   allocatedCategory,
   absentCategory,
@@ -8,6 +7,10 @@ import {
   singleCategory,
   view,
 } from "./spending-canonical-fixture.mjs";
+import {
+  createSpendingViteServer,
+  spendingDesktopApiInitScript,
+} from "./spending-browser-harness.mjs";
 
 const records = [
   record({
@@ -76,9 +79,7 @@ const model = view(records, {
   selectedCategory: "dining",
 });
 
-const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
-await server.listen();
-await server.watcher.close();
+const server = await createSpendingViteServer();
 const address = server.httpServer?.address();
 assert.ok(address && typeof address === "object");
 const browser = await chromium.launch({ headless: true });
@@ -90,21 +91,10 @@ try {
     if (message.type() === "error") errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(({ model }) => {
-    window.octopusBeak = {
-      settings: { load: async () => ({ systemTimezone: "Asia/Taipei", exchangeRateUpdateTime: "06:00" }) },
-      spending: {
-        load: async () => ({ canonical: model }),
-        updateTransactionOverride: async () => {
-          throw new Error("legacy Spending mutation invoked");
-        },
-        updateItemCategory: async () => {
-          throw new Error("legacy Spending mutation invoked");
-        },
-      },
-    };
+  await page.addInitScript({ content: spendingDesktopApiInitScript(model) });
+  await page.addInitScript(() => {
     localStorage.setItem("octopusbeak-locale", "zh-TW");
-  }, { model });
+  });
   await page.goto(`http://127.0.0.1:${address.port}/#/spending`);
 
   const dashboard = page.locator("[data-spending-canonical]");

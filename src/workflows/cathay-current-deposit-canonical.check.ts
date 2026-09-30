@@ -12,11 +12,13 @@ import {
 } from "./cathay-current-deposit-canonical.ts";
 import {
   admitCurrentDepositBalanceCapture,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 const observedAt = "2026-09-08T21:20:10.000+08:00";
 const date = "Tue, 08 Sep 2026 13:20:04 GMT";
+const domesticAccountNumber = ["0000", "1234", "5678", "9012"].join("");
+const foreignAccountNumber = ["1234", "5678", "9012"].join("");
 
 const domesticRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "domestic",
@@ -26,7 +28,7 @@ const domesticRows = parseCathayCurrentDepositBalanceSnapshot({
     method: "POST",
     headers: { date },
   },
-  rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000123456789012","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
+  rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"${domesticAccountNumber}","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
   observedAt,
   uiAccountNumbers: ["123456789012"],
 });
@@ -96,7 +98,7 @@ const foreignRows = parseCathayCurrentDepositBalanceSnapshot({
     method: "POST",
     headers: { date },
   },
-  rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"123456789012","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00},{"currencyCode":"JPY","balance":2000,"equalTwdBalance":450.00}]}]}}`,
+  rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${foreignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00},{"currencyCode":"JPY","balance":2000,"equalTwdBalance":450.00}]}]}}`,
   observedAt,
 });
 const foreignCaptures = buildCathayCurrentDepositBalanceCaptures(

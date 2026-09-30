@@ -7,6 +7,10 @@ import type {
 } from "../types.ts";
 import { BANK_STATEMENT_CAPABILITIES } from "../statement-selection.ts";
 import { VERIFICATION_CONFIDENCE_THRESHOLD_KEYS } from "../verification-config.ts";
+import {
+  PACKAGED_BROWSER_FIXTURE_TASKS,
+  packagedBrowserFixtureEnabled,
+} from "./packaged-browser-fixture.ts";
 
 export type {
   AutomationCredentialGroup,
@@ -29,8 +33,9 @@ export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
 };
 
 export type AutomationTask = AutomationTaskSummary & {
-  command: readonly string[];
   maxAttempts: number;
+  /** App-owned typed workflow definition, when this task has migrated. */
+  workflowId?: string;
 };
 
 const localized = (en: string, zh: string) => ({ en, "zh-TW": zh });
@@ -942,17 +947,11 @@ export const AUTOMATION_CREDENTIAL_GROUPS: readonly AutomationCredentialGroup[] 
     }),
   ];
 
-export const AUTOMATION_TASKS: readonly AutomationTask[] = [
+const coreAutomationTasks: readonly AutomationTask[] = [
   {
     id: "fubon-all-statements",
     label: "Fubon all statements",
-    script: "run:fubon-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/fubon-all-statements.ts",
-      "--headless",
-    ],
+    workflowId: "fubon-all-statements",
     kind: "crawler",
     credentialGroupId: "fubon",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[0].credentialKeys,
@@ -962,13 +961,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "esun-credit-card-statements",
     label: "ESun credit card statements",
-    script: "run:esun-credit-card-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/esun-credit-card-statements.ts",
-      "--headless",
-    ],
+    workflowId: "esun-credit-card-statements",
     kind: "crawler",
     credentialGroupId: "esun",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[1].credentialKeys,
@@ -978,15 +971,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-all-statements",
     label: "Yuanta all statements",
-    script: "run:yuanta-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/yuanta-all-statements.ts",
-      "--headless",
-      "--params",
-      '{"statements":{"telemetry":true}}',
-    ],
+    workflowId: "yuanta-all-statements",
     kind: "crawler",
     credentialGroupId: "yuanta",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[2].credentialKeys,
@@ -996,13 +981,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "yuanta-trade-statements",
     label: "Yuanta trade statements",
-    script: "run:yuanta-trade-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/yuanta-trade-statements.ts",
-      "--headless",
-    ],
+    workflowId: "yuanta-trade-statements",
     kind: "crawler",
     credentialGroupId: "yuanta-trade",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[3].credentialKeys,
@@ -1013,15 +992,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "cathay-all-statements",
     label: "Cathay all statements",
-    script: "run:cathay-all-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/cathay-all-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    workflowId: "cathay-all-statements",
     kind: "crawler",
     credentialGroupId: "cathay",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[4].credentialKeys,
@@ -1031,13 +1002,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "hncb-statements",
     label: "HNCB statements",
-    script: "run:hncb-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/hncb-statements.ts",
-      "--headless",
-    ],
+    workflowId: "hncb-statements",
     kind: "crawler",
     credentialGroupId: "hncb",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[5].credentialKeys,
@@ -1047,15 +1012,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "ctbc-statements",
     label: "CTBC statements",
-    script: "run:ctbc-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/ctbc-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    workflowId: "ctbc-statements",
     kind: "crawler",
     credentialGroupId: "ctbc",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[6].credentialKeys,
@@ -1065,15 +1022,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "post-statements",
     label: "Post Office statements",
-    script: "run:post-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/post-statements.ts",
-      "--headless",
-      "--params",
-      '{"telemetry":true}',
-    ],
+    workflowId: "post-statements",
     kind: "crawler",
     credentialGroupId: "post",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[7].credentialKeys,
@@ -1083,13 +1032,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sinopac-statements",
     label: "SinoPac statements",
-    script: "run:sinopac-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/sinopac-statements.ts",
-      "--headless",
-    ],
+    workflowId: "sinopac-statements",
     kind: "crawler",
     credentialGroupId: "sinopac",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[8].credentialKeys,
@@ -1099,13 +1042,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "linebank-statements",
     label: "LINE Bank statements",
-    script: "run:linebank-statements",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/linebank-statements.ts",
-      "--headless",
-    ],
+    workflowId: "linebank-statements",
     kind: "crawler",
     credentialGroupId: "linebank",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[9].credentialKeys,
@@ -1115,13 +1052,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "einvoice-personal-invoices",
     label: "E-Invoice personal invoices",
-    script: "run:einvoice-personal-invoices",
-    command: [
-      "libretto",
-      "run",
-      "src/workflows/einvoice-personal-invoices.ts",
-      "--headless",
-    ],
+    workflowId: "einvoice-personal-invoices",
     kind: "crawler",
     credentialGroupId: "einvoice",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[10].credentialKeys,
@@ -1131,13 +1062,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "exchange-rates",
     label: "Exchange rates",
-    script: "run:exchange-rates",
-    command: [
-      "node",
-      "--no-warnings",
-      "--experimental-strip-types",
-      "src/ledger/sync-exchange-rates.ts",
-    ],
+    workflowId: "exchange-rates",
     kind: "sync",
     credentialKeys: [],
     dependencies: [],
@@ -1146,14 +1071,7 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
   {
     id: "sync-maicoin",
     label: "MaiCoin sync",
-    script: "run:sync-maicoin",
-    command: [
-      "node",
-      "--env-file-if-exists=.env",
-      "--no-warnings",
-      "--experimental-strip-types",
-      "src/ledger/sync-maicoin.ts",
-    ],
+    workflowId: "sync-maicoin",
     kind: "sync",
     credentialGroupId: "maicoin",
     credentialKeys: AUTOMATION_CREDENTIAL_GROUPS[11].credentialKeys,
@@ -1161,6 +1079,28 @@ export const AUTOMATION_TASKS: readonly AutomationTask[] = [
     maxAttempts: 1,
   },
 ];
+
+export function automationTasksForEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): readonly AutomationTask[] {
+  const packagedBrowserFixtureTasks: readonly AutomationTask[] =
+    packagedBrowserFixtureEnabled(environment)
+    ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ taskId, workflowId }, index) => ({
+      id: taskId,
+      label: index === 0
+        ? "Packaged browser fixture success"
+        : "Packaged browser fixture cancellation",
+      workflowId,
+      kind: "crawler",
+      credentialKeys: [],
+      dependencies: [],
+      maxAttempts: 1,
+    }))
+    : [];
+  return [...coreAutomationTasks, ...packagedBrowserFixtureTasks];
+}
+
+export const AUTOMATION_TASKS: readonly AutomationTask[] = automationTasksForEnvironment();
 
 export const AUTOMATION_CREDENTIAL_KEYS = Array.from(
   new Set(

@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerHooks } from "node:module";
-import type { DatabaseSync } from "node:sqlite";
 
-import type {
-  LoanRepaymentRelationResolutionRequest,
-  LoanRepaymentRelationResolutionResult,
-} from "../ledger/canonical/loan-repayment-relations.ts";
-import { queryCounterpartyAccountEvidence } from "../ledger/canonical/loan-repayment-relations.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
-import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-domestic-deposit.ts";
+import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -38,7 +39,6 @@ const {
   buildYuantaCapture,
   deriveYuantaDomesticDepositAccountNumberEvidence,
   deriveYuantaDomesticDepositQueryRange,
-  dismissYuantaBankNotice,
   readYuantaDepositAccountOptions,
   runYuantaStatements,
   statementRowsFromDownloadedCsv,
@@ -128,19 +128,17 @@ await assert.rejects(
         dateRange: "one_month",
         accountFilters: [],
         replaceActiveSession: true,
-        telemetry: false,
+      },
+      {
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: "invalid-source-connection-key",
+        deferredCommitItems: [],
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
       },
     ),
   /stable caller-supplied Source Connection scope and key/u,
 );
-const {
-  createCanonicalSourceStore,
-  queryCanonicalSourceCurrent,
-  queryCanonicalSourceHistorical,
-  queryCanonicalSourceLineage,
-} = await import("../ledger/canonical/canonical-source-store.ts");
-const { buildYuantaDomesticDepositReadinessFromLedger } =
-  await import("../ledger/canonical/advertised-domestic-deposit-readiness.ts");
 const { StatementComponentAbsentError } =
   await import("./run-selected-statements.ts");
 
@@ -186,15 +184,13 @@ const source = readFileSync(
   "utf8",
 );
 
-assert.match(
-  source,
-  /import \{\s*authenticateYuantaBank as sharedAuthenticateYuantaBank,\s*dismissYuantaBankNotice,\s*yuantaSourceConnectionScope,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
-);
-assert.match(source, /await sharedAuthenticateYuantaBank\(/);
-assert.match(
-  source,
-  /export \{\s*dismissYuantaBankNotice,\s*type YuantaCredentials,\s*\} from "\.\/yuanta-auth\.ts";/,
-);
+assert.doesNotMatch(source, /from ["']libretto["']/u, "the domestic provider must not register a Libretto production workflow");
+assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/u, "the domestic provider must return items to the App commit port");
+assert.doesNotMatch(source, /from ["']node:fs\/promises["']|writeBankTransactionsFile|downloads[\\/]yuanta-statements/u, "the domestic provider must not write statement source or output files");
+assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic provider must not write standalone logs or expose a legacy workflow entry");
+assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
+assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
+assert.match(source, /decode\(bytes, ["']big5["']\)/u, "download bytes must remain strictly decoded as Big5");
 
 const popup = new DelayedVisibilityLocator(20);
 const dismissed = await dismissYuantaBankNotice(
@@ -351,7 +347,6 @@ const workflowDownload = {
     {
       accountLabel: workflowAccount.label,
       values: workflowValues.slice(1),
-      sortTime: Date.parse("2026-08-02T09:10:11+08:00"),
       sourceRowOrdinal: 0,
     },
   ],
@@ -409,8 +404,8 @@ const nextDayAccountingWorkflowDownload = {
       ...workflowDownload.rows[0]!,
       values: [
         "YUANTA-ACCOUNT-001",
-        "20260907",
-        "20260906",
+        "20260622",
+        "20260619",
         "09:10:11",
         "CLEAN DEPOSIT",
         "",
@@ -419,20 +414,19 @@ const nextDayAccountingWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-09-06T09:10:11+08:00"),
     },
   ],
   source: {
     ...workflowDownload.source,
-    contentDigest: "sha256:yuanta-next-day-accounting-content" as `sha256:${string}`,
+    contentDigest: "sha256:yuanta-accounting-date-range-content" as `sha256:${string}`,
     rows: [
       {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
           "YUANTA-ACCOUNT-001",
-          "20260907",
-          "20260906",
+          "20260622",
+          "20260619",
           "09:10:11",
           "CLEAN DEPOSIT",
           "",
@@ -452,8 +446,8 @@ const transactionOutsideWorkflowDownload = {
       ...nextDayAccountingWorkflowDownload.rows[0]!,
       values: [
         "YUANTA-ACCOUNT-001",
-        "20260906",
-        "20260907",
+        "20260619",
+        "20260622",
         "09:10:11",
         "CLEAN DEPOSIT",
         "",
@@ -462,20 +456,19 @@ const transactionOutsideWorkflowDownload = {
         "",
         "",
       ],
-      sortTime: Date.parse("2026-09-07T09:10:11+08:00"),
     },
   ],
   source: {
     ...nextDayAccountingWorkflowDownload.source,
-    contentDigest: "sha256:yuanta-transaction-outside-content" as `sha256:${string}`,
+    contentDigest: "sha256:yuanta-accounting-date-outside-content" as `sha256:${string}`,
     rows: [
       {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
           "YUANTA-ACCOUNT-001",
-          "20260906",
-          "20260907",
+          "20260619",
+          "20260622",
           "09:10:11",
           "CLEAN DEPOSIT",
           "",
@@ -520,717 +513,455 @@ const secondWorkflowDownload = {
     rows: [{ rowOrdinal: 0, values: secondWorkflowValues }],
   },
 };
-const writeWorkflowFile = async () => ({
-  baseName: "yuanta-synthetic",
-  kind: "bank-transactions" as const,
-  rowCount: 1,
-  headers: ["帳戶名稱"],
-  accounts: [workflowAccount.label],
-  dateRange: "one_month" as const,
-  csvFilename: "yuanta-synthetic.csv",
-  jsonFilename: "yuanta-synthetic.json",
-  csvPath: "yuanta-synthetic.csv",
-  jsonPath: "yuanta-synthetic.json",
-  csvBytes: 1,
-  jsonBytes: 1,
-});
-
-const sourceOnlyDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-source-only-workflow-"),
-);
+const typedOutputDir = await mkdtemp(join(tmpdir(), "yuanta-deposit-typed-"));
+const originalCwd = process.cwd();
+process.chdir(typedOutputDir);
 try {
-  const sourceOnlyOutput = await runYuantaStatements(
+  const deferredItems: PGliteWorkflowRunItem[] = [];
+  let preparedDateRange: string | null = null;
+  const typedResult = await runYuantaStatements(
     {} as never,
+    { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
     {
-      dateRange: "one_month",
-      accountFilters: [],
-      replaceActiveSession: true,
-      telemetry: true,
-    },
-    {
-      ...stableConnectionIdentity,
-      canonicalLedgerDir: sourceOnlyDir,
-      readDepositAccountOptions: async () => [workflowAccount],
-      queryAccount: async () => undefined,
-      downloadStatementRows: async () => workflowDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
-    },
-  );
-  assert.equal(sourceOnlyOutput.admissions[0]?.status, "source-only");
-  assert.equal(
-    sourceOnlyOutput.admissions[0]?.reason,
-    "financial-ledger-not-configured",
-  );
-  assert.equal(sourceOnlyOutput.telemetry?.length, 1);
-  const sourceOnlyStore = createCanonicalSourceStore(
-    join(sourceOnlyDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      sourceOnlyStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
-    );
-    const current = queryCanonicalSourceCurrent(sourceOnlyStore);
-    assert.equal(current.records.length, 1);
-    const sourceOnlyReadiness = buildYuantaDomesticDepositReadinessFromLedger(
-      sourceOnlyStore.db,
-    );
-    assert.equal(sourceOnlyReadiness.capability, "preflight-only");
-    assert.deepEqual(sourceOnlyReadiness.blockers.length > 0, true);
-    assert.doesNotMatch(
-      JSON.stringify(
-        current.records.map(({ compact }) => ({
-          amountShape: compact.amountShape,
-          cellCount: compact.cellCount,
-          evidenceVersion: compact.evidenceVersion,
-          pageOrdinal: compact.pageOrdinal,
-          rowOrdinal: compact.rowOrdinal,
-          semanticStatus: compact.semanticStatus,
-        })),
-      ),
-      /CLEAN DEPOSIT|900|YUANTA-ACCOUNT-001/,
-    );
-  } finally {
-    sourceOnlyStore.close();
-  }
-} finally {
-  await rm(sourceOnlyDir, { recursive: true, force: true });
-}
-
-const boundaryDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-date-boundary-workflow-"),
-);
-try {
-  const boundaryOutput = await runYuantaStatements(
-    {} as never,
-    {
-      dateRange: "three_months",
-      accountFilters: [],
-      replaceActiveSession: true,
-      telemetry: false,
-    },
-    {
-      ...stableConnectionIdentity,
-      observedAt: () => "2026-09-06T23:40:39+08:00",
-      canonicalLedgerDir: boundaryDir,
-      canonicalFinancialLedgerDir: boundaryDir,
-      readDepositAccountOptions: async () => [workflowAccount],
-      queryAccount: async () => undefined,
-      downloadStatementRows: async () => nextDayAccountingWorkflowDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
-      readCurrentDepositBalances: async () => [],
-    },
-  );
-  assert.equal(boundaryOutput.admissions[0]?.status, "financial-admitted");
-  const boundaryStore = createCanonicalSourceStore(
-    join(boundaryDir, "canonical.sqlite"),
-  );
-  try {
-    const boundaryCurrent = queryCanonicalSourceCurrent(boundaryStore);
-    assert.equal(boundaryCurrent.records.length, 1);
-    assert.deepEqual(
-      {
-        accountingDate: boundaryCurrent.records[0]?.compact.accountingDate,
-        transactionDate: boundaryCurrent.records[0]?.compact.transactionDate,
+      preparePage: async (_page, dateRange) => {
+        preparedDateRange = dateRange;
       },
-      { accountingDate: "2026-09-07", transactionDate: "2026-09-06" },
-    );
-    assert.equal(
-      boundaryStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      1,
-    );
-  } finally {
-    boundaryStore.close();
-  }
-} finally {
-  await rm(boundaryDir, { recursive: true, force: true });
-}
-
-const outOfRangeDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-out-of-range-workflow-"),
-);
-try {
-  await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "three_months",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: false,
-        },
-        {
-          ...stableConnectionIdentity,
-          observedAt: () => "2026-09-06T23:40:39+08:00",
-          canonicalLedgerDir: outOfRangeDir,
-          canonicalFinancialLedgerDir: outOfRangeDir,
-          readDepositAccountOptions: async () => [workflowAccount],
-          queryAccount: async () => undefined,
-          downloadStatementRows: async () => transactionOutsideWorkflowDownload,
-          writeBankTransactionsFile: writeWorkflowFile as never,
-        },
-      ),
-    /Yuanta domestic deposit financial admission failed: row-outside-query-range/,
-  );
-} finally {
-  await rm(outOfRangeDir, { recursive: true, force: true });
-}
-
-const financialSourceDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-source-workflow-"),
-);
-const financialLedgerDir = financialSourceDir;
-const relationRequests: LoanRepaymentRelationResolutionRequest[] = [];
-const relationEvidenceCounts: number[] = [];
-const resolveYuantaRelations = async (
-  store: { db: DatabaseSync; databasePath?: string },
-  request: LoanRepaymentRelationResolutionRequest,
-): Promise<LoanRepaymentRelationResolutionResult> => {
-  relationRequests.push(request);
-  relationEvidenceCounts.push(
-    Number(
-      (
-        store.db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM transaction_counterparty_account_evidence",
-          )
-          .get() as { count?: number }
-      ).count ?? 0,
-    ),
-  );
-  return {
-    status: "canonical-live",
-    outcome: "no-admission",
-    resolutionId: null,
-    exactRelationIds: [],
-    settlementGroupIds: [],
-    reason: "no-evidence-backed-admission",
-  };
-};
-try {
-  const financialOutput = await runYuantaStatements(
-    {} as never,
-    {
-      dateRange: "one_month",
-      accountFilters: [],
-      replaceActiveSession: true,
-      telemetry: false,
-    },
-    {
       observedAt: stableConnectionIdentity.observedAt,
-      canonicalLedgerDir: financialSourceDir,
-      canonicalFinancialLedgerDir: financialLedgerDir,
-      readDepositAccountOptions: async () => [workflowAccount],
+      readDepositAccountOptions: async () => {
+        assert.equal(preparedDateRange, "one_month", "the selected range must be prepared before account collection");
+        return [workflowAccount];
+      },
       queryAccount: async () => undefined,
       downloadStatementRows: async () => workflowDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
       sourceConnectionScope: stableConnectionScope,
       sourceConnectionKey: stableConnectionKey,
-      resolveRelations: resolveYuantaRelations,
       readCurrentDepositBalances: async () => [workflowCurrentBalanceRow],
+      deferredCommitItems: deferredItems,
+      sourceText: strictSourceText,
+      signal: new AbortController().signal,
     },
   );
-  assert.equal(financialOutput.admissions[0]?.status, "financial-admitted");
-  assert.equal(relationRequests.length, 1);
-  assert.equal(relationRequests[0]?.integrationNamespace, "yuanta");
-  assert.equal(relationRequests[0]?.sourceConnectionKey, stableConnectionKey);
-  assert.deepEqual(relationRequests[0]?.requiredCoverage, { complete: true });
-  assert.equal("explicitLinks" in relationRequests[0]!, false);
-  assert.deepEqual(relationEvidenceCounts, [1]);
-  assert.equal(financialOutput.relationResolution?.outcome, "no-admission");
-  assert.equal(
-    financialOutput.relationResolution?.reason,
-    "no-evidence-backed-admission",
-  );
-  const financialStore = createCanonicalSourceStore(
-    join(financialLedgerDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      financialStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      1,
-    );
-    assert.equal(
-      financialStore.db
-        .prepare("SELECT COUNT(*) AS count FROM balance_observation_revisions")
-        .get()?.count,
-      2,
-      "current balance observations must not create transaction rows",
-    );
-    assert.deepEqual(
-      (
-        financialStore.db
-          .prepare(
-            "SELECT record_kind, COUNT(*) AS count FROM source_captures GROUP BY record_kind ORDER BY record_kind",
-          )
-          .all() as Array<{ record_kind?: unknown; count?: unknown }>
-      ).map((row) => ({
-        record_kind: row.record_kind,
-        count: row.count,
-      })),
-      [
-        { record_kind: "current-deposit-balance", count: 1 },
-        { record_kind: "yuanta-domestic-deposit", count: 1 },
-      ],
-      "statement and current-balance captures must remain separately identifiable",
-    );
-    const evidence = queryCounterpartyAccountEvidence(financialStore);
-    assert.equal(evidence.length, 1);
-    assert.equal(evidence[0]?.sourceValue, " 9988-7766 ");
-    assert.equal(evidence[0]?.normalizedValue, "99887766");
-    assert.equal(evidence[0]?.purpose, "loan_repayment");
-    assert.equal(evidence[0]?.scope, "shared_collection");
-    assert.equal(
-      evidence[0]?.sourceField,
-      "provider-detail-counterparty-account",
-    );
-    const financialCurrent = queryCanonicalSourceCurrent(financialStore);
-    assert.deepEqual(
-      financialCurrent.records
-        .map((record) => record.identity.recordKind)
-        .sort(),
-      [
-        "current-deposit-balance",
-        "current-deposit-balance",
-        "yuanta-domestic-deposit",
-      ],
-      "current query must retain the statement record and both balance fields",
-    );
-    const financialHistorical = queryCanonicalSourceHistorical(financialStore);
-    assert.equal(financialHistorical.records.length, 3);
-    const financialObservation = financialCurrent.observations[0]!;
-    const financialLineage = queryCanonicalSourceLineage(financialStore, {
-      ...financialObservation.identity,
-      occurrenceKey: financialObservation.occurrenceKey,
-    });
-    assert.equal(financialLineage.provenanceComplete, true);
-    const readiness = buildYuantaDomesticDepositReadinessFromLedger(
-      financialStore.db,
-    );
-    assert.equal(readiness.capability, "canonical-human-attested");
-    assert.equal(readiness.liveValidation, "complete");
-    assert.deepEqual(readiness.blockers, []);
-    assert.equal(readiness.providerGuaranteed, false);
-  } finally {
-    financialStore.close();
-  }
-} finally {
-  await rm(financialSourceDir, { recursive: true, force: true });
-}
+  assert.ok(typedResult.itemCount > 0);
+  assert.equal(preparedDateRange, "one_month", "the typed collector must apply the selected range before reading source data");
+  assert.equal(typedResult.sourceCount, 1);
+  assert.equal(typedResult.rowCount, 1);
+  assert.equal(deferredItems.length, typedResult.itemCount);
+  assert.ok(deferredItems.every((item) => item.provider === "yuanta" && item.command));
+  assert.deepEqual(await readdir(typedOutputDir), []);
 
-const splitStoreRoot = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-split-store-rejection-"),
-);
-try {
-  let splitStoreCollected = false;
+  const rejectedItems: PGliteWorkflowRunItem[] = [];
   await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "one_month",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: false,
-        },
-        {
-          ...stableConnectionIdentity,
-          canonicalLedgerDir: join(splitStoreRoot, "source"),
-          canonicalFinancialLedgerDir: join(splitStoreRoot, "financial"),
-          readDepositAccountOptions: async () => {
-            splitStoreCollected = true;
-            return [workflowAccount];
-          },
-        },
-      ),
-    /same canonical SQLite database/i,
-  );
-  assert.equal(
-    splitStoreCollected,
-    false,
-    "split source/financial stores fail closed before collection",
-  );
-} finally {
-  await rm(splitStoreRoot, { recursive: true, force: true });
-}
-
-const maskedSourceDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-masked-source-workflow-"),
-);
-const maskedLedgerDir = maskedSourceDir;
-try {
-  await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "one_month",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: false,
-        },
-        {
-          ...stableConnectionIdentity,
-          canonicalLedgerDir: maskedSourceDir,
-          canonicalFinancialLedgerDir: maskedLedgerDir,
-          readDepositAccountOptions: async () => [workflowAccount],
-          queryAccount: async () => undefined,
-          downloadStatementRows: async () => maskedWorkflowDownload,
-          writeBankTransactionsFile: writeWorkflowFile as never,
-        },
-      ),
-    /masked counterparty account/i,
-  );
-  const maskedStore = createCanonicalSourceStore(
-    join(maskedLedgerDir, "canonical.sqlite"),
-  );
-  try {
-    // Counterparty evidence is validated before the run transaction opens;
-    // rejecting a masked account must leave the whole run unapplied.
-    assert.equal(
-      maskedStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
-    );
-    assert.equal(queryCounterpartyAccountEvidence(maskedStore).length, 0);
-  } finally {
-    maskedStore.close();
-  }
-} finally {
-  await rm(maskedSourceDir, { recursive: true, force: true });
-}
-
-const multiAccountDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-multi-account-workflow-"),
-);
-try {
-  const multiAccountOutput = await runYuantaStatements(
-    {} as never,
-    {
-      dateRange: "one_month",
-      accountFilters: [],
-      replaceActiveSession: true,
-      telemetry: false,
-    },
-    {
-      ...stableConnectionIdentity,
-      canonicalLedgerDir: multiAccountDir,
-      readDepositAccountOptions: async () => [
-        workflowAccount,
-        secondWorkflowAccount,
-      ],
-      queryAccount: async () => undefined,
-      downloadStatementRows: async (_page, account) =>
-        account.value === secondWorkflowAccount.value
-          ? secondWorkflowDownload
-          : workflowDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
-      readCurrentDepositBalances: async () => [],
-    },
-  );
-  assert.equal(multiAccountOutput.admissions.length, 2);
-  const multiAccountStore = createCanonicalSourceStore(
-    join(multiAccountDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      queryCanonicalSourceCurrent(multiAccountStore).records.length,
-      2,
-    );
-    assert.equal(
-      multiAccountStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
-    );
-  } finally {
-    multiAccountStore.close();
-  }
-} finally {
-  await rm(multiAccountDir, { recursive: true, force: true });
-}
-
-const financialMultiAccountDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-multi-account-workflow-"),
-);
-try {
-  const financialRun = async () =>
     runYuantaStatements(
       {} as never,
+      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
       {
-        dateRange: "one_month",
-        accountFilters: [],
-        replaceActiveSession: true,
-        telemetry: false,
-      },
-      {
-        ...stableConnectionIdentity,
-        canonicalLedgerDir: financialMultiAccountDir,
-        canonicalFinancialLedgerDir: financialMultiAccountDir,
-        readDepositAccountOptions: async () => [
-          workflowAccount,
-          secondWorkflowAccount,
-        ],
+        preparePage: async () => undefined,
+        observedAt: stableConnectionIdentity.observedAt,
+        readDepositAccountOptions: async () => [workflowAccount],
         queryAccount: async () => undefined,
-        downloadStatementRows: async (_page, account) =>
-          account.value === secondWorkflowAccount.value
-            ? secondWorkflowDownload
-            : workflowDownload,
-        writeBankTransactionsFile: writeWorkflowFile as never,
-        readCurrentDepositBalances: async () => [],
-        resolveRelations: async () => ({
-          status: "canonical-live" as const,
-          outcome: "no-admission" as const,
-          resolutionId: null,
-          exactRelationIds: [],
-          settlementGroupIds: [],
-          reason: "test" as const,
-        }),
+        downloadStatementRows: async () => {
+          strictSourceText.decode(Uint8Array.of(0x81), "big5");
+          return workflowDownload;
+        },
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: stableConnectionKey,
+        deferredCommitItems: rejectedItems,
+        sourceText: strictSourceText,
+        signal: new AbortController().signal,
       },
-    );
+    ),
+    /Source text integrity failed/u,
+  );
+  assert.deepEqual(rejectedItems, [], "malformed Big5 must fail before any source item is returned");
 
-  const firstFinancialRun = await financialRun();
-  assert.deepEqual(
-    firstFinancialRun.admissions.map((admission) => admission.status),
-    ["financial-admitted", "financial-admitted"],
-    "a successful multi-account run commits every account together",
-  );
-  const secondFinancialRun = await financialRun();
-  assert.deepEqual(
-    secondFinancialRun.admissions.map((admission) => admission.status),
-    ["financial-admitted", "financial-admitted"],
-  );
-  const financialMultiStore = createCanonicalSourceStore(
-    join(financialMultiAccountDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      financialMultiStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      2,
-      "repeated synchronization keeps one transaction per source occurrence",
-    );
-    assert.equal(
-      queryCanonicalSourceCurrent(financialMultiStore).records.length,
-      2,
-    );
-  } finally {
-    financialMultiStore.close();
-  }
-} finally {
-  await rm(financialMultiAccountDir, { recursive: true, force: true });
-}
-
-const financialRollbackDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-financial-rollback-workflow-"),
-);
-try {
+  const canceledItems: PGliteWorkflowRunItem[] = [];
+  const cancellation = new AbortController();
+  cancellation.abort();
   await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "one_month",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: false,
-        },
-        {
-          ...stableConnectionIdentity,
-          canonicalLedgerDir: financialRollbackDir,
-          canonicalFinancialLedgerDir: financialRollbackDir,
-          readDepositAccountOptions: async () => [
-            workflowAccount,
-            secondWorkflowAccount,
-          ],
-          queryAccount: async () => undefined,
-          downloadStatementRows: async (_page, account) => {
-            if (account.value === secondWorkflowAccount.value)
-              throw new Error("synthetic later-account download failure");
-            return workflowDownload;
-          },
-          writeBankTransactionsFile: writeWorkflowFile as never,
-          readCurrentDepositBalances: async () => [],
-        },
-      ),
-    /later-account download failure/i,
-  );
-  const rollbackStore = createCanonicalSourceStore(
-    join(financialRollbackDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      rollbackStore.db
-        .prepare("SELECT COUNT(*) AS count FROM source_captures")
-        .get()?.count,
-      0,
-      "a later account failure leaves no source capture from the run",
-    );
-    assert.equal(
-      rollbackStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
-      "a later account failure leaves no financial transaction from the run",
-    );
-    assert.equal(
-      rollbackStore.db
-        .prepare("SELECT COUNT(*) AS count FROM source_sync_states")
-        .get()?.count,
-      0,
-      "a failed run does not advance committed sync state",
-    );
-  } finally {
-    rollbackStore.close();
-  }
-} finally {
-  await rm(financialRollbackDir, { recursive: true, force: true });
-}
-
-const cancellationDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-cancellation-workflow-"),
-);
-try {
-  const cancellationValues = [...workflowValues];
-  cancellationValues[5] = "取消沖正";
-  const cancellationDownload = {
-    ...workflowDownload,
-    rows: [
+    runYuantaStatements(
+      {} as never,
+      { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
       {
-        ...workflowDownload.rows[0]!,
-        values: cancellationValues.slice(1),
+        preparePage: async () => { throw new Error("canceled collection navigated the browser"); },
+        sourceConnectionScope: stableConnectionScope,
+        sourceConnectionKey: stableConnectionKey,
+        deferredCommitItems: canceledItems,
+        sourceText: strictSourceText,
+        signal: cancellation.signal,
       },
-    ],
-    source: {
-      ...workflowDownload.source,
-      contentDigest: "sha256:yuanta-cancellation-content" as `sha256:${string}`,
-      rows: [{ rowOrdinal: 0, values: cancellationValues }],
-    },
-  };
-  const originalLog = console.log;
-  const amountTelemetry: Array<{
-    rowCount: number;
-    pairs: Record<string, number>;
-  }> = [];
-  console.log = ((label: unknown, payload: unknown) => {
-    if (label === "yuanta-domestic-deposit-amount-classes")
-      amountTelemetry.push(payload as (typeof amountTelemetry)[number]);
-  }) as typeof console.log;
-  await assert.rejects(
-    () =>
-      runYuantaStatements(
-        {} as never,
-        {
-          dateRange: "one_month",
-          accountFilters: [],
-          replaceActiveSession: true,
-          telemetry: true,
-        },
-        {
-          ...stableConnectionIdentity,
-          canonicalLedgerDir: cancellationDir,
-          canonicalFinancialLedgerDir: cancellationDir,
-          readDepositAccountOptions: async () => [workflowAccount],
-          queryAccount: async () => undefined,
-          downloadStatementRows: async () => cancellationDownload,
-          writeBankTransactionsFile: writeWorkflowFile as never,
-        },
-      ),
-    /cancellation-marker-unsupported|financial admission failed/i,
+    ),
+    /abort/u,
   );
-  console.log = originalLog;
-  assert.deepEqual(amountTelemetry, [
-    { rowCount: 1, pairs: { "empty|valid-nonzero": 1 } },
-  ]);
-  assert.doesNotMatch(
-    JSON.stringify(amountTelemetry),
-    /YUANTA|CLEAN|取消|沖正/,
-  );
-  const cancellationStore = createCanonicalSourceStore(
-    join(cancellationDir, "canonical.sqlite"),
-  );
-  try {
-    assert.equal(
-      cancellationStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
-    );
-    assert.equal(
-      queryCanonicalSourceCurrent(cancellationStore).records.length,
-      0,
-    );
-  } finally {
-    cancellationStore.close();
-  }
+  assert.deepEqual(canceledItems, [], "cancellation must return no commit items");
 } finally {
-  await rm(cancellationDir, { recursive: true, force: true });
+  process.chdir(originalCwd);
+  await rm(typedOutputDir, { recursive: true, force: true });
 }
 
-const emptyDir = await mkdtemp(
-  join(process.env.TMPDIR ?? "/tmp", "yuanta-empty-workflow-"),
+const browserFixtureBytes = Buffer.from(
+  "IrFiuLkiLCKxYrDIpOm0wSIsIqXmqfak6bTBIiwipeap9q7JtqEiLCKl5qn2u6Gp+iIsIqTkpViq98NCIiwipnOkSqr3w0IiLCKxYq2xvmzDQiIsIrK8vtq4ub1YIiwis8a1+SIKIllVQU5UQS1BQ0NPVU5ULTAwMSIsIjIwMjYwODAyIiwiMjAyNjA4MDIiLCIwOToxMDoxMSIsIkNMRUFOIERFUE9TSVQiLCIiLCIxMDAiLCI5MDAiLCIiLCIiCg==",
+  "base64",
 );
+const streamedFixtureLimit = 25 * 1024 * 1024;
+const streamedFixtureTotal = streamedFixtureLimit + 32 * 1024 * 1024;
+let fixtureCookie: string | undefined;
+type FixtureBodyMode =
+  | "success"
+  | "forbidden"
+  | "invalid-big5"
+  | "declared-oversize"
+  | "streamed-oversize"
+  | "redirect-cross-origin"
+  | "redirect-same-origin"
+  | "unsafe-filename"
+  | "slow";
+let fixtureHref: string | null = "/export.csv";
+let fixtureJavaScriptExport = false;
+let fixtureForeignJavaScriptExport = false;
+let fixturePostCount = 0;
+let fixtureBaseHref: string | null = null;
+let fixtureBodyMode: FixtureBodyMode = "success";
+let crossOriginRequestCount = 0;
+let streamedFixtureBytes = 0;
+let streamWasCanceledEarly = false;
+const browserFixtureServer = createServer((request, response) => {
+  if (request.url?.startsWith("/start")) {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "set-cookie": "yuanta-fixture-session=present; Path=/; SameSite=Lax",
+    });
+    const base = fixtureBaseHref === null
+      ? ""
+      : `<base href="${fixtureBaseHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}">`;
+    const href = fixtureHref === null
+      ? ""
+      : ` href="${fixtureHref.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;")}"`;
+    response.end(fixtureForeignJavaScriptExport
+      ? '<form name="mform" method="post" action="/fxtransactiondetails"><input id="txntype" name="txntype" type="hidden" value="query"><input type="hidden" name="cid" value="synthetic-cid"></form><a class="order_2 m_color_check" href="javascript:void(0);" onclick="getDownload(\'csv\');">下載CSV檔</a>'
+      : fixtureJavaScriptExport
+      ? '<form name="jform" method="post" action="/transactiondetails"><input type="hidden" name="cid" value="synthetic-cid"></form><a class="order_2 m_color_check" href="javascript:void(0);" onclick="getDownload(\'csv\');">下載CSV檔</a>'
+      : `${base}<a class="order_2 m_color_check"${href}>下載CSV檔</a>`);
+    return;
+  }
+  if (request.url === "/transactiondetails?method=downloadcsv" && request.method === "POST") {
+    fixturePostCount += 1;
+    fixtureCookie = request.headers.cookie;
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      assert.match(Buffer.concat(chunks).toString("utf8"), /cid=synthetic-cid/u);
+      response.writeHead(200, { "content-type": "text/csv; charset=big5" });
+      response.end(browserFixtureBytes);
+    });
+    return;
+  }
+  if (request.url === "/fxtransactiondetails" && request.method === "POST") {
+    fixturePostCount += 1;
+    fixtureCookie = request.headers.cookie;
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      assert.match(Buffer.concat(chunks).toString("utf8"), /txntype=downloadcsv/u);
+      response.writeHead(200, { "content-type": "text/csv; charset=big5" });
+      response.end(browserFixtureBytes);
+    });
+    return;
+  }
+  if (request.url === "/export.csv" || request.url === "/export-final.csv") {
+    fixtureCookie = request.headers.cookie;
+    if (fixtureBodyMode === "forbidden") {
+      response.writeHead(403, { "content-length": "0" });
+      response.end();
+      return;
+    }
+    if (fixtureBodyMode === "invalid-big5") {
+      response.writeHead(200, {
+        "content-type": "text/csv",
+        "content-disposition": 'attachment; filename="invalid.csv"',
+        "content-length": "1",
+      });
+      response.end(Buffer.from([0x81]));
+      return;
+    }
+    if (fixtureBodyMode === "declared-oversize") {
+      response.writeHead(200, {
+        "content-type": "text/csv",
+        "content-length": String(25 * 1024 * 1024 + 1),
+      });
+      response.flushHeaders();
+      return;
+    }
+    if (fixtureBodyMode === "streamed-oversize") {
+      response.writeHead(200, { "content-type": "text/csv" });
+      let finished = false;
+      const sendChunk = () => {
+        if (finished || response.destroyed) return;
+        const length = Math.min(64 * 1024, streamedFixtureTotal - streamedFixtureBytes);
+        if (length <= 0) {
+          finished = true;
+          response.end();
+          return;
+        }
+        streamedFixtureBytes += length;
+        const canContinue = response.write(Buffer.alloc(length, 0x41));
+        if (streamedFixtureBytes >= streamedFixtureTotal) {
+          finished = true;
+          response.end();
+        } else if (canContinue) {
+          setTimeout(sendChunk, 8);
+        } else {
+          response.once("drain", () => setTimeout(sendChunk, 8));
+        }
+      };
+      response.on("close", () => {
+        finished = true;
+        streamWasCanceledEarly = streamedFixtureBytes < streamedFixtureTotal;
+      });
+      sendChunk();
+      return;
+    }
+    if (fixtureBodyMode === "slow") {
+      response.writeHead(200, { "content-length": "100" });
+      response.flushHeaders();
+      const timer = setTimeout(() => response.end("x".repeat(100)), 5_000);
+      response.on("close", () => clearTimeout(timer));
+      return;
+    }
+    if (request.url === "/export.csv" && fixtureBodyMode === "redirect-cross-origin") {
+      response.writeHead(302, { location: crossOriginFixtureUrl, "content-length": "0" });
+      response.end();
+      return;
+    }
+    if (request.url === "/export.csv" && fixtureBodyMode === "redirect-same-origin") {
+      response.writeHead(302, { location: "/export-final.csv", "content-length": "0" });
+      response.end();
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": "text/csv; charset=big5",
+      "content-disposition": fixtureBodyMode === "unsafe-filename"
+        ? 'attachment; filename="../private.csv"'
+        : 'attachment; filename="yuanta-fixture.csv"',
+      "content-length": String(browserFixtureBytes.byteLength),
+    });
+    response.end(browserFixtureBytes);
+    return;
+  }
+  response.writeHead(404, { "content-length": "0" });
+  response.end();
+});
+const crossOriginFixtureServer = createServer((_request, response) => {
+  crossOriginRequestCount += 1;
+  response.writeHead(200, { "content-length": "0" });
+  response.end();
+});
+await new Promise<void>((resolve, reject) => {
+  crossOriginFixtureServer.once("error", reject);
+  crossOriginFixtureServer.listen(0, "127.0.0.1", resolve);
+});
+const crossOriginFixtureAddress = crossOriginFixtureServer.address();
+assert.ok(crossOriginFixtureAddress && typeof crossOriginFixtureAddress !== "string");
+const crossOriginFixtureUrl = `http://127.0.0.1:${crossOriginFixtureAddress.port}/export.csv`;
+await new Promise<void>((resolve, reject) => {
+  browserFixtureServer.once("error", reject);
+  browserFixtureServer.listen(0, "127.0.0.1", resolve);
+});
+const browserFixtureAddress = browserFixtureServer.address();
+assert.ok(browserFixtureAddress && typeof browserFixtureAddress !== "string");
+const browserFixtureBaseUrl = `http://127.0.0.1:${browserFixtureAddress.port}`;
+const browserFixtureDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-deposit-browser-fixture-"),
+);
+const browserFixtureOutputDirectory = await mkdtemp(
+  join(tmpdir(), "yuanta-deposit-output-fixture-"),
+);
+const browserFixtureOriginalCwd = process.cwd();
+process.chdir(browserFixtureOutputDirectory);
+let observedBrowserDownload = false;
 try {
-  const emptyDownload = {
-    ...workflowDownload,
-    rows: [],
-    source: {
-      ...workflowDownload.source,
-      contentDigest: "sha256:yuanta-empty-content" as `sha256:${string}`,
-      rows: [],
-    },
-  };
-  const emptyOutput = await runYuantaStatements(
-    {} as never,
-    {
-      dateRange: "one_month",
-      accountFilters: [],
-      replaceActiveSession: true,
-      telemetry: false,
-    },
-    {
-      ...stableConnectionIdentity,
-      canonicalLedgerDir: emptyDir,
-      canonicalFinancialLedgerDir: emptyDir,
-      readDepositAccountOptions: async () => [workflowAccount],
-      queryAccount: async () => undefined,
-      downloadStatementRows: async () => emptyDownload,
-      writeBankTransactionsFile: writeWorkflowFile as never,
-    },
-  );
-  assert.equal(emptyOutput.admissions[0]?.status, "source-only");
-  assert.match(
-    emptyOutput.admissions[0]?.reason ?? "",
-    /zero-result-authority-unproven/,
-  );
-  const emptyStore = createCanonicalSourceStore(
-    join(emptyDir, "canonical.sqlite"),
-  );
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
   try {
-    assert.equal(
-      emptyStore.db
-        .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-        .get()?.count,
-      0,
+    let runOrdinal = 0;
+    async function collectFixture(
+      controller = new AbortController(),
+      items: PGliteWorkflowRunItem[] = [],
+    ): Promise<{ result: Awaited<ReturnType<typeof runYuantaStatements>>; items: PGliteWorkflowRunItem[] }> {
+      runOrdinal += 1;
+      observedBrowserDownload = false;
+      fixtureCookie = undefined;
+      const signal = controller.signal;
+      const browserPort = createAppWorkflowBrowserPort({
+        taskId: "yuanta-domestic-fixture",
+        taskRunId: `yuanta-domestic-run-${runOrdinal}`,
+        userDataDirectory: browserFixtureDirectory,
+        startUrl: `${browserFixtureBaseUrl}/start`,
+        signal,
+        launchPersistentContext: async () =>
+          await browser.newContext({ acceptDownloads: false }),
+      });
+      const result = await browserPort.withPage(async (page) => {
+        page.on("download", () => { observedBrowserDownload = true; });
+        return await runYuantaStatements(
+          page,
+          { dateRange: "one_month", accountFilters: [], replaceActiveSession: true },
+          {
+            preparePage: async () => undefined,
+            readDepositAccountOptions: async () => [workflowAccount],
+            queryAccount: async () => undefined,
+            observedAt: stableConnectionIdentity.observedAt,
+            readCurrentDepositBalances: async () => [],
+            sourceConnectionScope: stableConnectionScope,
+            sourceConnectionKey: stableConnectionKey,
+            deferredCommitItems: items,
+            sourceText: strictSourceText,
+            signal,
+          },
+        );
+      });
+      return { result, items };
+    }
+
+    const success = await collectFixture();
+    const result = success.result;
+    const browserFixtureItems = success.items;
+    assert.equal(result.sourceCount, 1);
+    assert.ok(result.itemCount > 0);
+    const typedCommandPayload = JSON.stringify(browserFixtureItems);
+    const expectedFilenameDigest = createHash("sha256")
+      .update("yuanta-filename-v1\0")
+      .update("yuanta-fixture.csv")
+      .digest("base64url");
+    assert.ok(
+      typedCommandPayload.includes(expectedFilenameDigest),
+      "the selected safe response filename must contribute to source metadata",
+    );
+    assert.ok(
+      typedCommandPayload.includes(
+        createHash("sha256").update(browserFixtureBytes).digest("base64url"),
+      ),
+      "the raw export bytes must retain their content digest",
     );
     assert.equal(
-      emptyStore.db
-        .prepare("SELECT COUNT(*) AS count FROM source_captures")
-        .get()?.count,
-      1,
+      fixtureCookie,
+      "yuanta-fixture-session=present",
+      "the in-memory request must carry the authenticated same-origin cookie",
+    );
+    assert.equal(
+      observedBrowserDownload,
+      false,
+      "App acceptDownloads:false collection must not trigger a browser download",
+    );
+    assert.deepEqual(await readdir(browserFixtureDirectory), ["data"]);
+    assert.deepEqual(await readdir(join(browserFixtureDirectory, "data")), ["automation"]);
+    assert.deepEqual(await readdir(join(browserFixtureDirectory, "data", "automation")), ["browser-state"]);
+    assert.deepEqual(
+      await readdir(join(browserFixtureDirectory, "data", "automation", "browser-state", "yuanta-domestic-fixture")),
+      ["authentication"],
+      "the export must remain in memory and not become a retained profile file",
+    );
+    assert.deepEqual(
+      await readdir(join(browserFixtureDirectory, "data", "automation", "browser-state", "yuanta-domestic-fixture", "authentication")),
+      [],
+      "no cookie or export file is retained without a credential codec",
+    );
+
+    fixtureJavaScriptExport = true;
+    const formExport = await collectFixture();
+    assert.equal(formExport.result.sourceCount, 1);
+    assert.equal(fixturePostCount, 1);
+    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
+    assert.equal(observedBrowserDownload, false);
+    fixtureJavaScriptExport = false;
+    fixtureForeignJavaScriptExport = true;
+    const foreignFormExport = await collectFixture();
+    assert.equal(foreignFormExport.result.sourceCount, 1);
+    assert.equal(fixturePostCount, 2);
+    assert.equal(observedBrowserDownload, false);
+    fixtureForeignJavaScriptExport = false;
+
+    for (const testCase of [
+      { href: null, mode: "success" as const, error: /no fetchable URL/u },
+      { href: "javascript:void(0)", mode: "success" as const, error: /no fetchable URL/u },
+      { href: crossOriginFixtureUrl, mode: "success" as const, error: /left the authenticated origin/u },
+      {
+        href: "/export.csv",
+        base: `${new URL(crossOriginFixtureUrl).origin}/`,
+        mode: "success" as const,
+        error: /left the authenticated origin/u,
+      },
+      { href: "/export.csv", mode: "redirect-cross-origin" as const, error: /same-origin|Failed to fetch|redirect/u },
+      { href: "/export.csv", mode: "forbidden" as const, error: /did not return a complete response/u },
+      { href: "/export.csv", mode: "unsafe-filename" as const, error: /filename is unsafe/u },
+      { href: "/export.csv", mode: "invalid-big5" as const, error: /Source text integrity failed/u },
+      { href: "/export.csv", mode: "declared-oversize" as const, error: /in-memory size limit/u },
+      { href: "/export.csv", mode: "streamed-oversize" as const, error: /in-memory size limit/u },
+    ]) {
+      fixtureHref = testCase.href;
+      fixtureBaseHref = "base" in testCase ? testCase.base ?? null : null;
+      fixtureBodyMode = testCase.mode;
+      const rejectedItems: PGliteWorkflowRunItem[] = [];
+      await assert.rejects(
+        () => collectFixture(new AbortController(), rejectedItems),
+        testCase.error,
+      );
+      assert.deepEqual(
+        rejectedItems,
+        [],
+        `failed fixture ${testCase.mode} must not yield Canonical Financial Commit items`,
+      );
+    }
+    assert.equal(
+      crossOriginRequestCount,
+      0,
+      "a cross-origin target and a cross-origin redirect must not reach the target server",
+    );
+    assert.ok(
+      streamedFixtureBytes > streamedFixtureLimit,
+      "the streamed limit test must send bytes past the cap before the reader cancels",
+    );
+    assert.equal(
+      streamWasCanceledEarly,
+      true,
+      "the browser response body reader must cancel before the oversized fixture finishes",
+    );
+    assert.ok(streamedFixtureBytes < streamedFixtureTotal);
+
+    fixtureHref = "/export.csv";
+    fixtureBaseHref = null;
+    fixtureBodyMode = "redirect-same-origin";
+    const redirectedSuccess = await collectFixture();
+    assert.equal(redirectedSuccess.result.sourceCount, 1);
+    assert.ok(redirectedSuccess.items.length > 0);
+    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
+    assert.equal(observedBrowserDownload, false);
+
+    fixtureHref = "/export.csv";
+    fixtureBaseHref = null;
+    fixtureBodyMode = "slow";
+    const cancellation = new AbortController();
+    const canceledItems: PGliteWorkflowRunItem[] = [];
+    const pending = collectFixture(cancellation, canceledItems);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    cancellation.abort(new Error("fixture run canceled"));
+    await assert.rejects(pending, /fixture run canceled/u);
+    assert.deepEqual(canceledItems, [], "canceled retrieval must return no Canonical Financial Commit items");
+    assert.deepEqual(
+      await readdir(browserFixtureOutputDirectory),
+      [],
+      "successful and rejected collection paths must leave no source, output, or log files",
     );
   } finally {
-    emptyStore.close();
+    await browser.close();
   }
 } finally {
-  await rm(emptyDir, { recursive: true, force: true });
+  process.chdir(browserFixtureOriginalCwd);
+  await new Promise<void>((resolve, reject) => {
+    browserFixtureServer.close((error) => error ? reject(error) : resolve());
+  });
+  await new Promise<void>((resolve, reject) => {
+    crossOriginFixtureServer.close((error) => error ? reject(error) : resolve());
+  });
+  await rm(browserFixtureDirectory, { recursive: true, force: true });
+  await rm(browserFixtureOutputDirectory, { recursive: true, force: true });
 }

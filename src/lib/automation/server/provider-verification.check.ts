@@ -113,6 +113,32 @@ function pageRunner(page: never): ProviderVerificationPageRunner {
   return async (_session, action) => action(page);
 }
 
+test("LINE Bank verification completes only with a visible authenticated marker", async () => {
+  const verification = contract("linebank.login.page", {
+    stageId: "linebank-login-verification",
+    completion: {
+      mode: "independent",
+      targetIds: ["verification-target"],
+      status: "pending",
+    },
+  });
+  let signedIn = false;
+  const host = createProviderVerificationHost({
+    withPage: pageRunner({
+      url: () => signedIn
+        ? "https://accessibility.linebank.com.tw/"
+        : "https://accessibility.linebank.com.tw/login",
+      locator: (selector: string) => {
+        assert.equal(selector, 'a[href="/transaction"]:visible');
+        return fakeLocator({ count: signedIn ? 1 : 0, visible: signedIn });
+      },
+    } as never),
+  });
+  assert.equal(await host.inspectCompletion("session", verification), false);
+  signedIn = true;
+  assert.equal(await host.inspectCompletion("session", verification), true);
+});
+
 function yuantaBankCaptchaContract(overrides: Partial<HumanAssistanceContract> = {}) {
   return contract("yuanta-bank.login.captcha-input", {
     challengeKind: "text-captcha",
@@ -490,6 +516,37 @@ test("SinoPac selector-backed fill fails when the field does not retain the answ
   );
 });
 
+test("Post solver fills its semantic CAPTCHA field despite stale coordinates over the user-code field", async () => {
+  const fills: string[] = [];
+  const captcha = fakeLocator({ onFill: value => fills.push(value) });
+  const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': captcha }));
+  const host = createProviderVerificationHost({
+    withPage,
+    sendInput: async (session, rawInput, verificationContract, handler) => {
+      const input = normalizeHumanVerificationInput(rawInput, verificationContract);
+      assert.ok(handler, "Post requires semantic input ownership, never coordinate fallback");
+      return withPage(session, page => handler(page, input, verificationContract.targets[0]!));
+    },
+  });
+  const verification = contract("post.login.captcha-input", { stageId: "ipost-login-captcha" });
+  await host.injectAnswer("post-session", verification, "1234");
+  assert.deepEqual(fills, ["1234"]);
+});
+
+test("Post input ownership rejects missing, ambiguous and non-retaining CAPTCHA fields", async () => {
+  for (const options of [{ count: 0 }, { count: 2 }, { inputValue: () => "" }]) {
+    const withPage = pageRunner(fakePage({ 'input[name="captcha"]:visible': fakeLocator(options) }));
+    const host = createProviderVerificationHost({
+      withPage,
+      sendInput: async (session, rawInput, verificationContract, handler) => {
+        assert.ok(handler);
+        return withPage(session, page => handler(page, normalizeHumanVerificationInput(rawInput, verificationContract), verificationContract.targets[0]!));
+      },
+    });
+    await assert.rejects(host.injectAnswer("post-session", contract("post.login.captcha-input", { stageId: "ipost-login-captcha" }), "1234"), /Post CAPTCHA/u);
+  }
+});
+
 test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", async () => {
   const dialogs = new EventEmitter();
   const host = createProviderVerificationHost({
@@ -513,6 +570,135 @@ test("SinoPac host probe proves a CAPTCHA rejection from the provider dialog", a
   );
   assert.equal(outcome, "provider-rejected");
   assert.equal(dialogs.listenerCount("dialog"), 0);
+});
+
+test("Fubon host probe treats the exact in-page 0290 CAPTCHA response as provider rejection", async () => {
+  let shown = false;
+  let cleanupCount = 0;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: (name: string) => {
+        assert.equal(name, "txnFrame");
+        return {
+          getByText: (pattern: RegExp) => {
+            assert.equal(pattern.test("0290 驗證碼輸入錯誤"), true);
+            const rejection = {
+              isVisible: async () => shown,
+              first: () => rejection,
+            };
+            return rejection;
+          },
+        } as never;
+      },
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-0290",
+    fubonCaptchaContract(),
+    async () => {
+      shown = true;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      throw new Error("workflow stopped after the 0290 response");
+    },
+    async () => { cleanupCount += 1; },
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.equal(cleanupCount, 1);
+});
+
+test("Fubon host probe follows a replaced login frame to the 0290 response", async () => {
+  let replacementVisible = false;
+  let frameReads = 0;
+  const frame = (visible: boolean) => ({
+    getByText: () => {
+      const rejection = {
+        first: () => rejection,
+        isVisible: async () => visible,
+      };
+      return rejection;
+    },
+  });
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: () => {
+        frameReads += 1;
+        return frame(replacementVisible) as never;
+      },
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-replaced-frame",
+    fubonCaptchaContract(),
+    async () => {
+      replacementVisible = true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+  assert.ok(frameReads >= 2);
+});
+
+test("Fubon host probe does not retry other login responses", async () => {
+  for (const message of [
+    "0240 頁面閒置過久",
+    "0212 重複登入",
+    "帳號或密碼錯誤",
+    "0290 帳號或密碼錯誤",
+  ]) {
+    let cleanupCount = 0;
+    const host = createProviderVerificationHost({
+      withPage: async (_session, action) => action({
+        frame: () => ({
+          getByText: (pattern: RegExp) => {
+            assert.equal(pattern.test(message), false);
+            const rejection = {
+              first: () => rejection,
+              isVisible: async () => false,
+              waitFor: async () => { throw new Error("0290 CAPTCHA response absent"); },
+            };
+            return rejection;
+          },
+        } as never),
+      } as never),
+      sleep: async () => {},
+    });
+    await assert.rejects(host.probePostSubmit(
+      "session-fubon-other-error",
+      fubonCaptchaContract(),
+      async () => { throw new Error("ordinary login failure"); },
+      async () => { cleanupCount += 1; },
+    ), /ordinary login failure/);
+    assert.equal(cleanupCount, 0);
+  }
+});
+
+test("Fubon host probe refuses a 0290 response already visible before submission", async () => {
+  let resumed = false;
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      frame: () => ({
+        getByText: () => {
+          const rejection = {
+            first: () => rejection,
+            isVisible: async () => true,
+          };
+          return rejection;
+        },
+      } as never),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-fubon-stale-0290",
+    fubonCaptchaContract(),
+    async () => { resumed = true; },
+    async () => {},
+  );
+  assert.equal(outcome, "unrecognized-dialog");
+  assert.equal(resumed, false);
 });
 
 test("SinoPac host probe keeps a proven rejection when resume fails after the dialog", async () => {
@@ -566,10 +752,34 @@ test("SinoPac host probe recognizes only the exact provider CAPTCHA wording", as
   assert.equal(dialogs.listenerCount("dialog"), 0);
 });
 
+test("SinoPac host probe accepts the bank FAQ wording without a terminal full stop", async () => {
+  const dialogs = new EventEmitter();
+  const host = createProviderVerificationHost({
+    withPage: async (_session, action) => action({
+      onDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.on("dialog", handler),
+      offDialog: (handler: (dialog: ViewerDialogAccess) => void) => dialogs.off("dialog", handler),
+    } as never),
+    sleep: async () => {},
+  });
+  const outcome = await host.probePostSubmit(
+    "session-sinopac-faq-wording",
+    sinopacCaptchaContract(),
+    async () => {
+      dialogs.emit("dialog", {
+        type: () => "alert",
+        message: () => "驗證碼失效或輸入錯誤，請重新輸入",
+        dismiss: async () => {},
+      });
+    },
+    async () => {},
+  );
+  assert.equal(outcome, "provider-rejected");
+});
+
 test("SinoPac host probe fails closed for near-match and account-lock wording", async () => {
   for (const message of [
     "驗證碼不正確，請重新輸入",
-    "驗證碼失效或輸入錯誤，請重新輸入",
+    "驗證碼失效或輸入錯誤，請再次輸入",
     "帳號已被鎖定，請聯絡客服",
   ]) {
     const dialogs = new EventEmitter();

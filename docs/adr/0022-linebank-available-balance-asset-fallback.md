@@ -12,7 +12,7 @@ The product decision is to include a proven LINE Bank available amount in the as
 
 ## Decision
 
-The LINE Bank current-balance adapter admits only `wdrwAvblAmt` from a complete, HTTP 200 payables response with `featureTypeCode=01`, a valid HTTP Date, and the provider cache policy. Numeric JSON tokens are parsed from `response.text()` with their original lexical value retained before exact decimal admission. Every account entry must have a complete twelve-digit `acctNbr`, an `arrId`, and an exact `wdrwAvblAmt`; a missing amount is an error and is never treated as zero. The domestic route emits TWD rows only; non-TWD entries are structurally checked but remain outside this bounded route.
+The LINE Bank current-balance adapter admits only `wdrwAvblAmt` from a complete, HTTP 200 payables response with `featureTypeCode=01`, a valid HTTP Date, and the provider cache policy. Numeric JSON tokens are parsed from `response.text()` with their original lexical value retained before exact decimal admission. Every account entry must have a complete twelve-digit `acctNbr`, an `arrId`, and an exact `wdrwAvblAmt`; a missing amount is an error and is never treated as zero. The App samples the injected observation clock after the account response completes; request-start time is not observation time. The observation must still be at or after the provider HTTP Date. The domestic route emits TWD rows only; non-TWD entries are structurally checked but remain outside this bounded route.
 
 Overview aggregation applies the fallback per account and currency:
 

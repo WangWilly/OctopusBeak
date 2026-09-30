@@ -83,9 +83,9 @@ export type GmailRawMessage = {
 };
 
 type GmailApi = {
-  listMessages(accessToken: string, requestedAfterMs?: number): Promise<{ messages: { id: string }[]; nextPageToken?: string }>;
-  getMessage(accessToken: string, id: string): Promise<GmailRawMessage>;
-  profile(accessToken: string): Promise<{ emailAddress: string }>;
+  listMessages(accessToken: string, requestedAfterMs?: number, signal?: AbortSignal): Promise<{ messages: { id: string }[]; nextPageToken?: string }>;
+  getMessage(accessToken: string, id: string, signal?: AbortSignal): Promise<GmailRawMessage>;
+  profile(accessToken: string, signal?: AbortSignal): Promise<{ emailAddress: string }>;
 };
 
 export type GmailOtpServiceOptions = {
@@ -95,9 +95,9 @@ export type GmailOtpServiceOptions = {
   fetch?: FetchLike;
   openExternal?: (url: string) => Promise<void> | void;
   now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   api?: Partial<GmailApi>;
-  oauthAuthorize?: () => Promise<{ refreshToken: string; connectedEmail: string }>;
+  oauthAuthorize?: (signal?: AbortSignal) => Promise<{ refreshToken: string; connectedEmail: string }>;
 };
 
 type OAuthTokenResponse = {
@@ -111,9 +111,17 @@ type OAuthTokenResponse = {
 type OAuthAuthorizationResult = {
   refreshToken: string;
   connectedEmail: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
 };
 
-let globalAuthorizationFlight: Promise<OAuthAuthorizationResult> | null = null;
+type OAuthAuthorizationFlight = {
+  promise: Promise<OAuthAuthorizationResult>;
+  controller: AbortController;
+  consumers: number;
+};
+
+let globalAuthorizationFlight: OAuthAuthorizationFlight | null = null;
 
 function safeString(value: unknown) {
   return typeof value === "string" ? value : "";
@@ -515,13 +523,64 @@ export function inspectCathayGmailOtpMessage(message: GmailRawMessage, requested
 export type GmailOtpPollInput = {
   requestedAfterMs: number;
   knownMessageIds?: ReadonlySet<string>;
-  listMessages: () => Promise<{ messages: { id: string }[]; nextPageToken?: string }>;
-  getMessage: (id: string) => Promise<GmailRawMessage>;
+  listMessages: (signal?: AbortSignal) => Promise<{ messages: { id: string }[]; nextPageToken?: string }>;
+  getMessage: (id: string, signal?: AbortSignal) => Promise<GmailRawMessage>;
   now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  signal?: AbortSignal;
   intervalMs?: number;
   timeoutMs?: number;
 };
+
+function cathayGmailOtpAbortError() {
+  return new Error("Cathay Gmail OTP retrieval was cancelled.");
+}
+
+function throwIfCathayGmailOtpAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw cathayGmailOtpAbortError();
+}
+
+function awaitCathayGmailOtpOperation<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    return Promise.reject(cathayGmailOtpAbortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(cathayGmailOtpAbortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function sleepWithCathayGmailOtpAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCathayGmailOtpAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(cathayGmailOtpAbortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export async function pollCathayGmailOtp({
   requestedAfterMs,
@@ -529,10 +588,12 @@ export async function pollCathayGmailOtp({
   listMessages,
   getMessage,
   now = Date.now,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep = sleepWithCathayGmailOtpAbort,
+  signal,
   intervalMs = CATHAY_GMAIL_POLL_INTERVAL_MS,
   timeoutMs = CATHAY_GMAIL_POLL_TIMEOUT_MS,
 }: GmailOtpPollInput): Promise<CathayGmailOtpResult> {
+  throwIfCathayGmailOtpAborted(signal);
   if (!Number.isSafeInteger(requestedAfterMs) || requestedAfterMs < 0)
     return { status: "fallback", reason: "protocol-error" };
   const startedAt = now();
@@ -540,34 +601,49 @@ export async function pollCathayGmailOtp({
   while (now() - startedAt <= timeoutMs) {
     let listing: { messages: { id: string }[]; nextPageToken?: string };
     try {
-      listing = await listMessages();
+      throwIfCathayGmailOtpAborted(signal);
+      listing = await awaitCathayGmailOtpOperation(listMessages(signal), signal);
+      throwIfCathayGmailOtpAborted(signal);
     } catch {
+      throwIfCathayGmailOtpAborted(signal);
       return { status: "fallback", reason: "gmail-request-failed" };
     }
     if (listing.nextPageToken) return { status: "fallback", reason: "ambiguous-candidate" };
     const inspections: GmailOtpInspection[] = [];
     try {
       for (const item of listing.messages.slice(0, 100)) {
+        throwIfCathayGmailOtpAborted(signal);
         if (knownMessageIds?.has(item.id)) continue;
         inspections.push(await inspectCathayGmailOtpMessage(
-          await getMessage(item.id),
+          await awaitCathayGmailOtpOperation(getMessage(item.id, signal), signal),
           knownMessageIds ? 0 : requestedAfterMs,
         ));
+        throwIfCathayGmailOtpAborted(signal);
       }
     } catch {
+      throwIfCathayGmailOtpAborted(signal);
       return { status: "fallback", reason: "gmail-request-failed" };
     }
     const eligible = inspections.filter((item): item is { status: "eligible"; otp: string } => item.status === "eligible");
+    throwIfCathayGmailOtpAborted(signal);
     if (eligible.length > 1) return { status: "fallback", reason: "ambiguous-candidate" };
-    if (eligible.length === 1 && inspections.length === 1) return { status: "found", otp: eligible[0]!.otp };
+    if (eligible.length === 1 && inspections.length === 1) {
+      throwIfCathayGmailOtpAborted(signal);
+      return { status: "found", otp: eligible[0]!.otp };
+    }
     if (inspections.some((item) => item.status === "rejected")) {
       const reason = inspections.find((item) => item.status === "rejected")!.reason;
       lastRejection = reason;
       if (eligible.length === 1) return { status: "fallback", reason: "ambiguous-candidate" };
     }
     if (now() - startedAt >= timeoutMs) break;
-    await sleep(Math.min(intervalMs, timeoutMs - Math.max(0, now() - startedAt)));
+    throwIfCathayGmailOtpAborted(signal);
+    await awaitCathayGmailOtpOperation(
+      sleep(Math.min(intervalMs, timeoutMs - Math.max(0, now() - startedAt)), signal),
+      signal,
+    );
   }
+  throwIfCathayGmailOtpAborted(signal);
   return { status: "fallback", reason: lastRejection === "no-candidate" ? "timeout" : lastRejection };
 }
 
@@ -581,7 +657,7 @@ function defaultApi(fetchImpl: FetchLike): GmailApi {
     return await response.json() as T;
   }
   return {
-    async listMessages(accessToken, requestedAfterMs) {
+    async listMessages(accessToken, requestedAfterMs, signal) {
       const after = Number.isSafeInteger(requestedAfterMs) && requestedAfterMs !== undefined
         ? ` after:${Math.max(0, Math.floor(requestedAfterMs / 1000))}`
         : "";
@@ -589,13 +665,15 @@ function defaultApi(fetchImpl: FetchLike): GmailApi {
       const value = await apiJson<{ messages?: { id: string }[]; nextPageToken?: string }>(
         `${GMAIL_API_ENDPOINT}/messages?maxResults=100&q=${query}`,
         accessToken,
+        signal ? { signal } : undefined,
       );
       return { messages: value.messages ?? [], ...(value.nextPageToken ? { nextPageToken: value.nextPageToken } : {}) };
     },
-    async getMessage(accessToken, id) {
+    async getMessage(accessToken, id, signal) {
       const value = await apiJson<GmailRawMessage & { raw?: unknown }>(
         `${GMAIL_API_ENDPOINT}/messages/${encodeURIComponent(id)}?format=raw`,
         accessToken,
+        signal ? { signal } : undefined,
       );
       if (!nonEmpty(value.raw)) throw new Error("Gmail message did not include raw content.");
       let raw = value.raw;
@@ -606,8 +684,12 @@ function defaultApi(fetchImpl: FetchLike): GmailApi {
       }
       return { ...value, raw };
     },
-    async profile(accessToken) {
-      return await apiJson<{ emailAddress: string }>(`${GMAIL_API_ENDPOINT}/profile`, accessToken);
+    async profile(accessToken, signal) {
+      return await apiJson<{ emailAddress: string }>(
+        `${GMAIL_API_ENDPOINT}/profile`,
+        accessToken,
+        signal ? { signal } : undefined,
+      );
     },
   };
 }
@@ -636,7 +718,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
   private readonly fetchImpl: FetchLike;
   private readonly openExternal: (url: string) => Promise<void> | void;
   private readonly now: () => number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly api: GmailApi;
   private readonly oauthAuthorizeOverride?: GmailOtpServiceOptions["oauthAuthorize"];
   private readonly credentialCodec: AutomationCredentialCodec | null;
@@ -650,7 +732,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
       throw new Error("System browser opener is not configured.");
     });
     this.now = options.now ?? Date.now;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.sleep = options.sleep ?? sleepWithCathayGmailOtpAbort;
     this.credentialCodec = getAutomationCredentialCodec();
     const api = defaultApi(this.fetchImpl);
     this.api = {
@@ -678,10 +760,12 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     return readAutomationCredentialsFile(this.credentialsPath, this.credentialCodec);
   }
 
-  private saveAuthorization(result: OAuthAuthorizationResult) {
+  private saveAuthorization(result: OAuthAuthorizationResult, signal?: AbortSignal) {
     try {
+      throwIfCathayGmailOtpAborted(signal);
       requireCredentialCodec(this.credentialCodec);
       const credentials = this.credentials();
+      throwIfCathayGmailOtpAborted(signal);
       writeAutomationCredentialsFile(this.credentialsPath, {
         ...credentials,
         [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: result.refreshToken,
@@ -692,15 +776,34 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     }
   }
 
-  private async authorization(): Promise<OAuthAuthorizationResult> {
-    if (globalAuthorizationFlight) return await globalAuthorizationFlight;
-    globalAuthorizationFlight = this.oauthAuthorizeOverride
-      ? this.oauthAuthorizeOverride()
-      : this.performAuthorization();
+  private async authorization(signal?: AbortSignal): Promise<OAuthAuthorizationResult> {
+    throwIfCathayGmailOtpAborted(signal);
+    let flight = globalAuthorizationFlight;
+    if (!flight || flight.controller.signal.aborted) {
+      const controller = new AbortController();
+      const promise = this.oauthAuthorizeOverride
+        ? awaitCathayGmailOtpOperation(
+          Promise.resolve().then(() => this.oauthAuthorizeOverride!(controller.signal)),
+          controller.signal,
+        )
+        : this.performAuthorization(controller.signal);
+      flight = { promise, controller, consumers: 0 };
+      globalAuthorizationFlight = flight;
+      void promise.then(
+        () => { if (globalAuthorizationFlight === flight) globalAuthorizationFlight = null; },
+        () => { if (globalAuthorizationFlight === flight) globalAuthorizationFlight = null; },
+      );
+    }
+    const activeFlight = flight;
+    activeFlight.consumers += 1;
     try {
-      return await globalAuthorizationFlight;
+      return await awaitCathayGmailOtpOperation(activeFlight.promise, signal);
     } finally {
-      globalAuthorizationFlight = null;
+      activeFlight.consumers -= 1;
+      if (activeFlight.consumers === 0 && globalAuthorizationFlight === activeFlight) {
+        globalAuthorizationFlight = null;
+        activeFlight.controller.abort();
+      }
     }
   }
 
@@ -720,12 +823,14 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     return parsed;
   }
 
-  private async performAuthorization(): Promise<OAuthAuthorizationResult> {
+  private async performAuthorization(signal: AbortSignal): Promise<OAuthAuthorizationResult> {
+    throwIfCathayGmailOtpAborted(signal);
     const client = this.clientConfig();
     const verifier = createPkceVerifier();
     const challenge = pkceChallengeForVerifier(verifier);
     const state = createOAuthState();
     let callbackServer: ReturnType<typeof createServer> | null = null;
+    let authorizationTimeout: ReturnType<typeof setTimeout> | null = null;
     let redirectUri = "";
     const callbackPromise = new Promise<OAuthCallbackResult>((resolve, reject) => {
       let settled = false;
@@ -759,6 +864,7 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
         }
       });
       server.listen(0, "127.0.0.1", () => {
+        if (signal.aborted) return;
         const address = server.address();
         if (!address || typeof address === "string") {
           reject(new Error("OAuth loopback server did not expose a port."));
@@ -778,15 +884,17 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
           }
         });
       });
-      setTimeout(() => {
+      authorizationTimeout = setTimeout(() => {
         if (!settled) {
           settled = true;
           reject(new Error("Google OAuth authorization timed out."));
         }
-      }, AUTH_TIMEOUT_MS).unref?.();
+      }, AUTH_TIMEOUT_MS);
+      authorizationTimeout.unref?.();
     });
     try {
-      const callback = await callbackPromise;
+      const callback = await awaitCathayGmailOtpOperation(callbackPromise, signal);
+      throwIfCathayGmailOtpAborted(signal);
       if (callback.status === "cancelled") throw new GmailOtpAuthorizationError("authorization-cancelled");
       if (callback.status !== "accepted") throw new GmailOtpAuthorizationError("authorization-failed");
       const body = new URLSearchParams({
@@ -801,8 +909,11 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
+        signal,
       });
+      throwIfCathayGmailOtpAborted(signal);
       const tokenResponse = await response.json() as OAuthTokenResponse;
+      throwIfCathayGmailOtpAborted(signal);
       if (!response.ok || tokenResponse.error) throw new GmailOtpAuthorizationError("token-exchange-failed");
       let token: ReturnType<typeof parseTokenResponse>;
       try {
@@ -811,23 +922,30 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
         throw new GmailOtpAuthorizationError("token-exchange-failed");
       }
       if (!token.refreshToken) throw new GmailOtpAuthorizationError("token-exchange-failed");
-      this.accessToken = token.accessToken;
-      this.accessTokenExpiresAt = this.now() + Math.max(60, typeof tokenResponse.expires_in === "number" ? tokenResponse.expires_in : 3600) * 1000;
       let profile: { emailAddress: string };
       try {
-        profile = await this.api.profile(token.accessToken);
+        profile = await awaitCathayGmailOtpOperation(this.api.profile(token.accessToken, signal), signal);
       } catch {
+        throwIfCathayGmailOtpAborted(signal);
         throw new GmailOtpAuthorizationError("gmail-profile-failed");
       }
+      throwIfCathayGmailOtpAborted(signal);
       if (!nonEmpty(profile.emailAddress)) throw new GmailOtpAuthorizationError("gmail-profile-failed");
-      return { refreshToken: token.refreshToken, connectedEmail: profile.emailAddress };
+      return {
+        refreshToken: token.refreshToken,
+        connectedEmail: profile.emailAddress,
+        accessToken: token.accessToken,
+        accessTokenExpiresAt: this.now() + Math.max(60, typeof tokenResponse.expires_in === "number" ? tokenResponse.expires_in : 3600) * 1000,
+      };
     } finally {
+      if (authorizationTimeout) clearTimeout(authorizationTimeout);
       (callbackServer as ReturnType<typeof createServer> | null)?.close();
       callbackServer = null;
     }
   }
 
-  private async refreshAccessToken(refreshToken: string) {
+  private async refreshAccessToken(refreshToken: string, signal?: AbortSignal) {
+    throwIfCathayGmailOtpAborted(signal);
     const client = this.clientConfig();
     const body = new URLSearchParams({
       client_id: client.clientId,
@@ -835,12 +953,15 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
       grant_type: "refresh_token",
     });
     if (client.clientSecret) body.set("client_secret", client.clientSecret);
-    const response = await this.fetchImpl(client.tokenEndpoint, {
+    const response = await awaitCathayGmailOtpOperation(this.fetchImpl(client.tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
-    });
-    const value = await response.json() as OAuthTokenResponse;
+      signal,
+    }), signal);
+    throwIfCathayGmailOtpAborted(signal);
+    const value = await awaitCathayGmailOtpOperation(response.json() as Promise<OAuthTokenResponse>, signal);
+    throwIfCathayGmailOtpAborted(signal);
     if (!response.ok || value.error) {
       if (value.error === "invalid_grant") throw new GmailOtpAuthorizationError("token-invalid");
       throw new Error("Google token refresh failed.");
@@ -848,17 +969,21 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     const token = parseTokenResponse(value);
     if (token.refreshToken) requireCredentialCodec(this.credentialCodec);
     if (token.refreshToken) {
+      throwIfCathayGmailOtpAborted(signal);
       const credentials = this.credentials();
+      throwIfCathayGmailOtpAborted(signal);
       writeAutomationCredentialsFile(this.credentialsPath, {
         ...credentials,
         [CATHAY_GMAIL_REFRESH_TOKEN_KEY]: token.refreshToken,
       }, this.credentialCodec);
     }
+    throwIfCathayGmailOtpAborted(signal);
     this.accessToken = token.accessToken;
     this.accessTokenExpiresAt = this.now() + Math.max(60, typeof value.expires_in === "number" ? value.expires_in : 3600) * 1000;
   }
 
-  async ensureAccess(): Promise<CathayGmailOtpAccessResult> {
+  async ensureAccess(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
+    if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
     if (!this.status().enabled) return { status: "fallback", reason: "disabled" };
     if (!this.credentialCodec) return { status: "fallback", reason: "not-configured" };
     const credentials = this.credentials();
@@ -868,16 +993,24 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
         return { status: "ready" };
       if (refreshToken) {
         try {
-          await this.refreshAccessToken(refreshToken);
+          await this.refreshAccessToken(refreshToken, signal);
+          throwIfCathayGmailOtpAborted(signal);
           return { status: "ready" };
         } catch (error) {
           if (!(error instanceof GmailOtpAuthorizationError) || error.reason !== "token-invalid") throw error;
         }
       }
-      const authorized = await this.authorization();
-      this.saveAuthorization(authorized);
+      const authorized = await this.authorization(signal);
+      throwIfCathayGmailOtpAborted(signal);
+      this.saveAuthorization(authorized, signal);
+      if (authorized.accessToken) {
+        throwIfCathayGmailOtpAborted(signal);
+        this.accessToken = authorized.accessToken;
+        this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
+      }
       return { status: "ready" };
     } catch (error) {
+      if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
       return {
         status: "fallback",
         reason: error instanceof GmailOtpAuthorizationError && error.reason === "authorization-cancelled"
@@ -891,18 +1024,25 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     }
   }
 
-  async prepareRetrieval(): Promise<CathayGmailOtpBoundaryResult> {
-    const access = await this.ensureAccess();
+  async prepareRetrieval(signal?: AbortSignal): Promise<CathayGmailOtpBoundaryResult> {
+    if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
+    const access = await this.ensureAccess(signal);
+    if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
     if (access.status !== "ready") return access;
     if (!this.accessToken) return { status: "fallback", reason: "token-invalid" };
     const createdAtMs = this.now();
     const searchAfterMs = Math.max(0, createdAtMs - CATHAY_GMAIL_BOUNDARY_LOOKBACK_MS);
     let listing: { messages: { id: string }[]; nextPageToken?: string };
     try {
-      listing = await this.api.listMessages(this.accessToken, searchAfterMs);
+      listing = await awaitCathayGmailOtpOperation(
+        this.api.listMessages(this.accessToken, searchAfterMs, signal),
+        signal,
+      );
     } catch {
+      if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
       return { status: "fallback", reason: "gmail-request-failed" };
     }
+    if (signal?.aborted) return { status: "fallback", reason: "gmail-request-failed" };
     if (listing.nextPageToken)
       return { status: "fallback", reason: "ambiguous-candidate" };
     for (const [id, boundary] of this.retrievalBoundaries) {
@@ -918,20 +1058,23 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
     return { status: "prepared", boundaryId };
   }
 
-  async retrieve(boundaryId: string): Promise<CathayGmailOtpResult> {
+  async retrieve(boundaryId: string, signal?: AbortSignal): Promise<CathayGmailOtpResult> {
     const boundary = this.retrievalBoundaries.get(boundaryId);
     if (!boundary) return { status: "fallback", reason: "protocol-error" };
     this.retrievalBoundaries.delete(boundaryId);
-    const access = await this.ensureAccess();
+    throwIfCathayGmailOtpAborted(signal);
+    const access = await this.ensureAccess(signal);
+    throwIfCathayGmailOtpAborted(signal);
     if (access.status !== "ready") return access;
     if (!this.accessToken) return { status: "fallback", reason: "token-invalid" };
     return await pollCathayGmailOtp({
       requestedAfterMs: boundary.createdAtMs,
       knownMessageIds: boundary.knownMessageIds,
-      listMessages: () => this.api.listMessages(this.accessToken!, boundary.searchAfterMs),
-      getMessage: (id) => this.api.getMessage(this.accessToken!, id),
+      listMessages: (pollSignal) => this.api.listMessages(this.accessToken!, boundary.searchAfterMs, pollSignal),
+      getMessage: (id, pollSignal) => this.api.getMessage(this.accessToken!, id, pollSignal),
       now: this.now,
       sleep: this.sleep,
+      signal,
     });
   }
 
@@ -947,10 +1090,18 @@ class CathayGmailOtpService implements GmailOtpBrokerService {
           if (!(error instanceof GmailOtpAuthorizationError) || error.reason !== "token-invalid") throw error;
           const authorized = await this.authorization();
           this.saveAuthorization(authorized);
+          if (authorized.accessToken) {
+            this.accessToken = authorized.accessToken;
+            this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
+          }
         }
       } else {
         const authorized = await this.authorization();
         this.saveAuthorization(authorized);
+        if (authorized.accessToken) {
+          this.accessToken = authorized.accessToken;
+          this.accessTokenExpiresAt = authorized.accessTokenExpiresAt ?? 0;
+        }
       }
       writeAutomationSettingsFile(this.settingsPath, {
         ...readAutomationSettingsFile(this.settingsPath),
@@ -1057,19 +1208,20 @@ export function disconnectCathayGmailOtp() {
   return service().disconnect();
 }
 
-export async function ensureCathayGmailOtpAccess(): Promise<CathayGmailOtpAccessResult> {
-  return await service().ensureAccess();
+export async function ensureCathayGmailOtpAccess(signal?: AbortSignal): Promise<CathayGmailOtpAccessResult> {
+  return await service().ensureAccess(signal);
 }
 
-export async function prepareCathayGmailOtpRetrieval(): Promise<CathayGmailOtpBoundaryResult> {
-  return await service().prepareRetrieval();
+export async function prepareCathayGmailOtpRetrieval(signal?: AbortSignal): Promise<CathayGmailOtpBoundaryResult> {
+  return await service().prepareRetrieval(signal);
 }
 
-export async function retrieveCathayGmailOtp(boundaryId: string): Promise<CathayGmailOtpResult> {
-  return await service().retrieve(boundaryId);
+export async function retrieveCathayGmailOtp(boundaryId: string, signal?: AbortSignal): Promise<CathayGmailOtpResult> {
+  return await service().retrieve(boundaryId, signal);
 }
 
 export function resetCathayGmailOtpServiceForTests() {
   configuredService = null;
+  globalAuthorizationFlight?.controller.abort();
   globalAuthorizationFlight = null;
 }

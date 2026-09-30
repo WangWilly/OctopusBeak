@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import test from "node:test";
 import {
   POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -17,10 +13,11 @@ import {
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/canonical/current-deposit-balance-writer.ts";
-import { runPostStatements } from "./post-statements.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00.123+08:00";
+const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
+const conflictingPostAccountNumber = ["0311", "5240", "5293", "96"].join("");
 const response: PostCurrentDepositResponseMetadata = {
   url: `https://ipost.post.gov.tw${POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
   status: 200,
@@ -42,7 +39,7 @@ const response: PostCurrentDepositResponseMetadata = {
 
 const psRow = {
   ACT_TYPE: "PS",
-  ACT_NO: "03115240529395",
+  ACT_NO: syntheticPostAccountNumber,
   BAL: "0000012345",
   PBA_CUT_BAL: "999999999999",
   VISA_BAL: "777777",
@@ -108,9 +105,9 @@ const financialCapture = {
     identityEpochKey: "post-user-existing-epoch",
     stream: "domestic-deposit",
     subjectDigest: token("post-subject"),
-    accountNo: "03115240529395",
-    sourceAccountKey: "03115240529395",
-    accountNumber: { value: "03115240529395" },
+    accountNo: syntheticPostAccountNumber,
+    sourceAccountKey: syntheticPostAccountNumber,
+    accountNumber: { value: syntheticPostAccountNumber },
     currency: "TWD",
   },
 } as const;
@@ -118,7 +115,7 @@ const financialCapture = {
 test("Post parser keeps the PS BAL integer exact and preserves account zeroes", () => {
   const rows = parse();
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]?.accountNumber, "03115240529395");
+  assert.equal(rows[0]?.accountNumber, syntheticPostAccountNumber);
   assert.deepEqual(rows[0]?.ledger, {
     coefficient: "12345",
     scale: 0,
@@ -394,8 +391,8 @@ test("Post capture admission uses only BAL and the existing financial identity",
       buildPostCurrentDepositBalanceCapture(row, {
         identity: {
           ...financialCapture.identity,
-          accountNo: "03115240529396",
-          accountNumber: { value: "03115240529396" },
+          accountNo: conflictingPostAccountNumber,
+          accountNumber: { value: conflictingPostAccountNumber },
         },
       }),
     /does not exactly match/i,
@@ -422,86 +419,4 @@ test("Post replay keys are stable while a changed BAL creates a new source recor
   );
   assert.notEqual(first.records[0]?.sourceRecordKey, changed.records[0]?.sourceRecordKey);
   assert.equal(first.observations[0]?.observationKey, changed.observations[0]?.observationKey);
-});
-
-test("Post financial workflow commits the current balance after account admission", async () => {
-  const ledgerDir = await mkdtemp(join(tmpdir(), "post-current-workflow-check-"));
-  try {
-    const output = await runPostStatements({} as never, false, {
-      canonicalSourceLedgerDir: ledgerDir,
-      canonicalFinancialLedgerDir: ledgerDir,
-      observedAt: "2026-09-09T10:14:00+08:00",
-      readCurrentDepositBalances: async () => parse(),
-      collectStatements: async () => [
-        {
-          accountId: "03115240529395",
-          queryPeriods: ["2026/02/01~2026/08/24"],
-          queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-          httpStatus: 200,
-          itemShape: "array" as const,
-          rows: [
-            {
-              accountId: "03115240529395",
-              sortKey: "20260824-101502-0",
-              values: [
-                "2026/08/24",
-                "2026/08/24",
-                "10:15:02",
-                "薪資",
-                "",
-                "123.45",
-                "1000.00",
-                "",
-              ],
-              directionFlag: "inflow" as const,
-            },
-          ],
-          download: {
-            account: "03115240529395 郵局",
-            accountId: "03115240529395",
-            queryPeriods: ["2026/02/01~2026/08/24"],
-            baseName: "post-current-workflow",
-            csvFilename: "post-current-workflow.csv",
-            csvPath: "/tmp/post-current-workflow.csv",
-            csvBytes: 1,
-            jsonFilename: "post-current-workflow.json",
-            jsonPath: "/tmp/post-current-workflow.json",
-            jsonBytes: 1,
-            rowCount: 1,
-          },
-        },
-      ],
-    });
-    assert.equal(output.status, "financial-admitted");
-    const db = new DatabaseSync(join(ledgerDir, "canonical.sqlite"), {
-      readOnly: true,
-    });
-    const currentCaptureCount = Number(
-      (
-        db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/current-balance-v1'",
-          )
-          .get() as { count: number }
-      ).count,
-    );
-    assert.equal(currentCaptureCount, 1);
-    const revision = db
-      .prepare(
-        "SELECT balance_coefficient, balance_scale FROM balance_observation_revisions",
-      )
-      .get() as { balance_coefficient: string; balance_scale: number };
-    assert.equal(revision.balance_coefficient, "12345");
-    assert.equal(revision.balance_scale, 0);
-    const account = db
-      .prepare(
-        "SELECT source_account_key, account_no FROM financial_accounts WHERE stream = 'domestic-deposit'",
-      )
-      .get() as { source_account_key: string; account_no: string };
-    assert.equal(account.source_account_key, "03115240529395");
-    assert.equal(account.account_no, "03115240529395");
-    db.close();
-  } finally {
-    await rm(ledgerDir, { recursive: true, force: true });
-  }
 });

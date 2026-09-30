@@ -1,28 +1,27 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { TextDecoder } from "node:util";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Download, Frame, Locator, Page } from "playwright";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
+import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import { YUANTA_ENTRY_URL, type YuantaCredentials } from "./yuanta-auth.ts";
 import {
   parseFragment,
   type DefaultTreeAdapterTypes,
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.js";
+import { readYuantaBig5CsvFromAnchor } from "./yuanta-statements.ts";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
-  authenticateYuantaBank as sharedAuthenticateYuantaBank,
-  YUANTA_ENTRY_URL,
-  type YuantaCredentials,
-} from "./yuanta-auth.ts";
-import {
   admitForeignCurrencyDepositCapture,
-  commitForeignCurrencyDepositCaptureBatch,
   type ForeignCurrencyDepositCaptureInput,
-  type ForeignCurrencyDepositCommitStore,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -30,25 +29,18 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
-} from "../ledger/canonical/investment-funding-relations.ts";
-import { runCanonicalInvestmentRelationFollowThrough } from "../ledger/canonical/canonical-relation-followthrough.ts";
+} from "../ledger/canonical/investment-funding-contract.ts";
 
-const big5Decoder = new TextDecoder("big5");
 
 type BrowserScope = Page | Frame;
 
@@ -104,7 +96,7 @@ const customDateRangeSchema = z.object({
   endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
 });
 
-const inputSchema = z.object({
+export const yuantaForeignCurrencyStatementsInputSchema = z.object({
   dateRange: quickDateRangeSchema.default("three_months"),
   customDateRange: customDateRangeSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
@@ -112,42 +104,15 @@ const inputSchema = z.object({
   channelType: channelTypeSchema.default("all"),
   replaceActiveSession: z.boolean().default(true),
 });
+const inputSchema = yuantaForeignCurrencyStatementsInputSchema;
 
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.literal("foreign-currency-transactions"),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  accounts: z.array(z.string()),
-  currencies: z.array(z.string()),
-  dateRange: z.string(),
-  channelType: channelTypeSchema,
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.string(),
-  channelType: channelTypeSchema,
-  usedExistingSession: z.boolean(),
-  replacedActiveSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  files: z.array(tableFileSchema),
-});
-
-type WorkflowInput = z.infer<typeof inputSchema>;
-type TableFile = z.infer<typeof tableFileSchema>;
+export type YuantaForeignCurrencyWorkflowInput = z.infer<typeof inputSchema>;
+type WorkflowInput = YuantaForeignCurrencyWorkflowInput;
 
 type SourceDownloadMetadata = {
   accountValue: string;
   account: string;
   currency: string;
-  /** Null when the provider explicitly returned an empty result. */
-  filename: string | null;
   rowCount: number;
 };
 
@@ -1546,7 +1511,9 @@ async function hasVisibleYuantaForeignCurrencyTimestampResult(
 
 function logYuantaForeignCurrencyResultObservation(
   observations: readonly YuantaForeignResultObservation[],
+  silent = false,
 ): void {
+  if (silent) return;
   const serializedObservation = JSON.stringify({
     ruleVersion: YUANTA_FOREIGN_RESULT_RULE_VERSION,
     framesExamined: observations.length,
@@ -1700,11 +1667,13 @@ async function refreshYuantaForeignCurrencyCsvControl(
 export async function findYuantaForeignCurrencyCsvDownloadControl(
   page: Page,
   timeoutMs = 60_000,
+  options: Readonly<{ silent?: boolean; signal?: AbortSignal }> = {},
 ): Promise<YuantaForeignCurrencyCsvControlTarget> {
   const deadline = Date.now() + timeoutMs;
   let lastObservations: YuantaForeignResultObservation[] = [];
 
   while (Date.now() < deadline) {
+    options.signal?.throwIfAborted();
     const observations: YuantaForeignResultObservation[] = [];
     let providerError = false;
     let providerNoData = false;
@@ -1818,14 +1787,14 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
 
     lastObservations = observations;
     if (providerNoData) {
-      logYuantaForeignCurrencyResultObservation(observations);
+      logYuantaForeignCurrencyResultObservation(observations, options.silent);
       return {
         kind: "empty",
         reason: "provider-explicit-no-data",
       };
     }
     if (!readyResultFound && providerError) {
-      logYuantaForeignCurrencyResultObservation(observations);
+      logYuantaForeignCurrencyResultObservation(observations, options.silent);
       throw new Error(
         "YuanTa foreign-currency provider returned an explicit result error.",
       );
@@ -1836,7 +1805,7 @@ export async function findYuantaForeignCurrencyCsvDownloadControl(
       await page.waitForTimeout(Math.min(250, remainingMs));
   }
 
-  logYuantaForeignCurrencyResultObservation(lastObservations);
+  logYuantaForeignCurrencyResultObservation(lastObservations, options.silent);
   if (
     lastObservations.some(
       (observation) =>
@@ -1947,20 +1916,6 @@ function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
 function stripSpreadsheetTextPrefix(value: string): string {
   const text = cleanText(value);
   return text.replace(/^'+/, "").replace(/'+$/, "");
@@ -2042,101 +1997,6 @@ function sortedTransactionRows(
     if (right.sortTime === null) return -1;
     return right.sortTime - left.sortTime;
   });
-}
-
-function foreignCurrencyTransactionsToCsv(
-  rows: ForeignCurrencyTransactionRow[],
-): string {
-  return rowsToCsv([
-    foreignCurrencyTransactionHeaders,
-    ...sortedTransactionRows(rows).map((row) => [
-      row.accountLabel,
-      row.queryCurrencyLabel,
-      ...row.values,
-    ]),
-  ]);
-}
-
-async function readBig5DownloadAsUtf8(download: Download): Promise<string> {
-  const stream = await download.createReadStream();
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return big5Decoder.decode(Buffer.concat(chunks));
-}
-
-async function writeForeignCurrencyTransactionsFile(
-  nextTimestamp: () => string,
-  dateRange: string,
-  channelType: z.infer<typeof channelTypeSchema>,
-  rows: ForeignCurrencyTransactionRow[],
-  sourceDownloads: SourceDownloadMetadata[],
-): Promise<TableFile> {
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    "yuanta-foreign-currency-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `foreign-currency-transactions-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const accounts = [...new Set(rows.map((row) => row.accountLabel))];
-  const currencies = [
-    ...new Set(
-      rows.map((row) => stripSpreadsheetTextPrefix(row.values[4] ?? "")),
-    ),
-  ].filter((currency) => currency.length > 0);
-
-  await writeFile(csvPath, foreignCurrencyTransactionsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "yuantaForeignCurrencyStatements",
-        kind: "foreign-currency-transactions",
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers: foreignCurrencyTransactionHeaders,
-        accounts,
-        currencies,
-        dateRange,
-        channelType,
-        sourceDownloads,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    baseName,
-    kind: "foreign-currency-transactions",
-    rowCount: rows.length,
-    headers: foreignCurrencyTransactionHeaders,
-    accounts,
-    currencies,
-    dateRange,
-    channelType,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
-  };
 }
 
 function matchesFilter(
@@ -2551,137 +2411,6 @@ export async function readYuantaForeignCurrencyOptions(
   return filtered;
 }
 
-const YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS = 3;
-const YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS = 1;
-const YUANTA_FOREIGN_CSV_PENDING_POLL_MS = 5_000;
-
-function isTerminalYuantaForeignCurrencyResultError(error: unknown): boolean {
-  return (
-    error instanceof StatementComponentAbsentError ||
-    (error instanceof Error &&
-      error.message ===
-        "YuanTa foreign-currency provider returned an explicit result error.")
-  );
-}
-
-/**
- * Re-validate the complete result/table/link fence for each native click.
- * Yuanta re-renders this page while scrolling, so an actionability wait on a
- * previously resolved locator can outlive the element it was meant to click.
- * A failed native click is the only retryable action; once click() returns,
- * waiting for its download avoids issuing a second provider request.
- */
-export async function clickYuantaForeignCurrencyCsvDownloadControl(
-  page: Page,
-  timeoutMs = 60_000,
-  requery?: () => Promise<void>,
-): Promise<Download | null> {
-  const deadline = Date.now() + timeoutMs;
-  let lastError: unknown;
-  let requeryAttempts = 0;
-
-  for (
-    let attempt = 0;
-    attempt < YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS;
-    attempt += 1
-  ) {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) break;
-
-    let target: YuantaForeignCurrencyCsvControlTarget;
-    try {
-      const finderTimeoutMs =
-        requery && requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS
-          ? Math.min(remainingMs, YUANTA_FOREIGN_CSV_PENDING_POLL_MS)
-          : remainingMs;
-      target = await findYuantaForeignCurrencyCsvDownloadControl(
-        page,
-        finderTimeoutMs,
-      );
-    } catch (error) {
-      if (isTerminalYuantaForeignCurrencyResultError(error)) throw error;
-      lastError = error;
-      if (
-        requery &&
-        requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS &&
-        error instanceof YuantaForeignCurrencyPendingResultError
-      ) {
-        requeryAttempts += 1;
-        try {
-          await requery();
-        } catch (requeryError) {
-          if (isTerminalYuantaForeignCurrencyResultError(requeryError)) {
-            throw requeryError;
-          }
-          lastError = requeryError;
-        }
-      }
-      continue;
-    }
-
-    if (target.kind === "empty") {
-      // An explicit provider empty result is a successful per-account query.
-      // There is deliberately no click and therefore no opportunity to reuse
-      // a download control or file from the preceding account.
-      return null;
-    }
-
-    const control = await target.refresh().catch((error: unknown) => {
-      lastError = error;
-      return null;
-    });
-    if (!control) {
-      lastError ??= new Error(
-        "YuanTa foreign-currency CSV download control changed before click.",
-      );
-      if (
-        requery &&
-        requeryAttempts < YUANTA_FOREIGN_CSV_REQUERY_MAX_ATTEMPTS
-      ) {
-        requeryAttempts += 1;
-        try {
-          await requery();
-        } catch (requeryError) {
-          if (isTerminalYuantaForeignCurrencyResultError(requeryError)) {
-            throw requeryError;
-          }
-          lastError = requeryError;
-        }
-      }
-      continue;
-    }
-
-    const actionTimeoutMs = Math.max(1, Math.min(60_000, deadline - Date.now()));
-    const downloadPromise = page.waitForEvent("download", {
-      timeout: actionTimeoutMs,
-    });
-    try {
-      await control.evaluate((element) => {
-        const clickable = element as HTMLElement;
-        if (typeof clickable.click !== "function") {
-          throw new Error("YuanTa CSV control is not a clickable HTMLElement.");
-        }
-        clickable.click();
-      });
-    } catch (error) {
-      lastError = error;
-      // The failed attempt did not issue a click. Consume a later timeout
-      // rejection so the abandoned wait cannot become an unhandled promise.
-      void downloadPromise.catch(() => undefined);
-      continue;
-    }
-
-    // Do not retry after click() returns: a delayed download must not cause a
-    // duplicate provider request.
-    return await downloadPromise;
-  }
-
-  throw new Error(
-    `Could not safely click YuanTa foreign-currency CSV download control after ${YUANTA_FOREIGN_CSV_CLICK_MAX_ATTEMPTS} attempts.`,
-    { cause: lastError },
-  );
-}
-
 async function queryAccountCurrency(
   page: Page,
   input: WorkflowInput,
@@ -2737,35 +2466,232 @@ async function queryAccountCurrency(
   );
 }
 
-async function downloadTransactionRows(
+/** Fetch the provider's verified export link into memory; App runs disable browser downloads. */
+async function downloadTransactionRowsInMemory(
   page: Page,
   accountLabel: string,
   accountValue: string,
   currencyLabel: string,
   currencyValue: string,
   requery: () => Promise<void>,
-): Promise<{ filename: string | null; rows: ForeignCurrencyTransactionRow[] }> {
-  const download = await clickYuantaForeignCurrencyCsvDownloadControl(
-    page,
-    60_000,
-    requery,
-  );
+  sourceText: SourceTextPort = strictSourceText,
+  signal?: AbortSignal,
+): Promise<{ rows: ForeignCurrencyTransactionRow[] }> {
+  let target: YuantaForeignCurrencyCsvControlTarget;
+  try {
+    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+      silent: true,
+      signal,
+    });
+  } catch (error) {
+    if (!(error instanceof YuantaForeignCurrencyPendingResultError)) throw error;
+    signal?.throwIfAborted();
+    await requery();
+    target = await findYuantaForeignCurrencyCsvDownloadControl(page, 60_000, {
+      silent: true,
+      signal,
+    });
+  }
+  if (target.kind === "empty") return { rows: [] };
+  signal?.throwIfAborted();
+  const control = await target.refresh();
+  if (!control)
+    throw new Error("Yuanta foreign-currency export control changed before in-memory retrieval.");
 
-  if (!download) {
-    return { filename: null, rows: [] };
+  const controlOrigin = await control.evaluate((element) => element.ownerDocument.location.origin);
+  if (controlOrigin !== new URL(YUANTA_ENTRY_URL).origin)
+    throw new Error("Yuanta foreign-currency export left the bank origin.");
+  signal?.throwIfAborted();
+  const content = (await readYuantaBig5CsvFromAnchor(
+    control,
+    sourceText,
+    signal ?? new AbortController().signal,
+  )).content;
+  sourceText.assertIntact(content);
+  const rows = transactionRowsFromDownloadedCsv(
+    content,
+    accountLabel,
+    accountValue,
+    currencyLabel,
+    currencyValue,
+  );
+  return { rows };
+}
+
+export type YuantaForeignCurrencyWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+}>;
+
+export type YuantaForeignCurrencyWorkflowDependencies = Readonly<{
+  openPage?: typeof openForeignCurrencyDetailsPage;
+  readAccounts?: typeof readYuantaForeignCurrencyAccountOptions;
+  selectAccount?: typeof selectAccount;
+  readCurrencies?: typeof readYuantaForeignCurrencyOptions;
+  queryAccountCurrency?: typeof queryAccountCurrency;
+  downloadRows?: typeof downloadTransactionRowsInMemory;
+  readCurrentBalances?: typeof readYuantaCurrentDepositBalances;
+  now?: () => string;
+  signal?: AbortSignal;
+  sourceText?: SourceTextPort;
+  collectOnly?: true;
+  deferredCommitItems?: PGliteWorkflowRunItem[];
+}>;
+
+/** Collect every selected FX account/currency source and build canonical items without committing or writing files. */
+export async function runYuantaForeignCurrencyStatements(
+  page: Page,
+  input: WorkflowInput,
+  credentials: YuantaCredentials,
+  overrides: YuantaForeignCurrencyWorkflowDependencies & Readonly<{
+    collectOnly: true;
+    deferredCommitItems: PGliteWorkflowRunItem[];
+  }>,
+): Promise<YuantaForeignCurrencyWorkflowCollection> {
+  const signal = overrides.signal;
+  const sourceText = overrides.sourceText ?? strictSourceText;
+  const checkCancelled = () => signal?.throwIfAborted();
+  const openPage = overrides.openPage ?? openForeignCurrencyDetailsPage;
+  const readAccounts = overrides.readAccounts ?? readYuantaForeignCurrencyAccountOptions;
+  const select = overrides.selectAccount ?? selectAccount;
+  const readCurrencies = overrides.readCurrencies ?? readYuantaForeignCurrencyOptions;
+  const query = overrides.queryAccountCurrency ?? queryAccountCurrency;
+  const downloadRows = overrides.downloadRows ?? downloadTransactionRowsInMemory;
+  const readBalances = overrides.readCurrentBalances ?? readYuantaCurrentDepositBalances;
+  const now = overrides.now ?? (() => new Date().toISOString());
+
+  checkCancelled();
+  await openPage(page);
+  const accounts = await readAccounts(page, input.accountFilters);
+  const rows: ForeignCurrencyTransactionRow[] = [];
+  const sourceDownloads: SourceDownloadMetadata[] = [];
+
+  for (const account of accounts) {
+    checkCancelled();
+    await select(page, account);
+    const currencies = await readCurrencies(page, input.currencyFilters);
+    for (const currency of currencies) {
+      checkCancelled();
+      const maskedAccount = maskAccountLabel(account.label);
+      await query(page, input, account, currency);
+      checkCancelled();
+      const download = await downloadRows(
+        page,
+        maskedAccount,
+        account.value,
+        currency.label,
+        currency.value,
+        () => query(page, input, account, currency),
+        sourceText,
+        signal,
+      );
+      sourceText.assertIntact(JSON.stringify(download));
+      rows.push(...download.rows);
+      sourceDownloads.push({
+        accountValue: account.value,
+        account: maskedAccount,
+        currency: currency.label,
+        rowCount: download.rows.length,
+      });
+    }
   }
 
-  const filename = download.suggestedFilename();
-  const content = await readBig5DownloadAsUtf8(download);
+  checkCancelled();
+  const captureOccurrenceId = randomUUID();
+  const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
+  for (const row of rows) {
+    sourceText.assertIntact(JSON.stringify(row));
+    const accountRows = grouped.get(row.accountValue) ?? [];
+    accountRows.push(row);
+    grouped.set(row.accountValue, accountRows);
+  }
+  const captures = accounts.map((account) => {
+    const accountRows = grouped.get(account.value) ?? [];
+    const accountDownloads = sourceDownloads.filter(
+      (download) => download.accountValue === account.value,
+    );
+    const zeroResultAuthority = accountRows.length === 0 &&
+      accountDownloads.length > 0 &&
+      accountDownloads.every((download) => download.rowCount === 0)
+      ? "provider-explicit-no-data" as const
+      : undefined;
+    return buildYuantaForeignCurrencyCaptureInput(
+      accountRows,
+      input,
+      account.value,
+      now(),
+      captureOccurrenceId,
+      zeroResultAuthority,
+      credentials.yuanta_user_id ?? "",
+    );
+  });
+  const admitted = captures.map((capture) => admitForeignCurrencyDepositCapture(capture));
+  const statementItems: PGliteWorkflowRunItem[] = admitted.map((capture) => ({
+    provider: "yuanta",
+    product: "foreign-currency-deposit",
+    itemKey: capture.identity.accountNo,
+    command: {
+      kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+      request: { capture },
+    },
+    relationCommands: () => [{
+      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+      request: {
+        sourceConnectionKey: capture.identity.sourceConnectionKey,
+        observedAt: capture.observedAt,
+      },
+    }],
+  }));
+
+  // Current balances are source inputs too. Read, decode, and admit all of them
+  // before the parent opens the one Canonical Financial Commit boundary.
+  const balanceItems: PGliteWorkflowRunItem[] = [];
+  if (admitted.length > 0) {
+    const authorityCapture = admitted[0]!;
+    const authority = {
+      sourceConnectionKey: authorityCapture.identity.sourceConnectionKey,
+      identityEpochKey: authorityCapture.identity.identityEpochKey,
+      authorityClass: "existing-financial-admission" as const,
+    };
+    const currentRows = await readBalances(page, "foreign", {
+      observedAt: now(),
+      financialAuthority: authority,
+    });
+    sourceText.assertIntact(JSON.stringify(currentRows));
+    const existingBySourceAccount = indexYuantaForeignCurrentDepositFinancialCaptures(admitted);
+    for (const unadjustedRow of currentRows) {
+      checkCancelled();
+      const row = { ...unadjustedRow, observedAt: now() };
+      const matching = existingBySourceAccount.get(row.sourceAccountKey);
+      if (!matching)
+        throw new Error("Yuanta foreign current deposit snapshot contains an account without an existing financial identity.");
+      const capture = admitCurrentDepositBalanceCapture(
+        buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
+      );
+      const item: PGliteWorkflowRunItem = {
+        provider: "yuanta",
+        product: "current-deposit-balance",
+        itemKey: capture.identity.sourceAccountKey,
+        command: {
+          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+          request: currentDepositBalanceCommandRequest(capture),
+        },
+      };
+      sourceText.assertIntact(JSON.stringify(item.command));
+      balanceItems.push(item);
+    }
+  }
+  const items = [...statementItems, ...balanceItems];
+  for (const item of items) {
+    checkCancelled();
+    sourceText.assertIntact(JSON.stringify(item.command));
+  }
+  overrides.deferredCommitItems.push(...items);
   return {
-    filename,
-    rows: transactionRowsFromDownloadedCsv(
-      content,
-      accountLabel,
-      accountValue,
-      currencyLabel,
-      currencyValue,
-    ),
+    sourceCount: sourceDownloads.length,
+    rowCount: rows.length,
+    itemCount: items.length,
   };
 }
 
@@ -2935,169 +2861,3 @@ export function buildYuantaForeignCurrencyCaptureInput(
     }),
   };
 }
-
-export async function commitYuantaForeignCurrencyCapture(
-  store: ForeignCurrencyDepositCommitStore,
-  input: ForeignCurrencyDepositCaptureInput,
-) {
-  const results = await commitForeignCurrencyDepositCaptureBatch(store, [input]);
-  await runCanonicalInvestmentRelationFollowThrough(store);
-  return results;
-}
-
-export default workflow("yuantaForeignCurrencyStatements", {
-  startUrl: YUANTA_ENTRY_URL,
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (
-      input as typeof input & { credentials: YuantaCredentials }
-    ).credentials;
-    const authResult = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
-    );
-    const replacedActiveSession = authResult.replacedActiveSession;
-
-    await openForeignCurrencyDetailsPage(page);
-
-    const accounts = await readYuantaForeignCurrencyAccountOptions(
-      page,
-      input.accountFilters,
-    );
-    const rows: ForeignCurrencyTransactionRow[] = [];
-    const sourceDownloads: SourceDownloadMetadata[] = [];
-    const nextTimestamp = createTimestampGenerator();
-
-    for (const account of accounts) {
-      await selectAccount(page, account);
-      const currencies = await readYuantaForeignCurrencyOptions(
-        page,
-        input.currencyFilters,
-      );
-
-      for (const currency of currencies) {
-        const maskedAccount = maskAccountLabel(account.label);
-        await queryAccountCurrency(page, input, account, currency);
-        const download = await downloadTransactionRows(
-          page,
-          maskedAccount,
-          account.value,
-          currency.label,
-          currency.value,
-          () => queryAccountCurrency(page, input, account, currency),
-        );
-        rows.push(...download.rows);
-        sourceDownloads.push({
-          accountValue: account.value,
-          account: maskedAccount,
-          currency: currency.label,
-          filename: download.filename,
-          rowCount: download.rows.length,
-        });
-      }
-    }
-
-    const dateRange = describeDateRange(input);
-    const file = await writeForeignCurrencyTransactionsFile(
-      nextTimestamp,
-      dateRange,
-      input.channelType,
-      rows,
-      sourceDownloads,
-    );
-
-    const financialLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-    if (financialLedgerDir) {
-      const captureOccurrenceId = randomUUID();
-      const financialStore = createCanonicalSourceStore(
-        canonicalSqlitePath(financialLedgerDir),
-      );
-      try {
-        const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
-        for (const row of rows) {
-          const accountRows = grouped.get(row.accountValue) ?? [];
-          accountRows.push(row);
-          grouped.set(row.accountValue, accountRows);
-        }
-        const captures = accounts.map((account) => {
-          const accountRows = grouped.get(account.value) ?? [];
-          const accountDownloads = sourceDownloads.filter(
-            (download) => download.accountValue === account.value,
-          );
-          const zeroResultAuthority =
-            accountRows.length === 0 &&
-            accountDownloads.length > 0 &&
-            accountDownloads.every((download) => download.rowCount === 0)
-              ? ("provider-explicit-no-data" as const)
-              : undefined;
-          return buildYuantaForeignCurrencyCaptureInput(
-            accountRows,
-            input,
-            account.value,
-            new Date().toISOString(),
-            captureOccurrenceId,
-            zeroResultAuthority,
-            credentials.yuanta_user_id ?? "",
-          );
-        });
-        const admittedCaptures = captures.map((capture) =>
-          admitForeignCurrencyDepositCapture(capture),
-        );
-        await commitForeignCurrencyDepositCaptureBatch(
-          financialStore,
-          admittedCaptures,
-        );
-        await runCanonicalInvestmentRelationFollowThrough(financialStore);
-        const authority = admittedCaptures[0]?.identity;
-        if (!authority)
-          throw new Error(
-            "Yuanta foreign financial admission produced no canonical identity.",
-          );
-        const currentRows = await readYuantaCurrentDepositBalances(
-          page,
-          "foreign",
-          {
-            observedAt: new Date().toISOString(),
-            financialAuthority: {
-              sourceConnectionKey: authority.sourceConnectionKey,
-              identityEpochKey: authority.identityEpochKey,
-              authorityClass: "existing-financial-admission",
-            },
-          },
-        );
-        const currentObservedAt = new Date().toISOString();
-        const existingBySourceAccount =
-          indexYuantaForeignCurrentDepositFinancialCaptures(admittedCaptures);
-        const currentCaptures = currentRows.map((unadjustedRow) => {
-          const row = { ...unadjustedRow, observedAt: currentObservedAt };
-          const matching = existingBySourceAccount.get(row.sourceAccountKey);
-          if (!matching)
-            throw new Error(
-              "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
-            );
-          return admitCurrentDepositBalanceCapture(
-            buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
-          );
-        });
-        for (const capture of currentCaptures)
-          await commitCurrentDepositBalanceCapture(financialStore, capture);
-      } finally {
-        financialStore.close();
-      }
-    }
-
-    return {
-      dateRange,
-      channelType: input.channelType,
-      usedExistingSession: authResult.usedProfile,
-      replacedActiveSession,
-      count: 1,
-      files: [file],
-    };
-  },
-});

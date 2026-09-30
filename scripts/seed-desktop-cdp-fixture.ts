@@ -2,13 +2,17 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { initializeCanonicalRuntime } from "../electron/canonical-reset.ts";
+import { PGlite } from "@electric-sql/pglite";
+import { applyPgliteOperationalBaseline, createPgliteOperationalStore } from "../src/ledger/pglite/operational.ts";
+import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
 } from "../src/lib/automation/server/config-files.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS } from "../src/lib/automation/server/tasks.ts";
-import { seedMockLedger } from "../src/ledger/seed-mock-ledger-db.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  automationCredentialKeyIsSecret,
+} from "../src/lib/automation/server/tasks.ts";
 
 export const desktopCdpFixtureCredentialGroupIds = [
   "fubon",
@@ -33,7 +37,12 @@ export const desktopCdpFixtureCredentials = Object.fromEntries(
   desktopCdpFixtureCredentialGroupIds.flatMap((groupId) => {
     const group = fixtureCredentialGroup(groupId);
     return group.credentialFields
-      .filter((credentialField) => credentialField.redaction !== "none")
+      // Redaction describes how a value is displayed, not whether the
+      // workflow needs it.  The CDP fixture must provide inert values for
+      // every required secret, including password/API-key fields whose
+      // catalog default is `redaction: none`.  Non-secret settings such as
+      // MAX_SUB_ACCOUNT stay in the settings file.
+      .filter((credentialField) => automationCredentialKeyIsSecret(credentialField.key))
       .map((credentialField, index) => [
         credentialField.key,
         `fixture-cdp-${group.id}-${index + 1}`,
@@ -73,38 +82,86 @@ function assertDisposableFixtureRoot(userData: string) {
 /**
  * Prepare a disposable user-data root before Electron starts.
  *
- * Canonical reset must complete before the mock legacy operational ledger is
- * written. This preserves the fixture's task history while ensuring the app
- * still opens a canonical database during startup.
+ * The operational task history lives in the same PGlite directory the app
+ * will reopen at startup.
  */
-export function seedDesktopCdpFixture(
+export async function seedDesktopCdpFixture(
   userData: string,
   referenceDate = new Date(),
 ) {
   const root = assertDisposableFixtureRoot(userData);
   mkdirSync(root, { recursive: true });
-  initializeCanonicalRuntime({ userData: root });
   writeAutomationSettingsFile(join(root, "settings.json"), desktopCdpFixtureSettings);
   writeAutomationCredentialsFile(
     join(root, "credentials.json"),
     desktopCdpFixtureCredentials,
     null,
   );
-  return seedMockLedger(join(root, "data", "ledger"), referenceDate);
+  const dataDir = join(root, "data", "pglite");
+  mkdirSync(join(root, "data"), { recursive: true });
+  const database = await PGlite.create({ dataDir });
+  try {
+    const store = new PGliteStore(database);
+    await applyPgliteOperationalBaseline(store);
+    const automation = createPgliteOperationalStore(store);
+    const day = referenceDate.toISOString().slice(0, 10);
+    const fubonRun = await automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 2,
+      startedAt: `${day}T08:00:00.000Z`,
+    });
+    await automation.transitionTaskRunToTerminal(fubonRun.taskRunId, {
+      status: "completed",
+      finishedAt: `${day}T08:02:00.000Z`,
+      exitCode: 0,
+      appWorkflowOutcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { rowCount: 1 } },
+      },
+    });
+    const esunRun = await automation.createTaskRun({
+      taskId: "esun-credit-card-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 2,
+      startedAt: `${day}T09:00:00.000Z`,
+    });
+    await automation.transitionTaskRunToTerminal(esunRun.taskRunId, {
+      status: "failed",
+      finishedAt: `${day}T09:02:00.000Z`,
+      exitCode: 1,
+      appWorkflowOutcome: {
+        errorCode: "workflow-failed",
+        summary: { status: "failed", counts: {} },
+      },
+    });
+  } finally {
+    await database.close();
+  }
+  return dataDir;
 }
 
 /** Remove only the named disposable fixture root. */
 export function removeDesktopCdpFixture(userData: string) {
-  rmSync(assertDisposableFixtureRoot(userData), { recursive: true, force: true });
+  rmSync(assertDisposableFixtureRoot(userData), {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 }
 
-function main() {
+async function main() {
   const userData = process.argv[2];
   if (!userData) throw new Error("Usage: seed-desktop-cdp-fixture <user-data-root>");
   removeDesktopCdpFixture(userData);
-  console.log(`Desktop CDP fixture written to ${seedDesktopCdpFixture(userData)}`);
+  console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData)}`);
 }
 
 const isCliEntry = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isCliEntry) main();
+if (isCliEntry) await main();

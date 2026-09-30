@@ -1,27 +1,69 @@
 <script lang="ts">
-  import { locale } from "$lib/i18n/i18n.ts";
+  import { onMount } from "svelte";
+  import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
+  import { resolveSpendingPurchaseReport } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import {
-    rankSpendingManualPaymentCandidates,
     type SpendingPurchaseRecordView as PurchaseRecord,
-    type SpendingPurchaseReportView as PurchaseReport,
+    type SpendingPurchaseReportView,
   } from "../purchase-matching.ts";
-  import type { SpendingPageDto } from "../model.ts";
+  import {
+    reconcileSpendingPageActionSummary,
+    spendingPairingReportContext,
+    type SpendingCandidatePageDto,
+    type SpendingPageDto,
+    type SpendingPageActionResult,
+    type SpendingPairingCandidateView,
+    type SpendingPurchaseReportSummaryDto,
+    type SpendingRecordPageDto,
+    preserveSpendingMonthSelection,
+  } from "../model.ts";
   import { applySpendingPurchaseReportPatch } from "../purchase-report-patch.ts";
   import PurchaseActivityBarChart, {
     type PurchaseActivityDatum,
   } from "./PurchaseActivityBarChart.svelte";
 
+  type PurchaseReport = SpendingPurchaseReportView & Readonly<{ summary?: SpendingPurchaseReportSummaryDto }>;
+
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
+
+  function blockState(key: "summary" | "chart" | "list" | "details"): BlockState<DashboardBlockPayload> {
+    if (report.summary) {
+      const data = {
+        canonical: fallbackCanonical,
+        purchaseReport: report as unknown as SpendingPageDto["purchaseReport"],
+        invoices: [],
+      };
+      return {
+        status: "ready",
+        data: { route: "spending", block: key, data } as DashboardBlockPayload,
+      };
+    }
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function spendingBlockData(
+    key: "summary" | "chart" | "list" | "details",
+    payload: DashboardBlockPayload | undefined,
+  ) {
+    return payload?.route === "spending" && payload.block === key ? payload.data : undefined;
+  }
 
   let report = purchaseReport;
   let previousReport: PurchaseReport | undefined;
   let selectedMonth: string | null = null;
+  let chartReady = false;
   let busyAction: string | null = null;
   let actionError = "";
+  let pairingFeedback = "";
   let pairingInvoice: PurchaseRecord | null = null;
   let selectedPaymentId = "";
   let paymentVisibleCount = 10;
@@ -30,64 +72,517 @@
   let chartMode: "day" | "month" = "day";
   let selectedCurrency = "";
   let selectedDay: string | null = null;
-  let showAllCandidates = false;
+  let monthCandidateCount: number | null = null;
+  let monthCandidateLoading = false;
+  let recordPageLoading = false;
+  let recordPageNextCursor: string | null = null;
+  let recordPageRecords: readonly PurchaseRecord[] = [];
+  let candidatePageItems: SpendingCandidatePageDto["items"] = [];
+  let candidatePageNextOffset: number | null = null;
+  let candidatePageMonthKey = "";
+  let candidatePageRequestId: string | null = null;
+  let candidatePageTimer: ReturnType<typeof setTimeout> | null = null;
+  let recordRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingRecordRefresh: Readonly<{
+    knowledgeAt: number;
+    month: string;
+    day: string | null;
+    key: string;
+    requestToken: number;
+  }> | null = null;
+  let monthDataRequestToken = 0;
+  let candidatePageRequestToken = 0;
+  let requestedMonthDataKey = "";
+  let loadedMonthDataKey = "";
+  let pageError = "";
+  let nextCandidateRequestId = 1;
+  let pairingCandidates: readonly SpendingPairingCandidateView[] | null = null;
+  let validatedSelectedCandidate: SpendingPairingCandidateView | null = null;
+  let pairingDataVersion: number | null = null;
+  let pairingCandidateTotal = 0;
+  let pairingNextOffset: number | null = null;
+  let pairingCandidatesLoading = false;
+  let pairingRequestToken = 0;
+  let pairingPrewarmVersion: number | null = null;
+  const initialPairingCandidateCount = 50;
+  const reportDerivedCache = new WeakMap<object, {
+    months: readonly string[];
+    availableCurrencies: readonly string[];
+    monthTotals: ReturnType<typeof totalsByMonthFor>;
+    pendingCandidates: PurchaseReport["candidates"];
+    candidateRecordsByKey: Map<string, PurchaseRecord>;
+  }>();
+  const reportRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
+  const reportVisibleRecordsCache = new WeakMap<object, Map<string, PurchaseRecord[]>>();
+
+  onMount(() => {
+    let firstFrame = 0;
+    let chartFrame = 0;
+    firstFrame = requestAnimationFrame(() => {
+      chartFrame = requestAnimationFrame(() => {
+        chartReady = true;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(chartFrame);
+      if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+      pendingRecordRefresh = null;
+    };
+  });
+
+  function recordsForMonth(sourceReport: PurchaseReport, month: string | null) {
+    const key = month ?? "*";
+    const cachedByMonth = reportRecordsCache.get(sourceReport);
+    const cached = cachedByMonth?.get(key);
+    if (cached) return cached;
+    const records = sourceReport.records.filter((record) =>
+      month === null || record.occurrence.value.startsWith(`${month}-`));
+    const nextByMonth = cachedByMonth ?? new Map<string, PurchaseRecord[]>();
+    nextByMonth.set(key, records);
+    reportRecordsCache.set(sourceReport, nextByMonth);
+    return records;
+  }
+
+  function visibleRecordsFor(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+    const key = `${month ?? "*"}\u0000${day ?? "*"}`;
+    const cachedByFilter = reportVisibleRecordsCache.get(sourceReport);
+    const cached = cachedByFilter?.get(key);
+    if (cached) return cached;
+    const records = recordsForMonth(sourceReport, month)
+      .filter((record) => day === null || record.occurrence.value.startsWith(day))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+    const nextByFilter = cachedByFilter ?? new Map<string, PurchaseRecord[]>();
+    nextByFilter.set(key, records);
+    reportVisibleRecordsCache.set(sourceReport, nextByFilter);
+    return records;
+  }
+
+  function reportDerivedFor(sourceReport: PurchaseReport) {
+    const cached = reportDerivedCache.get(sourceReport);
+    if (cached) return cached;
+    const derived = {
+      months: monthsForReport(sourceReport),
+      availableCurrencies: currenciesForReport(sourceReport),
+      monthTotals: totalsByMonthFor(sourceReport),
+      pendingCandidates: sourceReport.candidates.filter((candidate) => candidate.status === "candidate"),
+      candidateRecordsByKey: candidateRecordsByKeyFor(sourceReport),
+    };
+    reportDerivedCache.set(sourceReport, derived);
+    return derived;
+  }
 
   $: if (previousReport !== purchaseReport) {
+    const sameVersionUpdate = Boolean(previousReport && report.summary && purchaseReport.summary
+      && report.knowledgeAt === purchaseReport.knowledgeAt);
+    const selection = preserveSpendingMonthSelection(
+      previousReport?.summary,
+      purchaseReport.summary,
+      selectedMonth,
+      selectedDay,
+    );
     previousReport = purchaseReport;
-    report = purchaseReport;
-    selectedMonth = null;
+    selectedMonth = selection.selectedMonth;
+    selectedDay = selection.selectedDay;
     actionError = "";
+    if (sameVersionUpdate) {
+      // The compact action result already advanced this version locally. The
+      // same-version live publication confirms its summary without discarding
+      // the immediately patched affected row or launching a duplicate page.
+      report = Object.freeze({
+        ...purchaseReport,
+        records: report.records,
+        candidates: report.candidates,
+      });
+    } else {
+      report = purchaseReport;
+      resetMonthPageState();
+    }
   }
-  $: months = [...new Set(report.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+  $: if (pairingInvoice?.invoice && pairingDataVersion !== report.knowledgeAt) {
+    const currentInvoice = report.records.find((record) =>
+      record.basis === "invoice" && record.invoice?.invoiceId === pairingInvoice?.invoice?.invoiceId);
+    if (currentInvoice) {
+      pairingInvoice = currentInvoice;
+      pairingDataVersion = report.knowledgeAt;
+      pairingCandidates = null;
+      validatedSelectedCandidate = null;
+      pairingCandidateTotal = 0;
+      pairingNextOffset = null;
+      paymentVisibleCount = initialPairingCandidateCount;
+      pairingCandidatesLoading = true;
+      void loadPairingCandidates(currentInvoice, ++pairingRequestToken);
+    } else {
+      closePairing();
+      actionError = $t.purchaseSpending.pairingInvoiceUnavailable;
+    }
+  }
+  // Candidate preparation stays in the financial worker.  Fire it once for
+  // each immutable report version without delaying the shell or renderer.
+  $: if (report.knowledgeAt !== pairingPrewarmVersion) {
+    const dataVersion = report.knowledgeAt;
+    pairingPrewarmVersion = dataVersion;
+    void window.octopusBeak.spending.prewarmPairingCandidates({ dataVersion }).catch(() => {});
+  }
+  $: reportDerived = reportDerivedFor(report);
+  $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
-  $: monthRecords = report.records.filter((record) => activeMonth === null || record.occurrence.value.startsWith(`${activeMonth}-`));
-  $: visibleRecords = monthRecords
-    .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
-    .slice()
-    .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
-  $: availableCurrencies = [...new Set(report.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+  $: if (report.summary && activeMonth) {
+    const key = `${report.knowledgeAt}:${activeMonth}:${selectedDay ?? ""}`;
+    if (key !== requestedMonthDataKey && key !== loadedMonthDataKey)
+      void loadMonthData(report.knowledgeAt, activeMonth, key);
+  }
+  $: monthRecords = recordsForMonth(report, activeMonth);
+  $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
+  $: availableCurrencies = reportDerived.availableCurrencies;
   $: if (!selectedCurrency || !availableCurrencies.includes(selectedCurrency)) selectedCurrency = availableCurrencies[0] ?? "TWD";
-  $: pendingCandidates = report.candidates.filter((candidate) => candidate.status === "candidate");
+  $: pendingCandidates = reportDerived.pendingCandidates;
   $: monthCandidates = pendingCandidates.filter((candidate) => {
     const invoice = candidateRecordsByKey.get(`${candidate.candidateId}:invoice`);
     const transaction = candidateRecordsByKey.get(`${candidate.candidateId}:transaction`);
     return activeMonth === null || invoice?.occurrence.value.startsWith(`${activeMonth}-`) || transaction?.occurrence.value.startsWith(`${activeMonth}-`);
   });
-  $: visibleCandidates = showAllCandidates ? pendingCandidates : monthCandidates;
-  $: candidateKey = visibleCandidates.map((candidate) => `${candidate.candidateId}:${candidate.status}`).join("\u0001");
+  $: visibleCandidates = monthCandidates;
+  $: candidateKey = `${report.knowledgeAt}:${activeMonth ?? ""}:${monthCandidateCount ?? "unloaded"}`;
   $: if (candidateKey !== previousCandidateKey) {
     previousCandidateKey = candidateKey;
     candidateVisibleCount = Math.min(10, visibleCandidates.length);
   }
   $: visibleCandidateRows = visibleCandidates.slice(0, candidateVisibleCount);
-  $: allEligiblePayments = report.records.filter((record) => record.basis === "bank-transaction" && record.transaction !== null);
-  $: eligiblePayments = (() => {
-    if (!pairingInvoice?.invoice) return allEligiblePayments;
-    const paymentById = new Map(allEligiblePayments.map((record) => [record.transaction!.transactionId, record]));
-    return rankSpendingManualPaymentCandidates(pairingInvoice.invoice, allEligiblePayments.map((record) => record.transaction!))
-      .map((candidate) => paymentById.get(candidate.transactionId))
-      .filter((record): record is PurchaseRecord => record !== undefined);
-  })();
-  $: visibleEligiblePayments = eligiblePayments.slice(0, paymentVisibleCount);
-  $: selectedPayment = eligiblePayments.find((record) => record.transaction?.transactionId === selectedPaymentId) ?? null;
-  $: monthTotals = totalsByMonth(report.records);
-  $: visibleTotals = totalsByCurrency(monthRecords);
+  $: visibleEligiblePayments = [
+    ...(validatedSelectedCandidate && selectedPaymentId === validatedSelectedCandidate.transactionId &&
+      !(pairingCandidates ?? []).slice(0, paymentVisibleCount).some((candidate) => candidate.transactionId === selectedPaymentId)
+      ? [validatedSelectedCandidate] : []),
+    ...(pairingCandidates ?? []).slice(0, paymentVisibleCount),
+  ];
+  $: selectedPayment = pairingCandidates?.find((candidate) => candidate.transactionId === selectedPaymentId)
+    ?? (validatedSelectedCandidate?.transactionId === selectedPaymentId ? validatedSelectedCandidate : null);
+  $: monthTotals = reportDerived.monthTotals;
+  $: visibleTotals = totalsForPeriod(report, activeMonth, selectedDay);
   $: selectedMonthTotal = visibleTotals.find((amount) => amount.currency === selectedCurrency) ?? null;
-  $: spendingDayCount = new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
+  $: monthSummary = report.summary?.monthTotals.find((summary) => summary.month === activeMonth) ?? null;
+  $: periodRecordCount = report.summary
+    ? selectedDay
+      ? report.summary.dayTotals.find((summary) => summary.date === selectedDay)?.recordCount ?? 0
+      : monthSummary?.recordCount ?? 0
+    : visibleRecords.length;
+  $: spendingDayCount = selectedDay
+    ? 1
+    : monthSummary?.activeDayCount ?? new Set(monthRecords.map((record) => record.occurrence.value.slice(0, 10))).size;
   $: recordGroups = groupRecordsByDate(visibleRecords);
   $: chartData = chartMode === "day"
-    ? dailyChartData(monthRecords, activeMonth, selectedCurrency)
+    ? dailyChartDataFor(report, monthRecords, activeMonth, selectedCurrency)
     : monthlyChartData(monthTotals, selectedCurrency);
-  $: candidateRecordsByKey = (() => {
-    const index = new Map<string, PurchaseRecord>();
-    for (const record of report.records) {
-      for (const candidateId of record.candidateIds) {
-        if (record.invoice) index.set(`${candidateId}:invoice`, record);
-        if (record.transaction) index.set(`${candidateId}:transaction`, record);
-      }
+  $: candidateRecordsByKey = reportDerived.candidateRecordsByKey;
+
+  function cancelPendingCandidatePage(): Promise<void> {
+    const pendingTimer = candidatePageTimer;
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    candidatePageTimer = null;
+    candidatePageRequestToken += 1;
+    monthCandidateLoading = false;
+    const requestId = candidatePageRequestId;
+    candidatePageRequestId = null;
+    if (requestId && typeof window !== "undefined") {
+      return window.octopusBeak.spending.cancelCandidatePage(requestId).then(() => undefined, () => undefined);
     }
-    return index;
-  })();
+    return Promise.resolve();
+  }
+
+  function resetMonthPageState() {
+    cancelPendingRecordRefresh();
+    monthDataRequestToken += 1;
+    void cancelPendingCandidatePage();
+    requestedMonthDataKey = "";
+    loadedMonthDataKey = "";
+    candidatePageMonthKey = "";
+    recordPageLoading = false;
+    recordPageNextCursor = null;
+    recordPageRecords = [];
+    candidatePageItems = [];
+    candidatePageNextOffset = null;
+    monthCandidateCount = null;
+    pageError = "";
+  }
+
+  function publishMonthPageRecords() {
+    if (!report.summary) return;
+    const byId = new Map<string, PurchaseRecord>();
+    for (const record of [...recordPageRecords, ...candidatePageItems.flatMap((item) => [item.invoiceRecord, item.paymentRecord].filter((value): value is PurchaseRecord => value !== null))]) {
+      const prior = byId.get(record.purchaseId);
+      if (!prior) {
+        byId.set(record.purchaseId, record);
+        continue;
+      }
+      byId.set(record.purchaseId, Object.freeze({
+        ...prior,
+        candidateIds: Object.freeze([...new Set([...prior.candidateIds, ...record.candidateIds])]),
+        possibleDuplicate: prior.possibleDuplicate || record.possibleDuplicate,
+      }));
+    }
+    const records = [...byId.values()].sort((left, right) =>
+      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId));
+    const candidates = candidatePageItems.map((item) => item.candidate);
+    const summary = Object.freeze({
+      ...report.summary,
+      monthTotals: Object.freeze(report.summary.monthTotals.map((month) => month.month === activeMonth && monthCandidateCount !== null
+        ? Object.freeze({ ...month, pendingCandidateCount: monthCandidateCount })
+        : month)),
+    });
+    report = Object.freeze({
+      ...report,
+      records: Object.freeze(records),
+      candidates: Object.freeze(candidates),
+      summary,
+    });
+  }
+
+  async function loadMonthData(knowledgeAt: number, month: string, key: string) {
+    if (requestedMonthDataKey === key || loadedMonthDataKey === key) return;
+    requestedMonthDataKey = key;
+    const requestToken = ++monthDataRequestToken;
+    const candidateKeyForMonth = `${knowledgeAt}:${month}`;
+    if (candidatePageMonthKey !== candidateKeyForMonth) {
+      await cancelPendingCandidatePage();
+      if (requestToken !== monthDataRequestToken) return;
+      candidatePageMonthKey = candidateKeyForMonth;
+      candidatePageItems = [];
+      candidatePageNextOffset = null;
+      monthCandidateCount = null;
+      publishMonthPageRecords();
+    }
+    recordPageLoading = true;
+    pageError = "";
+    recordPageRecords = [];
+    recordPageNextCursor = null;
+    publishMonthPageRecords();
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = page.records;
+      recordPageNextCursor = page.nextCursor;
+      loadedMonthDataKey = key;
+      publishMonthPageRecords();
+      scheduleCandidatePageLoad(knowledgeAt, month, candidateKeyForMonth);
+    } catch (error) {
+      if (requestToken === monthDataRequestToken) {
+        pageError = error instanceof Error ? error.message : String(error);
+        requestedMonthDataKey = "";
+      }
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
+
+  function scheduleCandidatePageLoad(knowledgeAt: number, month: string, key: string) {
+    if (pairingInvoice || monthCandidateCount !== null || candidatePageTimer !== null || candidatePageRequestId !== null) return;
+    candidatePageTimer = setTimeout(() => {
+      candidatePageTimer = null;
+      void fetchCandidatePage(knowledgeAt, month, key, 0);
+    }, 1_200);
+  }
+
+  async function fetchCandidatePage(knowledgeAt: number, month: string, key: string, offset: number) {
+    if (pairingInvoice || candidatePageMonthKey !== key || report.knowledgeAt !== knowledgeAt) return;
+    const requestToken = ++candidatePageRequestToken;
+    const requestId = `spending-candidates-${nextCandidateRequestId++}`;
+    candidatePageRequestId = requestId;
+    monthCandidateLoading = true;
+    try {
+      const page: SpendingCandidatePageDto = await window.octopusBeak.spending.loadCandidatePage({
+        knowledgeAt,
+        month,
+        offset,
+        limit: 50,
+      }, requestId);
+      if (requestToken !== candidatePageRequestToken || pairingInvoice || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      candidatePageItems = offset === 0 ? page.items : Object.freeze([...candidatePageItems, ...page.items]);
+      candidatePageNextOffset = page.nextOffset;
+      monthCandidateCount = page.totalCandidateCount;
+      publishMonthPageRecords();
+    } catch (error) {
+      if (requestToken === candidatePageRequestToken) {
+        pageError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      if (candidatePageRequestId === requestId) candidatePageRequestId = null;
+      if (requestToken === candidatePageRequestToken) monthCandidateLoading = false;
+    }
+  }
+
+  async function loadMoreRecords() {
+    if (!recordPageNextCursor || !activeMonth || !report.summary || recordPageLoading) return;
+    const knowledgeAt = report.knowledgeAt;
+    const month = activeMonth;
+    const requestToken = monthDataRequestToken;
+    recordPageLoading = true;
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
+        cursor: recordPageNextCursor,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = Object.freeze([...recordPageRecords, ...page.records]);
+      recordPageNextCursor = page.nextCursor;
+      publishMonthPageRecords();
+    } catch (error) {
+      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
+        pageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
+
+  async function showMoreCandidates() {
+    const nextCount = candidateVisibleCount + 10;
+    if (nextCount > visibleCandidates.length && candidatePageNextOffset !== null && activeMonth && report.summary) {
+      await fetchCandidatePage(report.knowledgeAt, activeMonth, candidatePageMonthKey, candidatePageNextOffset);
+    }
+    candidateVisibleCount = Math.min(nextCount, monthCandidateCount ?? visibleCandidates.length);
+  }
+
+  function acceptCompactPageAction(result: SpendingPageActionResult) {
+    if (!report.summary) {
+      if (report.knowledgeAt >= result.knowledgeAt) return;
+      throw new Error("Spending changed while applying the pairing result. Reload the selected month.");
+    }
+    const reconciliation = reconcileSpendingPageActionSummary(report.summary, report.knowledgeAt, result);
+    if (reconciliation.state === "newer-live-version") return;
+    const liveAlreadyPublishedAction = reconciliation.state === "already-current";
+    const month = activeMonth;
+    const day = selectedDay && month && selectedDay.startsWith(`${month}-`) ? selectedDay : null;
+    const summary = reconciliation.summary;
+    const matchesPair = (record: PurchaseRecord) =>
+      record.invoice?.invoiceId === result.invoiceIdentityId ||
+      record.transaction?.transactionId === result.transactionIdentityId;
+    const matchesView = (record: PurchaseRecord) =>
+      (month === null || record.occurrence.value.startsWith(`${month}-`))
+      && (day === null || record.occurrence.value.startsWith(day));
+    const nextRecords = Object.freeze([
+      ...recordPageRecords.filter((record) => !matchesPair(record)),
+      ...result.affectedRecords.filter((record) => matchesView(record as PurchaseRecord)),
+    ].sort((left, right) =>
+      right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
+    const nextReport = Object.freeze({
+      ...report,
+      knowledgeAt: result.knowledgeAt,
+      totalsByCurrency: summary.totalsByCurrency,
+      summary,
+      records: nextRecords,
+      candidates: Object.freeze([]),
+    }) as PurchaseReport;
+    const monthKey = month ? `${result.knowledgeAt}:${month}:${day ?? ""}` : "";
+    const currentPageRequestPending = liveAlreadyPublishedAction
+      && requestedMonthDataKey === monthKey
+      && loadedMonthDataKey !== monthKey;
+    if (!liveAlreadyPublishedAction) monthDataRequestToken += 1;
+    const requestToken = monthDataRequestToken;
+    void cancelPendingCandidatePage();
+    candidatePageItems = [];
+    candidatePageNextOffset = null;
+    candidatePageMonthKey = month ? `${result.knowledgeAt}:${month}` : "";
+    monthCandidateCount = null;
+    recordPageRecords = nextRecords;
+    recordPageNextCursor = null;
+    if (!liveAlreadyPublishedAction) {
+      recordPageLoading = Boolean(month);
+      requestedMonthDataKey = monthKey;
+      loadedMonthDataKey = "";
+    }
+    pageError = "";
+    report = nextReport;
+    selectedMonth = month;
+    fallbackCanonical = Object.freeze({
+      ...fallbackCanonical,
+      availability: summary.recordCount > 0 ? "available" : "empty",
+      knowledgePoint: result.knowledgeAt,
+      totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
+        currency: amount.currency,
+        value: exactToNumber(amount),
+        exact: { coefficient: amount.coefficient, scale: amount.scale },
+      })),
+      totalStatus: "complete",
+    });
+    if (month && liveAlreadyPublishedAction && !currentPageRequestPending) {
+      recordPageLoading = true;
+      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+    } else if (month && !liveAlreadyPublishedAction) {
+      scheduleRecordRefreshAfterAction(result.knowledgeAt, month, day, monthKey, requestToken);
+    }
+  }
+
+  function scheduleRecordRefreshAfterAction(
+    knowledgeAt: number,
+    month: string,
+    day: string | null,
+    key: string,
+    requestToken: number,
+  ) {
+    pendingRecordRefresh = { knowledgeAt, month, day, key, requestToken };
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    // The action result already patches affected rows and summary. Give a
+    // subsequent Pairing click priority over this full page reconciliation.
+    recordRefreshTimer = setTimeout(() => {
+      recordRefreshTimer = null;
+      flushRecordRefreshAfterAction();
+    }, 1_200);
+  }
+
+  function cancelPendingRecordRefresh() {
+    const hadPending = pendingRecordRefresh !== null;
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
+    pendingRecordRefresh = null;
+    if (hadPending) recordPageLoading = false;
+  }
+
+  function flushRecordRefreshAfterAction() {
+    if (pairingInvoice || !pendingRecordRefresh) return;
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
+    const request = pendingRecordRefresh;
+    pendingRecordRefresh = null;
+    void refreshRecordsAfterAction(
+      request.knowledgeAt, request.month, request.day, request.key, request.requestToken,
+    );
+  }
+
+  async function refreshRecordsAfterAction(
+    knowledgeAt: number,
+    month: string,
+    day: string | null,
+    key: string,
+    requestToken: number,
+  ) {
+    try {
+      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+        knowledgeAt,
+        month,
+        day,
+        limit: 50,
+      });
+      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      recordPageRecords = page.records;
+      recordPageNextCursor = page.nextCursor;
+      loadedMonthDataKey = key;
+      publishMonthPageRecords();
+      scheduleCandidatePageLoad(knowledgeAt, month, `${knowledgeAt}:${month}`);
+    } catch (error) {
+      if (requestToken === monthDataRequestToken && report.knowledgeAt === knowledgeAt && activeMonth === month)
+        pageError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === monthDataRequestToken) recordPageLoading = false;
+    }
+  }
 
   function moneyValue(amount: { coefficient: string; scale: number; currency: string }) {
     return {
@@ -98,12 +593,12 @@
   }
 
   function amountText(amount: { coefficient: string; scale: number; currency: string } | null, signed = false) {
-    if (!amount) return $locale === "zh-TW" ? "金額未提供" : "Amount unavailable";
+    if (!amount) return $t.purchaseSpending.amountUnavailable;
     return formatMoney(moneyValue(amount), { locale: $locale, signed });
   }
 
   function exactText(value: { coefficient: string; scale: number } | null) {
-    if (!value) return $locale === "zh-TW" ? "無資料" : "Unavailable";
+    if (!value) return $t.purchaseSpending.unavailable;
     if (value.scale === 0) return value.coefficient;
     const negative = value.coefficient.startsWith("-");
     const digits = negative ? value.coefficient.slice(1) : value.coefficient;
@@ -127,33 +622,138 @@
   }
 
   function recordLabel(record: PurchaseRecord) {
-    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? ($locale === "zh-TW" ? "未提供商家名稱" : "Merchant unavailable");
+    return record.description ?? record.invoice?.revision.seller.name ?? record.transaction?.description ?? $t.purchaseSpending.merchantUnavailable;
   }
 
   function basisLabel(record: PurchaseRecord) {
-    if (record.basis === "linked") return $locale === "zh-TW" ? "已配對購買" : "Linked purchase";
-    if (record.basis === "invoice") return $locale === "zh-TW" ? "電子發票購買" : "E-Invoice purchase";
-    if (record.basis === "refund") return $locale === "zh-TW" ? "退款" : "Refund";
+    if (record.basis === "linked") return $t.purchaseSpending.linkedPurchase;
+    if (record.basis === "invoice") return $t.purchaseSpending.invoicePurchase;
+    if (record.basis === "refund") return $t.purchaseSpending.refund;
     const isCreditCard = record.transaction?.stream === "credit-card";
-    return isCreditCard
-      ? ($locale === "zh-TW" ? "信用卡消費" : "Credit-card purchase")
-      : ($locale === "zh-TW" ? "銀行交易" : "Bank transaction");
+    return isCreditCard ? $t.purchaseSpending.creditCardPurchase : $t.purchaseSpending.bankTransaction;
+  }
+
+  function pairingRecordLabel(candidate: SpendingPairingCandidateView) {
+    return candidate.description ?? $t.purchaseSpending.merchantUnavailable;
+  }
+
+  function pairingBasisLabel(candidate: SpendingPairingCandidateView) {
+    return candidate.stream === "credit-card" ? $t.purchaseSpending.creditCardPurchase : $t.purchaseSpending.bankTransaction;
   }
 
   function occurrenceBasisLabel(record: PurchaseRecord) {
-    return record.occurrence.basis === "posting-date-fallback"
-      ? ($locale === "zh-TW" ? "以入帳日期代替" : "Posting date used as fallback")
-      : null;
+    return record.occurrence.basis === "posting-date-fallback" ? $t.purchaseSpending.postingDateFallback : null;
   }
 
   function transactionDateBasisLabel(transaction: NonNullable<PurchaseRecord["transaction"]>) {
-    return transaction.effectiveDateBasis === "posting-date-fallback"
-      ? ($locale === "zh-TW" ? "消費日期未提供，以入帳日期代替" : "Consume date unavailable; posting date used")
-      : null;
+    return transaction.effectiveDateBasis === "posting-date-fallback" ? $t.purchaseSpending.consumeDateFallback : null;
   }
 
   function candidateRecord(candidateId: string, kind: "invoice" | "transaction") {
     return candidateRecordsByKey.get(`${candidateId}:${kind}`) ?? null;
+  }
+
+  function candidateRecordsByKeyFor(sourceReport: PurchaseReport) {
+    const index = new Map<string, PurchaseRecord>();
+    for (const record of sourceReport.records) {
+      for (const candidateId of record.candidateIds) {
+        if (record.invoice) index.set(`${candidateId}:invoice`, record);
+        if (record.transaction) index.set(`${candidateId}:transaction`, record);
+      }
+    }
+    return index;
+  }
+
+  function monthsForReport(sourceReport: PurchaseReport) {
+    return sourceReport.summary?.monthTotals.map((month) => month.month)
+      ?? [...new Set(sourceReport.records.map((record) => record.occurrence.value.slice(0, 7)))].sort();
+  }
+
+  function activeMonthForReport(sourceReport: PurchaseReport, preferred: string | null) {
+    const months = monthsForReport(sourceReport);
+    return preferred && months.includes(preferred) ? preferred : months.at(-1) ?? null;
+  }
+
+  function purchaseListView(
+    sourceReport: PurchaseReport,
+    preferredMonth: string | null,
+    visibleCount: number,
+  ) {
+    const active = activeMonthForReport(sourceReport, preferredMonth);
+    const recordsByKey = candidateRecordsByKeyFor(sourceReport);
+    const pending = sourceReport.candidates.filter((candidate) => candidate.status === "candidate");
+    const month = pending.filter((candidate) => {
+      const invoice = recordsByKey.get(`${candidate.candidateId}:invoice`);
+      const transaction = recordsByKey.get(`${candidate.candidateId}:transaction`);
+      return active === null
+        || invoice?.occurrence.value.startsWith(`${active}-`)
+        || transaction?.occurrence.value.startsWith(`${active}-`);
+    });
+    const visible = month;
+    return {
+      pending,
+      month,
+      visible,
+      rows: visible.slice(0, visibleCount),
+      recordsByKey,
+    };
+  }
+
+  function chartDataFor(
+    sourceReport: PurchaseReport,
+    mode: "day" | "month",
+    preferredMonth: string | null,
+    currency: string,
+  ) {
+    const active = activeMonthForReport(sourceReport, preferredMonth);
+    return mode === "day"
+      ? dailyChartDataFor(sourceReport, sourceReport.records, active, currency)
+      : monthlyChartData(totalsByMonthFor(sourceReport), currency);
+  }
+
+  function currenciesForReport(sourceReport: PurchaseReport) {
+    return sourceReport.summary?.currencies
+      ?? [...new Set(sourceReport.records.flatMap((record) => record.amount ? [record.amount.currency] : []))].sort();
+  }
+
+  function totalsByMonthFor(sourceReport: PurchaseReport) {
+    return sourceReport.summary
+      ? sourceReport.summary.monthTotals.flatMap((month) => month.totalsByCurrency.map((amount) => ({ month: month.month, amount })))
+      : totalsByMonth(sourceReport.records);
+  }
+
+  function totalsForPeriod(sourceReport: PurchaseReport, month: string | null, day: string | null) {
+    if (sourceReport.summary) {
+      if (day) return sourceReport.summary.dayTotals.find((row) => row.date === day)?.totalsByCurrency ?? [];
+      return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
+    }
+    return totalsByCurrency(day
+      ? sourceReport.records.filter((record) => record.occurrence.value.startsWith(day))
+      : sourceReport.records.filter((record) => month === null || record.occurrence.value.startsWith(`${month}-`)));
+  }
+
+  function dailyChartDataFor(
+    sourceReport: PurchaseReport,
+    records: readonly PurchaseRecord[],
+    month: string | null,
+    currency: string,
+  ) {
+    if (sourceReport.summary && month) {
+      const [year, monthNumber] = month.split("-").map(Number);
+      if (!year || !monthNumber) return [];
+      const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+      const totals = new Map(sourceReport.summary.dayTotals
+        .filter((row) => row.month === month)
+        .flatMap((row) => row.totalsByCurrency
+          .filter((amount) => amount.currency === currency)
+          .map((amount) => [row.date, exactToNumber(amount)] as const)));
+      return Array.from({ length: days }, (_, index) => {
+        const date = `${month}-${String(index + 1).padStart(2, "0")}`;
+        const value = totals.get(date) ?? 0;
+        return { key: date, label: `${monthNumber}/${index + 1}`, value, tone: value < 0 ? "refund" as const : "spend" as const };
+      });
+    }
+    return dailyChartData(records, month, currency);
   }
 
   function totalsByMonth(records: readonly PurchaseRecord[]) {
@@ -252,7 +852,6 @@
   function chooseMonth(month: string) {
     selectedMonth = month;
     selectedDay = null;
-    showAllCandidates = false;
   }
 
   function selectChartPeriod(key: string) {
@@ -281,12 +880,42 @@
   }
 
   async function decideCandidate(candidateId: string, action: "confirmCandidate" | "denyCandidate") {
+    cancelPendingRecordRefresh();
     busyAction = `${action}:${candidateId}`;
     actionError = "";
     try {
+      const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
+      const recordsByKey = candidateRecordsByKeyFor(report);
+      const invoiceRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null : null;
+      const paymentRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null : null;
+      if (report.summary) {
+        if (!candidate || !invoiceRecord?.invoice || !paymentRecord?.transaction)
+          throw new Error($t.purchaseSpending.pairingSelectionUnavailable);
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: action === "confirmCandidate" ? "confirm" : "deny",
+          kind: "candidate",
+          candidateId,
+          invoiceIdentityId: invoiceRecord.invoice.invoiceId,
+          transactionIdentityId: paymentRecord.transaction.transactionId,
+          dataVersion: report.knowledgeAt,
+        });
+        acceptCompactPageAction(result);
+        selectedMonth = activeMonth;
+        return;
+      }
+      const context = candidate && invoiceRecord && paymentRecord
+        ? spendingPairingReportContext(report, invoiceRecord, paymentRecord, candidateId) : null;
+      const request = candidate && context ? {
+        kind: "candidate" as const, candidateId,
+        invoiceIdentityId: invoiceRecord!.invoice!.invoiceId,
+        transactionIdentityId: paymentRecord!.transaction!.transactionId,
+        dataVersion: report.knowledgeAt,
+        totalsByCurrency: report.totalsByCurrency,
+        pairingReportContext: context,
+      } : { kind: "candidate" as const, candidateId };
       const next = action === "confirmCandidate"
-        ? await window.octopusBeak.spending.confirmCandidate({ kind: "candidate", candidateId })
-        : await window.octopusBeak.spending.denyCandidate({ kind: "candidate", candidateId });
+        ? await window.octopusBeak.spending.confirmCandidate(request)
+        : await window.octopusBeak.spending.denyCandidate(request);
       report = applySpendingPurchaseReportPatch(report, next.patch);
       selectedMonth = activeMonth;
     } catch (error) {
@@ -296,28 +925,151 @@
     }
   }
 
+
   function openPairing(record: PurchaseRecord) {
+    if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
+    recordRefreshTimer = null;
     pairingInvoice = record;
+    pairingDataVersion = report.knowledgeAt;
     selectedPaymentId = "";
-    paymentVisibleCount = 10;
+    pairingFeedback = "";
+    validatedSelectedCandidate = null;
+    paymentVisibleCount = initialPairingCandidateCount;
+    pairingCandidates = null;
+    pairingCandidateTotal = 0;
+    pairingNextOffset = null;
+    pairingCandidatesLoading = true;
+    const requestToken = ++pairingRequestToken;
     actionError = "";
+    void cancelPendingCandidatePage().then(() => {
+      if (requestToken === pairingRequestToken && pairingInvoice?.invoice?.invoiceId === record.invoice?.invoiceId)
+        void loadPairingCandidates(record, requestToken);
+    });
   }
 
-  function closePairing() {
+  function closePairing(reloadMonthCandidates = true) {
+    pairingRequestToken += 1;
     pairingInvoice = null;
+    pairingDataVersion = null;
     selectedPaymentId = "";
+    pairingFeedback = "";
+    validatedSelectedCandidate = null;
+    pairingCandidates = null;
+    pairingCandidateTotal = 0;
+    pairingNextOffset = null;
+    pairingCandidatesLoading = false;
+    if (busyAction === null) flushRecordRefreshAfterAction();
+    if (reloadMonthCandidates && report.summary && activeMonth)
+      scheduleCandidatePageLoad(report.knowledgeAt, activeMonth, candidatePageMonthKey);
+  }
+
+  async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
+    const invoiceIdentityId = record.invoice?.invoiceId;
+    if (!invoiceIdentityId) return;
+    const expectedDataVersion = report.knowledgeAt;
+    const selectedAtRequest = selectedPaymentId;
+    try {
+      const result = await window.octopusBeak.spending.rankPairingCandidates({
+        invoiceIdentityId,
+        dataVersion: expectedDataVersion,
+        selectedTransactionId: selectedAtRequest || undefined,
+        limit: initialPairingCandidateCount,
+      });
+      if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
+      if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt)
+        throw new Error($t.purchaseSpending.pairingDataChanged);
+      pairingCandidates = result.candidates;
+      pairingCandidateTotal = result.totalCandidateCount;
+      pairingNextOffset = result.nextOffset;
+      validatedSelectedCandidate = result.selectedCandidate ?? null;
+      if (selectedAtRequest && selectedAtRequest === selectedPaymentId && !result.selectedCandidate) {
+        selectedPaymentId = "";
+        pairingFeedback = $t.purchaseSpending.pairingSelectionUnavailable;
+      }
+    } catch (error) {
+      if (requestToken !== pairingRequestToken) return;
+      pairingCandidates = [];
+      actionError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
+    }
+  }
+
+  async function showMorePayments() {
+    const nextVisibleCount = paymentVisibleCount + 10;
+    if (
+      pairingInvoice?.invoice &&
+      pairingNextOffset !== null &&
+      nextVisibleCount > (pairingCandidates?.length ?? 0)
+    ) {
+      const requestToken = pairingRequestToken;
+      const invoiceIdentityId = pairingInvoice.invoice.invoiceId;
+      const expectedDataVersion = report.knowledgeAt;
+      pairingCandidatesLoading = true;
+      try {
+        const result = await window.octopusBeak.spending.rankPairingCandidates({
+          invoiceIdentityId,
+          dataVersion: expectedDataVersion,
+          offset: pairingNextOffset,
+          limit: 50,
+        });
+        if (
+          requestToken !== pairingRequestToken ||
+          pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId
+        ) return;
+        if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt) {
+          pairingCandidates = null;
+          pairingCandidateTotal = 0;
+          pairingNextOffset = null;
+          paymentVisibleCount = initialPairingCandidateCount;
+          pairingCandidatesLoading = true;
+          const restartToken = ++pairingRequestToken;
+          void loadPairingCandidates(pairingInvoice, restartToken);
+          return;
+        }
+        pairingCandidates = Object.freeze([...(pairingCandidates ?? []), ...result.candidates]);
+        pairingCandidateTotal = result.totalCandidateCount;
+        pairingNextOffset = result.nextOffset;
+      } catch (error) {
+        actionError = error instanceof Error ? error.message : String(error);
+      } finally {
+        if (requestToken === pairingRequestToken) pairingCandidatesLoading = false;
+      }
+    }
+    paymentVisibleCount = Math.min(nextVisibleCount, pairingCandidateTotal);
   }
 
   async function confirmDirectPair() {
+    cancelPendingRecordRefresh();
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
-    if (!invoiceIdentityId || !selectedPaymentId) return;
+    if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading) return;
     busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-    actionError = "";
+      actionError = "";
     try {
+      if (report.summary) {
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: "confirm",
+          kind: "direct",
+          invoiceIdentityId,
+          transactionIdentityId: selectedPaymentId,
+          dataVersion: report.knowledgeAt,
+        });
+        closePairing(false);
+        acceptCompactPageAction(result);
+        return;
+      }
+      const paymentRecord = report.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === selectedPaymentId);
+      const pairCandidate = report.candidates.find((candidate) =>
+        candidateRecord(candidate.candidateId, "invoice")?.invoice?.invoiceId === invoiceIdentityId &&
+        candidateRecord(candidate.candidateId, "transaction")?.transaction?.transactionId === selectedPaymentId);
+      const context = pairingInvoice && paymentRecord ? spendingPairingReportContext(report, pairingInvoice, paymentRecord, pairCandidate?.candidateId) : undefined;
       const next = await window.octopusBeak.spending.confirmCandidate({
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
+        dataVersion: report.knowledgeAt,
+        totalsByCurrency: report.totalsByCurrency,
+        pairingReportContext: context,
       });
       report = applySpendingPurchaseReportPatch(report, next.patch);
       closePairing();
@@ -330,10 +1082,23 @@
 
   async function revokeLink(record: PurchaseRecord) {
     if (!record.link) return;
+    cancelPendingRecordRefresh();
     const action = `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`;
     busyAction = action;
     actionError = "";
     try {
+      if (report.summary) {
+        const result = await window.octopusBeak.spending.applyPageAction({
+          action: "revoke",
+          kind: "revoke",
+          invoiceIdentityId: record.link.invoiceId,
+          transactionIdentityId: record.link.transactionId,
+          dataVersion: report.knowledgeAt,
+        });
+        acceptCompactPageAction(result);
+        selectedMonth = activeMonth;
+        return;
+      }
       const next = await window.octopusBeak.spending.revokeLink({
         invoiceId: record.link.invoiceId,
         transactionId: record.link.transactionId,
@@ -351,51 +1116,57 @@
     const category = item.sourceFacts.category;
     return typeof category === "string" && category.trim()
       ? category
-      : ($locale === "zh-TW" ? "未分類" : "Unclassified");
+      : $t.purchaseSpending.unclassified;
   }
 </script>
 
 <DashboardShell
   active="spending"
-  eyebrow={$locale === "zh-TW" ? "消費" : "Spending"}
-  title={$locale === "zh-TW" ? "個人消費" : "Personal spending"}
-  sideLabel={$locale === "zh-TW" ? "購買行為合計" : "Purchases total"}
-  sideValue={report.totalsByCurrency.length > 0 ? report.totalsByCurrency.map((amount) => amountText(amount)).join(" / ") : "--"}
-  sideSub={report.totalStatus === "includes-pending-confirmation"
-    ? ($locale === "zh-TW" ? "含待確認項目" : "Includes pending confirmation")
-    : ($locale === "zh-TW" ? "依購買日期認列" : "Purchase-basis total")}
+  eyebrow={$t.spending.eyebrow}
+  title={$t.spending.title}
+  sideLabel={$t.purchaseSpending.monthlyTotal}
+  sideValue={visibleTotals.length > 0 ? visibleTotals.map((amount) => amountText(amount)).join(" / ") : "--"}
+  sideSub={(report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : report.totalStatus === "includes-pending-confirmation")
+    ? $t.purchaseSpending.includesPending
+    : $t.purchaseSpending.purchaseBasisTotal}
 >
   <div class="content spending-dashboard purchase-spending" data-spending-canonical data-purchase-report>
     <section class="card purchase-policy-card" data-policy-id="gross-posted-outflow">
       <div class="policy-copy">
-        <h2>{$locale === "zh-TW" ? "消費基準" : "Spending basis"}</h2>
-        <p>
-          {$locale === "zh-TW"
-            ? "依購買發生日歸類。未配對的發票與付款會先各自列入；確認為同一筆後，只保留付款金額。"
-            : "Purchases are grouped by purchase date. Unmatched invoices and payments count separately until a match is confirmed, then only the payment amount remains."}
-        </p>
+        <h2>{$t.purchaseSpending.basisTitle}</h2>
+        <p>{$t.purchaseSpending.basisDescription}</p>
       </div>
-      <span class="purchase-total-status" data-total-status={report.totalStatus}>
-        {report.totalStatus === "includes-pending-confirmation"
-          ? ($locale === "zh-TW" ? `${pendingCandidates.length} 筆待確認，總額可能重複` : `${pendingCandidates.length} pending; total may include duplicates`)
-          : ($locale === "zh-TW" ? "所有來源已確認" : "All sources confirmed")}
+      <span class="purchase-total-status" data-total-status={report.summary
+        ? monthCandidateCount === null ? "month-pending-unloaded" : monthCandidateCount > 0 ? "includes-pending-confirmation" : "month-clear"
+        : report.totalStatus}>
+        {report.summary
+          ? monthCandidateCount === null
+            ? $t.purchaseSpending.preparingCandidates
+            : monthCandidateCount > 0
+              ? $t.purchaseSpending.pendingCountWarning(monthCandidateCount)
+              : $t.purchaseSpending.noPendingMatches
+          : report.totalStatus === "includes-pending-confirmation"
+            ? $t.purchaseSpending.pendingCountWarning(pendingCandidates.length)
+            : $t.purchaseSpending.allSourcesConfirmed}
       </span>
     </section>
 
-    {#if actionError}
-      <section class="card purchase-action-error" role="alert">{actionError}</section>
+    {#if actionError || pageError}
+      <section class="card purchase-action-error" role="alert">{actionError || pageError}</section>
     {/if}
 
     <div class="purchase-analysis-grid">
+      <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+      {@const summaryBlock = spendingBlockData("summary", data)}
       <section class="card purchase-summary-card">
         <div class="section-heading">
           <div>
-            <h2>{$locale === "zh-TW" ? "購買總額" : "Purchase total"}</h2>
-            <p>{activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")}</p>
+            <h2>{$t.purchaseSpending.purchaseTotal}</h2>
+            <p>{activeMonth ? monthText(activeMonth) : $t.purchaseSpending.allMonths}</p>
           </div>
           {#if months.length > 0}
             <label class="month-picker">
-              <span>{$locale === "zh-TW" ? "月份" : "Month"}</span>
+              <span>{$t.purchaseSpending.month}</span>
               <select value={activeMonth ?? ""} onchange={(event) => chooseMonth(event.currentTarget.value)}>
                 {#each [...months].reverse() as month}
                   <option value={month}>{monthText(month)}</option>
@@ -408,192 +1179,231 @@
           <strong class="money" data-sensitive>{amountText(selectedMonthTotal)}</strong>
         </div>
         <dl class="summary-facts">
-          <div><dt>{$locale === "zh-TW" ? "消費筆數" : "Purchases"}</dt><dd>{monthRecords.length}</dd></div>
-          <div><dt>{$locale === "zh-TW" ? "有消費的日子" : "Active days"}</dt><dd>{spendingDayCount}</dd></div>
-          <div><dt>{$locale === "zh-TW" ? "本月待確認" : "Pending this month"}</dt><dd>{monthCandidates.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.purchaseCount}</dt><dd>{monthSummary?.recordCount ?? monthRecords.length}</dd></div>
+          <div><dt>{$t.purchaseSpending.activeDays}</dt><dd>{spendingDayCount}</dd></div>
+          <div><dt>{$t.purchaseSpending.pendingThisMonth}</dt><dd>{monthCandidateCount ?? monthSummary?.pendingCandidateCount ?? "—"}</dd></div>
         </dl>
         {#if availableCurrencies.length > 1}
-          <div class="currency-switch" role="group" aria-label={$locale === "zh-TW" ? "圖表幣別" : "Chart currency"}>
+          <div class="currency-switch" role="group" aria-label={$t.purchaseSpending.chartCurrency}>
             {#each availableCurrencies as currency}
               <button type="button" aria-pressed={currency === selectedCurrency} onclick={() => selectedCurrency = currency}>{currency}</button>
             {/each}
           </div>
         {/if}
-        {#if report.totalStatus === "includes-pending-confirmation"}
-          <p class="pending-total-note" data-pending-total>{$locale === "zh-TW" ? "待確認的發票與付款目前分開計入。完成配對後，總額會自動去重。" : "Pending invoices and payments currently count separately. The total is deduplicated after confirmation."}</p>
+        {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > 0 : (summaryBlock?.purchaseReport.totalStatus ?? report.totalStatus) === "includes-pending-confirmation"}
+          <p class="pending-total-note" data-pending-total>{$t.purchaseSpending.pendingTotalNote}</p>
         {/if}
       </section>
+      </ProgressiveBlock>
 
-      <section class="card purchase-chart-card" aria-label={$locale === "zh-TW" ? "消費圖表" : "Spending chart"} data-chart>
+      <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")} let:data>
+      {@const chartReport = resolveSpendingPurchaseReport(report, spendingBlockData("chart", data))}
+      {@const chartCurrencies = currenciesForReport(chartReport)}
+      {@const chartCurrency = chartCurrencies.includes(selectedCurrency) ? selectedCurrency : chartCurrencies[0] ?? "TWD"}
+      {@const blockChartData = chartDataFor(chartReport, chartMode, activeMonth, chartCurrency)}
+      <section class="card purchase-chart-card" aria-label={$t.purchaseSpending.chartAria} data-chart>
         <div class="section-heading chart-heading">
           <div>
-            <h2>{chartMode === "day" ? ($locale === "zh-TW" ? "每日消費" : "Daily spending") : ($locale === "zh-TW" ? "每月消費" : "Monthly spending")}</h2>
-            <p>{selectedCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "最近月份" : "Recent months")}</p>
+            <h2>{chartMode === "day" ? $t.purchaseSpending.dailySpending : $t.purchaseSpending.monthlySpending}</h2>
+            <p>{chartCurrency} · {chartMode === "day" && activeMonth ? monthText(activeMonth) : $t.purchaseSpending.recentMonths}</p>
           </div>
-          <div class="chart-mode-switch" role="group" aria-label={$locale === "zh-TW" ? "圖表範圍" : "Chart range"}>
-            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$locale === "zh-TW" ? "每日" : "Daily"}</button>
-            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$locale === "zh-TW" ? "每月" : "Monthly"}</button>
+          <div class="chart-mode-switch" role="group" aria-label={$t.purchaseSpending.chartRange}>
+            <button type="button" aria-pressed={chartMode === "day"} onclick={() => { chartMode = "day"; selectedDay = null; }}>{$t.purchaseSpending.daily}</button>
+            <button type="button" aria-pressed={chartMode === "month"} onclick={() => { chartMode = "month"; selectedDay = null; }}>{$t.purchaseSpending.monthly}</button>
           </div>
         </div>
-        <PurchaseActivityBarChart
-          data={chartData}
-          selectedKey={chartMode === "day" ? selectedDay : activeMonth}
-          label={chartMode === "day" ? ($locale === "zh-TW" ? "每日消費金額" : "Daily spending amount") : ($locale === "zh-TW" ? "每月消費金額" : "Monthly spending amount")}
-          onSelect={selectChartPeriod}
-        />
+        {#if chartReady}
+          <PurchaseActivityBarChart
+            data={blockChartData}
+            selectedKey={chartMode === "day" ? selectedDay : activeMonth}
+            label={chartMode === "day" ? $t.purchaseSpending.dailyAmount : $t.purchaseSpending.monthlyAmount}
+            onSelect={selectChartPeriod}
+          />
+        {:else}
+          <div class="purchase-chart-pending" aria-hidden="true"></div>
+        {/if}
         <label class="chart-period-picker">
-          <span>{chartMode === "day" ? ($locale === "zh-TW" ? "選擇日期" : "Choose a day") : ($locale === "zh-TW" ? "選擇月份" : "Choose a month")}</span>
+          <span>{chartMode === "day" ? $t.purchaseSpending.chooseDay : $t.purchaseSpending.chooseMonth}</span>
           <select
-            aria-label={chartMode === "day" ? ($locale === "zh-TW" ? "選擇日期以篩選購買明細" : "Choose a day to filter purchases") : ($locale === "zh-TW" ? "選擇月份以查看每日消費" : "Choose a month to view daily spending")}
+            aria-label={chartMode === "day" ? $t.purchaseSpending.chooseDayAria : $t.purchaseSpending.chooseMonthAria}
             value={chartMode === "day" ? selectedDay ?? "" : activeMonth ?? ""}
             onchange={(event) => selectChartPeriodFromControl(event.currentTarget.value)}
           >
-            {#if chartMode === "day"}<option value="">{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</option>{/if}
-            {#each chartData as datum (datum.key)}
-              <option value={datum.key}>{datum.label} · {selectedCurrency} {datum.value.toLocaleString($locale)}</option>
+            {#if chartMode === "day"}<option value="">{$t.purchaseSpending.showFullMonth}</option>{/if}
+            {#each blockChartData as datum (datum.key)}
+              <option value={datum.key}>{datum.label} · {chartCurrency} {datum.value.toLocaleString($locale)}</option>
             {/each}
           </select>
         </label>
         <p class="chart-hint">{chartMode === "day"
-          ? ($locale === "zh-TW" ? "點選日期可只看當天明細；再次點選即可取消。" : "Select a day to filter the list below; select it again to clear.")
-          : ($locale === "zh-TW" ? "點選月份可切換到該月的每日消費。" : "Select a month to open its daily view.")}</p>
+          ? $t.purchaseSpending.dayHint
+          : $t.purchaseSpending.monthHint}</p>
       </section>
+      </ProgressiveBlock>
     </div>
 
-    {#if pendingCandidates.length > 0}
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")} let:data>
+    {@const listReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("list", data))}
+    {@const listView = purchaseListView(listReport, activeMonth, candidateVisibleCount)}
+    {#if listView.pending.length > 0 || report.summary && (monthCandidateCount === null || monthCandidateLoading)}
       <section class="card purchase-candidates-card" data-candidates>
         <div class="section-heading">
-          <div><h2>{$locale === "zh-TW" ? "待確認配對" : "Pending matches"}</h2><p>{$locale === "zh-TW" ? "確認同一筆消費，避免發票與付款重複計入。" : "Confirm matching purchases to avoid counting an invoice and payment twice."}</p></div>
+          <div><h2>{$t.purchaseSpending.pendingMatches}</h2><p>{$t.purchaseSpending.pendingMatchesDescription}</p></div>
           <div class="candidate-scope">
-            <span>{visibleCandidates.length} {$locale === "zh-TW" ? "筆" : "items"}</span>
-            {#if pendingCandidates.length !== monthCandidates.length}
-              <button type="button" class="button secondary" onclick={() => { showAllCandidates = !showAllCandidates; candidateVisibleCount = 10; }}>{showAllCandidates ? ($locale === "zh-TW" ? "只看本月" : "This month") : ($locale === "zh-TW" ? `查看全部 ${pendingCandidates.length} 筆` : `View all ${pendingCandidates.length}`)}</button>
+            {#if report.summary && monthCandidateCount === null}
+              <span role="status">{$t.purchaseSpending.preparingCandidates}</span>
+            {:else}
+              <span>{$t.purchaseSpending.itemsCount(report.summary ? monthCandidateCount ?? 0 : listView.visible.length)}</span>
             {/if}
           </div>
         </div>
         <div class="candidate-list">
-          {#if visibleCandidates.length === 0}
-            <p class="candidate-empty">{$locale === "zh-TW" ? "這個月沒有待確認配對。你可以查看其他月份的候選。" : "There are no pending matches this month. You can review candidates from other months."}</p>
+          {#if listView.visible.length === 0}
+            <p class="candidate-empty" role={monthCandidateLoading ? "status" : undefined}>{monthCandidateLoading ? $t.purchaseSpending.preparingCandidates : $t.purchaseSpending.noPendingMatches}</p>
           {/if}
-          {#each visibleCandidateRows as candidate (candidate.candidateId)}
-            {@const invoiceRecord = candidateRecord(candidate.candidateId, "invoice")}
-            {@const transactionRecord = candidateRecord(candidate.candidateId, "transaction")}
+          {#each listView.rows as candidate (candidate.candidateId)}
+            {@const invoiceRecord = listView.recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null}
+            {@const transactionRecord = listView.recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null}
             <article class="candidate-row" data-candidate-id={candidate.candidateId}>
               <div class="candidate-side">
-                <strong>{$locale === "zh-TW" ? "發票來源" : "Invoice source"}</strong>
-                <span>{invoiceRecord?.invoice?.revision.seller.name ?? ($locale === "zh-TW" ? "未知商家" : "Merchant unavailable")}</span>
+                <strong>{$t.purchaseSpending.invoiceSource}</strong>
+                <span>{invoiceRecord?.invoice?.revision.seller.name ?? $t.purchaseSpending.merchantUnavailable}</span>
                 <span>{invoiceRecord ? dateText(invoiceRecord.occurrence.value) : "--"} · {invoiceRecord ? amountText(invoiceRecord.amount) : "--"}</span>
               </div>
-              <div class="candidate-compare"><span class="possible-duplicate">{$locale === "zh-TW" ? "可能是同一筆" : "Possible match"}</span><span>{$locale === "zh-TW" ? "待確認" : "Review"}</span></div>
+              <div class="candidate-compare"><span class="possible-duplicate">{$t.purchaseSpending.possibleMatch}</span><span>{$t.purchaseSpending.review}</span></div>
               <div class="candidate-side">
-                <strong>{transactionRecord ? basisLabel(transactionRecord) : ($locale === "zh-TW" ? "銀行來源" : "Bank source")}</strong>
-                <span>{transactionRecord?.transaction?.description ?? ($locale === "zh-TW" ? "未提供交易描述" : "Description unavailable")}</span>
+                <strong>{transactionRecord ? basisLabel(transactionRecord) : $t.purchaseSpending.bankSource}</strong>
+                <span>{transactionRecord?.transaction?.description ?? $t.purchaseSpending.descriptionUnavailable}</span>
                 <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · {transactionRecord ? amountText(transactionRecord.amount) : "--"}</span>
               </div>
               <div class="candidate-actions">
-                <button type="button" class="button primary" disabled={busyAction !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$locale === "zh-TW" ? "確認配對" : "Confirm match"}</button>
-                <button type="button" class="button secondary" disabled={busyAction !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$locale === "zh-TW" ? "否認候選" : "Deny candidate"}</button>
+                <button type="button" class="button primary" disabled={busyAction !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
+                <button type="button" class="button secondary" disabled={busyAction !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
               </div>
             </article>
           {/each}
-          {#if visibleCandidates.length > candidateVisibleCount}
-            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => candidateVisibleCount = Math.min(candidateVisibleCount + 10, visibleCandidates.length)}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+          {#if report.summary ? monthCandidateCount !== null && monthCandidateCount > candidateVisibleCount : listView.visible.length > candidateVisibleCount}
+            <button type="button" class="button secondary show-more-candidates" data-show-more-candidates onclick={() => report.summary ? void showMoreCandidates() : candidateVisibleCount = Math.min(candidateVisibleCount + 10, listView.visible.length)}>{$t.purchaseSpending.showMore}</button>
           {/if}
         </div>
       </section>
     {/if}
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")} let:data>
+    {@const detailsReport = report.summary ? report : resolveSpendingPurchaseReport(report, spendingBlockData("details", data))}
+    {@const detailsActiveMonth = activeMonthForReport(detailsReport, activeMonth)}
+    {@const detailsMonthRecords = detailsReport.records.filter((record) => detailsActiveMonth === null || record.occurrence.value.startsWith(`${detailsActiveMonth}-`))}
+    {@const detailsVisibleRecords = detailsMonthRecords
+      .filter((record) => selectedDay === null || record.occurrence.value.startsWith(selectedDay))
+      .slice()
+      .sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId))}
+    {@const detailsRecordGroups = groupRecordsByDate(detailsVisibleRecords)}
     <section class="card purchase-records-card">
       <div class="section-heading records-heading">
-        <div><h2>{$locale === "zh-TW" ? "購買明細" : "Purchases"}</h2><p>{selectedDay ? dateText(selectedDay) : activeMonth ? monthText(activeMonth) : ($locale === "zh-TW" ? "全部紀錄" : "All records")} · {visibleRecords.length} {$locale === "zh-TW" ? "筆" : "records"}</p></div>
-        {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$locale === "zh-TW" ? "顯示整月" : "Show full month"}</button>{/if}
+        <div><h2>{$t.purchaseSpending.purchases}</h2><p>{selectedDay ? dateText(selectedDay) : detailsActiveMonth ? monthText(detailsActiveMonth) : $t.purchaseSpending.allRecords} · {$t.purchaseSpending.recordsCount(periodRecordCount)}</p></div>
+        {#if selectedDay}<button type="button" class="button secondary" onclick={() => selectedDay = null}>{$t.purchaseSpending.showFullMonth}</button>{/if}
       </div>
       <div class="purchase-record-list">
-        {#each recordGroups as group (group.date)}
+        {#each detailsRecordGroups as group (group.date)}
           <section class="purchase-day-group" data-purchase-day={group.date}>
             <header class="purchase-day-heading">
-              <div><strong>{dateText(group.date)}</strong><span>{group.records.length} {$locale === "zh-TW" ? "筆消費" : "purchases"}</span></div>
+              <div><strong>{dateText(group.date)}</strong><span>{$t.purchaseSpending.dayPurchasesCount(group.records.length)}</span></div>
               <div class="day-totals">{#each group.totals as total (total.currency)}<span class="money" data-sensitive>{amountText(total)}</span>{/each}</div>
             </header>
             {#each group.records as record (record.purchaseId)}
-          <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-possible-duplicate={record.possibleDuplicate}>
+          <article class:possible={record.possibleDuplicate} class="purchase-record" data-purchase-record data-basis={record.basis} data-transaction-id={record.transaction?.transactionId ?? ""} data-possible-duplicate={record.possibleDuplicate}>
             <div class="purchase-record-main">
-              <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$locale === "zh-TW" ? "可能重複" : "Possible duplicate"}</span>{/if}</div>
+              <div class="purchase-record-heading"><strong>{recordLabel(record)}</strong><span class="purchase-basis">{basisLabel(record)}</span>{#if record.possibleDuplicate}<span class="possible-duplicate">{$t.purchaseSpending.possibleDuplicate}</span>{/if}</div>
               {#if occurrenceBasisLabel(record)}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}
               {#if record.basis === "linked" && record.transaction}
-                <span>{$locale === "zh-TW" ? "付款金額" : "Payment amount"}: {amountText(record.transaction.amount)} · {record.transaction.amount.currency}</span>
-                <span>{$locale === "zh-TW" ? "發票購買日" : "Invoice purchase date"}: {dateText(record.occurrence.value)} · {$locale === "zh-TW" ? "消費日期" : "Consume date"}: {record.transaction.consumeDate ? dateText(record.transaction.consumeDate) : ($locale === "zh-TW" ? "未提供" : "Unavailable")} · {$locale === "zh-TW" ? "入帳日" : "Posting date"}: {record.transaction.postingDate ? dateText(record.transaction.postingDate) : dateText(record.transaction.effectiveOn)}</span>
+                <span>{$t.purchaseSpending.paymentAmount}: {amountText(record.transaction.amount)} · {record.transaction.amount.currency}</span>
+                <span>{$t.purchaseSpending.invoicePurchaseDate}: {dateText(record.occurrence.value)} · {$t.purchaseSpending.consumeDate}: {record.transaction.consumeDate ? dateText(record.transaction.consumeDate) : $t.purchaseSpending.notProvided} · {$t.purchaseSpending.postingDate}: {record.transaction.postingDate ? dateText(record.transaction.postingDate) : dateText(record.transaction.effectiveOn)}</span>
                 {#if transactionDateBasisLabel(record.transaction)}<span class="fallback-date" data-transaction-date-basis="posting-date-fallback">{transactionDateBasisLabel(record.transaction)}</span>{/if}
-                {#if record.difference}<span data-link-difference>{$locale === "zh-TW" ? "發票金額" : "Invoice amount"}: {amountText(record.difference.invoiceAmount)} · {$locale === "zh-TW" ? "銀行金額" : "Bank amount"}: {amountText(record.difference.bankAmount)} · {$locale === "zh-TW" ? "差額" : "Difference"}: {record.difference.exactAmountEqual ? "0" : $locale === "zh-TW" ? "來源金額不同，未推算費用" : "Source amounts differ; no fee inferred"}</span>{/if}
+                {#if record.difference}<span data-link-difference>{$t.purchaseSpending.invoiceAmount}: {amountText(record.difference.invoiceAmount)} · {$t.purchaseSpending.bankAmount}: {amountText(record.difference.bankAmount)} · {$t.purchaseSpending.difference}: {record.difference.exactAmountEqual ? "0" : $t.purchaseSpending.amountDifferenceNotInferred}</span>{/if}
               {/if}
               {#if record.items.length > 0}
                 <details class="item-list" data-item-details>
-                  <summary>{record.items.length} {$locale === "zh-TW" ? "個發票品項" : "invoice items"}</summary>
+                  <summary>{$t.purchaseSpending.invoiceItemsCount(record.items.length)}</summary>
                   {#each record.items as item (item.itemId)}
-                    <span>{item.name ?? ($locale === "zh-TW" ? "未提供品項名稱" : "Item name unavailable")} · {$locale === "zh-TW" ? "數量" : "Qty"}: {exactText(item.quantity)} · {$locale === "zh-TW" ? "分類" : "Category"}: {itemCategory(item)} · {$locale === "zh-TW" ? "品項金額" : "Item amount"}: {amountText(item.amount)}</span>
+                    <span>{item.name ?? $t.purchaseSpending.itemNameUnavailable} · {$t.purchaseSpending.quantity}: {exactText(item.quantity)} · {$t.purchaseSpending.category}: {itemCategory(item)} · {$t.purchaseSpending.itemAmount}: {amountText(item.amount)}</span>
                   {/each}
                 </details>
               {/if}
               {#if record.basis === "invoice" && record.invoice}
-                <button type="button" class="button secondary pair-button" disabled={busyAction !== null} data-open-pairing onclick={() => openPairing(record)}>{$locale === "zh-TW" ? "配對付款" : "Match payment"}</button>
+                <button type="button" class="button secondary pair-button" disabled={busyAction !== null} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
               {/if}
               {#if record.link}
-                <details class="source-details" data-source-details><summary>{$locale === "zh-TW" ? "來源與配對證據" : "Source and match evidence"}</summary><div>{$locale === "zh-TW" ? "配對事件" : "Match event"}: {record.link.eventId} · {$locale === "zh-TW" ? "知識點" : "Knowledge"}: {record.link.evidenceKnowledgeSequence} · {$locale === "zh-TW" ? "來源" : "Origin"}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
-                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$locale === "zh-TW" ? "撤銷配對" : "Revoke match"}</button>
+                <details class="source-details" data-source-details><summary>{$t.purchaseSpending.sourceAndMatchEvidence}</summary><div>{$t.purchaseSpending.matchEvent}: {record.link.eventId} · {$t.purchaseSpending.knowledge}: {record.link.evidenceKnowledgeSequence} · {$t.purchaseSpending.origin}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
+                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
               {/if}
-              {#if record.refund}<span class="refund-note">{$locale === "zh-TW" ? "退款依退款發生月份認列" : "Refund recognized in its occurrence month"} · {record.refund.provenanceReference}</span>{/if}
+              {#if record.refund}<span class="refund-note">{$t.purchaseSpending.refundPeriod} · {record.refund.provenanceReference}</span>{/if}
             </div>
             <div class="purchase-record-side"><strong class="money" data-sensitive>{amountText(record.amount, record.basis === "refund")}</strong></div>
           </article>
             {/each}
           </section>
-        {:else}<div class="purchase-empty"><strong>{$locale === "zh-TW" ? "這個期間沒有消費" : "No purchases in this period"}</strong><span>{$locale === "zh-TW" ? "選擇其他日期或月份查看明細。" : "Choose another day or month to view purchases."}</span></div>{/each}
+        {:else}<div class="purchase-empty"><strong>{$t.purchaseSpending.noPurchases}</strong><span>{$t.purchaseSpending.chooseOtherPeriod}</span></div>{/each}
       </div>
+      {#if recordPageNextCursor}
+        <button type="button" class="button secondary" disabled={recordPageLoading} data-load-more-records onclick={() => void loadMoreRecords()}>
+          {recordPageLoading ? $t.common.loading : $t.purchaseSpending.showMore}
+        </button>
+      {/if}
     </section>
+    </ProgressiveBlock>
 
     {#if pairingInvoice?.invoice}
-      <section class="pairing-dialog-backdrop" data-pairing-dialog>
-        <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      <section class="pairing-dialog-backdrop" data-pairing-dialog data-pairing-feedback="open-dialog">
+        <div class="card pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title" aria-busy={busyAction !== null}>
           <div class="panel-title">
-            <div><p class="eyebrow">{$locale === "zh-TW" ? "人工配對" : "Manual match"}</p><h2 id="pairing-title">{$locale === "zh-TW" ? "選擇付款交易" : "Choose a payment transaction"}</h2></div>
-            <button type="button" class="button secondary" onclick={closePairing}>{$locale === "zh-TW" ? "關閉" : "Close"}</button>
+            <div><p class="eyebrow">{$t.purchaseSpending.manualMatch}</p><h2 id="pairing-title">{$t.purchaseSpending.choosePayment}</h2></div>
+            <button type="button" class="button secondary" onclick={() => closePairing()}>{$t.common.close}</button>
           </div>
-          <p class="panel-meta">{$locale === "zh-TW" ? "你可以選擇不同月份、金額或幣別的付款。系統不會自動配對，也不會把相似度當成證據。" : "You may choose a payment with a different month, amount, or currency. The app never auto-matches or treats similarity as evidence."}</p>
+          <p class="panel-meta">{$t.purchaseSpending.pairingHelp}</p>
+          {#if pairingFeedback}<p class="panel-meta pairing-feedback" role="status">{pairingFeedback}</p>{/if}
           <div class="pairing-invoice-summary">
             <strong>{recordLabel(pairingInvoice)}</strong>
             <span>{dateText(pairingInvoice.occurrence.value)} · {amountText(pairingInvoice.amount)}</span>
           </div>
-          <fieldset class="payment-options">
-            <legend>{$locale === "zh-TW" ? "可配對的付款交易" : "Eligible payment transactions"}</legend>
-            {#each visibleEligiblePayments as payment (payment.purchaseId)}
-              <label class="payment-option">
-                <input type="radio" name="spending-payment" value={payment.transaction!.transactionId} bind:group={selectedPaymentId} />
-                <span><strong>{basisLabel(payment)}</strong><span>{recordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount?.currency}</small></span>
-              </label>
+          <fieldset class="payment-options" data-total-candidate-count={pairingCandidateTotal} data-loaded-candidate-count={pairingCandidates?.length ?? 0}>
+            <legend>{$t.purchaseSpending.eligiblePayments}</legend>
+            {#if pairingCandidatesLoading}
+              <span class="panel-meta pairing-loading" role="status"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.preparingCandidates}</span>
             {:else}
-              <span class="panel-meta">{$locale === "zh-TW" ? "沒有可配對的付款交易" : "No eligible payment transactions"}</span>
-            {/each}
-            {#if eligiblePayments.length > paymentVisibleCount}
-              <button type="button" class="button secondary show-more-payments" data-show-more-payments onclick={() => paymentVisibleCount += 10}>{$locale === "zh-TW" ? "顯示更多" : "Show more"}</button>
+              {#each visibleEligiblePayments as payment (payment.purchaseId)}
+                <label class="payment-option">
+                  <input type="radio" name="spending-payment" value={payment.transactionId} bind:group={selectedPaymentId} onchange={() => pairingFeedback = ""} />
+                  <span><strong>{pairingBasisLabel(payment)}</strong><span>{pairingRecordLabel(payment)}</span><small>{dateText(payment.occurrence.value)} · {amountText(payment.amount)} · {payment.amount.currency}</small></span>
+                </label>
+              {:else}
+                <span class="panel-meta">{$t.purchaseSpending.noEligiblePayments}</span>
+              {/each}
+            {/if}
+            {#if pairingCandidateTotal > paymentVisibleCount}
+              <button type="button" class="button secondary show-more-payments" disabled={pairingCandidatesLoading} data-show-more-payments onclick={() => void showMorePayments()}>{$t.purchaseSpending.showMore}</button>
             {/if}
           </fieldset>
-          {#if selectedPayment?.transaction}
+          {#if selectedPayment}
             <div class="pairing-effect" data-direct-pair-effect>
-              <strong>{$locale === "zh-TW" ? "配對後的認列方式" : "Recognition after matching"}</strong>
-              <span>{$locale === "zh-TW" ? "金額與幣別採銀行付款" : "Amount and currency use the bank payment"}: {amountText(selectedPayment.amount)}</span>
-              <span>{$locale === "zh-TW" ? "日期採發票購買日" : "Date uses the invoice purchase date"}: {dateText(pairingInvoice.occurrence.value)}</span>
+              <strong>{$t.purchaseSpending.recognitionAfterMatch}</strong>
+              <span>{$t.purchaseSpending.amountCurrencyFromBank}: {amountText(selectedPayment.amount)}</span>
+              <span>{$t.purchaseSpending.dateFromInvoice}: {dateText(pairingInvoice.occurrence.value)}</span>
               {#if pairingInvoice.amount?.currency !== selectedPayment.amount?.currency || exactText(pairingInvoice.amount) !== exactText(selectedPayment.amount)}
-                <span>{$locale === "zh-TW" ? "來源金額或幣別不同；不推算差額用途。" : "Source amount or currency differs; no use for the difference is inferred."}</span>
+                <span>{$t.purchaseSpending.sourceDifferenceNotInferred}</span>
               {/if}
             </div>
           {/if}
-          <button type="button" class="button primary" disabled={!selectedPaymentId || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$locale === "zh-TW" ? "確認配對" : "Confirm match"}</button>
+          {#if busyAction !== null}
+            <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.savingPair}</span>
+          {/if}
+          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
     {/if}
 
     {#if fallbackCanonical.availability === "unavailable"}
-      <p class="panel-meta purchase-canonical-note">{$locale === "zh-TW" ? "部分銀行交易仍缺少消費認列必要資料。" : "Some bank transactions still lack the facts required for spending recognition."}</p>
+      <p class="panel-meta purchase-canonical-note">{$t.purchaseSpending.missingCanonical}</p>
     {/if}
   </div>
 </DashboardShell>
@@ -630,6 +1440,7 @@
   .currency-switch button[aria-pressed="true"], .chart-mode-switch button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 2px 8px rgb(15 23 42 / 0.08); }
   .pending-total-note, .purchase-canonical-note { margin: var(--space-4) 0 0; color: var(--muted); font-size: 12px; }
   .chart-heading { margin-bottom: var(--space-3); }
+  .purchase-chart-pending { min-height: 280px; }
   .chart-period-picker { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); color: var(--muted); font-size: 11px; }
   .chart-period-picker select { min-height: 32px; max-width: 210px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; }
   .chart-hint { margin: var(--space-2) 0 0; color: var(--muted); font-size: 11px; text-align: center; }
@@ -689,6 +1500,9 @@
   .payment-option span { display: grid; gap: 3px; }
   .payment-option small { color: var(--muted); }
   .pairing-effect { margin-bottom: var(--space-4); }
+  .pairing-loading { display: inline-flex; align-items: center; gap: 7px; }
+  .pairing-spinner { width: 12px; height: 12px; border: 2px solid color-mix(in oklch, var(--accent) 25%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: pairing-spin 700ms linear infinite; }
+  @keyframes pairing-spin { to { transform: rotate(360deg); } }
 
   @media (max-width: 1050px) {
     .purchase-analysis-grid { grid-template-columns: 1fr; }

@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
+import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { chromium } from "playwright";
-import { DatabaseSync } from "node:sqlite";
 import { emitHumanAssistanceStage } from "./human-assistance.ts";
 import {
   buildPostDomesticDepositCapture,
@@ -14,17 +11,15 @@ import {
   postDetailLinkSelector,
   postLoginEntryUrl,
   postLoginFieldValues,
-  postManualAuthMessage,
   postProviderDate,
   postProviderDateShape,
   postRowsToStatementRows,
-  postStatementRowsToCsv,
   runPostLoginAttempt,
-  runPostStatements,
   submitPostLoginAndWait,
-  withPostAssistanceDeadline,
 } from "./post-statements.ts";
 import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
+
+const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 
 function fakeNoticePage(visible: boolean) {
   let clicks = 0;
@@ -108,11 +103,6 @@ function visibilityRacingNoticePage(page: import("playwright").Page) {
   assert.equal(absent.clicks(), 0);
 }
 
-assert.equal(
-  postManualAuthMessage("ses-1p4q"),
-  "manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-1p4q`.",
-);
-
 assert.deepEqual(
   postLoginFieldValues({
     post_user_id: "post-user-id",
@@ -191,6 +181,20 @@ assert.equal(fakeProbeStarted, true);
 assert.equal(fakeProbeSettled, true);
 assert.equal(fakeDialogDismissed, true);
 assert.equal(fakeDialogPage.listenerCount("dialog"), 0);
+
+for (const message of ["圖形驗證錯誤", " 帳號或密碼錯誤 ", "圖形驗證錯誤，帳號已鎖定"]) {
+  const page = new FakeDialogPage();
+  await assert.rejects(runPostLoginAttempt(page as never, {
+    submit: async () => {
+      page.emit("dialog", { type: () => "alert", message: () => message, dismiss: async () => undefined });
+    },
+    waitForSuccess: () => new Promise<void>(() => undefined),
+  }), (error: unknown) => {
+    assert.equal(error instanceof CaptchaProviderRejectedError, message === "圖形驗證錯誤");
+    return true;
+  });
+  assert.equal(page.listenerCount("dialog"), 0);
+}
 
 const fakeSuccessPage = new FakeDialogPage();
 let fakeSuccessSubmitted = false;
@@ -373,23 +377,6 @@ try {
   await browser.close();
 }
 
-assert.equal(
-  await withPostAssistanceDeadline(
-    "the signed-in state probe",
-    Promise.resolve("ready"),
-    10,
-  ),
-  "ready",
-);
-await assert.rejects(
-  withPostAssistanceDeadline(
-    "the signed-in state probe",
-    new Promise<never>(() => undefined),
-    5,
-  ),
-  /iPost browser stopped responding during the signed-in state probe; start a fresh CAPTCHA assistance session\./,
-);
-
 const rows = postRowsToStatementRows("123456", [
   {
     PRS_DATE: "1150704",
@@ -418,11 +405,6 @@ assert.deepEqual(
   ],
 );
 
-assert.equal(
-  postStatementRowsToCsv(rows),
-  "帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註\n2026/07/04,2026/07/04,09:15:02,薪資,,123.45,1000.00,備註\n",
-);
-
 const builtCapture = buildPostDomesticDepositCapture(
   {
     accountId: "PRIVATE-ACCOUNT",
@@ -437,7 +419,7 @@ const builtCapture = buildPostDomesticDepositCapture(
 assert.equal(builtCapture.response.rows[0]?.directionFlag, "inflow");
 const builtAccountNumberCapture = buildPostDomesticDepositCapture(
   {
-    accountId: "03115240529395",
+    accountId: syntheticPostAccountNumber,
     queryPeriods: ["2026/02/01~2026/08/24"],
     queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
     httpStatus: 200,
@@ -447,7 +429,7 @@ const builtAccountNumberCapture = buildPostDomesticDepositCapture(
   "2026-08-24T10:11:12+08:00",
 );
 assert.deepEqual(builtAccountNumberCapture.account.accountNumber, {
-  value: "03115240529395",
+  value: syntheticPostAccountNumber,
   kind: "depository-account",
   evidenceVersion: "post/domestic-deposit/account-number-v1",
   sourceField: "request.body._USER_ID",
@@ -461,7 +443,7 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
         itemList: [
           {
             ACT_TYPE: "PS",
-            ACT_NO: "03115240529395",
+            ACT_NO: syntheticPostAccountNumber,
             BAL: "12345",
             PBA_CUT_BAL: "99999",
             VISA_BAL: "77777",
@@ -491,169 +473,3 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
   observedAt: "2026-08-24T10:12:13+08:00",
 });
 assert.equal(postCurrentBalanceRow.length, 1);
-
-const runDir = await mkdtemp(join(tmpdir(), "post-workflow-check-"));
-try {
-  const output = await runPostStatements({} as never, true, {
-    canonicalSourceLedgerDir: runDir,
-    observedAt: "2026-08-24T10:11:12+08:00",
-    collectStatements: async () => [
-      {
-        accountId: "PRIVATE-ACCOUNT",
-        queryPeriods: ["2026/02/01~2026/08/24"],
-        queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-        httpStatus: 200,
-        itemShape: "array",
-        rows,
-        download: {
-          account: "PRIVATE-ACCOUNT 郵局",
-          accountId: "PRIVATE-ACCOUNT",
-          queryPeriods: ["2026/02/01~2026/08/24"],
-          baseName: "private",
-          csvFilename: "private.csv",
-          csvPath: "/private/private.csv",
-          csvBytes: 1,
-          jsonFilename: "private.json",
-          jsonPath: "/private/private.json",
-          jsonBytes: 1,
-          rowCount: 1,
-        },
-      },
-    ],
-  });
-  assert.deepEqual(
-    {
-      count: output.count,
-      rowCount: output.rowCount,
-      sourceCaptureCount: output.sourceCaptureCount,
-      status: output.status,
-    },
-    { count: 1, rowCount: 1, sourceCaptureCount: 1, status: "source-only" },
-  );
-  const db = new DatabaseSync(join(runDir, "canonical.sqlite"), {
-    readOnly: true,
-  });
-  assert.equal(
-    Number(
-      (
-        db.prepare("SELECT COUNT(*) AS count FROM source_records").get() as {
-          count: number;
-        }
-      ).count,
-    ),
-    1,
-  );
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-          .get() as { count: number }
-      ).count,
-    ),
-    0,
-  );
-  const payload = String(
-    (
-      db
-        .prepare("SELECT payload_json AS payload FROM source_records")
-        .get() as {
-        payload: string;
-      }
-    ).payload,
-  );
-  for (const privateToken of ["PRIVATE-ACCOUNT", "薪資", "123.45"])
-    assert.equal(payload.includes(privateToken), false, privateToken);
-  db.close();
-} finally {
-  await rm(runDir, { recursive: true, force: true });
-}
-
-const financialRunDir = await mkdtemp(
-  join(tmpdir(), "post-workflow-financial-check-"),
-);
-try {
-  const output = await runPostStatements({} as never, false, {
-    canonicalSourceLedgerDir: financialRunDir,
-    canonicalFinancialLedgerDir: financialRunDir,
-    observedAt: "2026-08-24T10:12:13+08:00",
-    readCurrentDepositBalances: async () => postCurrentBalanceRow,
-    collectStatements: async () => [
-      {
-        accountId: "03115240529395",
-        queryPeriods: ["2026/02/01~2026/08/24"],
-        queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
-        httpStatus: 200,
-        itemShape: "array",
-        rows,
-        download: {
-          account: "03115240529395 郵局",
-          accountId: "03115240529395",
-          queryPeriods: ["2026/02/01~2026/08/24"],
-          baseName: "private-financial",
-          csvFilename: "private-financial.csv",
-          csvPath: "/private/private-financial.csv",
-          csvBytes: 1,
-          jsonFilename: "private-financial.json",
-          jsonPath: "/private/private-financial.json",
-          jsonBytes: 1,
-          rowCount: 1,
-        },
-      },
-    ],
-  });
-  assert.equal(output.status, "financial-admitted");
-  const db = new DatabaseSync(join(financialRunDir, "canonical.sqlite"), {
-    readOnly: true,
-  });
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS count FROM financial_transactions")
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/current-balance-v1'",
-          )
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  const balanceRow = db
-    .prepare(
-      "SELECT balance_coefficient, balance_scale FROM balance_observation_revisions",
-    )
-    .get() as { balance_coefficient: string; balance_scale: number };
-  assert.deepEqual({ ...balanceRow }, { balance_coefficient: "12345", balance_scale: 0 });
-  assert.equal(
-    Number(
-      (
-        db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM source_captures WHERE authority_route = 'post/domestic-deposit/human-attested-v1'",
-          )
-          .get() as { count: number }
-      ).count,
-    ),
-    1,
-  );
-  const accountIdentity = db
-    .prepare(
-      "SELECT source_account_key, account_no FROM financial_accounts WHERE stream = 'domestic-deposit'",
-    )
-    .get() as { source_account_key: string; account_no: string };
-  assert.equal(accountIdentity.source_account_key, "03115240529395");
-  assert.equal(accountIdentity.account_no, "03115240529395");
-  db.close();
-} finally {
-  await rm(financialRunDir, { recursive: true, force: true });
-}

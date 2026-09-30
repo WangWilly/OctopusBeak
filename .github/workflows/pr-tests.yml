@@ -41,15 +41,24 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
+      - name: Install Electron Secret Service dependencies
+        run: sudo apt-get install --yes gnome-keyring dbus-x11 libsecret-1-0
+
       - name: Run tests
-        run: npm run test:ci
+        timeout-minutes: 10
+        run: dbus-run-session -- xvfb-run --auto-servernum bash scripts/run-linux-ci-tests.sh
 
       - name: Publish job summary
         if: always()
         run: |
           if [ ! -f reports/test-summary.txt ]; then
-            echo "Test report was not generated." >&2
-            exit 1
+            echo '## Partial test reports' >> "$GITHUB_STEP_SUMMARY"
+            for report in reports/test-summary-*.txt; do
+              if [ -f "$report" ]; then
+                cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+            exit 0
           fi
           echo '## Test and coverage report' >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
@@ -64,5 +73,7 @@ jobs:
           path: |
             reports/test-summary.txt
             reports/junit.xml
+            reports/test-summary-*.txt
+            reports/junit-*.xml
           if-no-files-found: error
           retention-days: 14

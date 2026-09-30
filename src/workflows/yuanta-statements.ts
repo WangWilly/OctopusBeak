@@ -1,67 +1,44 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { TextDecoder } from "node:util";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
-import type { Download, Frame, Locator, Page } from "playwright";
+import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
-  commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction,
-  commitYuantaDomesticDepositSourceEvidenceBatch,
   createYuantaDomesticDepositSourceEvidence,
-  createYuantaDomesticDepositTelemetryManifest,
-  getYuantaHumanAttestedV2Manifest,
-  isYuantaHumanAttestationV2DurablyActive,
-  isYuantaHumanAttestedV2Active,
   isYuantaSourceOnlyFinancialDiagnostic,
-  latestYuantaHumanAttestationEventV2,
   YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
   type YuantaDomesticDepositCaptureEvidence,
   type YuantaDomesticDepositValidatedEvidence,
-  type YuantaDomesticDepositFinancialAdmissionInput,
   type YuantaDomesticDepositDownloadEvidence,
-  type YuantaDomesticDepositTelemetryManifest,
   type YuantaDomesticDepositAccountNumberEvidence,
-} from "../ledger/canonical/yuanta-domestic-deposit.ts";
-import { withCanonicalSourceCaptureAdmissionTransaction } from "../ledger/canonical/canonical-source-capture-admission.ts";
+} from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-  type CanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import type { CanonicalFinancialDepositValidatedCapture } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+  getYuantaHumanAttestedV2Manifest,
+  isYuantaHumanAttestedV2Active,
+} from "../ledger/canonical/yuanta-human-attestation-contract.ts";
 import {
-  deriveSourceConnectionIdentityKey,
   requireSourceConnectionIdentity,
 } from "../ledger/canonical/source-connection-identity.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import {
-  authenticateYuantaBank as sharedAuthenticateYuantaBank,
-  dismissYuantaBankNotice,
-  yuantaSourceConnectionScope,
-  type YuantaCredentials,
-} from "./yuanta-auth.ts";
 import {
   admitCounterpartyAccountEvidence,
-  persistCounterpartyAccountEvidence,
-  resolveLoanRepaymentRelations,
   YUANTA_LOAN_ACCOUNT_NOTE_NORMALIZATION_CONTRACT_VERSION,
-  type LoanRepaymentRelationResolutionResult,
-  type TransactionCounterpartyAccountEvidenceInput,
-} from "../ledger/canonical/loan-repayment-relations.ts";
-import { resolveLoanRelationsAfterCapture } from "./safe-loan-relation-resolution.ts";
-import {
-  writeYuantaOccurrenceDiagnosticCandidate,
-  yuantaOccurrenceDiagnosticDirectoryFromEnvironment,
-} from "./yuanta-occurrence-diagnostic.ts";
+} from "../ledger/canonical/counterparty-account-evidence.ts";
+import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -69,142 +46,28 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-export {
-  dismissYuantaBankNotice,
-  type YuantaCredentials,
-} from "./yuanta-auth.ts";
-
+} from "../ledger/pglite/current-deposit-admission.ts";
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
-const big5Decoder = new TextDecoder("big5");
-
+const YUANTA_DOMESTIC_EXPORT_MAX_BYTES = 25 * 1024 * 1024;
 type BrowserScope = Page | Frame;
 const dateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
+const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
+  one_week: "一週",
+  one_month: "一個月",
+  three_months: "三個月",
+};
 
 export const yuantaStatementsInputSchema = z.object({
   dateRange: dateRangeSchema.default("three_months"),
   accountFilters: z.array(z.string()).default([]),
   replaceActiveSession: z.boolean().default(true),
-  /** Opt-in, sanitized CSV-boundary evidence; never a ledger write. */
-  telemetry: z.boolean().default(false),
 });
-
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.literal("bank-transactions"),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  accounts: z.array(z.string()),
-  dateRange: dateRangeSchema,
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: dateRangeSchema,
-  replacedActiveSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  admissions: z.array(
-    z.object({
-      accountId: z.string(),
-      accountValueDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-      status: z.enum(["financial-admitted", "source-only"]),
-      reason: z.string().nullable(),
-    }),
-  ),
-  files: z.array(tableFileSchema),
-  relationResolution: z
-    .object({
-      status: z.literal("canonical-live"),
-      outcome: z.enum(["changed", "unchanged", "no-admission"]),
-      resolutionId: z.string().nullable(),
-      exactRelationIds: z.array(z.string()),
-      settlementGroupIds: z.array(z.string()),
-      reason: z.string().optional(),
-    })
-    .optional(),
-  telemetry: z
-    .array(
-      z.object({
-        telemetryVersion: z.literal(YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION),
-        evidenceVersion: z.literal(YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION),
-        source: z.literal("yuanta"),
-        observedAt: z.string(),
-        account: z.object({
-          valueDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-          labelDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-        }),
-        queryRange: z.object({
-          dateRange: z.string().min(1),
-          startDate: z.string(),
-          endDate: z.string(),
-        }),
-        downloads: z.array(
-          z.object({
-            filenameDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-            byteLength: z.number().int().nonnegative(),
-            contentDigest: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-            columnNames: z.array(z.string()).length(11),
-            columnCount: z.literal(11),
-            rowCount: z.number().int().nonnegative(),
-            rows: z.array(
-              z.object({
-                rowOrdinal: z.number().int().nonnegative(),
-                rowFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]+$/),
-                cellDigests: z
-                  .array(z.string().regex(/^sha256:[A-Za-z0-9_-]+$/))
-                  .length(11),
-                cellCount: z.literal(11),
-                amountShape: z.enum([
-                  "inflow",
-                  "outflow",
-                  "empty",
-                  "invalid",
-                  "conflict",
-                ]),
-                amountClasses: z.object({
-                  outflow: z.enum([
-                    "empty",
-                    "valid-zero",
-                    "valid-nonzero",
-                    "invalid",
-                  ]),
-                  inflow: z.enum([
-                    "empty",
-                    "valid-zero",
-                    "valid-nonzero",
-                    "invalid",
-                  ]),
-                }),
-              }),
-            ),
-          }),
-        ),
-        canonicalAdmission: z.literal("blocked"),
-        sourceStage: z.literal("telemetry-only"),
-      }),
-    )
-    .optional(),
-});
-
-type TableFile = z.infer<typeof tableFileSchema>;
-
-type SourceDownloadMetadata = {
-  account: string;
-  filename: string;
-  rowCount: number;
-};
 
 /**
  * Evidence supplied by a Yuanta detail or repayment-setting page.  The
@@ -237,6 +100,10 @@ export type YuantaStatementDownload = {
 };
 
 export type YuantaStatementsRunDependencies = {
+  preparePage?: (
+    page: Page,
+    dateRange: z.infer<typeof dateRangeSchema>,
+  ) => Promise<void>;
   readDepositAccountOptions?: (
     page: Page,
   ) => Promise<Array<{ label: string; value: string }>>;
@@ -248,33 +115,34 @@ export type YuantaStatementsRunDependencies = {
     page: Page,
     account: { label: string; value: string },
   ) => Promise<YuantaStatementDownload>;
-  writeBankTransactionsFile?: typeof writeBankTransactionsFile;
-  canonicalLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
-  /** Explicit opt-in directory for raw, local-only occurrence diagnostics. */
-  occurrenceDiagnosticDirectory?: string | null;
   /** Stable provider-login scope; never contains a password or session. */
-  sourceConnectionScope?: string;
+  sourceConnectionScope: string;
   /** Stable source key derived from the provider-login scope. */
-  sourceConnectionKey?: string;
+  sourceConnectionKey: string;
   /** Deterministic capture clock for checks; production uses Taiwan local time. */
   observedAt?: () => string;
-  /** Injected in checks; production uses the canonical resolver. */
-  resolveRelations?: typeof resolveLoanRepaymentRelations;
   /** Injected in checks; production reads the authenticated current-balance page. */
   readCurrentDepositBalances?: typeof readYuantaCurrentDepositBalances;
+  /** Item sink owned by the App's existing Canonical Financial Commit port. */
+  deferredCommitItems: PGliteWorkflowRunItem[];
+  sourceText: SourceTextPort;
+  signal: AbortSignal;
 };
+
+export type YuantaDepositWorkflowCollection = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+  financialAdmissionCount: number;
+}>;
 
 type BankTransactionRow = {
   accountLabel: string;
   values: string[];
-  sortTime: number | null;
   sourceRowOrdinal: number;
 };
 
-type YuantaStatementsInput = z.infer<typeof yuantaStatementsInputSchema> & {
-  credentials?: YuantaCredentials;
-};
+type YuantaStatementsInput = z.infer<typeof yuantaStatementsInputSchema>;
 
 type ExistingYuantaFinancialCapture = Readonly<{
   identity: Readonly<{
@@ -446,12 +314,6 @@ export function indexYuantaCurrentDepositFinancialCaptures(
   return existingBySourceAccount;
 }
 
-const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
-  one_week: "一週",
-  one_month: "一個月",
-  three_months: "三個月",
-};
-
 function formatDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -516,8 +378,7 @@ export function deriveYuantaDomesticDepositQueryRange(
   };
 }
 
-const bankTransactionHeaders = [
-  "帳戶名稱",
+const downloadedBankHeaders = [
   "帳號",
   "帳務日期",
   "交易日期",
@@ -529,8 +390,6 @@ const bankTransactionHeaders = [
   "票據號碼",
   "備註",
 ];
-
-const downloadedBankHeaders = bankTransactionHeaders.slice(1);
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
@@ -608,14 +467,6 @@ function maskAccountLabel(value: string): string {
   });
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function createTimestampGenerator(): () => string {
   let lastTimestamp = 0;
 
@@ -636,23 +487,6 @@ function isRepeatedHeaderRow(values: string[]): boolean {
     values.length === downloadedBankHeaders.length &&
     values.every((value, index) => value === downloadedBankHeaders[index])
   );
-}
-
-function parseBankSortTime(values: string[]): number | null {
-  const dateText = toAsciiDigits(stripSpreadsheetTextPrefix(values[2] ?? ""));
-  const timeText = toAsciiDigits(stripSpreadsheetTextPrefix(values[3] ?? ""));
-  const dateMatch = dateText.match(/^(\d{4})(\d{2})(\d{2})$/);
-  const timeMatch = timeText.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (!dateMatch) return null;
-
-  const year = Number(dateMatch[1]);
-  const month = Number(dateMatch[2]);
-  const day = Number(dateMatch[3]);
-  const hour = timeMatch ? Number(timeMatch[1]) : 0;
-  const minute = timeMatch ? Number(timeMatch[2]) : 0;
-  const second = timeMatch ? Number(timeMatch[3] ?? "0") : 0;
-  const time = Date.UTC(year, month - 1, day, hour, minute, second);
-  return Number.isFinite(time) ? time : null;
 }
 
 export function statementRowsFromDownloadedCsv(
@@ -683,7 +517,6 @@ export function statementRowsFromDownloadedCsv(
     statements.push({
       accountLabel,
       values,
-      sortTime: parseBankSortTime(values),
       sourceRowOrdinal: statements.length,
     });
   }
@@ -691,103 +524,221 @@ export function statementRowsFromDownloadedCsv(
   return statements;
 }
 
-function sortedStatementRows(rows: BankTransactionRow[]): BankTransactionRow[] {
-  return [...rows].sort((left, right) => {
-    if (left.sortTime === null && right.sortTime === null) return 0;
-    if (left.sortTime === null) return 1;
-    if (right.sortTime === null) return -1;
-    return right.sortTime - left.sortTime;
-  });
-}
-
-function bankTransactionsToCsv(rows: BankTransactionRow[]): string {
-  return rowsToCsv([
-    bankTransactionHeaders,
-    ...sortedStatementRows(rows).map((row) => [
-      row.accountLabel,
-      ...row.values,
-    ]),
-  ]);
-}
-
 type DownloadText = {
   content: string;
   byteLength: number;
   contentDigest: `sha256:${string}`;
+  contentDisposition: string;
+  exportUrl: string;
 };
 
-async function readBig5DownloadAsUtf8(
-  download: Download,
-): Promise<DownloadText> {
-  const stream = await download.createReadStream();
-  const chunks: Buffer[] = [];
+type BrowserCsvResponse = Readonly<{
+  status: number;
+  byteLength: number;
+  base64: string;
+  contentDisposition: string;
+  exportUrl: string;
+}>;
 
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+function filenameFromCsvResponse(
+  contentDisposition: string,
+  exportUrl: string,
+): string {
+  const extendedFilename = contentDisposition.match(
+    /(?:^|;)\s*filename\*\s*=\s*([^;]+)/iu,
+  )?.[1]?.trim();
+  const plainFilename = contentDisposition.match(
+    /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/iu,
+  );
+  let filename: string | undefined;
+  if (extendedFilename) {
+    const encoded = extendedFilename.replace(/^"|"$/gu, "");
+    const parts = encoded.match(/^([^']*)'[^']*'(.*)$/u);
+    if (!parts || parts[1]?.toLowerCase() !== "utf-8") {
+      throw new Error("Yuanta domestic CSV filename encoding is unsupported.");
+    }
+    try {
+      filename = decodeURIComponent(parts[2] ?? "");
+    } catch {
+      throw new Error("Yuanta domestic CSV filename is malformed.");
+    }
+  } else {
+    filename = plainFilename?.[1] ?? plainFilename?.[2]?.trim();
   }
 
-  const bytes = Buffer.concat(chunks);
-  return {
-    content: big5Decoder.decode(bytes),
-    byteLength: bytes.byteLength,
-    contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-  };
+  if (!filename) {
+    const pathName = new URL(exportUrl).pathname;
+    const urlName = pathName.slice(pathName.lastIndexOf("/") + 1);
+    const decoded = urlName ? decodeURIComponent(urlName) : "";
+    filename = /\.csv$/iu.test(decoded)
+      ? decoded
+      : "yuanta-domestic-deposit.csv";
+  }
+  if (
+    filename.length > 255 ||
+    Buffer.byteLength(filename, "utf8") > 255 ||
+    filename === "." ||
+    filename === ".." ||
+    /[\\/\u0000-\u001f\u007f]/u.test(filename)
+  ) {
+    throw new Error("Yuanta domestic CSV filename is unsafe.");
+  }
+  return filename;
 }
 
-async function writeBankTransactionsFile(
-  nextTimestamp: () => string,
-  dateRange: z.infer<typeof dateRangeSchema>,
-  rows: BankTransactionRow[],
-  sourceDownloads: SourceDownloadMetadata[],
-): Promise<TableFile> {
-  const downloadsDir = join(process.cwd(), "downloads", "yuanta-statements");
-  await mkdir(downloadsDir, { recursive: true });
+export async function readYuantaBig5CsvFromAnchor(
+  exportLink: Locator,
+  text: SourceTextPort,
+  signal: AbortSignal,
+): Promise<DownloadText> {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Yuanta CSV retrieval was canceled."),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  let response: BrowserCsvResponse;
+  try {
+    const read = exportLink.evaluate(
+      async (element, maxBytes): Promise<BrowserCsvResponse> => {
+        const anchor = element as HTMLAnchorElement;
+        const href = anchor.getAttribute("href")?.trim();
+        const documentUrl = new URL(anchor.ownerDocument.baseURI);
+        const pageOrigin = anchor.ownerDocument.location.origin;
+        let url: URL;
+        let requestBody: URLSearchParams | undefined;
+        if (
+          /^javascript:void\(0\);?$/iu.test(href ?? "") &&
+          /^\s*getDownload\(\s*['"]csv['"]\s*\)\s*;?\s*$/iu.test(anchor.getAttribute("onclick") ?? "")
+        ) {
+          const foreignForm = anchor.ownerDocument.querySelector('form[name="mform"]') as HTMLFormElement | null;
+          const isForeignExport = foreignForm !== null &&
+            /\/fxtransactiondetails$/iu.test(new URL(foreignForm.action, documentUrl).pathname);
+          const form = isForeignExport
+            ? foreignForm
+            : anchor.ownerDocument.querySelector('form[name="jform"]') as HTMLFormElement | null;
+          if (!form || form.method.toLowerCase() !== "post") {
+            throw new Error("Yuanta CSV export form is unavailable.");
+          }
+          url = new URL(form.action, documentUrl);
+          if (!(isForeignExport
+            ? /\/fxtransactiondetails$/iu.test(url.pathname)
+            : /\/transactiondetails$/iu.test(url.pathname))) {
+            throw new Error("Yuanta CSV export form has an unexpected action.");
+          }
+          if (!isForeignExport) url.searchParams.set("method", "downloadcsv");
+          requestBody = new URLSearchParams();
+          for (const [name, value] of new FormData(form)) {
+            if (typeof value !== "string") {
+              throw new Error("Yuanta CSV export form contains a file input.");
+            }
+            requestBody.append(name, value);
+          }
+          if (isForeignExport) {
+            const transactionType = anchor.ownerDocument.getElementById("txntype") as HTMLInputElement | null;
+            if (!transactionType || transactionType.form !== form || !transactionType.name) {
+              throw new Error("Yuanta foreign CSV export type is unavailable.");
+            }
+            requestBody.set(transactionType.name, "downloadcsv");
+          }
+        } else {
+          if (!href || /^(?:javascript|data):/iu.test(href)) {
+            throw new Error("Yuanta CSV link has no fetchable URL.");
+          }
+          url = new URL(href, documentUrl);
+        }
+        if (
+          !["http:", "https:"].includes(url.protocol) ||
+          url.username.length > 0 ||
+          url.password.length > 0 ||
+          url.origin !== pageOrigin
+        ) {
+          throw new Error("Yuanta CSV link left the authenticated origin.");
+        }
 
-  const baseName = `bank-transactions-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-  const accounts = [...new Set(rows.map((row) => row.accountLabel))];
+        const fetched = await fetch(url.href, {
+          ...(requestBody ? { method: "POST", body: requestBody } : {}),
+          mode: "same-origin",
+          credentials: "same-origin",
+          cache: "no-store",
+          redirect: "follow",
+        });
+        if (new URL(fetched.url).origin !== pageOrigin) {
+          throw new Error("Yuanta CSV redirected outside the authenticated origin.");
+        }
+        if (fetched.status !== 200 || !fetched.ok) {
+          throw new Error("Yuanta CSV request did not return a complete response.");
+        }
+        const contentLength = fetched.headers.get("content-length");
+        if (contentLength !== null) {
+          if (!/^\d+$/u.test(contentLength)) {
+            throw new Error("Yuanta CSV response length is invalid.");
+          }
+          const declaredLength = Number(contentLength);
+          if (!Number.isSafeInteger(declaredLength) || declaredLength > maxBytes) {
+            throw new Error("Yuanta CSV exceeded the in-memory size limit.");
+          }
+        }
 
-  await writeFile(csvPath, bankTransactionsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "yuantaStatements",
-        kind: "bank-transactions",
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers: bankTransactionHeaders,
-        accounts,
-        dateRange,
-        sourceDownloads,
+        const reader = fetched.body?.getReader();
+        if (!reader) throw new Error("Yuanta CSV response body is missing.");
+        const chunks: Uint8Array[] = [];
+        let byteLength = 0;
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            byteLength += next.value.byteLength;
+            if (byteLength > maxBytes) {
+              await reader.cancel().catch(() => undefined);
+              throw new Error("Yuanta CSV exceeded the in-memory size limit.");
+            }
+            chunks.push(next.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        const bytes = new Uint8Array(byteLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        let binary = "";
+        for (let index = 0; index < bytes.length; index += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+        }
+        return {
+          status: fetched.status,
+          byteLength,
+          base64: btoa(binary),
+          contentDisposition: fetched.headers.get("content-disposition") ?? "",
+          exportUrl: fetched.url,
+        };
       },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
+      YUANTA_DOMESTIC_EXPORT_MAX_BYTES,
+    );
+    response = await Promise.race([read, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+  signal.throwIfAborted();
+  const bytes = Buffer.from(response.base64, "base64");
+  if (bytes.byteLength !== response.byteLength) {
+    throw new Error("Yuanta CSV response was incomplete in memory.");
+  }
   return {
-    baseName,
-    kind: "bank-transactions",
-    rowCount: rows.length,
-    headers: bankTransactionHeaders,
-    accounts,
-    dateRange,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
+    content: text.decode(bytes, "big5"),
+    byteLength: bytes.byteLength,
+    contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
+    contentDisposition: response.contentDisposition,
+    exportUrl: response.exportUrl,
   };
 }
 
@@ -923,11 +874,11 @@ async function openTransactionDetailsPage(page: Page): Promise<BrowserScope> {
   return await findScopeWithSelector(page, "#acctno");
 }
 
-async function chooseDateRange(
+async function prepareYuantaDepositPage(
   page: Page,
   dateRange: z.infer<typeof dateRangeSchema>,
 ): Promise<void> {
-  const scope = await findScopeWithSelector(page, "#acctno");
+  const scope = await openTransactionDetailsPage(page);
   const label = dateRangeLabels[dateRange];
   const link = await firstVisibleLocator(
     scope.locator("#duration a").filter({ hasText: label }),
@@ -993,6 +944,8 @@ async function queryAccount(
 async function downloadStatementRows(
   page: Page,
   account: { label: string; value: string },
+  sourceText: SourceTextPort,
+  signal: AbortSignal,
 ): Promise<YuantaStatementDownload> {
   const scope = await findScopeWithLocator(
     page,
@@ -1003,16 +956,16 @@ async function downloadStatementRows(
     "YuanTa CSV download link",
   );
 
-  const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
-  await scope
+  const exportLink = scope
     .locator("a.order_2.m_color_check")
     .filter({ hasText: "下載CSV檔" })
-    .first()
-    .click();
-  const download = await downloadPromise;
-
-  const filename = download.suggestedFilename();
-  const downloaded = await readBig5DownloadAsUtf8(download);
+    .first();
+  await exportLink.waitFor({ state: "attached", timeout: 60_000 });
+  const downloaded = await readYuantaBig5CsvFromAnchor(exportLink, sourceText, signal);
+  const filename = filenameFromCsvResponse(
+    downloaded.contentDisposition,
+    downloaded.exportUrl,
+  );
   const publicAccountLabel = maskAccountLabel(account.label);
   const rows = statementRowsFromDownloadedCsv(
     downloaded.content,
@@ -1143,18 +1096,15 @@ function materializeYuantaCounterpartyEvidence(
   };
 }
 
-/**
- * Run the domestic Yuanta capture after authentication/navigation. Source
- * evidence is always durable; financial projection is enabled only by an
- * explicit financial-ledger directory and a durable active attestation.
- */
+/** Collect domestic-deposit source items for the App-owned financial commit. */
 export async function runYuantaStatements(
   page: Page,
   input: YuantaStatementsInput,
-  overrides: YuantaStatementsRunDependencies = {},
-): Promise<z.infer<typeof outputSchema>> {
+  overrides: YuantaStatementsRunDependencies,
+): Promise<YuantaDepositWorkflowCollection> {
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta deposit", overrides);
+  const prepare = overrides.preparePage ?? prepareYuantaDepositPage;
   const stableSourceIdentity = {
     sourceConnectionScope,
     sourceConnectionKey,
@@ -1164,347 +1114,196 @@ export async function runYuantaStatements(
     ((candidatePage: Page) =>
       readYuantaDepositAccountOptions(candidatePage, []));
   const query = overrides.queryAccount ?? queryAccount;
-  const download = overrides.downloadStatementRows ?? downloadStatementRows;
-  const write =
-    overrides.writeBankTransactionsFile ?? writeBankTransactionsFile;
+  const download =
+    overrides.downloadStatementRows ??
+    ((candidatePage: Page, account: { label: string; value: string }) =>
+      downloadStatementRows(
+        candidatePage,
+        account,
+        overrides.sourceText,
+        overrides.signal,
+      ));
   const readCurrent =
     overrides.readCurrentDepositBalances ?? readYuantaCurrentDepositBalances;
-  const sourceLedgerDir = overrides.canonicalLedgerDir ?? DEFAULT_LEDGER_DIR;
-  const sourceDatabasePath = canonicalSqlitePath(sourceLedgerDir);
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
-    : null;
-  if (financialDatabasePath && financialDatabasePath !== sourceDatabasePath)
-    throw new Error(
-      "Yuanta source and financial captures must use the same canonical SQLite database.",
-    );
-  const sourceStore = createCanonicalSourceStore(sourceDatabasePath);
-  const financialStore = financialDatabasePath ? sourceStore : null;
-  const financialWriter = financialStore
-    ? {
-        db: financialStore.db,
-        databasePath: financialStore.databasePath,
-        commitClock: () => financialStore.commitClock(),
-      }
-    : null;
-  const resolveRelations =
-    overrides.resolveRelations ?? resolveLoanRepaymentRelations;
-  const occurrenceDiagnosticDirectory =
-    overrides.occurrenceDiagnosticDirectory === undefined
-      ? yuantaOccurrenceDiagnosticDirectoryFromEnvironment()
-      : overrides.occurrenceDiagnosticDirectory;
   const nextTimestamp = createTimestampGenerator();
   const observedAt = overrides.observedAt?.() ?? yuantaObservedAt();
   const queryRange = deriveYuantaDomesticDepositQueryRange(
     input.dateRange,
     observedAt,
   );
-  const rows: BankTransactionRow[] = [];
-  const sourceDownloads: SourceDownloadMetadata[] = [];
-  const telemetry: YuantaDomesticDepositTelemetryManifest[] = [];
-  const admissions: Array<{
-    accountId: string;
-    accountValueDigest: `sha256:${string}`;
-    status: "financial-admitted" | "source-only";
-    reason: string | null;
-  }> = [];
-  let relationResolution: LoanRepaymentRelationResolutionResult | null = null;
-  const financialCaptures: ExistingYuantaFinancialCapture[] = [];
-  const sourceEntries: Array<{
+  let rowCount = 0;
+  let sourceCount = 0;
+  const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitYuantaDomesticDepositFinancialCapture>["capture"]>> = [];
+  const sourceOnlyEntries: Array<{
     capture: YuantaDomesticDepositValidatedEvidence;
     captureId: string;
   }> = [];
-  const sourceOnlyEntries: typeof sourceEntries = [];
-  const financialInputs: YuantaDomesticDepositFinancialAdmissionInput[] = [];
   const relationInputs: Array<{
-    capture: CanonicalFinancialDepositValidatedCapture;
+    captureId: string;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
   }> = [];
   let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
-  try {
-    // The canonical domestic scope is all visible TWD selectors. Input
-    // accountFilters remains accepted for compatibility but never narrows
-    // the financial/source capture set.
-    const accounts = await readAccounts(page);
-    for (const account of accounts) {
-      await query(page, account);
-      const downloaded = await download(page, account);
-      if (downloaded.source.terminal !== true)
-        throw new Error(
-          "Yuanta domestic deposit download did not reach a terminal CSV state.",
-        );
-      rows.push(...downloaded.rows);
-      sourceDownloads.push({
-        account: maskAccountLabel(account.label),
-        filename: downloaded.filename,
-        rowCount: downloaded.rows.length,
-      });
-      const structural = admitYuantaDomesticDepositCaptureEvidence(
-        buildYuantaCapture(account, queryRange, observedAt, downloaded),
+  // The canonical domestic scope is all visible TWD selectors. Input
+  // accountFilters remains accepted for compatibility but never narrows it.
+  overrides.signal.throwIfAborted();
+  await prepare(page, input.dateRange);
+  overrides.signal.throwIfAborted();
+  const accounts = await readAccounts(page);
+  for (const account of accounts) {
+    overrides.signal.throwIfAborted();
+    await query(page, account);
+    overrides.signal.throwIfAborted();
+    const downloaded = await download(page, account);
+    overrides.sourceText.assertIntact(JSON.stringify(downloaded));
+    if (downloaded.source.terminal !== true)
+      throw new Error(
+        "Yuanta domestic deposit download did not reach a terminal CSV state.",
       );
-      if (structural.status !== "admissible" || !structural.capture)
-        throw new Error(
-          `Yuanta domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
-        );
-      const capture = structural.capture;
-      const telemetryManifest = input.telemetry
-        ? createYuantaDomesticDepositTelemetryManifest(capture)
-        : null;
-      if (telemetryManifest) {
-        const pairCounts = new Map<string, number>();
-        let rowCount = 0;
-        for (const download of telemetryManifest.downloads) {
-          for (const row of download.rows) {
-            const pair = `${row.amountClasses.outflow}|${row.amountClasses.inflow}`;
-            pairCounts.set(pair, (pairCounts.get(pair) ?? 0) + 1);
-            rowCount += 1;
-          }
-        }
-        console.log("yuanta-domestic-deposit-amount-classes", {
-          rowCount,
-          pairs: Object.fromEntries(
-            [...pairCounts.entries()].sort(([left], [right]) =>
-              left.localeCompare(right),
-            ),
-          ),
-        });
-        telemetry.push(telemetryManifest);
-      }
-      const captureIdSuffix = digestAccountValue(account.value).slice(7, 19);
-      const financialInput = {
-        capture,
-        captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
-        humanAttestation: getYuantaHumanAttestedV2Manifest(),
-        // Financial Source Connection identity comes only from the stable
-        // login pair. The attestation manifest remains provenance for the
-        // independently versioned account/identity epoch.
-        sourceConnectionScope,
-        sourceConnectionKey,
-      };
-      const financialAdmission =
-        admitYuantaDomesticDepositFinancialCapture(financialInput);
-      const diagnosticPath = await writeYuantaOccurrenceDiagnosticCandidate(
-        occurrenceDiagnosticDirectory,
-        financialInput,
-      );
-      if (diagnosticPath)
-        console.log("yuanta-occurrence-diagnostic-candidate-written", {
-          path: diagnosticPath,
-        });
-      const reasons = new Set<string>();
-      let attestationStateInvalid = false;
-      let status: "financial-admitted" | "source-only" = "source-only";
-      const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
-
-      sourceEntries.push({ capture, captureId: sourceCaptureId });
-      if (!financialWriter) {
-        reasons.add("financial-ledger-not-configured");
-        sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-      } else {
-        let durablyActive = false;
-        if (isYuantaHumanAttestedV2Active()) {
-          try {
-            const latest = latestYuantaHumanAttestationEventV2(financialWriter.db);
-            durablyActive = latest === null || latest.eventKind === "attested";
-          } catch {
-            attestationStateInvalid = true;
-          }
-        }
-        if (financialAdmission.status !== "admitted") {
-          const disallowed = financialAdmission.diagnostics.filter(
-            (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
-          );
-          if (disallowed.length > 0)
-            throw new Error(
-              `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
-            );
-          financialAdmission.diagnostics.forEach((diagnostic) =>
-            reasons.add(diagnostic),
-          );
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-        } else if (!durablyActive) {
-          reasons.add(
-            attestationStateInvalid
-              ? "human-attestation-mismatch"
-              : "human-attestation-revoked",
-          );
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-        } else {
-          status = "financial-admitted";
-          if (!financialAdmission.capture)
-            throw new Error(
-              "Yuanta domestic deposit admission lost its canonical capture.",
-            );
-          financialInputs.push(financialInput);
-          financialCaptures.push(financialAdmission.capture);
-          relationInputs.push({
-            capture: financialAdmission.capture,
-            evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
-              (evidence) => {
-                const materialized = materializeYuantaCounterpartyEvidence(
-                  financialAdmission.capture!,
-                  evidence,
-                );
-                admitCounterpartyAccountEvidence(materialized, "yuanta");
-                return materialized;
-              },
-            ),
-          });
-        }
-      }
-
-      admissions.push({
-        accountId: maskAccountLabel(account.label),
-        accountValueDigest: digestAccountValue(account.value),
-        status,
-        reason: reasons.size > 0 ? [...reasons].join(",") : null,
-      });
-    }
-
-    // Read and validate the point-in-time page before opening the financial
-    // commit boundary. A failure here must not leave statement captures from
-    // this run behind.
-    if (financialWriter && financialCaptures.length > 0) {
-      const authority = financialCaptures[0]!.identity;
-      const currentRows = await readCurrent(page, "domestic", {
-        observedAt: yuantaObservedAt(),
-        financialAuthority: {
-          sourceConnectionKey: authority.sourceConnectionKey,
-          identityEpochKey: authority.identityEpochKey,
-          authorityClass: "existing-financial-admission",
-        },
-      });
-      const currentObservedAt = overrides.observedAt?.() ?? yuantaObservedAt();
-      const existingBySourceAccount = indexYuantaCurrentDepositFinancialCaptures(
-        financialCaptures,
-      );
-      currentBalanceCaptures = currentRows.map((unadjustedRow) => {
-        const row = { ...unadjustedRow, observedAt: currentObservedAt };
-        const matching = existingBySourceAccount.get(row.sourceAccountKey);
-        if (!matching)
-          throw new Error(
-            "Yuanta current deposit snapshot contains an account without exactly one existing financial identity.",
-          );
-        return admitCurrentDepositBalanceCapture(
-          buildYuantaCurrentDepositBalanceCapture(row, matching),
-        );
-      });
-    }
-
-    if (financialWriter && financialInputs.length > 0) {
-      await withCanonicalSourceCaptureAdmissionTransaction(
-        sourceStore,
-        (capability) => {
-          for (const entry of sourceOnlyEntries)
-            capability.admit(
-              createYuantaDomesticDepositSourceEvidence(
-                entry.capture,
-                entry.captureId,
-                stableSourceIdentity,
-              ),
-            );
-          commitCanonicalYuantaDomesticDepositCaptureBatchInTransaction(
-            financialWriter,
-            financialInputs,
-            capability,
-          );
-        },
-      );
-    } else if (sourceEntries.length > 0) {
-      await commitYuantaDomesticDepositSourceEvidenceBatch(
-        sourceStore,
-        sourceEntries.map((entry) => ({
-          ...entry,
-          sourceIdentity: stableSourceIdentity,
-        })),
-      );
-    }
-
-    for (const { capture, evidence } of relationInputs) {
-      for (const item of evidence)
-        await persistCounterpartyAccountEvidence(financialStore!, item);
-      relationResolution = await resolveLoanRelationsAfterCapture(
-        financialStore!,
-        resolveRelations,
-        {
-          sourceConnectionKey,
-          integrationNamespace: "yuanta",
-          observedAt: capture.observedAt,
-          failureEvent: "yuanta-loan-relation-resolution-failed",
-        },
-      );
-    }
-
-    for (const capture of currentBalanceCaptures)
-      await commitCurrentDepositBalanceCapture(financialStore!, capture);
-
-    const file = await write(
-      nextTimestamp,
-      input.dateRange,
-      rows,
-      sourceDownloads,
+    rowCount += downloaded.rows.length;
+    sourceCount += 1;
+    const structural = admitYuantaDomesticDepositCaptureEvidence(
+      buildYuantaCapture(account, queryRange, observedAt, downloaded),
     );
-    return {
-      dateRange: input.dateRange,
-      replacedActiveSession: input.replaceActiveSession,
-      count: 1,
-      admissions,
-      files: [file],
-      ...(relationResolution
-        ? {
-            relationResolution: {
-              ...relationResolution,
-              exactRelationIds: [...relationResolution.exactRelationIds],
-              settlementGroupIds: [...relationResolution.settlementGroupIds],
-            },
-          }
-        : {}),
-      ...(telemetry.length > 0 ? { telemetry } : {}),
-    };
-  } finally {
-    sourceStore.close();
-    if (financialStore && financialStore !== sourceStore)
-      financialStore.close();
-  }
-}
-
-export default workflow("yuantaStatements", {
-  startUrl: "https://ebank.yuantabank.com.tw/nib/ibanc.jsp",
-  credentials: ["yuanta_user_id", "yuanta_account", "yuanta_password"],
-  input: yuantaStatementsInputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (input as YuantaStatementsInput).credentials;
-    if (!credentials) throw new Error("Yuanta credentials are required.");
-    const { replacedActiveSession } = await sharedAuthenticateYuantaBank(
-      ctx,
-      credentials,
-      input.replaceActiveSession,
-    );
-
-    await openTransactionDetailsPage(page);
-    await chooseDateRange(page, input.dateRange);
-    const configuredSourceLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-      process.env.LEDGER_DIR ??
-      DEFAULT_LEDGER_DIR;
-    const explicitFinancialLedgerDir =
-      process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-    const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
-    const output = await runYuantaStatements(page, input, {
-      canonicalLedgerDir: configuredSourceLedgerDir,
+    if (structural.status !== "admissible" || !structural.capture)
+      throw new Error(
+        `Yuanta domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+      );
+    const capture = structural.capture;
+    const captureIdSuffix = digestAccountValue(account.value).slice(7, 19);
+    const financialInput = {
+      capture,
+      captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
+      humanAttestation: getYuantaHumanAttestedV2Manifest(),
+      // Financial Source Connection identity comes only from the stable
+      // login pair. The attestation manifest remains provenance for the
+      // independently versioned account/identity epoch.
       sourceConnectionScope,
-      sourceConnectionKey: deriveSourceConnectionIdentityKey(
-        "yuanta",
-        sourceConnectionScope,
+      sourceConnectionKey,
+    };
+    const financialAdmission =
+      admitYuantaDomesticDepositFinancialCapture(financialInput);
+    const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
+
+    if (financialAdmission.status !== "admitted") {
+      const disallowed = financialAdmission.diagnostics.filter(
+        (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
+      );
+      if (disallowed.length > 0)
+        throw new Error(
+          `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
+        );
+      sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+      continue;
+    }
+    if (!isYuantaHumanAttestedV2Active()) {
+      sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+      continue;
+    }
+    if (!financialAdmission.capture)
+      throw new Error(
+        "Yuanta domestic deposit admission lost its canonical capture.",
+      );
+    financialDepositCaptures.push(financialAdmission.capture);
+    relationInputs.push({
+      captureId: financialInput.captureId,
+      evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
+        (evidence) => {
+          const materialized = materializeYuantaCounterpartyEvidence(
+            financialAdmission.capture!,
+            evidence,
+          );
+          admitCounterpartyAccountEvidence(materialized, "yuanta");
+          return materialized;
+        },
       ),
-      ...(explicitFinancialLedgerDir
-        ? { canonicalFinancialLedgerDir: explicitFinancialLedgerDir }
-        : {}),
     });
-    return { ...output, replacedActiveSession };
-  },
-});
+  }
+
+  // Read and validate the point-in-time page before returning any items. A
+  // failure here must not leave statement captures from this run behind.
+  if (financialDepositCaptures.length > 0) {
+    const authority = financialDepositCaptures[0]!.identity;
+    const currentRows = await readCurrent(page, "domestic", {
+      observedAt: yuantaObservedAt(),
+      financialAuthority: {
+        sourceConnectionKey: authority.sourceConnectionKey,
+        identityEpochKey: authority.identityEpochKey,
+        authorityClass: "existing-financial-admission",
+      },
+    });
+    overrides.sourceText.assertIntact(JSON.stringify(currentRows));
+    const currentObservedAt = overrides.observedAt?.() ?? yuantaObservedAt();
+    const existingBySourceAccount = indexYuantaCurrentDepositFinancialCaptures(
+      financialDepositCaptures,
+    );
+    currentBalanceCaptures = currentRows.map((unadjustedRow) => {
+      const row = { ...unadjustedRow, observedAt: currentObservedAt };
+      const matching = existingBySourceAccount.get(row.sourceAccountKey);
+      if (!matching)
+        throw new Error(
+          "Yuanta current deposit snapshot contains an account without exactly one existing financial identity.",
+        );
+      return admitCurrentDepositBalanceCapture(
+        buildYuantaCurrentDepositBalanceCapture(row, matching),
+      );
+    });
+  }
+
+  overrides.signal.throwIfAborted();
+  const items: PGliteWorkflowRunItem[] = [];
+  for (const entry of sourceOnlyEntries) items.push({
+    provider: "yuanta",
+    product: "domestic-deposit",
+    itemKey: entry.captureId,
+    command: {
+      kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+      request: createYuantaDomesticDepositSourceEvidence(
+        entry.capture,
+        entry.captureId,
+        stableSourceIdentity,
+      ),
+    },
+  });
+  for (const capture of financialDepositCaptures) {
+    const relation = relationInputs.find((item) => item.captureId === capture.captureId);
+    items.push({
+      provider: "yuanta",
+      product: "domestic-deposit",
+      itemKey: capture.captureId,
+      command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
+      ...(relation ? {
+        relationCommands: () => [{
+          kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+          request: {
+            sourceConnectionKey,
+            integrationNamespace: "yuanta",
+            observedAt: capture.observedAt,
+            counterpartyEvidence: relation.evidence,
+          },
+        }],
+      } : {}),
+    });
+  }
+  for (const capture of currentBalanceCaptures) items.push({
+    provider: "yuanta",
+    product: "current-balance",
+    itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
+    command: {
+      kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+      request: currentDepositBalanceCommandRequest(capture),
+    },
+  });
+  for (const item of items) {
+    overrides.signal.throwIfAborted();
+    overrides.sourceText.assertIntact(JSON.stringify(item.command));
+  }
+  overrides.deferredCommitItems.push(...items);
+
+  return {
+    sourceCount,
+    rowCount,
+    itemCount: items.length,
+    financialAdmissionCount: financialDepositCaptures.length + currentBalanceCaptures.length,
+  };
+}

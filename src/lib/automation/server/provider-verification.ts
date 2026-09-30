@@ -12,8 +12,10 @@ import {
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
   SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
+  isSinopacCaptchaRejectionDialog,
 } from "../sinopac-captcha.ts";
 import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
+import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../post-captcha.ts";
 import {
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
@@ -45,6 +47,9 @@ export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
 const FUBON_CAPTCHA_INPUT_SEMANTIC_ID = "fubon.login.captcha-input";
 const FUBON_CAPTCHA_IMAGE_SEMANTIC_ID = "fubon.login.captcha-image";
 const FUBON_CAPTCHA_FRAME_NAME = "txnFrame";
+const FUBON_CAPTCHA_REJECTION_TEXT = /^0290\s*驗證碼輸入錯誤$/u;
+const FUBON_POST_SUBMIT_OBSERVE_TIMEOUT_MS = 12_000;
+const FUBON_POST_SUBMIT_POLL_MS = 75;
 const FUBON_CAPTCHA_NATURAL_WIDTH = 158;
 const FUBON_CAPTCHA_NATURAL_HEIGHT = 30;
 
@@ -264,10 +269,13 @@ function classifyProviderPostSubmitDialog(
 function classifySinopacPostSubmitDialog(
   dialog: ViewerDialogAccess,
 ): ProviderVerificationPostSubmitOutcome {
-  return classifyProviderPostSubmitDialog(
-    dialog,
-    "驗證碼失效或輸入錯誤，請重新輸入。",
-  );
+  try {
+    return isSinopacCaptchaRejectionDialog(dialog.type(), dialog.message())
+      ? "provider-rejected"
+      : "unrecognized-dialog";
+  } catch {
+    return "unrecognized-dialog";
+  }
 }
 
 function classifyYuantaPostSubmitDialog(
@@ -399,6 +407,90 @@ function createProviderPostSubmitProbe(
       return "none";
     } finally {
       page.offDialog(dialogHandler);
+    }
+  });
+}
+
+function createFubonPostSubmitProbe(
+  withPage: ProviderVerificationPageRunner,
+): ProviderVerificationPostSubmitProbe {
+  return async (session, _contract, resume, cleanupSession) => withPage(session, async (page) => {
+    // A missing observer or exact-session cleanup cannot safely start a
+    // retryable post-submit execution.
+    if (!page.frame || !cleanupSession) return "unrecognized-dialog";
+    const frame = page.frame(FUBON_CAPTCHA_FRAME_NAME);
+    if (!frame) return "unrecognized-dialog";
+    const rejection = frame.getByText(FUBON_CAPTCHA_REJECTION_TEXT).first();
+    // Only a newly appearing response can prove this submission was rejected.
+    let alreadyVisible: boolean;
+    try {
+      alreadyVisible = await rejection.isVisible();
+    } catch {
+      return "unrecognized-dialog";
+    }
+    if (alreadyVisible) return "unrecognized-dialog";
+
+    let observing = true;
+    const observed = (async () => {
+      const deadline = Date.now() + FUBON_POST_SUBMIT_OBSERVE_TIMEOUT_MS;
+      while (observing && Date.now() < deadline) {
+        try {
+          // Resolve the frame again on every poll: the bank can replace the
+          // login iframe while rendering the response.
+          const currentFrame = page.frame?.(FUBON_CAPTCHA_FRAME_NAME);
+          if (
+            currentFrame &&
+            await currentFrame.getByText(FUBON_CAPTCHA_REJECTION_TEXT).first().isVisible()
+          ) return true;
+        } catch {
+          // A detached frame is transient; only a visible exact 0290 proves
+          // the rejection.
+        }
+        await new Promise((resolve) => setTimeout(resolve, FUBON_POST_SUBMIT_POLL_MS));
+      }
+      return false;
+    })();
+    const resumed = Promise.resolve().then(resume).then(
+      () => ({ kind: "completed" as const }),
+      (error) => ({ kind: "failed" as const, error }),
+    );
+    try {
+      const first = await Promise.race([
+        observed.then((seen) => ({ kind: "observed" as const, seen })),
+        resumed,
+      ]);
+      let providerRejected = first.kind === "observed" && first.seen;
+      if (first.kind === "failed" && !providerRejected) {
+        // The workflow can reject the login form immediately after the bank
+        // renders 0290. Give the already-armed observer a bounded chance to
+        // settle before the failure propagates.
+        const lateObservation = await settleProviderPromise(observed, 500);
+        providerRejected = !lateObservation.timedOut
+          && !("error" in lateObservation)
+          && lateObservation.value;
+      }
+      if (providerRejected) {
+        const cleanupResult = await settleProviderPromise(
+          Promise.resolve().then(cleanupSession),
+          PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS,
+        );
+        const resumeResult = await settleProviderPromise(
+          resumed,
+          PROVIDER_RESUME_JOIN_TIMEOUT_MS,
+        );
+        if (
+          cleanupResult.timedOut ||
+          ("error" in cleanupResult) ||
+          resumeResult.timedOut
+        ) return "unrecognized-dialog";
+        return "provider-rejected";
+      }
+      if (first.kind === "failed") throw first.error;
+      const finalResume = await resumed;
+      if (finalResume.kind === "failed") throw finalResume.error;
+      return "none";
+    } finally {
+      observing = false;
     }
   });
 }
@@ -604,6 +696,32 @@ async function inspectYuantaCompletion(
   });
 }
 
+async function inspectLineBankCompletion(
+  withPage: ProviderVerificationPageRunner,
+  session: string,
+  contract: HumanAssistanceContract,
+): Promise<boolean> {
+  if (contract.stageId !== "linebank-login-verification"
+    || contract.completion.mode !== "independent") return false;
+  return withPage(session, async (page) => {
+    const rawUrl = page.url?.();
+    if (!rawUrl) return false;
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return false;
+    }
+    if (url.origin !== "https://accessibility.linebank.com.tw" || url.pathname === "/login") {
+      return false;
+    }
+    const marker = url.pathname === "/transaction"
+      ? page.locator("#account-dropdown:visible")
+      : page.locator('a[href="/transaction"]:visible');
+    return (await marker.count().catch(() => 0)) > 0;
+  });
+}
+
 async function refreshYuantaChallengeSubmitTarget(
   withPage: ProviderVerificationPageRunner,
   session: string,
@@ -668,6 +786,43 @@ function createAdapters(
   });
   return [
     {
+      id: "post",
+      owns: contract => contract.stageId === "ipost-login-captcha"
+        && contract.targets.some(target => target.semanticId === POST_CAPTCHA_INPUT_SEMANTIC_ID),
+      refreshTarget: async () => null,
+      inspectCompletion: async () => false,
+      handleInput: async (page, operation, target) => {
+        if (target.semanticId !== POST_CAPTCHA_INPUT_SEMANTIC_ID) return false;
+        const input = page.locator(POST_CAPTCHA_INPUT_SELECTOR);
+        if (await input.count() !== 1 || !await input.isVisible()) {
+          throw new Error("Post CAPTCHA field is missing or ambiguous.");
+        }
+        if (operation.type === "click") {
+          await input.click();
+          return true;
+        }
+        if (operation.type === "type") {
+          await input.fill(operation.text);
+          if (await input.inputValue() !== operation.text) {
+            throw new Error("Post CAPTCHA field did not retain the solver answer.");
+          }
+          return true;
+        }
+        return false;
+      },
+      shouldCheckCompletion: () => false,
+      shouldAutoResume: () => false,
+    },
+    {
+      id: "linebank",
+      owns: (contract) => contract.stageId === "linebank-login-verification"
+        && contract.targets.some((target) => target.semanticId === "linebank.login.page"),
+      refreshTarget: async () => null,
+      inspectCompletion: (session, contract) => inspectLineBankCompletion(withPage, session, contract),
+      shouldCheckCompletion: () => false,
+      shouldAutoResume: () => false,
+    },
+    {
       id: "fubon",
       capabilityOwner: {
         id: fubonSourceOwner.id,
@@ -680,6 +835,7 @@ function createAdapters(
       ),
       refreshTarget: async () => null,
       inspectCompletion: async () => false,
+      probePostSubmit: createFubonPostSubmitProbe(withPage),
       shouldCheckCompletion: () => false,
       shouldAutoResume: () => false,
     },

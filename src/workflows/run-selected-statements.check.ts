@@ -80,6 +80,61 @@ assert.deepEqual(parseStatementRunSummary(summaryLines[0]), {
   results: run.results,
 });
 
+// The canonical execution seam has a more precise partial-run label than the
+// existing automation summary. A provider item failure must still aggregate to
+// the UI's partial state when another component succeeds, without leaking the
+// internal lifecycle label into the summary diagnostic.
+const executionPartialStatus = ["partially", "completed"].join("-");
+const partialExecutionSummaryLines: string[] = [];
+let partialExecutionRun;
+console.log = (...args: unknown[]) => {
+  if (
+    typeof args[0] === "string" &&
+    args[0].startsWith("automation-statement-summary: ")
+  ) {
+    partialExecutionSummaryLines.push(args[0]);
+  }
+};
+console.error = () => undefined;
+try {
+  partialExecutionRun = await runSelectedStatements(
+    ["deposit", "foreign_currency"],
+    [
+      {
+        typeId: "deposit",
+        run: async () => ({ count: 1 }),
+      },
+      {
+        typeId: "foreign_currency",
+        run: async () => {
+          throw new Error(
+            `canonical financial commit ${executionPartialStatus}: one item failed`,
+          );
+        },
+      },
+    ],
+  );
+} finally {
+  console.log = originalLog;
+  console.error = originalError;
+}
+assert.deepEqual(partialExecutionRun?.results, [
+  { typeId: "deposit", status: "success" },
+  {
+    typeId: "foreign_currency",
+    status: "failed",
+    error: "canonical financial commit partial: one item failed",
+  },
+]);
+assert.equal(
+  parseStatementRunSummary(partialExecutionSummaryLines[0] ?? "")?.status,
+  "partial",
+);
+assert.doesNotMatch(
+  partialExecutionSummaryLines[0] ?? "",
+  new RegExp(executionPartialStatus, "u"),
+);
+
 const oversizedError = "full component diagnostic ".repeat(500);
 const oversizedSummaryLines: string[] = [];
 const componentErrors: Array<Record<string, unknown>> = [];

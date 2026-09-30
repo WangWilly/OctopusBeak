@@ -4,7 +4,7 @@ export const VERIFICATION_ACTORS = ["human", "solver"] as const;
 
 export type VerificationActor = typeof VERIFICATION_ACTORS[number];
 
-export const DEFAULT_VERIFICATION_ACTOR: VerificationActor = "human";
+export const DEFAULT_VERIFICATION_ACTOR: VerificationActor = "solver";
 
 export const DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD = 0.9;
 

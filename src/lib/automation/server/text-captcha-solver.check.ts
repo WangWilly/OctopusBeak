@@ -270,6 +270,27 @@ test("the OCR solver reads the image in memory without persisting or logging it"
   );
   assert.doesNotMatch(source, /writeFile|appendFile|createWriteStream|from\("node:fs"\)/);
   assert.doesNotMatch(source, /console\.(log|info|debug|warn)/);
+  assert.doesNotMatch(source, /captcha-debug|openCaptchaDebugSession/u);
+});
+
+test("the debug environment flag cannot persist or log raw CAPTCHA results", async () => {
+  const previousFlag = process.env.OCTOPUSBEAK_CAPTCHA_DEBUG;
+  const originalError = console.error;
+  const output: unknown[][] = [];
+  process.env.OCTOPUSBEAK_CAPTCHA_DEBUG = "true";
+  console.error = (...args: unknown[]) => output.push(args);
+  try {
+    const result = await textCaptchaSolver(engineReturning("A1B2", 0.93)).solve({
+      image: fixtureImage,
+      challengeKind: "text-captcha",
+    });
+    assert.deepEqual(result, { answer: "A1B2", confidence: 0.93 });
+    assert.deepEqual(output, []);
+  } finally {
+    console.error = originalError;
+    if (previousFlag === undefined) delete process.env.OCTOPUSBEAK_CAPTCHA_DEBUG;
+    else process.env.OCTOPUSBEAK_CAPTCHA_DEBUG = previousFlag;
+  }
 });
 
 test("Tesseract language models are cached outside the repository", () => {
