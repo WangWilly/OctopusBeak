@@ -8,6 +8,9 @@ import {
   type PGliteCanonicalInvestmentCommitRequest,
 } from "./investment.ts";
 import { PGliteStore } from "./transaction.ts";
+import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
+import { createPGliteSpendingQuery } from "./spending-query.ts";
+import { mapCanonicalProduct } from "../../lib/shared-ledger/server/canonical-product.ts";
 import {
   commitPGliteCanonicalFinancialCapture,
   type PGliteCanonicalFinancialCommitRequest,
@@ -96,6 +99,99 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
     },
   };
 }
+
+test("zero-cash brokerage events retain security, action, and quantity for the transaction modal", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const request = investmentRequest("investment-zero-cash-detail");
+    const source = request.capture.transactions[0]!;
+    await commitPGliteCanonicalInvestmentCapture(store, {
+      ...request,
+      capture: {
+        ...request.capture,
+        transactions: [{
+          ...source,
+          action: "corporate_action_in",
+          cashEffect: { coefficient: "0", scale: 0, currency: "TWD" },
+          description: null,
+        }],
+      },
+    });
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    const row = Object.values(mapCanonicalProduct(projection, "assets").transactionsByAccount)
+      .flat().find((transaction) => transaction.investment);
+    assert.equal(row?.label, "Acme Equity");
+    assert.equal(row?.type, "corporate_action_in");
+    assert.deepEqual(row?.investment, {
+      securityName: "Acme Equity",
+      quantity: { coefficient: "5", scale: 0 },
+    });
+    assert.equal(row?.amount, 0);
+  } finally {
+    await store.close();
+  }
+});
+
+test("brokerage transactions retain source cash across financial and product queries", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const request = investmentRequest("investment-usd-cash-detail");
+    const source = request.capture.transactions[0]!;
+    await commitPGliteCanonicalInvestmentCapture(store, {
+      ...request,
+      capture: {
+        ...request.capture,
+        transactions: [{
+          ...source,
+          cashEffect: { coefficient: "12345", scale: 2, currency: "USD" },
+          description: null,
+        }],
+      },
+    });
+    const financial = (await store.query<{
+      amount_coefficient: string;
+      amount_scale: number;
+      currency: string;
+    }>(`SELECT revision.amount_coefficient, revision.amount_scale, revision.currency
+         FROM transaction_revisions revision
+         JOIN investment_transactions investment ON investment.transaction_id = revision.transaction_id
+        WHERE investment.cash_currency = 'USD'`)).rows[0];
+    assert.deepEqual(financial, {
+      amount_coefficient: "12345",
+      amount_scale: 2,
+      currency: "USD",
+    });
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    const row = Object.values(mapCanonicalProduct(projection, "assets").transactionsByAccount)
+      .flat().find((transaction) => transaction.investment);
+    assert.equal(row?.label, "Acme Equity");
+    assert.equal(row?.type, "buy");
+    assert.equal(row?.currency, "USD");
+    assert.equal(row?.amount, -123.45);
+    assert.deepEqual(row?.amountExact, { coefficient: "-12345", scale: 2 });
+
+    const spendingQuery = createPGliteSpendingQuery(store);
+    const current = await spendingQuery.current();
+    const investment = current.spending.transactions.find((transaction) => transaction.amount.currency === "USD");
+    assert.deepEqual(investment?.amount, { coefficient: "12345", scale: 2, currency: "USD" });
+
+    await store.query(`UPDATE transaction_revisions
+                          SET amount_coefficient = '0', amount_scale = 0, currency = 'TWD'
+                        WHERE transaction_id IN (SELECT transaction_id FROM investment_transactions)`);
+    const overviewQuery = createPGliteCanonicalOverviewQuery(store);
+    assert.equal((await overviewQuery.current()).projection.availability, "unavailable");
+    await assert.rejects(
+      overviewQuery.historical({ knowledgeAt: current.spending.knowledgePoint, financialAt: "2026-09-22" }),
+      /Investment cash effect conflicts with its canonical financial transaction/,
+    );
+  } finally {
+    await store.close();
+  }
+});
 
 function fundingDepositRequest(
   captureId: string,

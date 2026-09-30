@@ -44,6 +44,19 @@ export type InvestmentSecurityType =
 /** A provider-reported investment event, never an inference from amounts. */
 export type InvestmentTransactionAction =
   "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend";
+export function investmentTransactionDirection(action: string): "inflow" | "outflow" {
+  switch (action) {
+    case "buy":
+    case "corporate_action_out":
+      return "outflow";
+    case "sell":
+    case "corporate_action_in":
+    case "dividend":
+      return "inflow";
+    default:
+      throw new Error(`Unsupported investment transaction action: ${action}`);
+  }
+}
 export type InvestmentFundingEvidence =
   | { kind: "unresolved"; sourceRecordKey: string }
   | {
