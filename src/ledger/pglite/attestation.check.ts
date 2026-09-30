@@ -36,6 +36,7 @@ import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   esunCreditCardHumanAttestedManifestFingerprint,
 } from "../canonical/esun-credit-card-human-attestation-contract.ts";
 import {
@@ -91,8 +92,8 @@ async function fixture(directory?: string): Promise<{
 }
 
 test("PGlite human-attestation registry covers every provider contract and table", () => {
-  assert.equal(PGLITE_HUMAN_ATTESTATION_MANIFESTS.length, 15);
-  assert.equal(Object.keys(PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY).length, 15);
+  assert.equal(PGLITE_HUMAN_ATTESTATION_MANIFESTS.length, 16);
+  assert.equal(Object.keys(PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY).length, 16);
   assert.equal(PGLITE_ATTESTATION_TABLES.length, 10);
   assert.equal(
     new Set(PGLITE_HUMAN_ATTESTATION_MANIFESTS.map((entry) => entry.tableName)).size,
@@ -101,7 +102,7 @@ test("PGlite human-attestation registry covers every provider contract and table
   const currentRoutes = new Set([
     "cathay/domestic-deposit/human-attested-v1",
     "ctbc/domestic-deposit/human-attested-v1",
-    "esun/credit-card/human-attested-v3",
+    "esun/credit-card/human-attested-v4",
     "fubon/credit-card/human-attested-v2",
     "fubon/domestic-deposit/human-attested-v1",
     "hncb/domestic-deposit/human-attested-v1",
@@ -203,7 +204,8 @@ test("PGlite worker registry stays aligned with canonical pure contract metadata
     [FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST, "fubon/credit-card/human-attested-v1", fubonCreditCardHumanAttestedLegacyV1ManifestFingerprint()],
     [FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "fubon/credit-card/human-attested-v2", fubonCreditCardHumanAttestedManifestFingerprint(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST)],
     [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "esun/credit-card/human-attested-v2", "sha256:gY7YH5F676w3tHxCKKor5THe5kZIOGpkUcKGFYLx1Z4"],
-    [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST, "esun/credit-card/human-attested-v3", esunCreditCardHumanAttestedManifestFingerprint()],
+    [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST, "esun/credit-card/human-attested-v3", "sha256:o3LEXGFIyb3TZ3KnkbhIpnZwfHB6DRV-X01GY82EE5c"],
+    [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, "esun/credit-card/human-attested-v4", esunCreditCardHumanAttestedManifestFingerprint()],
     [YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST, "yuanta/credit-card/human-attested-v1", YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.provenance.sourceCaptureFingerprint],
     [YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "yuanta/credit-card/human-attested-v2", yuantaCreditCardHumanAttestedV2ManifestFingerprint()],
   ] as const;

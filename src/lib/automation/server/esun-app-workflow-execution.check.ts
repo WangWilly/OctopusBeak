@@ -52,7 +52,7 @@ function timelineResponse(now: Date) {
   return {
     body: {
       rtnCode: "S",
-      cursor: 1,
+      cursor: 4,
       transList: Array.from({ length: 13 }, (_, offset) => {
         const month = monthAtOffset(now, offset);
         return {

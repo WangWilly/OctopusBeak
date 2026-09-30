@@ -237,6 +237,7 @@ export function isEsunCompleteGrid({
 }
 
 export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
+  // The portfolio identity did not change when timeline coverage became variable.
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE;
 
 function normalizedEsunLoginPart(value: string | undefined): string {
@@ -488,7 +489,8 @@ export function buildEsunCanonicalCreditCardCapture(
     input.capture.captureKinds[1] !== "unbilled" ||
     input.capture.completenessEvidence.range !== "default_one_year" ||
     !("kind" in input.grid
-      ? input.grid.terminal && input.grid.monthCount === 13
+      ? input.grid.terminal && input.grid.terminalCursor === 4 &&
+        (input.grid.monthCount === 12 || input.grid.monthCount === 13)
       : isEsunCompleteGrid(input.grid)) ||
     input.identity.identityEpochKey !== ESUN_CREDIT_CARD_IDENTITY_EPOCH
   ) {
@@ -690,9 +692,17 @@ function priorMonth(month: string): string {
     : `${year}/${String(value - 1).padStart(2, "0")}`;
 }
 
+function nextMonth(month: string): string {
+  const [year, value] = month.split("/").map(Number);
+  return value === 12
+    ? `${year + 1}/01`
+    : `${year}/${String(value + 1).padStart(2, "0")}`;
+}
+
 export function rowsFromTimelineResponse(raw: unknown): {
   rows: StatementRow[];
   months: string[];
+  cursor: number;
 } {
   const response = timelineResponseSchema.parse(raw);
   const rows: StatementRow[] = [];
@@ -720,7 +730,7 @@ export function rowsFromTimelineResponse(raw: unknown): {
       });
     }
   }
-  return { rows, months };
+  return { rows, months, cursor: response.body.cursor };
 }
 
 export async function loadNextEsunTimelineResponse(
@@ -775,8 +785,8 @@ async function queryStatements(
     const rows: StatementRow[] = [];
     const months: string[] = [];
     let pageCount = 0;
-    const targetMonth = startDate.slice(0, 7);
-    while (pageCount < 20) {
+    let lastCursor = 0;
+    while (pageCount < 4) {
       options.signal?.throwIfAborted();
       if (response.status() !== 200) throw new Error("E.SUN timeline request failed.");
       const raw = options.readJson
@@ -788,6 +798,9 @@ async function queryStatements(
       } catch {
         throw new Error("E.SUN timeline source is malformed or incomplete.");
       }
+      if (parsed.cursor <= lastCursor || parsed.cursor > 4)
+        throw new Error("E.SUN timeline cursor is invalid or out of order.");
+      lastCursor = parsed.cursor;
       for (const month of parsed.months) {
         if (months.length && priorMonth(months[months.length - 1]!) !== month)
           throw new Error("E.SUN timeline month coverage is discontinuous.");
@@ -795,24 +808,32 @@ async function queryStatements(
       }
       rows.push(...parsed.rows);
       pageCount += 1;
-      if (months.at(-1)! <= targetMonth) break;
+      if (lastCursor === 4) break;
       response = await loadNextEsunTimelineResponse(popup, options.signal);
     }
-    if (!months.length || months.at(-1)! > targetMonth)
-      throw new Error("E.SUN timeline did not cover the requested start month.");
-    const filtered = rows.filter((row) => row.consumeDate >= startDate && row.consumeDate <= endDate);
+    const oldestMonth = months.at(-1);
+    const anniversaryMonth = startDate.slice(0, 7);
+    if (lastCursor !== 4 || months[0] !== endDate.slice(0, 7) ||
+      (months.length !== 12 && months.length !== 13) ||
+      (oldestMonth !== anniversaryMonth && oldestMonth !== nextMonth(anniversaryMonth)))
+      throw new Error("E.SUN timeline did not reach a complete 12- or 13-month terminal page.");
+    const coveredStartDate = `${oldestMonth}/01`;
+    if (rows.some((row) => row.consumeDate < coveredStartDate || row.consumeDate > endDate))
+      throw new Error("E.SUN timeline contains a transaction outside its captured range.");
     return {
-      rows: filtered,
+      rows,
       timeline: {
         kind: "past-year-timeline",
         firstMonth: months[0]!,
-        lastMonth: months.at(-1)!,
+        lastMonth: oldestMonth,
+        months,
         pageCount,
         monthCount: months.length,
-        capturedRowCount: filtered.length,
+        capturedRowCount: rows.length,
         terminal: true,
+        terminalCursor: 4,
       },
-      startDate,
+      startDate: coveredStartDate,
       endDate,
     };
   } finally {
@@ -1259,11 +1280,11 @@ export async function runEsunCreditCardProviderWorkflow(
     await context.event("collection", "collection-started");
     await context.event("decoding", "source-decoding-started");
     const endDate = formatDate(new Date(context.now()));
-    const startDate = defaultStartDate(endDate);
+    let startDate = defaultStartDate(endDate);
     let rows: StatementRow[];
     let timeline: EsunCreditCardTimeline;
     try {
-      ({ rows, timeline } = await queryStatements(page, { startDate, endDate }, {
+      ({ rows, timeline, startDate } = await queryStatements(page, { startDate, endDate }, {
         readJson: (response) => readEsunResponseJson(response, context),
         signal: context.signal,
       }));
@@ -1317,13 +1338,14 @@ export async function runEsunCreditCardProviderWorkflow(
     const isComplete =
       timeline.firstMonth === endDate.slice(0, 7) &&
       timeline.lastMonth === startDate.slice(0, 7) &&
-      timeline.monthCount === 13 &&
+      (timeline.monthCount === 12 || timeline.monthCount === 13) &&
       timeline.terminal &&
+      timeline.terminalCursor === 4 &&
       [...billedRows, ...unbilledRows].every((row) => cardKeyForRow(row).length === 4);
     if (!isComplete || issuerSummaries.length < 2) {
       await context.event("validation", "source-validation-rejected", {
         completed: timeline.monthCount,
-        total: 13,
+        total: 12,
       });
       throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
     }

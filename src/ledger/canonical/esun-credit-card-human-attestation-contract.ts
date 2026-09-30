@@ -29,6 +29,10 @@ export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE =
   "esun/credit-card/human-attested-v3" as const;
 export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_VERSION =
   "esun/credit-card/human-attested-v3" as const;
+export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE =
+  "esun/credit-card/human-attested-v4" as const;
+export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_VERSION =
+  "esun/credit-card/human-attested-v4" as const;
 
 export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
   attestationId: "esun-credit-card-human-attested-v1",
@@ -112,6 +116,27 @@ export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST = deepFreeze({
   },
 } as const);
 
+/** Live review found the bank's bounded timeline can contain 12 or 13 months. */
+export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST = deepFreeze({
+  ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
+  attestationId: "esun-credit-card-human-attested-v4",
+  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_VERSION,
+  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
+  attestedAt: "2026-09-30T00:00:00.000Z",
+  attestedBy: "user-confirmed-esun-terminal-twelve-or-thirteen-month-timeline",
+  provenance: {
+    kind: "human-attestation",
+    sourceCaptureFingerprint:
+      "sha256:esun-credit-card-terminal-cursor-four-twelve-or-thirteen-month-timeline-v4",
+    source: "E.SUN paginated timeline and issuer bill summaries observed on September 24 and 30",
+  },
+  semantics: {
+    ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.semantics,
+    completeness:
+      "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
+  },
+} as const);
+
 export type EsunCreditCardHumanAttestedV1Manifest = Omit<
   typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   "status" | "revokedAt" | "revocationReason"
@@ -139,6 +164,15 @@ export type EsunCreditCardHumanAttestedV3Manifest = Omit<
   revocationReason: string | null;
 };
 
+export type EsunCreditCardHumanAttestedV4Manifest = Omit<
+  typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
+  "status" | "revokedAt" | "revocationReason"
+> & {
+  status: "active" | "revoked";
+  revokedAt: string | null;
+  revocationReason: string | null;
+};
+
 export type EsunCreditCardHumanAttestationEvent = {
   attestationId: string;
   evidenceVersion: string;
@@ -151,12 +185,12 @@ export type EsunCreditCardHumanAttestationEvent = {
 };
 
 const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: EsunCreditCardHumanAttestedV3Manifest =
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST;
+let currentManifest: EsunCreditCardHumanAttestedV4Manifest =
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST;
 VALIDATED_MANIFESTS.add(currentManifest);
 
 function manifestFingerprint(
-  manifest: EsunCreditCardHumanAttestedV3Manifest = currentManifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
 ): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(
@@ -178,17 +212,17 @@ export function esunCreditCardHumanAttestedManifestFingerprint(): `sha256:${stri
 }
 
 function assertCurrentManifest(
-  manifest: EsunCreditCardHumanAttestedV3Manifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest,
 ): void {
   if (
     manifest !== currentManifest ||
     !VALIDATED_MANIFESTS.has(manifest) ||
     manifest.attestationId !==
-      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.attestationId ||
+      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST.attestationId ||
     manifest.evidenceVersion !==
-      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.evidenceVersion ||
+      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST.evidenceVersion ||
     manifest.authorityRoute !==
-      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.authorityRoute ||
+      ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST.authorityRoute ||
     manifest.providerGuaranteed !== false ||
     manifest.occurrenceProviderGuaranteed !== false
   )
@@ -197,13 +231,13 @@ function assertCurrentManifest(
     );
 }
 
-export function getEsunCreditCardHumanAttestedV3Manifest(): EsunCreditCardHumanAttestedV3Manifest {
+export function getEsunCreditCardHumanAttestedV4Manifest(): EsunCreditCardHumanAttestedV4Manifest {
   return currentManifest;
 }
 
-export function isEsunCreditCardHumanAttestedV3Manifest(
+export function isEsunCreditCardHumanAttestedV4Manifest(
   value: unknown,
-): value is EsunCreditCardHumanAttestedV3Manifest {
+): value is EsunCreditCardHumanAttestedV4Manifest {
   return (
     value !== null &&
     typeof value === "object" &&
@@ -212,7 +246,7 @@ export function isEsunCreditCardHumanAttestedV3Manifest(
   );
 }
 
-export function isEsunCreditCardHumanAttestedV3Active(): boolean {
+export function isEsunCreditCardHumanAttestedV4Active(): boolean {
   return currentManifest.status === "active";
 }
 
@@ -236,7 +270,7 @@ export function isEsunCreditCardHumanAttestedAccountKey(
 }
 
 export function esunCreditCardHumanAttestedIdentityEpochKey(
-  manifest: EsunCreditCardHumanAttestedV3Manifest = currentManifest,
+  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
 ): `sha256:${string}` {
   assertCurrentManifest(manifest);
   return `sha256:${createHash("sha256")
@@ -256,10 +290,10 @@ function validEventAt(value: string): boolean {
 }
 
 /** Mutate the shared in-memory manifest; the legacy wrapper optionally records the durable event. */
-export function revokeEsunCreditCardHumanAttestedV3InMemory(
+export function revokeEsunCreditCardHumanAttestedV4InMemory(
   at: string,
   reason: string,
-): EsunCreditCardHumanAttestedV3Manifest {
+): EsunCreditCardHumanAttestedV4Manifest {
   if (!validEventAt(at) || !reason.trim())
     throw new Error("E.SUN credit-card attestation revocation requires time and reason.");
   if (currentManifest.status === "revoked") return currentManifest;
@@ -275,10 +309,10 @@ export function revokeEsunCreditCardHumanAttestedV3InMemory(
 }
 
 /** Mutate the shared in-memory manifest; the legacy wrapper optionally records the durable event. */
-export function restoreEsunCreditCardHumanAttestedV3InMemory(
+export function restoreEsunCreditCardHumanAttestedV4InMemory(
   at: string,
   reason: string,
-): EsunCreditCardHumanAttestedV3Manifest {
+): EsunCreditCardHumanAttestedV4Manifest {
   if (!validEventAt(at) || !reason.trim())
     throw new Error("E.SUN credit-card attestation restoration requires time and reason.");
   if (currentManifest.status === "active") return currentManifest;

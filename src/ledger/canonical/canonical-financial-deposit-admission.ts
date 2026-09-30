@@ -312,7 +312,8 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
   const isEsunCreditCardCapture =
     capture.authorityRoute === "esun/credit-card/human-attested-v1" ||
     capture.authorityRoute === "esun/credit-card/human-attested-v2" ||
-    capture.authorityRoute === "esun/credit-card/human-attested-v3";
+    capture.authorityRoute === "esun/credit-card/human-attested-v3" ||
+    capture.authorityRoute === "esun/credit-card/human-attested-v4";
   const isYuantaCreditCardCapture =
     capture.authorityRoute === "yuanta/credit-card/human-attested-v1" ||
     capture.authorityRoute === "yuanta/credit-card/human-attested-v2";
@@ -673,6 +674,28 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       recordKind: "esun-credit-card-transaction",
       accountType: "credit",
       contractVersion: "esun/credit-card/human-attested-v3",
+      requireProviderGuaranteedFalse: true,
+    },
+    "esun/credit-card/human-attested-v4": {
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      ruleVersion: "esun/credit-card/human-attested-v4",
+      effectiveTimeBasis: "transaction-time",
+      currency: "TWD",
+      postingStatus: "posted",
+      timeZone: "Asia/Taipei",
+      timePrecision: "date",
+      completeness: "complete-range",
+      completenessBasis:
+        "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
+      completenessRuleVersion: "esun/credit-card/human-attested-v4",
+      absenceAuthority: null,
+      withdrawalPolicy: "never-infer",
+      integrationNamespace: "esun",
+      stream: "credit-card",
+      recordKind: "esun-credit-card-transaction",
+      accountType: "credit",
+      contractVersion: "esun/credit-card/human-attested-v4",
       requireProviderGuaranteedFalse: true,
     },
     "yuanta/credit-card/human-attested-v1": {
