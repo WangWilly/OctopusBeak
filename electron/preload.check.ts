@@ -5,12 +5,17 @@ import { octopusBeakApiChannels } from "../src/lib/desktop/api.ts";
 assert.equal(octopusBeakApiChannels.includes("automation:run"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:runMany"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cancel"), true);
+assert.equal(octopusBeakApiChannels.includes("automation:forceTerminate"), true);
+assert.equal((octopusBeakApiChannels as readonly string[]).includes("automation:forceQuit"), false);
 assert.equal(octopusBeakApiChannels.includes("automation:runHistory"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:viewerScreenshot"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:cathayGmailOtpStatus"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:enableCathayGmailOtp"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:setCathayGmailOtpEnabled"), true);
 assert.equal(octopusBeakApiChannels.includes("automation:disconnectCathayGmailOtp"), true);
+assert.equal(octopusBeakApiChannels.includes("data:getVersion"), true);
+assert.equal(octopusBeakApiChannels.includes("data:acknowledgeVersion"), true);
+assert.equal(octopusBeakApiChannels.includes("data:invalidated"), true);
 
 const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
 assert.deepEqual(
@@ -26,3 +31,14 @@ for (const [method, channel] of [
 ]) {
   assert.match(source, new RegExp(`${method}: .*ipcRenderer\\.invoke\\("${channel}"`));
 }
+assert.match(source, /getVersion: .*ipcRenderer\.invoke\("data:getVersion"/);
+assert.match(source, /acknowledgeVersion: .*ipcRenderer\.invoke\("data:acknowledgeVersion"/);
+assert.match(source, /forceTerminate: .*ipcRenderer\.invoke\("automation:forceTerminate"/);
+assert.doesNotMatch(source, /forceQuit:/);
+assert.match(source, /onInvalidated\(listener\)/);
+assert.match(source, /ipcRenderer\.on\("data:invalidated"/);
+assert.match(source, /const dataViews = \{/);
+for (const channel of ["data-views:subscribe", "data-views:enabled", "data-views:unsubscribe", "data-views:rows", "data-views:error"]) {
+  assert.match(source, new RegExp(channel.replace(/[-:]/gu, "[-:]")));
+}
+assert.match(source, /dataViews,/);

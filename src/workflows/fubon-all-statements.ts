@@ -1,35 +1,35 @@
 import { createHmac } from "node:crypto";
-import { workflow, type LibrettoWorkflowContext } from "libretto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
+import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
   BANK_STATEMENT_CAPABILITIES,
   allSupportedStatementTypeIds,
 } from "../lib/automation/statement-selection.js";
 import {
   activateControlWithoutPointer,
-  keepBrowserWindowOutOfForeground,
 } from "./browser-interaction.ts";
 import {
   fubonCreditCardStatementsInputSchema,
-  fubonCreditCardStatementsOutputSchema,
   runFubonCreditCardStatements,
+  type FubonCreditCardWorkflowCollection,
 } from "./fubon-credit-card-statements.ts";
 import {
   fubonLoanStatementsInputSchema,
-  fubonLoanStatementsOutputSchema,
   runFubonLoanStatements,
+  type FubonLoanWorkflowCollection,
 } from "./fubon-loan-statements.ts";
 import {
   type FubonCredentials,
   fubonStatementsInputSchema,
-  fubonStatementsOutputSchema,
   runFubonStatements,
-  signInFubon,
+  type FubonDepositWorkflowCollection,
 } from "./fubon-statements.ts";
-import { runSelectedStatements } from "./run-selected-statements.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import { FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+import { StatementComponentAbsentError } from "./run-selected-statements.ts";
+import { completeFubonHumanLoginWithAssistance, openFubonLoginForm } from "./fubon-auth.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -37,36 +37,17 @@ import {
 
 export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
-const inputSchema = z.object({
-  statements: fubonStatementsInputSchema.default(() =>
-    fubonStatementsInputSchema.parse({}),
-  ),
-  creditCards: fubonCreditCardStatementsInputSchema.default(() =>
-    fubonCreditCardStatementsInputSchema.parse({}),
-  ),
-  loans: fubonLoanStatementsInputSchema.default(() =>
-    fubonLoanStatementsInputSchema.parse({}),
-  ),
+const appInputSchema = z.object({
+  managedIdentitySecret: z.string().trim().min(1),
+  credentials: z.object({
+    fubon_user_id: z.string().trim().min(1),
+    fubon_account: z.string().trim().min(1),
+    fubon_password: z.string().min(1),
+  }),
+  statements: fubonStatementsInputSchema.default(() => fubonStatementsInputSchema.parse({})),
+  creditCards: fubonCreditCardStatementsInputSchema.default(() => fubonCreditCardStatementsInputSchema.parse({})),
+  loans: fubonLoanStatementsInputSchema.default(() => fubonLoanStatementsInputSchema.parse({})),
 });
-
-const outputSchema = z.object({
-  statements: fubonStatementsOutputSchema.optional(),
-  creditCards: fubonCreditCardStatementsOutputSchema.optional(),
-  loans: fubonLoanStatementsOutputSchema.optional(),
-  componentResults: z.array(
-    z.object({
-      typeId: z.string(),
-      status: z.enum(["success", "failed", "skipped"]),
-      skipReason: z.enum(["absent", "not_selected"]).optional(),
-      fileCount: z.number().int().nonnegative().optional(),
-      error: z.string().optional(),
-    }),
-  ),
-});
-
-type Input = z.infer<typeof inputSchema> & {
-  credentials: FubonCredentials;
-};
 
 const FUBON_CREDIT_CARD_IDENTITY_EPOCH =
   "fubon-credit-card-human-attested-v2" as const;
@@ -110,12 +91,6 @@ export function deriveFubonCanonicalHumanAttestation(
     identityEpochKey: FUBON_CREDIT_CARD_IDENTITY_EPOCH,
     humanAttestedAccountKey,
   };
-}
-
-function optionalFubonManagedSecret(): string | undefined {
-  const secret =
-    process.env[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
-  return secret || undefined;
 }
 
 async function keepFubonSessionAlive(page: Page): Promise<void> {
@@ -170,210 +145,286 @@ async function signOutFubon(page: Page): Promise<void> {
     .catch(() => undefined);
 }
 
-async function runSectionOutOfForeground<T>(
+export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
+export type FubonAllWorkflowOutput = Readonly<{
+  sourceCaptureCount: number;
+  rowCount: number;
+  itemCount: number;
+  skippedProductCount: number;
+  status: "financial-admitted" | "source-only" | "no-data";
+}>;
+
+export type FubonWorkflowIdentity = Readonly<{
+  sourceConnectionScope: string;
+  sourceConnectionKey: string;
+  canonicalHumanAttestation?: ReturnType<typeof deriveFubonCanonicalHumanAttestation>;
+  managedSecret?: string;
+}>;
+
+export type FubonWorkflowCollectionSummary = Readonly<{
+  sourceCount: number;
+  rowCount: number;
+  itemCount: number;
+  financialAdmissionCount?: number;
+}>;
+
+export type FubonAllWorkflowDependencies = Readonly<{
+  authenticate?: (page: Page, credentials: FubonCredentials, context: WorkflowContext) => Promise<void>;
+  collectDeposit?: (
+    page: Page,
+    input: z.infer<typeof fubonStatementsInputSchema>,
+    context: WorkflowContext,
+    identity: FubonWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+  ) => Promise<FubonDepositWorkflowCollection>;
+  collectCreditCard?: (
+    page: Page,
+    input: z.infer<typeof fubonCreditCardStatementsInputSchema>,
+    context: WorkflowContext,
+    identity: FubonWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+  ) => Promise<FubonCreditCardWorkflowCollection>;
+  collectLoan?: (
+    page: Page,
+    input: z.infer<typeof fubonLoanStatementsInputSchema>,
+    context: WorkflowContext,
+    identity: FubonWorkflowIdentity,
+    items: PGliteWorkflowRunItem[],
+  ) => Promise<FubonLoanWorkflowCollection>;
+  signOut?: (page: Page) => Promise<void>;
+  startSessionKeepAlive?: (page: Page) => () => void;
+}>;
+
+function fubonCredentialValues(credentials: FubonCredentials) {
+  const userId = credentials.fubon_user_id?.trim();
+  const account = credentials.fubon_account?.trim();
+  const password = credentials.fubon_password;
+  if (!userId || !account || !password)
+    throw new Error("Fubon workflow credentials are missing or invalid.");
+  return { userId, account, password };
+}
+
+async function authenticateFubonForApp(
   page: Page,
-  section: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  console.log("combined-workflow-section-start", { section });
-  await keepBrowserWindowOutOfForeground(page);
-
-  const keepOutOfForeground = setInterval(() => {
-    void keepBrowserWindowOutOfForeground(page).catch(() => undefined);
-  }, 1_000);
-  try {
-    return await run();
-  } finally {
-    clearInterval(keepOutOfForeground);
-    await keepBrowserWindowOutOfForeground(page).catch(() => undefined);
-  }
+  credentials: FubonCredentials,
+  context: WorkflowContext,
+): Promise<void> {
+  const values = fubonCredentialValues(credentials);
+  await openFubonLoginForm(page);
+  await completeFubonHumanLoginWithAssistance(page, values, {
+    signal: context.signal,
+    request: (contract, signal) => context.humanAssistance.request(contract, signal),
+    event: (code) => context.event("authentication", code),
+  });
 }
 
-const fubonAllStatementsDependencies = {
-  signInFubon,
-  keepBrowserWindowOutOfForeground,
-  startFubonSessionKeepAlive,
-  runSectionOutOfForeground,
-  runFubonStatements,
-  runFubonCreditCardStatements,
-  runFubonLoanStatements,
-  signOutFubon,
-};
-
-const FUBON_SOURCE_LEDGER_DIR_ENV = "OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR";
-const FUBON_FINANCIAL_LEDGER_DIR_ENV =
-  "OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR";
-const FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV =
-  "OCTOPUSBEAK_CANONICAL_LEDGER_DIR";
-
-function readFubonLedgerDirectory(envName: string): string | undefined {
-  const raw = process.env[envName];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
-    throw new Error(`Invalid Fubon ledger directory in ${envName}.`);
-  }
-  return raw;
+async function collectFubonDepositForApp(
+  page: Page,
+  input: z.infer<typeof fubonStatementsInputSchema>,
+  context: WorkflowContext,
+  identity: FubonWorkflowIdentity,
+  items: PGliteWorkflowRunItem[],
+): Promise<FubonDepositWorkflowCollection> {
+  return await runFubonStatements(page, input, {
+    sourceConnectionScope: identity.sourceConnectionScope,
+    sourceConnectionKey: identity.sourceConnectionKey,
+    deferredCommitItems: items,
+    sourceText: context.text,
+    signal: context.signal,
+  });
 }
 
-/**
- * Resolve the combined workflow's two ledger destinations.
- *
- * Source evidence is always enabled. The old generic canonical-ledger
- * variable is retained only as a financial opt-in alias; it must never be
- * silently reused as the source destination by this caller. If both financial
- * aliases are configured with different paths, fail before login so the run
- * cannot write to an unintended ledger.
- */
-function resolveFubonLedgerOverrides(): {
-  canonicalLedgerDir: string;
-  canonicalFinancialLedgerDir?: string;
-} {
-  const sourceLedgerDir =
-    readFubonLedgerDirectory(FUBON_SOURCE_LEDGER_DIR_ENV) ??
-    readFubonLedgerDirectory("LEDGER_DIR") ??
-    DEFAULT_LEDGER_DIR;
-  const financialLedgerDirs: Array<readonly [string, string]> = [];
-  for (const [envName, directory] of [
-    [
-      FUBON_FINANCIAL_LEDGER_DIR_ENV,
-      readFubonLedgerDirectory(FUBON_FINANCIAL_LEDGER_DIR_ENV),
-    ] as const,
-    [
-      FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV,
-      readFubonLedgerDirectory(FUBON_LEGACY_FINANCIAL_LEDGER_DIR_ENV),
-    ] as const,
-  ]) {
-    if (directory !== undefined) financialLedgerDirs.push([envName, directory]);
-  }
-  const uniqueFinancialLedgerDirs = [
-    ...new Set(financialLedgerDirs.map(([, directory]) => directory)),
-  ];
-  if (uniqueFinancialLedgerDirs.length > 1) {
-    throw new Error(
-      `Ambiguous Fubon financial ledger directories configured in ${financialLedgerDirs
-        .map(([envName]) => envName)
-        .join(", ")}.`,
-    );
-  }
-
-  return {
-    canonicalLedgerDir: sourceLedgerDir,
-    ...(uniqueFinancialLedgerDirs[0]
-      ? { canonicalFinancialLedgerDir: uniqueFinancialLedgerDirs[0] }
-      : {}),
+async function collectFubonCreditCardForApp(
+  page: Page,
+  input: z.infer<typeof fubonCreditCardStatementsInputSchema>,
+  context: WorkflowContext,
+  identity: FubonWorkflowIdentity,
+  items: PGliteWorkflowRunItem[],
+): Promise<FubonCreditCardWorkflowCollection> {
+  const creditCardInput = {
+    ...input,
+    canonicalHumanAttestation: identity.canonicalHumanAttestation ?? undefined,
   };
+  return await runFubonCreditCardStatements(page, creditCardInput, {
+    ...(identity.managedSecret ? { panFingerprintKey: { secret: identity.managedSecret } } : {}),
+    deferredCommitItems: items,
+    sourceText: context.text,
+    signal: context.signal,
+    observedAt: context.now,
+  });
 }
 
-export async function runFubonAllStatements(
-  ctx: LibrettoWorkflowContext,
+async function collectFubonLoanForApp(
+  page: Page,
+  input: z.infer<typeof fubonLoanStatementsInputSchema>,
+  context: WorkflowContext,
+  identity: FubonWorkflowIdentity,
+  items: PGliteWorkflowRunItem[],
+): Promise<FubonLoanWorkflowCollection> {
+  return await runFubonLoanStatements(page, input, {
+    sourceConnectionScope: identity.sourceConnectionScope,
+    sourceConnectionKey: identity.sourceConnectionKey,
+    deferredCommitItems: items,
+    sourceText: context.text,
+    signal: context.signal,
+    observedAt: context.now,
+  });
+}
+
+/** App-owned combined provider flow: all selected sources are collected and validated before Canonical Financial Commit. */
+export async function runFubonAllStatementsWorkflow(
+  context: WorkflowContext,
   rawInput: unknown,
-  overrides: Partial<typeof fubonAllStatementsDependencies> = {},
-) {
-  const {
-    signInFubon,
-    keepBrowserWindowOutOfForeground,
-    startFubonSessionKeepAlive,
-    runSectionOutOfForeground,
-    runFubonStatements,
-    runFubonCreditCardStatements,
-    runFubonLoanStatements,
-    signOutFubon,
-  } = { ...fubonAllStatementsDependencies, ...overrides };
-  const input = rawInput as Input;
-  const { page, session } = ctx;
-  console.log("automation-progress: 0");
-  // Fubon exposes product availability at runtime. Persisted Settings selections
-  // are intentionally ignored; always probe every currently supported component
-  // in registry order and let explicit provider absence become skipped_absent.
-  const selectedIds = allSupportedStatementTypeIds(
-    BANK_STATEMENT_CAPABILITIES.fubon,
-  );
-  const ledgerOverrides = resolveFubonLedgerOverrides();
-  const sourceConnectionScope = fubonStableLoginScope(input.credentials);
-  const sourceConnectionKey = deriveFubonSourceConnectionKey(input.credentials);
+  overrides: FubonAllWorkflowDependencies = {},
+): Promise<FubonAllWorkflowOutput> {
+  const parsed = appInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("Fubon workflow credentials or input are missing or invalid.");
+  const financialCommit = context.financialCommit;
+  if (!financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+
+  const selectedIds = allSupportedStatementTypeIds(BANK_STATEMENT_CAPABILITIES.fubon);
+  const supportedIds = new Set(["deposit", "credit_card", "loan"]);
+  if (selectedIds.length !== supportedIds.size || selectedIds.some((id) => !supportedIds.has(id)))
+    throw new Error("Fubon has a selected product without a typed App collector.");
+  const sourceConnectionScope = fubonStableLoginScope(parsed.data.credentials);
+  const sourceConnectionKey = deriveFubonSourceConnectionKey(parsed.data.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)
-    throw new Error(
-      "Fubon all-statements requires a stable login identity for its Source Connection.",
-    );
-  const managedSecret = optionalFubonManagedSecret();
-  const canonicalHumanAttestation = managedSecret
-    ? deriveFubonCanonicalHumanAttestation(input.credentials, managedSecret)
-    : undefined;
-  const creditCardInput = canonicalHumanAttestation
-    ? { ...input.creditCards, canonicalHumanAttestation }
-    : { ...input.creditCards, canonicalHumanAttestation: undefined };
+    throw new Error("Fubon all-statements requires a stable login identity for its Source Connection.");
 
-  await signInFubon(page, session, input.credentials);
-  await keepBrowserWindowOutOfForeground(page);
-  console.log("automation-progress: 20");
+  const managedSecret = parsed.data.managedIdentitySecret;
+  const identity: FubonWorkflowIdentity = {
+    sourceConnectionScope,
+    sourceConnectionKey,
+    managedSecret,
+    canonicalHumanAttestation: deriveFubonCanonicalHumanAttestation(parsed.data.credentials, managedSecret),
+  };
+  const authenticate = overrides.authenticate ?? authenticateFubonForApp;
+  const collectDeposit = overrides.collectDeposit ?? collectFubonDepositForApp;
+  const collectCreditCard = overrides.collectCreditCard ?? collectFubonCreditCardForApp;
+  const collectLoan = overrides.collectLoan ?? collectFubonLoanForApp;
+  const stopKeepAlive = overrides.startSessionKeepAlive ?? startFubonSessionKeepAlive;
+  const signOut = overrides.signOut ?? signOutFubon;
 
-  const stopSessionKeepAlive = startFubonSessionKeepAlive(page);
-  try {
-    const run = await runSelectedStatements(selectedIds, [
-      {
-        typeId: "deposit",
-        run: () =>
-          runSectionOutOfForeground(page, "statements", () =>
-            runFubonStatements(page, input.statements, {
-              ...ledgerOverrides,
-              sourceConnectionScope,
-              sourceConnectionKey,
-            }),
-          ),
-      },
-      {
-        typeId: "credit_card",
-        run: () =>
-          runSectionOutOfForeground(page, "creditCards", () =>
-            runFubonCreditCardStatements(page, creditCardInput, {
-              ...(ledgerOverrides.canonicalFinancialLedgerDir
-                ? {
-                    canonicalFinancialLedgerDir:
-                      ledgerOverrides.canonicalFinancialLedgerDir,
-                  }
-                : {}),
-              ...(managedSecret
-                ? { panFingerprintKey: { secret: managedSecret } }
-                : {}),
-            }),
-          ),
-      },
-      {
-        typeId: "loan",
-        run: () =>
-          runSectionOutOfForeground(page, "loans", () =>
-            runFubonLoanStatements(page, input.loans, {
-              ...ledgerOverrides,
-              sourceConnectionScope,
-              sourceConnectionKey,
-            }),
-          ),
-      },
-    ]);
-    console.log("automation-progress: 100");
+  context.signal.throwIfAborted();
+  await context.event("preparation", "input-validated");
+  return await context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    // A retained Fubon session cookie can route the next run straight to
+    // NotAuth.jsp?type=dupLogin before credentials are entered.
+    await page.context().clearCookies({ domain: /(?:^|\.)taipeifubon\.com\.tw$/u });
+    await context.event("authentication", "authentication-started");
+    await authenticate(page, parsed.data.credentials, context);
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+    const stop = stopKeepAlive(page);
+    const items: PGliteWorkflowRunItem[] = [];
+    let sourceCaptureCount = 0;
+    let rowCount = 0;
+    let skippedProductCount = 0;
 
-    return {
-      statements: run.outputs.deposit as
-        z.infer<typeof fubonStatementsOutputSchema> | undefined,
-      creditCards: run.outputs.credit_card as
-        z.infer<typeof fubonCreditCardStatementsOutputSchema> | undefined,
-      loans: run.outputs.loan as
-        z.infer<typeof fubonLoanStatementsOutputSchema> | undefined,
-      componentResults: run.results,
+    const collect = async <T extends FubonWorkflowCollectionSummary>(
+      product: "deposit" | "credit_card" | "loan",
+      run: () => Promise<T>,
+    ) => {
+      context.signal.throwIfAborted();
+      await context.event("collection", `${product.replaceAll("_", "-")}-collection-started`);
+      const itemCountBefore = items.length;
+      try {
+        const summary = await run();
+        context.signal.throwIfAborted();
+        if (!Number.isInteger(summary.sourceCount) || summary.sourceCount < 0 ||
+          !Number.isInteger(summary.rowCount) || summary.rowCount < 0 ||
+          items.length - itemCountBefore !== summary.itemCount)
+          throw new Error("Fubon source collection returned inconsistent counts.");
+        sourceCaptureCount += summary.sourceCount;
+        rowCount += summary.rowCount;
+        await context.event("decoding", `${product.replaceAll("_", "-")}-source-decoding-completed`, {
+          completed: summary.sourceCount,
+          total: summary.sourceCount,
+        });
+        await context.event("validation", `${product.replaceAll("_", "-")}-source-validation-completed`, {
+          completed: summary.itemCount,
+          total: summary.itemCount,
+        });
+      } catch (error) {
+        if (error instanceof StatementComponentAbsentError) {
+          skippedProductCount += 1;
+          await context.event("collection", `${product.replaceAll("_", "-")}-component-absent`);
+          return;
+        }
+        if (error instanceof SourceTextIntegrityError)
+          await context.event("decoding", "source-decoding-failed");
+        await context.event("validation", `${product.replaceAll("_", "-")}-source-validation-rejected`);
+        throw error;
+      }
     };
-  } finally {
-    stopSessionKeepAlive();
-    await signOutFubon(page).catch((error: unknown) => {
-      console.warn("fubon-logout-failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-}
 
-export default workflow("fubonAllStatements", {
-  credentials: ["fubon_user_id", "fubon_account", "fubon_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: runFubonAllStatements,
-});
+    try {
+      await context.event("decoding", "source-decoding-started");
+      await collect("deposit", () => collectDeposit(page, parsed.data.statements, context, identity, items));
+      await collect("credit_card", () => collectCreditCard(page, parsed.data.creditCards, context, identity, items));
+      await collect("loan", () => collectLoan(page, parsed.data.loans, context, identity, items));
+      context.signal.throwIfAborted();
+      try {
+        for (const item of items) {
+          if (item.provider !== "fubon" || !item.itemKey || !item.command)
+            throw new Error("Fubon source produced an invalid Canonical Financial Commit item.");
+          context.text.assertIntact(JSON.stringify(item.command));
+        }
+      } catch (error) {
+        if (error instanceof SourceTextIntegrityError)
+          await context.event("decoding", "source-decoding-failed");
+        await context.event("validation", "source-validation-rejected");
+        throw error;
+      }
+      await context.event("validation", "source-validation-completed", {
+        completed: sourceCaptureCount,
+        total: sourceCaptureCount,
+      });
+      if (items.length === 0) {
+        return {
+          sourceCaptureCount,
+          rowCount,
+          itemCount: 0,
+          skippedProductCount,
+          status: "no-data",
+        };
+      }
+
+      await context.event("commit", "canonical-commit-started", { completed: 0, total: items.length });
+      const committed = await financialCommit.execute(items, {
+        provider: "fubon",
+        product: "financial",
+        signal: context.signal,
+      });
+      if (committed.status !== "completed" ||
+        committed.committedCount !== items.length ||
+        committed.items.length !== items.length ||
+        committed.items.some((item) => item.status !== "committed")) {
+        await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed", {
+          completed: committed.committedCount,
+          total: items.length,
+        });
+        const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+        throw new Error(`Fubon Canonical Financial Commit failed: ${codes || committed.status}.`);
+      }
+      await context.event("commit", "canonical-commit-completed", {
+        completed: committed.committedCount,
+        total: items.length,
+      });
+      const sourceOnly = items.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
+      return {
+        sourceCaptureCount,
+        rowCount,
+        itemCount: items.length,
+        skippedProductCount,
+        status: sourceOnly ? "source-only" : "financial-admitted",
+      };
+    } finally {
+      stop();
+      await signOut(page).catch(() => undefined);
+    }
+  });
+}

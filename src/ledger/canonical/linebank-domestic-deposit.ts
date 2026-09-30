@@ -12,26 +12,18 @@ import {
   DOMESTIC_DEPOSIT_CANONICAL_ADMISSION,
   DOMESTIC_DEPOSIT_FINANCIAL_ADMISSION_BLOCKERS,
   DOMESTIC_DEPOSIT_SOURCE_RECORD_STAGE,
-  admitLineBankHumanAttestedV13Capture,
   admitDomesticDepositCapture,
-  combineDomesticDepositDescription,
   type DomesticDepositCapture,
   type DomesticDepositExactAmount,
   type DomesticDepositSourceRecord,
-  type DomesticDepositSourceTime,
   type DomesticDepositValidatedCapture,
-  type LineBankHumanAttestedV13ValidatedCapture,
-} from "./domestic-deposit-store.ts";
-
-/** Shared source-record writer/query seams for source adapters and callers. */
-export {
-  commitCanonicalLineBankFinancialCapture,
-  commitCanonicalDomesticDeposit,
-  createDomesticDepositStore,
-  queryCurrent,
-  queryHistorical,
-  queryLineage,
-} from "./domestic-deposit-store.ts";
+} from "./domestic-deposit-contract.ts";
+import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
+import { admitLineBankHumanAttestedV13Capture } from "./linebank-domestic-deposit-contract.ts";
+import type {
+  LineBankHumanAttestedV13ValidatedCapture,
+} from "./linebank-domestic-deposit-contract.ts";
+import type { DomesticDepositSourceTime } from "./domestic-deposit-contract.ts";
 
 /**
  * This is intentionally a preflight contract, not a canonical writer.  The

@@ -1,0 +1,389 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { chromium } from "playwright";
+import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
+import {
+  BrowserRuntimeConfigurationError,
+  createBrowserRuntime,
+} from "./browser-runtime.ts";
+import {
+  appWorkflowBrowserConnectionForSession,
+  appWorkflowPageForSession,
+  createAppWorkflowBrowserPort,
+  cookiesForAppWorkflowBrowserProfile,
+  withAppWorkflowBrowserPage,
+} from "./app-browser-host.ts";
+
+test("CTBC profile drops retained CTBC cookies but preserves unrelated browser state", () => {
+  const cookies = [
+    { name: "bank-session", value: "one", domain: "www.ctbcbank.com", path: "/" },
+    { name: "bank-root", value: "two", domain: ".ctbcbank.com", path: "/" },
+    { name: "other", value: "three", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "ctbc-login"), [cookies[2]]);
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies), cookies);
+});
+
+test("Cathay login starts without retained Cathay cookies", () => {
+  const cookies = [
+    { name: "old-session", value: "one", domain: "www.cathaybk.com.tw", path: "/" },
+    { name: "shared-bank", value: "two", domain: ".cathaybk.com.tw", path: "/" },
+    { name: "unrelated", value: "three", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, "cathay-login"), [cookies[2]]);
+});
+
+test("E.SUN App execution starts without stale E.SUN session cookies", () => {
+  const profile = workflowBrowserProfileForTask("esun-credit-card-statements");
+  const cookies = [
+    { name: "old-session", value: "synthetic", domain: "ebank.esunbank.com.tw", path: "/" },
+    { name: "shared-session", value: "synthetic", domain: ".esunbank.com.tw", path: "/" },
+    { name: "unrelated", value: "synthetic", domain: "example.com", path: "/" },
+  ];
+  assert.deepEqual(cookiesForAppWorkflowBrowserProfile(cookies, profile), [cookies[2]]);
+});
+
+test("CTBC headless profile adds only the verified browser compatibility flag", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctbc-browser-profile-"));
+  const observed: string[][] = [];
+  const userAgents: string[] = [];
+  const identities: unknown[] = [];
+  const runtime = createBrowserRuntime({
+    getChromiumVersion: async () => "151.0.7922.34",
+    platform: "darwin",
+  });
+  try {
+    for (const browserProfile of [undefined, "ctbc-login"] as const) {
+      await createAppWorkflowBrowserPort({
+        taskId: "ctbc-statements",
+        taskRunId: browserProfile ? "ctbc-profile" : "default-profile",
+        signal: new AbortController().signal,
+        userDataDirectory: root,
+        credentialCodec: null,
+        browserRuntime: runtime,
+        onRuntimeIdentity: (identity) => identities.push(identity),
+        ...(browserProfile ? { browserProfile } : {}),
+        launchPersistentContext: async (_directory, options) => {
+          observed.push(options.args);
+          userAgents.push(options.userAgent ?? "");
+          return { pages: () => [{}], close: async () => {} } as never;
+        },
+      }).withPage(async () => undefined);
+    }
+    assert.equal(observed.length, 2);
+    assert.equal(observed[0].includes("--disable-blink-features=AutomationControlled"), false);
+    assert.equal(observed[1].includes("--disable-blink-features=AutomationControlled"), true);
+    assert.equal(observed[1].filter((arg) => arg === "--disable-blink-features=AutomationControlled").length, 1);
+    assert.equal(userAgents[0], userAgents[1]);
+    assert.match(userAgents[0], /Chrome\/151\.0\.7922\.34/u);
+    assert.deepEqual(identities, [
+      { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+      { profileId: "ctbc-login", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("App runtime identity is available before browser launch fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-runtime-launch-fail-"));
+  const identities: unknown[] = [];
+  try {
+    const port = createAppWorkflowBrowserPort({
+      taskId: "browser-runtime-launch-fail",
+      taskRunId: "run-browser-runtime-launch-fail",
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserRuntime: createBrowserRuntime({
+        getChromiumVersion: async () => "151.0.7922.34",
+        platform: "darwin",
+      }),
+      onRuntimeIdentity: (identity) => identities.push(identity),
+      launchPersistentContext: async () => { throw new Error("synthetic launch failure"); },
+    });
+
+    await assert.rejects(port.withPage(async () => undefined), /synthetic launch failure/u);
+    assert.deepEqual(identities, [
+      { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unsupported App browser profiles fail before launch with a sanitized code", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-runtime-unsupported-"));
+  let launchCalls = 0;
+  let identityCalls = 0;
+  try {
+    const port = createAppWorkflowBrowserPort({
+      taskId: "browser-runtime-unsupported",
+      taskRunId: "run-browser-runtime-unsupported",
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      browserProfile: "future-login" as never,
+      onRuntimeIdentity: () => { identityCalls += 1; },
+      launchPersistentContext: async () => {
+        launchCalls += 1;
+        throw new Error("launch should not run");
+      },
+    });
+
+    await assert.rejects(port.withPage(async () => undefined), (error: unknown) => {
+      assert.ok(error instanceof BrowserRuntimeConfigurationError);
+      assert.equal(error.code, "unsupported-profile");
+      assert.equal(error.message, "browser-runtime/unsupported-profile");
+      return true;
+    });
+    assert.equal(launchCalls, 0);
+    assert.equal(identityCalls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the production App browser launches headlessly with a worker CDP target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-headless-"));
+  const runId = "run-headless-browser-check";
+  try {
+    await createAppWorkflowBrowserPort({
+      taskId: "browser-headless-check",
+      taskRunId: runId,
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+    }).withPage(async (page) => {
+      await page.setContent("<title>headless-ready</title>");
+      assert.equal(await page.title(), "headless-ready");
+      assert.ok(appWorkflowBrowserConnectionForSession(runId));
+    });
+    assert.equal(appWorkflowBrowserConnectionForSession(runId), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("App worker attaches to its exact hosted page without creating workflow files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-host-cdp-"));
+  const runId = "run-app-browser-host-cdp-check";
+  const browserStateDirectory = join(root, "data", "automation", "browser-state", "browser-host-check");
+  const legacyCacheFile = join(browserStateDirectory, "Default", "Cache", "data_0");
+  await mkdir(join(browserStateDirectory, "Default", "Cache"), { recursive: true });
+  await writeFile(legacyCacheFile, "legacy raw response cache");
+  const credentialCodec = {
+    encrypt: (value: string) => `sealed:${Buffer.from(value, "utf8").toString("base64")}`,
+    decrypt: (value: string) => Buffer.from(value.replace(/^sealed:/u, ""), "base64").toString("utf8"),
+  };
+  let runtimeProfile: string | null = null;
+  const browserPort = createAppWorkflowBrowserPort({
+    taskId: "browser-host-check",
+    taskRunId: runId,
+    signal: new AbortController().signal,
+    userDataDirectory: root,
+    credentialCodec,
+    launchPersistentContext: async (userDataDirectory, options) => {
+      assert.equal(options.headless, true, "App workflow browser must default to headless");
+      runtimeProfile = userDataDirectory;
+      return await chromium.launchPersistentContext(userDataDirectory, {
+        ...options,
+        headless: true,
+      });
+    },
+  });
+
+  try {
+    await browserPort.withPage(async (ownerPage) => {
+      assert.equal(appWorkflowPageForSession(runId), ownerPage);
+      await ownerPage.context().addCookies([{
+        name: "session",
+        value: "cookie-secret-marker",
+        url: "http://127.0.0.1/",
+      }]);
+      await ownerPage.setContent('<input id="shared" value="owner">');
+      const siblingPage = await ownerPage.context().newPage();
+      await siblingPage.setContent('<input id="shared" value="sibling">');
+
+      const connection = appWorkflowBrowserConnectionForSession(runId);
+      assert.ok(connection);
+      assert.match(connection.endpoint, /^http:\/\/127\.0\.0\.1:[1-9]\d*$/u);
+      assert.ok(connection.targetId.length > 0);
+
+      const attachedValue = await withAppWorkflowBrowserPage(connection, async (workerPage) => {
+        assert.equal(await workerPage.locator("#shared").inputValue(), "owner");
+        await workerPage.locator("#shared").fill("worker");
+        return await workerPage.locator("#shared").inputValue();
+      });
+      assert.equal(attachedValue, "worker");
+      assert.equal(await ownerPage.locator("#shared").inputValue(), "worker");
+      assert.equal(await siblingPage.locator("#shared").inputValue(), "sibling");
+      assert.equal(appWorkflowPageForSession(runId), ownerPage);
+
+      await assert.rejects(
+        withAppWorkflowBrowserPage({ ...connection, targetId: "missing-target" }, async () => undefined),
+        /exact App browser page is unavailable/u,
+      );
+
+      const downloadObserved = ownerPage.waitForEvent("download");
+      await ownerPage.setContent('<a download="fixture.csv" href="data:text/csv,fixture">fixture</a>');
+      await ownerPage.locator("a").click();
+      const download = await downloadObserved;
+      await assert.rejects(download.createReadStream(), /acceptDownloads/u);
+    });
+
+    assert.equal(appWorkflowPageForSession(runId), null);
+    assert.equal(appWorkflowBrowserConnectionForSession(runId), null);
+    assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
+    const stateFiles = await readdir(join(root, "data", "automation", "browser-state", "browser-host-check"), {
+      recursive: true,
+    });
+    assert.deepEqual(stateFiles.sort(), [
+      "authentication",
+      join("authentication", "cookies.safeStorage.json"),
+    ]);
+    const cookieState = await readFile(
+      join(browserStateDirectory, "authentication", "cookies.safeStorage.json"),
+      "utf8",
+    );
+    assert.match(cookieState, /sealed:/u);
+    assert.doesNotMatch(cookieState, /cookie-secret-marker|session/u);
+    assert.equal((await stat(join(browserStateDirectory, "authentication", "cookies.safeStorage.json"))).mode & 0o777, 0o600);
+    assert.ok(runtimeProfile);
+    assert.match(runtimeProfile, /browser-runtime/u);
+    await assert.rejects(stat(runtimeProfile), { code: "ENOENT" });
+
+    const secondRunId = "run-app-browser-host-cookie-restore";
+    const restorePort = createAppWorkflowBrowserPort({
+      taskId: "browser-host-check",
+      taskRunId: secondRunId,
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec,
+      launchPersistentContext: async (userDataDirectory, options) =>
+        await chromium.launchPersistentContext(userDataDirectory, {
+          ...options,
+          headless: true,
+        }),
+    });
+    await restorePort.withPage(async (restoredPage) => {
+      const restored = await restoredPage.context().cookies("http://127.0.0.1/");
+      assert.equal(restored.find((cookie) => cookie.name === "session")?.value, "cookie-secret-marker");
+    });
+    assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
+    assert.deepEqual(
+      (await readdir(browserStateDirectory, { recursive: true })).sort(),
+      ["authentication", join("authentication", "cookies.safeStorage.json")],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an active page without loopback CDP metadata fails closed for worker access", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-host-unavailable-"));
+  const runId = "run-app-browser-host-unavailable-check";
+  const page = {} as never;
+  const browserPort = createAppWorkflowBrowserPort({
+    taskId: "browser-host-check",
+    taskRunId: runId,
+    signal: new AbortController().signal,
+    userDataDirectory: root,
+    credentialCodec: null,
+    launchPersistentContext: async () => ({
+      pages: () => [page],
+      close: async () => {},
+    }) as never,
+  });
+
+  try {
+    await browserPort.withPage(async () => {
+      assert.throws(
+        () => appWorkflowBrowserConnectionForSession(runId),
+        /connection is unavailable/u,
+      );
+    });
+    assert.equal(appWorkflowPageForSession(runId), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid retained cookies are ignored and cookie symlinks are never followed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-browser-host-cookie-guard-"));
+  const runId = "run-app-browser-host-cookie-guard";
+  const cookieStatePath = join(
+    root,
+    "data",
+    "automation",
+    "browser-state",
+    "browser-host-check",
+    "authentication",
+    "cookies.safeStorage.json",
+  );
+  const external = join(root, "external-cookie-state");
+  const codec = {
+    encrypt: (value: string) => `sealed:${Buffer.from(value, "utf8").toString("base64")}`,
+    decrypt: (value: string) => Buffer.from(value.replace(/^sealed:/u, ""), "base64").toString("utf8"),
+  };
+  const page = {} as never;
+  let addCookiesCalls = 0;
+  const context = {
+    pages: () => [page],
+    addCookies: async () => { addCookiesCalls += 1; },
+    cookies: async () => [],
+    close: async () => {},
+  };
+  const createPort = (taskRunId: string) => createAppWorkflowBrowserPort({
+    taskId: "browser-host-check",
+    taskRunId,
+    signal: new AbortController().signal,
+    userDataDirectory: root,
+    credentialCodec: codec,
+    launchPersistentContext: async () => context as never,
+  });
+
+  try {
+    await mkdir(join(cookieStatePath, ".."), { recursive: true });
+    await writeFile(cookieStatePath, JSON.stringify({
+      format: "octopusbeak.browser-auth.cookies.safeStorage.v1",
+      data: codec.encrypt(JSON.stringify({ cookies: [{ name: "partial", value: "invalid" }] })),
+    }));
+    await createPort(runId).withPage(async () => undefined);
+    assert.equal(addCookiesCalls, 0, "incomplete cookie objects must be rejected as a whole");
+
+    await writeFile(external, "external state must not be read");
+    await rm(cookieStatePath, { force: true });
+    await symlink(external, cookieStatePath);
+    await createPort("run-app-browser-host-cookie-symlink").withPage(async () => undefined);
+    assert.equal(addCookiesCalls, 0, "symlinked cookie state must be ignored");
+    assert.equal(await readFile(external, "utf8"), "external state must not be read");
+    assert.equal((await stat(cookieStatePath)).isFile(), true, "save replaces the symlink without following it");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("App connection leaves native dialogs to the attached worker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "app-dialog-owner-"));
+  const runId = "worker-dialog-owner";
+  try {
+    await createAppWorkflowBrowserPort({
+      taskId: "sinopac-statements", taskRunId: runId,
+      signal: new AbortController().signal, userDataDirectory: root, credentialCodec: null,
+      nativeDialogOwner: "worker",
+    }).withPage(async () => {
+      const connection = appWorkflowBrowserConnectionForSession(runId);
+      assert.ok(connection);
+      await withAppWorkflowBrowserPage(connection, async (page) => {
+        let dismissal!: Promise<void>;
+        page.once("dialog", (dialog) => { dismissal = dialog.dismiss(); });
+        await page.evaluate(() => alert("驗證碼失效或輸入錯誤，請重新輸入。"));
+        await assert.doesNotReject(dismissal, "the host must not dismiss the worker's dialog first");
+      });
+    });
+  } finally { await rm(root, {recursive: true, force: true}); }
+});

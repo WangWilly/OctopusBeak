@@ -1,5 +1,8 @@
-import { pause } from "libretto";
 import type { Dialog, Frame, Locator, Page } from "playwright";
+import type {
+  HumanAssistanceCompletionStatus,
+  HumanAssistanceContractInput,
+} from "../lib/automation/human-assistance.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import {
   emitHumanAssistanceStage,
@@ -12,6 +15,7 @@ const FUBON_AUTH_FRAME_NAME = "frame1";
 const FUBON_LOGIN_FRAME_NAME = "txnFrame";
 const DEFAULT_OUTCOME_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
+const LOGIN_FORM_REJECTION_GRACE_MS = 10_000;
 const MARKER_PROBE_TIMEOUT_MS = 100;
 const DEFAULT_LOGIN_FILL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS = 50;
@@ -91,7 +95,7 @@ export type FubonLoginDocumentOptions = Readonly<{
   confirmationMs?: number;
 }>;
 
-/** Non-sensitive evidence captured before the browser is paused for CAPTCHA. */
+/** Non-sensitive evidence captured before the App requests CAPTCHA assistance. */
 export type FubonLoginAssistanceSnapshot = Readonly<{
   frameName: string;
   frameIdentity: string;
@@ -167,6 +171,7 @@ export type FubonPostLoginOutcomeOptions = Readonly<{
   timeoutMs?: number;
   pollIntervalMs?: number;
   frameName?: string;
+  silent?: boolean;
   dialogChannel?: FubonLoginDialogChannel;
   probe?: (
     page: Page,
@@ -1184,54 +1189,6 @@ export function fubonCaptchaAssistanceStage(
   };
 }
 
-async function emitFubonCaptchaAssistance(page: Page): Promise<void> {
-  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
-  const frame = await waitForLoginFrame(
-    page,
-    FUBON_LOGIN_FRAME_NAME,
-    deadline,
-    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-  );
-  await frame.locator("#m1_userCaptcha").focus();
-  await emitHumanAssistanceStage(fubonCaptchaAssistanceStage(frame));
-}
-
-async function emitFubonOtpAssistance(page: Page): Promise<void> {
-  const deadline = Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS;
-  const frame = await waitForLoginFrame(
-    page,
-    FUBON_LOGIN_FRAME_NAME,
-    deadline,
-    DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-  );
-  await emitHumanAssistanceStage({
-    stageId: "fubon-login-otp",
-    title: "Enter the Fubon OTP",
-    targets: [
-      {
-        id: "otp-input",
-        label: "OTP input",
-        semanticId: "fubon.login.otp-input",
-        modes: ["click", "type"],
-        locator: frame.locator("#m1_inputOTP"),
-      },
-    ],
-    contextRegions: [
-      {
-        id: "otp-challenge",
-        label: "OTP instructions",
-        semanticId: "fubon.login.otp-challenge",
-      },
-    ],
-    completion: { mode: "inline", targetIds: ["otp-input"] },
-    focus: {
-      targetId: "otp-input",
-      contextRegionIds: ["otp-challenge"],
-      initialZoom: 1.15,
-    },
-  });
-}
-
 async function currentOtpChallengeVisible(
   page: Page,
   timeoutMs = 3_000,
@@ -1256,26 +1213,65 @@ async function currentOtpChallengeVisible(
   return false;
 }
 
-/** Shared human-authentication transaction for every Fubon product workflow. */
-async function completeFubonHumanLoginAttempt(
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Workflow cancelled."));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Fubon authentication using the App-owned human-assistance port. */
+export async function completeFubonHumanLoginWithAssistance(
   page: Page,
-  session: string,
   values: FubonLoginCredentialValues,
+  options: Readonly<{
+    signal: AbortSignal;
+    request(contract: HumanAssistanceContractInput, signal: AbortSignal): Promise<HumanAssistanceCompletionStatus>;
+    event?(code: "human-assistance-requested" | "human-assistance-completed" | "human-assistance-failed"): Promise<void>;
+  }>,
 ): Promise<void> {
+  const { signal, request } = options;
   const dialogs = captureFubonLoginDialogs(page);
+  const event = options.event ?? (() => Promise.resolve());
+  const assistance = async (stage: WorkflowHumanAssistanceStage) => {
+    signal.throwIfAborted();
+    const contract = await withAbort(emitHumanAssistanceStage(stage, (value) => value), signal);
+    await event("human-assistance-requested");
+    const status = await withAbort(request(contract, signal), signal);
+    signal.throwIfAborted();
+    if (status !== "entered" && status !== "verified") {
+      await event("human-assistance-failed");
+      throw new Error("Fubon login human assistance did not complete.");
+    }
+    await event("human-assistance-completed");
+  };
+
   try {
     let outcomeWindowStarted = false;
     let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
-    const submit = await runFubonCaptchaAcquisition({
+    const submit = await withAbort(runFubonCaptchaAcquisition({
       prepare: async () => {
+        signal.throwIfAborted();
         await prepareFubonLoginDocument(page);
         await fillFubonLoginCredentials(page, values);
         assistanceBefore = await readFubonLoginGeneration(page);
-        if (!assistanceBefore) {
-          throw new Error(
-            "Fubon login frame disappeared while preparing assistance.",
-          );
-        }
+        if (!assistanceBefore)
+          throw new Error("Fubon login frame disappeared while preparing assistance.");
         return assistanceBefore;
       },
       assistAndPause: async () => {
@@ -1283,78 +1279,67 @@ async function completeFubonHumanLoginAttempt(
           dialogs.beginOutcomeWindow();
           outcomeWindowStarted = true;
         }
-        await emitFubonCaptchaAssistance(page);
-        console.log(
-          "manual-auth-required: enter the CAPTCHA in the browser, then run `npx libretto resume --session " +
-            session +
-            "`.",
+        const frame = await waitForLoginFrame(
+          page,
+          FUBON_LOGIN_FRAME_NAME,
+          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
         );
-        await pause(session);
+        await frame.locator("#m1_userCaptcha").focus();
+        await assistance(fubonCaptchaAssistanceStage(frame));
       },
       submit: async () => {
-        if (
-          dialogs.messages.length > 0 ||
-          dialogs.terminalReason !== undefined
-        ) {
-          await waitForFubonPostLoginOutcome(page, {
+        signal.throwIfAborted();
+        if (dialogs.messages.length > 0 || dialogs.terminalReason !== undefined) {
+          await withAbort(waitForFubonPostLoginOutcome(page, {
             dialogChannel: dialogs,
-          });
+            silent: true,
+          }), signal);
         }
-        const result = await submitFubonCaptchaFromCurrentFrame(page, values, {
+        return await submitFubonCaptchaFromCurrentFrame(page, values, {
           before: assistanceBefore,
         });
-        if (result.status === "reacquire-human-assistance") {
-          console.log("fubon-login-human-reacquire", {
-            stage: "captcha",
-            reason: result.reason,
-          });
-        }
-        return result;
       },
-    });
+    }), signal);
 
-    if (submit.status === "submit-outcome-uncertain") {
+    if (submit.status === "submit-outcome-uncertain")
       throw new FubonSubmitOutcomeUncertainError(submit.reason);
-    }
-    if (submit.status !== "submitted") {
-      throw new Error(
-        `Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`,
-      );
-    }
+    if (submit.status !== "submitted")
+      throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
 
-    if (await currentOtpChallengeVisible(page)) {
+    if (await withAbort(currentOtpChallengeVisible(page), signal)) {
       for (;;) {
+        signal.throwIfAborted();
         const otpBefore = await readFubonLoginGeneration(page);
-        await emitFubonOtpAssistance(page);
-        console.log(
-          "manual-otp-required: complete OTP in the browser, then run `npx libretto resume --session " +
-            session +
-            "`.",
+        const frame = await waitForLoginFrame(
+          page,
+          FUBON_LOGIN_FRAME_NAME,
+          Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
+          DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
         );
-        await pause(session);
-        const otp = await inspectFubonOtpFromCurrentFrame(page, {
-          before: otpBefore,
+        await assistance({
+          stageId: "fubon-login-otp",
+          title: "Enter the Fubon OTP",
+          targets: [{
+            id: "otp-input",
+            label: "OTP input",
+            semanticId: "fubon.login.otp-input",
+            modes: ["click", "type"],
+            locator: frame.locator("#m1_inputOTP"),
+          }],
+          contextRegions: [{ id: "otp-challenge", label: "OTP instructions", semanticId: "fubon.login.otp-challenge" }],
+          completion: { mode: "inline", targetIds: ["otp-input"] },
+          focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
         });
+        const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
         if (otp.status === "ready" || otp.status === "no-challenge") break;
-        console.log("fubon-login-human-reacquire", {
-          stage: "otp",
-          reason: otp.reason,
-        });
       }
     }
 
-    await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs });
+    await withAbort(waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true }), signal);
   } finally {
     dialogs.dispose();
   }
-}
-
-export async function completeFubonHumanLogin(
-  page: Page,
-  session: string,
-  values: FubonLoginCredentialValues,
-): Promise<void> {
-  await completeFubonHumanLoginAttempt(page, session, values);
 }
 
 function emitOutcome(
@@ -1740,6 +1725,12 @@ export async function waitForFubonPostLoginOutcome(
     options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
   );
   const deadline = Date.now() + timeoutMs;
+  const loginFormRejectionAfter = Math.min(
+    deadline,
+    Date.now() + LOGIN_FORM_REJECTION_GRACE_MS,
+  );
+  let lastRejectionReason: string | undefined;
+  let lastErrorCode: string | undefined;
   const probe =
     options.probe ??
     ((actualPage: Page, context: FubonLoginProbeContext) =>
@@ -1785,13 +1776,23 @@ export async function waitForFubonPostLoginOutcome(
     }
 
     const rejectionReason = rejectionForSnapshot(snapshot);
+    lastRejectionReason = rejectionReason;
+    lastErrorCode = snapshot?.errorCode;
     if (rejectionReason) {
-      emitOutcome("rejected", rejectionReason);
-      throw new FubonLoginRejectedError(rejectionReason, snapshot?.errorCode);
+      // The login form is also visible immediately after the click. Give the
+      // bank time to emit its actual post-submit result or dialog before
+      // interpreting that unchanged form as a rejection.
+      if (
+        rejectionReason !== "login-form-visible" ||
+        Date.now() >= loginFormRejectionAfter
+      ) {
+        if (!options.silent) emitOutcome("rejected", rejectionReason);
+        throw new FubonLoginRejectedError(rejectionReason, snapshot?.errorCode);
+      }
     }
 
     if (authenticatedMarkerForSnapshot(snapshot)) {
-      emitOutcome("success", "marker");
+      if (!options.silent) emitOutcome("success", "marker");
       return;
     }
 
@@ -1809,6 +1810,11 @@ export async function waitForFubonPostLoginOutcome(
     throwDialogRejection(dialogMessage, undefined);
   }
 
-  emitOutcome("timeout", "no-authenticated-outcome");
+  if (lastRejectionReason === "login-form-visible") {
+    if (!options.silent) emitOutcome("rejected", lastRejectionReason);
+    throw new FubonLoginRejectedError(lastRejectionReason, lastErrorCode);
+  }
+
+  if (!options.silent) emitOutcome("timeout", "no-authenticated-outcome");
   throw new Error("Fubon post-login outcome timed out.");
 }

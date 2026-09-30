@@ -1,39 +1,42 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
-import type { Frame, Page } from "playwright";
+import type { Page, Response } from "playwright";
 import { z } from "zod";
 import {
+  creditCardBalanceCommandRequest,
+  creditCardCommandRequestFromCanonicalCapture,
+} from "../ledger/pglite/credit-card-adapters.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import {
+  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
-  commitEsunCreditCardCapture,
+  esunCanonicalSpineCapture,
+  esunNeutralCreditCardCapture,
   ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
   type EsunCreditCardCanonicalCaptureOptions,
   type EsunCreditCardIdentityInput,
   type EsunCreditCardSettledPeriod,
   type EsunCreditCardSourceRow,
+  type EsunCreditCardTimeline,
   type EsunCreditCardValidatedCapture,
-} from "../ledger/canonical/esun-credit-card.ts";
+} from "../ledger/canonical/esun-credit-card-admission.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  commitCreditCardCurrentBalanceCapture,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
   type CreditCardCurrentBalanceObservationInput,
-} from "../ledger/canonical/credit-card-current-balance-writer.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { captureCardRowCounts } from "../ledger/credit-card-capture.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
+import {
+  emitHumanAssistanceStage,
+  type WorkflowHumanAssistanceStage,
+} from "./human-assistance.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -84,49 +87,15 @@ export type EsunIssuerStatementSummary = {
 export type EsunCurrentUsedCreditSnapshot = Readonly<{
   usedCredit: string;
   available: string;
-  sourceField: "已用額度";
+  sourceField: "已用額度" | "usedCreditLimit";
   endpoint?: string;
-  /** Issuer UI 查詢時間, in Asia/Taipei, retained verbatim as time evidence. */
+  /** Issuer response time in Asia/Taipei, retained verbatim as time evidence. */
   queryTime: string;
   httpDate?: string;
   cacheControl?: string;
 }>;
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
-
-const inputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
-});
-
-const tableFileSchema = z.object({
-  baseName: z.string(),
-  kind: z.enum(["unbilled", "billed"]),
-  rowCount: z.number().int().nonnegative(),
-  headers: z.array(z.string()),
-  periods: z.array(z.string()),
-  csvFilename: z.string(),
-  jsonFilename: z.string(),
-  csvPath: z.string(),
-  jsonPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonBytes: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  usedExistingSession: z.boolean(),
-  count: z.number().int().nonnegative(),
-  query: z.object({
-    startDate: z.string(),
-    endDate: z.string(),
-  }),
-  files: z.array(tableFileSchema),
-  canonicalAdmission: z.enum(["not-configured", "admitted"]),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-});
-
-type WorkflowInput = z.infer<typeof inputSchema>;
-type TableFile = z.infer<typeof tableFileSchema>;
 
 function esunCurrentAmount(value: string | undefined): string {
   const normalized = cleanText(value).replace(/[,，\s]/gu, "");
@@ -221,19 +190,6 @@ export function parseEsunCurrentCreditCardUsedCreditHtml(
   };
 }
 
-const statementHeaders = [
-  "statement_period",
-  "card_number",
-  "card_label",
-  "consume_date",
-  "description",
-  "foreign_currency",
-  "foreign_amount",
-  "payment_currency",
-  "twd_amount",
-  "payment_status",
-];
-
 function requireCredential(
   credentials: EsunCredentials,
   name: keyof EsunCredentials,
@@ -251,14 +207,6 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function csvCell(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function formatDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -268,34 +216,6 @@ function formatDate(date: Date): string {
 function defaultStartDate(endDate: string): string {
   const [year, month, day] = endDate.split("/").map(Number);
   return `${year - 1}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
-}
-
-function createTimestampGenerator(): () => string {
-  let lastTimestamp = 0;
-
-  return () => {
-    const timestamp = Date.now();
-    lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-    return String(lastTimestamp);
-  };
-}
-
-function splitCurrencyAmount(value: string): { currency: string; amount: string } {
-  const normalized = cleanText(value).replace(/,/g, "");
-  const match = normalized.match(/^([A-Z]{3})\s*(.+)$/i);
-  if (!match) return { currency: "", amount: normalized };
-  return { currency: match[1].toUpperCase(), amount: match[2].trim() };
-}
-
-function consumeDateSortKey(row: StatementRow): string {
-  return row.consumeDate.replace(/\D/g, "");
-}
-
-function compareRowsByConsumeDateDesc(
-  left: StatementRow,
-  right: StatementRow,
-): number {
-  return consumeDateSortKey(right).localeCompare(consumeDateSortKey(left));
 }
 
 export function esunCreditCardStatementKind(
@@ -317,7 +237,8 @@ export function isEsunCompleteGrid({
 }
 
 export const ESUN_CREDIT_CARD_IDENTITY_EPOCH =
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE;
+  // The portfolio identity did not change when timeline coverage became variable.
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE;
 
 function normalizedEsunLoginPart(value: string | undefined): string {
   return (value ?? "")
@@ -504,7 +425,7 @@ export type EsunCanonicalCaptureBuildInput = {
   identity: EsunCreditCardIdentityInput;
   statementRows: readonly StatementRow[];
   unbilledRows?: readonly StatementRow[];
-  grid: GridState;
+  grid: GridState | EsunCreditCardTimeline;
   capture: CaptureMetadata;
   instrumentFingerprintSecret: string;
   /** Explicit issuer cycle-summary evidence; query dates are not statements. */
@@ -567,7 +488,10 @@ export function buildEsunCanonicalCreditCardCapture(
     input.capture.captureKinds[0] !== "billed" ||
     input.capture.captureKinds[1] !== "unbilled" ||
     input.capture.completenessEvidence.range !== "default_one_year" ||
-    !isEsunCompleteGrid(input.grid) ||
+    !("kind" in input.grid
+      ? input.grid.terminal && input.grid.terminalCursor === 4 &&
+        (input.grid.monthCount === 12 || input.grid.monthCount === 13)
+      : isEsunCompleteGrid(input.grid)) ||
     input.identity.identityEpochKey !== ESUN_CREDIT_CARD_IDENTITY_EPOCH
   ) {
     return undefined;
@@ -586,14 +510,16 @@ export function buildEsunCanonicalCreditCardCapture(
     identity: input.identity,
     statementRows,
     unbilledRows,
-    grid: {
-      kind: "combined",
-      currentPage: Number(input.grid.currentPage),
-      pageSize: Number(input.grid.currentPageSize),
-      maximumPageSize: ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
-      capturedRowCount: allRows.length,
-      terminal: true,
-    },
+    grid: "kind" in input.grid
+      ? input.grid
+      : {
+          kind: "combined",
+          currentPage: Number(input.grid.currentPage),
+          pageSize: Number(input.grid.currentPageSize),
+          maximumPageSize: ESUN_CREDIT_CARD_MAX_PAGE_SIZE,
+          capturedRowCount: allRows.length,
+          terminal: true,
+        },
     ...(input.settledPeriods === undefined
       ? {}
       : { settledPeriods: input.settledPeriods }),
@@ -601,108 +527,112 @@ export function buildEsunCanonicalCreditCardCapture(
   return buildCanonicalEsunCreditCardCapture(options);
 }
 
-async function waitForFrame(
-  page: Page,
-  name: string,
-  timeoutMs = 60_000,
-): Promise<Frame> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const frame = page.frame({ name });
-    if (frame) return frame;
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Timed out waiting for frame ${name}`);
-}
-
-async function mainFrame(page: Page): Promise<Frame> {
-  return await waitForFrame(page, "iframe1");
-}
-
 async function readEsunCurrentUsedCredit(
-  page: Page,
+  response: Response | undefined,
+  readJson: (response: Response) => Promise<unknown> = (value) => value.json(),
 ): Promise<EsunCurrentUsedCreditSnapshot | undefined> {
-  const frame = await mainFrame(page);
-  const navigation = frame.locator(".main_nav_ul_li03").first();
-  await navigation.hover();
-  const link = frame.locator('[taskid="FCM01006"] a').first();
-  await link.waitFor({ state: "visible", timeout: 30_000 });
-  const responsePromise = page
-    .waitForResponse(
-      (response) =>
-        response.url().includes("/l1/l2/dispatcher") &&
-        response.request().method() === "GET" &&
-        response.url().includes("taskId=FCM01006"),
-      { timeout: 60_000 },
-    )
-    .catch(() => null);
-  await link.click({ force: true });
-  await frame.locator("#fcm01006\\:grid_DataGridBody").waitFor({ timeout: 60_000 });
-  const html = await frame.locator("body").innerHTML();
-  const parsed = parseEsunCurrentCreditCardUsedCreditHtml(html);
-  if (!parsed) return undefined;
-  const response = await responsePromise;
-  const headers = response?.headers();
-  if (!response || !headers?.["cache-control"]) return undefined;
-  return {
-    ...parsed,
+  if (!response || response.status() !== 200) return undefined;
+  return esunCurrentUsedCreditFromSummaryResponse(await readJson(response), {
     endpoint: response.url(),
-    ...(headers.date ? { httpDate: headers.date } : {}),
-    cacheControl: headers["cache-control"],
+    httpDate: response.headers().date,
+  });
+}
+
+export function esunCurrentUsedCreditFromSummaryResponse(
+  value: unknown,
+  evidence: { endpoint: string; httpDate?: string },
+): EsunCurrentUsedCreditSnapshot | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  if (body.resultCode !== "0000" || typeof body.resultTime !== "string") return undefined;
+  const result = body.resultBody;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const fields = result as Record<string, unknown>;
+  if (fields.hasCreditCard !== true || typeof fields.usedCreditLimit !== "string" ||
+    typeof fields.availableCreditLimit !== "string") return undefined;
+  const usedCredit = issuerAmount(fields.usedCreditLimit);
+  const available = issuerAmount(fields.availableCreditLimit);
+  if (!usedCredit || !available) return undefined;
+  const httpDate = evidence.httpDate;
+  if (!httpDate || !Number.isFinite(Date.parse(httpDate))) return undefined;
+  return {
+    usedCredit,
+    available,
+    sourceField: "usedCreditLimit",
+    endpoint: evidence.endpoint,
+    queryTime: body.resultTime,
+    httpDate,
   };
 }
 
 async function isSignedIn(page: Page): Promise<boolean> {
-  const frame = page.frame({ name: "iframe1" });
-  if (!frame) return false;
-  return await frame
-    .locator("a", { hasText: "登出" })
+  return await page
+    .getByText("信用卡", { exact: true })
     .isVisible()
     .catch(() => false);
 }
 
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("E.SUN workflow was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function waitForOptionalResponse(
+  response: Promise<Response | undefined>,
+  timeoutMs: number,
+): Promise<Response | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs);
+    response.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
 async function waitForSignedInState(page: Page): Promise<void> {
-  const frame = await mainFrame(page);
-  await frame.locator("a", { hasText: "登出" }).waitFor({ timeout: 60_000 });
+  await page.getByText("信用卡", { exact: true }).waitFor({ timeout: 60_000 });
 }
 
-export async function acceptDuplicateLoginIfPresent(frame: Frame): Promise<void> {
-  const confirmButton = frame
-    .locator(".ui-dialog button, .ui-dialog a")
-    .filter({ hasText: /確定|確認|是|OK/i })
-    .first();
-  await confirmButton
-    .or(frame.locator("a", { hasText: "登出" }))
-    .first()
-    .waitFor({ timeout: 60_000 });
-  if (await confirmButton.isVisible().catch(() => false)) {
-    await confirmButton.click();
-  }
-}
-
-async function fillLoginForm(
+async function enterLoginCredentials(
   page: Page,
   credentials: EsunCredentials,
 ): Promise<void> {
-  await page.goto(BANK_ENTRY_URL);
-  const frame = await mainFrame(page);
-  await frame.locator("#loginform\\:linkCommand").waitFor({ timeout: 60_000 });
-  await page.waitForTimeout(500);
+  await page.locator('input[name="id"]').waitFor({ timeout: 60_000 });
 
   const userId = requireCredential(credentials, "esun_user_id");
   const account = requireCredential(credentials, "esun_account");
   const password = requireCredential(credentials, "esun_password");
   const fields = [
-    { label: "account", locator: frame.locator("#loginform\\:name"), value: account },
+    { label: "user id", locator: page.locator('input[name="id"]'), value: userId },
+    { label: "account", locator: page.locator('input[name="userName"]'), value: account },
     {
       label: "password",
-      locator: frame.locator("#loginform\\:pxsswd"),
+      locator: page.locator('input[name="pxssword"]'),
       value: password,
-    },
-    {
-      label: "user id",
-      locator: frame.locator("#loginform\\:custid"),
-      value: userId,
     },
   ];
 
@@ -715,107 +645,200 @@ async function fillLoginForm(
       throw new Error(`ESun login ${field.label} field did not retain value`);
     }
   }
-  await frame.locator("#loginform\\:linkCommand").click();
-  await acceptDuplicateLoginIfPresent(frame);
-  await waitForSignedInState(page);
+  await page.getByRole("button", { name: "登入", exact: true }).click();
 }
 
-async function openCreditCardStatementsPage(page: Page): Promise<Frame> {
-  const frame = await mainFrame(page);
-  const form = frame.locator("#fcm01004");
-  if (await form.isVisible().catch(() => false)) return frame;
+const timelineResponseSchema = z.object({
+  body: z.object({
+    rtnCode: z.literal("S"),
+    cursor: z.number().int().nonnegative(),
+    transList: z.array(z.object({
+      year: z.string().regex(/^\d{4}$/u),
+      month: z.string().regex(/^(?:0[1-9]|1[0-2])$/u),
+      transDetailList: z.array(z.object({
+        merchantName: z.string(),
+        paymentCurrency: z.string(),
+        paymentAmount: z.number().finite(),
+        transCurrency: z.string(),
+        transAmount: z.number().finite(),
+        cardNo: z.string(),
+        statusName: z.string(),
+        transMonthDay: z.string().regex(/^\d{4}$/u),
+      })),
+    })),
+  }),
+});
 
-  // Use ESun's widget loader directly; the menu flyout can cover this link.
-  await frame.evaluate(() => {
-    const loader = (
-      window as unknown as {
-        _leftMenuLoadWidget?: (
-          event: Event,
-          taskId: string,
-          appId: string,
-          menuId: string,
-        ) => void;
-      }
-    )._leftMenuLoadWidget;
-    if (!loader) throw new Error("_leftMenuLoadWidget not found");
-    loader(new Event("click"), "FCM01004", "FCM", "MFCM0202");
-  });
-  await frame.locator("#fcm01004\\:startDate").waitFor({ timeout: 60_000 });
-  return frame;
+async function openCardPopup(
+  page: Page,
+  label: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<Page> {
+  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+  await withAbort(page.getByText(label, { exact: true }).click(), signal);
+  const popup = await withAbort(popupPromise, signal);
+  await withAbort(
+    popup.waitForURL((url) => url.pathname === path, { timeout: 60_000 }),
+    signal,
+  );
+  return popup;
+}
+
+function priorMonth(month: string): string {
+  const [year, value] = month.split("/").map(Number);
+  return value === 1
+    ? `${year - 1}/12`
+    : `${year}/${String(value - 1).padStart(2, "0")}`;
+}
+
+function nextMonth(month: string): string {
+  const [year, value] = month.split("/").map(Number);
+  return value === 12
+    ? `${year + 1}/01`
+    : `${year}/${String(value + 1).padStart(2, "0")}`;
+}
+
+export function rowsFromTimelineResponse(raw: unknown): {
+  rows: StatementRow[];
+  months: string[];
+  cursor: number;
+} {
+  const response = timelineResponseSchema.parse(raw);
+  const rows: StatementRow[] = [];
+  const months: string[] = [];
+  for (const group of response.body.transList) {
+    const month = `${group.year}/${group.month}`;
+    months.push(month);
+    for (const item of group.transDetailList) {
+      const status = esunCreditCardStatementKind(item.statusName);
+      if (!status) throw new Error("E.SUN transaction has an unsupported billing status.");
+      if (item.transMonthDay.slice(0, 2) !== group.month)
+        throw new Error("E.SUN transaction date conflicts with its month group.");
+      const consumeDate = `${group.year}/${item.transMonthDay.slice(0, 2)}/${item.transMonthDay.slice(2)}`;
+      if (!isoDate(consumeDate)) throw new Error("E.SUN transaction date is invalid.");
+      rows.push({
+        cardNumber: item.cardNo,
+        consumeDate,
+        description: item.merchantName,
+        foreignCurrency: item.transCurrency,
+        foreignAmount: String(item.transAmount),
+        paymentCurrency: item.paymentCurrency,
+        twdAmount: String(item.paymentAmount),
+        paymentStatus: status,
+        sourcePaymentStatus: item.statusName,
+      });
+    }
+  }
+  return { rows, months, cursor: response.body.cursor };
+}
+
+export async function loadNextEsunTimelineResponse(
+  popup: Page,
+  signal?: AbortSignal,
+  timeoutMs = 15_000,
+): Promise<Response> {
+  signal?.throwIfAborted();
+  const response = popup.waitForResponse(
+    (candidate) => candidate.url().includes("/GW/creditLastYear/getFilterResult") &&
+      candidate.request().method() === "POST",
+    { timeout: timeoutMs },
+  );
+  void response.catch(() => undefined);
+  // Timeline content can grow after the response but before layout settles.
+  // Follow the current bottom until the bank emits the next page response.
+  while (true) {
+    signal?.throwIfAborted();
+    await withAbort(popup.locator(".timeline-query-continer").evaluate(
+      (element) => { element.scrollTop = element.scrollHeight; },
+    ), signal);
+    const next = await withAbort(Promise.race([
+      response,
+      popup.waitForTimeout(150).then(() => null),
+    ]), signal);
+    if (next) return next;
+  }
 }
 
 async function queryStatements(
   page: Page,
-  input: WorkflowInput,
-): Promise<{ frame: Frame; startDate: string; endDate: string }> {
+  input: Readonly<{ startDate?: string; endDate?: string }>,
+  options: Readonly<{
+    readJson?: (response: Response) => Promise<unknown>;
+    signal?: AbortSignal;
+  }> = {},
+): Promise<{ rows: StatementRow[]; timeline: EsunCreditCardTimeline; startDate: string; endDate: string }> {
   const endDate = input.endDate ?? formatDate(new Date());
   const startDate = input.startDate ?? defaultStartDate(endDate);
-  const frame = await openCreditCardStatementsPage(page);
-
-  await frame.locator("#fcm01004\\:intervalrdo4").check();
-  await frame.locator("#fcm01004\\:startDate").fill(startDate);
-  await frame.locator("#fcm01004\\:endDate").fill(endDate);
-  await frame.locator("#fcm01004\\:sortrdo2").check();
-  await frame.locator("#fcm01004\\:linkCommand").click();
-  await frame
-    .locator("#fcm01004\\:gridList_0_DataGridBody")
-    .waitFor({ timeout: 60_000 });
-
-  return { frame, startDate, endDate };
-}
-
-async function gridState(frame: Frame): Promise<GridState> {
-  const fields = frame.locator("input, select");
-  let currentPage: string | undefined;
-  let currentPageSize: string | undefined;
-  const count = await fields.count();
-  for (let index = 0; index < count; index += 1) {
-    const field = fields.nth(index);
-    const key =
-      (await field.getAttribute("name")) ??
-      (await field.getAttribute("id")) ??
-      "";
-    if (/currentpagesize/i.test(key)) {
-      currentPageSize ??= await field.inputValue();
-    } else if (/currentpage/i.test(key)) {
-      currentPage ??= await field.inputValue();
+  if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
+  const popup = await openCardPopup(page, "刷卡明細", "/IESC/cardTrans", options.signal);
+  try {
+    options.signal?.throwIfAborted();
+    const responsePromise = popup.waitForResponse(
+      (response) => response.url().includes("/GW/creditLastYear/getFilterResult") &&
+        response.request().method() === "POST",
+      { timeout: 30_000 },
+    );
+    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
+    await withAbort(popup.getByText("近一年刷卡明細", { exact: true }).click(), options.signal);
+    let response = await withAbort(responsePromise, options.signal);
+    const rows: StatementRow[] = [];
+    const months: string[] = [];
+    let pageCount = 0;
+    let lastCursor = 0;
+    while (pageCount < 4) {
+      options.signal?.throwIfAborted();
+      if (response.status() !== 200) throw new Error("E.SUN timeline request failed.");
+      const raw = options.readJson
+        ? await options.readJson(response)
+        : await response.json();
+      let parsed: ReturnType<typeof rowsFromTimelineResponse>;
+      try {
+        parsed = rowsFromTimelineResponse(raw);
+      } catch {
+        throw new Error("E.SUN timeline source is malformed or incomplete.");
+      }
+      if (parsed.cursor <= lastCursor || parsed.cursor > 4)
+        throw new Error("E.SUN timeline cursor is invalid or out of order.");
+      lastCursor = parsed.cursor;
+      for (const month of parsed.months) {
+        if (months.length && priorMonth(months[months.length - 1]!) !== month)
+          throw new Error("E.SUN timeline month coverage is discontinuous.");
+        months.push(month);
+      }
+      rows.push(...parsed.rows);
+      pageCount += 1;
+      if (lastCursor === 4) break;
+      response = await loadNextEsunTimelineResponse(popup, options.signal);
     }
+    const oldestMonth = months.at(-1);
+    const anniversaryMonth = startDate.slice(0, 7);
+    if (lastCursor !== 4 || months[0] !== endDate.slice(0, 7) ||
+      (months.length !== 12 && months.length !== 13) ||
+      (oldestMonth !== anniversaryMonth && oldestMonth !== nextMonth(anniversaryMonth)))
+      throw new Error("E.SUN timeline did not reach a complete 12- or 13-month terminal page.");
+    const coveredStartDate = `${oldestMonth}/01`;
+    if (rows.some((row) => row.consumeDate < coveredStartDate || row.consumeDate > endDate))
+      throw new Error("E.SUN timeline contains a transaction outside its captured range.");
+    return {
+      rows,
+      timeline: {
+        kind: "past-year-timeline",
+        firstMonth: months[0]!,
+        lastMonth: oldestMonth,
+        months,
+        pageCount,
+        monthCount: months.length,
+        capturedRowCount: rows.length,
+        terminal: true,
+        terminalCursor: 4,
+      },
+      startDate: coveredStartDate,
+      endDate,
+    };
+  } finally {
+    await popup.close();
   }
-  return {
-    currentPage,
-    currentPageSize,
-  };
-}
-
-async function readStatementRows(
-  frame: Frame,
-): Promise<StatementRow[]> {
-  const table = frame.locator("#fcm01004\\:gridList_0_DataGridBody");
-  const rows = await table.locator("tr").all();
-  const statementRows: StatementRow[] = [];
-
-  for (const row of rows.slice(1)) {
-    const cells = (await row.locator("th, td").allTextContents()).map(cleanText);
-    if (cells.length < 6 || cells[0] === "消費日期") continue;
-    const paymentStatus = esunCreditCardStatementKind(cells[5] ?? "");
-    if (!paymentStatus) continue;
-
-    const charge = splitCurrencyAmount(cells[2] ?? "");
-    const payment = splitCurrencyAmount(cells[3] ?? "");
-    statementRows.push({
-      cardNumber: cells[4] ?? "",
-      consumeDate: cells[0] ?? "",
-      description: cells[1] ?? "",
-      foreignCurrency: charge.currency,
-      foreignAmount: charge.amount,
-      paymentCurrency: payment.currency,
-      twdAmount: payment.amount,
-      paymentStatus,
-      sourcePaymentStatus: cells[5] ?? "",
-    });
-  }
-
-  return statementRows;
 }
 
 function labeledCellValue(rows: readonly string[][], label: string): string | undefined {
@@ -855,7 +878,7 @@ function esunExactAmount(value: string): CreditCardExactAmount {
 }
 
 function esunCreditCurrentSnapshotDate(queryTime: string): string {
-  const match = /^(\d{4})\/(\d{2})\/(\d{2})\s+\d{2}:\d{2}:\d{2}$/u.exec(queryTime);
+  const match = /^(\d{4})[/-](\d{2})[/-](\d{2})\s+\d{2}:\d{2}:\d{2}$/u.exec(queryTime);
   if (!match) throw new Error("E.SUN credit current snapshot query time is invalid.");
   const civil = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
   if (
@@ -869,7 +892,7 @@ function esunCreditCurrentSnapshotDate(queryTime: string): string {
 }
 
 function esunCreditCurrentSnapshotInstant(queryTime: string): string {
-  const match = /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u.exec(queryTime);
+  const match = /^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u.exec(queryTime);
   if (!match) throw new Error("E.SUN credit current snapshot query time is invalid.");
   const civil = new Date(
     Date.UTC(
@@ -894,27 +917,32 @@ function esunCreditCurrentSnapshotInstant(queryTime: string): string {
   return new Date(civil.getTime() - 8 * 60 * 60 * 1000).toISOString();
 }
 
-function esunCreditCurrentSnapshotCapture(
+export function esunCreditCurrentSnapshotCapture(
   capture: EsunCreditCardValidatedCapture,
   snapshot: EsunCurrentUsedCreditSnapshot,
 ): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
-  if (!snapshot.endpoint || !snapshot.queryTime || !snapshot.cacheControl)
+  const isRedesigned = snapshot.sourceField === "usedCreditLimit";
+  if (!snapshot.endpoint || !snapshot.queryTime ||
+    (isRedesigned ? !snapshot.httpDate : !snapshot.cacheControl))
     throw new Error("E.SUN current credit snapshot is missing response evidence.");
+  const route = isRedesigned
+    ? "esun/credit-card/current-used-credit-v2"
+    : "esun/credit-card/current-used-credit-v1";
   const effectiveAt = esunCreditCurrentSnapshotInstant(snapshot.queryTime);
   const used = esunExactAmount(snapshot.usedCredit);
   const sourceRecordKey = `sha256:${createHash("sha256")
-    .update(JSON.stringify(["esun-credit-current-used-credit-v1", capture.identity.accountNaturalKey, snapshot.queryTime]))
+    .update(JSON.stringify([route, capture.identity.accountNaturalKey, snapshot.queryTime]))
     .digest("base64url")}`;
   const providerKey = `sha256:${createHash("sha256")
-    .update(JSON.stringify(["esun-credit-current-used-credit-provider-v1", snapshot.endpoint]))
+    .update(JSON.stringify([route, snapshot.endpoint]))
     .digest("base64url")}`;
   const time = {
     effectiveAt,
     effectiveTimeBasis: "provider-query-time" as const,
-    effectiveTimeRuleVersion: "esun/credit-card/current-used-credit-v1",
-    sourceField: "查詢時間" as const,
+    effectiveTimeRuleVersion: route,
+    sourceField: isRedesigned ? "resultTime" as const : "查詢時間" as const,
     sourceValue: snapshot.queryTime,
-    contractVersion: "esun/credit-card/current-used-credit-v1",
+    contractVersion: route,
   };
   const estimate = {
     kind: "estimate" as const,
@@ -933,8 +961,8 @@ function esunCreditCurrentSnapshotCapture(
   };
   return admitCreditCardCurrentBalanceCapture({
     captureId: `${capture.captureId}:current-used-credit`,
-    authorityRoute: "esun/credit-card/current-used-credit-v1",
-    contractVersion: "esun/credit-card/current-used-credit-v1",
+    authorityRoute: route,
+    contractVersion: route,
     subjectDigest: capture.identity.accountNaturalKey,
     identity: canonicalCreditCardCurrentBalanceIdentity({
       integrationNamespace: "esun",
@@ -951,6 +979,7 @@ function esunCreditCurrentSnapshotCapture(
       endpoint: snapshot.endpoint,
       status: 200,
       cacheControl: snapshot.cacheControl,
+      httpDate: snapshot.httpDate,
     },
     pages: [{
       pageOrdinal: 0,
@@ -961,6 +990,7 @@ function esunCreditCurrentSnapshotCapture(
         sourceField: snapshot.sourceField,
         aggregate: "歸戶",
         queryTime: snapshot.queryTime,
+        ...(isRedesigned ? { resultCode: "0000", httpDate: snapshot.httpDate } : {}),
       },
     }],
     records: [creditCardCurrentBalanceSourceRecord({
@@ -978,6 +1008,8 @@ function esunCreditCurrentSnapshotCapture(
         usedCredit: snapshot.usedCredit,
         available: snapshot.available,
         queryTime: snapshot.queryTime,
+        endpoint: snapshot.endpoint,
+        ...(isRedesigned ? { resultCode: "0000" } : {}),
         ...(snapshot.httpDate ? { httpDate: snapshot.httpDate } : {}),
       },
     })],
@@ -1023,105 +1055,89 @@ export function esunIssuerSummaryFromText(
   return { cycleEnd, dueDate, balance, minimumPayment, currency: "TWD" };
 }
 
-function redactedIssuerEvidenceShape(value: string): string {
-  const labels = [
-    "帳款結帳日",
-    "繳款截止日",
-    "本期應繳總金額",
-    "本期最低應繳金額",
-  ];
-  const lines = value.split(/\r?\n/u).map(cleanText).filter(Boolean);
-  const evidenceLines = lines.filter((line, index) =>
-    labels.some((label) => line.includes(label)) ||
-    labels.some((label) => lines[index - 1]?.includes(label)),
-  );
-  return evidenceLines
-    .map((line) => line.replace(/\d/gu, "#"))
-    .join(" | ")
-    .slice(0, 600);
-}
+const billSummaryResponseSchema = z.object({
+  body: z.object({
+    rtnCode: z.literal("S"),
+    billInfo: z.object({
+      billDate: z.string().regex(/^\d{8}$/u),
+      paymentDueDate: z.string().regex(/^\d{8}$/u),
+      billTotalInfoList: z.array(z.object({
+        billTotalCurrency: z.string(),
+        billTotalAmount: z.number().finite(),
+      })),
+      minimumPaymentInfoList: z.array(z.object({
+        minimumPaymentCurrency: z.string(),
+        minimumPaymentAmount: z.number().finite(),
+      })),
+    }),
+  }),
+});
 
-async function tableCellRows(scope: Page | Frame): Promise<string[][]> {
-  const rows = await scope.locator("tr").all();
-  return await Promise.all(
-    rows.map(async (row) =>
-      (await row.locator("th, td").allTextContents()).map(cleanText)),
-  );
-}
-
-async function openIssuerStatementSummaryPage(page: Page): Promise<Frame> {
-  const frame = await mainFrame(page);
-  await frame.evaluate(() => {
-    const loader = (globalThis as unknown as {
-      _leftMenuLoadWidget?: (
-        event: Event,
-        widget: string,
-        group: string,
-        menu: string,
-      ) => void;
-    })._leftMenuLoadWidget;
-    if (typeof loader !== "function")
-      throw new Error("E.SUN statement menu loader is unavailable.");
-    loader(new Event("click"), "FCM01003", "FCM", "MFCM0201");
-  });
-  const summaryFrame = await mainFrame(page);
-  await summaryFrame.locator("form#fcm01003").waitFor({
-    state: "attached",
-    timeout: 60_000,
-  });
-  return summaryFrame;
+export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatementSummary {
+  const { billInfo } = billSummaryResponseSchema.parse(raw).body;
+  const total = billInfo.billTotalInfoList.find((item) => item.billTotalCurrency === "TWD");
+  const minimum = billInfo.minimumPaymentInfoList.find((item) => item.minimumPaymentCurrency === "TWD");
+  if (!total || !minimum)
+    throw new Error("E.SUN bill summary lacks TWD total or minimum payment.");
+  const date = (value: string) => `${value.slice(0, 4)}/${value.slice(4, 6)}/${value.slice(6)}`;
+  const cycleEnd = date(billInfo.billDate);
+  const dueDate = date(billInfo.paymentDueDate);
+  if (!isoDate(cycleEnd) || !isoDate(dueDate))
+    throw new Error("E.SUN bill summary has an invalid date.");
+  return {
+    cycleEnd,
+    dueDate,
+    balance: String(total.billTotalAmount),
+    minimumPayment: String(minimum.minimumPaymentAmount),
+    currency: "TWD",
+  };
 }
 
 async function readIssuerStatementSummaries(
   page: Page,
+  options: Readonly<{
+    readJson?: (response: Response) => Promise<unknown>;
+    signal?: AbortSignal;
+  }> = {},
 ): Promise<EsunIssuerStatementSummary[]> {
-  const frame = await openIssuerStatementSummaryPage(page);
-  const detailLinks = frame
-    .locator("form#fcm01003 a")
-    .filter({ hasText: /^\s*明細\s*$/u });
-  const count = await detailLinks.count();
-  const summaries: EsunIssuerStatementSummary[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const popupPromise = page.waitForEvent("popup", { timeout: 10_000 });
-    await detailLinks.nth(index).click();
-    const popup = await popupPromise;
-    try {
-      await popup.waitForLoadState("domcontentloaded");
-      const bodyText = await popup.locator("body").innerText();
-      const summary =
-        esunIssuerSummaryFromLabelRows(await tableCellRows(popup)) ??
-        esunIssuerSummaryFromText(bodyText);
-      if (!summary)
-        throw new Error(
-          `E.SUN statement detail lacks complete settled-cycle evidence (${redactedIssuerEvidenceShape(bodyText)}).`,
-        );
-      summaries.push(summary);
-    } finally {
-      await popup.close();
+  const popup = await openCardPopup(page, "帳單明細", "/IESC/cardBill", options.signal);
+  try {
+    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
+    const periods = (await popup.locator(".info-scrollable li").allTextContents())
+      .map(cleanText)
+      .filter((value) => /^\d{4}\/\d{2}$/u.test(value));
+    if (periods.length < 2)
+      throw new Error("E.SUN needs at least two available statement periods.");
+    const summaries: EsunIssuerStatementSummary[] = [];
+    for (const period of [...periods].reverse()) {
+      options.signal?.throwIfAborted();
+      const responsePromise = popup.waitForResponse(
+        (response) => response.url().includes("/GW/creditBill/getSummaryResult") &&
+          response.request().method() === "POST",
+        { timeout: 30_000 },
+      );
+      if (!(await popup.locator(".info-scrollable li").first().isVisible()))
+        await popup.locator('input[name="comboFilter"]').click();
+      await withAbort(popup.getByText(period, { exact: true }).click(), options.signal);
+      const response = await withAbort(responsePromise, options.signal);
+      if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
+      let raw: unknown;
+      try {
+        raw = options.readJson
+          ? await options.readJson(response)
+          : await response.json();
+        summaries.push(issuerSummaryFromBillResponse(raw));
+      } catch (error) {
+        if (error instanceof SourceTextIntegrityError) throw error;
+        throw new Error("E.SUN bill summary source is malformed or incomplete.");
+      }
     }
+    if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
+      throw new Error("E.SUN bill summary dates are duplicated.");
+    return summaries;
+  } finally {
+    await popup.close();
   }
-  if (summaries.length < 2)
-    throw new Error("E.SUN needs at least two consecutive statement closes.");
-  return summaries;
-}
-
-function statementRowsToCsv(rows: StatementRow[]): string {
-  const csvRows = [
-    statementHeaders,
-    ...[...rows].sort(compareRowsByConsumeDateDesc).map((row) => [
-      row.issuerStatementPeriod ?? "",
-      row.cardNumber,
-      "",
-      row.consumeDate,
-      row.description,
-      row.foreignCurrency,
-      row.foreignAmount,
-      row.paymentCurrency,
-      row.twdAmount,
-      row.paymentStatus,
-    ]),
-  ];
-  return rowsToCsv(csvRows);
 }
 
 function statementKind(row: StatementRow): StatementKind {
@@ -1132,242 +1148,301 @@ function cardKeyForRow(row: StatementRow): string {
   return row.cardNumber.replace(/\D/g, "").slice(-4);
 }
 
-function downloadsDir(): string {
-  return join(process.cwd(), "downloads", "esun-credit-card-statements");
-}
+export type EsunProviderWorkflowOutput = Readonly<{
+  usedExistingSession: boolean;
+  count: number;
+  query: Readonly<{ startDate: string; endDate: string }>;
+  canonicalAdmission: "admitted";
+  canonicalCaptureCount: 1;
+  captureId: string;
+}>;
 
-async function writeStatementFile(
-  nextTimestamp: () => string,
-  kind: StatementKind,
-  rows: StatementRow[],
-  capture: CaptureMetadata,
-  cardKeys: string[],
-): Promise<TableFile> {
-  const dir = downloadsDir();
-  await mkdir(dir, { recursive: true });
+const typedInputSchema = z.object({
+  managedIdentitySecret: z.string().trim().min(1),
+  credentials: z.object({
+    esun_user_id: z.string().trim().min(1),
+    esun_account: z.string().trim().min(1),
+    esun_password: z.string().trim().min(1),
+  }),
+  startDate: dateSchema.optional(),
+  endDate: dateSchema.optional(),
+});
 
-  const baseName = `${kind}-statements-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(dir, csvFilename);
-  const jsonPath = join(dir, jsonFilename);
-  const periods = [
-    ...new Set(
-      rows
-        .map((row) => row.issuerStatementPeriod)
-        .filter((period): period is string => Boolean(period)),
-    ),
-  ];
-
-  await writeFile(csvPath, statementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        schemaVersion: "download-table-metadata.v1",
-        generatedAt: new Date().toISOString(),
-        workflow: "esunCreditCardStatements",
-        kind,
-        csvFilename,
-        jsonFilename,
-        rowCount: rows.length,
-        headers: statementHeaders,
-        periods,
-        paymentStatuses:
-          kind === "billed"
-            ? [...new Set(rows.map((row) => row.paymentStatus).filter(Boolean))]
-            : [],
-        ...capture,
-        ...(capture.snapshotMode === "full"
-          ? {
-              cardRowCounts: captureCardRowCounts(
-                cardKeys,
-                rows.map((row) => ({ cardKey: cardKeyForRow(row) })),
-              ),
-            }
-          : {}),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
+function esunManualSignInStage(page: Page): WorkflowHumanAssistanceStage {
+  const pageBody = page.locator("body");
   return {
-    baseName,
-    kind,
-    rowCount: rows.length,
-    headers: statementHeaders,
-    periods,
-    csvFilename,
-    jsonFilename,
-    csvPath,
-    jsonPath,
-    csvBytes: csvStat.size,
-    jsonBytes: jsonStat.size,
+    stageId: "esun-login-verification",
+    title: "Complete E.SUN sign-in or verification",
+    targets: [{
+      id: "sign-in-page",
+      label: "E.SUN sign-in page",
+      semanticId: "esun.login.page",
+      modes: ["click", "type", "press"],
+      locator: pageBody,
+    }],
+    contextRegions: [{
+      id: "sign-in-context",
+      label: "E.SUN sign-in and verification",
+      semanticId: "esun.login.context",
+      locator: pageBody,
+    }],
+    completion: { mode: "independent", targetIds: ["sign-in-page"] },
+    focus: { targetId: "sign-in-page", contextRegionIds: ["sign-in-context"] },
+    prompt: "Complete any provider verification in the open E.SUN page, then wait for the card page to appear.",
   };
 }
 
-export default workflow("esunCreditCardStatements", {
-  startUrl: BANK_ENTRY_URL,
-  credentials: ["esun_user_id", "esun_account", "esun_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, input) => {
-    const { page } = ctx;
-    const credentials = (input as typeof input & { credentials: EsunCredentials })
-      .credentials;
-    console.log("automation-progress: 0");
+async function authenticateEsunPage(
+  page: Page,
+  credentials: EsunCredentials,
+  context: WorkflowContext,
+): Promise<boolean> {
+  if (await isSignedIn(page)) return true;
+  await page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" });
+  context.signal.throwIfAborted();
+  await enterLoginCredentials(page, credentials);
+  context.signal.throwIfAborted();
 
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
+  try {
+    await withAbort(
+      page.getByText("信用卡", { exact: true }).waitFor({ timeout: 15_000 }),
+      context.signal,
+    );
+    return false;
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    const duplicateLogin = page.getByRole("button", { name: "確定登入" });
+    if (await duplicateLogin.isVisible().catch(() => false)) {
+      await withAbort(duplicateLogin.click(), context.signal);
+      await withAbort(waitForSignedInState(page), context.signal);
+      return false;
+    }
+  }
+
+  const contract = await emitHumanAssistanceStage(esunManualSignInStage(page), (value) => value);
+  await context.event("authentication", "human-assistance-requested");
+  const status = await context.humanAssistance.request(contract, context.signal);
+  context.signal.throwIfAborted();
+  if (status !== "entered" && status !== "verified") {
+    await context.event("authentication", "human-assistance-failed");
+    throw new Error(`E.SUN human assistance ended with status ${status}.`);
+  }
+  await withAbort(waitForSignedInState(page), context.signal);
+  await context.event("authentication", "human-assistance-completed");
+  return false;
+}
+
+async function readEsunResponseJson(
+  response: Response,
+  context: WorkflowContext,
+): Promise<unknown> {
+  try {
+    const decoded = context.text.decode(await response.body(), "utf-8");
+    context.text.assertIntact(decoded);
+    return JSON.parse(decoded) as unknown;
+  } catch (error) {
+    await context.event("decoding", "source-decoding-failed");
+    if (error instanceof SourceTextIntegrityError) throw error;
+    throw new Error("E.SUN provider response is not valid JSON.");
+  }
+}
+
+/** App-owned provider entry. This path collects and commits without writing source artifacts. */
+export async function runEsunCreditCardProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+): Promise<EsunProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success) throw new Error("E.SUN workflow credentials are missing or invalid.");
+  if (!context.financialCommit) throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  if (parsed.data.startDate || parsed.data.endDate) {
+    throw new Error("E.SUN canonical collection requires the complete default one-year source.");
+  }
+  context.signal.throwIfAborted();
+
+  const credentials = parsed.data.credentials;
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    page.on("dialog", (dialog) => {
+      void dialog.accept().catch(() => undefined);
     });
+    await context.event("authentication", "authentication-started");
+    const usedExistingSession = await authenticateEsunPage(page, credentials, context);
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
 
-    console.log("automation-progress: 20");
-    const authResult = await librettoAuthenticate(ctx, {
-      credentials,
-      isSignedIn: async ({ page: authPage }) => await isSignedIn(authPage),
-      signIn: async ({ page: authPage }, signInCredentials) => {
-        await fillLoginForm(authPage, signInCredentials as EsunCredentials);
-      },
-    });
-    console.log("automation-progress: 40");
-
-    let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
+    const currentCreditResponse = page.waitForResponse(
+      (response) => response.url() ===
+        "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+      { timeout: 120_000 },
+    ).catch(() => undefined);
+    await context.event("collection", "collection-started");
+    await context.event("decoding", "source-decoding-started");
+    const endDate = formatDate(new Date(context.now()));
+    let startDate = defaultStartDate(endDate);
+    let rows: StatementRow[];
+    let timeline: EsunCreditCardTimeline;
     try {
-      currentUsedCredit = await readEsunCurrentUsedCredit(page);
+      ({ rows, timeline, startDate } = await queryStatements(page, { startDate, endDate }, {
+        readJson: (response) => readEsunResponseJson(response, context),
+        signal: context.signal,
+      }));
+    } catch (error) {
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    await context.event("collection", "timeline-collected", {
+      completed: timeline.pageCount,
+      total: timeline.pageCount,
+    });
+    context.signal.throwIfAborted();
+
+    let issuerSummaries: EsunIssuerStatementSummary[];
+    try {
+      issuerSummaries = await readIssuerStatementSummaries(page, {
+        readJson: (response) => readEsunResponseJson(response, context),
+        signal: context.signal,
+      });
+    } catch (error) {
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    await context.event("collection", "bill-summaries-collected", {
+      completed: issuerSummaries.length,
+      total: issuerSummaries.length,
+    });
+    let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
+    const response = await withAbort(
+      waitForOptionalResponse(currentCreditResponse, 5_000),
+      context.signal,
+    );
+    if (response) {
+      currentUsedCredit = await readEsunCurrentUsedCredit(
+        response,
+        (value) => readEsunResponseJson(value, context),
+      );
+    }
+    let settledPeriods: EsunCreditCardSettledPeriod[];
+    try {
+      settledPeriods = buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
     } catch {
-      console.log("esun-credit-current-used-credit-unavailable", {
-        reason: "optional-current-credit-estimate",
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN bill summary source failed validation.");
+    }
+    const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(rows, settledPeriods);
+    const unbilledRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "unbilled");
+    const billedRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "billed");
+    await context.event("decoding", "source-decoding-completed");
+
+    const isComplete =
+      timeline.firstMonth === endDate.slice(0, 7) &&
+      timeline.lastMonth === startDate.slice(0, 7) &&
+      (timeline.monthCount === 12 || timeline.monthCount === 13) &&
+      timeline.terminal &&
+      timeline.terminalCursor === 4 &&
+      [...billedRows, ...unbilledRows].every((row) => cardKeyForRow(row).length === 4);
+    if (!isComplete || issuerSummaries.length < 2) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: timeline.monthCount,
+        total: 12,
+      });
+      throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
+    }
+    await context.event("validation", "source-validation-started", {
+      completed: rows.length,
+      total: rows.length,
+    });
+
+    const managedSecret = parsed.data.managedIdentitySecret;
+    const identity = deriveEsunCanonicalHumanAttestation(credentials, managedSecret);
+    if (!identity) throw new Error("E.SUN canonical identity could not be established.");
+    const capture: CaptureMetadata = {
+      snapshotMode: "full",
+      captureId: randomUUID(),
+      capturedAt: context.now(),
+      captureKinds: ["billed", "unbilled"],
+      completenessEvidence: {
+        bank: "esun",
+        range: "default_one_year",
+        grid: timeline,
+      },
+    };
+    let canonicalCapture: EsunCreditCardValidatedCapture | undefined;
+    try {
+      canonicalCapture = buildEsunCanonicalCreditCardCapture({
+        startDate,
+        endDate,
+        identity,
+        statementRows: billedRows,
+        unbilledRows,
+        grid: timeline,
+        capture,
+        instrumentFingerprintSecret: managedSecret,
+        settledPeriods,
+      });
+    } catch {
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN source failed canonical admission validation.");
+    }
+    if (!canonicalCapture) {
+      await context.event("validation", "source-validation-rejected");
+      throw new Error("E.SUN source failed canonical completeness validation.");
+    }
+    await context.event("validation", "source-validation-completed", {
+      completed: rows.length,
+      total: rows.length,
+    });
+    context.signal.throwIfAborted();
+
+    const cardRequest = creditCardCommandRequestFromCanonicalCapture(
+      esunCanonicalSpineCapture(canonicalCapture),
+      esunNeutralCreditCardCapture(canonicalCapture),
+    );
+    const items: PGliteWorkflowRunItem[] = [{
+      provider: "esun",
+      product: "credit-card",
+      itemKey: canonicalCapture.captureId,
+      command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
+    }];
+    if (currentUsedCredit) {
+      const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
+      items.push({
+        provider: "esun",
+        product: "current-balance",
+        itemKey: balanceCapture.captureId,
+        command: {
+          kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+          request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
+        },
       });
     }
-    const { frame, startDate, endDate } = await queryStatements(page, input);
-    console.log("automation-progress: 60");
-    const rows = await readStatementRows(frame);
-    console.log("automation-progress: 80");
-    const nextTimestamp = createTimestampGenerator();
-    let unbilledRows = rows.filter(
-      (row) => statementKind(row) === "unbilled",
-    );
-    let billedRows = rows.filter((row) => statementKind(row) === "billed");
-    const cardKeys = [
-      ...new Set([...billedRows, ...unbilledRows].map(cardKeyForRow).filter(Boolean)),
-    ];
-    const completeGrid = await gridState(frame);
-    const isFullCapture =
-      !input.startDate &&
-      !input.endDate &&
-      isEsunCompleteGrid(completeGrid) &&
-      [...billedRows, ...unbilledRows].every(
-        (row) => cardKeyForRow(row).length === 4,
-      );
-    const capture: CaptureMetadata = isFullCapture
-      ? {
-          snapshotMode: "full",
-          captureId: randomUUID(),
-          capturedAt: new Date().toISOString(),
-          captureKinds: ["billed", "unbilled"],
-          completenessEvidence: {
-            bank: "esun",
-            range: "default_one_year",
-            grid: completeGrid,
-          },
-        }
-      : {
-          snapshotMode: "partial",
-          completenessEvidence: {
-            bank: "esun",
-            reason:
-              input.startDate || input.endDate
-                ? "date_range_override"
-                : "grid_not_proven_complete",
-            grid: completeGrid,
-          },
-        };
-    const settledPeriods = isFullCapture
-      ? buildEsunSettledPeriodsFromIssuerSummaries(
-          await readIssuerStatementSummaries(page),
-        )
-      : [];
-    if (settledPeriods.length > 0) {
-      const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(
-        rows,
-        settledPeriods,
-      );
-      unbilledRows = rowsWithIssuerPeriods.filter(
-        (row) => statementKind(row) === "unbilled",
-      );
-      billedRows = rowsWithIssuerPeriods.filter(
-        (row) => statementKind(row) === "billed",
-      );
-    }
-    const files = [
-      await writeStatementFile(
-        nextTimestamp,
-        "unbilled",
-        unbilledRows,
-        capture,
-        cardKeys,
-      ),
-      await writeStatementFile(
-        nextTimestamp,
-        "billed",
-        billedRows,
-        capture,
-        cardKeys,
-      ),
-    ];
-    const managedSecret = optionalEsunManagedSecret();
-    const canonicalHumanAttestation = managedSecret
-      ? deriveEsunCanonicalHumanAttestation(credentials, managedSecret)
-      : undefined;
-    const canonicalCapture = canonicalHumanAttestation
-      ? buildEsunCanonicalCreditCardCapture({
-          startDate,
-          endDate,
-          identity: canonicalHumanAttestation,
-          statementRows: billedRows,
-          unbilledRows,
-          grid: completeGrid,
-          capture,
-          instrumentFingerprintSecret: managedSecret!,
-          settledPeriods,
-        })
-      : undefined;
-    let canonicalAdmission: "not-configured" | "admitted" =
-      "not-configured";
-    let canonicalCaptureCount = 0;
-    if (canonicalCapture) {
-      const store = createCanonicalSourceStore(
-        canonicalSqlitePath(DEFAULT_LEDGER_DIR),
-      );
-      try {
-        await commitEsunCreditCardCapture(store, canonicalCapture);
-        if (currentUsedCredit) {
-          const balanceCapture = esunCreditCurrentSnapshotCapture(
-            canonicalCapture,
-            currentUsedCredit,
-          );
-          await commitCreditCardCurrentBalanceCapture(store, balanceCapture);
-        }
-        canonicalAdmission = "admitted";
-        canonicalCaptureCount = 1;
-      } finally {
-        store.close();
-      }
-    }
-    console.log("automation-progress: 100");
 
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: items.length,
+    });
+    const result = await financialCommit.execute(items, {
+      provider: "esun",
+      product: "credit-card",
+      signal: context.signal,
+    });
+    if (result.status !== "completed" || result.items.length !== items.length ||
+      result.items.some((item) => item.status !== "committed")) {
+      const codes = result.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+      throw new Error(`E.SUN Canonical Financial Commit failed: ${codes || result.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: items.length,
+      total: items.length,
+    });
     return {
-      usedExistingSession: authResult.usedProfile,
-      count: files.length,
+      usedExistingSession,
+      count: rows.length,
       query: { startDate, endDate },
-      files,
-      canonicalAdmission,
-      canonicalCaptureCount,
+      canonicalAdmission: "admitted",
+      canonicalCaptureCount: 1,
+      captureId: canonicalCapture.captureId,
     };
-  },
-});
+  });
+}

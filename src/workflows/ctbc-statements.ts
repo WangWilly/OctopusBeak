@@ -1,52 +1,46 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import {
+  type PGliteWorkflowRunItem,
+} from "../ledger/pglite/workflow-run.ts";
+import {
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
 import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
-  commitCanonicalCtbcDomesticDepositCaptureBatch,
-  commitCtbcDomesticDepositSourceEvidenceBatch,
+  createCtbcDomesticDepositSourceEvidence,
   CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   deriveCtbcDomesticDepositAccountNumberEvidence,
   type CtbcDomesticDepositCaptureEvidence,
   type CtbcDomesticDepositValidatedEvidence,
-} from "../ledger/canonical/ctbc-domestic-deposit.ts";
-import type { CanonicalFinancialDepositWriterStore } from "../ledger/canonical/canonical-financial-deposit-writer.ts";
+} from "../ledger/canonical/ctbc-domestic-deposit-admission.ts";
 import {
-  CTBC_HUMAN_ATTESTED_V1_CONFIRMED,
   getCtbcHumanAttestedV1Manifest,
-} from "../ledger/canonical/ctbc-human-attestation.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
-import { DEFAULT_LEDGER_DIR } from "../ledger/db/client.ts";
-import {
-  ctbcResponseDiagnosticDirectoryFromEnvironment,
-  writeCtbcResponseDiagnostic,
-} from "./ctbc-response-diagnostic.ts";
+} from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
   readCtbcCurrentDepositBalances,
   type CtbcCurrentDepositBalanceRow,
 } from "./ctbc-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { SourceUnavailableError } from "../lib/automation/source-access.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -54,47 +48,7 @@ const DOMESTIC_DETAILS_URL =
 const EBMW_RESOURCE_PATH = "/IB/api/adapters/IB_Adapter/resource/ebmwResource";
 const NO_DATA_CODE = "9201";
 
-const ctbcStatementHeaders = [
-  "帳務日期",
-  "交易日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-];
-
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
-
-const inputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
-  accountFilters: z.array(z.string()).optional(),
-  telemetry: z.boolean().optional(),
-});
-
-const statementFileSchema = z.object({
-  account: z.string(),
-  accountId: z.string(),
-  queryPeriods: z.array(z.string()),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  count: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-  downloads: z.array(statementFileSchema),
-  sourceCaptureCount: z.number().int().nonnegative(),
-  status: z.enum(["absent", "source-only", "financial-admitted"]),
-});
 
 type CtbcCredentials = {
   ctbc_user_id?: string;
@@ -102,12 +56,31 @@ type CtbcCredentials = {
   ctbc_password?: string;
 };
 
-type Input = z.infer<typeof inputSchema> & {
-  credentials: CtbcCredentials;
-};
+const typedInputSchema = z.object({
+  credentials: z.object({
+    ctbc_user_id: z.string().trim().min(1),
+    ctbc_account: z.string().trim().min(1),
+    ctbc_password: z.string().trim().min(1),
+  }),
+  startDate: dateSchema.optional(),
+  endDate: dateSchema.optional(),
+  accountFilters: z.array(z.string()).optional(),
+});
 
-type CtbcStatementsOutput = z.infer<typeof outputSchema>;
-type CtbcDownload = CtbcStatementsOutput["downloads"][number];
+export type CtbcProviderWorkflowOutput = Readonly<{
+  count: number;
+  rowCount: number;
+  sourceCaptureCount: number;
+  status: "source-only" | "financial-admitted";
+}>;
+
+export type CtbcProviderWorkflowDependencies = Readonly<{
+  collectStatements?: (
+    page: Page,
+    input: z.infer<typeof typedInputSchema>,
+  ) => Promise<CtbcCollectedStatements>;
+  readCurrentDepositBalances?: typeof readCtbcCurrentDepositBalances;
+}>;
 
 type CtbcResourceResponse<T> = {
   code?: string;
@@ -162,24 +135,8 @@ type CtbcDetailData = {
   nextKey?: string;
 };
 
-type CtbcAmountClass = "empty" | "valid-zero" | "valid-nonzero" | "invalid";
-
-export type CtbcDetailTelemetry = {
-  rowCount: number;
-  nextKey: "empty" | "present";
-  accountingDateShapes: Record<string, number>;
-  transactionDateShapes: Record<string, number>;
-  amountPairs: Record<string, number>;
-};
-
 type CtbcResourceCapture<T> = {
   body: CtbcResourceResponse<T>;
-  request: {
-    method: string;
-    url: string;
-    postData: string | null;
-  };
-  visibleMonthLabel?: string;
 };
 
 export type CtbcResponseShapeEvidence = {
@@ -209,8 +166,8 @@ export type CtbcObservedAccountCapture = {
   responses: CtbcObservedRangeResponse[];
 };
 
-type CtbcCollectedStatements = {
-  output: Omit<CtbcStatementsOutput, "sourceCaptureCount" | "status">;
+export type CtbcCollectedStatements = {
+  output: Readonly<{ count: number; rowCount: number }>;
   captures: CtbcObservedAccountCapture[];
 };
 
@@ -229,34 +186,49 @@ type ExistingCtbcFinancialCapture = Readonly<{
   }>;
 }>;
 
-export type CtbcStatementsRunDependencies = {
-  collectStatements?: (
-    page: Page,
-    input: z.infer<typeof inputSchema>,
-  ) => Promise<CtbcCollectedStatements>;
-  canonicalSourceLedgerDir?: string;
-  canonicalFinancialLedgerDir?: string;
-  observedAt?: string;
-  /** Injected in checks; production passively reads the authenticated summary POST. */
-  readCurrentDepositBalances?: typeof readCtbcCurrentDepositBalances;
-};
-
 export type CtbcStatementRow = {
-  account: string;
-  accountId: string;
   accountingDate: string;
   transactionDate: string;
-  sortKey: string;
   values: string[];
 };
 
-let lastTimestamp = 0;
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("CTBC workflow was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
-function actionByText(page: Page, text: string): Locator {
-  return page
-    .locator("a, button, input[type=button], input[type=submit]")
-    .filter({ hasText: text })
-    .last();
+/** Decode provider JSON through the injected strict text port before use. */
+export function decodeCtbcSourceJson<T>(
+  bytes: Uint8Array,
+  text: SourceTextPort,
+): T {
+  const decoded = text.decode(bytes, "utf-8");
+  let value: unknown;
+  try {
+    value = JSON.parse(decoded) as unknown;
+  } catch {
+    throw new Error("CTBC provider response is not valid JSON.");
+  }
+  // JSON may encode U+FFFD as an escape, so check the parsed source fields too.
+  text.assertIntact(JSON.stringify(value));
+  return value as T;
 }
 
 function requireCredential(
@@ -265,9 +237,7 @@ function requireCredential(
 ): string {
   const value = credentials[name]?.trim();
   if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
+    throw new Error(`Missing CTBC credential ${name}.`);
   }
   return value;
 }
@@ -283,72 +253,11 @@ function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
 }
 
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
-}
-
 function amountText(
   displayValue: string | undefined,
   rawValue: string | undefined,
 ) {
   return cleanText(displayValue) || cleanText(rawValue);
-}
-
-function amountClass(value: string): CtbcAmountClass {
-  const clean = cleanText(value).replace(/,/g, "");
-  if (!clean) return "empty";
-  if (!/^-?\d+(?:\.\d+)?$/.test(clean)) return "invalid";
-  return Number(clean) === 0 ? "valid-zero" : "valid-nonzero";
-}
-
-function dateShape(value: string | undefined): string {
-  const clean = cleanText(value);
-  if (!clean) return "empty";
-  if (/^\d{4}\/\d{2}\/\d{2}$/.test(clean)) return "slash-date";
-  if (/^\d{8}$/.test(clean)) return "compact-date";
-  if (/^\d{4}-\d{2}-\d{2}/.test(clean)) return "date-time-prefix";
-  return "other";
-}
-
-function increment(counts: Record<string, number>, key: string): void {
-  counts[key] = (counts[key] ?? 0) + 1;
-}
-
-export function ctbcDetailTelemetry(
-  data: CtbcDetailData | undefined,
-): CtbcDetailTelemetry {
-  const accountingDateShapes: Record<string, number> = {};
-  const transactionDateShapes: Record<string, number> = {};
-  const amountPairs: Record<string, number> = {};
-  const rows = data?.detailList ?? [];
-  for (const row of rows) {
-    increment(accountingDateShapes, dateShape(row.actDtFull));
-    increment(transactionDateShapes, dateShape(row.trnDtFull));
-    const outflow = amountText(row.dbAmtDisplay, row.dbAmt);
-    const inflow = amountText(row.crAmtDisplay, row.crAmt);
-    increment(amountPairs, `${amountClass(outflow)}|${amountClass(inflow)}`);
-  }
-  return {
-    rowCount: rows.length,
-    nextKey: cleanText(data?.nextKey) ? "present" : "empty",
-    accountingDateShapes,
-    transactionDateShapes,
-    amountPairs,
-  };
 }
 
 function slashDate(value: string | undefined): string {
@@ -382,18 +291,7 @@ function noteForDetail(detail: CtbcDetailRow): string {
   return [...new Set(parts)].join(" ");
 }
 
-function detailSortKey(detail: CtbcDetailRow): string {
-  return cleanText(detail.sortActDtTm) || cleanText(detail.actDtTm);
-}
-
-function sortedStatementRows(rows: CtbcStatementRow[]): CtbcStatementRow[] {
-  return [...rows].sort((left, right) =>
-    right.sortKey.localeCompare(left.sortKey),
-  );
-}
-
 export function ctbcDetailRowsToStatementRows(
-  account: CtbcAccount,
   details: CtbcDetailRow[],
 ): CtbcStatementRow[] {
   return details.map((detail) => {
@@ -411,26 +309,16 @@ export function ctbcDetailRowsToStatementRows(
     ];
 
     return {
-      account: account.label,
-      accountId: account.accountId,
       accountingDate,
       transactionDate,
-      sortKey: detailSortKey(detail),
       values: row,
     };
   });
 }
 
-export function ctbcStatementRowsToCsv(rows: CtbcStatementRow[]): string {
-  return rowsToCsv([
-    ctbcStatementHeaders,
-    ...sortedStatementRows(rows).map((row) => row.values),
-  ]);
-}
-
 function rowWithinDateRange(
   row: CtbcStatementRow,
-  input: z.infer<typeof inputSchema>,
+  input: z.infer<typeof typedInputSchema>,
 ): boolean {
   const key = dateKey(row.accountingDate || row.transactionDate);
   if (!key) return true;
@@ -439,89 +327,126 @@ function rowWithinDateRange(
   return true;
 }
 
-async function clickVisibleNow(locator: Locator): Promise<boolean> {
-  if (!(await locator.isVisible().catch(() => false))) return false;
-  await locator.click();
-  return true;
-}
-
-async function finishCtbcSignIn(page: Page): Promise<void> {
+async function finishCtbcSignIn(page: Page, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
-    if (await clickVisibleNow(actionByText(page, "確認登入"))) {
-      await page.waitForTimeout(1_000);
-      continue;
-    }
+    signal?.throwIfAborted();
+    if (await handleCtbcConcurrentLoginPrompt(page, signal)) continue;
+    if (await handleCtbcPasswordReminder(page, signal)) continue;
 
-    if (await clickVisibleNow(actionByText(page, "下次再提醒"))) {
-      await page.waitForTimeout(1_000);
-      continue;
-    }
-
-    if (
-      await page
+    if (await withAbort(
+      page
         .locator("#btnHeaderLogout")
         .isVisible()
-        .catch(() => false)
-    ) {
+        .catch(() => false),
+      signal,
+    )) {
       return;
     }
 
-    await page.waitForTimeout(500);
+    await withAbort(page.waitForTimeout(500), signal);
   }
 
   throw new Error("Timed out waiting for CTBC sign-in to finish.");
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  return await page
+async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
+  return await withAbort(page
     .locator("#btnHeaderLogout")
     .isVisible()
-    .catch(() => false);
+    .catch(() => false), signal);
 }
 
-async function waitForLoginForm(page: Page): Promise<void> {
-  await page.locator("form input[type=text]").first().waitFor({
+async function waitForLoginForm(
+  page: Page,
+  signal?: AbortSignal,
+  initialHttpStatus?: number,
+): Promise<void> {
+  const firstField = page.locator("form input[type=text]").first();
+  const unavailable = page.getByText(/系統忙碌中，請稍後再試/u).first();
+  const startedAt = Date.now();
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    if (await withAbort(unavailable.isVisible().catch(() => false), signal)) {
+      throw new SourceUnavailableError();
+    }
+    if (await withAbort(firstField.isVisible().catch(() => false), signal)) break;
+    if (initialHttpStatus === 202 && Date.now() - startedAt >= 1_000) {
+      throw new SourceUnavailableError();
+    }
+    await withAbort(page.waitForTimeout(200), signal);
+  }
+  await withAbort(firstField.waitFor({
+    state: "visible",
+    timeout: Math.max(1, deadline - Date.now()),
+  }), signal);
+  await withAbort(page.locator("form input[type=password]").nth(1).waitFor({
     state: "visible",
     timeout: 60_000,
-  });
-  await page.locator("form input[type=password]").nth(1).waitFor({
+  }), signal);
+  await withAbort(page.getByRole("button", { name: "登入" }).waitFor({
     state: "visible",
     timeout: 60_000,
-  });
-  await page.getByRole("button", { name: "登入" }).waitFor({
-    state: "visible",
-    timeout: 60_000,
-  });
-  await page.waitForTimeout(1_000);
+  }), signal);
+  await withAbort(page.waitForTimeout(1_000), signal);
 }
 
-async function signInCtbc(
+export async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted();
+    const response = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+    try {
+      await waitForLoginForm(page, signal, response?.status());
+      return;
+    } catch (error) {
+      if (!(error instanceof SourceUnavailableError) || attempt === 2) throw error;
+      await withAbort(page.waitForTimeout(1_000), signal);
+    }
+  }
+}
+
+export async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Promise<boolean> {
+  const reminder = page.getByText("密碼變更提醒", { exact: true });
+  if (!await withAbort(reminder.isVisible().catch(() => false), signal)) return false;
+  await withAbort(page.getByText("下次再提醒", { exact: true }).click(), signal);
+  await withAbort(page.waitForTimeout(1_000), signal);
+  return true;
+}
+
+export async function handleCtbcConcurrentLoginPrompt(page: Page, signal?: AbortSignal): Promise<boolean> {
+  const prompt = page.getByText("其他位置將會自動登出");
+  if (!await withAbort(prompt.isVisible().catch(() => false), signal)) return false;
+  await withAbort(page.getByText("確認登入", { exact: true }).click(), signal);
+  await withAbort(page.waitForTimeout(1_000), signal);
+  return true;
+}
+
+async function signInCtbcForApp(
   page: Page,
   credentials: CtbcCredentials,
+  context: WorkflowContext,
 ): Promise<void> {
+  if (await isSignedIn(page, context.signal)) return;
   const userId = requireCredential(credentials, "ctbc_user_id");
   const account = requireCredential(credentials, "ctbc_account");
   const password = requireCredential(credentials, "ctbc_password");
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-      await waitForLoginForm(page);
-      await page.locator("form input[type=text]").first().fill(userId);
-      const passwordFields = page.locator("form input[type=password]");
-      await passwordFields.nth(0).fill(account);
-      await passwordFields.nth(1).fill(password);
-      await page.getByRole("button", { name: "登入" }).click();
-      break;
-    } catch {
-      if (attempt === 2) {
-        throw new Error("Timed out waiting for the CTBC login form.");
-      }
-      await page.waitForTimeout(1_000);
-    }
+  try {
+    await openCtbcLoginForm(page, context.signal);
+  } catch (error) {
+    if (error instanceof SourceUnavailableError)
+      await context.event("authentication", "source-unavailable");
+    throw error;
   }
-  await finishCtbcSignIn(page);
+  await withAbort(page.locator("form input[type=text]").first().fill(userId), context.signal);
+  const passwordFields = page.locator("form input[type=password]");
+  await withAbort(passwordFields.nth(0).fill(account), context.signal);
+  await withAbort(passwordFields.nth(1).fill(password), context.signal);
+  await withAbort(page.getByRole("button", { name: "登入" }).click(), context.signal);
+  // A slow normal login is not a declared verification challenge. Continue
+  // observing the authenticated marker and the already approved bank prompts.
+  await finishCtbcSignIn(page, context.signal);
 }
 
 function requireCtbcOk<T>(
@@ -529,9 +454,8 @@ function requireCtbcOk<T>(
   resource: string,
 ): void {
   if (response.code === "0000") return;
-  throw new Error(
-    `CTBC resource ${resource} returned ${response.code ?? "unknown"}: ${cleanText(response.message ?? response.msg)}`,
-  );
+  const code = response.code ?? "unknown";
+  throw new Error(`CTBC resource ${resource} returned ${code}.`);
 }
 
 function isCtbcResourceResponse(resource: string) {
@@ -549,40 +473,36 @@ function isCtbcResourceResponse(resource: string) {
 async function nextCtbcResource<T>(
   page: Page,
   resource: string,
-  options: { allowNoData?: boolean } = {},
+  options: { allowNoData?: boolean; context: WorkflowContext },
 ): Promise<CtbcResourceCapture<T>> {
-  const response = await page.waitForResponse(
+  const response = await withAbort(page.waitForResponse(
     isCtbcResourceResponse(resource),
     {
       timeout: 60_000,
     },
-  );
-  const body = (await response.json()) as CtbcResourceResponse<T>;
+  ), options.context.signal);
+  let body: CtbcResourceResponse<T>;
+  try {
+    const bytes = await withAbort(response.body(), options.context.signal);
+    body = decodeCtbcSourceJson<CtbcResourceResponse<T>>(
+      bytes,
+      options.context.text,
+    );
+  } catch (error) {
+    await options.context.event("decoding", "source-decoding-failed");
+    throw error;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    await options.context.event("validation", "source-response-rejected");
+    throw new Error("CTBC provider response shape is invalid.");
+  }
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
     requireCtbcOk(body, resource);
   }
-  const request = response.request();
-  return {
-    body,
-    request: {
-      method: request.method(),
-      url: request.url(),
-      postData: request.postData(),
-    },
-  };
+  return { body };
 }
 
-function detailsFromCapture(
-  capture: CtbcResourceCapture<CtbcDetailData>,
-  telemetry = false,
-) {
-  if (telemetry) {
-    console.log("ctbc-domestic-detail-telemetry", {
-      responseClass:
-        capture.body.code === NO_DATA_CODE ? "provider-no-data" : "ok",
-      ...ctbcDetailTelemetry(capture.body.rsData ?? undefined),
-    });
-  }
+function detailsFromCapture(capture: CtbcResourceCapture<CtbcDetailData>) {
   if (capture.body.code === NO_DATA_CODE) return [];
   if (
     !capture.body.rsData ||
@@ -621,18 +541,22 @@ export function ctbcResponseShape(
   };
 }
 
-async function openDomesticDetailsPage(page: Page, telemetry = false) {
+async function openDomesticDetailsPage(
+  page: Page,
+  context: WorkflowContext,
+) {
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
     page,
     "/twrbc-deposit/qu002/010",
+    { context },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
     page,
     "/twrbc-deposit/qu002/011",
-    { allowNoData: true },
+    { allowNoData: true, context },
   );
 
-  await page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded" });
+  await withAbort(page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded" }), context.signal);
   const [bootstrap, initialDetails] = await Promise.all([
     bootstrapPromise,
     initialDetailsPromise,
@@ -667,32 +591,33 @@ function accountFromOptionText(
 async function readDetailAccountOptions(
   page: Page,
   fallbackAccounts: CtbcAccount[],
+  context: WorkflowContext,
 ): Promise<CtbcAccount[]> {
   const dropdown = detailAccountDropdown(page);
-  if (!(await dropdown.isVisible().catch(() => false))) {
+  if (!(await withAbort(dropdown.isVisible().catch(() => false), context.signal))) {
     return resolveCtbcAccountScope([], fallbackAccounts);
   }
-  await dropdown.click();
-  const optionVisible = await detailAccountOptions(page)
+  await withAbort(dropdown.click(), context.signal);
+  const optionVisible = await withAbort(detailAccountOptions(page)
     .first()
     .waitFor({ state: "visible", timeout: 10_000 })
     .then(() => true)
-    .catch(() => false);
+    .catch(() => false), context.signal);
   if (!optionVisible) {
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await withAbort(page.keyboard.press("Escape").catch(() => undefined), context.signal);
     return resolveCtbcAccountScope([], fallbackAccounts);
   }
 
-  const count = await detailAccountOptions(page).count();
+  const count = await withAbort(detailAccountOptions(page).count(), context.signal);
   const accounts: CtbcAccount[] = [];
   for (let index = 0; index < count; index += 1) {
     const text = cleanText(
-      await detailAccountOptions(page).nth(index).textContent(),
+      await withAbort(detailAccountOptions(page).nth(index).textContent(), context.signal),
     );
     const account = accountFromOptionText(text, index);
     if (account) accounts.push(account);
   }
-  await page.keyboard.press("Escape");
+  await withAbort(page.keyboard.press("Escape"), context.signal);
 
   return resolveCtbcAccountScope(accounts, fallbackAccounts);
 }
@@ -711,26 +636,27 @@ export function resolveCtbcAccountScope(
 async function selectDetailAccount(
   page: Page,
   account: CtbcAccount,
-  telemetry = false,
+  context: WorkflowContext,
 ) {
   if (account.optionIndex === undefined) {
     throw new Error(`No CTBC page option index for ${account.label}.`);
   }
 
-  await detailAccountDropdown(page).click();
+  await withAbort(detailAccountDropdown(page).click(), context.signal);
   const option = detailAccountOptions(page).nth(account.optionIndex);
-  await option.waitFor({ state: "visible", timeout: 60_000 });
+  await withAbort(option.waitFor({ state: "visible", timeout: 60_000 }), context.signal);
 
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
     page,
     "/twrbc-deposit/qu002/010",
+    { context },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
     page,
     "/twrbc-deposit/qu002/011",
-    { allowNoData: true },
+    { allowNoData: true, context },
   );
-  await option.click();
+  await withAbort(option.click(), context.signal);
   const [bootstrap, initialDetails] = await Promise.all([
     bootstrapPromise,
     initialDetailsPromise,
@@ -793,7 +719,7 @@ function queryPeriodForDateRange(dateRange: CtbcDateRange): string {
 
 function queryPeriodsForBootstrap(
   bootstrap: CtbcBootstrapData,
-  input: z.infer<typeof inputSchema>,
+  input: z.infer<typeof typedInputSchema>,
 ): string[] {
   if (input.startDate || input.endDate) {
     return [`${input.startDate ?? ""}~${input.endDate ?? ""}`];
@@ -811,30 +737,25 @@ function monthTabs(page: Page): Locator {
 async function captureVisibleMonthDetails(
   page: Page,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
-  telemetry = false,
+  context: WorkflowContext,
 ): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
   const tabs = monthTabs(page);
-  await tabs.first().waitFor({ state: "visible", timeout: 60_000 });
-  const captures = [
-    {
-      ...initialCapture,
-      visibleMonthLabel: cleanText(await tabs.first().textContent()),
-    },
-  ];
-  detailsFromCapture(initialCapture, telemetry);
+  await withAbort(tabs.first().waitFor({ state: "visible", timeout: 60_000 }), context.signal);
+  const captures = [initialCapture];
+  detailsFromCapture(initialCapture);
 
-  const count = await tabs.count();
+  const count = await withAbort(tabs.count(), context.signal);
   for (let index = 1; index < count; index += 1) {
-    const visibleMonthLabel = cleanText(await tabs.nth(index).textContent());
+    context.signal.throwIfAborted();
     const detailPromise = nextCtbcResource<CtbcDetailData>(
       page,
       "/twrbc-deposit/qu002/011",
-      { allowNoData: true },
+      { allowNoData: true, context },
     );
-    await tabs.nth(index).click();
+    await withAbort(tabs.nth(index).click(), context.signal);
     const capture = await detailPromise;
-    detailsFromCapture(capture, telemetry);
-    captures.push({ ...capture, visibleMonthLabel });
+    detailsFromCapture(capture);
+    captures.push(capture);
   }
 
   return captures;
@@ -845,37 +766,16 @@ async function accountRowsFromCurrentPage(
   account: CtbcAccount,
   bootstrap: CtbcBootstrapData,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
-  input: z.infer<typeof inputSchema>,
+  input: z.infer<typeof typedInputSchema>,
+  context: WorkflowContext,
 ): Promise<{
   queryPeriods: string[];
   rows: CtbcStatementRow[];
   responses: CtbcObservedRangeResponse[];
 }> {
-  const captures = await captureVisibleMonthDetails(
-    page,
-    initialCapture,
-    input.telemetry,
-  );
+  const captures = await captureVisibleMonthDetails(page, initialCapture, context);
   const ranges = bootstrap.dateRanges ?? [];
   const queryPeriods = queryPeriodsForBootstrap(bootstrap, input);
-  const diagnosticDirectory =
-    ctbcResponseDiagnosticDirectoryFromEnvironment();
-  for (const [rangeOrdinal, capture] of captures.entries()) {
-    await writeCtbcResponseDiagnostic(diagnosticDirectory, {
-      capturedAt: new Date().toISOString(),
-      resource: "/twrbc-deposit/qu002/011",
-      account: {
-        accountId: account.accountId,
-        label: account.label,
-      },
-      rangeOrdinal,
-      visibleMonthLabel: capture.visibleMonthLabel ?? null,
-      expectedRange: ranges[rangeOrdinal] ?? null,
-      queryPeriods,
-      request: capture.request,
-      response: capture.body,
-    });
-  }
   const responses = captures.map((capture, rangeOrdinal) => {
     const code = capture.body.code === NO_DATA_CODE ? NO_DATA_CODE : "0000";
     const nextKey = cleanText(capture.body.rsData?.nextKey) || null;
@@ -887,7 +787,7 @@ async function accountRowsFromCurrentPage(
       code,
       nextKey,
       terminal: nextKey === null,
-      rows: ctbcDetailRowsToStatementRows(account, detailsFromCapture(capture)),
+      rows: ctbcDetailRowsToStatementRows(detailsFromCapture(capture)),
       responseShape: ctbcResponseShape(capture.body),
     } satisfies CtbcObservedRangeResponse;
   });
@@ -901,83 +801,31 @@ async function accountRowsFromCurrentPage(
   };
 }
 
-async function writeStatementFiles(
-  account: CtbcAccount,
-  queryPeriods: string[],
-  rows: CtbcStatementRow[],
-): Promise<CtbcDownload> {
-  const downloadsDir = join(process.cwd(), "downloads", "ctbc-statements");
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${safeFilename(account.accountId)}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, ctbcStatementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: account.label,
-        查詢期間: queryPeriods,
-        分行名稱: "",
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    account: account.label,
-    accountId: account.accountId,
-    queryPeriods,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
-}
-
-async function downloadCtbcStatements(
+async function collectCtbcStatements(
   page: Page,
-  input: z.infer<typeof inputSchema>,
+  input: z.infer<typeof typedInputSchema>,
+  context: WorkflowContext,
 ): Promise<CtbcCollectedStatements> {
-  const opened = await openDomesticDetailsPage(page, input.telemetry);
+  const opened = await openDomesticDetailsPage(page, context);
   const allAccounts = await readDetailAccountOptions(
     page,
     accountsFromBootstrap(opened.data),
+    context,
   );
   const accounts = filterAccounts(allAccounts, input.accountFilters);
 
-  if (input.telemetry) {
-    console.log("ctbc-domestic-account-scope-telemetry", {
-      providerAccountCount: accountsFromBootstrap(opened.data).length,
-      uiAccountCount: allAccounts.length,
-      selectedAccountCount: accounts.length,
-      dateRangeCount: opened.data.dateRanges?.length ?? 0,
-    });
-  }
-
   if (accounts.length === 0) {
     return {
-      output: { count: 0, rowCount: 0, downloads: [] },
+      output: { count: 0, rowCount: 0 },
       captures: [],
     };
   }
 
-  const downloads: CtbcDownload[] = [];
   const captures: CtbcObservedAccountCapture[] = [];
   let currentOptionIndex = 0;
+  let rowCount = 0;
   for (const account of accounts) {
+    context.signal.throwIfAborted();
     let bootstrap = opened.data;
     let initialCapture = opened.initialCapture;
 
@@ -988,7 +836,7 @@ async function downloadCtbcStatements(
       const selected = await selectDetailAccount(
         page,
         account,
-        input.telemetry,
+        context,
       );
       bootstrap = selected.data;
       initialCapture = selected.initialCapture;
@@ -1001,21 +849,25 @@ async function downloadCtbcStatements(
       bootstrap,
       initialCapture,
       input,
+      context,
     );
-    downloads.push(await writeStatementFiles(account, queryPeriods, rows));
+    rowCount += rows.length;
     captures.push({
       accountId: account.accountId,
       queryPeriods,
       expectedRangeCount: bootstrap.dateRanges?.length ?? 0,
       responses,
     });
+    await context.event("collection", "account-collected", {
+      completed: captures.length,
+      total: accounts.length,
+    });
   }
 
   return {
     output: {
-      count: downloads.length,
-      rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-      downloads,
+      count: accounts.length,
+      rowCount,
     },
     captures,
   };
@@ -1253,175 +1105,275 @@ export function indexCtbcCurrentDepositFinancialCaptures(
   return result;
 }
 
-export async function runCtbcStatements(
+async function readCtbcCurrentDepositBalancesForApp(
   page: Page,
-  input: z.infer<typeof inputSchema>,
-  overrides: CtbcStatementsRunDependencies = {},
-): Promise<CtbcStatementsOutput> {
-  const collected = await (
-    overrides.collectStatements ?? downloadCtbcStatements
-  )(page, input);
-  if (collected.captures.length === 0) {
-    return {
-      ...collected.output,
-      sourceCaptureCount: 0,
-      status: "absent",
-    };
-  }
-
-  const observedAt = overrides.observedAt ?? ctbcObservedAt();
-  const captures: CtbcDomesticDepositValidatedEvidence[] = [];
-  for (const observed of collected.captures) {
-    const admission = admitCtbcDomesticDepositCaptureEvidence(
-      buildCtbcCapture(observed, observedAt),
-    );
-    if (admission.status !== "admissible" || !admission.capture) {
-      throw new Error(
-        `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
-      );
+  context: WorkflowContext,
+  reader: typeof readCtbcCurrentDepositBalances,
+): Promise<readonly CtbcCurrentDepositBalanceRow[]> {
+  const responses: Response[] = [];
+  const listener = (candidate: Response) => {
+    const request = candidate.request();
+    if (request.method() !== "POST" || !candidate.url().startsWith(
+      `https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+    )) return;
+    try {
+      const body = JSON.parse(request.postData() ?? "") as { resource?: unknown };
+      if (body.resource === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE)
+        responses.push(candidate);
+    } catch {
+      // The established reader validates the request and reports a safe error.
     }
-    captures.push(admission.capture);
-  }
+  };
 
-  const sourceLedgerDir =
-    overrides.canonicalSourceLedgerDir ??
-    process.env.OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR ??
-    process.env.LEDGER_DIR ??
-    DEFAULT_LEDGER_DIR;
-  const sourceStore = createCanonicalSourceStore(
-    canonicalSqlitePath(sourceLedgerDir),
-  );
-  const financialLedgerDir = overrides.canonicalFinancialLedgerDir;
-  const financialDatabasePath = financialLedgerDir
-    ? canonicalSqlitePath(financialLedgerDir)
-    : null;
-  const financialStore = financialDatabasePath
-    ? financialDatabasePath === canonicalSqlitePath(sourceLedgerDir)
-      ? sourceStore
-      : createCanonicalSourceStore(financialDatabasePath)
-    : null;
-  const financialWriter: CanonicalFinancialDepositWriterStore | null =
-    financialStore
-      ? {
-          db: financialStore.db,
-          databasePath: financialStore.databasePath,
-          commitClock: () => financialStore.commitClock(),
-        }
-      : null;
-  const financialUsesSourceStore = financialStore === sourceStore;
-  const captureEntries = captures.map((capture, index) => ({
-    capture,
-    captureId: `ctbc-${observedAt}-${index}`,
-  }));
-  const readCurrent =
-    overrides.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
-  let status: CtbcStatementsOutput["status"] = "source-only";
-
+  page.on("response", listener);
   try {
-    if (!financialWriter || !financialUsesSourceStore) {
-      await commitCtbcDomesticDepositSourceEvidenceBatch(
-        sourceStore,
-        captureEntries,
-      );
+    const rows = await withAbort(reader(page, {
+      observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
+    }), context.signal);
+    context.signal.throwIfAborted();
+    if (reader === readCtbcCurrentDepositBalances) {
+      if (responses.length !== 1)
+        throw new Error("CTBC current balance source response was missing or ambiguous.");
+      const bytes = await withAbort(responses[0]!.body(), context.signal);
+      decodeCtbcSourceJson(bytes, context.text);
     }
-    if (financialWriter) {
-      const manifest = getCtbcHumanAttestedV1Manifest();
-      const financialInputs = captureEntries.map(({ capture, captureId }) => ({
+    return rows;
+  } finally {
+    page.off("response", listener);
+  }
+}
+
+/** App-owned CTBC statement provider. Source admission completes before either commit. */
+export async function runCtbcProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+  dependencies: CtbcProviderWorkflowDependencies = {},
+): Promise<CtbcProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("CTBC workflow credentials or input are missing or invalid.");
+  if (!context.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  context.signal.throwIfAborted();
+  await context.event("preparation", "input-validated");
+
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    page.on("dialog", (dialog) => {
+      void dialog.accept().catch(() => undefined);
+    });
+
+    await context.event("authentication", "authentication-started");
+    await signInCtbcForApp(page, parsed.data.credentials, context);
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-completed");
+
+    await context.event("collection", "collection-started");
+    await context.event("decoding", "source-decoding-started");
+    let collected: CtbcCollectedStatements;
+    try {
+      collected = await (dependencies.collectStatements ??
+        ((target, input) => collectCtbcStatements(
+          target,
+          input,
+          context,
+        )))(page, parsed.data);
+    } catch (error) {
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    await context.event("decoding", "source-decoding-completed");
+    if (collected.captures.length === 0 ||
+      collected.output.count !== collected.captures.length) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: collected.captures.length,
+        total: collected.output.count,
+      });
+      throw new Error("CTBC source has no complete selected account capture.");
+    }
+    await context.event("collection", "collection-completed", {
+      completed: collected.captures.length,
+      total: collected.output.count,
+    });
+
+    await context.event("validation", "source-validation-started", {
+      completed: 0,
+      total: collected.captures.length,
+    });
+    const observedAt = ctbcObservedAt(new Date(context.now()).getTime());
+    const validatedCaptures: CtbcDomesticDepositValidatedEvidence[] = [];
+    for (const observed of collected.captures) {
+      context.signal.throwIfAborted();
+      const admission = admitCtbcDomesticDepositCaptureEvidence(
+        buildCtbcCapture(observed, observedAt),
+      );
+      if (admission.status !== "admissible" || !admission.capture) {
+        await context.event("validation", "source-validation-rejected", {
+          completed: validatedCaptures.length,
+          total: collected.captures.length,
+        });
+        throw new Error(
+          `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+        );
+      }
+      validatedCaptures.push(admission.capture);
+    }
+
+    const manifest = getCtbcHumanAttestedV1Manifest();
+    const financialCaptures: ExistingCtbcFinancialCapture[] = [];
+    const items: PGliteWorkflowRunItem[] = [];
+    await context.event("validation", "canonical-admission-started", {
+      completed: 0,
+      total: validatedCaptures.length,
+    });
+    for (const capture of validatedCaptures) {
+      context.signal.throwIfAborted();
+      const captureId = `ctbc-${randomUUID()}`;
+      const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
+      if (capture.responses.every((response) => response.rows.length === 0)) {
+        items.push({
+          provider: "ctbc",
+          product: "domestic-deposit",
+          itemKey: captureId,
+          command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
+        });
+        continue;
+      }
+      const admission = admitCtbcDomesticDepositFinancialCapture({
         capture,
         captureId: `ctbc-financial-${captureId}`,
         humanAttestation: manifest,
-      }));
-      const admissions = financialInputs.map(
-        admitCtbcDomesticDepositFinancialCapture,
-      );
-      if (admissions.every((admission) => admission.status === "admitted")) {
-        await commitCanonicalCtbcDomesticDepositCaptureBatch(
-          financialWriter,
-          financialInputs,
-        );
-        status = "financial-admitted";
-
-        // The balance POST is collected only after every ordinary statement
-        // capture is financially admitted. Every provider row must join the
-        // existing human-attested CTBC identity by its exact accountId.
-        const financialCaptures = admissions.map((admission) => {
-          if (!admission.capture)
-            throw new Error("CTBC financial admission lost its canonical identity.");
-          return admission.capture;
+      });
+      if (admission.status !== "admitted" || !admission.capture) {
+        await context.event("validation", "canonical-admission-rejected", {
+          completed: financialCaptures.length,
+          total: validatedCaptures.length,
         });
-        if (financialCaptures.length > 0) {
-          const currentRows = await readCurrent(page, {
-            observedAt: ctbcObservedAt(),
-          });
-          const existing = indexCtbcCurrentDepositFinancialCaptures(
-            financialCaptures,
-          );
-          const currentCaptures = currentRows.map((row) => {
-            const matching = existing.get(
-              `${financialCaptures[0]!.identity.sourceConnectionKey}\u0000${financialCaptures[0]!.identity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-            );
-            if (!matching)
-              throw new Error(
-                "CTBC current deposit snapshot contains an account without an existing admitted identity.",
-              );
-            return admitCurrentDepositBalanceCapture(
-              buildCtbcCurrentDepositBalanceCapture(row, matching),
-            );
-          });
-          for (const currentCapture of currentCaptures)
-            await commitCurrentDepositBalanceCapture(
-              financialStore!,
-              currentCapture,
-            );
-        }
-      } else if (financialUsesSourceStore) {
-        await commitCtbcDomesticDepositSourceEvidenceBatch(
-          sourceStore,
-          captureEntries,
+        throw new Error(
+          `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
         );
       }
+      financialCaptures.push(admission.capture);
+      items.push({
+        provider: "ctbc",
+        product: "domestic-deposit",
+        itemKey: captureId,
+        command: {
+          kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+          request: { steps: [
+            { kind: "source", request: source },
+            { kind: "deposit", request: { capture: admission.capture } },
+          ] },
+        },
+      });
     }
-  } finally {
-    if (financialStore && !financialUsesSourceStore) financialStore.close();
-    sourceStore.close();
-  }
+    await context.event("validation", "canonical-admission-completed", {
+      completed: validatedCaptures.length,
+      total: validatedCaptures.length,
+    });
+    context.signal.throwIfAborted();
+    const readCurrent = dependencies.readCurrentDepositBalances ?? readCtbcCurrentDepositBalances;
+    const balances: PGliteWorkflowRunItem[] = [];
+    if (financialCaptures.length > 0) {
+      await context.event("collection", "current-balance-collection-started");
+      await context.event("decoding", "current-balance-decoding-started");
+      let currentRows: readonly CtbcCurrentDepositBalanceRow[];
+      try {
+        currentRows = await readCtbcCurrentDepositBalancesForApp(page, context, readCurrent);
+      } catch {
+        await context.event("decoding", "current-balance-decoding-failed");
+        await context.event("collection", "current-balance-collection-failed");
+        throw new Error("CTBC current balance source collection failed.");
+      }
+      await context.event("decoding", "current-balance-decoding-completed");
+      await context.event("collection", "current-balance-collection-completed", {
+        completed: currentRows.length,
+        total: currentRows.length,
+      });
+      const existing = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+      const firstIdentity = financialCaptures[0]!.identity;
+      await context.event("validation", "current-balance-validation-started", {
+        completed: 0,
+        total: currentRows.length,
+      });
+      try {
+        for (const row of currentRows) {
+          context.signal.throwIfAborted();
+          const matching = existing.get(
+            `${firstIdentity.sourceConnectionKey}\u0000${firstIdentity.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
+          );
+          if (!matching)
+            throw new Error("CTBC current deposit snapshot has no admitted account identity.");
+          balances.push({
+            provider: "ctbc",
+            product: "current-balance",
+            itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
+                buildCtbcCurrentDepositBalanceCapture(row, matching),
+              )),
+            },
+          });
+        }
+      } catch {
+        await context.event("validation", "current-balance-validation-rejected", {
+          completed: 0,
+          total: currentRows.length,
+        });
+        throw new Error("CTBC current balance source admission was rejected.");
+      }
+      await context.event("validation", "current-balance-validation-completed", {
+        completed: balances.length,
+        total: currentRows.length,
+      });
+    }
 
-  return {
-    ...collected.output,
-    sourceCaptureCount: captures.length,
-    status,
-  };
+    await context.event("validation", "source-validation-completed", {
+      completed: validatedCaptures.length,
+      total: collected.captures.length,
+    });
+    context.signal.throwIfAborted();
+    const commitItems = [...items, ...balances];
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: commitItems.length,
+    });
+    if (balances.length > 0) {
+      await context.event("commit", "current-balance-commit-started", {
+        completed: 0,
+        total: balances.length,
+      });
+    }
+    const committed = await financialCommit.execute(commitItems, {
+      provider: "ctbc",
+      product: "financial",
+      signal: context.signal,
+    });
+    if (committed.status !== "completed" || committed.items.length !== commitItems.length ||
+      committed.items.some((item) => item.status !== "committed")) {
+      const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+      await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed");
+      throw new Error(`CTBC Canonical Financial Commit failed: ${codes || committed.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: commitItems.length,
+      total: commitItems.length,
+    });
+    if (balances.length > 0) {
+      await context.event("commit", "current-balance-commit-completed", {
+        completed: balances.length,
+        total: balances.length,
+      });
+    }
+
+    return {
+      count: collected.output.count,
+      rowCount: collected.output.rowCount,
+      sourceCaptureCount: validatedCaptures.length,
+      status: financialCaptures.length > 0 ? "financial-admitted" : "source-only",
+    };
+  });
 }
-
-export default workflow("ctbcStatements", {
-  startUrl: LOGIN_URL,
-  credentials: ["ctbc_user_id", "ctbc_account", "ctbc_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as Input;
-    const { page } = ctx;
-
-    page.on("dialog", async (dialog) => {
-      console.warn("bank-dialog", { type: dialog.type() });
-      await dialog.accept();
-    });
-
-    await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await isSignedIn(page),
-      signIn: async () => {
-        await signInCtbc(page, input.credentials);
-      },
-    });
-
-    console.log("automation-progress: 25");
-    const result = await runCtbcStatements(page, input, {
-      canonicalFinancialLedgerDir: CTBC_HUMAN_ATTESTED_V1_CONFIRMED
-        ? process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR
-        : undefined,
-    });
-    console.log("automation-progress: 100");
-    return result;
-  },
-});

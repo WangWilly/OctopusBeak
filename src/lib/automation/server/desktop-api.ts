@@ -26,25 +26,30 @@ import {
 import {
   activeAutomationTaskIds,
   cancelAutomationTask,
+  currentAutomationTaskRun,
+  forceTerminateAutomationTask,
   hasActiveAutomationTask,
-  resumeSessionFromLog,
-  startAutomationResume,
   startAutomationTask,
-  startAutomationTasks,
 } from "./runner.ts";
 import {
-  activeTaskPrerequisiteNotices,
-  latestTaskRuns,
-  recentTaskRuns,
-  todayTaskRunIds,
+  type AutomationPersistenceProvider,
+  type AutomationTaskHistoryRow,
+  type AutomationTaskPrerequisiteNoticeRecord,
 } from "./store.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import {
   certificateFilename,
   validateCertificateFilePath,
 } from "./credential-file.ts";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
+import type {
+  AutomationCoreSnapshot,
+  AutomationCredentialGroupCoreDto,
+  AutomationCredentialStateDto,
+  AutomationDesktopModel,
+  AutomationRunManyResult,
+  AutomationRunManyTaskResult,
+  AutomationRuntimeSnapshot,
+} from "$lib/desktop/api.ts";
 import type {
   CathayGmailOtpConnectionError,
   CathayGmailOtpStatus,
@@ -56,6 +61,8 @@ import {
   enableCathayGmailOtp as enableCathayGmailOtpCore,
   setCathayGmailOtpEnabled as setCathayGmailOtpEnabledCore,
 } from "./gmail-otp-service.ts";
+import { automationRuntimeState } from "./runtime-state.ts";
+import { resumeAppWorkflowHumanAssistance } from "./app-workflow-human-assistance.ts";
 
 const cathayGmailOtpConnectionErrors = new Set<CathayGmailOtpConnectionError>([
   "authorization-cancelled",
@@ -116,8 +123,10 @@ const certificateFileCredentialKeys = new Set([
   "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
 ]);
 
-function pagePrerequisiteNotices(db: ReturnType<typeof openLedgerDatabase>) {
-  return activeTaskPrerequisiteNotices(db).flatMap((notice) => {
+function pagePrerequisiteNoticesFromRows(
+  notices: readonly AutomationTaskPrerequisiteNoticeRecord[],
+) {
+  return notices.flatMap((notice) => {
     const prerequisite = taskById(notice.taskId)?.externalPrerequisites?.find(
       (candidate) => candidate.id === notice.prerequisiteId,
     );
@@ -166,69 +175,155 @@ function currentCredentialState() {
   return { status, fileNames, invalidFileKeys, invalidFileReasons };
 }
 
-export function loadAutomationDesktopModel(
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-): AutomationDesktopModel {
+function credentialStatesFromStatus(status: Readonly<Record<string, boolean>>) {
+  return Object.fromEntries(
+    Object.entries(status).map(([key, value]) => [key, value ? "ready" : "missing"]),
+  ) as Record<string, "ready" | "missing">;
+}
+
+/** Main-process-only credential reader; never call this from a worker. */
+export function readAutomationCredentialState() {
+  const state = currentCredentialState();
+  return {
+    status: state.status,
+    fileNames: state.fileNames,
+    invalidFileKeys: state.invalidFileKeys,
+    invalidFileReasons: state.invalidFileReasons,
+    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
+  };
+}
+
+function coreCredentialGroup(
+  group: (typeof AUTOMATION_CREDENTIAL_GROUPS)[number],
+  enabled: boolean,
+  selectedStatementTypeIds: readonly string[],
+  statementSetupRequired: boolean,
+): AutomationCredentialGroupCoreDto & {
+  storedCredentialFileNames: Readonly<Record<string, string>>;
+  invalidCredentialFileKeys: readonly string[];
+  invalidCredentialFileReasons: Readonly<Record<string, "invalid-extension" | "missing-or-unreadable">>;
+} {
+  return {
+    ...group,
+    enabled,
+    selectedStatementTypeIds,
+    statementSetupRequired,
+    storedCredentialFileNames: {},
+    invalidCredentialFileKeys: [],
+    invalidCredentialFileReasons: {},
+  };
+}
+
+/**
+ * Build the automation data that does not require access to encrypted
+ * credentials.  Workers use this function directly; the credential state is
+ * supplied separately by Electron main only for the details block.
+ */
+/**
+ * Promise-based page snapshot seam for the worker-owned PGlite store.  All
+ * persistence reads are awaited before the page model is assembled, keeping
+ * runtime state and persisted history from being published out of order.
+ */
+export async function loadAutomationCoreSnapshot(
+  provider: AutomationPersistenceProvider,
+  credentialStatus: Readonly<Record<string, boolean>> = {},
+  runtime: AutomationRuntimeSnapshot = automationRuntimeState.snapshot(),
+  credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
+): Promise<AutomationCoreSnapshot> {
   const settings = readAutomationSettings();
   const enabledGroups = automationGroupEnabledStatus(settings);
-  const credentialState = currentCredentialState();
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    const activeTaskIds = activeAutomationTaskIds();
-    const range = businessDayUtcRange(
-      undefined,
-      automationBusinessTimezone(settings),
+  const activeTaskIds = activeAutomationTaskIds();
+  const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+  const [latestRuns, todayRunTaskIds, notices] = await Promise.all([
+    provider.automation.latestTaskRuns(),
+    provider.automation.todayTaskRunIds({ startUtc: range.startUtc, endUtc: range.endUtc }),
+    provider.automation.activeTaskPrerequisiteNotices(),
+  ]);
+  const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
+    const enabled = enabledGroups[group.id] !== false;
+    const selectionSettings = { ...settings, [group.enabledKey]: enabled };
+    const selection = isStatementSelectionGroup(group)
+      ? group.id === "fubon" || group.id === "yuanta" || group.id === "sinopac"
+        ? { selectedIds: allSupportedStatementTypeIds(group), needsSetup: false }
+        : selectStatementTypes(group, selectionSettings, "display")
+      : { selectedIds: [], needsSetup: false };
+    return coreCredentialGroup(
+      group,
+      enabled,
+      selection.selectedIds,
+      selection.needsSetup,
     );
-    const credentialGroups = AUTOMATION_CREDENTIAL_GROUPS.map((group) => {
-      const enabled = enabledGroups[group.id] !== false;
-      const selectionSettings = { ...settings, [group.enabledKey]: enabled };
-      const selection = isStatementSelectionGroup(group)
-        ? group.id === "fubon" ||
-          group.id === "yuanta" ||
-          group.id === "sinopac"
-          ? {
-              selectedIds: allSupportedStatementTypeIds(group),
-              needsSetup: false,
-            }
-          : selectStatementTypes(group, selectionSettings, "display")
-        : { selectedIds: [], needsSetup: false };
-      return {
-        ...group,
-        enabled,
-        selectedStatementTypeIds: selection.selectedIds,
-        statementSetupRequired: selection.needsSetup,
-        storedCredentialFileNames: credentialState.fileNames,
-        invalidCredentialFileKeys: credentialState.invalidFileKeys,
-        invalidCredentialFileReasons: credentialState.invalidFileReasons,
-      };
-    });
-    return {
-      automation: {
-        ...buildAutomationPageModel({
-          tasks: enabledAutomationTasks(enabledGroups),
-          latestRuns: latestTaskRuns(db),
-          todayRunTaskIds: todayTaskRunIds(db, {
-            startUtc: range.startUtc,
-            endUtc: range.endUtc,
-          }),
-          activeTaskIds,
-          credentials: credentialState.status,
-          setupRequiredGroupIds: new Set(
-            credentialGroups
-              .filter((group) => group.statementSetupRequired)
-              .map((group) => group.id),
-          ),
-          externalPrerequisiteNotices: pagePrerequisiteNotices(db),
-          active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
-          businessDate: range.businessDate,
-        }),
-        cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
-      },
-      credentialGroups,
-    };
-  } finally {
-    db.close();
-  }
+  });
+  return {
+    runtimeSessionId: runtime.sessionId,
+    runtimeRevision: runtime.revision,
+    automation: {
+      ...buildAutomationPageModel({
+        tasks: enabledAutomationTasks(enabledGroups),
+        latestRuns,
+        todayRunTaskIds,
+        activeTaskIds,
+        credentials: { ...credentialStatus },
+        setupRequiredGroupIds: new Set(
+          credentialGroups
+            .filter((group) => group.statementSetupRequired)
+            .map((group) => group.id),
+        ),
+        externalPrerequisiteNotices: pagePrerequisiteNoticesFromRows(notices),
+        active: activeTaskIds.length > 0 || hasActiveAutomationTask(),
+        businessDate: range.businessDate,
+        runtime,
+        credentialStates: { ...credentialStates },
+      }),
+    },
+    credentialGroups,
+  };
+}
+
+/** Apply the sanitized main-process state without reading credentials. */
+export function applyAutomationCredentialState(
+  core: AutomationCoreSnapshot,
+  credentialState: AutomationCredentialStateDto,
+): AutomationDesktopModel {
+  const credentialGroups = core.credentialGroups.map((group) => ({
+    ...group,
+    storedCredentialFileNames: credentialState.fileNames,
+    invalidCredentialFileKeys: credentialState.invalidFileKeys,
+    invalidCredentialFileReasons: credentialState.invalidFileReasons,
+  }));
+  return {
+    runtimeSessionId: core.runtimeSessionId,
+    runtimeRevision: core.runtimeRevision,
+    automation: {
+      ...core.automation,
+      credentials: { ...credentialState.status },
+      credentialStates: credentialState.states
+        ? { ...credentialState.states }
+        : credentialStatesFromStatus(credentialState.status),
+      ...(credentialState.cathayGmailOtp
+        ? { cathayGmailOtp: credentialState.cathayGmailOtp }
+        : {}),
+    },
+    credentialGroups,
+  };
+}
+
+export async function loadAutomationDesktopModel(
+  provider: AutomationPersistenceProvider,
+): Promise<AutomationDesktopModel> {
+  const raw = currentCredentialState();
+  const credentialState: AutomationCredentialStateDto = {
+    revision: 0,
+    status: raw.status,
+    fileNames: raw.fileNames,
+    invalidFileKeys: raw.invalidFileKeys,
+    invalidFileReasons: raw.invalidFileReasons,
+    cathayGmailOtp: sanitizedCathayGmailOtpStatus(),
+  };
+  return applyAutomationCredentialState(
+    await loadAutomationCoreSnapshot(provider, raw.status),
+    credentialState,
+  );
 }
 
 export function externalPrerequisiteById(prerequisiteId: string) {
@@ -292,7 +387,7 @@ function assertAutomationTaskCanStartInModel(
   if (!row) throw new Error("Task is disabled.");
   if (row.status === "waiting_for_human") {
     throw new Error(
-      "Task is waiting for human input. Resume or force quit it first.",
+      "Task is waiting for human input. Complete assistance or cancel the run first.",
     );
   }
   const group = task.credentialGroupId
@@ -331,13 +426,13 @@ export function assertAutomationTasksCanStart(
   );
 }
 
-export function assertAutomationTaskCanStart(
+export async function assertAutomationTaskCanStart(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+  provider: AutomationPersistenceProvider,
 ) {
   return assertAutomationTaskCanStartInModel(
     taskId,
-    loadAutomationDesktopModel(ledgerDir),
+    await loadAutomationDesktopModel(provider),
   );
 }
 
@@ -387,50 +482,71 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   return { saved: true as const };
 }
 
-export function automationRun(
+export async function automationRun(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  const task = assertAutomationTaskCanStart(taskId, ledgerDir);
-  startAutomationTask(task.id, ledgerDir);
-  return { started: task.id };
+  provider: AutomationPersistenceProvider,
+): Promise<{ started: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
+  const current = currentAutomationTaskRun(taskId);
+  if (current) {
+    return { started: taskId, runId: current.runId, runtime: current.runtime };
+  }
+  const model = await loadAutomationDesktopModel(provider);
+  const task = assertAutomationTaskCanStartInModel(taskId, model);
+  const started = await startAutomationTask(task.id, provider);
+  return { started: task.id, runId: started.runId, runtime: started.runtime };
 }
 
-export function automationRunMany(
+export async function automationRunMany(
   taskIds: string[],
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  if (
-    !Array.isArray(taskIds) ||
-    taskIds.some((taskId) => typeof taskId !== "string")
-  ) {
+  provider: AutomationPersistenceProvider,
+): Promise<AutomationRunManyResult> {
+  if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
     throw new TypeError("Task IDs must be an array of strings.");
   }
-  if (taskIds.length === 0) return { started: [] as string[] };
-  const tasks = assertAutomationTasksCanStart(
-    taskIds,
-    loadAutomationDesktopModel(ledgerDir),
-  );
-  startAutomationTasks(
-    tasks.map((task) => task.id),
-    ledgerDir,
-  );
-  return { started: tasks.map((task) => task.id) };
+  if (taskIds.length === 0) return { started: [] as string[], results: {} };
+  const model = await loadAutomationDesktopModel(provider);
+  const started: string[] = [];
+  const errors: Record<string, string> = {};
+  const results: Record<string, AutomationRunManyTaskResult> = {};
+  for (const taskId of [...new Set(taskIds)]) {
+    try {
+      const existing = currentAutomationTaskRun(taskId);
+      if (existing) {
+        results[taskId] = { status: "already_running", runId: existing.runId };
+        continue;
+      }
+      const task = assertAutomationTaskCanStartInModel(taskId, model);
+      const run = await startAutomationTask(task.id, provider);
+      started.push(task.id);
+      results[task.id] = { status: "started", runId: run.runId };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors[taskId] = message;
+      results[taskId] = { status: "error", error: message };
+    }
+  }
+  return { started, results, ...(Object.keys(errors).length ? { errors } : {}) };
 }
 
-export function automationCancel(taskId: string) {
-  return cancelAutomationTask(taskId);
+export function automationCancel(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
+): Promise<{ cancelled: string }> {
+  return cancelAutomationTask(taskId, provider);
+}
+
+export function automationForceTerminate(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
+): Promise<{ cancelled: string }> {
+  return forceTerminateAutomationTask(taskId, provider);
 }
 
 export function automationRunHistory(
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  const db = openLedgerDatabase(ledgerDir);
-  try {
-    return recentTaskRuns(db, 100);
-  } finally {
-    db.close();
-  }
+  provider: AutomationPersistenceProvider,
+  limit = 100,
+): Promise<AutomationTaskHistoryRow[]> {
+  return provider.automation.recentTaskRuns(limit);
 }
 
 export function assertHumanAssistanceCompletionCanResume(
@@ -453,23 +569,36 @@ export function assertHumanAssistanceCompletionCanResume(
   }
 }
 
-export function automationResume(
+export async function automationResumeHumanAssistance(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
+  provider: AutomationPersistenceProvider,
+): Promise<{ resumed: string; runId: string; runtime: ReturnType<typeof automationRuntimeState.snapshot> }> {
   const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const model = loadAutomationDesktopModel(ledgerDir);
+  if (!task) throw new Error("Unknown automation task: " + taskId);
+  if (!task.workflowId || task.kind !== "crawler") {
+    throw new Error(
+      "This task does not use an App browser workflow. Start a new run from the source.",
+    );
+  }
+  const model = await loadAutomationDesktopModel(provider);
   const row = model.automation.tasks.find((item) => item.id === taskId);
   if (!row) throw new Error("Task is disabled.");
   if (row.status !== "waiting_for_human")
     throw new Error("Task is not waiting for human input.");
-  assertHumanAssistanceCompletionCanResume(
-    row.humanAssistanceContract?.completion,
-  );
-  const session = resumeSessionFromLog(row.logTail);
-  if (!session)
-    throw new Error("Missing Libretto resume session in latest log.");
-  startAutomationResume(task.id, session, ledgerDir);
-  return { resumed: task.id };
+  assertHumanAssistanceCompletionCanResume(row.humanAssistanceContract?.completion);
+  const runId = row.runId;
+  if (!runId) throw new Error("Missing App workflow run ID.");
+  const completionStatus = row.humanAssistanceContract?.completion.status;
+  if (!completionStatus || completionStatus === "pending") {
+    throw new Error("Human verification input is incomplete. Enter the verification input before continuing.");
+  }
+  const resumedInPlace = await resumeAppWorkflowHumanAssistance(runId, completionStatus);
+  if (!resumedInPlace) {
+    throw new Error("The App workflow is no longer active. Restart it from the beginning.");
+  }
+  return {
+    resumed: task.id,
+    runId,
+    runtime: automationRuntimeState.snapshot(),
+  };
 }

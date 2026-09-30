@@ -3,27 +3,26 @@ import { readFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
 import {
   desktopCdpFixtureSettings,
   desktopCdpFixtureCredentialGroupIds,
   removeDesktopCdpFixture,
   seedDesktopCdpFixture,
 } from "./seed-desktop-cdp-fixture.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS } from "../src/lib/automation/server/tasks.ts";
-import { openLedgerDatabase } from "../src/ledger/db/client.ts";
+import {
+  AUTOMATION_CREDENTIAL_GROUPS,
+  automationCredentialKeyIsSecret,
+} from "../src/lib/automation/server/tasks.ts";
 
-assert.throws(
-  () => seedDesktopCdpFixture(process.cwd()),
+await assert.rejects(
+  seedDesktopCdpFixture(process.cwd()),
   /temporary directory/,
 );
 
 const root = await mkdtemp(join(tmpdir(), "octopusbeak-desktop-cdp-fixture-"));
 try {
-  seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"));
-
-  const marker = JSON.parse(await readFile(join(root, ".libretto", "canonical-reset.json"), "utf8"));
-  assert.equal(marker.status, "completed");
-  assert.equal(marker.userData, root);
+  await seedDesktopCdpFixture(root, new Date("2026-09-14T04:00:00.000Z"));
 
   const settings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
   assert.deepEqual(settings, desktopCdpFixtureSettings);
@@ -32,7 +31,7 @@ try {
     .flatMap((groupId) => AUTOMATION_CREDENTIAL_GROUPS
       .find((group) => group.id === groupId)
       .credentialFields
-      .filter((credentialField) => credentialField.redaction !== "none")
+      .filter((credentialField) => automationCredentialKeyIsSecret(credentialField.key))
       .map((credentialField) => credentialField.key))
     .sort();
   assert.deepEqual(Object.keys(credentials).sort(), expectedCredentialKeys);
@@ -40,25 +39,48 @@ try {
     assert.match(credentials[key], /^fixture-cdp-/);
   }
 
-  const db = openLedgerDatabase(join(root, "data", "ledger"), { readOnly: true });
-  const rows = db.prepare(`
-    SELECT task_id, status, error_message, log_tail
+  const db = await PGlite.create({ dataDir: join(root, "data", "pglite") });
+  const rows = (await db.query(`
+    SELECT task_id, status, record_json
     FROM automation_task_runs
     ORDER BY task_id
-  `).all().map((row) => ({ ...row }));
-  db.close();
+  `)).rows.map((row) => {
+    const record = JSON.parse(row.record_json);
+    assert.equal("script" in record, false);
+    assert.equal("logPath" in record, false);
+    assert.equal("logTail" in record, false);
+    assert.equal("errorMessage" in record, false);
+    return {
+      task_id: row.task_id,
+      status: row.status,
+      app_workflow_outcome: record.appWorkflowOutcome ?? null,
+    };
+  });
+  const removedColumns = (await db.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'automation_task_runs'
+      AND column_name IN ('script', 'error_message', 'log_path', 'log_tail')
+  `)).rows;
+  await db.close();
+  assert.deepEqual(removedColumns, []);
   assert.deepEqual(rows, [
     {
       task_id: "esun-credit-card-statements",
       status: "failed",
-      error_message: "Mock fixture: E.SUN sign-in failed after the source was selected.",
-      log_tail: "automation-progress: 42\nMock fixture: E.SUN sign-in failed after the source was selected.",
+      app_workflow_outcome: {
+        errorCode: "workflow-failed",
+        summary: { status: "failed", counts: {} },
+      },
     },
     {
       task_id: "fubon-all-statements",
       status: "completed",
-      error_message: null,
-      log_tail: "automation-progress: 100",
+      app_workflow_outcome: {
+        errorCode: null,
+        summary: { status: "completed", counts: { rowCount: 1 } },
+      },
     },
   ]);
 } finally {

@@ -8,20 +8,13 @@ import {
 } from "./cathay-current-deposit-balances.ts";
 import {
   admitCurrentDepositBalanceCapture,
-  commitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceCommitResult,
   type CurrentDepositBalanceObservationInput,
-  type CurrentDepositBalanceWriterStore,
   type CurrentDepositSourceRecordInput,
   type CurrentDepositTimeEvidence,
-} from "../ledger/canonical/current-deposit-balance-writer.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
+} from "../ledger/pglite/current-deposit-admission.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "cathay/domestic-deposit/current-balance-v1" as const;
@@ -246,31 +239,6 @@ export function buildCathayCurrentDepositBalanceCaptures(
     });
   }
   return captures;
-}
-
-export async function commitCathayCurrentDepositBalanceCaptures(
-  ledgerDir: string,
-  captures: readonly CurrentDepositBalanceCaptureInput[],
-  storeFactory: (
-    path: string,
-  ) => CurrentDepositBalanceWriterStore = (path) =>
-    createCanonicalSourceStore(path),
-): Promise<readonly CurrentDepositBalanceCommitResult[]> {
-  if (captures.length === 0) return [];
-  if (!ledgerDir.trim()) {
-    throw new Error("Cathay current deposit canonical ledger directory is required.");
-  }
-  const store = storeFactory(canonicalSqlitePath(ledgerDir));
-  try {
-    const results: CurrentDepositBalanceCommitResult[] = [];
-    for (const capture of captures) {
-      const admitted = admitCurrentDepositBalanceCapture(capture);
-      results.push(await commitCurrentDepositBalanceCapture(store, admitted));
-    }
-    return results;
-  } finally {
-    store.close();
-  }
 }
 
 export function cathayCurrentSubjectDigest(

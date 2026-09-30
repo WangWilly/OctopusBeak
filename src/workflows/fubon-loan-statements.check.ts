@@ -1,32 +1,43 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import type { Frame, Locator, Page } from "playwright";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer } from "vite";
+import {
+  createPGliteChildRpcServer,
+  type PGliteChildProvider,
+} from "../../electron/pglite-child-rpc.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
+import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
+import {
+  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import { executePGliteWorkflowRun } from "../ledger/pglite/workflow-run.ts";
 import {
   FUBON_LOAN_PAGINATION_FIXTURES_V1,
   FUBON_LOAN_PAGINATION_FIXTURES_V2,
 } from "./fubon-loan-statements.fixtures.ts";
 
-const { persistFubonLoanCapture } =
-  await import("../ledger/canonical/fubon-loan.ts");
 const { runFubonLoanStatements } = await import("./fubon-loan-statements.ts");
+const { buildFubonLoanCapture, assertFubonLoanCaptureAccountNumberEvidence } =
+  await import("../ledger/canonical/fubon-loan-admission.ts");
 const { FUBON_LOAN_CONTRACT_VERSION } =
-  await import("../ledger/canonical/loan-financial.ts");
+  await import("../ledger/canonical/loan-admission.ts");
+const { deriveFubonSourceConnectionKey, fubonStableLoginScope } =
+  await import("./fubon-source-connection.ts");
+
+const syntheticFubonLoanAccountNumber = ["0123", "4567", "8901", "23"].join("");
 
 const source = await readFile(
   new URL("./fubon-loan-statements.ts", import.meta.url),
   "utf8",
 );
-const loginEntry = source.slice(
-  source.indexOf("async function openLoanLoginForm"),
-  source.indexOf("function loanForm"),
-);
-assert.match(loginEntry, /openFubonLoginForm\(page\)/);
-assert.doesNotMatch(
-  loginEntry,
-  /#menu_CLN|menu_CLN02|task_CLNQU001|landingFrame\.goto|txnFrame\.goto/,
-);
+assert.doesNotMatch(source, /from ["']libretto["']|export default workflow\(/u);
+assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin\(/u);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
 assert.doesNotMatch(source, /pageCount:\s*1/);
@@ -34,16 +45,9 @@ assert.match(source, /relationCoverage:\s*["']not-asserted["']/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonLoanStatements"),
 );
-assert.match(
-  runSource,
-  /resolveLoanRepaymentRelations|resolveRelations/,
-  "a successful complete loan capture must trigger the independent relation resolver",
-);
-assert.match(
-  runSource,
-  /fubon-loan-relation-resolution-failed/,
-  "relation resolution failures must not withdraw a committed capture",
-);
+assert.match(runSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/);
+assert.match(runSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/);
+assert.match(runSource, /relationCommands: \(\) => \[/);
 assert.doesNotMatch(
   source,
   /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
@@ -54,15 +58,25 @@ assert.match(
   /FUBON_LOAN_TERMINAL_RULE_VERSION\s*=\s*["']fubon-loan-terminal-v2["']/u,
   "the live-verified static result terminal rule must be versioned",
 );
-const loanCommitMarker = runSource.indexOf("await persist(store");
+const loanCommitMarker = runSource.indexOf(
+  "PGLITE_CANONICAL_LOAN_COMMIT_COMMAND",
+);
 const loanResolverMarker = runSource.indexOf(
-  "await resolveLoanRelationsAfterCapture(store",
+  "PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND",
 );
 assert.ok(
   loanCommitMarker >= 0 && loanResolverMarker > loanCommitMarker,
-  "loan relation resolution must happen after the canonical capture commit",
+  "loan relation resolution must be emitted with the PGlite capture item",
 );
-assert.match(source, /resolveLoanRelationsAfterCapture/u);
+assert.doesNotMatch(
+  source,
+  /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
+  "the workflow must not coordinate internal loan spines or low-level deposit batches",
+);
+assert.doesNotMatch(
+  source,
+  /resolveLoanRelationsAfterCapture|resolveLoanRepaymentRelations/u,
+);
 
 test("Fubon exported loan run fails closed without caller Source Connection identity", async () => {
   await assert.rejects(
@@ -72,6 +86,7 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
         { downloadFormat: "EXCEL" } as Parameters<
           typeof runFubonLoanStatements
         >[1],
+        {} as Parameters<typeof runFubonLoanStatements>[2],
       ),
     /stable caller-supplied Source Connection scope and key/u,
   );
@@ -79,6 +94,7 @@ test("Fubon exported loan run fails closed without caller Source Connection iden
 
 type FakeLocator = Locator & {
   selector: string;
+  locator(selector: string): FakeLocator;
 };
 
 type FakeScope = {
@@ -105,6 +121,7 @@ type LoanNavigationOptions = {
   retryFormReadyTimeoutMs?: number;
   navigationControlTimeoutMs?: number;
   navigationLinkTimeoutMs?: number;
+  silent?: boolean;
 };
 
 class TestHTMLElement {
@@ -117,6 +134,9 @@ class TestHTMLElement {
 function fakeLocator(scope: FakeScope, selector: string): FakeLocator {
   const locator = {
     selector,
+    locator(childSelector: string) {
+      return fakeLocator(scope, `${selector} ${childSelector}`);
+    },
     first() {
       return this;
     },
@@ -164,7 +184,8 @@ function fakeLocator(scope: FakeScope, selector: string): FakeLocator {
 
       const present =
         (selector === "#form1\\:loanAccountCombo" ||
-          selector === "form#form1") &&
+          selector === "form#form1" ||
+          selector === "#form1\\:loanAccountCombo option") &&
         scope.ready;
       const linkPresent =
         selector === "a.task_CLNQU001.menu_CLN02" &&
@@ -325,6 +346,19 @@ const parseFubonLoanStatementRows = module.parseFubonLoanStatementRows as (
 ) => string[][];
 const parseFubonLoanPaginationSignal =
   module.parseFubonLoanPaginationSignal as (html: string) => unknown;
+const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCollection as (
+  page: Page,
+  html: string,
+  account: { label: string; value: string },
+  input: {
+    loanAccountLabels: string[];
+    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
+    quickMonths: "1" | "3" | "6";
+    downloadFormat: "EXCEL";
+    dateRange: { startDate: string; endDate: string };
+  },
+  sourceText: { assertIntact(value: string): void },
+) => Promise<{ completeness: { terminal: true } | null }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   pages: ReadonlyArray<{
     accountType: string;
@@ -376,20 +410,68 @@ const deriveFubonLoanAccountNumberEvidence =
         value: string;
         kind: "loan-account";
         evidenceVersion: "fubon/loan/account-number-v1";
-        sourceField: "form1:loanAccountCombo option.text";
-      }
+      sourceField: "form1:loanAccountCombo option.text";
+    }
     | null;
+
+test("typed Fubon loan parser returns complete evidence without CSV/JSON files", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "fubon-loan-typed-no-files-"));
+  const originalCwd = process.cwd();
+  process.chdir(temp);
+  try {
+    const page = {
+      evaluate: async () => ({
+        accountType: "synthetic-loan",
+        branchName: "synthetic-branch",
+        currency: "TWD",
+        rows: [[
+          "2026/01/31",
+          "SYNTHETIC-LOAN-ROW",
+          "12500.00",
+          "1.50",
+          "2026/01/31",
+          "2026/02/28",
+          "87500.00",
+          "",
+        ]],
+      }),
+    } as unknown as Page;
+    const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
+    const result = await parseFubonLoanStatementForCollection(
+      page,
+      fixtureHtml,
+      {
+        label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
+        value: "opaque-synthetic-loan-option",
+      },
+      {
+        loanAccountLabels: [],
+        queryItems: ["TRANSACTION_DETAIL_QUERY"],
+        quickMonths: "6",
+        downloadFormat: "EXCEL",
+        dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
+      },
+      { assertIntact: (value) => assert.ok(value.length > 0) },
+    );
+
+    assert.deepEqual(await readdir(temp), [], "typed loan parsing must not create source, output, or log files");
+    assert.equal(result.completeness?.terminal, true);
+  } finally {
+    process.chdir(originalCwd);
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
     extractFubonLoanAccountEvidence(
       "opaque-provider-option",
-      "01234567890123 (學貸-留貸)",
+      `${syntheticFubonLoanAccountNumber} (學貸-留貸)`,
     ),
-    "01234567890123",
+    syntheticFubonLoanAccountNumber,
   );
   assert.equal(
-    extractFubonLoanAccountEvidence("01234567890123", "masked"),
+    extractFubonLoanAccountEvidence(syntheticFubonLoanAccountNumber, "masked"),
     null,
   );
   assert.equal(
@@ -402,17 +484,17 @@ test("extracts only a complete unmasked Fubon loan selector account", () => {
   assert.equal(
     extractFubonLoanAccountEvidence(
       "opaque-provider-option",
-      "01234567890123 arbitrary suffix",
+      `${syntheticFubonLoanAccountNumber} arbitrary suffix`,
     ),
     null,
   );
   assert.deepEqual(
     deriveFubonLoanAccountNumberEvidence({
       value: "opaque-provider-option",
-      label: "01234567890123 (學貸-留貸)",
+      label: `${syntheticFubonLoanAccountNumber} (學貸-留貸)`,
     }),
     {
-      value: "01234567890123",
+      value: syntheticFubonLoanAccountNumber,
       kind: "loan-account",
       evidenceVersion: "fubon/loan/account-number-v1",
       sourceField: "form1:loanAccountCombo option.text",
@@ -707,7 +789,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
         },
       },
     ],
-    { label: "01234567890123 (學貸-留貸)", value: "opaque-loan" },
+    { label: `${syntheticFubonLoanAccountNumber} (學貸-留貸)`, value: "opaque-loan" },
     {
       loanAccountLabels: [],
       queryItems: ["TRANSACTION_DETAIL_QUERY"],
@@ -719,7 +801,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
 
   assert.equal(parsed.completeness?.pageCount, 2);
   assert.deepEqual(parsed.accountNumber, {
-    value: "01234567890123",
+    value: syntheticFubonLoanAccountNumber,
     kind: "loan-account",
     evidenceVersion: "fubon/loan/account-number-v1",
     sourceField: "form1:loanAccountCombo option.text",
@@ -761,83 +843,148 @@ test("bounds a frame probe that never resolves and fails closed", async () => {
   assert.ok(landing.probeAborts > 0);
 });
 
-test("commits one canonical capture for a parsed Fubon loan result", async () => {
-  let commitCount = 0;
-  const admittedCaptures: unknown[] = [];
-  await persistFubonLoanCapture(
-    null as never,
-    {
-      accountValue: "fubon-option-test",
-      accountNumber: {
-        value: "01234567890123",
+test("commits and resolves one Fubon loan capture through authenticated PGlite RPC", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "fubon-loan-pglite-"));
+  const worker = createPGliteViewWorkerClient(
+    new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
+      execArgv: ["--experimental-strip-types"],
+      workerData: { dataDir: join(runDir, "pglite") },
+    }),
+  );
+  const server = createPGliteChildRpcServer({
+    provider: {
+      operational: worker.operationalProvider,
+      financial: worker.financial.registry,
+    } as PGliteChildProvider,
+  });
+  const priorEnv = Object.fromEntries(
+    Object.keys(server.env).map((key) => [key, process.env[key]]),
+  );
+
+  try {
+    await server.ready;
+    Object.assign(process.env, server.env);
+    const client = requirePGliteChildRpcClientFromEnv();
+    try {
+      await client.ready;
+      const capture = buildFubonLoanCapture({
+        accountValue: "fubon-option-test",
+        accountNumber: {
+          value: syntheticFubonLoanAccountNumber,
+          kind: "loan-account",
+          evidenceVersion: "fubon/loan/account-number-v1",
+          sourceField: "form1:loanAccountCombo option.text",
+        },
+        sourceConnectionScope: "fubon-connection-test",
+        observedAt: "2026-02-01T00:00:00.000Z",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        scope: {
+          startDate: "2026-01-01",
+          endDate: "2026-01-31",
+          completeness: "complete-range",
+          completenessBasis: "source-declared-terminal-range",
+          completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+          pageCount: 1,
+          terminal: true,
+        },
+        pages: [
+          {
+            pageOrdinal: 0,
+            responseCode: "200",
+            terminal: true,
+            rowCount: 1,
+            proofKind: "source-declared-terminal-range",
+          },
+        ],
+        relationCoverage: "not-asserted",
+        counterpartTransactions: [],
+        relations: [],
+        rows: [
+          {
+            transactionDate: "2026/01/05",
+            transactionContent: "LOAN-DISBURSEMENT",
+            transactionAmount: "100000.00",
+            balanceAfterTransaction: "100000.00",
+          },
+        ],
+      });
+      assertFubonLoanCaptureAccountNumberEvidence(capture);
+      assert.match(capture.identity.accountNo, /^sha256:/u);
+      assert.deepEqual(capture.identity.accountNumber, {
+        value: syntheticFubonLoanAccountNumber,
         kind: "loan-account",
         evidenceVersion: "fubon/loan/account-number-v1",
         sourceField: "form1:loanAccountCombo option.text",
-      } as const,
-      sourceConnectionScope: "fubon-connection-test",
-      observedAt: "2026-02-01T00:00:00.000Z",
-      startDate: "2026-01-01",
-      endDate: "2026-01-31",
-      scope: {
-        startDate: "2026-01-01",
-        endDate: "2026-01-31",
-        completeness: "complete-range",
-        completenessBasis: "source-declared-terminal-range",
-        completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
-        pageCount: 1,
-        terminal: true,
-      },
-      pages: [
-        {
-          pageOrdinal: 0,
-          responseCode: "200",
-          terminal: true,
-          rowCount: 1,
-          proofKind: "source-declared-terminal-range",
-        },
-      ],
-      relationCoverage: "not-asserted",
-      counterpartTransactions: [],
-      relations: [],
-      rows: [
-        {
-          transactionDate: "2026/01/05",
-          transactionContent: "LOAN-DISBURSEMENT",
-          transactionAmount: "100000.00",
-          balanceAfterTransaction: "100000.00",
-        },
-      ],
-    },
-    {
-      commit: async (_store, admitted) => {
-        commitCount += 1;
-        admittedCaptures.push(admitted);
-        return {} as never;
-      },
-    },
-  );
+      });
+      const sourceRecord = capture.records[0];
+      assert.ok(sourceRecord);
 
-  assert.equal(commitCount, 1);
-  assert.equal(admittedCaptures.length, 1);
-  assert.equal(
-    (admittedCaptures[0] as { relationCoverage?: string }).relationCoverage,
-    "not-asserted",
-  );
-  const identity = (
-    admittedCaptures[0] as {
-      identity: {
-        accountNo: string;
-        accountNumber?: unknown;
-      };
+      const result = await executePGliteWorkflowRun({
+        client: client.workflow,
+        provider: "fubon",
+        product: "loan",
+        items: [
+          {
+            provider: "fubon",
+            product: "loan",
+            itemKey: capture.captureId,
+            command: {
+              kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
+              request: { capture },
+            },
+            relationCommands: () => [
+              {
+                kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+                request: {
+                  sourceConnectionKey: capture.identity.sourceConnectionKey,
+                  integrationNamespace: "fubon",
+                  observedAt: capture.observedAt,
+                  counterpartyEvidence: [
+                    {
+                      captureId: capture.captureId,
+                      sourceRecordKey: sourceRecord.sourceRecordKey,
+                      sourceConnectionKey: capture.identity.sourceConnectionKey,
+                      identityEpochKey: capture.identity.identityEpochKey,
+                      accountValue: syntheticFubonLoanAccountNumber,
+                      role: "beneficiary",
+                      purpose: "loan_repayment",
+                      scope: "loan_contract",
+                      evidenceKind: "repayment-mandate",
+                      sourceField: "loan-account-selector",
+                      contractVersion:
+                        "fubon/loan-account-as-repayment-destination/v1",
+                      effectiveStartDate: capture.scope.startDate,
+                      effectiveEndDate: capture.scope.endDate,
+                      accountKey: capture.identity.accountKey,
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      assert.equal(result.status, "completed");
+      assert.equal(result.items[0]?.status, "committed");
+      assert.deepEqual(result.items[0]?.relationWarnings, []);
+      assert.equal(
+        (await worker.financial.registry.liabilitiesCurrent()).accounts.length,
+        1,
+      );
+    } finally {
+      client.close();
     }
-  ).identity;
-  assert.match(identity.accountNo, /^sha256:/u);
-  assert.deepEqual(identity.accountNumber, {
-    value: "01234567890123",
-    kind: "loan-account",
-    evidenceVersion: "fubon/loan/account-number-v1",
-    sourceField: "form1:loanAccountCombo option.text",
-  });
+  } finally {
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await server.close();
+    await worker.close();
+    await rm(runDir, { recursive: true, force: true });
+  }
 });
 
 test("emits non-sensitive bounded navigation stage telemetry", async () => {
@@ -914,4 +1061,20 @@ test("emits exactly one ordered link/readiness retry", async () => {
     ["loan-form-ready", "start"],
     ["loan-form-ready", "success"],
   ]);
+});
+
+test("typed collection suppresses raw loan navigation diagnostics", async () => {
+  const header = fakeScope("frame1");
+  const landing = fakeScope("txnFrame");
+  landing.readyOnNavigationClick = 1;
+  const page = fakePage([header, landing]);
+  const originalLog = console.log;
+  const logs: unknown[][] = [];
+  console.log = ((...values: unknown[]) => logs.push(values)) as typeof console.log;
+  try {
+    await navigateToLoanStatementsPage(page, { ...fastNavigation, silent: true });
+  } finally {
+    console.log = originalLog;
+  }
+  assert.deepEqual(logs, []);
 });

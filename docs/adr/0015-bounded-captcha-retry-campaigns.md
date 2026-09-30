@@ -4,16 +4,16 @@ Status: accepted
 
 ## Decision
 
-A user-initiated automation that uses a solver-backed `text-captcha` or
-`image-selection` challenge runs as one CAPTCHA Retry Campaign. The campaign is
+A user-initiated automation that uses a solver-backed `text-captcha`,
+`audio-captcha`, or supported `image-selection` challenge runs as one CAPTCHA Retry Campaign. The campaign is
 shown and persisted as one task run even if its provider workflow is restarted
 internally. Checkbox challenges and human-operated verification are outside this
 mechanism.
 
 Each campaign permits at most ten CAPTCHA Challenge Rounds. A round starts only
-after the workflow successfully captures a challenge image. It may run one to
-three distinct provider-declared OCR strategies against that image and may
-submit at most one accepted answer. A captured image that violates its declared
+after the workflow successfully captures challenge media. It may run one to
+three distinct provider-declared solve strategies against that media and may
+submit at most one accepted answer. Captured media that violates its declared
 challenge contract consumes the round without submission. A missing challenge,
 or a failure to load, locate, or capture it, does not consume the retry budget
 and follows the workflow's normal outcome.
@@ -81,9 +81,19 @@ acceptance, privacy, and fail-closed rules remain in force.
 - The automation host owns a campaign state machine above individual workflow
   processes and preserves one task-run identity across internal restarts.
 - Verification routing reports the host-side round outcome directly to that
-  campaign state machine. Workflows only publish their existing human-
-  assistance contract; stdout, exception messages, and a workflow-to-host
-  CAPTCHA IPC channel remain outside retry control.
+  campaign state machine. Workflows publish their existing human-assistance
+  contract. SinoPac also returns `captcha-provider-rejected` through the existing
+  allowlisted worker terminal outcome, only after recognizing the exact bank
+  CAPTCHA warning and successfully dismissing it. The App joins worker and
+  browser cleanup before routing this outcome into the campaign. This avoids a
+  race where worker cleanup aborts the assistance signal before an event poll
+  can observe rejection. Operational events, stdout, exception messages, and
+  an additional workflow-to-host CAPTCHA IPC channel remain outside retry control.
+  Explicit human runs do not enter automatic provider-rejection retries.
+- For Chromium workers, the App browser connection explicitly leaves native
+  dialogs to the worker/provider observer. Otherwise Playwright's independent
+  host connection auto-dismisses dialogs before the worker can classify and
+  dismiss them, producing a second race across CDP connections.
 - Process and browser-session cleanup becomes a prerequisite for starting the
   next round.
 - Task progress may expose the current round and fixed maximum, but no continue

@@ -1,4 +1,4 @@
-import type { ForeignCurrencyDepositCaptureInput } from "./foreign-currency-deposit.ts";
+import type { ForeignCurrencyDepositCaptureInput } from "./foreign-currency-deposit-admission.ts";
 
 /** Synthetic, versioned source contracts used by readiness and admission checks. */
 const shared = {

@@ -403,7 +403,7 @@ A view of consumption organized by the purchase rather than bank posting, in whi
 _Avoid_: Booked outflow total, bank posting month as purchase month
 
 **Spending deduplication link**:
-A revocable, traceable report-level association identifying one invoice and one payment transaction as evidence of the same purchase in the first version, established automatically only by reliable source evidence or otherwise by explicit user confirmation; similarity alone cannot establish it. The association follows legitimate revisions of the same source identity without renewed confirmation, preventing duplicate recognition under the spending policy without merging canonical identities or rewriting source financial facts.
+A revocable, traceable report-level association identifying one invoice and one payment transaction as evidence of the same purchase in the first version, established automatically only by reliable source evidence or otherwise by explicit user confirmation; similarity alone cannot establish it. The user-facing action that explicitly confirms this association is called **Pairing** (「配對」). The association follows legitimate revisions of the same source identity without renewed confirmation, preventing duplicate recognition under the spending policy without merging canonical identities or rewriting source financial facts.
 _Avoid_: Canonical identity merge, source-confirmed Transaction Relation, automatic fuzzy deduplication
 
 **Possible duplicate spending**:
@@ -754,33 +754,45 @@ A structured workflow result that identifies a recoverable external prerequisite
 _Avoid_: Error-text classification, generic failure
 
 **Automation session finalization**:
-The act of relinquishing an owned automation session after a run, including graceful close, daemon teardown when needed, and removal of the session's ownership record.
+The act of ending an automation session after the workflow no longer needs browser interaction, including releasing any resources held for it.
 _Avoid_: Session close (which names only the graceful close operation).
 
 **Automation task**:
-A reusable scheduled unit that can be started manually, in a batch, or as a resume.
+A reusable unit of automation that can be started manually, in a batch, or by its schedule.
 
 **Automation task run**:
-One persisted execution attempt of an automation task, including its output, status, and any retained session. A run waiting for human input remains that run; resuming creates a new run for the subsequent outcome.
+One execution attempt of an automation task, including its status, bounded operational events, and any human assistance needed to continue it. Completing human assistance continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
+
+**Automation run event**:
+A bounded, sanitized stage update or diagnostic belonging to one Automation Task Run, retained as operational state for progress and failure review. It contains no raw browser response, credential, or process output.
+_Avoid_: Log file, raw stdout, source record, financial fact
+
+**Workflow executor**:
+The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
+_Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
+
+**Browser execution profile**:
+A named, versioned browser environment required by an automation source, applied consistently throughout an Automation Task Run. A run uses its selected profile without silently trying alternative profiles when the source rejects access.
+_Avoid_: Solver profile, browser engine selection, arbitrary launch settings
 
 **Automation task run finalization**:
-The act of deciding an automation task run's terminal outcome, recording its result, and relinquishing or retaining its automation session.
+The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session.
 
 **Automation task run finalization intent**:
-The stated outcome and session disposition that guide how an automation task run is finalized.
+The stated outcome and safe result summary that guide how an automation task run is finalized.
 
 **Automation session disposition**:
 The decision to retain an automation session for human assistance or relinquish it after a task run.
 
 **Automation task run force-quit**:
-An operator-initiated action that ends a task run waiting for human input by relinquishing its exact automation session and finalizing the run as failed.
+An operator-initiated action that ends a task run waiting for human input and records the run as cancelled.
 
 **Verification target**:
 A workflow-declared browser control or verification modal area that a Verification Actor may interact with during an automation session. Each target has a workflow-owned semantic identity and current geometry for presentation and coordinate mapping. The host permits interaction only with declared targets; unrelated viewer regions do not open a floating input and do not count as completed verification.
 _Avoid_: Generic editable target, nearest input target
 
 **Verification actor**:
-The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `human`; the two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
+The party that performs a verification target: `human` through Assist, or `solver` through an automated Verification Solver. The actor is selected per supported source and defaults to `solver`; an explicit `human` setting is preserved. The two are mutually exclusive within one task run, so a solver run never falls back to human assistance and a human run never invokes a solver.
 _Avoid_: Viewer mode, interaction mode, fallback actor
 
 **Verification completion**:
@@ -840,7 +852,7 @@ One invocation of a distinct provider-declared OCR strategy against the image be
 _Avoid_: CAPTCHA refresh, challenge retry, repeated identical OCR strategy
 
 **CAPTCHA challenge round**:
-The CAPTCHA image successfully captured by one workflow execution, the one to three distinct Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after image capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while a captured image that violates the declared challenge contract consumes a round without submission. First-version campaigns apply to solver-backed `text-captcha` and `image-selection` challenges, not ordinary checkbox interaction or a `human` Verification Actor, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the first version treats that restarted execution as the new-round boundary and does not compare image identity across rounds.
+The CAPTCHA image or audio successfully captured by one workflow execution, the provider-declared Solve Attempts that may evaluate it, and at most one submitted answer selected by its Solve Acceptance Policy. A round is consumed only after media capture succeeds; challenge absence and failures to load, locate, or capture the challenge are ordinary workflow outcomes outside the retry budget, while captured media that violates the declared challenge contract consumes a round without submission. Campaigns apply to solver-backed `text-captcha`, `audio-captcha`, and supported `image-selection` challenges, not ordinary checkbox interaction or a `human` Verification Actor, and use the same fixed limit of ten rounds with no provider or user override. Exhausting a round without an accepted candidate or having its submitted answer rejected restarts the provider workflow before capturing the next challenge; the restarted execution is the new-round boundary and does not compare media identity across rounds.
 _Avoid_: OCR strategy, repeated screenshot within one workflow execution, unbounded CAPTCHA retry
 
 **CAPTCHA retry campaign**:
@@ -856,7 +868,7 @@ The provider-verifiable reason that permits a CAPTCHA Retry Campaign to advance 
 _Avoid_: Any login failure, inferred CAPTCHA rejection, generic workflow error retry
 
 **CAPTCHA round outcome**:
-The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, or the round ended for a non-retryable reason. A provider-rejected result is reserved for a future provider adapter with proven rejection evidence. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing human-assistance contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
+The typed host-side result of routing one CAPTCHA Challenge Round: the solver accepted an answer, the solver exhausted its declared strategies, the provider verifiably rejected the submitted CAPTCHA answer, or the round ended for a non-retryable reason. A provider-rejected result requires provider-specific evidence for an exact rejection signal; an alert's mere presence is insufficient. Verification routing passes this result directly to the CAPTCHA Retry Campaign; workflows publish only their existing human-assistance contract, while log text, exception wording, process exit status, and an unregistered workflow-to-host IPC channel never establish a CAPTCHA Retry Trigger.
 _Avoid_: Retry log marker, error-message matching, inferred process failure
 
 **Yuanta Bank login CAPTCHA**:

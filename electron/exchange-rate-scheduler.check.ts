@@ -71,6 +71,7 @@ function harness(overrides: Partial<Parameters<typeof createExchangeRateSchedule
     },
     clearTimer: (timer) => cleared.push(timer as Timer),
     readSettings: () => taipei,
+    hasOccurrenceBeenAttempted: () => false,
     hasSuccessSince: () => false,
     isTaskActive: () => false,
     startTask: (scheduledAtUtc) => { starts.push(scheduledAtUtc); },
@@ -100,6 +101,15 @@ test("startup catch-up starts once with the missed occurrence", async () => {
   h.scheduler.start();
   await settle();
   assert.deepEqual(h.starts, ["2026-07-15T22:00:00.000Z"]);
+  assert.equal(h.timers.length, 1);
+});
+
+test("multiple App-closed daily occurrences coalesce to the latest single run", async () => {
+  const h = harness();
+  h.setNow("2026-07-18T23:00:00Z");
+  h.scheduler.start();
+  await settle();
+  assert.deepEqual(h.starts, ["2026-07-18T22:00:00.000Z"]);
   assert.equal(h.timers.length, 1);
 });
 
@@ -134,6 +144,31 @@ test("a new scheduler instance retries an unsatisfied occurrence", async () => {
   second.scheduler.start();
   await settle();
   assert.deepEqual(starts, ["2026-07-15T22:00:00.000Z", "2026-07-15T22:00:00.000Z"]);
+});
+
+test("a persisted occurrence attempt prevents duplicate catch-up after restart", async () => {
+  const occurrenceClaims = new Set<string>();
+  const starts: string[] = [];
+  const first = harness({
+    hasSuccessSince: () => false,
+    startTask: (occurrenceUtc) => {
+      starts.push(occurrenceUtc);
+      occurrenceClaims.add(occurrenceUtc);
+    },
+  });
+  first.scheduler.start();
+  await settle();
+  first.scheduler.stop();
+
+  const second = harness({
+    hasSuccessSince: () => false,
+    hasOccurrenceBeenAttempted: (occurrenceUtc: string) => occurrenceClaims.has(occurrenceUtc),
+    startTask: (occurrenceUtc) => { starts.push(occurrenceUtc); },
+  });
+  second.scheduler.start();
+  await settle();
+
+  assert.deepEqual(starts, ["2026-07-15T22:00:00.000Z"]);
 });
 
 test("an active exchange-rate task suppresses a duplicate start", async () => {
@@ -339,6 +374,15 @@ test("a skipped local date is reported and the following date is armed", () => {
 });
 
 test("lookup and start errors are reported without crashing or double-starting", async () => {
+  const occurrenceClaimError = new Error("occurrence claim lookup failed");
+  const occurrenceClaim = harness({
+    hasOccurrenceBeenAttempted: () => { throw occurrenceClaimError; },
+  });
+  assert.doesNotThrow(() => occurrenceClaim.scheduler.start());
+  await settle();
+  assert.deepEqual(occurrenceClaim.errors, [occurrenceClaimError]);
+  assert.deepEqual(occurrenceClaim.starts, []);
+
   const lookupError = new Error("lookup failed");
   const lookup = harness({ hasSuccessSince: () => { throw lookupError; } });
   assert.doesNotThrow(() => lookup.scheduler.start());

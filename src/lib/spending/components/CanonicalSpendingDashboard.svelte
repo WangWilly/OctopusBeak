@@ -2,6 +2,9 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import ProgressiveBlock from "$lib/shared-shell/components/ProgressiveBlock.svelte";
+  import type { BlockState } from "$lib/shared-shell/block-load-state.ts";
+  import type { DashboardBlockPayload } from "$lib/shared-shell/dashboard-blocks.ts";
   import {
     aggregateCanonicalByMonth,
     canonicalSpendingCategoryMatches,
@@ -16,6 +19,19 @@
 
   export let spending: CanonicalSpendingView;
   export let invoices: readonly SpendingInvoiceDto[] = [];
+  export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
+  export let retryBlock: (key: string) => void = () => {};
+
+  function blockState(key: string): BlockState<DashboardBlockPayload> {
+    return blocks[key] ?? { status: "loading" };
+  }
+
+  function spendingBlockData(
+    key: "summary" | "chart" | "list" | "details",
+    payload: DashboardBlockPayload | undefined,
+  ) {
+    return payload?.route === "spending" && payload.block === key ? payload.data : undefined;
+  }
 
   let selectedMonth: string | undefined;
   let selectedCategory: string | null | undefined;
@@ -188,16 +204,19 @@
       </section>
     {/if}
 
+    <ProgressiveBlock label="summary" state={blockState("summary")} retry={() => retryBlock("summary")} let:data>
+    {@const summaryBlock = spendingBlockData("summary", data)}
+    {@const summaryPeriod = scopeCanonicalSpendingView(summaryBlock?.canonical ?? spending, activeMonth)}
     <section class="card canonical-summary-card">
       <div class="panel-title">
         <div>
           <p class="eyebrow">{$locale === "zh-TW" ? "Totals" : "Totals"}</p>
           <h2>{policyLabel}</h2>
         </div>
-        <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {period.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
+        <span class="panel-meta">{activeMonth ? monthLabel(activeMonth) : ($locale === "zh-TW" ? "全部月份" : "All months")} · {$locale === "zh-TW" ? "全部分類" : "All categories"} · {summaryPeriod.classificationCoverage.includedCount} {$locale === "zh-TW" ? "筆已納入" : "included"}</span>
       </div>
       <div class="canonical-amount-list">
-        {#each period.totalsByCurrency as amount (amount.currency)}
+        {#each summaryPeriod.totalsByCurrency as amount (amount.currency)}
           <div class="canonical-amount-row">
             <span>{amount.currency}</span>
             <strong class="money" data-sensitive>{amountText(amount)}</strong>
@@ -207,12 +226,14 @@
         {/each}
       </div>
       <div class="canonical-coverage-grid">
-        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{period.classificationCoverage.classifiedCount}</strong></div>
-        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{period.classificationCoverage.unclassifiedCount}</strong></div>
-        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{period.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "已分類" : "Classified"}</span><strong>{summaryPeriod.classificationCoverage.classifiedCount}</strong></div>
+        <div data-unclassified><span>{$locale === "zh-TW" ? "未分類" : "Unclassified"}</span><strong>{summaryPeriod.classificationCoverage.unclassifiedCount}</strong></div>
+        <div><span>{$locale === "zh-TW" ? "未分類金額" : "Unclassified amount"}</span><strong>{summaryPeriod.unclassifiedByCurrency.map(amountText).join(" / ") || "--"}</strong></div>
       </div>
     </section>
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="details" state={blockState("details")} retry={() => retryBlock("details")}>
     {#if invoices.length > 0}
       <section class="card canonical-invoices-card" data-einvoice-section>
         <div class="panel-title">
@@ -257,6 +278,7 @@
         </div>
       </section>
     {/if}
+    </ProgressiveBlock>
 
     {#if months.length > 0}
       <div class="canonical-month-tabs" role="group" aria-label={$locale === "zh-TW" ? "月份" : "Month"}>
@@ -268,6 +290,7 @@
       </div>
     {/if}
 
+    <ProgressiveBlock label="chart" state={blockState("chart")} retry={() => retryBlock("chart")}>
     <section class="card canonical-chart-card" aria-label={$locale === "zh-TW" ? "每月已入帳流出總額" : "Monthly gross posted outflow chart"}>
       <div class="panel-title">
         <div>
@@ -301,7 +324,9 @@
         {/each}
       </div>
     </section>
+    </ProgressiveBlock>
 
+    <ProgressiveBlock label="list" state={blockState("list")} retry={() => retryBlock("list")}>
     <section class="card canonical-records-card">
       <div class="panel-title">
         <div>
@@ -347,6 +372,7 @@
         {/each}
       </div>
     </section>
+    </ProgressiveBlock>
   </div>
 </DashboardShell>
 

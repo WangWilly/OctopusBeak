@@ -1,4 +1,7 @@
 import type { HumanAssistanceContract } from "./human-assistance.ts";
+import type { WorkflowRunEvent } from "./workflow-executor.ts";
+import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
+export type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 
 /**
  * A task owns the complete source operation. A crawler or sync task is only
@@ -53,14 +56,31 @@ export type AutomationExternalPrerequisite = {
 
 export type AutomationTaskStatus =
   | "queued"
+  | "preparing"
   | "running"
   | "waiting_for_human"
   | "retrying"
+  | "cancelling"
   | "completed"
   | "partial"
+  | "cancelled"
+  | "interrupted"
   | "failed"
   | "locked"
   | "needs_setup";
+
+/**
+ * Renderer-neutral progress emitted by an automation lifecycle.  Display
+ * strings stay in the renderer so a run record never becomes locale-specific.
+ */
+export type AutomationTaskProgress = {
+  phaseCode: string | null;
+  completed: number | null;
+  total: number | null;
+  percent: number | null;
+  attempt: number;
+  params?: Readonly<Record<string, string | number | boolean>>;
+};
 
 /**
  * Renderer-safe state for Cathay's optional Gmail Email OTP integration.
@@ -84,7 +104,6 @@ export type CathayGmailOtpConnectionError =
 export type AutomationTaskSummary = {
   id: string;
   label: string;
-  script: string;
   kind: AutomationTaskKind;
   credentialGroupId?: string;
   credentialKeys: readonly string[];
@@ -111,15 +130,13 @@ export type StatementTypeCapability = { id: string };
 export type AutomationTaskHistoryRow = {
   taskRunId: string;
   taskId: string;
-  script: string;
   kind: AutomationTaskKind;
   status: AutomationTaskStatus;
   startedAt: string;
   finishedAt: string | null;
   exitCode: number | null;
   signal: string | null;
-  errorMessage: string | null;
-  logPath: string;
+  appWorkflowOutcome: TypedWorkflowOutcome | null;
 };
 
 export type AutomationTaskPrerequisiteNotice = {
@@ -136,22 +153,23 @@ export type AutomationTaskPrerequisiteNotice = {
 };
 
 export type AutomationTaskRow = AutomationTaskSummary & {
+  /** The run whose live status/progress this row currently represents. */
+  runId?: string | null;
   status: AutomationTaskStatus;
   attempt: number;
   maxAttempts: number;
   latestStartedAt: string | null;
   latestFinishedAt: string | null;
-  logTail: string;
-  errorMessage: string | null;
-  logPath: string | null;
+  appWorkflowOutcome: TypedWorkflowOutcome | null;
+  events: readonly WorkflowRunEvent[];
   progressPercent: number | null;
   progressText: string;
-  statementFailures: readonly { typeId: string; error?: string }[];
   humanSession: string | null;
   humanAssistanceContract: HumanAssistanceContract | null;
+  forceTerminateAvailable?: boolean;
   isActive: boolean;
   ranToday: boolean;
-  primaryAction: "Run" | "Run again" | "Resume" | "Locked" | "Cancel" | "Configure";
+  primaryAction: "Run" | "Run again" | "Locked" | "Cancel" | "Configure";
   canRun: boolean;
 };
 
@@ -161,6 +179,7 @@ export type AutomationPageModel = {
   activeTaskCount: number;
   parallelRunnableTaskIds: string[];
   credentials: Record<string, boolean>;
+  credentialStates?: Record<string, "loading" | "ready" | "missing" | "read_failed">;
   externalPrerequisiteNotices: AutomationTaskPrerequisiteNotice[];
   tasks: AutomationTaskRow[];
   /** Optional for compatibility with non-desktop model consumers. */

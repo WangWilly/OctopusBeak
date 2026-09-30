@@ -1,60 +1,20 @@
-import { spawnSync } from "node:child_process";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import { resolvePatchCommand } from "./desktop-command.ts";
+import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
+import type { OverviewPageDto } from "../../overview/types.ts";
 import {
   finalizePersistedActiveRuns,
   finalizePersistedRun,
-  scheduleAutomationTaskRunTimeout,
 } from "./task-run-finalization.ts";
 import {
-  accumulateAutomationOutput,
-  automationProcessEnv,
-  automationTaskChild,
-  claimRunAutomationSession,
-  createAutomationOutputBuffer,
-  createAutomationSessionId,
-  liveTaskRunUpdate,
-  parseAutomationProgress,
-  resumeFailureMessage,
+  automationProcessEnv as workflowEnvironmentFromSettings,
+  interruptActiveAppWorkflows,
   runAutomationTaskExecution,
-  terminateAutomationTaskProcesses,
 } from "./task-run-execution.ts";
-export {
-  appendCleanupError,
-  automationCleanupFailureDetails,
-  automationSessionFromLog,
-  finalFailureMessage,
-  finalizeTerminalAutomationSession,
-  isForceQuitRun,
-  nextAttemptStatus,
-  resumeSessionFromLog,
-  shouldMarkWaitingForHuman,
-  shouldRetainAutomationSession,
-} from "./task-run-finalization.ts";
-export {
-  accumulateAutomationOutput,
-  automationProcessEnv,
-  claimRunAutomationSession,
-  createAutomationOutputBuffer,
-  createAutomationSessionId,
-  liveTaskRunUpdate,
-  parseAutomationProgress,
-  resumeFailureMessage,
-} from "./task-run-execution.ts";
+export { abortActiveAppWorkflowExecutions } from "./task-run-execution.ts";
 import {
-  automationSessionOwnerForRun,
-  isLiveOwnedAutomationSession,
-  relinquishAutomationSessionForTask,
-  type LiveAutomationSessionDependencies,
-} from "./automation-session-disposition.ts";
-import {
-  claimAutomationSessionForCleanup,
-  closeLibrettoSession,
-  finalizeAllOwnedAutomationSessions,
-  WAITING_SESSION_TIMEOUT_MS,
-} from "./session-lifecycle.ts";
-import {
-  activeTaskRuns,
+  isActiveTaskRunStatus,
+  isTerminalTaskRunStatus,
+  type AutomationPersistenceProvider,
   type AutomationTaskRun,
   type AutomationTaskStatus,
 } from "./store.ts";
@@ -68,51 +28,117 @@ import {
   runCaptchaRetryCampaign,
 } from "./captcha-retry-coordinator.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import { automationRuntimeState, runtimeTaskSnapshotFromRun } from "./runtime-state.ts";
 
-export { closeLibrettoSession };
+export async function hydrateAutomationRuntimeState(
+  provider: AutomationPersistenceProvider,
+) {
+  const runs = Object.values(await provider.automation.latestTaskRuns()).map((run) =>
+    runtimeTaskSnapshotFromRun(run),
+  );
+  automationRuntimeState.reset();
+  for (const run of runs) automationRuntimeState.upsert(run);
+  return automationRuntimeState.snapshot();
+}
 
+const workflowRunQueue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
+const queuedTaskControllers = new Map<string, AbortController>();
+let appWorkflowShuttingDown = false;
 const activeTaskRunIds = new Map<string, string>();
+const activeTaskRunCompletions = new Map<string, Promise<void>>();
 const cancellationRequestedTaskIds = new Set<string>();
-let librettoRunCdpPatched = false;
+const forceTerminationRequestedTaskIds = new Set<string>();
+const cancellationForceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const NON_BROWSER_APP_TASK_IDS = new Set(["exchange-rates", "sync-maicoin"]);
+
+function assertAppExecutorTask(
+  task: NonNullable<ReturnType<typeof taskById>>,
+) {
+  if (!task.workflowId && !NON_BROWSER_APP_TASK_IDS.has(task.id)) {
+    throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
+  }
+}
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
-};
-
-type AutomationTaskExecutionRunnerInput = {
-  task: NonNullable<ReturnType<typeof taskById>>;
-  taskDb: ReturnType<typeof openLedgerDatabase>;
-  ledgerDir: string;
-  baseLaunchEnv: NodeJS.ProcessEnv;
-  currentTaskRunId: () => string | null;
-  onRunCreated: (taskRunId: string) => void;
-  isCancellationRequested: () => boolean;
+  taskRunId?: string;
+  /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
 
+type PGliteWorkflowCapability = Readonly<{
+  required: boolean;
+  env: NodeJS.ProcessEnv;
+}>;
+
 /**
- * Build the execution closure shared by every round in one user operation.
- * The captured environment is the stable base; narrowly scoped per-execution
- * capabilities, such as a session-bound dialog owner, override only their key.
+ * Carry the authenticated PGlite service capability into the typed App
+ * workflow financial-commit adapter. No workflow process is launched.
  */
-export function createAutomationTaskExecutionRunner(
-  input: AutomationTaskExecutionRunnerInput,
+export function pgliteWorkflowRuntimeEnv(
+  provider: AutomationPersistenceProvider,
+): NodeJS.ProcessEnv {
+  const workflow = (provider as AutomationPersistenceProvider & {
+    pgliteWorkflow?: PGliteWorkflowCapability;
+  }).pgliteWorkflow;
+  if (!workflow) throw new Error("PGlite workflow transport is unavailable.");
+  const values = Object.values(workflow.env);
+  if (
+    !workflow.required
+    || workflow.env[PGLITE_WORKFLOW_REQUIRED_ENV] !== "1"
+    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT?.trim()
+    || !workflow.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN?.trim()
+    || values.some((value) => typeof value !== "string" || value.length === 0)
+  ) {
+    throw new Error("PGlite workflow transport is unavailable.");
+  }
+  return { ...workflow.env };
+}
+
+type PersistenceRunOptions = StartAutomationTaskOptions & {
+  claimed?: boolean;
+  runExecution?: typeof runAutomationTaskExecution;
+};
+
+export type StartedAutomationTask = {
+  taskId: string;
+  runId: string;
+  runtime: ReturnType<typeof automationRuntimeState.snapshot>;
+};
+
+type AutomationTaskPersistenceExecutionRunnerInput = {
+  task: NonNullable<ReturnType<typeof taskById>>;
+  provider: AutomationPersistenceProvider;
+  baseWorkflowEnvironment: NodeJS.ProcessEnv;
+  currentTaskRunId: () => string | null;
+  onRunCreated: (taskRunId: string) => void | Promise<void>;
+  onRuntimeUpdate?: (taskRunId: string) => void | Promise<void>;
+  isCancellationRequested: () => boolean;
+  isForceTerminationRequested?: () => boolean;
+  runExecution?: typeof runAutomationTaskExecution;
+};
+
+/** Build the async execution closure used by all App-owned workflow rounds. */
+export function createAutomationTaskExecutionRunnerWithPersistence(
+  input: AutomationTaskPersistenceExecutionRunnerInput,
 ) {
   const execute = input.runExecution ?? runAutomationTaskExecution;
   return (executionOptions: AutomationTaskExecutionOptions) =>
     execute(
       input.task,
-      input.taskDb,
-      input.ledgerDir,
+      input.provider.automation,
       {
         ...executionOptions,
         launchEnv: {
-          ...input.baseLaunchEnv,
+          ...input.baseWorkflowEnvironment,
           ...(executionOptions.launchEnv ?? {}),
         },
         taskRunId:
           executionOptions.taskRunId ?? input.currentTaskRunId() ?? undefined,
         isCancellationRequested: input.isCancellationRequested,
+        isForceTerminationRequested: input.isForceTerminationRequested,
+        onRuntimeUpdate: input.onRuntimeUpdate,
+        deferFinalization: true,
       },
       input.onRunCreated,
     );
@@ -127,41 +153,6 @@ function validateScheduledAtUtc(value: string | undefined) {
   }
 }
 
-export function shouldCloseResumeSession(input: {
-  status: AutomationTaskStatus;
-  resumeSession?: string;
-}) {
-  return input.status === "failed" && Boolean(input.resumeSession);
-}
-
-export function librettoRunCdpPatchCommand(input: { resumeSession?: string }) {
-  const command = resolvePatchCommand(input);
-  return command ? ([command.command, ...command.args] as const) : null;
-}
-
-export function prepareLibrettoRunCdpPatch(
-  runPatch: () => void = () => {
-    const command = resolvePatchCommand({});
-    if (!command) return;
-    const patch = spawnSync(command.command, command.args, {
-      env: command.env,
-      encoding: "utf8",
-    });
-    if (patch.stdout) console.info(patch.stdout.trim());
-    if (patch.stderr) console.warn(patch.stderr.trim());
-    if (patch.error || patch.status !== 0) {
-      throw (
-        patch.error ??
-        new Error(`Libretto CDP patch exited with code ${patch.status}`)
-      );
-    }
-  },
-) {
-  if (librettoRunCdpPatched) return;
-  runPatch();
-  librettoRunCdpPatched = true;
-}
-
 export function hasActiveAutomationTask() {
   return activeTaskRunIds.size > 0;
 }
@@ -170,9 +161,26 @@ export function activeAutomationTaskIds() {
   return Array.from(activeTaskRunIds.keys());
 }
 
+export function currentAutomationTaskRun(taskId: string) {
+  const current = activeTaskRunIds.get(taskId);
+  if (!current) return null;
+  if (current === "pending" || current === "queued") {
+    throw new Error(`Automation task is still preparing: ${taskId}`);
+  }
+  const runtime = automationRuntimeState.snapshot();
+  return {
+    runId: runtime.tasks.find((task) => task.taskId === taskId)?.runId ?? current,
+    runtime,
+  };
+}
+
 /** True after a user cancellation request until the current task exits. */
 export function automationTaskCancellationRequested(taskId: string) {
   return cancellationRequestedTaskIds.has(taskId);
+}
+
+export function automationTaskForceTerminationRequested(taskId: string) {
+  return forceTerminationRequestedTaskIds.has(taskId);
 }
 
 function claimTask(taskId: string) {
@@ -180,6 +188,137 @@ function claimTask(taskId: string) {
     throw new Error(`Automation task is already running: ${taskId}`);
   }
   activeTaskRunIds.set(taskId, "pending");
+}
+
+function runtimeForTask(taskId: string) {
+  return automationRuntimeState.snapshot().tasks.find((task) => task.taskId === taskId);
+}
+
+/** Persist cancellation through the async worker port before publishing UI state. */
+export async function persistCancellationTransitionForRunWithPersistence(
+  provider: AutomationPersistenceProvider,
+  runId: string,
+  status: "cancelling" | "cancelled",
+  finishedAt: string | null = null,
+) {
+  const persistence = provider.automation;
+  const run = await persistence.taskRunById(runId);
+  if (!run || isTerminalTaskRunStatus(run.status)) return run;
+  if (!isActiveTaskRunStatus(run.status)) return run;
+  if (status === "cancelled") {
+    await persistence.transitionTaskRunToTerminal(runId, {
+      status,
+      finishedAt: finishedAt ?? new Date().toISOString(),
+    });
+  } else {
+    await persistence.transitionTaskRunToActive(runId, { status });
+  }
+  return persistence.taskRunById(runId);
+}
+
+async function preparedRunForTaskWithPersistence(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  provider: AutomationPersistenceProvider,
+  options: StartAutomationTaskOptions = {},
+  existingRun?: AutomationTaskRun,
+) {
+  if (existingRun) return existingRun;
+  const created = await provider.automation.createTaskRun({
+    taskId: task.id,
+    kind: task.kind,
+    status: "preparing",
+    attempt: 1,
+    maxAttempts: task.maxAttempts,
+    startedAt: new Date().toISOString(),
+    scheduledAtUtc: options.scheduledAtUtc,
+  });
+  const run = await provider.automation.taskRunById(created.taskRunId);
+  if (!run) throw new Error(`Failed to create automation task run: ${task.id}`);
+  return run;
+}
+
+async function startPreparedTaskWithPersistence(
+  task: NonNullable<ReturnType<typeof taskById>>,
+  provider: AutomationPersistenceProvider,
+  options: StartAutomationTaskOptions = {},
+  existingRun?: AutomationTaskRun,
+): Promise<StartedAutomationTask> {
+  const run = await preparedRunForTaskWithPersistence(task, provider, options, existingRun);
+  activeTaskRunIds.set(task.id, run.taskRunId);
+  const runtime = automationRuntimeState.upsert(
+    runtimeTaskSnapshotFromRun(run, "preparing"),
+  );
+  void runAutomationTask(task.id, provider, {
+    claimed: true,
+    taskRunId: options.taskRunId ?? run.taskRunId,
+    scheduledAtUtc: options.scheduledAtUtc,
+    runExecution: options.runExecution,
+  }).then(async () => {
+    const finalRun = await provider.automation.taskRunById(run.taskRunId);
+    if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+  }).catch(async () => {
+    console.error("automation-task-run-failed");
+    const failed = await provider.automation.taskRunById(run.taskRunId);
+    if (!failed || isTerminalTaskRunStatus(failed.status)) return;
+    try {
+      await provider.automation.transitionTaskRunToTerminal(run.taskRunId, {
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        exitCode: 1,
+        signal: null,
+        appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
+      });
+      const finalized = await provider.automation.taskRunById(run.taskRunId);
+      if (finalized) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalized));
+    } catch {
+      console.error("automation-task-run-finalization-failed");
+    }
+  });
+  return { taskId: task.id, runId: run.taskRunId, runtime };
+}
+
+export async function startAutomationTask(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
+  options: StartAutomationTaskOptions = {},
+): Promise<StartedAutomationTask> {
+  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  assertAppExecutorTask(task);
+  validateScheduledAtUtc(options.scheduledAtUtc);
+  const group = task.credentialGroupId
+    ? AUTOMATION_CREDENTIAL_GROUPS.find(
+        (candidate) => candidate.id === task.credentialGroupId,
+      )
+    : null;
+  if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
+    selectStatementTypes(group, readAutomationSettings(), "strict");
+  }
+  const current = activeTaskRunIds.get(taskId);
+  if (current && current !== "pending") {
+    const snapshot = runtimeForTask(taskId);
+    if (snapshot) {
+      return {
+        taskId,
+        runId: snapshot.runId ?? current,
+        runtime: automationRuntimeState.snapshot(),
+      };
+    }
+  }
+  if (current === "pending") throw new Error(`Automation task is still preparing: ${taskId}`);
+  claimTask(taskId);
+  try {
+    let existingRun: AutomationTaskRun | undefined;
+    if (options.taskRunId) {
+      existingRun = await provider.automation.taskRunById(options.taskRunId) ?? undefined;
+      if (!existingRun) throw new Error(`Missing automation task run: ${options.taskRunId}`);
+    }
+    return await startPreparedTaskWithPersistence(task, provider, options, existingRun);
+  } catch (error) {
+    activeTaskRunIds.delete(taskId);
+    throw error;
+  }
 }
 
 export async function runWithConcurrency<T>(
@@ -212,297 +351,284 @@ export async function runAutomationBatch(
 ) {
   const selectedTaskIds = [...new Set(taskIds)];
   const errors: unknown[] = [];
-  // Each automation workflow can open the canonical database in its own
-  // Libretto process. Keep the batch on one slot so those processes never
-  // contend for the lifecycle's exclusive path lease while a capture is
-  // being admitted or the projection is rebuilt.
-  await runWithConcurrency(selectedTaskIds, 1, execute).catch((error) => {
+  await runWithConcurrency(selectedTaskIds, APP_WORKFLOW_CONCURRENCY, execute).catch((error) => {
     errors.push(error);
   });
   if (errors.length) throw errors[0];
 }
 
-export function startAutomationTask(
+async function cancelAutomationTaskWithPersistence(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  options: StartAutomationTaskOptions = {},
+  provider: AutomationPersistenceProvider,
 ) {
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  validateScheduledAtUtc(options.scheduledAtUtc);
-  const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find(
-        (candidate) => candidate.id === task.credentialGroupId,
-      )
-    : null;
-  if (
-    group &&
-    isStatementSelectionGroup(group) &&
-    group.id !== "fubon" &&
-    group.id !== "sinopac"
-  ) {
-    selectStatementTypes(group, readAutomationSettings(), "strict");
+  if (!activeTaskRunIds.has(taskId)) {
+    throw new Error(`Automation task is not running: ${taskId}`);
   }
-  claimTask(taskId);
-  void runAutomationTask(taskId, ledgerDir, {
-    claimed: true,
-    scheduledAtUtc: options.scheduledAtUtc,
-  }).catch((error) => {
-    console.error("automation-task-run-failed", error);
-  });
+  cancellationRequestedTaskIds.add(taskId);
+  const cancellationRequestedAt = new Date().toISOString();
+  const activeRunId = runtimeForTask(taskId)?.runId
+    ?? activeTaskRunIds.get(taskId);
+  const cancellingRun = activeRunId && activeRunId !== "pending" && activeRunId !== "queued"
+    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
+    : null;
+  const runtime = runtimeForTask(taskId);
+  if (cancellingRun) {
+    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
+  } else if (runtime) {
+    automationRuntimeState.upsert({
+      ...runtime,
+      status: "cancelling",
+      cancellationRequestedAt,
+      forceTerminateAvailable: false,
+      updatedAt: cancellationRequestedAt,
+    });
+  }
+  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue cancelled."));
+  const previousTimer = cancellationForceTimers.get(taskId);
+  if (previousTimer) clearTimeout(previousTimer);
+  cancellationForceTimers.set(taskId, setTimeout(() => {
+    cancellationForceTimers.delete(taskId);
+    if (!activeTaskRunIds.has(taskId)) return;
+    const current = runtimeForTask(taskId);
+    if (!current || current.status !== "cancelling") return;
+    automationRuntimeState.upsert({
+      ...current,
+      forceTerminateAvailable: true,
+      updatedAt: new Date().toISOString(),
+    });
+  }, 10_000));
+  return { cancelled: taskId };
 }
 
-export function startAutomationTasks(
+export async function startAutomationTasks(
   taskIds: readonly string[],
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
+  provider: AutomationPersistenceProvider,
+): Promise<StartedAutomationTask[]> {
   const uniqueTaskIds = [...new Set(taskIds)];
   let settings: ReturnType<typeof readAutomationSettings> | undefined;
   for (const taskId of uniqueTaskIds) {
     const task = taskById(taskId);
-    if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+    if (!task) throw new Error("Unknown automation task: " + taskId);
+    assertAppExecutorTask(task);
     const group = task.credentialGroupId
-      ? AUTOMATION_CREDENTIAL_GROUPS.find(
-          (candidate) => candidate.id === task.credentialGroupId,
-        )
+      ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
       : null;
-    if (
-      group &&
-      isStatementSelectionGroup(group) &&
-      group.id !== "fubon" &&
-      group.id !== "sinopac"
-    ) {
+    if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
       settings ??= readAutomationSettings();
       selectStatementTypes(group, settings, "strict");
     }
-    if (activeTaskRunIds.has(taskId))
-      throw new Error(`Automation task is already running: ${taskId}`);
   }
-  for (const taskId of uniqueTaskIds) {
-    claimTask(taskId);
-    activeTaskRunIds.set(taskId, "queued");
-  }
-  setImmediate(() => {
-    void runAutomationBatch(uniqueTaskIds, async (taskId) => {
-      const claimed = uniqueTaskIds.includes(taskId);
-      if (claimed) {
-        if (activeTaskRunIds.get(taskId) !== "queued") return;
-        activeTaskRunIds.set(taskId, "pending");
-      }
-      await runAutomationTask(taskId, ledgerDir, { claimed }).catch((error) => {
-        console.error("automation-task-run-failed", error);
-      });
-    }).catch((error) => {
-      console.error("automation-batch-run-failed", error);
-    });
-  });
+  return Promise.all(uniqueTaskIds.map((taskId) => startAutomationTask(taskId, provider)));
 }
 
-export function startAutomationResume(
+export async function cancelAutomationTask(
   taskId: string,
-  session: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-) {
-  if (!taskById(taskId)) throw new Error(`Unknown automation task: ${taskId}`);
-  if (!session.match(/^[\w-]+$/))
-    throw new Error(`Invalid Libretto session: ${session}`);
-  claimTask(taskId);
-  void runAutomationTask(taskId, ledgerDir, {
-    claimed: true,
-    resumeSession: session,
-  }).catch((error) => {
-    console.error("automation-task-resume-failed", error);
-  });
+  provider: AutomationPersistenceProvider,
+): Promise<{ cancelled: string }> {
+  return cancelAutomationTaskWithPersistence(taskId, provider);
 }
 
-export async function cancelAutomationTask(taskId: string) {
-  if (!activeTaskRunIds.has(taskId))
+/** Force termination is available only after the normal cancellation grace period. */
+async function forceTerminateAutomationTaskWithPersistence(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
+) {
+  if (!activeTaskRunIds.has(taskId)) {
     throw new Error(`Automation task is not running: ${taskId}`);
-  if (activeTaskRunIds.get(taskId) === "queued") {
-    activeTaskRunIds.delete(taskId);
-    return { cancelled: taskId };
   }
+  forceTerminationRequestedTaskIds.add(taskId);
   cancellationRequestedTaskIds.add(taskId);
-  const child = automationTaskChild(taskId);
-  // A CAPTCHA retry round can be between child processes while its previous
-  // session is being cleaned up. Keep the cancellation request latched so the
-  // campaign coordinator observes it after cleanup and never starts round N+1.
-  if (!child) {
-    // Yield briefly so a pending execution can observe the latched request
-    // before a caller that polls cancellation in a tight loop continues.
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    return { cancelled: taskId };
+  const timer = cancellationForceTimers.get(taskId);
+  if (timer) clearTimeout(timer);
+  cancellationForceTimers.delete(taskId);
+  const activeRunId = runtimeForTask(taskId)?.runId
+    ?? activeTaskRunIds.get(taskId);
+  const cancellingRun = activeRunId && activeRunId !== "pending" && activeRunId !== "queued"
+    ? await persistCancellationTransitionForRunWithPersistence(provider, activeRunId, "cancelling")
+    : null;
+  const runtime = runtimeForTask(taskId);
+  if (cancellingRun) {
+    automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(cancellingRun, "cancelling"));
+  } else if (runtime) {
+    automationRuntimeState.upsert({
+      ...runtime,
+      status: "cancelling",
+      forceTerminateAvailable: true,
+      updatedAt: new Date().toISOString(),
+    });
   }
-  child.kill("SIGTERM");
-  await relinquishAutomationSessionForTask(taskId);
+  queuedTaskControllers.get(taskId)?.abort(new Error("Workflow queue force-cancelled."));
+  await activeTaskRunCompletions.get(taskId);
   return { cancelled: taskId };
 }
 
-export type AbandonedAutomationRecoveryDependencies =
-  LiveAutomationSessionDependencies & {
-    finalizeRun?: typeof finalizePersistedRun;
-    claimSession?: typeof claimAutomationSessionForCleanup;
-    scheduleWaitingTimeout?: typeof scheduleAutomationTaskRunTimeout;
-    now?: () => number;
-  };
-
-function waitingSessionExpired(
-  run: Pick<AutomationTaskRun, "startedAt">,
-  now: () => number,
+export async function forceTerminateAutomationTask(
+  taskId: string,
+  provider: AutomationPersistenceProvider,
 ) {
-  const startedAt = Date.parse(run.startedAt);
-  if (!Number.isFinite(startedAt)) return true;
-  try {
-    const age = now() - startedAt;
-    return age < 0 || age >= WAITING_SESSION_TIMEOUT_MS;
-  } catch {
-    return true;
-  }
+  return forceTerminateAutomationTaskWithPersistence(taskId, provider);
 }
 
-async function preserveWaitingHumanSession(
-  db: ReturnType<typeof openLedgerDatabase>,
-  run: AutomationTaskRun,
-  ledgerDir: string,
-  dependencies: AbandonedAutomationRecoveryDependencies,
-) {
-  if (!run.humanAssistanceContract) return false;
-  if (waitingSessionExpired(run, dependencies.now ?? (() => Date.now())))
-    return false;
-  const owner = automationSessionOwnerForRun(run);
-  if (!owner || owner.pid === null) return false;
-  if (!(await isLiveOwnedAutomationSession(owner, dependencies))) return false;
-  const claimSession =
-    dependencies.claimSession ?? claimAutomationSessionForCleanup;
-  try {
-    if (!claimSession(owner)) return false;
-    (dependencies.scheduleWaitingTimeout ?? scheduleAutomationTaskRunTimeout)({
-      taskDb: db,
-      taskId: run.taskId,
-      taskKind: run.kind,
-      taskRunId: run.taskRunId,
-      logPath: run.logPath,
-      ledgerDir,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
+export type InterruptedAutomationRecoveryDependencies = {
+  finalizeRunWithPersistence?: (
+    provider: AutomationPersistenceProvider,
+    run: AutomationTaskRun,
+    reason: string,
+    status?: Extract<AutomationTaskStatus, "failed" | "interrupted">,
+  ) => Promise<void>;
+};
 
-export async function recoverAbandonedAutomationSessions(
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  dependencies: AbandonedAutomationRecoveryDependencies = {},
-) {
-  const db = openLedgerDatabase(ledgerDir);
+export async function recoverInterruptedAutomationRuns(
+  provider: AutomationPersistenceProvider,
+  dependencies: InterruptedAutomationRecoveryDependencies = {},
+): Promise<void> {
   const errors: unknown[] = [];
-  try {
-    for (const run of activeTaskRuns(db)) {
-      try {
-        if (
-          run.status === "waiting_for_human" &&
-          (await preserveWaitingHumanSession(db, run, ledgerDir, dependencies))
-        ) {
-          continue;
-        }
-        await (dependencies.finalizeRun ?? finalizePersistedRun)(
-          db,
-          run,
-          "App 前次異常結束",
-        );
-      } catch (error) {
-        errors.push(error);
-      }
+  for (const run of await provider.automation.activeTaskRuns()) {
+    try {
+      await (dependencies.finalizeRunWithPersistence ?? finalizePersistedRun)(
+        provider,
+        run,
+        "App 前次異常結束",
+        "interrupted",
+      );
+    } catch (error) {
+      errors.push(error);
     }
-  } finally {
-    db.close();
   }
-  if (errors.length)
-    throw new AggregateError(
-      errors,
-      "Failed to finalize persisted automation runs",
-    );
+  if (errors.length) throw new AggregateError(errors, "Failed to finalize persisted automation runs");
 }
 
-export async function shutdownAutomationSessions(
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
+export async function shutdownAppAutomationWorkflows(
+  provider: AutomationPersistenceProvider,
   dependencies: Partial<{
-    finalizeOwnedSessions: typeof finalizeAllOwnedAutomationSessions;
     finalizePersistedRuns: typeof finalizePersistedActiveRuns;
   }> = {},
-) {
-  terminateAutomationTaskProcesses();
+): Promise<void> {
+  appWorkflowShuttingDown = true;
+  for (const controller of queuedTaskControllers.values()) {
+    controller.abort(new Error("App closed before queued workflow started."));
+  }
   const errors: unknown[] = [];
-  const finalizeOwnedSessions =
-    dependencies.finalizeOwnedSessions ?? finalizeAllOwnedAutomationSessions;
-  const finalizePersistedRuns =
-    dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
   try {
-    await finalizeOwnedSessions();
+    await interruptActiveAppWorkflows(provider.automation);
   } catch (error) {
     errors.push(error);
   }
   try {
-    await finalizePersistedRuns(ledgerDir, "App 關閉，人工操作未完成");
+    await Promise.all([...activeTaskRunCompletions.values()]);
   } catch (error) {
     errors.push(error);
   }
-  if (errors.length)
-    throw new AggregateError(errors, "Failed to shut down automation sessions");
+  const finalizePersistedRuns = dependencies.finalizePersistedRuns ?? finalizePersistedActiveRuns;
+  try {
+    await finalizePersistedRuns(provider, "App 關閉，人工操作未完成");
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length) throw new AggregateError(errors, "Failed to shut down automation workflows");
 }
 
 export async function runAutomationTask(
   taskId: string,
-  ledgerDir = process.env.LEDGER_DIR ?? "data/ledger",
-  options: StartAutomationTaskOptions & {
-    claimed?: boolean;
-    resumeSession?: string;
-  } = {},
+  provider: AutomationPersistenceProvider,
+  options: PersistenceRunOptions = {},
 ) {
+  if (appWorkflowShuttingDown) throw new Error("App workflow runtime is shutting down.");
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  assertAppExecutorTask(task);
   validateScheduledAtUtc(options.scheduledAtUtc);
   if (!options.claimed) claimTask(taskId);
-
-  let db: ReturnType<typeof openLedgerDatabase> | null = null;
+  let completeRun!: () => void;
+  const runCompletion = new Promise<void>((resolve) => { completeRun = resolve; });
+  activeTaskRunCompletions.set(taskId, runCompletion);
+  let releaseSlot: (() => void) | undefined;
+  let slotReady: Promise<() => void> | undefined;
+  const queueController = new AbortController();
+  queuedTaskControllers.set(taskId, queueController);
   try {
-    db = openLedgerDatabase(ledgerDir);
-    const launchEnv = { ...automationProcessEnv() };
-    // Verification actor and solver settings belong to this user operation.
-    // Capture them once so a settings-file edit while a CAPTCHA campaign is
-    // between rounds cannot silently change the next execution's policy.
+    const ticket = workflowRunQueue.enter(queueController.signal);
+    slotReady = ticket.ready;
+    // Observe rejection before awaiting persistence to avoid an unhandled abort.
+    void ticket.ready.catch(() => undefined);
+    if (ticket.queued && options.taskRunId) {
+      await provider.automation.transitionTaskRunToActive(options.taskRunId, { status: "queued" });
+      const queued = await provider.automation.taskRunById(options.taskRunId);
+      if (queued) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(queued));
+    }
+    try {
+      releaseSlot = await ticket.ready;
+      queueController.signal.throwIfAborted();
+    } catch (error) {
+      if (options.taskRunId) {
+        await provider.automation.transitionTaskRunToTerminal(options.taskRunId, {
+          status: appWorkflowShuttingDown ? "interrupted" : "cancelled",
+          finishedAt: new Date().toISOString(),
+          appWorkflowOutcome: { errorCode: "cancelled", summary: null },
+        });
+        const ended = await provider.automation.taskRunById(options.taskRunId);
+        if (ended) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(ended));
+      }
+      throw error;
+    }
+    queuedTaskControllers.delete(taskId);
+    const workflowEnvironment = {
+      ...workflowEnvironmentFromSettings(),
+      ...pgliteWorkflowRuntimeEnv(provider),
+    };
     const launchVerificationSettings = { ...readAutomationSettings() };
     let taskRunId: string | null = null;
-    const onRunCreated = (createdTaskRunId: string) => {
+    const onRunCreated = async (createdTaskRunId: string) => {
       taskRunId = createdTaskRunId;
       activeTaskRunIds.set(taskId, createdTaskRunId);
+      const created = await provider.automation.taskRunById(createdTaskRunId);
+      if (created) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(created));
     };
-    const execution = createAutomationTaskExecutionRunner({
+    const execution = createAutomationTaskExecutionRunnerWithPersistence({
       task,
-      taskDb: db,
-      ledgerDir,
-      baseLaunchEnv: launchEnv,
+      provider,
+      baseWorkflowEnvironment: workflowEnvironment,
       currentTaskRunId: () => taskRunId,
       onRunCreated,
-      isCancellationRequested: () =>
-        automationTaskCancellationRequested(taskId),
+      onRuntimeUpdate: async (updatedTaskRunId) => {
+        const updated = await provider.automation.taskRunById(updatedTaskRunId);
+        if (updated) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(updated));
+      },
+      isCancellationRequested: () => automationTaskCancellationRequested(taskId),
+      isForceTerminationRequested: () => automationTaskForceTerminationRequested(taskId),
+      runExecution: options.runExecution,
     });
-    return await runCaptchaRetryCampaign({
+    const result = await runCaptchaRetryCampaign({
       taskId,
-      taskDb: db,
-      ledgerDir,
+      appWorkflow: Boolean(task.workflowId && task.kind === "crawler"),
+      provider,
       launchVerificationSettings,
       initialExecutionOptions: {
         scheduledAtUtc: options.scheduledAtUtc,
-        resumeSession: options.resumeSession,
+        taskRunId: options.taskRunId,
       },
       execute: execution,
-      isCancellationRequested: () =>
-        automationTaskCancellationRequested(taskId),
+      isCancellationRequested: () => automationTaskCancellationRequested(taskId),
     });
+    if (taskRunId) {
+      const finalRun = await provider.automation.taskRunById(taskRunId);
+      if (finalRun) automationRuntimeState.upsert(runtimeTaskSnapshotFromRun(finalRun));
+    }
+    return result;
   } finally {
+    queuedTaskControllers.delete(taskId);
+    queueController.abort();
+    if (releaseSlot) releaseSlot();
+    else await slotReady?.then((release) => release(), () => undefined);
     activeTaskRunIds.delete(taskId);
+    if (activeTaskRunCompletions.get(taskId) === runCompletion) {
+      activeTaskRunCompletions.delete(taskId);
+    }
+    completeRun();
     cancellationRequestedTaskIds.delete(taskId);
-    db?.close();
+    forceTerminationRequestedTaskIds.delete(taskId);
+    const forceTimer = cancellationForceTimers.get(taskId);
+    if (forceTimer) clearTimeout(forceTimer);
+    cancellationForceTimers.delete(taskId);
   }
 }

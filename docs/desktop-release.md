@@ -45,6 +45,19 @@ The unpacked app is created under:
 out/OctopusBeak-darwin-arm64/OctopusBeak.app
 ```
 
+The production package includes Playwright's Chromium headless shell and FFmpeg support files. The browser preparation command installs with `--only-shell` into Playwright's project-local payload directory, then removes leftover full Chromium, Firefox, WebKit, and stale entries from that directory. Electron Forge also excludes those entries if a package is built from a directory containing them. The cleanup is limited to `node_modules/playwright-core/.local-browsers`; it does not touch the developer's default Playwright cache.
+
+Before packaging, verify payload selection and the install locator:
+
+```bash
+npm run check:desktop-browser-payload
+npm run desktop:install-browsers
+```
+
+After packaging, run `npm run desktop:packaged-browser-smoke -- --app-root <app-or-resources-app-path>` to launch both the bundled Playwright browser and the packaged App's workflow worker against a local fixture. The App fixture checks one completed run and one cancelled run through the real browser host, validates the browser profile identity, and confirms page, runtime profile, and temporary user data cleanup. On macOS, pass `out/OctopusBeak-darwin-arm64/OctopusBeak.app`; on Linux or Windows, pass the unpacked `resources/app` directory. This smoke uses only a temporary local HTTP server and never contacts a financial source.
+
+The macOS arm64 package passed this smoke on 2026-09-29. It verified Chromium 151.0.7922.34, the actual shell executable inside the packaged browser root, and normal packaged-App worker success and cancellation. Linux and Windows package artifacts were not built in this phase.
+
 ## macOS Signing Identity
 
 List installed signing identities:
@@ -89,9 +102,7 @@ Run code checks before packaging:
 
 ```bash
 npm run typecheck
-npm run check:libretto-patch
 node electron/runtime.check.cjs
-node --no-warnings --experimental-strip-types src/lib/automation/server/desktop-command.check.ts
 node --no-warnings --experimental-strip-types src/lib/automation/server/runner.check.ts
 npm run desktop:runtime-probe
 npm run desktop:strip-types-probe

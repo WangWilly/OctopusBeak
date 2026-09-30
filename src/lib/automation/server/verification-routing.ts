@@ -1,4 +1,3 @@
-import type { LedgerDatabase } from "../../../ledger/db/client.ts";
 import type {
   CaptchaImagePreprocessingMode,
   CaptchaOcrAttemptStrategy,
@@ -33,51 +32,46 @@ import {
   captureProviderVerificationImage,
   injectProviderVerificationAnswer,
   isProviderVerificationImageCurrent,
-  probeProviderVerificationPostSubmit,
   providerVerificationHandlesChallengeImage,
 } from "./provider-verification.ts";
 import type { ProviderVerificationHost } from "./provider-verification.ts";
-import { finalizeFailedWaitingRun } from "./task-run-finalization.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import { sessionFromRun } from "./automation-session-disposition.ts";
-import { taskRunById } from "./store.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
 
 export type VerificationRoutingDependencies = {
   solver: VerificationSolver;
   captureChallengeImage: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
   ) => Promise<Buffer | null>;
   captureChallengeAudio?: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
   ) => Promise<Buffer | null>;
   validateChallengeImage?: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
   ) => Promise<boolean>;
   injectAnswer: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
     answer: string,
   ) => Promise<void>;
   probePostSubmit?: ProviderVerificationHost["probePostSubmit"];
   injectSelections: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
     selections: readonly VerificationSelectionPoint[],
   ) => Promise<void>;
   clickTarget: (
-    session: string,
+    taskRunId: string,
     contract: HumanAssistanceContract,
     targetId: string,
   ) => Promise<void>;
-  resume: (session: string) => void | Promise<void>;
+  resumeAppWorkflow: () => void | Promise<void>;
   finalizeFailed: (message: string) => void | Promise<void>;
-  /** Terminate and join the current resumed execution before a retry. */
-  cleanupSession?: () => Promise<void>;
   /** Called once after a non-empty challenge image has been captured. */
   onChallengeCaptured?: () => void | Promise<void>;
 };
@@ -116,10 +110,10 @@ export function selectVerificationChallengeImage(
 ): VerificationChallengeImageSelection {
   if (options.provider.handlesChallengeImage(contract)) {
     return {
-      captureChallengeImage: (session, currentContract) =>
-        options.provider.captureChallengeImage(session, currentContract),
-      validateChallengeImage: (session, currentContract) =>
-        options.provider.isChallengeImageCurrent(session, currentContract),
+      captureChallengeImage: (viewerKey, currentContract) =>
+        options.provider.captureChallengeImage(viewerKey, currentContract),
+      validateChallengeImage: (viewerKey, currentContract) =>
+        options.provider.isChallengeImageCurrent(viewerKey, currentContract),
       providerOwned: true,
     };
   }
@@ -143,7 +137,7 @@ const defaultLocalSolver = localVerificationSolver();
 export async function routeVerificationActor(input: {
   actor: VerificationActor;
   contract: HumanAssistanceContract | null;
-  session: string;
+  taskRunId: string;
   confidenceThreshold: number | undefined;
   prompt?: string;
   charset?: ChallengeCharacterSet;
@@ -159,12 +153,12 @@ export async function routeVerificationActor(input: {
   const plan = verificationPlanForContract(contract);
   const deps = input.dependencies;
   if (plan.kind === "proceed") {
-    await deps.resume(input.session);
+    await deps.resumeAppWorkflow();
     return { kind: "resumed" };
   }
   if (plan.kind === "click") {
-    await deps.clickTarget(input.session, contract!, plan.targetId);
-    await deps.resume(input.session);
+    await deps.clickTarget(input.taskRunId, contract!, plan.targetId);
+    await deps.resumeAppWorkflow();
     return { kind: "resumed" };
   }
   if (plan.kind === "unsolvable") {
@@ -191,22 +185,29 @@ export async function routeVerificationActor(input: {
         ?? DEFAULT_VERIFICATION_CONFIDENCE_THRESHOLD,
       solver: deps.solver,
       captureChallengeImage: async () => {
-        const image = await deps.captureChallengeImage(input.session, contract!);
+        const image = await deps.captureChallengeImage(input.taskRunId, contract!);
         if (image !== null && !challengeCaptured) {
           challengeCaptured = true;
           await deps.onChallengeCaptured?.();
         }
         return image;
       },
-      captureChallengeAudio: deps.captureChallengeAudio
-        ? () => deps.captureChallengeAudio!(input.session, contract!)
-        : undefined,
+    captureChallengeAudio: deps.captureChallengeAudio
+      ? async () => {
+          const audio = await deps.captureChallengeAudio!(input.taskRunId, contract!);
+          if (audio !== null && !challengeCaptured) {
+            challengeCaptured = true;
+            await deps.onChallengeCaptured?.();
+          }
+          return audio;
+        }
+      : undefined,
       injectAnswer: (answer) =>
-        deps.injectAnswer(input.session, contract!, answer),
+        deps.injectAnswer(input.taskRunId, contract!, answer),
       injectSelections: (selections) =>
-        deps.injectSelections(input.session, contract!, selections),
+        deps.injectSelections(input.taskRunId, contract!, selections),
       validateChallengeImage: deps.validateChallengeImage
-        ? () => deps.validateChallengeImage!(input.session, contract!)
+        ? () => deps.validateChallengeImage!(input.taskRunId, contract!)
         : undefined,
       ...solverMetadata,
     });
@@ -221,12 +222,11 @@ export async function routeVerificationActor(input: {
   if (outcome.status === "solved" || outcome.status === "absent") {
     const postSubmitOutcome = deps.probePostSubmit
       ? await deps.probePostSubmit(
-        input.session,
+        input.taskRunId,
         contract!,
-        () => Promise.resolve(deps.resume(input.session)),
-        deps.cleanupSession,
+        () => Promise.resolve(deps.resumeAppWorkflow()),
       )
-      : (await deps.resume(input.session), "none" as const);
+      : (await deps.resumeAppWorkflow(), "none" as const);
     if (postSubmitOutcome === "provider-rejected") {
       return { kind: "retryable", reason: "provider-rejected" };
     }
@@ -242,58 +242,55 @@ export async function routeVerificationActor(input: {
 export async function routeWaitingRunVerification(input: {
   taskId: string;
   taskRunId: string;
-  /** The session created by the current execution, when known. */
-  session?: string;
-  db: LedgerDatabase;
-  scheduleResume: (session: string) => void | Promise<void>;
+  provider: AutomationPersistenceProvider;
+  resumeAppWorkflow: () => void | Promise<void>;
   solver?: VerificationSolver;
   captureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   captureChallengeAudio?: VerificationRoutingDependencies["captureChallengeAudio"];
   providerCaptureChallengeAudio?: ProviderVerificationHost["captureChallengeAudio"];
   validateChallengeImage?: VerificationRoutingDependencies["validateChallengeImage"];
   injectAnswer?: VerificationRoutingDependencies["injectAnswer"];
-  providerProbePostSubmit?: ProviderVerificationHost["probePostSubmit"];
+  providerProbePostSubmit: ProviderVerificationHost["probePostSubmit"];
   providerInjectAnswer?: ProviderVerificationHost["injectAnswer"];
   injectSelections?: VerificationRoutingDependencies["injectSelections"];
   clickTarget?: VerificationRoutingDependencies["clickTarget"];
-  finalizeFailed?: VerificationRoutingDependencies["finalizeFailed"];
-  /** Terminate and join the current resumed execution before a retry. */
-  cleanupSession?: VerificationRoutingDependencies["cleanupSession"];
+  finalizeFailed: VerificationRoutingDependencies["finalizeFailed"];
   onChallengeCaptured?: VerificationRoutingDependencies["onChallengeCaptured"];
   providerVerification?: VerificationChallengeImageProvider;
   genericCaptureChallengeImage?: VerificationRoutingDependencies["captureChallengeImage"];
   settings?: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
   const task = taskById(input.taskId);
-  const group = task?.credentialGroupId
+  if (!task?.workflowId) {
+    await input.finalizeFailed("Verification routing requires an App browser workflow.");
+    return { kind: "failed" };
+  }
+  const group = task.credentialGroupId
     ? AUTOMATION_CREDENTIAL_GROUPS.find(
         (candidate) => candidate.id === task.credentialGroupId,
       )
     : null;
   const settings = input.settings ?? readAutomationSettings();
   const actor = verificationActorForSource(group?.verificationActorKey, settings);
-  if (actor !== "solver") return { kind: "human" };
-
-  const run = taskRunById(input.db, input.taskRunId);
-  if (!run) return { kind: "human" };
-  const contract = run.humanAssistanceContract;
-  const session = input.session ?? sessionFromRun(run);
-
-  const finalizeFailed =
-    input.finalizeFailed ??
-    ((message: string) => finalizeFailedWaitingRun(input.db, run, message));
-
-  if (!session) {
-    await finalizeFailed("Verification solver could not resolve the session.");
+  const run = await input.provider.automation.taskRunById(input.taskRunId);
+  if (
+    !run
+    || run.taskId !== input.taskId
+    || run.status !== "waiting_for_human"
+    || !run.humanAssistanceContract
+  ) {
+    await input.finalizeFailed("App workflow verification stage is unavailable.");
     return { kind: "failed" };
   }
+  if (actor !== "solver") return { kind: "human" };
 
+  const contract = run.humanAssistanceContract;
+  const taskRunId = input.taskRunId;
   const kind = contract?.challengeKind;
   const confidenceThreshold = isSolverChallengeKind(kind)
     ? contract?.solverConfidenceThreshold
       ?? challengeConfidenceThreshold(settings, kind)
     : undefined;
-
   const providerVerification: VerificationChallengeImageProvider = input.providerVerification ?? {
     handlesChallengeImage: providerVerificationHandlesChallengeImage,
     captureChallengeImage: captureProviderVerificationImage,
@@ -311,16 +308,14 @@ export async function routeWaitingRunVerification(input: {
         validateChallengeImage: undefined,
         providerOwned: false,
       };
-
   const capture = input.captureChallengeImage ?? imageSelection.captureChallengeImage;
   const selectedCapture = imageSelection.providerOwned
-    ? async (selectedSession: string, selectedContract: HumanAssistanceContract) => {
-        const image = await capture(selectedSession, selectedContract);
+    ? async (selectedTaskRunId: string, selectedContract: HumanAssistanceContract) => {
+        const image = await capture(selectedTaskRunId, selectedContract);
         if (image === null) throw new ProviderChallengeImageCaptureError();
         return image;
       }
     : capture;
-
   const dependencies: VerificationRoutingDependencies = {
     solver: input.solver ?? defaultLocalSolver,
     captureChallengeImage: selectedCapture,
@@ -332,23 +327,19 @@ export async function routeWaitingRunVerification(input: {
     injectAnswer: input.injectAnswer
       ?? input.providerInjectAnswer
       ?? injectProviderVerificationAnswer,
-    probePostSubmit: input.providerProbePostSubmit
-      ?? (input.providerVerification
-        ? undefined
-        : probeProviderVerificationPostSubmit),
+    probePostSubmit: input.providerProbePostSubmit,
     injectSelections: input.injectSelections ?? injectVerificationSelections,
     clickTarget: input.clickTarget ?? clickVerificationTarget,
-    resume: (session) => input.scheduleResume(session),
-    finalizeFailed,
-    cleanupSession: input.cleanupSession,
+    resumeAppWorkflow: input.resumeAppWorkflow,
+    finalizeFailed: input.finalizeFailed,
     onChallengeCaptured: input.onChallengeCaptured,
   };
-
-  return routeVerificationActor({
+  const outcome = await routeVerificationActor({
     actor,
     contract,
-    session,
+    taskRunId,
     confidenceThreshold,
     dependencies,
   });
+  return outcome;
 }

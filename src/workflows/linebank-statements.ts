@@ -1,22 +1,26 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import {
-  librettoAuthenticate,
-  workflow,
-  type LibrettoWorkflowContext,
-} from "libretto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
-import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/domestic-deposit-store.ts";
+import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import {
-  commitForeignCurrencyDepositCaptureBatch,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+} from "../ledger/pglite/workflow-client.ts";
+import type {
+  DomesticDepositSourceTime,
+  LineBankHumanAttestedV13ValidatedCapture,
+} from "../ledger/canonical/linebank-domestic-deposit-contract.ts";
+import {
+  admitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositValidatedCapture,
+} from "../ledger/canonical/canonical-financial-deposit-admission.ts";
+import {
+  admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
-} from "../ledger/canonical/foreign-currency-deposit.ts";
-import {
-  canonicalSqlitePath,
-  createCanonicalSourceStore,
-} from "../ledger/canonical/canonical-source-store.ts";
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
   buildLinebankCurrentDepositBalanceCaptures,
 } from "./linebank-current-deposit-canonical.ts";
@@ -26,6 +30,7 @@ import {
   type LineBankCurrentDepositBalanceRow,
   type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
 const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
@@ -33,58 +38,214 @@ const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
-const statementHeaders = [
-  "帳務日期",
-  "交易日期",
-  "交易時間",
-  "摘要",
-  "支出金額",
-  "存入金額",
-  "即時餘額",
-  "附註",
-  "匯率",
-];
+const LINEBANK_V13_AUTHORITY = "linebank/domestic-deposit/human-attested-v13";
+const LINEBANK_V13_RECORD_KIND = "linebank-domestic-deposit-financial-v13";
+
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("LINE Bank workflow was cancelled."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function linebankCanonicalToken(...parts: string[]): string {
+  return `sha256:${createHash("sha256").update(parts.join("\u0000")).digest("hex")}`;
+}
+
+function linebankCanonicalDate(value: string): string {
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+}
+
+function linebankCanonicalDateTime(value: DomesticDepositSourceTime): string {
+  return `${linebankCanonicalDate(value.localDate)}T${value.localTime.slice(0, 2)}:${value.localTime.slice(2, 4)}:${value.localTime.slice(4, 6)}`;
+}
+
+function linebankCompactFinancialRecord(
+  capture: LineBankHumanAttestedV13ValidatedCapture,
+  record: LineBankHumanAttestedV13ValidatedCapture["records"][number],
+): string {
+  return JSON.stringify({
+    sourceOccurrenceKey: record.sourceOccurrenceKey,
+    baseOccurrenceKey: record.baseOccurrenceKey,
+    sourceChangeFingerprint: record.sourceChangeFingerprint,
+    accountKey: capture.accountKey,
+    sourceConnection: capture.sourceConnection,
+    stream: capture.stream,
+    contractVersion: capture.contractVersion,
+    identityEpoch: capture.identityEpoch,
+    sourceSequence: record.sourceSequence,
+    occurrenceCounter: record.occurrenceCounter,
+    sourceSequenceKey: record.sourceOccurrenceKey,
+    sourceTime: record.sourceTime,
+    direction: record.direction,
+    sourceDirectionCode: record.sourceDirectionCode,
+    amount: record.amount,
+    balanceAfter: record.balanceAfter,
+    currency: record.currency,
+    description: record.description ?? null,
+    cancellation: "N",
+    cancellationFlags: record.cancellationFlags,
+    provenance: { matchingRuleVersion: "occurrence-v1" },
+  });
+}
+
+/** Keep LINE Bank's provider vocabulary in the adapter before execution. */
+export function normalizeLineBankFinancialCapture(
+  capture: LineBankHumanAttestedV13ValidatedCapture,
+): CanonicalFinancialDepositValidatedCapture {
+  const contractFingerprint = linebankCanonicalToken(
+    "linebank-v13-contract",
+    capture.contractVersion,
+    capture.humanAttestation.evidenceVersion,
+  );
+  const preflightFingerprint = linebankCanonicalToken(
+    "linebank-v13-scope",
+    capture.sourceScopeEvidence.evidenceVersion,
+    capture.authority.kind,
+    capture.authority.membershipEffectiveDate ?? "personal-main",
+  );
+  return admitCanonicalFinancialDepositCapture({
+    captureId: capture.captureId,
+    authorityRoute: LINEBANK_V13_AUTHORITY,
+    contractVersion: "human-attested-v13",
+    identity: {
+      integrationNamespace: "linebank",
+      sourceConnectionKey: linebankCanonicalToken(
+        "linebank-connection",
+        capture.sourceConnection,
+      ),
+      identityEpochKey: linebankCanonicalToken(
+        "linebank-epoch",
+        capture.sourceConnection,
+        String(capture.identityEpoch),
+      ),
+      stream: capture.stream,
+      recordKind: LINEBANK_V13_RECORD_KIND,
+      subjectDigest: capture.accountKey,
+      accountNo: capture.accountKey,
+      sourceAccountKey: capture.accountKey,
+      accountNumber: capture.accountNumber ?? null,
+      accountType: "depository",
+      currency: "TWD",
+    },
+    observedAt: capture.observedAt,
+    scope: {
+      startDate: linebankCanonicalDate(capture.scope.startDate),
+      endDate: linebankCanonicalDate(capture.scope.endDate),
+      scopeKind: "bounded-range",
+      completeness: "complete-range",
+      completenessBasis:
+        "human-attested-requested-scope-all-pages-stable-totals",
+      completenessRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      absenceAuthority: "comparable-complete-range",
+      contractFingerprint,
+      preflightFingerprint,
+      pageCount: capture.pageCount,
+    },
+    semantics: {
+      postingStatus: capture.postingStatus,
+      postingOrigin: "human_attested_history",
+      postingBasis: "human-attested-formally-posted",
+      postingRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      effectiveTimeBasis: capture.effectiveTimeBasis,
+      effectiveTimeRuleVersion: "linebank/domestic-deposit/human-attested-v13",
+      timeZone: capture.timeZone,
+      timePrecision: "second",
+      timeOrigin: "source_reported",
+      requireBalance: true,
+    },
+    pages: capture.pages.map((page) => ({
+      pageOrdinal: page.pageNbr - 1,
+      responseCode: "200",
+      terminal: page.pageNbr === capture.pageCount,
+      rowCount: page.txCnt,
+      responseDigest: linebankCanonicalToken(
+        "linebank-v13-page",
+        capture.captureId,
+        String(page.pageNbr),
+        String(page.txCnt),
+      ),
+      proofKind: "human-attested-requested-scope-all-pages-stable-totals",
+      contractFingerprint,
+      preflightFingerprint,
+      metadataJson: JSON.stringify({
+        pageNbr: page.pageNbr,
+        pageCapacity: page.pageCnt,
+        totalCount: page.totTxCnt,
+        rowCount: page.txCnt,
+      }),
+    })),
+    records: capture.records.map((record) => ({
+      occurrenceKey: record.sourceOccurrenceKey,
+      collisionKey: record.baseOccurrenceKey,
+      providerKey: record.sourceOccurrenceKey,
+      contentHash: record.sourceChangeFingerprint,
+      sequenceLexeme: record.sourceOccurrenceKey,
+      compactJson: linebankCompactFinancialRecord(capture, record),
+      amount: record.amount,
+      balanceAfter: record.balanceAfter,
+      currency: record.currency,
+      description: record.description ?? null,
+      direction: record.direction,
+      sourceTime: {
+        localDate: linebankCanonicalDate(record.sourceTime.localDate),
+        localTime: `${record.sourceTime.localTime.slice(0, 2)}:${record.sourceTime.localTime.slice(2, 4)}:${record.sourceTime.localTime.slice(4, 6)}`,
+        timeZone: record.sourceTime.timeZone,
+        epochMilliseconds: record.sourceTime.epochMilliseconds,
+      },
+      effectiveOn: linebankCanonicalDate(record.sourceTime.localDate),
+      transactionDateTimeLocal: linebankCanonicalDateTime(record.sourceTime),
+    })),
+  });
+}
 
 const dateSchema = z.string().regex(/^\d{8}$/);
 
-const inputSchema = z.object({
+const typedInputSchema = z.object({
+  credentials: z.object({
+    linebank_user_id: z.string().trim().min(1),
+    linebank_account: z.string().trim().min(1),
+    linebank_password: z.string().trim().min(1),
+  }),
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
 });
 
-const downloadSchema = z.object({
-  accountId: z.string(),
-  account: z.string(),
-  currency: z.string(),
-  kind: z.enum(["domestic", "foreign"]),
-  queryPeriods: z.array(z.string()),
-  baseName: z.string(),
-  csvFilename: z.string(),
-  csvPath: z.string(),
-  csvBytes: z.number().int().nonnegative(),
-  jsonFilename: z.string(),
-  jsonPath: z.string(),
-  jsonBytes: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-});
-
-const outputSchema = z.object({
-  dateRange: z.object({
-    startDate: dateSchema,
-    endDate: dateSchema,
-  }),
-  count: z.number().int().nonnegative(),
-  rowCount: z.number().int().nonnegative(),
-  canonicalCaptureCount: z.number().int().nonnegative(),
-  downloads: z.array(downloadSchema),
-});
-
 type DateRange = {
   startDate: string;
   endDate: string;
 };
+
+export type LineBankProviderWorkflowInput = z.infer<typeof typedInputSchema>;
+
+export type LineBankProviderWorkflowOutput = Readonly<{
+  dateRange: DateRange;
+  accountCount: number;
+  statementRowCount: number;
+  sourceCaptureCount: number;
+  financialItemCount: number;
+  status: "source-only" | "financial-admitted";
+}>;
 
 type LineBankCredentials = {
   linebank_user_id?: string;
@@ -207,7 +368,7 @@ export type LineBankTransactionsResponse = {
 };
 
 /** A page preserves the source response envelope instead of reducing it to
- * rendered CSV rows. The canonical contract uses these counts to prove that
+ * rendered statement rows. The canonical contract uses these counts to prove that
  * the requested range was completely collected before admitting any record. */
 export type LineBankTransactionPage = {
   pageNbr: number;
@@ -220,37 +381,15 @@ export type LineBankTransactionPage = {
   responseMessage?: string;
 };
 
-type LineBankDownload = z.infer<typeof downloadSchema>;
-
 export type LineBankStatementRow = {
   sortKey: string;
   values: string[];
 };
 
-let lastTimestamp = 0;
-
 function cleanText(value: unknown): string {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function safeFilename(filename: string): string {
-  return filename.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-function nextTimestamp(): string {
-  const timestamp = Date.now();
-  lastTimestamp = Math.max(timestamp, lastTimestamp + 1);
-  return String(lastTimestamp);
-}
-
-function csvCell(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function rowsToCsv(rows: string[][]): string {
-  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 function dateFromYYYYMMDD(value: string): Date {
@@ -300,7 +439,7 @@ function defaultEndDate(): string {
   ].join("");
 }
 
-function resolveDateRange(input: z.infer<typeof inputSchema>): DateRange {
+function resolveDateRange(input: LineBankProviderWorkflowInput): DateRange {
   const endDate = input.endDate ?? defaultEndDate();
   const startDate =
     input.startDate ??
@@ -490,19 +629,6 @@ function amountColumns(row: LineBankTransactionRow): [string, string] {
   const amount = rawAmount.replace(/^-/, "");
   if (!amount) return ["", ""];
   return row.dpstWdrwDsCd === "1" ? ["", amount] : [amount, ""];
-}
-
-function compareRowsDesc(
-  left: LineBankStatementRow,
-  right: LineBankStatementRow,
-) {
-  return right.sortKey.localeCompare(left.sortKey);
-}
-
-export function linebankSortStatementRows(
-  rows: LineBankStatementRow[],
-): LineBankStatementRow[] {
-  return [...rows].sort(compareRowsDesc);
 }
 
 function linebankSourceEnvelope(
@@ -720,12 +846,6 @@ export function linebankValidateTransactionPageSequence(
   }
 }
 
-export function linebankStatementRowsToCsv(
-  rows: LineBankStatementRow[],
-): string {
-  return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
-}
-
 function exactLinebankAmount(value: number | string | undefined, label: string): string {
   if (typeof value === "number")
     throw new Error(`LINE Bank foreign ${label} must remain an exact decimal string.`);
@@ -871,10 +991,6 @@ function filterAccounts(
   });
 }
 
-function queryPeriod(dateRange: DateRange): string {
-  return `${formatSlashDate(dateRange.startDate)} ~ ${formatSlashDate(dateRange.endDate)}`;
-}
-
 function transactionLinkLocator(page: Page): Locator {
   return page.getByRole("link", { name: "帳戶交易明細查詢" });
 }
@@ -959,46 +1075,6 @@ function requireLineBankCredential(
   return value;
 }
 
-/** Sign in from a clean headless session using the declared device-local credentials. */
-export async function linebankSignIn(
-  page: Page,
-  credentials: LineBankCredentials,
-): Promise<void> {
-  if (await linebankIsSignedIn(page)) return;
-
-  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
-  const userId = requireLineBankCredential(credentials, "linebank_account");
-  const password = requireLineBankCredential(credentials, "linebank_password");
-  if (new URL(page.url()).pathname !== "/login") {
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-  }
-
-  await page.locator("#nationalId").fill(nationalId);
-  await page.locator("#userId").fill(userId);
-  await page.locator("#pw").fill(password);
-
-  const loginButtons = page.getByRole("button", {
-    name: "登入友善網路銀行",
-    exact: true,
-  });
-  if ((await loginButtons.count()) !== 1) {
-    throw new Error("LINE Bank login requires exactly one submit button.");
-  }
-  const loginButton = loginButtons.first();
-  if (!(await loginButton.isVisible().catch(() => false))) {
-    throw new Error("LINE Bank login submit button is not visible.");
-  }
-  await loginButton.click();
-
-  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await linebankAutoDismissApprovedAlert(page);
-    if (await linebankIsSignedIn(page)) return;
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Timed out waiting for LINE Bank signed-in state.");
-}
-
 /** Enter the transaction stage only after authentication has completed. */
 export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/transaction") {
@@ -1026,11 +1102,26 @@ export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
   });
 }
 
+function responseCharset(headers: Readonly<Record<string, string>>): string {
+  const contentType = Object.entries(headers).find(
+    ([name]) => name.toLowerCase() === "content-type",
+  )?.[1] ?? "";
+  const match = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType);
+  return match?.[1] ?? "utf-8";
+}
+
 export class LineBankApiClient {
   private page: Page;
+  private text: SourceTextPort;
+  private signal?: AbortSignal;
 
-  constructor(page: Page) {
+  constructor(
+    page: Page,
+    options: { text: SourceTextPort; signal?: AbortSignal },
+  ) {
     this.page = page;
+    this.text = options.text;
+    this.signal = options.signal;
   }
 
   private async apiResponse(
@@ -1043,7 +1134,13 @@ export class LineBankApiClient {
     method: string;
     headers: Record<string, string>;
   }> {
-    return await this.page.evaluate(
+    const response = await withAbort(this.page.evaluate<{
+      bodyBytes?: number[];
+      url: string;
+      status: number;
+      method: string;
+      headers: Record<string, string>;
+    }, { path: string; body?: unknown }>(
       async ({ path, body }) => {
         const headers = {
           accept: "application/json",
@@ -1068,7 +1165,7 @@ export class LineBankApiClient {
           responseHeaders[key] = value;
         });
         return {
-          body: await response.text(),
+          bodyBytes: Array.from(new Uint8Array(await response.arrayBuffer())),
           url: response.url,
           status: response.status,
           method: init.method ?? "GET",
@@ -1076,7 +1173,15 @@ export class LineBankApiClient {
         };
       },
       { path, body: options?.body },
+    ), this.signal);
+    if (!Array.isArray(response.bodyBytes))
+      throw new Error("LINE Bank source response bytes are unavailable.");
+    const body = this.text.decode(
+      Uint8Array.from(response.bodyBytes),
+      responseCharset(response.headers),
     );
+    this.text.assertIntact(body);
+    return { ...response, body };
   }
 
   private async apiJson<T>(
@@ -1086,7 +1191,9 @@ export class LineBankApiClient {
     const response = await this.apiResponse(path, options);
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${path}`);
-    return parseLinebankApiJson<T>(response.body);
+    const value = parseLinebankApiJson<T>(response.body);
+    this.text.assertIntact(JSON.stringify(value));
+    return value;
   }
 
   private async accountResponse(): Promise<{
@@ -1098,6 +1205,7 @@ export class LineBankApiClient {
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
     const payload = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
+    this.text.assertIntact(JSON.stringify(payload));
     if (payload.code !== "200") {
       throw new Error(
         `LINE Bank account list failed: ${payload.message ?? "unknown"}`,
@@ -1130,12 +1238,12 @@ export class LineBankApiClient {
     return snapshot.accounts;
   }
 
-  async fetchAccountSnapshot(observedAt?: string): Promise<{
+  async fetchAccountSnapshot(now: () => string = () => new Date().toISOString()): Promise<{
     accounts: LineBankAccount[];
     currentBalances: readonly LineBankCurrentDepositBalanceRow[];
   }> {
     const snapshot = await this.accountResponse();
-    const effectiveObservedAt = observedAt ?? new Date().toISOString();
+    const effectiveObservedAt = now();
     const currentBalances = parseLinebankCurrentDepositBalanceSnapshot({
       response: snapshot.response,
       rawBody: snapshot.rawBody,
@@ -1205,73 +1313,11 @@ export class LineBankApiClient {
     return pages;
   }
 
-  async fetchTransactions(
-    account: LineBankAccount,
-    dateRange: DateRange,
-  ): Promise<LineBankTransactionRow[]> {
-    const pages = await this.fetchTransactionPages(account, dateRange);
-    return pages.flatMap((page) => page.rows);
-  }
-}
-
-async function writeStatementFiles(
-  account: LineBankAccount,
-  queryPeriods: string[],
-  rows: LineBankStatementRow[],
-): Promise<LineBankDownload> {
-  const currency = linebankAccountCurrency(account);
-  const kind = currency === "TWD" ? "domestic" : "foreign";
-  const downloadsDir = join(
-    process.cwd(),
-    "downloads",
-    kind === "domestic" ? "linebank-statements" : "linebank-foreign-statements",
-  );
-  await mkdir(downloadsDir, { recursive: true });
-
-  const baseName = `${safeFilename(accountId(account))}-${currency}-${nextTimestamp()}`;
-  const csvFilename = `${baseName}.csv`;
-  const jsonFilename = `${baseName}.json`;
-  const csvPath = join(downloadsDir, csvFilename);
-  const jsonPath = join(downloadsDir, jsonFilename);
-
-  await writeFile(csvPath, linebankStatementRowsToCsv(rows), "utf8");
-  await writeFile(
-    jsonPath,
-    `${JSON.stringify(
-      {
-        帳號: `${accountId(account)} ${accountLabel(account)}`.trim(),
-        查詢期間: queryPeriods,
-        分行名稱: "LINE Bank",
-        幣別: currency,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-
-  const csvStat = await stat(csvPath);
-  const jsonStat = await stat(jsonPath);
-  return {
-    accountId: accountId(account),
-    account: accountLabel(account),
-    currency,
-    kind,
-    queryPeriods,
-    baseName,
-    csvFilename,
-    csvPath,
-    csvBytes: csvStat.size,
-    jsonFilename,
-    jsonPath,
-    jsonBytes: jsonStat.size,
-    rowCount: rows.length,
-  };
 }
 
 /** Build the privacy-bounded v13 canonical capture for one personal TWD
  * account/range. Shared-member captures remain outside the first admission
- * contract and are skipped without affecting statement downloads. */
+ * contract and are rejected during typed source admission. */
 export async function linebankHumanAttestedCapture(input: {
   account: LineBankAccount;
   dateRange: DateRange;
@@ -1312,169 +1358,360 @@ export async function linebankHumanAttestedCapture(input: {
   return validation.capture;
 }
 
-async function downloadLineBankStatements(
+async function waitForLineBankSignIn(
   page: Page,
-  input: z.infer<typeof inputSchema>,
-): Promise<z.infer<typeof outputSchema>> {
-  const dateRange = resolveDateRange(input);
-  const windows = linebankQueryWindows(dateRange);
-  const apiClient = new LineBankApiClient(page);
-  const accountSnapshot = await apiClient.fetchAccountSnapshot();
-  const accounts = filterAccounts(
-    accountSnapshot.accounts,
-    input.accountFilters,
-    input.currencyFilters,
-  );
-
-  if (accounts.length === 0) {
-    throw new Error(
-      "No LINE Bank accounts matched accountFilters/currencyFilters.",
-    );
+  context: WorkflowContext,
+): Promise<void> {
+  const deadline = Date.now() + LINEBANK_LOGIN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    context.signal.throwIfAborted();
+    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+    if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+    await withAbort(page.waitForTimeout(250), context.signal);
   }
-  const selectedAccountKeys = new Set(
-    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
-  );
-  const currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
-    selectedAccountKeys.has(linebankAccountKey(row.account)),
-  );
-
-  const downloads: LineBankDownload[] = [];
-  const canonicalCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-  const foreignCanonicalCaptures: ForeignCurrencyDepositCaptureInput[] = [];
-  let currentBalanceCaptureCount = 0;
-  const captureOccurrenceId = randomUUID();
-  for (const account of accounts) {
-    const rows: LineBankStatementRow[] = [];
-    for (const window of windows) {
-      const pages = await apiClient.fetchTransactionPages(account, window);
-      rows.push(
-        ...linebankApiRowsToStatementRows(pages.flatMap((page) => page.rows)),
-      );
-      if (linebankAccountCurrency(account) === "TWD") {
-        const capture = await linebankHumanAttestedCapture({
-          account,
-          dateRange: window,
-          pages,
-          captureId: `linebank-${randomUUID()}`,
-          observedAt: new Date().toISOString(),
-        });
-        if (capture) canonicalCaptures.push(capture);
-      } else {
-        foreignCanonicalCaptures.push(
-          buildLinebankForeignCurrencyCaptureInput({
-            account,
-            dateRange: window,
-            pages,
-            captureOccurrenceId,
-          }),
-        );
-      }
-    }
-    downloads.push(
-      await writeStatementFiles(
-        account,
-        windows.map(queryPeriod),
-        linebankSortStatementRows(rows),
-      ),
-    );
-  }
-
-  const financialLedgerDir =
-    process.env.OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR;
-  if (financialLedgerDir && canonicalCaptures.length > 0) {
-    const {
-      commitCanonicalLineBankFinancialCaptureBatch,
-      createDomesticDepositStore,
-    } = await import("../ledger/canonical/domestic-deposit-store.ts");
-    const store = createDomesticDepositStore(
-      join(financialLedgerDir, "canonical.sqlite"),
-    );
-    try {
-      await commitCanonicalLineBankFinancialCaptureBatch(
-        store,
-        canonicalCaptures,
-      );
-    } finally {
-      store.close();
-    }
-  }
-  if (financialLedgerDir && foreignCanonicalCaptures.length > 0) {
-    const store = createCanonicalSourceStore(
-      canonicalSqlitePath(financialLedgerDir),
-    );
-    try {
-      await commitForeignCurrencyDepositCaptureBatch(
-        store,
-        foreignCanonicalCaptures,
-      );
-    } finally {
-      store.close();
-    }
-  }
-  if (financialLedgerDir && currentBalanceRows.length > 0 && canonicalCaptures.length > 0) {
-    const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
-      currentBalanceRows,
-      canonicalCaptures.map((capture) => ({
-        accountKey: capture.accountKey,
-        sourceConnection: capture.sourceConnection,
-        identityEpoch: capture.identityEpoch,
-        observedAt: capture.observedAt,
-      })),
-    );
-    const {
-      admitCurrentDepositBalanceCapture,
-      commitCurrentDepositBalanceCapture,
-    } = await import("../ledger/canonical/current-deposit-balance-writer.ts");
-    const store = createCanonicalSourceStore(
-      canonicalSqlitePath(financialLedgerDir),
-    );
-    try {
-      for (const capture of currentBalanceCaptures) {
-        const admitted = admitCurrentDepositBalanceCapture(capture);
-        await commitCurrentDepositBalanceCapture(store, admitted);
-      }
-      currentBalanceCaptureCount = currentBalanceCaptures.length;
-    } finally {
-      store.close();
-    }
-  }
-
-  return {
-    dateRange,
-    count: downloads.length,
-    rowCount: downloads.reduce((sum, download) => sum + download.rowCount, 0),
-    canonicalCaptureCount:
-      financialLedgerDir === undefined
-        ? 0
-        : canonicalCaptures.length + foreignCanonicalCaptures.length + currentBalanceCaptureCount,
-    downloads,
-  };
+  throw new Error("Timed out waiting for LINE Bank signed-in state.");
 }
 
-export default workflow("linebankStatements", {
-  startUrl: LOGIN_URL,
-  credentials: ["linebank_user_id", "linebank_account", "linebank_password"],
-  input: inputSchema,
-  output: outputSchema,
-  handler: async (ctx: LibrettoWorkflowContext, rawInput) => {
-    const input = rawInput as z.infer<typeof inputSchema> & {
-      credentials: LineBankCredentials;
-    };
-    const { page } = ctx;
+async function linebankSignInForApp(
+  page: Page,
+  credentials: LineBankCredentials,
+  context: WorkflowContext,
+): Promise<void> {
+  if (await withAbort(linebankIsSignedIn(page), context.signal)) return;
+  const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
+  const userId = requireLineBankCredential(credentials, "linebank_account");
+  const password = requireLineBankCredential(credentials, "linebank_password");
+  if (new URL(page.url()).pathname !== "/login")
+    await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), context.signal);
 
-    await librettoAuthenticate(ctx, {
-      credentials: input.credentials,
-      isSignedIn: async () => await linebankIsSignedIn(page),
-      signIn: async (signInContext) => {
-        await linebankSignIn(signInContext.page, input.credentials);
-      },
+  await withAbort(page.locator("#nationalId").fill(nationalId), context.signal);
+  await withAbort(page.locator("#userId").fill(userId), context.signal);
+  await withAbort(page.locator("#pw").fill(password), context.signal);
+  const loginButtons = page.getByRole("button", {
+    name: "登入友善網路銀行",
+    exact: true,
+  });
+  if (await withAbort(loginButtons.count(), context.signal) !== 1)
+    throw new Error("LINE Bank login requires exactly one submit button.");
+  const loginButton = loginButtons.first();
+  if (!(await withAbort(loginButton.isVisible().catch(() => false), context.signal)))
+    throw new Error("LINE Bank login submit button is not visible.");
+  await withAbort(loginButton.click(), context.signal);
+  // Login/navigation and its bank confirmation can take longer than three
+  // seconds under Sync All. Observe the authenticated marker within the normal
+  // deadline; an unfinished login is not a declared human challenge.
+  await waitForLineBankSignIn(page, context);
+}
+
+function sourceDecodeError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.name === "SourceTextIntegrityError" ||
+    /API response body is not valid JSON/u.test(error.message)
+  );
+}
+
+function sourceValidationError(error: unknown): boolean {
+  return error instanceof Error && /pagination|page metadata|pageCnt|totTxCnt|transaction page|source account identity|total row count|transaction source/u.test(error.message);
+}
+
+/** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
+export async function runLineBankProviderWorkflow(
+  context: WorkflowContext,
+  rawInput: unknown,
+): Promise<LineBankProviderWorkflowOutput> {
+  const parsed = typedInputSchema.safeParse(rawInput);
+  if (!parsed.success)
+    throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
+  if (!context.financialCommit)
+    throw new Error("Canonical Financial Commit port is unavailable.");
+  const financialCommit = context.financialCommit;
+  context.signal.throwIfAborted();
+  const dateRange = resolveDateRange(parsed.data);
+  const windows = linebankQueryWindows(dateRange);
+  await context.event("preparation", "input-validated");
+
+  return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
+    await context.event("authentication", "authentication-started");
+    await linebankSignInForApp(page, parsed.data.credentials, context);
+    context.signal.throwIfAborted();
+    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
+    await withAbort(linebankEnsureTransactionPage(page), context.signal);
+    await context.event("authentication", "authentication-completed");
+
+    const client = new LineBankApiClient(page, {
+      text: context.text,
+      signal: context.signal,
+    });
+    await context.event("collection", "collection-started");
+    await context.event("decoding", "source-decoding-started");
+    await context.event("collection", "current-balance-collection-started");
+    await context.event("decoding", "current-balance-decoding-started");
+    let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
+    let accounts: LineBankAccount[];
+    let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
+    try {
+      accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
+      accounts = filterAccounts(
+        accountSnapshot.accounts,
+        parsed.data.accountFilters,
+        parsed.data.currencyFilters,
+      );
+      if (accounts.length === 0)
+        throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
+      const selectedAccountKeys = new Set(
+        accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+      );
+      currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
+        selectedAccountKeys.has(linebankAccountKey(row.account)),
+      );
+    } catch (error) {
+      if (sourceDecodeError(error))
+        await context.event("decoding", "source-decoding-failed");
+      else
+        await context.event("collection", "current-balance-collection-failed");
+      throw error;
+    }
+    await context.event("decoding", "current-balance-decoding-completed");
+    await context.event("collection", "current-balance-collection-completed", {
+      completed: currentBalanceRows.length,
+      total: currentBalanceRows.length,
     });
 
-    await linebankAutoDismissApprovedAlert(page);
-    console.log("automation-progress: 25");
-    await linebankEnsureTransactionPage(page);
-    const result = await downloadLineBankStatements(page, input);
-    console.log("automation-progress: 100");
-    return result;
-  },
-});
+    const selectedSources: Array<{
+      account: LineBankAccount;
+      dateRange: DateRange;
+      pages: LineBankTransactionPage[];
+    }> = [];
+    let statementRowCount = 0;
+    const expectedSourceCount = accounts.length * windows.length;
+    try {
+      for (const account of accounts) {
+        for (const window of windows) {
+          context.signal.throwIfAborted();
+          const pages = await client.fetchTransactionPages(account, window);
+          selectedSources.push({ account, dateRange: window, pages });
+          statementRowCount += linebankApiRowsToStatementRows(
+            pages.flatMap((page) => page.rows),
+          ).length;
+        }
+        await context.event("collection", "account-collected", {
+          completed: selectedSources.length,
+          total: expectedSourceCount,
+        });
+      }
+    } catch (error) {
+      if (sourceDecodeError(error))
+        await context.event("decoding", "source-decoding-failed");
+      else if (sourceValidationError(error)) {
+        await context.event("validation", "source-validation-rejected", {
+          completed: selectedSources.length,
+          total: expectedSourceCount,
+        });
+      }
+      await context.event("collection", "collection-failed");
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    await context.event("decoding", "source-decoding-completed");
+    await context.event("collection", "collection-completed", {
+      completed: selectedSources.length,
+      total: expectedSourceCount,
+    });
+    if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: selectedSources.length,
+        total: expectedSourceCount,
+      });
+      throw new Error("LINE Bank source does not contain every selected account and date window.");
+    }
+
+    await context.event("validation", "source-validation-started", {
+      completed: 0,
+      total: selectedSources.length,
+    });
+    const observedAt = context.now();
+    const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
+    const financialCaptures: CanonicalFinancialDepositValidatedCapture[] = [];
+    const statementItems: PGliteWorkflowRunItem[] = [];
+    const captureOccurrenceId = randomUUID();
+    await context.event("validation", "canonical-admission-started", {
+      completed: 0,
+      total: selectedSources.length,
+    });
+    try {
+      for (const [index, selected] of selectedSources.entries()) {
+        context.signal.throwIfAborted();
+        const captureId = `linebank-${randomUUID()}`;
+        if (linebankAccountCurrency(selected.account) === "TWD") {
+          const capture = await linebankHumanAttestedCapture({
+            account: selected.account,
+            dateRange: selected.dateRange,
+            pages: selected.pages,
+            captureId,
+            observedAt,
+          });
+          if (!capture)
+            throw new Error("LINE Bank selected domestic source authority is not supported.");
+          const admitted = normalizeLineBankFinancialCapture(capture);
+          domesticCaptures.push(capture);
+          financialCaptures.push(admitted);
+          statementItems.push({
+            provider: "linebank",
+            product: "domestic-deposit",
+            itemKey: captureId,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: admitted },
+            },
+          });
+        } else {
+          const capture = buildLinebankForeignCurrencyCaptureInput({
+            account: selected.account,
+            dateRange: selected.dateRange,
+            pages: selected.pages,
+            observedAt,
+            captureOccurrenceId: `${captureOccurrenceId}:${index}`,
+          });
+          const admitted = admitForeignCurrencyDepositCapture(capture);
+          statementItems.push({
+            provider: "linebank",
+            product: "foreign-currency",
+            itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
+            command: {
+              kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+              request: { capture: admitted },
+            },
+          });
+          financialCaptures.push(admitted);
+        }
+        await context.event("validation", "account-source-admitted", {
+          completed: index + 1,
+          total: selectedSources.length,
+        });
+      }
+    } catch (error) {
+      await context.event("validation", "source-validation-rejected", {
+        completed: statementItems.length,
+        total: selectedSources.length,
+      });
+      throw error;
+    }
+
+    await context.event("validation", "canonical-admission-completed", {
+      completed: statementItems.length,
+      total: selectedSources.length,
+    });
+    const balanceItems: PGliteWorkflowRunItem[] = [];
+    if (domesticCaptures.length > 0) {
+      const selectedTwdAccountKeys = new Set(
+        accounts
+          .filter((account) => linebankAccountCurrency(account) === "TWD")
+          .map((account) => linebankAccountKey(account)),
+      );
+      const admittedTwdAccountKeys = new Set(
+        domesticCaptures.map((capture) => capture.accountKey),
+      );
+      const selectedTwdSourceKeys = new Set(
+        currentBalanceRows.map((row) => row.sourceAccountKey),
+      );
+      if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
+        currentBalanceRows.length !== selectedTwdAccountKeys.size ||
+        selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
+        [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
+        await context.event("validation", "current-balance-validation-rejected", {
+          completed: currentBalanceRows.length,
+          total: selectedTwdAccountKeys.size,
+        });
+        throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
+      }
+      await context.event("validation", "current-balance-validation-started", {
+        completed: 0,
+        total: currentBalanceRows.length,
+      });
+      try {
+        const currentBalanceCaptures = buildLinebankCurrentDepositBalanceCaptures(
+          currentBalanceRows,
+          domesticCaptures.map((capture) => ({
+            accountKey: capture.accountKey,
+            sourceConnection: capture.sourceConnection,
+            identityEpoch: capture.identityEpoch,
+            observedAt: capture.observedAt,
+          })),
+        );
+        for (const [index, capture] of currentBalanceCaptures.entries()) {
+          context.signal.throwIfAborted();
+          balanceItems.push({
+            provider: "linebank",
+            product: "current-balance",
+            itemKey: `current-balance:${index}`,
+            command: {
+              kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+              request: currentDepositBalanceCommandRequest(
+                admitCurrentDepositBalanceCapture(capture),
+              ),
+            },
+          });
+        }
+      } catch {
+        await context.event("validation", "current-balance-validation-rejected", {
+          completed: 0,
+          total: currentBalanceRows.length,
+        });
+        throw new Error("LINE Bank current balance source admission was rejected.");
+      }
+      await context.event("validation", "current-balance-validation-completed", {
+        completed: balanceItems.length,
+        total: currentBalanceRows.length,
+      });
+    }
+    await context.event("validation", "source-validation-completed", {
+      completed: selectedSources.length,
+      total: expectedSourceCount,
+    });
+    context.signal.throwIfAborted();
+
+    const commitItems = [...statementItems, ...balanceItems];
+    await context.event("commit", "canonical-commit-started", {
+      completed: 0,
+      total: commitItems.length,
+    });
+    if (balanceItems.length > 0)
+      await context.event("commit", "current-balance-commit-started", {
+        completed: 0,
+        total: balanceItems.length,
+      });
+    const committed = await financialCommit.execute(commitItems, {
+      provider: "linebank",
+      product: "financial",
+      signal: context.signal,
+    });
+    if (
+      committed.status !== "completed" ||
+      committed.items.length !== commitItems.length ||
+      committed.items.some((item) => item.status !== "committed")
+    ) {
+      const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
+      await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed");
+      throw new Error(`LINE Bank Canonical Financial Commit failed: ${codes || committed.status}.`);
+    }
+    await context.event("commit", "canonical-commit-completed", {
+      completed: commitItems.length,
+      total: commitItems.length,
+    });
+    if (balanceItems.length > 0)
+      await context.event("commit", "current-balance-commit-completed", {
+        completed: balanceItems.length,
+        total: balanceItems.length,
+      });
+    const hasFinancialRecords = financialCaptures.some((capture) => capture.records.length > 0);
+    return {
+      dateRange,
+      accountCount: accounts.length,
+      statementRowCount,
+      sourceCaptureCount: selectedSources.length,
+      financialItemCount: commitItems.length,
+      status: hasFinancialRecords ? "financial-admitted" : "source-only",
+    };
+  });
+}

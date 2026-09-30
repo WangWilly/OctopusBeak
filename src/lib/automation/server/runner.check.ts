@@ -1,2271 +1,293 @@
 import assert from "node:assert/strict";
-import test, { afterEach, describe } from "node:test";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../../../ledger/pglite/workflow-client.ts";
 import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openLedgerDatabase } from "../../../ledger/db/client.ts";
-import {
-  parseStatementRunSummary,
-  STATEMENT_RUN_SUMMARY_PREFIX,
-  statementRunSummaryLine,
-} from "../statement-run-summary.ts";
-import {
-  activeTaskRuns,
-  createTaskRun,
-  latestTaskRuns,
-  recentTaskRuns,
-  taskRunById,
-  updateHumanAssistanceContract,
-  updateTaskRun,
-} from "./store.ts";
-import {
-  armAutomationSessionTimeout,
-  finalizeExactOwnedAutomationSession,
-  ownAutomationSession,
-  ownedAutomationSession,
-  WAITING_SESSION_TIMEOUT_MS,
-} from "./session-lifecycle.ts";
-import {
-  accumulateAutomationOutput,
-  activeAutomationTaskIds,
-  appendCleanupError,
-  automationCleanupFailureDetails,
-  automationSessionFromLog,
-  automationProcessEnv,
-  createAutomationSessionId,
-  createAutomationTaskExecutionRunner,
-  createAutomationOutputBuffer,
-  finalFailureMessage,
-  finalizeTerminalAutomationSession,
-  hasActiveAutomationTask,
-  isForceQuitRun,
-  librettoRunCdpPatchCommand,
-  liveTaskRunUpdate,
-  nextAttemptStatus,
-  parseAutomationProgress,
-  prepareLibrettoRunCdpPatch,
-  claimRunAutomationSession,
   cancelAutomationTask,
-  resumeFailureMessage,
-  resumeSessionFromLog,
-  recoverAbandonedAutomationSessions,
-  runAutomationBatch,
+  hasActiveAutomationTask,
+  pgliteWorkflowRuntimeEnv,
+  forceTerminateAutomationTask,
   runAutomationTask,
-  runWithConcurrency,
-  shutdownAutomationSessions,
-  shouldCloseResumeSession,
-  shouldMarkWaitingForHuman,
-  shouldRetainAutomationSession,
-  startAutomationResume,
-  startAutomationTask,
-  startAutomationTasks,
+  shutdownAppAutomationWorkflows,
 } from "./runner.ts";
-import { taskById } from "./tasks.ts";
-import {
-  SINOPAC_DIALOG_OWNER_ENV,
-  sinopacHostDialogOwner,
-} from "../sinopac-captcha.ts";
+import { AUTOMATION_TASKS } from "./tasks.ts";
+import type {
+  AutomationPersistenceProvider,
+  AutomationTaskRun,
+} from "./store.ts";
+import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../ledger/exchange-rates.ts";
+import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
 
-const TEST_TASK_SETTLE_TIMEOUT_MS = 30_000;
-
-async function waitForTaskToSettle(taskId: string) {
-  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
-  while (activeAutomationTaskIds().includes(taskId)) {
-    if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for ${taskId} to settle.`);
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+function providerStub(automation: Record<string, unknown> = {}) {
+  return {
+    automation: {
+      async taskRunById() { return null; },
+      ...automation,
+    },
+    pgliteWorkflow: {
+      required: true,
+      env: {
+        [PGLITE_WORKFLOW_REQUIRED_ENV]: "1",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT: "http://127.0.0.1:43121/rpc",
+        OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN: "test-token",
+      },
+    },
+    exchangeRates: {
+      async readExchangeRates() { return []; },
+      async upsertExchangeRates() {},
+    },
+    financial: {
+      async overviewCurrent() { return { dailyHistory: [] }; },
+    },
+  } as unknown as AutomationPersistenceProvider;
 }
 
-async function settleStartedTasks(taskIds: readonly string[]) {
-  const pending = new Set(taskIds);
-  const deadline = Date.now() + TEST_TASK_SETTLE_TIMEOUT_MS;
-  while (pending.size > 0) {
-    for (const taskId of pending) {
-      if (!activeAutomationTaskIds().includes(taskId)) {
-        pending.delete(taskId);
-        continue;
-      }
-      try {
-        await cancelAutomationTask(taskId);
-      } catch {
-        // The task can finish between the active check and cancellation.
-        if (!activeAutomationTaskIds().includes(taskId)) pending.delete(taskId);
-      }
-    }
-    if (pending.size === 0) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Timed out waiting for automation cleanup: ${[...pending].join(", ")}`,
-      );
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-}
-
-async function settleStartedTask(taskId: string) {
-  await settleStartedTasks([taskId]);
-}
-
-async function settleStartedBatchTasks(taskIds: readonly string[]) {
-  await settleStartedTasks(taskIds);
-}
-
-afterEach(async () => {
-  // A timeout or assertion failure must not leave the module-level task claim
-  // fenced for the next stateful runner test. Join every child before the
-  // next test starts so failures cannot cascade into "already running".
-  await settleStartedTasks(activeAutomationTaskIds());
+test("typed workflow runtime uses the authenticated PGlite capability", () => {
+  const provider = providerStub({});
+  const provided = (provider as unknown as {
+    pgliteWorkflow: { required: boolean; env: NodeJS.ProcessEnv };
+  }).pgliteWorkflow.env;
+  const launched = pgliteWorkflowRuntimeEnv(provider);
+  assert.deepEqual(launched, provided);
+  assert.notEqual(launched, provided);
 });
 
-describe("runner stateful operations", { concurrency: false }, () => {
-
-test("runner execution preserves base env and applies the current session dialog owner", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-runner-launch-env-"));
-  const db = openLedgerDatabase(ledgerDir);
-  const task = taskById("sinopac-statements");
-  assert.ok(task);
-  let captured: NodeJS.ProcessEnv | undefined;
-  try {
-    const execute = createAutomationTaskExecutionRunner({
-      task,
-      taskDb: db,
-      ledgerDir,
-      baseLaunchEnv: {
-        OCTOPUSBEAK_BASE_ENV_PROBE: "preserved",
-        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-stale"),
-      },
-      currentTaskRunId: () => "run-current",
-      onRunCreated: () => {},
-      isCancellationRequested: () => false,
-      runExecution: async (_task, _db, _ledgerDir, options) => {
-        captured = options.launchEnv;
-        return { status: "cancelled" as const };
-      },
-    });
-    await execute({
-      resumeSession: "ses-current",
-      launchEnv: {
-        [SINOPAC_DIALOG_OWNER_ENV]: sinopacHostDialogOwner("ses-current"),
-        OCTOPUSBEAK_EXECUTION_ENV_PROBE: "present",
-      },
-    });
-    assert.equal(captured?.OCTOPUSBEAK_BASE_ENV_PROBE, "preserved");
-    assert.equal(captured?.OCTOPUSBEAK_EXECUTION_ENV_PROBE, "present");
-    assert.equal(
-      captured?.[SINOPAC_DIALOG_OWNER_ENV],
-      sinopacHostDialogOwner("ses-current"),
-    );
-  } finally {
-    db.close();
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("manual Fubon starts ignore persisted statement selection", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "automation-start-selection-"));
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(dir);
-    writeFileSync(
-      "settings.json",
-      JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }),
-    );
-    assert.doesNotThrow(() => startAutomationTask("fubon-all-statements", dir));
-    await settleStartedTask("fubon-all-statements");
-    assert.equal(hasActiveAutomationTask(), false);
-  } finally {
-    process.chdir(originalCwd);
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("batch starts allow Fubon without a persisted selection", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "automation-batch-selection-"));
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(dir);
-    writeFileSync(
-      "settings.json",
-      JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }),
-    );
-    assert.doesNotThrow(() =>
-      startAutomationTasks(["exchange-rates", "fubon-all-statements"], dir),
-    );
-    await settleStartedBatchTasks([
-      "fubon-all-statements",
-      "exchange-rates",
-    ]);
-    assert.deepEqual(activeAutomationTaskIds(), []);
-  } finally {
-    process.chdir(originalCwd);
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("manual SinoPac starts ignore persisted statement selection", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "automation-sinopac-selection-"));
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(dir);
-    writeFileSync(
-      "settings.json",
-      JSON.stringify({
-        LIBRETTO_CLOUD_SINOPAC_ENABLED: true,
-        LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "stale-account-selection",
-      }),
-    );
-    assert.doesNotThrow(() => startAutomationTask("sinopac-statements", dir));
-    await settleStartedTask("sinopac-statements");
-    assert.equal(hasActiveAutomationTask(), false);
-  } finally {
-    process.chdir(originalCwd);
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("batch starts allow SinoPac without a persisted selection", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "automation-sinopac-batch-"));
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(dir);
-    writeFileSync(
-      "settings.json",
-      JSON.stringify({
-        LIBRETTO_CLOUD_SINOPAC_ENABLED: true,
-        LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES: "accounts,retired_type",
-      }),
-    );
-    assert.doesNotThrow(() =>
-      startAutomationTasks(["exchange-rates", "sinopac-statements"], dir),
-    );
-    await settleStartedBatchTasks([
-      "sinopac-statements",
-      "exchange-rates",
-    ]);
-    assert.deepEqual(activeAutomationTaskIds(), []);
-  } finally {
-    process.chdir(originalCwd);
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("resume bypasses fresh statement-selection validation", async () => {
-  const root = mkdtempSync(join(tmpdir(), "automation-resume-selection-"));
-  const binDir = join(root, "bin");
-  const ledgerDir = join(root, "ledger");
-  const originalCwd = process.cwd();
-  const originalPath = process.env.PATH;
-  try {
-    mkdirSync(binDir);
-    writeFileSync(join(binDir, "libretto"), "#!/bin/sh\nexit 0\n");
-    chmodSync(join(binDir, "libretto"), 0o755);
-    writeFileSync(join(binDir, "npx"), "#!/bin/sh\nexit 0\n");
-    chmodSync(join(binDir, "npx"), 0o755);
-    writeFileSync(
-      join(root, "settings.json"),
-      JSON.stringify({ LIBRETTO_CLOUD_FUBON_ENABLED: true }),
-    );
-    process.chdir(root);
-    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
-    assert.doesNotThrow(() =>
-      startAutomationResume("fubon-all-statements", "ses-existing", ledgerDir),
-    );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await waitForTaskToSettle("fubon-all-statements");
-    assert.equal(activeAutomationTaskIds().includes("fubon-all-statements"), false);
-    const db = openLedgerDatabase(ledgerDir);
-    assert.equal(
-      latestTaskRuns(db)["fubon-all-statements"]?.taskId,
-      "fubon-all-statements",
-    );
-    db.close();
-  } finally {
-    process.chdir(originalCwd);
-    if (originalPath === undefined) delete process.env.PATH;
-    else process.env.PATH = originalPath;
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-assert.equal(
-  createAutomationSessionId(() => "fixed-uuid"),
-  "ses-octopus-fixed-uuid",
-);
-assert.equal(
-  automationSessionFromLog("automation-session: ses-octopus-fixed-uuid\n"),
-  "ses-octopus-fixed-uuid",
-);
-assert.equal(automationSessionFromLog("no session"), null);
-assert.equal(shouldRetainAutomationSession("waiting_for_human"), true);
-assert.equal(shouldRetainAutomationSession("completed"), false);
-assert.equal(shouldRetainAutomationSession("failed"), false);
-assert.equal(
-  appendCleanupError("workflow failed", "IPC timeout"),
-  "workflow failed\nSession cleanup failed: IPC timeout",
-);
-assert.equal(
-  appendCleanupError(null, "IPC timeout"),
-  "Session cleanup failed: IPC timeout",
-);
-assert.deepEqual(
-  automationCleanupFailureDetails(
-    {
-      taskId: "task-log",
-      taskRunId: "run-log",
-      session: "ses-log",
-      pid: 777,
-    },
-    new Error("IPC timeout"),
-  ),
-  {
-    taskRunId: "run-log",
-    sessionId: "ses-log",
-    retainedPid: 777,
-    error: "IPC timeout",
-  },
-);
-
-test("persisted session recovery uses a bounded log read", () => {
-  const source = readFileSync(
-    new URL("./automation-session-disposition.ts", import.meta.url),
-    "utf8",
+test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
+  assert.throws(
+    () => pgliteWorkflowRuntimeEnv({ automation: {} } as unknown as AutomationPersistenceProvider),
+    /PGlite workflow transport is unavailable/u,
   );
-  assert.doesNotMatch(source, /readFileSync\(run\.logPath/);
-  assert.match(source, /readSync\([^;]+SESSION_LOG_PREFIX_BYTES/s);
+  const provider = providerStub({});
+  (provider as unknown as { pgliteWorkflow: { required: boolean; env: NodeJS.ProcessEnv } })
+    .pgliteWorkflow.required = false;
+  assert.throws(() => pgliteWorkflowRuntimeEnv(provider), /PGlite workflow transport is unavailable/u);
 });
 
-test("terminal cleanup catch logs owner and appends the workflow error", async () => {
-  const messages: unknown[][] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    messages.push(args);
+test("exchange-rate service uses injected overview and persistence with progress", async () => {
+  const readCurrencies: string[][] = [];
+  const writes: ExchangeRateRecord[][] = [];
+  const persistence: ExchangeRatePersistencePort = {
+    async readExchangeRates(currencies = []) {
+      readCurrencies.push([...currencies]);
+      return [];
+    },
+    async upsertExchangeRates(rows) { writes.push(rows.map((row) => ({ ...row }))); },
   };
-  try {
-    const result = await finalizeTerminalAutomationSession(
-      {
-        taskId: "task-terminal-log",
-        taskRunId: "run-terminal-log",
-        session: "ses-terminal-log",
-        pid: 888,
+  let overviewReads = 0;
+  const provider = {
+    automation: {},
+    exchangeRates: persistence,
+    financial: {
+      async overviewCurrent() {
+        overviewReads += 1;
+        return {
+          dailyHistory: [{
+            date: "2026-01-03",
+            netAssets: [{ currency: "USD", value: 100 }],
+            dailyChange: [],
+            assets: [],
+            liabilities: [],
+            accountChanges: [],
+            positionCount: 1,
+          }],
+        };
       },
-      "workflow failed",
-      async () => {
-        throw new Error("close timeout");
-      },
-    );
-    assert.deepEqual(result, {
-      errorMessage: "workflow failed\nSession cleanup failed: close timeout",
-      cleanupFailed: true,
-    });
-  } finally {
-    console.error = originalError;
-  }
-  assert.deepEqual(messages, [
-    [
-      "automation-session-cleanup-failed",
-      {
-        taskRunId: "run-terminal-log",
-        sessionId: "ses-terminal-log",
-        retainedPid: 888,
-        error: "close timeout",
-      },
-    ],
-  ]);
-});
-
-assert.equal(
-  automationProcessEnv({ NODE_ENV: "production" }).NODE_ENV,
-  "development",
-);
-assert.equal(automationProcessEnv({ NODE_ENV: "test" }).NODE_ENV, "test");
-
-test("Libretto CDP patch is prepared once per app process", () => {
-  let calls = 0;
-  const runPatch = () => {
-    calls += 1;
-  };
-
-  prepareLibrettoRunCdpPatch(runPatch);
-  prepareLibrettoRunCdpPatch(runPatch);
-
-  assert.equal(calls, 1);
-});
-
-test("automation output is flushed in batches", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const flushed: string[] = [];
-  const buffer = createAutomationOutputBuffer((chunk) => flushed.push(chunk));
-
-  buffer.push("first\n");
-  buffer.push("second\n");
-  context.mock.timers.tick(499);
-  assert.deepEqual(flushed, []);
-  context.mock.timers.tick(1);
-  assert.deepEqual(flushed, ["first\nsecond\n"]);
-
-  buffer.push("final\n");
-  buffer.flush();
-  context.mock.timers.tick(500);
-  assert.deepEqual(flushed, ["first\nsecond\n", "final\n"]);
-});
-
-test("automation output persistence errors are contained", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const errors: unknown[] = [];
-  const buffer = createAutomationOutputBuffer(
-    () => {
-      throw new Error("database is locked");
     },
-    500,
-    (error) => errors.push(error),
-  );
-
-  buffer.push("progress\n");
-  assert.doesNotThrow(() => context.mock.timers.tick(500));
-  assert.equal((errors[0] as Error).message, "database is locked");
-});
-
-test("automation output retries a failed timer flush", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const flushed: string[] = [];
-  let attempts = 0;
-  const buffer = createAutomationOutputBuffer(
-    (chunk) => {
-      attempts += 1;
-      if (attempts === 1) throw new Error("database is locked");
-      flushed.push(chunk);
+  } as unknown as AutomationPersistenceProvider;
+  const progress: Array<{ phaseCode: string | null; completed: number | null }> = [];
+  let receivedSignal: AbortSignal | undefined;
+  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      const url = new URL(input.toString());
+      assert.equal(url.searchParams.get("from"), "2025-12-27");
+      assert.equal(url.searchParams.get("to"), "2026-07-12");
+      receivedSignal = init?.signal as AbortSignal;
+      return new Response(JSON.stringify([
+        { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.5 },
+      ]), { status: 200, headers: { "content-type": "application/json" } });
     },
-    500,
-    () => {},
-  );
-
-  buffer.push("progress\n");
-  context.mock.timers.tick(500);
-  assert.deepEqual(flushed, []);
-  context.mock.timers.tick(499);
-  assert.deepEqual(flushed, []);
-  context.mock.timers.tick(1);
-  assert.deepEqual(flushed, ["progress\n"]);
-});
-
-test("automation output does not retry a failed manual flush", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  let attempts = 0;
-  const buffer = createAutomationOutputBuffer(
-    () => {
-      attempts += 1;
-      throw new Error("database is closed");
-    },
-    500,
-    () => {},
-  );
-
-  buffer.push("final\n");
-  buffer.flush();
-  context.mock.timers.tick(500);
-
-  assert.equal(attempts, 1);
-});
-
-test("automation output caps retained failed chunks", () => {
-  let attempts = 0;
-  let flushed = "";
-  const buffer = createAutomationOutputBuffer(
-    (chunk) => {
-      attempts += 1;
-      if (attempts < 3) throw new Error("database is locked");
-      flushed = chunk;
-    },
-    60_000,
-    () => {},
-  );
-
-  buffer.push("a".repeat(3_000));
-  buffer.flush();
-  buffer.push("b".repeat(3_000));
-  buffer.flush();
-  buffer.flush();
-
-  assert.equal(flushed, `${"a".repeat(1_000)}${"b".repeat(3_000)}`);
-});
-
-test("automation output contains error handler failures for timer and manual flushes", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const messages: unknown[][] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    messages.push(args);
-  };
-  try {
-    const buffer = createAutomationOutputBuffer(
-      () => {
-        throw new Error("database is locked");
-      },
-      500,
-      () => {
-        throw new Error("handler failed");
-      },
-    );
-
-    buffer.push("progress\n");
-    assert.doesNotThrow(() => context.mock.timers.tick(500));
-    assert.doesNotThrow(() => buffer.flush());
-  } finally {
-    console.error = originalError;
-  }
-  assert.equal(messages.length, 2);
-});
-
-test("output persistence warnings remain visible in terminal history without hiding failure", async () => {
-  const rootDir = mkdtempSync(join(tmpdir(), "automation-output-history-"));
-  const ledgerDir = join(rootDir, "ledger");
-  const workDir = join(rootDir, "work");
-  const binDir = join(rootDir, "bin");
-  const previousCwd = process.cwd();
-  const previousPath = process.env.PATH;
-  const originalError = console.error;
-  try {
-    mkdirSync(join(workDir, "data", "automation"), { recursive: true });
-    writeFileSync(
-      join(workDir, "data", "automation", "logs"),
-      "blocks log directory",
-    );
-    mkdirSync(binDir, { recursive: true });
-    const npmPath = join(binDir, "npm");
-    writeFileSync(
-      npmPath,
-      "#!/bin/sh\nprintf 'first\\n'\nsleep 0.05\nprintf 'second\\n'\n",
-      "utf8",
-    );
-    chmodSync(npmPath, 0o755);
-    process.chdir(workDir);
-    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
-    console.error = () => {};
-
-    assert.deepEqual(await runAutomationTask("exchange-rates", ledgerDir), {
-      status: "completed",
-    });
-
-    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-    const terminal = latestTaskRuns(db)["exchange-rates"];
-    assert.equal(terminal?.status, "completed");
-    assert.match(
-      terminal?.errorMessage ?? "",
-      /automation-output-write-failed:/,
-    );
-    assert.equal(
-      terminal?.errorMessage?.match(/automation-output-write-failed:/g)?.length,
-      2,
-    );
-    const history = recentTaskRuns(db, 1);
-    assert.equal(history[0]?.status, "completed");
-    assert.equal(history[0]?.errorMessage, terminal?.errorMessage);
-    db.close();
-
-    writeFileSync(
-      npmPath,
-      "#!/bin/sh\nprintf 'real terminal failure\\n'\nexit 1\n",
-      "utf8",
-    );
-    assert.deepEqual(await runAutomationTask("exchange-rates", ledgerDir), {
-      status: "failed",
-    });
-    const failedDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    const failed = recentTaskRuns(failedDb, 1)[0];
-    assert.equal(failed?.status, "failed");
-    assert.match(failed?.errorMessage ?? "", /^real terminal failure/);
-    assert.match(failed?.errorMessage ?? "", /automation-output-write-failed:/);
-    failedDb.close();
-  } finally {
-    console.error = originalError;
-    process.chdir(previousCwd);
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    rmSync(rootDir, { recursive: true, force: true });
-  }
-});
-
-test("clean exits persist statement summary status and preserve missing or malformed fallback", async () => {
-  const rootDir = mkdtempSync(join(tmpdir(), "automation-statement-summary-"));
-  const ledgerDir = join(rootDir, "ledger");
-  const workDir = join(rootDir, "work");
-  const binDir = join(rootDir, "bin");
-  const npmPath = join(binDir, "npm");
-  const previousCwd = process.cwd();
-  const previousPath = process.env.PATH;
-  const runWithScript = async (script: string) => {
-    writeFileSync(npmPath, `#!/bin/sh\n${script}`, "utf8");
-    chmodSync(npmPath, 0o755);
-    return runAutomationTask("exchange-rates", ledgerDir);
-  };
-  const runWithOutput = (line: string) =>
-    runWithScript(`printf '%s\\n' '${line}'\n`);
-
-  try {
-    mkdirSync(workDir, { recursive: true });
-    mkdirSync(binDir, { recursive: true });
-    process.chdir(workDir);
-    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
-
-    assert.deepEqual(
-      await runWithOutput(
-        statementRunSummaryLine([
-          { typeId: "deposit", status: "success" },
-          { typeId: "loan", status: "failed", error: "no account" },
-        ]),
-      ),
-      { status: "partial" },
-    );
-    assert.deepEqual(
-      await runWithOutput(
-        statementRunSummaryLine([
-          { typeId: "deposit", status: "failed", error: "broken" },
-          { typeId: "loan", status: "failed", error: "denied" },
-        ]),
-      ),
-      { status: "failed" },
-    );
-    assert.deepEqual(
-      await runWithOutput(
-        statementRunSummaryLine([
-          { typeId: "deposit", status: "skipped" },
-          { typeId: "loan", status: "skipped" },
-        ]),
-      ),
-      { status: "failed" },
-    );
-    assert.deepEqual(
-      await runWithOutput("automation-statement-summary: not-json"),
-      { status: "completed" },
-    );
-    assert.deepEqual(await runWithOutput("ordinary workflow output"), {
-      status: "completed",
-    });
-
-    const splitSummary = statementRunSummaryLine([
-      { typeId: "deposit", status: "success" },
-      { typeId: "loan", status: "failed", error: "split failure" },
-    ]);
-    const splitAt = Math.floor(splitSummary.length / 2);
-    assert.deepEqual(
-      await runWithScript(
-        [
-          `printf '%s' '${splitSummary.slice(0, splitAt)}'`,
-          "sleep 0.05",
-          `printf '%s\\n' '${splitSummary.slice(splitAt)}'`,
-        ].join("\n"),
-      ),
-      { status: "partial" },
-    );
-
-    const evictedSummary = statementRunSummaryLine([
-      { typeId: "deposit", status: "success" },
-      { typeId: "loan", status: "failed", error: "evicted failure" },
-    ]);
-    assert.deepEqual(
-      await runWithScript(
-        [
-          `printf '%s\\n' '${evictedSummary}'`,
-          `printf '%s\\n' '${"later output ".repeat(500)}'`,
-        ].join("\n"),
-      ),
-      { status: "partial" },
-    );
-    let tailDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    let persistedTail = latestTaskRuns(tailDb)["exchange-rates"]?.logTail ?? "";
-    tailDb.close();
-    assert.deepEqual(parseStatementRunSummary(persistedTail), {
-      status: "partial",
-      results: [
-        { typeId: "deposit", status: "success" },
-        { typeId: "loan", status: "failed", error: "evicted failure" },
-      ],
-    });
-
-    const oversizedSplitSummary = statementRunSummaryLine([
-      { typeId: "deposit", status: "success" },
-      { typeId: "loan", status: "failed", error: "x".repeat(6_000) },
-    ]);
-    assert.deepEqual(
-      await runWithScript(
-        [
-          `printf '%s' '${oversizedSplitSummary.slice(0, 100)}'`,
-          "sleep 0.05",
-          `printf '%s' '${oversizedSplitSummary.slice(100, -1)}'`,
-          "sleep 0.05",
-          `printf '%s\\n' '${oversizedSplitSummary.slice(-1)}'`,
-        ].join("\n"),
-      ),
-      { status: "partial" },
-    );
-    tailDb = openLedgerDatabase(ledgerDir, { readOnly: true });
-    persistedTail = latestTaskRuns(tailDb)["exchange-rates"]?.logTail ?? "";
-    tailDb.close();
-    assert.equal(parseStatementRunSummary(persistedTail)?.status, "partial");
-    assert.ok(persistedTail.length <= 4_000);
-
-    const validSummary = statementRunSummaryLine([
-      { typeId: "deposit", status: "success" },
-    ]);
-    assert.deepEqual(
-      await runWithOutput(
-        `${validSummary}\n${STATEMENT_RUN_SUMMARY_PREFIX}not-json`,
-      ),
-      { status: "completed" },
-    );
-    assert.deepEqual(
-      await runWithScript(
-        [
-          `printf '%s\\n' '${validSummary}'`,
-          "printf 'process failed\\n'",
-          "exit 7",
-        ].join("\n"),
-      ),
-      { status: "failed" },
-    );
-
-    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-    const rows = db
-      .prepare(
-        `
-      SELECT status, error_message
-      FROM automation_task_runs
-      WHERE task_id = 'exchange-rates'
-      ORDER BY rowid DESC
-    `,
-      )
-      .all() as { status: string; error_message: string | null }[];
-    assert.deepEqual(
-      rows.map((row) => row.status),
-      [
-        "failed",
-        "completed",
-        "partial",
-        "partial",
-        "partial",
-        "completed",
-        "completed",
-        "failed",
-        "failed",
-        "partial",
-      ],
-    );
-    assert.equal(rows[0]?.error_message, "process failed");
-    assert.equal(rows[7]?.error_message, "No statement components completed.");
-    assert.equal(rows[8]?.error_message, "deposit: broken\nloan: denied");
-    db.close();
-  } finally {
-    process.chdir(previousCwd);
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    rmSync(rootDir, { recursive: true, force: true });
-  }
-});
-
-test("cleanup failure makes a partial Libretto run failed", async () => {
-  const rootDir = mkdtempSync(join(tmpdir(), "automation-partial-cleanup-"));
-  const ledgerDir = join(rootDir, "ledger");
-  const binDir = join(rootDir, "bin");
-  const previousCwd = process.cwd();
-  const previousPath = process.env.PATH;
-  const originalError = console.error;
-  const summary = statementRunSummaryLine([
-    { typeId: "deposit", status: "success" },
-    { typeId: "loan", status: "failed", error: "no loan account" },
-  ]);
-  try {
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(
-      join(rootDir, "settings.json"),
-      JSON.stringify({
-        LIBRETTO_CLOUD_FUBON_ENABLED: true,
-        LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,loan",
-      }),
-    );
-    const npmPath = join(binDir, "npm");
-    writeFileSync(
-      npmPath,
-      ["#!/bin/sh", `printf '%s\\n' '${summary}'`].join("\n"),
-      "utf8",
-    );
-    chmodSync(npmPath, 0o755);
-    const npxPath = join(binDir, "npx");
-    writeFileSync(
-      npxPath,
-      "#!/bin/sh\nprintf 'close failed\\n' >&2\nexit 1\n",
-      "utf8",
-    );
-    chmodSync(npxPath, 0o755);
-    process.chdir(rootDir);
-    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
-    console.error = () => {};
-
-    assert.deepEqual(
-      await runAutomationTask("fubon-all-statements", ledgerDir),
-      {
-        status: "failed",
-      },
-    );
-    const db = openLedgerDatabase(ledgerDir, { readOnly: true });
-    const terminal = latestTaskRuns(db)["fubon-all-statements"];
-    assert.equal(terminal?.status, "failed");
-    assert.equal(terminal?.exitCode, 0);
-    assert.equal(
-      parseStatementRunSummary(terminal?.logTail ?? "")?.status,
-      "partial",
-    );
-    assert.match(terminal?.errorMessage ?? "", /Session cleanup failed/);
-    db.close();
-  } finally {
-    console.error = originalError;
-    process.chdir(previousCwd);
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
-    rmSync(rootDir, { recursive: true, force: true });
-  }
-});
-
-test("batch task startup uses one serialized slot", () => {
-  const source = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
-  assert.match(source, /runWithConcurrency\(selectedTaskIds, 1,/);
-});
-
-test("sync-all canonical writer tasks never overlap", async () => {
-  let active = 0;
-  let peak = 0;
-  const execute = async () => {
-    active += 1;
-    peak = Math.max(peak, active);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    active -= 1;
-  };
-
-  await runAutomationBatch(
-    ["fubon-all-statements", "cathay-all-statements"],
-    execute,
-  );
-
-  assert.equal(peak, 1);
-});
-
-test("each sync-all batch runs every selected source once", async () => {
-  const executed: string[] = [];
-  const execute = async (taskId: string) => {
-    executed.push(taskId);
-  };
-
-  await runAutomationBatch(["fubon-all-statements", "exchange-rates"], execute);
-  assert.deepEqual(executed, ["fubon-all-statements", "exchange-rates"]);
-  await runAutomationBatch(["fubon-all-statements", "exchange-rates"], execute);
-
-  assert.deepEqual(executed, [
-    "fubon-all-statements",
-    "exchange-rates",
-    "fubon-all-statements",
-    "exchange-rates",
-  ]);
-});
-
-test("a selected task failure still permits independent sources", async () => {
-  const executed: string[] = [];
-  const failure = new Error("crawler failed");
-
-  await assert.rejects(
-    runAutomationBatch(
-      ["fubon-all-statements", "exchange-rates"],
-      async (taskId) => {
-        executed.push(taskId);
-        if (taskId === "fubon-all-statements") throw failure;
-      },
-    ),
-    (error) => error === failure,
-  );
-
-  assert.deepEqual(executed, ["fubon-all-statements", "exchange-rates"]);
-});
-
-test("a batch without crawlers still runs every selected source", async () => {
-  const executed: string[] = [];
-  await runAutomationBatch(
-    ["exchange-rates", "sync-maicoin"],
-    async (taskId) => {
-      executed.push(taskId);
-    },
-  );
-  assert.deepEqual(executed, ["exchange-rates", "sync-maicoin"]);
-});
-
-test("a batch de-duplicates a source selected more than once", async () => {
-  const executed: string[] = [];
-  await runAutomationBatch(
-    ["exchange-rates", "exchange-rates", "sync-maicoin"],
-    async (taskId) => {
-      executed.push(taskId);
-    },
-  );
-  assert.deepEqual(executed, ["exchange-rates", "sync-maicoin"]);
-});
-
-test("batch execution limits concurrency and starts the next task after a slot opens", async () => {
-  const started: number[] = [];
-  const releases = new Map<number, () => void>();
-  let active = 0;
-  let peak = 0;
-  const batch = runWithConcurrency([1, 2, 3, 4, 5], 4, async (item) => {
-    started.push(item);
-    active += 1;
-    peak = Math.max(peak, active);
-    await new Promise<void>((resolve) => releases.set(item, resolve));
-    active -= 1;
   });
 
-  for (let turn = 0; turn < 5; turn += 1) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  const result = await service({
+    signal: new AbortController().signal,
+    emitProgress: (event) => progress.push({ phaseCode: event.phaseCode, completed: event.completed }),
+  });
+
+  assert.equal(overviewReads, 1);
+  assert.deepEqual(readCurrencies, [["USD"]]);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0]?.map(({ currency, twdPerUnit }) => ({ currency, twdPerUnit })), [
+    { currency: "USD", twdPerUnit: 2 },
+  ]);
+  assert.equal(receivedSignal?.aborted, false);
+  assert.equal(result.written, 1);
+  assert.deepEqual(progress, [
+    { phaseCode: "load-request", completed: 0 },
+    { phaseCode: "sync", completed: 1 },
+    { phaseCode: "complete", completed: 3 },
+  ]);
+});
+
+test("exchange-rate service forwards cancellation to its in-flight request", async () => {
+  let markFetchStarted!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+  let writes = 0;
+  const provider = {
+    automation: {},
+    exchangeRates: {
+      async readExchangeRates() { return []; },
+      async upsertExchangeRates() { writes += 1; },
+    },
+    financial: {
+      async overviewCurrent() {
+        return {
+          dailyHistory: [{
+            date: "2026-01-03",
+            netAssets: [{ currency: "USD", value: 100 }],
+            dailyChange: [],
+            assets: [],
+            liabilities: [],
+            accountChanges: [],
+            positionCount: 1,
+          }],
+        };
+      },
+    },
+  } as unknown as AutomationPersistenceProvider;
+  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+    fetchImpl: async (_input, init) => {
+      markFetchStarted();
+      await new Promise<never>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      throw new Error("unreachable after abort");
+    },
+  });
+  const controller = new AbortController();
+  const running = service({ signal: controller.signal });
+  const rejected = assert.rejects(running, /exchange-rate sync cancelled/u);
+  await fetchStarted;
+  controller.abort(new Error("exchange-rate sync cancelled"));
+  await rejected;
+  assert.equal(writes, 0);
+});
+
+test("the task catalog contains only typed workflows and the two typed nonbrowser jobs", () => {
+  const allowedNonbrowserTaskIds = new Set(["exchange-rates", "sync-maicoin"]);
+  assert.ok(AUTOMATION_TASKS.length > 0);
+  for (const task of AUTOMATION_TASKS) {
+    assert.ok(
+      task.workflowId || allowedNonbrowserTaskIds.has(task.id),
+      `${task.id} must be registered with the App executor`,
+    );
   }
-  assert.deepEqual(started, [1, 2, 3, 4]);
-  assert.equal(peak, 4);
-
-  releases.get(1)?.();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, [1, 2, 3, 4, 5]);
-
-  for (const release of releases.values()) release();
-  await batch;
-  assert.equal(active, 0);
 });
 
-test("batch execution rejects invalid concurrency limits", async () => {
-  await assert.rejects(
-    runWithConcurrency([1], 0, async () => {}),
-    RangeError,
+test("runner cancellation aborts the typed execution without accessing a child process", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let cancellationObserved = false;
+  const runExecution: typeof runAutomationTaskExecution = async (
+    _task,
+    _persistence,
+    options,
+    onRunCreated,
+  ) => {
+    await onRunCreated("runner-cancellation-check");
+    markStarted();
+    return await new Promise<Awaited<ReturnType<typeof runAutomationTaskExecution>>>(
+      (_resolve, reject) => {
+        const poll = setInterval(() => {
+          if (!options.isCancellationRequested?.()) return;
+          cancellationObserved = true;
+          clearInterval(poll);
+          reject(new Error("typed workflow observed cancellation"));
+        }, 5);
+      },
+    );
+  };
+  const provider = providerStub();
+  const run = runAutomationTask("exchange-rates", provider, { runExecution });
+  const rejectedRun = run.then(
+    () => assert.fail("the cancelled runner should propagate the typed execution result"),
+    (error: unknown) => error,
   );
-});
-
-test("batch execution captures synchronous callback failures", async () => {
-  await assert.rejects(
-    runWithConcurrency([1], 1, () => {
-      throw new Error("sync failure");
-    }),
-    /sync failure/,
-  );
-});
-
-test("batch startup validates every task before claiming any", async () => {
-  assert.throws(
-    () => startAutomationTasks(["exchange-rates", "unknown-task"]),
-    /Unknown automation task/,
-  );
-  if (activeAutomationTaskIds().includes("exchange-rates"))
-    await cancelAutomationTask("exchange-rates");
-  await waitForTaskToSettle("exchange-rates");
-  assert.deepEqual(activeAutomationTaskIds(), []);
-});
-
-test("a queued batch task can be cancelled before its process starts", async () => {
-  startAutomationTasks(["exchange-rates"]);
-  assert.deepEqual(activeAutomationTaskIds(), ["exchange-rates"]);
-  assert.deepEqual(await cancelAutomationTask("exchange-rates"), {
+  await started;
+  assert.equal(hasActiveAutomationTask(), true);
+  assert.deepEqual(await cancelAutomationTask("exchange-rates", provider), {
     cancelled: "exchange-rates",
   });
-  await waitForTaskToSettle("exchange-rates");
-  assert.deepEqual(activeAutomationTaskIds(), []);
+  const error = await rejectedRun;
+  assert.match(String(error), /typed workflow observed cancellation/u);
+  assert.equal(cancellationObserved, true);
+  assert.equal(hasActiveAutomationTask(), false);
 });
 
-assert.equal(
-  shouldMarkWaitingForHuman("libretto paused. resume --session abc"),
-  true,
-);
-assert.equal(shouldMarkWaitingForHuman("Please enter OTP in browser"), true);
-assert.equal(
-  shouldMarkWaitingForHuman(
-    "manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-post`.",
-  ),
-  true,
-);
-assert.equal(
-  shouldMarkWaitingForHuman(
-    "hncb-login-account-refilled-after-captcha\nautomation-progress: 100\nIntegration completed.",
-  ),
-  false,
-);
-assert.equal(shouldMarkWaitingForHuman("download completed"), false);
-assert.deepEqual(librettoRunCdpPatchCommand({ resumeSession: undefined }), [
-  "node",
-  "scripts/patch-libretto-run-cdp.mjs",
-]);
-const originalDesktop = process.env.OCTOPUSBEAK_DESKTOP;
-const originalAppRoot = process.env.OCTOPUSBEAK_APP_ROOT;
-const originalNodePath = process.env.OCTOPUSBEAK_NODE_PATH;
-process.env.OCTOPUSBEAK_DESKTOP = "1";
-process.env.OCTOPUSBEAK_APP_ROOT = "/AppRoot";
-process.env.OCTOPUSBEAK_NODE_PATH = "/AppRoot/OctopusBeak";
-assert.deepEqual(librettoRunCdpPatchCommand({ resumeSession: undefined }), [
-  "/AppRoot/OctopusBeak",
-  "/AppRoot/scripts/patch-libretto-run-cdp.mjs",
-]);
-if (originalDesktop === undefined) delete process.env.OCTOPUSBEAK_DESKTOP;
-else process.env.OCTOPUSBEAK_DESKTOP = originalDesktop;
-if (originalAppRoot === undefined) delete process.env.OCTOPUSBEAK_APP_ROOT;
-else process.env.OCTOPUSBEAK_APP_ROOT = originalAppRoot;
-if (originalNodePath === undefined) delete process.env.OCTOPUSBEAK_NODE_PATH;
-else process.env.OCTOPUSBEAK_NODE_PATH = originalNodePath;
-assert.equal(librettoRunCdpPatchCommand({ resumeSession: "ses-1p4q" }), null);
-assert.equal(
-  resumeSessionFromLog(
-    "Workflow paused. run `npx libretto resume --session ses-1p4q`.",
-  ),
-  "ses-1p4q",
-);
-assert.equal(
-  resumeSessionFromLog(
-    "manual-auth-required: enter the iPost CAPTCHA in the browser, then run `npx libretto resume --session ses-post`.",
-  ),
-  "ses-post",
-);
-assert.equal(resumeSessionFromLog("download completed"), null);
-assert.equal(parseAutomationProgress("automation-progress: 35"), 35);
-assert.equal(
-  parseAutomationProgress("automation-progress: 20\nautomation-progress: 67"),
-  67,
-);
-assert.equal(parseAutomationProgress("automation-progress: 105"), 100);
-assert.equal(parseAutomationProgress("download completed"), null);
-assert.deepEqual(liveTaskRunUpdate("download in progress"), {
-  logTail: "download in progress",
-});
-assert.deepEqual(
-  liveTaskRunUpdate("Workflow paused. resume --session ses-1p4q"),
-  {
-    status: "waiting_for_human",
-    logTail: "Workflow paused. resume --session ses-1p4q",
-  },
-);
-const failedResumeLog =
-  'Workflow failed after resume: Could not find selector "input[name=\\"qry_option\\"]".';
-const failedResumeMessage =
-  'Could not find selector "input[name=\\"qry_option\\"]".';
-assert.equal(resumeFailureMessage(failedResumeLog), failedResumeMessage);
-assert.deepEqual(liveTaskRunUpdate(failedResumeLog), {
-  errorMessage: failedResumeMessage,
-  logTail: failedResumeLog,
-});
-const longResumeFailureLog = [
-  "Workflow failed after resume: locator.click: Timeout 30000ms exceeded.",
-  ...Array.from(
-    { length: 220 },
-    () => "\u001b[2m    - waiting 500ms\u001b[22m",
-  ),
-].join("\n");
-const accumulatedFailure = accumulateAutomationOutput(
-  { logTail: "", resumeFailure: null },
-  longResumeFailureLog,
-);
-assert.equal(
-  accumulatedFailure.resumeFailure,
-  "locator.click: Timeout 30000ms exceeded.",
-);
-assert.ok(accumulatedFailure.logTail.length <= 4_000);
-assert.doesNotMatch(accumulatedFailure.logChunk, /\u001b/);
-assert.doesNotMatch(accumulatedFailure.logTail, /\u001b/);
-assert.equal(
-  accumulateAutomationOutput(
-    accumulatedFailure,
-    "\u001b[2m    - retrying click action\u001b[22m",
-  ).resumeFailure,
-  "locator.click: Timeout 30000ms exceeded.",
-);
-assert.equal(
-  finalFailureMessage(
-    [
-      "libretto run CDP patch already applied.",
-      'Running workflow "fubonAllStatements" from /path/fubon-all-statements.ts (headless)...',
-      "automation-progress: 0",
-      "Fubon credentials look like placeholder values. Update the Fubon credentials in Settings before running Fubon statements.",
-      "Browser is still open. You can use `exec` to inspect it. Call `run` to re-run the workflow.",
-      "",
-    ].join("\n"),
-    1,
-  ),
-  "Fubon credentials look like placeholder values. Update the Fubon credentials in Settings before running Fubon statements.",
-);
-assert.equal(finalFailureMessage("", 1), "Task exited with code 1");
-assert.equal(
-  isForceQuitRun({
-    status: "failed",
-    errorMessage: "Browser session force quit.",
-  }),
-  true,
-);
-assert.equal(
-  isForceQuitRun({ status: "failed", errorMessage: "Task exited with code 1" }),
-  false,
-);
-assert.equal(
-  isForceQuitRun({ status: "waiting_for_human", errorMessage: null }),
-  false,
-);
-
-assert.equal(
-  nextAttemptStatus({
-    kind: "crawler",
-    attempt: 1,
-    maxAttempts: 2,
-    exitCode: 0,
-    waitingForHuman: true,
-  }),
-  "waiting_for_human",
-);
-assert.equal(
-  nextAttemptStatus({
-    kind: "crawler",
-    attempt: 1,
-    maxAttempts: 2,
-    exitCode: 1,
-  }),
-  "failed",
-);
-assert.equal(
-  nextAttemptStatus({
-    kind: "crawler",
-    attempt: 1,
-    maxAttempts: 1,
-    exitCode: 1,
-    waitingForHuman: true,
-  }),
-  "failed",
-);
-assert.equal(
-  nextAttemptStatus({
-    kind: "crawler",
-    attempt: 2,
-    maxAttempts: 2,
-    exitCode: 1,
-  }),
-  "failed",
-);
-assert.equal(
-  nextAttemptStatus({ kind: "sync", attempt: 1, maxAttempts: 1, exitCode: 1 }),
-  "failed",
-);
-assert.equal(
-  nextAttemptStatus({
-    kind: "crawler",
-    attempt: 1,
-    maxAttempts: 2,
-    exitCode: 0,
-  }),
-  "completed",
-);
-
-assert.equal(
-  shouldCloseResumeSession({ status: "failed", resumeSession: "ses-1p4q" }),
-  true,
-);
-assert.equal(
-  shouldCloseResumeSession({
-    status: "waiting_for_human",
-    resumeSession: "ses-1p4q",
-  }),
-  false,
-);
-assert.equal(shouldCloseResumeSession({ status: "failed" }), false);
-
-test("persisted recovery continues after one cleanup failure", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-recovery-"));
-  const visited: string[] = [];
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    for (const taskId of ["run-1", "run-2"]) {
-      createTaskRun(db, {
-        taskId,
-        script: taskId,
-        kind: "crawler",
-        status: "running",
-        attempt: 1,
-        maxAttempts: 1,
-        startedAt: new Date().toISOString(),
-        logPath: join(ledgerDir, taskId + ".log"),
-      });
-    }
-    db.close();
-    await assert.rejects(
-      recoverAbandonedAutomationSessions(ledgerDir, {
-        async finalizeRun(_db, run) {
-          visited.push(run.taskId);
-          if (run.taskId === "run-1") throw new Error("first cleanup failed");
-        },
-      }),
-      AggregateError,
-    );
-    assert.deepEqual(visited, ["run-1", "run-2"]);
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-const recoveryHumanAssistanceContract = {
-  stageId: "provider-captcha",
-  title: "Complete the CAPTCHA",
-  targets: [
-    {
-      id: "captcha-input",
-      label: "CAPTCHA input",
-      semanticId: "provider.login.captcha-input",
-      modes: ["type" as const],
-    },
-  ],
-  contextRegions: [
-    {
-      id: "captcha-challenge",
-      label: "CAPTCHA challenge",
-      semanticId: "provider.login.captcha-challenge",
-    },
-  ],
-  completion: { mode: "inline" as const, targetIds: ["captcha-input"] },
-  focus: { targetId: "captcha-input", contextRegionIds: ["captcha-challenge"] },
-};
-
-function writeRecoverySessionState(
-  root: string,
-  session: string,
-  input: { pid: number; port: number; logPort?: number; status?: string },
-) {
-  const sessionDir = join(root, ".libretto", "sessions", session);
-  mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(
-    join(sessionDir, "state.json"),
-    JSON.stringify({
-      version: 1,
-      session,
-      port: input.port,
-      pid: input.pid,
-      status: input.status ?? "paused",
-    }),
-  );
-  if (input.logPort !== undefined) {
-    writeFileSync(
-      join(sessionDir, "logs.jsonl"),
-      JSON.stringify({
-        scope: "libretto.child",
-        event: "child-launched",
-        data: { session, pid: input.pid, port: input.logPort },
-      }) + "\n",
-    );
-  }
-}
-
-function writeMalformedRecoverySessionState(root: string, session: string) {
-  const sessionDir = join(root, ".libretto", "sessions", session);
-  mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(join(sessionDir, "state.json"), "{malformed");
-}
-
-function createRecoveryWaitingRun(
-  ledgerDir: string,
-  input: {
-    session?: string;
-    startedAt?: string;
-    contract?: "valid" | "missing" | "malformed";
-  } = {},
-) {
-  const session = input.session ?? "ses-recovery-human";
-  const db = openLedgerDatabase(ledgerDir);
-  const logPath = join(ledgerDir, `${session}.log`);
-  const run = createTaskRun(db, {
-    taskId: "human-assistance-recovery",
-    script: "run:human-assistance-recovery",
-    kind: "crawler",
-    status: "waiting_for_human",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: input.startedAt ?? new Date().toISOString(),
-    logPath,
-    logTail: `Workflow paused. automation-session: ${session}`,
-    humanAssistanceContract:
-      input.contract === "malformed" ? ({ schemaVersion: 999 } as never) : null,
-  });
-  writeFileSync(logPath, `automation-session: ${session}\n`);
-  if (input.contract === "valid")
-    updateHumanAssistanceContract(
-      db,
-      run.taskRunId,
-      recoveryHumanAssistanceContract,
-    );
-  db.close();
-  return run;
-}
-
-function recoveryTestDependencies(input: {
-  finalized: string[];
-  owned: string[];
-  armed: string[];
-  expectedDaemon?: boolean;
-  endpointLive?: boolean;
-  now?: () => number;
-}) {
-  return {
-    finalizeRun: async (
-      _db: ReturnType<typeof openLedgerDatabase>,
-      run: { taskRunId: string },
-    ) => {
-      input.finalized.push(run.taskRunId);
-    },
-    isExpectedDaemon: () => input.expectedDaemon ?? true,
-    probeEndpoint: async () => input.endpointLive ?? true,
-    claimSession(owner: { taskRunId: string }) {
-      input.owned.push(owner.taskRunId);
-      return true;
-    },
-    scheduleWaitingTimeout(context: { taskId: string }) {
-      input.armed.push(context.taskId);
-    },
-    now: input.now ?? (() => Date.now()),
+test("force termination waits for typed cancellation to settle", async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let markCancellationObserved!: () => void;
+  const cancellationObserved = new Promise<void>((resolve) => { markCancellationObserved = resolve; });
+  let releaseExecution!: () => void;
+  const executionRelease = new Promise<void>((resolve) => { releaseExecution = resolve; });
+  let forceRequested = false;
+  const runExecution: typeof runAutomationTaskExecution = async (
+    _task,
+    _persistence,
+    options,
+    onRunCreated,
+  ) => {
+    await onRunCreated("runner-force-check");
+    markStarted();
+    await new Promise<void>((_resolve, reject) => {
+      const poll = setInterval(() => {
+        if (!options.isCancellationRequested?.()) return;
+        forceRequested = options.isForceTerminationRequested?.() === true;
+        clearInterval(poll);
+        markCancellationObserved();
+        void executionRelease.then(() => reject(new Error("typed workflow force-cancelled")));
+      }, 5);
+    });
+    return null as never;
   };
-}
-
-test("startup recovery preserves a live owned waiting human session", async () => {
-  const root = mkdtempSync(join(tmpdir(), "automation-recovery-human-live-"));
-  const originalCwd = process.cwd();
-  const finalized: string[] = [];
-  const owned: string[] = [];
-  const armed: string[] = [];
-  try {
-    process.chdir(root);
-    const run = createRecoveryWaitingRun(root, { contract: "valid" });
-    writeRecoverySessionState(root, "ses-recovery-human", {
-      pid: 4242,
-      port: 0,
-      logPort: 49321,
-    });
-    await recoverAbandonedAutomationSessions(
-      root,
-      recoveryTestDependencies({ finalized, owned, armed }),
-    );
-    assert.deepEqual(finalized, []);
-    assert.deepEqual(owned, [run.taskRunId]);
-    assert.deepEqual(armed, ["human-assistance-recovery"]);
-    const db = openLedgerDatabase(root, { readOnly: true });
-    assert.equal(taskRunById(db, run.taskRunId)?.status, "waiting_for_human");
-    db.close();
-  } finally {
-    process.chdir(originalCwd);
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("startup recovery finalizes waiting runs without an authenticated pending session", async () => {
-  const cases = [
-    { name: "missing contract", contract: "missing" as const },
-    { name: "malformed contract", contract: "malformed" as const },
-    {
-      name: "missing session state",
-      contract: "valid" as const,
-      state: false as const,
-    },
-    {
-      name: "malformed session state",
-      contract: "valid" as const,
-      state: "malformed" as const,
-    },
-    {
-      name: "terminal session",
-      contract: "valid" as const,
-      state: "closed" as const,
-    },
-    { name: "dead child", contract: "valid" as const, expectedDaemon: false },
-    {
-      name: "expired session",
-      contract: "valid" as const,
-      startedAt: new Date(
-        Date.now() - WAITING_SESSION_TIMEOUT_MS - 1,
-      ).toISOString(),
-    },
-  ];
-  for (const candidate of cases) {
-    const root = mkdtempSync(
-      join(tmpdir(), "automation-recovery-human-invalid-"),
-    );
-    const originalCwd = process.cwd();
-    const finalized: string[] = [];
-    const owned: string[] = [];
-    const armed: string[] = [];
-    try {
-      process.chdir(root);
-      const run = createRecoveryWaitingRun(root, {
-        contract: candidate.contract,
-        startedAt: candidate.startedAt,
-      });
-      if (candidate.state === "malformed") {
-        writeMalformedRecoverySessionState(root, "ses-recovery-human");
-      } else if (candidate.state === "closed") {
-        writeRecoverySessionState(root, "ses-recovery-human", {
-          pid: 4242,
-          port: 49321,
-          status: "closed",
-        });
-      } else if (candidate.state !== false) {
-        writeRecoverySessionState(root, "ses-recovery-human", {
-          pid: 4242,
-          port: 49321,
-        });
-      }
-      await recoverAbandonedAutomationSessions(
-        root,
-        recoveryTestDependencies({
-          finalized,
-          owned,
-          armed,
-          expectedDaemon: candidate.expectedDaemon,
-          now: () => Date.now(),
-        }),
-      );
-      assert.deepEqual(finalized, [run.taskRunId], candidate.name);
-      assert.deepEqual(owned, [], candidate.name);
-      assert.deepEqual(armed, [], candidate.name);
-    } finally {
-      process.chdir(originalCwd);
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-});
-
-test("startup recovery applies the waiting-session timeout boundary", async () => {
-  const recoveryNow = Date.parse("2026-08-20T00:00:00.000Z");
-  const cases = [
-    {
-      name: "below timeout preserves the session",
-      startedAt: new Date(
-        recoveryNow - WAITING_SESSION_TIMEOUT_MS + 1,
-      ).toISOString(),
-      preserve: true,
-    },
-    {
-      name: "exact timeout finalizes the session",
-      startedAt: new Date(
-        recoveryNow - WAITING_SESSION_TIMEOUT_MS,
-      ).toISOString(),
-      preserve: false,
-    },
-    {
-      name: "above timeout finalizes the session",
-      startedAt: new Date(
-        recoveryNow - WAITING_SESSION_TIMEOUT_MS - 1,
-      ).toISOString(),
-      preserve: false,
-    },
-  ];
-  for (const candidate of cases) {
-    const root = mkdtempSync(
-      join(tmpdir(), "automation-recovery-human-timeout-"),
-    );
-    const originalCwd = process.cwd();
-    const finalized: string[] = [];
-    const owned: string[] = [];
-    const armed: string[] = [];
-    try {
-      process.chdir(root);
-      const run = createRecoveryWaitingRun(root, {
-        contract: "valid",
-        startedAt: candidate.startedAt,
-      });
-      writeRecoverySessionState(root, "ses-recovery-human", {
-        pid: 4242,
-        port: 0,
-        logPort: 49321,
-      });
-      await recoverAbandonedAutomationSessions(
-        root,
-        recoveryTestDependencies({
-          finalized,
-          owned,
-          armed,
-          now: () => recoveryNow,
-        }),
-      );
-      if (candidate.preserve) {
-        assert.deepEqual(finalized, [], candidate.name);
-        assert.deepEqual(owned, [run.taskRunId], candidate.name);
-        assert.deepEqual(armed, ["human-assistance-recovery"], candidate.name);
-      } else {
-        assert.deepEqual(finalized, [run.taskRunId], candidate.name);
-        assert.deepEqual(owned, [], candidate.name);
-        assert.deepEqual(armed, [], candidate.name);
-      }
-    } finally {
-      process.chdir(originalCwd);
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-});
-
-test("failed initial session claim persists failure before spawn", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-in-flight-"));
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
+  const provider = providerStub();
+  const run = runAutomationTask("exchange-rates", provider, { runExecution });
+  const settledRun = run.then(() => undefined, () => undefined);
+  await started;
+  let forceSettled = false;
+  const force = forceTerminateAutomationTask("exchange-rates", provider).then(() => {
+    forceSettled = true;
   });
-  const oldOwner = {
-    taskId: "fubon-all-statements",
-    taskRunId: "run-old",
-    session: "ses-in-flight-runner",
-  };
-  ownAutomationSession({ ...oldOwner, pid: null });
-  const closing = finalizeExactOwnedAutomationSession(oldOwner, {
-    async closeSession() {
-      await blocked;
-    },
-    isExpectedDaemon() {
-      return false;
-    },
-    signalProcessGroup() {},
-    wait: () => new Promise<void>(() => {}),
-  });
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
-      taskId: oldOwner.taskId,
-      script: "libretto resume",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "in-flight.log"),
-    });
-    let spawnCalls = 0;
-    if (
-      claimRunAutomationSession(db, run.taskRunId, {
-        ...oldOwner,
-        taskRunId: run.taskRunId,
-        pid: null,
-      })
-    )
-      spawnCalls += 1;
-
-    assert.equal(spawnCalls, 0);
-    assert.equal(taskRunById(db, run.taskRunId)?.status, "failed");
-    assert.match(
-      taskRunById(db, run.taskRunId)?.errorMessage ?? "",
-      /session.*closing/i,
-    );
-    assert.equal(
-      ownedAutomationSession(oldOwner.taskId)?.taskRunId,
-      oldOwner.taskRunId,
-    );
-    db.close();
-  } finally {
-    release();
-    await closing;
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
+  await cancellationObserved;
+  await new Promise<void>((resolve) => setTimeout(resolve, 15));
+  assert.equal(forceRequested, true);
+  assert.equal(forceSettled, false);
+  releaseExecution();
+  await force;
+  await settledRun;
+  assert.equal(forceSettled, true);
+  assert.equal(hasActiveAutomationTask(), false);
 });
 
-test("a terminal force-ended owner without pending cleanup cannot fence the next start", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-terminal-owner-"));
-  const taskId = "fubon-all-statements";
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const previous = createTaskRun(db, {
-      taskId,
-      script: "libretto run",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-22T01:00:00.000Z",
-      logPath: join(ledgerDir, "terminal-owner.log"),
-      logTail:
-        "automation-session: ses-terminal-owner\nWorkflow paused. run `npx libretto resume --session ses-terminal-owner`.",
-    });
-    const previousOwner = {
-      taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-terminal-owner",
-      pid: null,
-    };
-    assert.equal(ownAutomationSession(previousOwner), true);
-    updateTaskRun(db, previous.taskRunId, {
-      status: "failed",
-      finishedAt: "2026-08-22T01:01:00.000Z",
-      errorMessage: "Browser session force quit.",
-    });
-
-    const next = createTaskRun(db, {
-      taskId,
-      script: "libretto run",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-22T01:02:00.000Z",
-      logPath: join(ledgerDir, "next-start.log"),
-    });
-    const nextOwner = {
-      taskId,
-      taskRunId: next.taskRunId,
-      session: "ses-next-start",
-      pid: null,
-    };
-
-    assert.equal(
-      claimRunAutomationSession(db, next.taskRunId, nextOwner),
-      true,
-    );
-    assert.equal(ownedAutomationSession(taskId)?.taskRunId, next.taskRunId);
-    assert.equal(taskRunById(db, next.taskRunId)?.status, "running");
-    db.close();
-  } finally {
-    await finalizeExactOwnedAutomationSession(
-      ownedAutomationSession(taskId) ?? {
-        taskId,
-        taskRunId: "absent",
-        session: "absent",
-      },
-      {
-        async closeSession() {},
-        isExpectedDaemon() {
-          return false;
-        },
-        signalProcessGroup() {},
-        async wait() {},
-      },
-    );
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("a terminal owner remains fenced only until its real cleanup settles", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-terminal-closing-"));
-  const taskId = "fubon-all-statements";
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const previous = createTaskRun(db, {
-      taskId,
-      script: "libretto run",
-      kind: "crawler",
-      status: "failed",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-22T02:00:00.000Z",
-      finishedAt: "2026-08-22T02:01:00.000Z",
-      logPath: join(ledgerDir, "terminal-closing.log"),
-      errorMessage: "Browser session force quit.",
-    });
-    const previousOwner = {
-      taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-terminal-closing",
-      pid: null,
-    };
-    assert.equal(ownAutomationSession(previousOwner), true);
-    const closing = finalizeExactOwnedAutomationSession(previousOwner, {
-      async closeSession() {
-        await blocked;
-      },
-      isExpectedDaemon() {
-        return false;
-      },
-      signalProcessGroup() {},
-      async wait() {},
-    });
-
-    const duringCleanup = createTaskRun(db, {
-      taskId,
-      script: "libretto run",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-22T02:01:01.000Z",
-      logPath: join(ledgerDir, "during-cleanup.log"),
-    });
-    assert.equal(
-      claimRunAutomationSession(db, duringCleanup.taskRunId, {
-        taskId,
-        taskRunId: duringCleanup.taskRunId,
-        session: "ses-during-cleanup",
-        pid: null,
-      }),
-      false,
-    );
-    assert.match(
-      taskRunById(db, duringCleanup.taskRunId)?.errorMessage ?? "",
-      /session.*closing/i,
-    );
-
-    release();
-    await closing;
-    const afterCleanup = createTaskRun(db, {
-      taskId,
-      script: "libretto run",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-08-22T02:01:02.000Z",
-      logPath: join(ledgerDir, "after-cleanup.log"),
-    });
-    assert.equal(
-      claimRunAutomationSession(db, afterCleanup.taskRunId, {
-        taskId,
-        taskRunId: afterCleanup.taskRunId,
-        session: "ses-after-cleanup",
-        pid: null,
-      }),
-      true,
-    );
-    assert.equal(
-      ownedAutomationSession(taskId)?.taskRunId,
-      afterCleanup.taskRunId,
-    );
-    assert.equal(taskRunById(db, previous.taskRunId)?.status, "failed");
-    db.close();
-  } finally {
-    release();
-    await finalizeExactOwnedAutomationSession(
-      ownedAutomationSession(taskId) ?? {
-        taskId,
-        taskRunId: "absent",
-        session: "absent",
-      },
-      {
-        async closeSession() {},
-        isExpectedDaemon() {
-          return false;
-        },
-        signalProcessGroup() {},
-        async wait() {},
-      },
-    );
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("resume handoff terminals the matching waiting run after ownership claim", () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-handoff-"));
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const waiting = createTaskRun(db, {
-      taskId: "resume-handoff-task",
-      script: "libretto run",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T01:00:00.000Z",
-      logPath: join(ledgerDir, "waiting.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-resume-handoff`.",
-    });
-    const resumed = createTaskRun(db, {
-      taskId: "resume-handoff-task",
-      script: "libretto resume",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T01:01:00.000Z",
-      logPath: join(ledgerDir, "resumed.log"),
-    });
-    const previous = taskRunById(db, waiting.taskRunId)!;
-    let cleared = 0;
-    ownAutomationSession({
-      taskId: previous.taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-resume-handoff",
-      pid: 321,
-    });
-    armAutomationSessionTimeout(previous.taskId, async () => {}, {
-      setTimer() {
-        return 91;
-      },
-      clearTimer() {
-        cleared += 1;
-      },
-    });
-
-    assert.equal(
-      claimRunAutomationSession(
-        db,
-        resumed.taskRunId,
-        {
-          taskId: previous.taskId,
-          taskRunId: resumed.taskRunId,
-          session: "ses-resume-handoff",
-          pid: 321,
-        },
-        { resumeSession: "ses-resume-handoff", resumeFrom: previous },
-      ),
-      true,
-    );
-    assert.equal(cleared, 1);
-    assert.equal(taskRunById(db, waiting.taskRunId)?.status, "failed");
-    assert.equal(
-      taskRunById(db, waiting.taskRunId)?.errorMessage,
-      `Superseded by resume handoff: ${resumed.taskRunId}`,
-    );
-    assert.match(
-      taskRunById(db, waiting.taskRunId)?.logTail ?? "",
-      new RegExp(resumed.taskRunId),
-    );
-    assert.deepEqual(
-      activeTaskRuns(db).map((run) => run.taskRunId),
-      [resumed.taskRunId],
-    );
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("ordinary run cannot replace a waiting owner or cancel its timer", () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-owner-race-"));
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const run = createTaskRun(db, {
-      taskId: "owner-race-task",
-      script: "libretto run",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-      logPath: join(ledgerDir, "new.log"),
-    });
-    ownAutomationSession({
-      taskId: "owner-race-task",
-      taskRunId: "waiting-run",
-      session: "ses-waiting-owner",
-      pid: 654,
-    });
-    let cleared = 0;
-    armAutomationSessionTimeout("owner-race-task", async () => {}, {
-      setTimer() {
-        return 92;
-      },
-      clearTimer() {
-        cleared += 1;
-      },
-    });
-
-    assert.equal(
-      claimRunAutomationSession(db, run.taskRunId, {
-        taskId: "owner-race-task",
-        taskRunId: run.taskRunId,
-        session: "ses-new-owner",
-        pid: null,
-      }),
-      false,
-    );
-    assert.equal(cleared, 0);
-    assert.equal(
-      ownedAutomationSession("owner-race-task")?.taskRunId,
-      "waiting-run",
-    );
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("resume DB failure preserves the waiting owner and timer", () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-resume-db-failure-"),
-  );
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const waiting = createTaskRun(db, {
-      taskId: "resume-db-failure-task",
-      script: "libretto run",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T02:00:00.000Z",
-      logPath: join(ledgerDir, "waiting.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-resume-db-failure`.",
-    });
-    const resumed = createTaskRun(db, {
-      taskId: "resume-db-failure-task",
-      script: "libretto resume",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T02:01:00.000Z",
-      logPath: join(ledgerDir, "resumed.log"),
-    });
-    const previous = taskRunById(db, waiting.taskRunId)!;
-    ownAutomationSession({
-      taskId: previous.taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-resume-db-failure",
-      pid: 432,
-    });
-    let cleared = 0;
-    armAutomationSessionTimeout(previous.taskId, async () => {}, {
-      setTimer() {
-        return 93;
-      },
-      clearTimer() {
-        cleared += 1;
-      },
-    });
-    const failingDb = {
-      prepare() {
-        throw new Error("DB update failed");
-      },
-    } as unknown as typeof db;
-    assert.throws(() =>
-      claimRunAutomationSession(
-        failingDb,
-        resumed.taskRunId,
-        {
-          taskId: previous.taskId,
-          taskRunId: resumed.taskRunId,
-          session: "ses-resume-db-failure",
-          pid: 432,
-        },
-        { resumeSession: "ses-resume-db-failure", resumeFrom: previous },
-      ),
-    );
-    assert.equal(cleared, 0);
-    assert.equal(
-      ownedAutomationSession(previous.taskId)?.taskRunId,
-      previous.taskRunId,
-    );
-    assert.equal(
-      taskRunById(db, waiting.taskRunId)?.status,
-      "waiting_for_human",
-    );
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("closing session rolls back resume handoff in one transaction", async () => {
-  const ledgerDir = mkdtempSync(join(tmpdir(), "automation-resume-closing-"));
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const waiting = createTaskRun(db, {
-      taskId: "resume-closing-task",
-      script: "libretto run",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T03:00:00.000Z",
-      logPath: join(ledgerDir, "waiting.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-resume-closing`.",
-    });
-    const resumed = createTaskRun(db, {
-      taskId: "resume-closing-task",
-      script: "libretto resume",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T03:01:00.000Z",
-      logPath: join(ledgerDir, "resumed.log"),
-    });
-    const previous = taskRunById(db, waiting.taskRunId)!;
-    const previousOwner = {
-      taskId: previous.taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-resume-closing",
-      pid: 543,
-    };
-    ownAutomationSession(previousOwner);
-    const closing = finalizeExactOwnedAutomationSession(previousOwner, {
-      async closeSession() {
-        await blocked;
-      },
-      isExpectedDaemon() {
-        return false;
-      },
-      signalProcessGroup() {},
-      async wait() {},
-      timerDeps: {
-        setTimer() {
-          return 94;
-        },
-        clearTimer() {},
-      },
-    });
-    let cleared = 0;
-    armAutomationSessionTimeout(previous.taskId, async () => {}, {
-      setTimer() {
-        return 95;
-      },
-      clearTimer() {
-        cleared += 1;
-      },
-    });
-    const transactionSql: string[] = [];
-    const transactionDb = new Proxy(db, {
-      get(target, property) {
-        if (property === "exec") {
-          return (sql: string) => {
-            transactionSql.push(sql);
-            return target.exec(sql);
-          };
-        }
-        const value = Reflect.get(target, property);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-
-    assert.equal(
-      claimRunAutomationSession(
-        transactionDb,
-        resumed.taskRunId,
-        {
-          taskId: previous.taskId,
-          taskRunId: resumed.taskRunId,
-          session: "ses-resume-closing",
-          pid: 543,
-        },
-        { resumeSession: "ses-resume-closing", resumeFrom: previous },
-      ),
-      false,
-    );
-    assert.deepEqual(transactionSql, ["BEGIN", "ROLLBACK"]);
-    assert.equal(
-      taskRunById(db, waiting.taskRunId)?.status,
-      "waiting_for_human",
-    );
-    assert.equal(taskRunById(db, resumed.taskRunId)?.status, "failed");
-    assert.equal(
-      ownedAutomationSession(previous.taskId)?.taskRunId,
-      previous.taskRunId,
-    );
-    assert.equal(cleared, 0);
-    db.close();
-    release();
-    await closing;
-  } finally {
-    release?.();
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("resume commit failure restores the exact owner without clearing its timer", () => {
-  const ledgerDir = mkdtempSync(
-    join(tmpdir(), "automation-resume-commit-failure-"),
-  );
-  try {
-    const db = openLedgerDatabase(ledgerDir);
-    const waiting = createTaskRun(db, {
-      taskId: "resume-commit-failure-task",
-      script: "libretto run",
-      kind: "crawler",
-      status: "waiting_for_human",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T04:00:00.000Z",
-      logPath: join(ledgerDir, "waiting.log"),
-      logTail:
-        "Workflow paused. run `npx libretto resume --session ses-resume-commit-failure`.",
-    });
-    const resumed = createTaskRun(db, {
-      taskId: "resume-commit-failure-task",
-      script: "libretto resume",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: "2026-07-14T04:01:00.000Z",
-      logPath: join(ledgerDir, "resumed.log"),
-    });
-    const previous = taskRunById(db, waiting.taskRunId)!;
-    const previousOwner = {
-      taskId: previous.taskId,
-      taskRunId: previous.taskRunId,
-      session: "ses-resume-commit-failure",
-      pid: 654,
-    };
-    ownAutomationSession(previousOwner);
-    let cleared = 0;
-    armAutomationSessionTimeout(previous.taskId, async () => {}, {
-      setTimer() {
-        return 96;
-      },
-      clearTimer() {
-        cleared += 1;
-      },
-    });
-    const transactionSql: string[] = [];
-    const transactionDb = new Proxy(db, {
-      get(target, property) {
-        if (property === "exec") {
-          return (sql: string) => {
-            transactionSql.push(sql);
-            if (sql === "COMMIT") throw new Error("commit failed");
-            return target.exec(sql);
-          };
-        }
-        const value = Reflect.get(target, property);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-
-    assert.equal(
-      claimRunAutomationSession(
-        transactionDb,
-        resumed.taskRunId,
-        {
-          taskId: previous.taskId,
-          taskRunId: resumed.taskRunId,
-          session: "ses-resume-commit-failure",
-          pid: 654,
-        },
-        { resumeSession: "ses-resume-commit-failure", resumeFrom: previous },
-      ),
-      false,
-    );
-    assert.deepEqual(transactionSql, ["BEGIN", "COMMIT", "ROLLBACK"]);
-    assert.equal(
-      taskRunById(db, waiting.taskRunId)?.status,
-      "waiting_for_human",
-    );
-    assert.equal(taskRunById(db, resumed.taskRunId)?.status, "failed");
-    assert.equal(
-      ownedAutomationSession(previous.taskId)?.taskRunId,
-      previous.taskRunId,
-    );
-    assert.equal(cleared, 0);
-    db.close();
-  } finally {
-    rmSync(ledgerDir, { recursive: true, force: true });
-  }
-});
-
-test("shutdown continues persisted recovery after in-memory cleanup failure", async () => {
+test("shutdown finalizes persisted runs after aborting active App workflows", async () => {
   const calls: string[] = [];
-  await assert.rejects(
-    shutdownAutomationSessions("unused", {
-      async finalizeOwnedSessions() {
-        calls.push("memory");
-        throw new AggregateError([], "memory failed");
-      },
-      async finalizePersistedRuns() {
-        calls.push("persisted");
-      },
-    }),
-    AggregateError,
-  );
-  assert.deepEqual(calls, ["memory", "persisted"]);
+  const provider = providerStub();
+  await shutdownAppAutomationWorkflows(provider, {
+    finalizePersistedRuns: async (_provider, reason) => { calls.push(reason); },
+  });
+  assert.deepEqual(calls, ["App 關閉，人工操作未完成"]);
 });
 
-test("scheduled exchange-rate starts append schedule context only to that task", async () => {
-  const root = mkdtempSync(join(tmpdir(), "automation-scheduled-run-"));
-  const ledgerDir = join(root, "ledger");
-  const capturePath = join(root, "capture.json");
-  const script = `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));\n`;
-  const oldEnv = {
-    OCTOPUSBEAK_DESKTOP: process.env.OCTOPUSBEAK_DESKTOP,
-    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
-    OCTOPUSBEAK_NODE_PATH: process.env.OCTOPUSBEAK_NODE_PATH,
-    CAPTURE_PATH: process.env.CAPTURE_PATH,
-    PATH: process.env.PATH,
-  };
-  mkdirSync(join(root, "bin"), { recursive: true });
-  mkdirSync(join(root, "src", "ledger"), { recursive: true });
-  mkdirSync(join(root, "scripts"), { recursive: true });
-  writeFileSync(join(root, "src", "ledger", "sync-exchange-rates.ts"), script);
-  writeFileSync(join(root, "scripts", "patch-libretto-run-cdp.mjs"), "");
-  const fakeNpm = join(root, "bin", "npm");
-  writeFileSync(fakeNpm, `#!/usr/bin/env node\n${script}`);
-  chmodSync(fakeNpm, 0o755);
-  process.env.OCTOPUSBEAK_DESKTOP = "1";
-  process.env.OCTOPUSBEAK_APP_ROOT = root;
-  process.env.OCTOPUSBEAK_NODE_PATH = process.execPath;
-  process.env.CAPTURE_PATH = capturePath;
-
-  const waitForCapture = async () => {
-    for (let attempt = 0; attempt < 1_000; attempt += 1) {
-      try {
-        return JSON.parse(readFileSync(capturePath, "utf8"));
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-    }
-    throw new Error("Timed out waiting for automation command capture");
-  };
-  const waitForIdle = async (taskId: string) => {
-    await waitForTaskToSettle(taskId);
-  };
-  try {
-    startAutomationTask("exchange-rates", ledgerDir, {
-      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
-    });
-    assert.deepEqual(await waitForCapture(), [
-      "--scheduled-at-utc",
-      "2026-07-14T22:00:00.000Z",
-    ]);
-    await waitForIdle("exchange-rates");
-    const db = openLedgerDatabase(ledgerDir);
-    assert.equal(
-      latestTaskRuns(db)["exchange-rates"]?.script,
-      "run:exchange-rates --scheduled-at-utc 2026-07-14T22:00:00.000Z",
-    );
-    db.close();
-
-    rmSync(capturePath);
-    delete process.env.OCTOPUSBEAK_DESKTOP;
-    process.env.PATH = `${join(root, "bin")}:${oldEnv.PATH ?? ""}`;
-    startAutomationTask("exchange-rates", ledgerDir, {
-      scheduledAtUtc: "2026-07-14T22:00:00.000Z",
-    });
-    assert.deepEqual(await waitForCapture(), [
-      "run",
-      "run:exchange-rates",
-      "--",
-      "--scheduled-at-utc",
-      "2026-07-14T22:00:00.000Z",
-    ]);
-    await waitForIdle("exchange-rates");
-
-    rmSync(capturePath);
-    process.env.OCTOPUSBEAK_DESKTOP = "1";
-    process.env.PATH = oldEnv.PATH;
-    startAutomationTask("exchange-rates", ledgerDir);
-    assert.deepEqual(await waitForCapture(), []);
-    await waitForIdle("exchange-rates");
-
-    assert.throws(
-      () =>
-        startAutomationTask("exchange-rates", ledgerDir, {
-          scheduledAtUtc: "tomorrow",
-        }),
-      /Invalid scheduledAtUtc/,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(oldEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+test("runner source has no Libretto command, patch, or session-resume path", async () => {
+  const source = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /node:child_process|spawnSync|resolvePatchCommand|prepareLibrettoRunCdpPatch|automationTaskChild|terminateAutomationTaskProcessTree|relinquishAutomationSessionForTask|finalizeAllOwnedAutomationSessions|resumeSession|resumeFailureMessage|task\.script|task\.command|logPath|logTail|errorMessage/u);
+  assert.doesNotMatch(source, /runExchangeRateSyncCommand|exchange-rate-cli-worker|LEDGER_DIR|data\/ledger/u);
 });

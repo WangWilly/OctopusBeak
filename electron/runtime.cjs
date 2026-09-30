@@ -19,13 +19,7 @@ const defaultAutomationSettings = {
 };
 
 function ensureDataRoot(userData) {
-  fs.mkdirSync(path.join(userData, ".libretto"), { recursive: true });
-  fs.mkdirSync(path.join(userData, "downloads"), { recursive: true });
-  fs.mkdirSync(path.join(userData, "data", "ledger"), { recursive: true });
-  fs.mkdirSync(path.join(userData, "data", "automation", "logs"), {
-    recursive: true,
-  });
-
+  fs.mkdirSync(path.join(userData, "data"), { recursive: true });
   const settingsPath = path.join(userData, "settings.json");
   if (!fs.existsSync(settingsPath)) {
     fs.writeFileSync(
@@ -44,18 +38,13 @@ function buildDesktopEnv({
   appRoot,
   electronPath = process.execPath,
 }) {
-  const canonicalLedgerDir = path.join(userData, "data", "ledger");
   const env = {
     ...process.env,
     NODE_ENV: "production",
-    LEDGER_DIR: canonicalLedgerDir,
-    OCTOPUSBEAK_CANONICAL_SOURCE_LEDGER_DIR: canonicalLedgerDir,
-    OCTOPUSBEAK_CANONICAL_FINANCIAL_LEDGER_DIR: canonicalLedgerDir,
     OCTOPUSBEAK_DESKTOP: "1",
     OCTOPUSBEAK_APP_ROOT: appRoot,
     OCTOPUSBEAK_USER_DATA: userData,
     OCTOPUSBEAK_NODE_PATH: electronPath,
-    LIBRETTO_REPO_ROOT: userData,
   };
   const playwrightBrowsersPath = path.join(
     appRoot,

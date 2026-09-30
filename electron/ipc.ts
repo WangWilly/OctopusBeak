@@ -5,23 +5,28 @@ import {
   shell,
   type OpenDialogOptions,
 } from "electron";
-import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 import {
   automationCancel,
   cathayGmailOtpStatus,
   disconnectCathayGmailOtp,
   enableCathayGmailOtp,
-  automationResume,
+  automationResumeHumanAssistance,
   automationRun,
   automationRunMany,
+  automationForceTerminate,
   automationRunHistory,
   automationSaveCredentials,
   automationSetupGuideLink,
+  applyAutomationCredentialState,
+  loadAutomationCoreSnapshot,
   externalPrerequisiteById,
-  loadAutomationDesktopModel,
+  readAutomationCredentialState,
   setCathayGmailOtpEnabled,
 } from "../src/lib/automation/server/desktop-api.ts";
+import {
+  assertKnownAutomationRuntimeTasks,
+  AutomationRuntimeInvariantError,
+} from "../src/lib/automation/runtime-invariants.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
@@ -40,20 +45,19 @@ import {
   waitForProviderVerificationCompletion,
 } from "../src/lib/automation/server/provider-verification.ts";
 import {
-  forceQuitHumanSessionForTask,
   humanAssistanceContractForTask,
   humanSessionForTask,
   updateHumanAssistanceContractForTask,
   updateHumanAssistanceCompletionForTask,
 } from "../src/lib/automation/server/human-session.ts";
+import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import {
-  updateSpendingItemCategory,
-  updateSpendingTransactionOverride,
-  type SpendingLoadInput,
-  type SpendingOverrideUpdate,
-} from "../src/lib/spending/server/store.ts";
-import { createFinancialPageWorkerClient } from "./financial-page-worker-client.ts";
+  registerPGliteViewIpc,
+  type PGliteViewIpcRegistration,
+} from "./pglite-ipc.ts";
+import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import {
   systemSettings,
@@ -64,17 +68,121 @@ import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
 } from "./window-options.ts";
+import {
+  dataVersionStore,
+  withExpectedDataVersion,
+  type DataReadOptions,
+} from "../src/lib/shared-shell/data-version.ts";
+import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+import type { AutomationCredentialStatus } from "../src/lib/desktop/api.ts";
+import { automationRuntimeState } from "../src/lib/automation/server/runtime-state.ts";
+import type { AutomationPersistenceProvider } from "../src/lib/automation/server/store.ts";
+import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
+import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
+import type { PGliteFinancialPageClient } from "./pglite-financial-registry.ts";
+import type {
+  SpendingCandidatePageRequest,
+  SpendingPageActionRequest,
+  SpendingRecordPageRequest,
+} from "../src/lib/spending/model.ts";
+import { projectFinancialBlock } from "./financial-page-block-loader.ts";
 
 export function registerOctopusBeakIpc({
   onSystemSettingsChanged,
+  onAutomationRuntimeFatal,
+  onAutomationRuntimeReady,
+  pgliteViews,
+  pgliteOperational,
+  pgliteFinancial,
 }: {
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
-} = {}) {
-  const financialPages = createFinancialPageWorkerClient(
-    new Worker(join(__dirname, "financial-page-worker.cjs")),
+  onAutomationRuntimeFatal?: (details: { code: string; stage: string }) => void;
+  onAutomationRuntimeReady?: () => Promise<void> | void;
+  pgliteViews: {
+    dataDir?: string;
+    workerPath?: string;
+  };
+  pgliteOperational: {
+    provider: AutomationPersistenceProvider & { exchangeRates: ExchangeRatePersistencePort };
+    worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
+    dataDir?: string;
+    workerPath?: string;
+  };
+  pgliteFinancial: PGliteFinancialPageClient;
+}) {
+  const reportAutomationRuntimeFatal = (stage: string, error?: unknown): never => {
+    const invariant = error instanceof AutomationRuntimeInvariantError ? error.details : null;
+    const details = {
+      code: invariant?.code ?? "automation-runtime-snapshot-failed",
+      stage,
+      ...(invariant
+        ? {
+          sessionId: invariant.sessionId,
+          revision: invariant.revision,
+          taskId: invariant.taskId,
+          runId: invariant.runId,
+        }
+        : {}),
+    };
+    console.error("automation-runtime-fatal", {
+      ...details,
+      ...(process.env.NODE_ENV === "development" && error instanceof Error
+        ? { stack: error.stack }
+        : {}),
+    });
+    onAutomationRuntimeFatal?.(details);
+    throw new Error("Automation runtime snapshot unavailable.");
+  };
+  const ensureAutomationRuntimeReady = async (stage: string) => {
+    try {
+      await onAutomationRuntimeReady?.();
+    } catch (error) {
+      reportAutomationRuntimeFatal(stage, error);
+    }
+  };
+  const operationalProvider = pgliteOperational.provider;
+  const readHumanSession = (taskId: string): Promise<string> =>
+    humanSessionForTask(taskId, operationalProvider);
+  const readHumanContract = (taskId: string): Promise<Awaited<ReturnType<typeof humanAssistanceContractForTask>>> =>
+    humanAssistanceContractForTask(taskId, operationalProvider);
+  const updateHumanContract = (
+    taskId: string,
+    input: Parameters<typeof updateHumanAssistanceContractForTask>[1],
+  ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceContractForTask>>> =>
+    updateHumanAssistanceContractForTask(taskId, input, operationalProvider);
+  const updateHumanCompletion = (
+    taskId: string,
+    status: Parameters<typeof updateHumanAssistanceCompletionForTask>[1],
+  ): Promise<Awaited<ReturnType<typeof updateHumanAssistanceCompletionForTask>>> =>
+    updateHumanAssistanceCompletionForTask(taskId, status, operationalProvider);
+  const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
+    const windows = BrowserWindow.getAllWindows();
+    for (const window of windows) {
+      if (!window.isDestroyed()) window.webContents.send("data:invalidated", event);
+    }
+  });
+  const unsubscribeFromAutomationRuntime = automationRuntimeState.subscribe((snapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
+    }
+  });
+  const financialPages = pgliteFinancial;
+  const spendingCandidatePageControllers = new Map<string, AbortController>();
+  const sharedPgliteWorker = pgliteOperational.worker;
+  const pgliteViewRegistration: PGliteViewIpcRegistration = registerPGliteViewIpc({
+    dataDir: pgliteOperational.dataDir ?? pgliteViews.dataDir ?? "",
+    workerPath: pgliteOperational.workerPath ?? pgliteViews.workerPath,
+    ...(sharedPgliteWorker ? { worker: sharedPgliteWorker, workerOwned: false } : {}),
+  }, ipcMain);
+  ipcMain.handle("data-views:enabled", () => true);
+  const automationCredentials = createAutomationCredentialStateCache(
+    readAutomationCredentialState,
   );
+  void automationCredentials.prewarm().catch(() => {
+    // The details block reports a retryable, user-facing error if this fails.
+  });
   ipcMain.on("display:setScale", (event, percent: unknown) => {
     if (process.platform !== "darwin") return;
     if (!isFiniteDisplayScale(percent)) return;
@@ -95,13 +203,114 @@ export function registerOctopusBeakIpc({
     await onSystemSettingsChanged?.(value);
     return value;
   });
-  ipcMain.handle("overview:load", () => financialPages.load("overview"));
-  ipcMain.handle("assets:load", () => financialPages.load("assets"));
-  ipcMain.handle("liabilities:load", () => financialPages.load("liabilities"));
+  ipcMain.handle(
+    "overview:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("overview", options),
+      ),
+  );
+  ipcMain.handle(
+    "overview:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("overview", block, options),
+      ),
+  );
+  ipcMain.handle(
+    "assets:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("assets", options),
+      ),
+  );
+  ipcMain.handle(
+    "assets:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("assets", block, options),
+      ),
+  );
+  ipcMain.handle(
+    "liabilities:load",
+    (_event, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("liabilities", options),
+      ),
+  );
+  ipcMain.handle(
+    "liabilities:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("liabilities", block, options),
+      ),
+  );
   ipcMain.handle(
     "spending:load",
-    (_event, input: SpendingLoadInput | undefined) =>
-      financialPages.load("spending", input),
+    (
+      _event,
+      input: SpendingLoadInput | undefined,
+      options: DataReadOptions | undefined,
+    ) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.load("spending", input, options),
+      ),
+  );
+  ipcMain.handle(
+    "spending:block",
+    (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        () => financialPages.loadBlock("spending", block, options),
+      ),
+  );
+  ipcMain.handle("spending:record-page", async (_event, request: SpendingRecordPageRequest) => {
+    return pgliteFinancial.loadSpendingRecordPage(request);
+  });
+  ipcMain.handle("spending:candidate-page", async (_event, request: SpendingCandidatePageRequest, requestId: string) => {
+    if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 160)
+      throw new TypeError("Spending candidate page request id is invalid.");
+    if (spendingCandidatePageControllers.has(requestId))
+      throw new Error("Spending candidate page request id is already active.");
+    const controller = new AbortController();
+    spendingCandidatePageControllers.set(requestId, controller);
+    try {
+      return await pgliteFinancial.loadSpendingCandidatePage(request, { signal: controller.signal });
+    } finally {
+      if (spendingCandidatePageControllers.get(requestId) === controller)
+        spendingCandidatePageControllers.delete(requestId);
+    }
+  });
+  ipcMain.handle("spending:candidate-page-cancel", (_event, requestId: string) => {
+    if (typeof requestId !== "string") return false;
+    const controller = spendingCandidatePageControllers.get(requestId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  });
+  ipcMain.handle("spending:page-action", async (_event, request: SpendingPageActionRequest) => {
+    return pgliteFinancial.applySpendingPageAction(request);
+  });
+  ipcMain.handle("spending:pairing-candidates", (_event, input) =>
+    financialPages.rankPairingCandidates(input),
+  );
+  ipcMain.handle("spending:pairing-prewarm", (_event, input) =>
+    financialPages.prewarmPairingCandidates(input),
   );
   ipcMain.handle("spending:confirmCandidate", (_event, input) =>
     financialPages.confirmCandidate(input),
@@ -112,22 +321,68 @@ export function registerOctopusBeakIpc({
   ipcMain.handle("spending:revokeLink", (_event, input) =>
     financialPages.revokeLink(input),
   );
-  ipcMain.handle("spending:updateItemCategory", async (_event, input) => {
-    await updateSpendingItemCategory(input);
-    return { ok: true as const };
-  });
   ipcMain.handle(
-    "spending:updateTransactionOverride",
-    (_event, input: SpendingOverrideUpdate) => {
-      updateSpendingTransactionOverride(input);
-      return { ok: true as const };
-    },
+    "automation:block",
+    async (_event, block: DashboardBlockKey, options: DataReadOptions | undefined) =>
+      withExpectedDataVersion(
+        options?.expectedVersion,
+        () => dataVersionStore.snapshot(),
+        async () => {
+          await ensureAutomationRuntimeReady("automation-block");
+          let credentialState;
+          try {
+            credentialState = options?.refreshCredentials
+              ? await automationCredentials.refresh()
+              : await automationCredentials.read();
+          } catch (error) {
+            if (block === "details") throw new Error("無法讀取登入資料");
+            console.warn("automation-credential-state-read-failed", {
+              code: "credential-state-unavailable",
+              stage: "block",
+              block,
+              message: error instanceof Error ? error.message : "unknown",
+            });
+            const states: Record<string, AutomationCredentialStatus> = {};
+            for (const key of AUTOMATION_CREDENTIAL_KEYS) states[key] = "read_failed";
+            credentialState = {
+              revision: 0,
+              status: Object.fromEntries(AUTOMATION_CREDENTIAL_KEYS.map((key) => [key, false])),
+              states,
+              fileNames: {},
+              invalidFileKeys: [],
+              invalidFileReasons: {},
+            };
+          }
+          let runtimeSnapshot;
+          try {
+            runtimeSnapshot = automationRuntimeState.snapshot();
+            assertKnownAutomationRuntimeTasks(
+              runtimeSnapshot,
+              new Set(AUTOMATION_TASKS.map((task) => task.id)),
+            );
+          } catch (error) {
+            reportAutomationRuntimeFatal("automation-block", error);
+          }
+          const core = await loadAutomationCoreSnapshot(
+            operationalProvider,
+            credentialState.status,
+            runtimeSnapshot,
+            credentialState.states,
+          );
+          const model = credentialState
+            ? applyAutomationCredentialState(core, credentialState)
+            : core;
+          return projectFinancialBlock(model, block as never, "automation" as never);
+        },
+      ),
   );
-  ipcMain.handle("automation:load", () => loadAutomationDesktopModel());
   ipcMain.handle(
     "automation:saveCredentials",
-    (_event, updates: Record<string, string>) =>
-      automationSaveCredentials(updates),
+    async (_event, updates: Record<string, string>) => {
+      const result = automationSaveCredentials(updates);
+      if (result.saved) await automationCredentials.refresh();
+      return result;
+    },
   );
   ipcMain.handle("automation:cathayGmailOtpStatus", () =>
     cathayGmailOtpStatus(),
@@ -186,19 +441,25 @@ export function registerOctopusBeakIpc({
       return { ok: true as const };
     },
   );
-  ipcMain.handle("automation:run", (_event, taskId: string) =>
-    automationRun(taskId),
-  );
-  ipcMain.handle("automation:runMany", (_event, taskIds: string[]) =>
-    automationRunMany(taskIds),
-  );
-  ipcMain.handle("automation:resume", (_event, taskId: string) =>
-    automationResume(taskId),
-  );
+  ipcMain.handle("automation:run", async (_event, taskId: string) => {
+    await ensureAutomationRuntimeReady("automation-run");
+    return automationRun(taskId, operationalProvider);
+  });
+  ipcMain.handle("automation:runMany", async (_event, taskIds: string[]) => {
+    await ensureAutomationRuntimeReady("automation-run-many");
+    return automationRunMany(taskIds, operationalProvider);
+  });
+  ipcMain.handle("automation:resumeHumanAssistance", async (_event, taskId: string) => {
+    await ensureAutomationRuntimeReady("automation-resume");
+    return automationResumeHumanAssistance(taskId, operationalProvider);
+  });
   ipcMain.handle("automation:cancel", (_event, taskId: string) =>
-    automationCancel(taskId),
+    automationCancel(taskId, operationalProvider),
   );
-  ipcMain.handle("automation:runHistory", () => automationRunHistory());
+  ipcMain.handle("automation:forceTerminate", (_event, taskId: string) =>
+    automationForceTerminate(taskId, operationalProvider),
+  );
+  ipcMain.handle("automation:runHistory", () => automationRunHistory(operationalProvider));
   ipcMain.handle(
     "automation:openExternalPrerequisite",
     async (_event, prerequisiteId: string) => {
@@ -212,7 +473,7 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerScreenshot",
     async (_event, taskId: string) => {
-      const session = humanSessionForTask(taskId);
+      const session = await readHumanSession(taskId);
       try {
         return new Uint8Array(await captureSessionScreenshot(session));
       } catch (error) {
@@ -224,16 +485,16 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerInspect",
     async (_event, taskId: string, point: unknown) => {
-      const session = humanSessionForTask(taskId);
-      const contract = humanAssistanceContractForTask(taskId);
+      const session = await readHumanSession(taskId);
+      const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
-        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        ? await updateHumanContract(taskId, refreshedContractInput)
         : contract;
       return inspectHumanVerificationPoint(session, point, refreshedContract);
     },
@@ -241,16 +502,16 @@ export function registerOctopusBeakIpc({
   ipcMain.handle(
     "automation:viewerInput",
     async (_event, taskId: string, input: unknown) => {
-      const session = humanSessionForTask(taskId);
-      const contract = humanAssistanceContractForTask(taskId);
+      const session = await readHumanSession(taskId);
+      const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
-        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        ? await updateHumanContract(taskId, refreshedContractInput)
         : contract;
       await sendProviderVerificationInput(session, input, refreshedContract);
       const refreshedContractInputAfterInput =
@@ -259,7 +520,7 @@ export function registerOctopusBeakIpc({
           refreshedContract,
         );
       const refreshedContractAfterInput = refreshedContractInputAfterInput
-        ? updateHumanAssistanceContractForTask(
+        ? await updateHumanContract(
             taskId,
             refreshedContractInputAfterInput,
           )
@@ -290,9 +551,9 @@ export function registerOctopusBeakIpc({
         typeof record.targetId === "string" &&
         refreshedContractAfterInput.completion.targetIds.includes(record.targetId);
       const updatedContract = verified
-        ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+        ? await updateHumanCompletion(taskId, "verified")
         : isTextInputOnCompletionTarget
-          ? updateHumanAssistanceCompletionForTask(taskId, "entered")
+          ? await updateHumanCompletion(taskId, "entered")
           : refreshedContractAfterInput;
       const resumed =
         typeof record.targetId === "string" &&
@@ -301,39 +562,61 @@ export function registerOctopusBeakIpc({
           record.targetId,
           verified,
         );
-      if (resumed) automationResume(taskId);
+      if (resumed) {
+        await ensureAutomationRuntimeReady("automation-resume");
+        await automationResumeHumanAssistance(taskId, operationalProvider);
+      }
       return { ok: true as const, contract: updatedContract, resumed };
     },
   );
   ipcMain.handle(
     "automation:viewerCompletionCheck",
     async (_event, taskId: string) => {
-      const session = humanSessionForTask(taskId);
-      const contract = humanAssistanceContractForTask(taskId);
+      const session = await readHumanSession(taskId);
+      const contract = await readHumanContract(taskId);
       if (!contract)
         throw new Error(
-          "Human assistance contract is missing; force quit this legacy run.",
+          "Human assistance contract is missing for this run; force quit it.",
         );
       const refreshedContractInput =
         await refreshProviderVerificationTarget(session, contract);
       const refreshedContract = refreshedContractInput
-        ? updateHumanAssistanceContractForTask(taskId, refreshedContractInput)
+        ? await updateHumanContract(taskId, refreshedContractInput)
         : contract;
       const verified = await inspectProviderVerificationCompletion(
         session,
         refreshedContract,
       );
       const updatedContract = verified
-        ? updateHumanAssistanceCompletionForTask(taskId, "verified")
+        ? await updateHumanCompletion(taskId, "verified")
         : refreshedContract;
       return { verified, contract: updatedContract };
     },
   );
-  ipcMain.handle("automation:forceQuit", async (_event, taskId: string) => {
-    await forceQuitHumanSessionForTask(taskId);
-    return { ok: true as const, closed: true };
+  ipcMain.handle("automation:runtimeSnapshot", async () => {
+    try {
+      await ensureAutomationRuntimeReady("runtime-snapshot");
+      return automationRuntimeState.snapshot();
+    } catch (error) {
+      return reportAutomationRuntimeFatal("runtime-snapshot", error);
+    }
+  });
+  ipcMain.handle("automation:fatalRuntimeSnapshot", () => {
+    reportAutomationRuntimeFatal("renderer-resync");
+  });
+  ipcMain.handle("data:getVersion", () => dataVersionStore.snapshot());
+  ipcMain.handle("data:acknowledgeVersion", (_event, version: unknown) => {
+    if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+      throw new TypeError("Data version must be a non-negative safe integer.");
+    }
+    dataVersionStore.acknowledge(version);
+    return dataVersionStore.snapshot();
   });
   return {
-    close: () => financialPages.close(),
+    close: async () => {
+      unsubscribeFromDataInvalidation();
+      unsubscribeFromAutomationRuntime();
+      await pgliteViewRegistration.close();
+    },
   };
 }

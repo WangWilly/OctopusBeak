@@ -49,7 +49,9 @@ function sequencePatch<T>(
   for (let index = 0; index < after.length; index += 1) {
     const expected = after[index]!;
     const id = identity(expected);
-    const currentIndex = working.findIndex((value) => identity(value) === id);
+    const currentIndex = index < working.length && identity(working[index]!) === id
+      ? index
+      : working.findIndex((value) => identity(value) === id);
     if (currentIndex === -1) {
       operations.push({ kind: "upsert", index, value: expected });
       working.splice(index, 0, expected);
@@ -60,7 +62,7 @@ function sequencePatch<T>(
       const [moved] = working.splice(currentIndex, 1);
       working.splice(index, 0, moved!);
     }
-    if (!sameValue(working[index], expected)) {
+    if (working[index] !== expected && !sameValue(working[index], expected)) {
       operations.push({ kind: "upsert", index, value: expected });
       working.splice(index, 1, expected);
     }

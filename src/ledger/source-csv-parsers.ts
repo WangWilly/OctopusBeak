@@ -146,13 +146,6 @@ function cleanTypedCell(value: unknown): string {
     .trim();
 }
 
-function sqliteInteger(value: string | number | null | undefined): number | null {
-  const cleaned = cleanTypedCell(value);
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
-
 function payloadCell(payload: Record<string, unknown>, key: string): string {
   return cleanTypedCell(payload[key]);
 }
@@ -172,7 +165,7 @@ function metadataCell(metadata: SourceMetadata | null, key: string): string {
   return cleanTypedCell(metadata?.[key]);
 }
 
-export function sqliteAmount(value: unknown): number | null {
+export function parseSourceAmount(value: unknown): number | null {
   const raw = cleanTypedCell(value).replace(/\u00a0/g, " ").trim();
   if (!raw || raw === "-" || raw === "--") return null;
   const amountText = raw.match(/-?\(?\d[\d,]*(?:\.\d+)?\)?-?/)?.[0];
@@ -328,13 +321,13 @@ function bankTransactionFields(context: ParserContext) {
     transaction_time: transactionTime,
     transaction_at_utc: transactionAtUtcOrNull(context, transactionDate, transactionTime),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
-    withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
-    deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
-    balance_after: sqliteAmount(
+    withdrawal_amount: parseSourceAmount(payloadCell(rawPayload, "支出金額")),
+    deposit_amount: parseSourceAmount(payloadCell(rawPayload, "存入金額")),
+    balance_after: parseSourceAmount(
       firstPayloadCell(rawPayload, ["即時餘額", "帳面餘額"]),
     ),
     note: firstPayloadCell(rawPayload, ["附註", "備註"]),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
+    fx_rate: parseSourceAmount(payloadCell(rawPayload, "匯率")),
   };
 }
 
@@ -362,13 +355,13 @@ function foreignCurrencyTransactionFields(context: ParserContext) {
     transaction_time: transactionTime,
     transaction_at_utc: transactionAtUtcOrNull(context, transactionDate, transactionTime),
     description: firstPayloadCell(rawPayload, ["摘要", "交易說明"]),
-    withdrawal_amount: sqliteAmount(payloadCell(rawPayload, "支出金額")),
-    deposit_amount: sqliteAmount(payloadCell(rawPayload, "存入金額")),
-    balance_after: sqliteAmount(
+    withdrawal_amount: parseSourceAmount(payloadCell(rawPayload, "支出金額")),
+    deposit_amount: parseSourceAmount(payloadCell(rawPayload, "存入金額")),
+    balance_after: parseSourceAmount(
       firstPayloadCell(rawPayload, ["即時餘額", "帳面餘額"]),
     ),
     note: firstPayloadCell(rawPayload, ["附註", "交易資訊", "備註"]),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
+    fx_rate: parseSourceAmount(payloadCell(rawPayload, "匯率")),
   };
 }
 
@@ -397,10 +390,10 @@ function creditCardStatementLineFields(context: ParserContext) {
     foreign_currency: normalizeCurrencyCode(
       firstPayloadCell(rawPayload, ["foreign_currency", "國家/幣別"]),
     ),
-    foreign_amount: sqliteAmount(
+    foreign_amount: parseSourceAmount(
       firstPayloadCell(rawPayload, ["foreign_amount", "外幣金額"]),
     ),
-    twd_amount: sqliteAmount(
+    twd_amount: parseSourceAmount(
       firstPayloadCell(rawPayload, ["twd_amount", "新臺幣金額"]),
     ),
     installment_action: payloadCell(rawPayload, "installment_action"),
@@ -430,12 +423,12 @@ function loanTransactionFields(context: ParserContext) {
     interest_end_date: normalizeDateValue(
       firstPayloadCell(rawPayload, ["計息止日", "提息迄日"]),
     ),
-    amount: sqliteAmount(firstPayloadCell(rawPayload, ["異動金額", "交易金額"])),
+    amount: parseSourceAmount(firstPayloadCell(rawPayload, ["異動金額", "交易金額"])),
     interest_rate: payloadCell(rawPayload, "利率"),
-    balance_after: sqliteAmount(
+    balance_after: parseSourceAmount(
       firstPayloadCell(rawPayload, ["餘額", "交易後餘額"]),
     ),
-    overpayment: sqliteAmount(payloadCell(rawPayload, "溢繳款")),
+    overpayment: parseSourceAmount(payloadCell(rawPayload, "溢繳款")),
     note: payloadCell(rawPayload, "備註"),
   };
 }
@@ -449,15 +442,15 @@ function fundHoldingFields(context: ParserContext) {
     fund_name: payloadCell(rawPayload, "基金名稱"),
     fund_type: payloadCell(rawPayload, "基金類型"),
     currency: normalizeCurrencyCode(payloadCell(rawPayload, "投資幣別")),
-    investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
-    market_value_without_dividend: sqliteAmount(
+    investment_amount: parseSourceAmount(payloadCell(rawPayload, "投資金額")),
+    market_value_without_dividend: parseSourceAmount(
       payloadCell(rawPayload, "不含息參考市值"),
     ),
-    unrealized_pnl_without_dividend: sqliteAmount(
+    unrealized_pnl_without_dividend: parseSourceAmount(
       payloadCell(rawPayload, "不含息參考損益"),
     ),
     return_rate_without_dividend: payloadCell(rawPayload, "不含息參考報酬率"),
-    unrealized_pnl_with_dividend: sqliteAmount(
+    unrealized_pnl_with_dividend: parseSourceAmount(
       payloadCell(rawPayload, "含息參考損益"),
     ),
     return_rate_with_dividend: payloadCell(rawPayload, "含息參考報酬率"),
@@ -476,16 +469,16 @@ function fundBuyTransactionFields(context: ParserContext) {
     fund_name: payloadCell(rawPayload, "基金名稱"),
     transaction_number: payloadCell(rawPayload, "交易編號"),
     currency,
-    investment_amount: sqliteAmount(payloadCell(rawPayload, "投資金額")),
-    subscription_fx_rate: sqliteAmount(payloadCell(rawPayload, "申購匯率")),
-    subscription_nav: sqliteAmount(payloadCell(rawPayload, "申購淨值")),
-    subscription_fee: sqliteAmount(payloadCell(rawPayload, "申購手續費")),
+    investment_amount: parseSourceAmount(payloadCell(rawPayload, "投資金額")),
+    subscription_fx_rate: parseSourceAmount(payloadCell(rawPayload, "申購匯率")),
+    subscription_nav: parseSourceAmount(payloadCell(rawPayload, "申購淨值")),
+    subscription_fee: parseSourceAmount(payloadCell(rawPayload, "申購手續費")),
     subscription_fee_currency: normalizeCurrencyCode(
       payloadCell(rawPayload, "申購手續費"),
       currency,
     ),
-    point_discount: sqliteAmount(payloadCell(rawPayload, "點數折抵")),
-    subscribed_units: sqliteAmount(payloadCell(rawPayload, "申購單位數")),
+    point_discount: parseSourceAmount(payloadCell(rawPayload, "點數折抵")),
+    subscribed_units: parseSourceAmount(payloadCell(rawPayload, "申購單位數")),
   };
 }
 
@@ -499,18 +492,18 @@ function fundRedemptionTransactionFields(context: ParserContext) {
     distribution_date: normalizeDateValue(payloadCell(rawPayload, "分配日期")),
     fund_name: payloadCell(rawPayload, "基金名稱"),
     transaction_number: payloadCell(rawPayload, "交易編號"),
-    redemption_investment_amount: sqliteAmount(
+    redemption_investment_amount: parseSourceAmount(
       payloadCell(rawPayload, "贖回投資金額"),
     ),
-    redemption_units: sqliteAmount(payloadCell(rawPayload, "贖回單位數")),
-    redemption_price: sqliteAmount(payloadCell(rawPayload, "贖回價格")),
-    redemption_fx_rate: sqliteAmount(payloadCell(rawPayload, "贖回匯率")),
-    trust_management_fee: sqliteAmount(payloadCell(rawPayload, "信託管理費")),
-    short_term_fee: sqliteAmount(payloadCell(rawPayload, "短線費用")),
-    deferred_fee: sqliteAmount(payloadCell(rawPayload, "遞延手續費")),
+    redemption_units: parseSourceAmount(payloadCell(rawPayload, "贖回單位數")),
+    redemption_price: parseSourceAmount(payloadCell(rawPayload, "贖回價格")),
+    redemption_fx_rate: parseSourceAmount(payloadCell(rawPayload, "贖回匯率")),
+    trust_management_fee: parseSourceAmount(payloadCell(rawPayload, "信託管理費")),
+    short_term_fee: parseSourceAmount(payloadCell(rawPayload, "短線費用")),
+    deferred_fee: parseSourceAmount(payloadCell(rawPayload, "遞延手續費")),
     deposit_account: payloadCell(rawPayload, "入帳帳號"),
-    net_deposit_amount: sqliteAmount(payloadCell(rawPayload, "入帳淨額")),
-    reference_pnl: sqliteAmount(payloadCell(rawPayload, "贖回參考損益")),
+    net_deposit_amount: parseSourceAmount(payloadCell(rawPayload, "入帳淨額")),
+    reference_pnl: parseSourceAmount(payloadCell(rawPayload, "贖回參考損益")),
     reference_return_rate: payloadCell(rawPayload, "參考贖回報酬率"),
     note: payloadCell(rawPayload, "備註"),
   };
@@ -528,10 +521,10 @@ function fundCashDividendFields(context: ParserContext) {
     transaction_number: payloadCell(rawPayload, "交易編號"),
     benchmark_date: normalizeDateValue(payloadCell(rawPayload, "基準日期")),
     currency: normalizeCurrencyCode(payloadCell(rawPayload, "計價幣別")),
-    benchmark_units: sqliteAmount(payloadCell(rawPayload, "基準單位數")),
-    distribution_amount: sqliteAmount(payloadCell(rawPayload, "分配金額")),
+    benchmark_units: parseSourceAmount(payloadCell(rawPayload, "基準單位數")),
+    distribution_amount: parseSourceAmount(payloadCell(rawPayload, "分配金額")),
     distribution_currency: distributionCurrency,
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "匯率")),
+    fx_rate: parseSourceAmount(payloadCell(rawPayload, "匯率")),
     distribution_rate: payloadCell(rawPayload, "分配率"),
     deposit_account: payloadCell(rawPayload, "入帳帳號"),
   };
@@ -548,19 +541,19 @@ function fundConversionTransactionFields(context: ParserContext) {
     transaction_number: payloadCell(rawPayload, "交易編號"),
     from_fund_name: payloadCell(rawPayload, "轉出基金"),
     to_fund_name: payloadCell(rawPayload, "轉入基金"),
-    conversion_investment_amount: sqliteAmount(
+    conversion_investment_amount: parseSourceAmount(
       payloadCell(rawPayload, "轉換投資金額"),
     ),
-    from_units: sqliteAmount(payloadCell(rawPayload, "轉出單位數")),
-    to_units: sqliteAmount(payloadCell(rawPayload, "轉入單位數")),
-    from_nav: sqliteAmount(payloadCell(rawPayload, "轉出基金淨值")),
-    to_nav: sqliteAmount(payloadCell(rawPayload, "轉入基金淨值")),
-    conversion_fx_rate: sqliteAmount(payloadCell(rawPayload, "轉換匯率")),
-    short_term_fee: sqliteAmount(payloadCell(rawPayload, "短線費用")),
-    bank_conversion_fee: sqliteAmount(
+    from_units: parseSourceAmount(payloadCell(rawPayload, "轉出單位數")),
+    to_units: parseSourceAmount(payloadCell(rawPayload, "轉入單位數")),
+    from_nav: parseSourceAmount(payloadCell(rawPayload, "轉出基金淨值")),
+    to_nav: parseSourceAmount(payloadCell(rawPayload, "轉入基金淨值")),
+    conversion_fx_rate: parseSourceAmount(payloadCell(rawPayload, "轉換匯率")),
+    short_term_fee: parseSourceAmount(payloadCell(rawPayload, "短線費用")),
+    bank_conversion_fee: parseSourceAmount(
       payloadCell(rawPayload, "銀行轉換手續費"),
     ),
-    fund_company_conversion_fee: sqliteAmount(
+    fund_company_conversion_fee: parseSourceAmount(
       payloadCell(rawPayload, "基金公司轉換手續費"),
     ),
   };
@@ -576,23 +569,23 @@ function brokerageHoldingFields(context: ParserContext) {
     product_code: payloadCell(rawPayload, "product_code"),
     product_name: payloadCell(rawPayload, "product_name"),
     currency: normalizeCurrencyCode(payloadCell(rawPayload, "currency")),
-    quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
+    quantity: parseSourceAmount(payloadCell(rawPayload, "quantity")),
     market_date: normalizeDateValue(payloadCell(rawPayload, "market_date")),
-    market_price: sqliteAmount(payloadCell(rawPayload, "market_price")),
-    market_value_original: sqliteAmount(
+    market_price: parseSourceAmount(payloadCell(rawPayload, "market_price")),
+    market_value_original: parseSourceAmount(
       payloadCell(rawPayload, "market_value_original"),
     ),
-    market_value_twd: sqliteAmount(payloadCell(rawPayload, "market_value_twd")),
-    cost_price: sqliteAmount(payloadCell(rawPayload, "cost_price")),
-    cost_amount: sqliteAmount(payloadCell(rawPayload, "cost_amount")),
-    unrealized_pnl_original: sqliteAmount(
+    market_value_twd: parseSourceAmount(payloadCell(rawPayload, "market_value_twd")),
+    cost_price: parseSourceAmount(payloadCell(rawPayload, "cost_price")),
+    cost_amount: parseSourceAmount(payloadCell(rawPayload, "cost_amount")),
+    unrealized_pnl_original: parseSourceAmount(
       payloadCell(rawPayload, "unrealized_pnl_original"),
     ),
-    unrealized_pnl_twd: sqliteAmount(
+    unrealized_pnl_twd: parseSourceAmount(
       payloadCell(rawPayload, "unrealized_pnl_twd"),
     ),
     return_rate: payloadCell(rawPayload, "return_rate"),
-    fx_rate: sqliteAmount(payloadCell(rawPayload, "fx_rate")),
+    fx_rate: parseSourceAmount(payloadCell(rawPayload, "fx_rate")),
   };
 }
 
@@ -602,8 +595,8 @@ function brokerageAssetSummaryFields(context: ParserContext) {
     as_of_date: normalizeDateValue(payloadCell(rawPayload, "as_of_date")),
     asset_type: payloadCell(rawPayload, "asset_type"),
     asset_name: payloadCell(rawPayload, "asset_name"),
-    asset_value_twd: sqliteAmount(payloadCell(rawPayload, "asset_value_twd")),
-    unrealized_pnl_twd: sqliteAmount(payloadCell(rawPayload, "unrealized_pnl_twd")),
+    asset_value_twd: parseSourceAmount(payloadCell(rawPayload, "asset_value_twd")),
+    unrealized_pnl_twd: parseSourceAmount(payloadCell(rawPayload, "unrealized_pnl_twd")),
   };
 }
 
@@ -619,15 +612,15 @@ function brokerageTradeTransactionFields(context: ParserContext) {
     product_name: payloadCell(rawPayload, "product_name"),
     currency: normalizeCurrencyCode(payloadCell(rawPayload, "currency")),
     action: payloadCell(rawPayload, "action"),
-    quantity: sqliteAmount(payloadCell(rawPayload, "quantity")),
-    price: sqliteAmount(payloadCell(rawPayload, "price")),
-    gross_amount: sqliteAmount(payloadCell(rawPayload, "gross_amount")),
-    fee: sqliteAmount(payloadCell(rawPayload, "fee")),
-    tax: sqliteAmount(payloadCell(rawPayload, "tax")),
-    settlement_amount: sqliteAmount(payloadCell(rawPayload, "settlement_amount")),
+    quantity: parseSourceAmount(payloadCell(rawPayload, "quantity")),
+    price: parseSourceAmount(payloadCell(rawPayload, "price")),
+    gross_amount: parseSourceAmount(payloadCell(rawPayload, "gross_amount")),
+    fee: parseSourceAmount(payloadCell(rawPayload, "fee")),
+    tax: parseSourceAmount(payloadCell(rawPayload, "tax")),
+    settlement_amount: parseSourceAmount(payloadCell(rawPayload, "settlement_amount")),
     settlement_currency: normalizeCurrencyCode(payloadCell(rawPayload, "settlement_currency")),
-    realized_pnl: sqliteAmount(payloadCell(rawPayload, "realized_pnl")),
-    cost_amount: sqliteAmount(payloadCell(rawPayload, "cost_amount")),
+    realized_pnl: parseSourceAmount(payloadCell(rawPayload, "realized_pnl")),
+    cost_amount: parseSourceAmount(payloadCell(rawPayload, "cost_amount")),
   };
 }
 

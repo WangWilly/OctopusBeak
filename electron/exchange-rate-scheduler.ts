@@ -8,6 +8,7 @@ export type ExchangeRateSchedulerDependencies = {
   setTimer(callback: () => void, ms: number): unknown;
   clearTimer(timer: unknown): void;
   readSettings(): SystemSettingsDto;
+  hasOccurrenceBeenAttempted(occurrenceUtc: string): Awaitable<boolean>;
   hasSuccessSince(occurrenceUtc: string): Awaitable<boolean>;
   isTaskActive(): Awaitable<boolean>;
   startTask(scheduledAtUtc: string): Awaitable<void>;
@@ -89,8 +90,11 @@ export function createExchangeRateScheduler(deps: ExchangeRateSchedulerDependenc
   const attempt = async (occurrenceUtc: string, expectedGeneration: number) => {
     try {
       const current = () => running && generation === expectedGeneration;
-      const successful = await deps.hasSuccessSince(occurrenceUtc);
-      if (!current() || successful) return;
+      const [attempted, successful] = await Promise.all([
+        deps.hasOccurrenceBeenAttempted(occurrenceUtc),
+        deps.hasSuccessSince(occurrenceUtc),
+      ]);
+      if (!current() || attempted || successful) return;
       const active = await deps.isTaskActive();
       if (!current() || active) return;
       await deps.startTask(occurrenceUtc);

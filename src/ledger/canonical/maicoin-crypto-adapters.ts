@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import {
   parseExactDecimalLexeme,
   type ExactDecimal,
-} from "./canonical-source-store.ts";
+} from "./exact-decimal-lexeme.ts";
 import { multiplyExact } from "../../lib/shared-money/exact.ts";
 import type {
   HoldingEffectiveTimeEvidence,

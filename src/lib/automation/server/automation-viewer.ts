@@ -1,4 +1,4 @@
-import type { Browser, Dialog, ElementHandle, Frame, Locator, Page } from "playwright";
+import type { Dialog, ElementHandle, Frame, Locator, Page } from "playwright";
 import type {
   HumanAssistanceContract,
   HumanAssistanceContractInput,
@@ -8,7 +8,7 @@ import type {
 } from "../human-assistance.ts";
 import { transformHumanAssistanceContract } from "../human-assistance.ts";
 import type { VerificationSelectionPoint } from "./verification-solver.ts";
-import { cdpEndpointForSession } from "./libretto-session.ts";
+import { appWorkflowPageForSession } from "./app-browser-host.ts";
 
 export type ViewerInput =
   | { type: "click"; x: number; y: number }
@@ -89,8 +89,7 @@ const editableTargetSelector = [
 
 export function viewerScreenshotErrorKind(error: unknown): ViewerScreenshotErrorKind {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("No CDP endpoint available for Libretto session")
-    || message.includes("No browser page available for Libretto session")
+  if (message.includes("No active App browser page is available for this workflow run.")
     || /connect ECONNREFUSED 127\.0\.0\.1:\d+/.test(message)) {
     return "unavailable";
   }
@@ -224,38 +223,10 @@ export function selectAllShortcut(platform = process.platform) {
   return platform === "darwin" ? "Meta+A" : "Control+A";
 }
 
-export function selectViewerPage<T extends { url(): string }>(pages: T[]) {
-  const eligiblePages = pages.filter((candidate) => {
-    const url = candidate.url();
-    return url !== "about:blank" &&
-      !url.startsWith("chrome://") &&
-      !url.startsWith("devtools://") &&
-      !url.startsWith("chrome-error://");
-  });
-  return eligiblePages[eligiblePages.length - 1] ?? null;
-}
-
-function visiblePage(browser: Browser, session: string) {
-  const page = selectViewerPage(browser.contexts().flatMap((context) => context.pages()));
-  if (!page) throw new Error(`No browser page available for Libretto session ${session}.`);
-  return page;
-}
-
 async function withPausedPage<T>(session: string, action: (page: Page) => Promise<T>) {
-  const endpoint = cdpEndpointForSession(session);
-  if (!endpoint) {
-    throw new Error(
-      `No CDP endpoint available for Libretto session ${session}. Run npm run patch:libretto and restart the workflow.`,
-    );
-  }
-
-  const { chromium } = await import("playwright");
-  const browser = await chromium.connectOverCDP(endpoint);
-  try {
-    return await action(visiblePage(browser, session));
-  } finally {
-    await browser.close();
-  }
+  const page = appWorkflowPageForSession(session);
+  if (!page) throw new Error("No active App browser page is available for this workflow run.");
+  return action(page);
 }
 
 export function withViewerPage<T>(

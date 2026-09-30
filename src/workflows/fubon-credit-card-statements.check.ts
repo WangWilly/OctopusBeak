@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import type { Frame, Locator, Page } from "playwright";
+import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -29,12 +33,55 @@ const {
   parseFubonSettledStatementSummary,
   parseFubonCurrentCreditCardUsedCreditHtml,
   diagnoseFubonCurrentCreditCardUsedCreditHtml,
+  runFubonCreditCardStatements,
   resolveFubonSettledStatementCycles,
 } =
   await import("./fubon-credit-card-statements.ts");
 const { deriveFubonSourceConnectionKey } = await import(
   "./fubon-source-connection.ts"
 );
+
+test("typed Fubon card collection emits items without writing files", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "fubon-card-typed-no-files-"));
+  const originalCwd = process.cwd();
+  process.chdir(temp);
+  try {
+    const deferredCommitItems: PGliteWorkflowRunItem[] = [];
+    const result = await runFubonCreditCardStatements(
+      {} as Page,
+      fubonCreditCardStatementsInputSchema.parse({}),
+      {
+        deferredCommitItems,
+        signal: new AbortController().signal,
+        observedAt: () => "2026-09-25T00:00:00.000Z",
+        sourceText: strictSourceText,
+        readSourceSnapshot: async () => ({
+          statementRows: [],
+          statementPeriods: ["p1", "p2", "p3", "p4", "p5", "p6"],
+          summaries: [],
+          gridStates: Array.from({ length: 7 }, () => ({
+            currentPage: "1",
+            currentPageSize: "2147483647",
+          })),
+          unavailablePeriodOffsets: [],
+          unbilledRows: [],
+        }),
+      },
+    );
+
+    assert.deepEqual(result, {
+      sourceCount: 7,
+      rowCount: 0,
+      itemCount: 0,
+      financialAdmissionCount: 0,
+    });
+    assert.deepEqual(deferredCommitItems, []);
+    assert.deepEqual(await readdir(temp), [], "typed card execution must not reach CSV/JSON writes");
+  } finally {
+    process.chdir(originalCwd);
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 const fubonLoginSourceConnectionKey = deriveFubonSourceConnectionKey({
   fubon_user_id: "synthetic-fubon-user",
@@ -53,25 +100,26 @@ const source = await readFile(
   new URL("./fubon-credit-card-statements.ts", import.meta.url),
   "utf8",
 );
+const staticModuleHeader = source.slice(0, source.indexOf("const BANK_ENTRY_URL"));
+const runtimeStaticImports = staticModuleHeader.replace(
+  /import type[\s\S]*?from ["'][^"']+["'];/gu,
+  "",
+);
+assert.doesNotMatch(runtimeStaticImports, /pglite-child-rpc-client\.ts/);
+assert.match(runtimeStaticImports, /fubon-credit-card-admission\.ts/);
+assert.match(runtimeStaticImports, /credit-card-current-balance-admission\.ts/);
 const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );
-const loginEntry = source.slice(
-  source.indexOf("async function openCreditCardLoginForm"),
-  source.indexOf("async function openStatementDetailsPage"),
-);
-assert.match(loginEntry, /openFubonLoginForm\(page\)/);
+assert.doesNotMatch(source, /openFubonLoginForm|completeFubonHumanLogin|workflow\(/u);
 assert.match(source, /findStatementDetailsScope/);
 assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /hasFubonCreditCardNoRecord\(scope\)/);
 assert.match(source, /isFubonCreditCardStatementUnavailableText/);
 assert.match(runSource, /iterateFubonStatementPeriodProbes/);
 assert.match(runSource, /capture\.snapshotMode === "full"/);
-assert.match(runSource, /available downloads were saved/);
-assert.doesNotMatch(
-  loginEntry,
-  /#menu_CCC|menu_CCC02|task_CCCQU002|landingFrame\.goto|txnFrame\.goto/,
-);
+assert.match(runSource, /deferredCommitItems\.push\(\.\.\.items\)/u);
+assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 
 const summaryRows = [
   ["115/06/21", "網路繳款"],
@@ -1557,160 +1605,6 @@ assert.throws(
   "distinct PANs sharing one safe first-six+last-four projection must fail closed",
 );
 
-const { commitFubonCreditCardCaptureBatch } =
-  await import("../ledger/canonical/fubon-credit-card.ts");
-const { createCanonicalSourceStore } =
-  await import("../ledger/canonical/canonical-source-store.ts");
-
-for (const [firstCapture, secondCapture, direction] of [
-  [maskedRepresentationCapture, fullPanRepresentationCapture, "masked-to-full-pan"],
-  [fullPanRepresentationCapture, maskedRepresentationCapture, "full-pan-to-masked"],
-] as const) {
-  const representationStore = createCanonicalSourceStore(":memory:");
-  try {
-    await commitFubonCreditCardCaptureBatch(representationStore, firstCapture);
-    await commitFubonCreditCardCaptureBatch(representationStore, secondCapture);
-    const count = (table: string): number =>
-      Number(
-        (representationStore.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
-          value?: number;
-        }).value ?? 0,
-      );
-    const transactionSourceRecordCount = Number(
-      (
-        representationStore.db.prepare(
-          `SELECT COUNT(*) AS value
-           FROM source_records
-           WHERE record_kind = 'fubon-credit-card-transaction'`,
-        ).get() as { value?: number }
-      ).value ?? 0,
-    );
-    const transactionProvenanceCount = Number(
-      (
-        representationStore.db.prepare(
-          `SELECT COUNT(*) AS value
-           FROM source_record_provenance provenance
-           JOIN source_records record
-             ON record.source_record_id = provenance.source_record_id
-           WHERE record.record_kind = 'fubon-credit-card-transaction'`,
-        ).get() as { value?: number }
-      ).value ?? 0,
-    );
-    assert.equal(count("financial_accounts"), 1, direction);
-    assert.equal(count("fubon_credit_instrument_details"), 1, direction);
-    assert.equal(count("financial_transactions"), 1, direction);
-    assert.equal(count("fubon_credit_transaction_details"), 2, direction);
-    assert.equal(transactionSourceRecordCount, 2, direction);
-    assert.equal(transactionProvenanceCount, 2, direction);
-  } finally {
-    representationStore.close();
-  }
-}
-
-const canonicalStore = createCanonicalSourceStore(":memory:");
-try {
-  const committed = await commitFubonCreditCardCaptureBatch(
-    canonicalStore,
-    canonicalCaptures,
-  );
-  assert.equal(committed.length, 1);
-  const repeatedCommitted = await commitFubonCreditCardCaptureBatch(
-    canonicalStore,
-    buildFubonCanonicalCreditCardCaptures({
-      ...canonicalBuildOptions,
-      captureId: "capture-synthetic-repeat",
-      input: canonicalInput,
-    }),
-  );
-  assert.equal(repeatedCommitted.length, 1);
-  const sharedCount = (table: string): number =>
-    Number(
-      (canonicalStore.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
-        value?: number;
-      }).value ?? 0,
-    );
-  assert.equal(sharedCount("financial_accounts"), 1);
-  assert.equal(sharedCount("source_captures"), 2);
-  assert.equal(sharedCount("fubon_credit_instrument_details"), 2);
-  assert.equal(sharedCount("financial_transactions"), 3);
-  assert.equal(sharedCount("fubon_credit_statement_details"), 5);
-} finally {
-  canonicalStore.close();
-}
-const crossPeriodStore = createCanonicalSourceStore(":memory:");
-try {
-  await commitFubonCreditCardCaptureBatch(
-    crossPeriodStore,
-    crossPeriodForwardCapture,
-  );
-  const count = (table: string): number =>
-    Number(
-      (crossPeriodStore.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
-        value?: number;
-      }).value ?? 0,
-    );
-  const authorityTransactionCount = count("financial_transactions");
-  const transactionRevisionCount = count("transaction_revisions");
-  const statementRevisionCount = count("fubon_credit_statement_revision_details");
-  await commitFubonCreditCardCaptureBatch(
-    crossPeriodStore,
-    crossPeriodReverseCapture,
-  );
-  assert.equal(count("financial_transactions"), authorityTransactionCount);
-  assert.equal(count("transaction_revisions"), transactionRevisionCount);
-  assert.equal(
-    count("fubon_credit_statement_revision_details"),
-    statementRevisionCount,
-    "reversing tab order must not create a new statement revision",
-  );
-} finally {
-  crossPeriodStore.close();
-}
-const rollingStore = createCanonicalSourceStore(":memory:");
-try {
-  await commitFubonCreditCardCaptureBatch(
-    rollingStore,
-    rollingInitialCapture,
-  );
-  const count = (table: string): number =>
-    Number(
-      (rollingStore.db.prepare(`SELECT COUNT(*) AS value FROM ${table}`).get() as {
-        value?: number;
-      }).value ?? 0,
-    );
-  const authorityTransactionCount = count("financial_transactions");
-  const transactionRevisionCount = count("transaction_revisions");
-  const period2RevisionCount = Number(
-    (
-      rollingStore.db.prepare(
-        `SELECT COUNT(*) AS value
-         FROM fubon_credit_statement_revision_details revision
-         JOIN fubon_credit_statement_details statement
-           ON statement.statement_id = revision.statement_id
-         WHERE statement.statement_key = ?`,
-      ).get(rollingInitialPeriod2Statement.statementKey) as { value?: number }
-    ).value ?? 0,
-  );
-  await commitFubonCreditCardCaptureBatch(rollingStore, rollingNextCapture);
-  assert.equal(count("financial_transactions"), authorityTransactionCount);
-  assert.equal(count("transaction_revisions"), transactionRevisionCount);
-  assert.equal(
-    Number(
-      (
-        rollingStore.db.prepare(
-          `SELECT COUNT(*) AS value
-           FROM fubon_credit_statement_revision_details revision
-           JOIN fubon_credit_statement_details statement
-             ON statement.statement_id = revision.statement_id
-           WHERE statement.statement_key = ?`,
-        ).get(rollingNextPeriod2Statement.statementKey) as { value?: number }
-      ).value ?? 0,
-    ),
-    period2RevisionCount,
-    "a rolling window must not create a new revision for a retained statement",
-  );
-} finally {
-  rollingStore.close();
-}
-assert.match(source, /commitFubonCreditCardCaptureBatch/);
-assert.match(source, /canonicalFinancialLedgerDir/);
+assert.doesNotMatch(source, /executePGliteWorkflowRun|requirePGliteChildRpcClientFromEnv/u);
+assert.match(source, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
+assert.doesNotMatch(source, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/);

@@ -20,15 +20,7 @@ assert.equal(taskById("ctbc-statements")?.credentialGroupId, "ctbc");
 assert.equal(taskById("post-statements")?.credentialGroupId, "post");
 assert.equal(taskById("einvoice-personal-invoices")?.kind, "crawler");
 assert.equal(taskById("einvoice-personal-invoices")?.credentialGroupId, "einvoice");
-assert.deepEqual(
-  taskById("einvoice-personal-invoices")?.command,
-  [
-    "libretto",
-    "run",
-    "src/workflows/einvoice-personal-invoices.ts",
-    "--headless",
-  ],
-);
+assert.equal(taskById("einvoice-personal-invoices")?.workflowId, "einvoice-personal-invoices");
 assert.deepEqual(
   AUTOMATION_CREDENTIAL_GROUPS.find((group) => group.id === "einvoice")
     ?.credentialKeys,

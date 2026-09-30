@@ -191,60 +191,6 @@ export type QualityIssue = {
   sourceRowIndex?: number;
 };
 
-export type FinancialModel = {
-  schemaVersion: "financial-model.v1";
-  generatedAt: string;
-  sourceLedgerDir: string;
-  sourceLedgerStore: "sqlite";
-  counts: {
-    normalizedTransactions: number;
-    assetPositions: number;
-    includedPositions: number;
-    duplicateNormalizedTransactions: number;
-    assetSnapshots: number;
-    auditOnlyRows: number;
-    unsupportedRows: number;
-  };
-  totals: FinancialTotals;
-  dashboard: DashboardView;
-  parserCoverage: Record<
-    string,
-    {
-      rows: number;
-      parsedRows: number;
-      auditOnlyRows: number;
-      unsupportedRows: number;
-      transactions: number;
-      positions: number;
-    }
-  >;
-  assetPositions: AssetPosition[];
-  normalizedTransactions: NormalizedTransaction[];
-  snapshotHistory: SnapshotHistory;
-  unsupportedRows: Array<{
-    bank: string;
-    product: string;
-    sourceRelativePath: string;
-    sourceRowIndex: number;
-    reason: string;
-  }>;
-  auditOnlyRows: Array<{
-    bank: string;
-    product: string;
-    sourceRelativePath: string;
-    sourceRowIndex: number;
-    reason: string;
-  }>;
-  sourceBatches: {
-    count: number;
-    layoutStrategies: Record<string, number>;
-  };
-  quality: {
-    status: "pass" | "warn" | "fail";
-    issues: QualityIssue[];
-  };
-};
-
 export type CurrencyBucket = Record<string, number>;
 
 export type DashboardMetric = {
