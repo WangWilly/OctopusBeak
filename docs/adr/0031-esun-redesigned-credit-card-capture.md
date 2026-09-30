@@ -48,3 +48,34 @@ used-credit estimate; the overview no longer listed E.SUN as an uncollected
 source. During verification, a UTF-8 character split between socket chunks
 corrupted one source string in transit. The child RPC now decodes UTF-8
 incrementally in both directions, with a split-character regression check.
+
+## 2026-09-30 coverage revision
+
+The App's September 30 run authenticated but could not collect the thirteenth
+month. Live inspection of three bank responses found twelve consecutive month
+buckets, 2026/09 through 2025/10, including empty months. Their cursors were
+1, 2, and 4. The bank's September 16 page bundle stops requesting another
+page when its next cursor exceeds 4 and the loaded records have been consumed.
+The workflow had scrolled to the bottom, so its wait for another response was
+an incorrect assumption about the number of months. The September 24 live
+review had thirteen buckets. The exact provider cutoff rule is not exposed;
+date-dependent source coverage is plausible, but not asserted as a guarantee.
+
+The user approved `esun/credit-card/human-attested-v4` on September 30. It
+requires the current month first, either twelve or thirteen consecutive
+months, all rows from every response, and the bank page's terminal cursor 4.
+The capture records every month and the actual oldest month. Fewer months,
+a gap, a reordered cursor, or a missing terminal cursor fails before Canonical
+Financial Commit. Issuer settled-cycle summaries continue to be validated
+independently. The v3 route remains historical; the primary-cardholder
+portfolio identity epoch remains stable because this revision changes source
+coverage evidence rather than account identity. No database migration is
+required.
+
+The first v4 App run passed source validation but its transaction and statement
+commit conflicted with an existing v3 statement revision. The old statement
+revision key covered stable transaction occurrence keys only; the same member
+occurrences acquired new financial revision IDs under the v4 semantic contract.
+The statement revision key now includes the capture contract version, issuer
+summary values, and member evidence. A changed financial revision can therefore
+create a new immutable statement revision while preserving the prior revision.

@@ -2,19 +2,19 @@ import { createHash } from "node:crypto";
 import { admitCanonicalFinancialDepositCapture, type CanonicalFinancialDepositValidatedCapture } from "./canonical-financial-deposit-admission.ts";
 import type { CanonicalCreditCardPersistenceCapture } from "./canonical-credit-card-contracts.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
   isEsunCreditCardHumanAttestedAccountKey,
-  isEsunCreditCardHumanAttestedV3Active,
+  isEsunCreditCardHumanAttestedV4Active,
 } from "./esun-credit-card-human-attestation-contract.ts";
 
-export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
+export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
 
 export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   source: "esun",
   stream: "credit-card",
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
-  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.evidenceVersion,
+  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
+  contractVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST.evidenceVersion,
   accountType: "credit",
   accountSubtype: "credit_card",
   providerGuaranteed: false,
@@ -26,7 +26,7 @@ export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   statementRule: "issuer-close-due-total-minimum-with-prior-close-cycle-start",
   relationRule: "explicit-source-linkage-only",
   completenessRule:
-    "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
+    "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
 } as const);
 
 export const ESUN_CREDIT_CARD_MAX_PAGE_SIZE = 2_147_483_647;
@@ -86,10 +86,12 @@ export type EsunCreditCardTimeline = {
   kind: "past-year-timeline";
   firstMonth: string;
   lastMonth: string;
+  months: readonly string[];
   pageCount: number;
   monthCount: number;
   capturedRowCount: number;
   terminal: true;
+  terminalCursor: 4;
 };
 
 export type EsunCreditCardGrid = {
@@ -194,8 +196,8 @@ export type EsunCreditCardAdmittedCapture = Omit<
   instruments: readonly EsunCreditCardInstrumentInput[];
   transactions: readonly EsunCreditCardAdmittedTransaction[];
   statements: readonly EsunCreditCardAdmittedStatement[];
-  contractVersion: "esun/credit-card/human-attested-v3";
-  authorityRoute: "esun/credit-card/human-attested-v3";
+  contractVersion: "esun/credit-card/human-attested-v4";
+  authorityRoute: "esun/credit-card/human-attested-v4";
 };
 
 export type EsunCreditCardValidatedCapture = EsunCreditCardAdmittedCapture & {
@@ -733,12 +735,21 @@ function validTimelineEvidence(
   const lastMonth = startDate.slice(0, 7).replace("-", "/");
   const [firstYear, firstNumber] = firstMonth.split("/").map(Number);
   const [lastYear, lastNumber] = lastMonth.split("/").map(Number);
+  const span = (firstYear - lastYear) * 12 + firstNumber - lastNumber;
   return evidence.kind === "past-year-timeline" &&
     evidence.terminal === true &&
+    evidence.terminalCursor === 4 &&
     evidence.firstMonth === firstMonth &&
     evidence.lastMonth === lastMonth &&
-    (firstYear - lastYear) * 12 + firstNumber - lastNumber === 12 &&
-    evidence.monthCount === 13 &&
+    (span === 11 || span === 12) &&
+    evidence.monthCount === span + 1 &&
+    Array.isArray(evidence.months) &&
+    evidence.months.length === evidence.monthCount &&
+    evidence.months.every((month, index) => {
+      if (!/^\d{4}\/(?:0[1-9]|1[0-2])$/u.test(month)) return false;
+      const [year, number] = month.split("/").map(Number);
+      return year * 12 + number === firstYear * 12 + firstNumber - index;
+    }) &&
     Number.isSafeInteger(evidence.pageCount) &&
     evidence.pageCount > 0 &&
     evidence.pageCount <= evidence.monthCount &&
@@ -824,8 +835,8 @@ const freezeDeep = <T>(value: T, seen = new WeakSet<object>()): T => {
 export function admitEsunCreditCardCapture(
   capture: EsunCreditCardCaptureInput,
 ): EsunCreditCardValidatedCapture {
-  if (!isEsunCreditCardHumanAttestedV3Active())
-    fail("E.SUN credit-card human-attested v3 contract is revoked.");
+  if (!isEsunCreditCardHumanAttestedV4Active())
+    fail("E.SUN credit-card human-attested v4 contract is revoked.");
   if (capture === null || typeof capture !== "object")
     fail("E.SUN credit-card capture is required.");
   text(capture.captureId, "Capture ID");
@@ -1076,22 +1087,51 @@ function buildSettledStatements(
     const cycleEnd = validDate(period.cycleEnd, "Statement cycle end");
     if (cycleStart > cycleEnd)
       fail("E.SUN statement cycle start must not follow its cycle end.");
-    const memberKeys = transactions
+    const members = transactions
       .filter((transaction) => {
         const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
         return transaction.billingStatus === "billed" &&
           effectiveDate !== undefined && effectiveDate !== null &&
           effectiveDate >= cycleStart && effectiveDate <= cycleEnd;
-      })
-      .map((transaction) => transaction.sourceRecordKey);
+      });
+    const memberKeys = members.map((transaction) => transaction.sourceRecordKey);
+    // A source occurrence can keep its identity while its admitted financial
+    // revision changes (for example, when issuer billing metadata arrives).
+    // Statement revision identity must include the member evidence, not just
+    // its stable source keys, or a later capture reuses an immutable revision
+    // with different transaction-revision membership.
+    const memberEvidence = members
+      .map((transaction) => [
+        transaction.sourceRecordKey,
+        transaction.occurrenceIndex,
+        transaction.instrumentKey,
+        transaction.consumeDate,
+        transaction.postingDate,
+        transaction.bookedAmount,
+        transaction.bookedCurrency,
+        transaction.direction,
+        transaction.description,
+        transaction.billingStatus,
+        transaction.statementPeriod ?? null,
+      ])
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
     return {
       statementKey,
-      revisionKey:
-        period.revisionKey?.trim() ||
-        digest("esun-credit-card-statement-revision-v1", [
-          statementKey,
-          memberKeys,
-        ]),
+      revisionKey: digest("esun-credit-card-statement-revision-v2", [
+        ESUN_CREDIT_CARD_CAPTURE_CONTRACT.contractVersion,
+        statementKey,
+        period.revisionKey?.trim() || null,
+        cycleStart,
+        cycleEnd,
+        period.issueDate,
+        period.dueDate,
+        period.currency ?? "TWD",
+        exactAmount(period.balance, "Statement balance"),
+        period.minimumPayment == null
+          ? null
+          : exactAmount(period.minimumPayment, "Statement minimum payment"),
+        memberEvidence,
+      ]),
       cycleStart,
       cycleEnd,
       issueDate: period.issueDate,

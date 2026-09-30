@@ -34,11 +34,11 @@ function byteResponse(bytes: Uint8Array, url: string): Response {
   } as unknown as Response;
 }
 
-function timelineValue(now: Date, monthCount = 13): unknown {
+function timelineValue(now: Date, monthCount = 13, cursor = 4): unknown {
   return {
     body: {
       rtnCode: "S",
-      cursor: 1,
+      cursor,
       transList: Array.from({ length: monthCount }, (_, offset) => {
         const month = monthAtOffset(now, offset);
         return {
@@ -80,9 +80,10 @@ function issuerSummary(period: string): unknown {
 function createPage(options: {
   timelineBytes?: Uint8Array;
   monthCount?: number;
+  cursor?: number;
   initialSignedIn?: boolean;
 } = {}): Page & { finishSignIn(): void } {
-  const now = new Date();
+  const now = new Date(2026, 8, 25);
   const newestPeriod = monthAtOffset(now, 1);
   const oldestPeriod = monthAtOffset(now, 2);
   const periods = [
@@ -92,7 +93,7 @@ function createPage(options: {
   const responses = [
     options.timelineBytes
       ? byteResponse(options.timelineBytes, timelineEndpoint)
-      : jsonResponse(timelineValue(now, options.monthCount), timelineEndpoint),
+      : jsonResponse(timelineValue(now, options.monthCount, options.cursor), timelineEndpoint),
     jsonResponse(issuerSummary(periods[1]!), summaryEndpoint),
     jsonResponse(issuerSummary(periods[0]!), summaryEndpoint),
   ];
@@ -204,37 +205,40 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
   const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = "synthetic-esun-managed-secret";
   try {
-    const harness = createContext(createPage());
-    const output = await esunCreditCardStatementsWorkflow.run(harness.context, {
-      managedIdentitySecret: "synthetic-esun-managed-secret",
-      credentials: {
-        esun_user_id: "synthetic-user",
-        esun_account: "synthetic-account",
-        esun_password: "synthetic-password",
-      },
-    });
+    for (const monthCount of [12, 13]) {
+      const harness = createContext(createPage({ monthCount }));
+      const output = await esunCreditCardStatementsWorkflow.run(harness.context, {
+        managedIdentitySecret: "synthetic-esun-managed-secret",
+        credentials: {
+          esun_user_id: "synthetic-user",
+          esun_account: "synthetic-account",
+          esun_password: "synthetic-password",
+        },
+      });
 
-    assert.equal(harness.committed.length, 1);
-    assert.equal(harness.committed[0]?.length, 1);
-    assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "esun");
-    assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
-    assert.equal("files" in (output as object), false);
-    assert.deepEqual(
-      harness.events.map(({ stage, code }) => [stage, code]),
-      [
-        ["authentication", "authentication-started"],
-        ["authentication", "authentication-completed"],
-        ["collection", "collection-started"],
-        ["decoding", "source-decoding-started"],
-        ["collection", "timeline-collected"],
-        ["collection", "bill-summaries-collected"],
-        ["decoding", "source-decoding-completed"],
-        ["validation", "source-validation-started"],
-        ["validation", "source-validation-completed"],
-        ["commit", "canonical-commit-started"],
-        ["commit", "canonical-commit-completed"],
-      ],
-    );
+      assert.equal(harness.committed.length, 1);
+      assert.equal(harness.committed[0]?.length, 1);
+      assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "esun");
+      assert.equal((output as { canonicalAdmission?: string }).canonicalAdmission, "admitted");
+      assert.equal((output as { count?: number }).count, monthCount);
+      assert.equal("files" in (output as object), false);
+      assert.deepEqual(
+        harness.events.map(({ stage, code }) => [stage, code]),
+        [
+          ["authentication", "authentication-started"],
+          ["authentication", "authentication-completed"],
+          ["collection", "collection-started"],
+          ["decoding", "source-decoding-started"],
+          ["collection", "timeline-collected"],
+          ["collection", "bill-summaries-collected"],
+          ["decoding", "source-decoding-completed"],
+          ["validation", "source-validation-started"],
+          ["validation", "source-validation-completed"],
+          ["commit", "canonical-commit-started"],
+          ["commit", "canonical-commit-completed"],
+        ],
+      );
+    }
   } finally {
     if (previousSecret === undefined) delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
     else process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = previousSecret;
@@ -247,7 +251,8 @@ test("E.SUN typed workflow rejects malformed text and incomplete timelines befor
   try {
     for (const page of [
       createPage({ timelineBytes: new Uint8Array([0xc3, 0x28]) }),
-      createPage({ monthCount: 12 }),
+      createPage({ monthCount: 11 }),
+      createPage({ cursor: 3 }),
     ]) {
       const harness = createContext(page);
       await assert.rejects(

@@ -169,6 +169,12 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     contractVersions: ["esun/credit-card/human-attested-v3"],
   },
   {
+    routeKey: "esun/credit-card/human-attested-v4",
+    integrationNamespace: "esun",
+    stream: "credit-card",
+    contractVersions: ["esun/credit-card/human-attested-v4"],
+  },
+  {
     routeKey: "yuanta/credit-card/human-attested-v1",
     integrationNamespace: "yuanta",
     stream: "credit-card",

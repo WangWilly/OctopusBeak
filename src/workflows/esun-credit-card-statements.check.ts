@@ -20,7 +20,10 @@ import {
   rowsFromTimelineResponse,
   issuerSummaryFromBillResponse,
 } from "./esun-credit-card-statements.ts";
-import { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
+import {
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
+  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
+} from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import {
   esunCanonicalSpineCapture,
@@ -380,14 +383,56 @@ const canonicalCapture = buildEsunCanonicalCreditCardCapture({
   settledPeriods,
 });
 assert(canonicalCapture);
+const statementAmountRevision = buildEsunCanonicalCreditCardCapture({
+  startDate: "2025/08/26",
+  endDate: "2026/08/26",
+  identity,
+  statementRows: [billedRow],
+  unbilledRows: [unbilledRow],
+  grid: completeGrid,
+  capture: { ...completeCapture, captureId: "capture-esun-statement-amount-check" },
+  instrumentFingerprintSecret: managedSecret,
+  settledPeriods: [{ ...settledPeriods[0]!, balance: "124.45" }],
+});
+assert(statementAmountRevision);
+assert.notEqual(
+  canonicalCapture.statements[0]?.revisionKey,
+  statementAmountRevision.statements[0]?.revisionKey,
+  "a changed issuer statement amount must create a new immutable statement revision",
+);
+const memberEvidenceRevision = buildEsunCanonicalCreditCardCapture({
+  startDate: "2025/08/26",
+  endDate: "2026/08/26",
+  identity,
+  statementRows: [{ ...billedRow, issuerStatementPeriod: "2026-06" }],
+  unbilledRows: [unbilledRow],
+  grid: completeGrid,
+  capture: { ...completeCapture, captureId: "capture-esun-member-evidence-check" },
+  instrumentFingerprintSecret: managedSecret,
+  settledPeriods,
+});
+assert(memberEvidenceRevision);
+assert.equal(
+  canonicalCapture.transactions[0]?.sourceKey,
+  memberEvidenceRevision.transactions[0]?.sourceKey,
+  "issuer billing metadata must not change transaction occurrence identity",
+);
+assert.notEqual(
+  canonicalCapture.statements[0]?.revisionKey,
+  memberEvidenceRevision.statements[0]?.revisionKey,
+  "member evidence changes must create a new immutable statement revision",
+);
 const timelineGrid = {
   kind: "past-year-timeline" as const,
   firstMonth: "2026/08",
   lastMonth: "2025/08",
+  months: Array.from({ length: 13 }, (_, index) =>
+    new Date(Date.UTC(2026, 7 - index, 1)).toISOString().slice(0, 7).replace("-", "/")),
   pageCount: 3,
   monthCount: 13,
   capturedRowCount: 2,
   terminal: true as const,
+  terminalCursor: 4 as const,
 };
 const timelineCapture = buildEsunCanonicalCreditCardCapture({
   startDate: "2025/08/26",
@@ -401,6 +446,47 @@ const timelineCapture = buildEsunCanonicalCreditCardCapture({
   settledPeriods,
 });
 assert(timelineCapture);
+const twelveMonthGrid = {
+  ...timelineGrid,
+  lastMonth: "2025/09",
+  months: timelineGrid.months.slice(0, 12),
+  monthCount: 12,
+};
+assert(buildEsunCanonicalCreditCardCapture({
+  startDate: "2025/09/01",
+  endDate: "2026/08/26",
+  identity,
+  statementRows: [billedRow],
+  unbilledRows: [unbilledRow],
+  grid: twelveMonthGrid,
+  capture: completeCapture,
+  instrumentFingerprintSecret: managedSecret,
+  settledPeriods,
+}));
+for (const grid of [
+  { ...twelveMonthGrid, terminalCursor: 3 as 4 },
+  { ...twelveMonthGrid, months: twelveMonthGrid.months.slice(0, 11) },
+  { ...twelveMonthGrid, lastMonth: "2025/10", monthCount: 11, months: twelveMonthGrid.months.slice(0, 11) },
+]) {
+  let result;
+  try {
+    result = buildEsunCanonicalCreditCardCapture({
+      startDate: "2025/09/01",
+      endDate: "2026/08/26",
+      identity,
+      statementRows: [billedRow],
+      unbilledRows: [unbilledRow],
+      grid,
+      capture: completeCapture,
+      instrumentFingerprintSecret: managedSecret,
+      settledPeriods,
+    });
+  } catch (error) {
+    assert.match(String(error), /E\.SUN/u);
+    continue;
+  }
+  assert.equal(result, undefined);
+}
 const currentCreditCapture = esunCreditCurrentSnapshotCapture(timelineCapture, redesignedCurrentCredit);
 assert.equal(currentCreditCapture.authorityRoute, "esun/credit-card/current-used-credit-v2");
 assert.equal(currentCreditCapture.observations[0]?.time.effectiveAt, "2026-09-24T07:21:22.000Z");
@@ -413,18 +499,18 @@ assert.throws(
 );
 assert.equal(timelineCapture.scope.completeness.grid.kind, "past-year-timeline");
 const timelineSpine = esunCanonicalSpineCapture(timelineCapture);
-assert.equal(timelineSpine.authorityRoute, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE);
+assert.equal(timelineSpine.authorityRoute, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE);
 assert.equal(timelineSpine.pages[0]?.proofKind, "bounded-one-year-timeline");
 assert.equal(
   timelineSpine.scope.completenessBasis,
-  "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
+  "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
 );
 const timelineCommand = creditCardCommandRequestFromCanonicalCapture(
   timelineSpine,
   esunNeutralCreditCardCapture(timelineCapture),
 );
-assert.equal(timelineCommand.capture.routeKey, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE);
-test("E.SUN v3 timeline capture commits to a fresh PGlite database", async () => {
+assert.equal(timelineCommand.capture.routeKey, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE);
+test("E.SUN v4 timeline capture commits to a fresh PGlite database", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {
@@ -432,6 +518,24 @@ test("E.SUN v3 timeline capture commits to a fresh PGlite database", async () =>
     const result = await commitPGliteCanonicalCreditCardCapture(store, timelineCommand);
     assert.equal(result.transactionCount, 2);
     assert.equal(result.statementCount, 1);
+    const repeatCapture = buildEsunCanonicalCreditCardCapture({
+      startDate: "2025/08/26",
+      endDate: "2026/08/26",
+      identity,
+      statementRows: [billedRow],
+      unbilledRows: [unbilledRow],
+      grid: timelineGrid,
+      capture: { ...completeCapture, captureId: "capture-esun-repeat-check" },
+      instrumentFingerprintSecret: managedSecret,
+      settledPeriods,
+    });
+    assert(repeatCapture);
+    const repeatCommand = creditCardCommandRequestFromCanonicalCapture(
+      esunCanonicalSpineCapture(repeatCapture),
+      esunNeutralCreditCardCapture(repeatCapture),
+    );
+    const repeated = await commitPGliteCanonicalCreditCardCapture(store, repeatCommand);
+    assert.equal(repeated.statementCount, 1);
     const balanceResult = await commitPGliteCanonicalCreditCardBalanceCapture(
       store,
       creditCardBalanceCommandRequest(currentCreditCapture, timelineCommand.identity),
@@ -441,7 +545,7 @@ test("E.SUN v3 timeline capture commits to a fresh PGlite database", async () =>
     await store.close();
   }
 });
-assert.equal(buildEsunCanonicalCreditCardCapture({
+assert.throws(() => buildEsunCanonicalCreditCardCapture({
   startDate: "2025/08/26",
   endDate: "2026/08/26",
   identity,
@@ -451,7 +555,7 @@ assert.equal(buildEsunCanonicalCreditCardCapture({
   capture: completeCapture,
   instrumentFingerprintSecret: managedSecret,
   settledPeriods,
-}), undefined);
+}), /complete past-year timeline coverage/u);
 assert.equal(canonicalCapture.transactions.length, 2);
 assert.equal(canonicalCapture.instruments.length, 1);
 assert.equal(canonicalCapture.instruments[0]?.cardMask, "****1234");
