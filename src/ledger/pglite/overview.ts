@@ -1,5 +1,6 @@
 import type { PGliteStore } from "./transaction.ts";
 import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.ts";
+import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -119,6 +120,11 @@ type InvestmentTransactionRow = Readonly<{
   transaction_id: string;
   account_id: string;
   action: string;
+  security_name: string | null;
+  security_ticker: string | null;
+  security_key: string;
+  quantity_coefficient: string;
+  quantity_scale: number | string;
   cash_coefficient: string;
   cash_scale: number | string;
   cash_currency: string;
@@ -329,6 +335,16 @@ function mapTransactions(
   }
   for (const row of investmentRows) {
     const existing = byId.get(row.transaction_id);
+    const sourceMoney = {
+      coefficient: row.cash_coefficient,
+      scale: Number(row.cash_scale),
+      currency: row.cash_currency,
+    };
+    const investment = {
+      action: row.action,
+      securityName: row.security_name ?? row.security_ticker ?? row.security_key,
+      quantity: { coefficient: row.quantity_coefficient, scale: Number(row.quantity_scale) },
+    };
     let description: string | null = row.description;
     if (description === null) {
       try {
@@ -338,20 +354,18 @@ function mapTransactions(
         description = null;
       }
     }
-    if (existing) {
-      if (existing.description === null && description !== null)
-        byId.set(row.transaction_id, { ...existing, description });
-      continue;
-    }
+    if (!existing) throw new Error("Investment transaction is missing its canonical financial transaction.");
+    if (existing.amount.coefficient !== sourceMoney.coefficient ||
+        existing.amount.scale !== sourceMoney.scale ||
+        existing.currency !== sourceMoney.currency)
+      throw new Error("Investment cash effect conflicts with its canonical financial transaction.");
+    const expectedDirection = investmentTransactionDirection(row.action);
+    if (existing.direction !== expectedDirection)
+      throw new Error("Investment action conflicts with its canonical financial transaction direction.");
     byId.set(row.transaction_id, {
-      id: row.transaction_id,
-      accountId: row.account_id,
-      amount: { coefficient: row.cash_coefficient, scale: Number(row.cash_scale) },
-      currency: row.cash_currency,
-      direction: row.action === "buy" || row.action === "corporate_action_out" ? "outflow" : "inflow",
-      postingStatus: "posted",
-      effectiveOn: row.effective_on,
-      description,
+      ...existing,
+      description: existing.description ?? description,
+      investment,
     });
   }
   return [...byId.values()].sort((left, right) =>
@@ -779,6 +793,11 @@ async function readProjection(
     `SELECT encode(investment_transaction.transaction_id, 'hex') AS transaction_id,
             encode(investment_transaction.account_id, 'hex') AS account_id,
             investment_transaction.action,
+            COALESCE(latest_name.name, security.name) AS security_name,
+            security.ticker AS security_ticker,
+            security.security_key,
+            investment_transaction.quantity_coefficient,
+            investment_transaction.quantity_scale,
             investment_transaction.cash_coefficient,
             investment_transaction.cash_scale,
             investment_transaction.cash_currency,
@@ -787,6 +806,16 @@ async function readProjection(
             source_record.description
        FROM investment_transactions investment_transaction
        JOIN canonical_commits commit_row ON commit_row.commit_id = investment_transaction.commit_id
+       JOIN investment_securities security ON security.security_id = investment_transaction.security_id
+       LEFT JOIN LATERAL (
+         SELECT observation.name
+           FROM investment_security_name_observations observation
+           JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
+          WHERE observation.security_id = security.security_id
+            AND name_commit.commit_sequence <= $1
+          ORDER BY name_commit.commit_sequence DESC, observation.capture_id DESC
+          LIMIT 1
+       ) latest_name ON TRUE
        JOIN source_records source_record ON source_record.source_record_id = investment_transaction.source_record_id
       WHERE commit_row.commit_sequence <= $1
         AND ($2::text IS NULL OR investment_transaction.effective_on <= $2)

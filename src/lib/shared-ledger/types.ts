@@ -159,6 +159,10 @@ export type TransactionRowDto = {
   };
   currency: string;
   note: string | null;
+  investment?: {
+    securityName: string;
+    quantity: { coefficient: string; scale: number };
+  };
 };
 
 export type ReturnCategoryDto = "trade" | "deposit" | "reward";

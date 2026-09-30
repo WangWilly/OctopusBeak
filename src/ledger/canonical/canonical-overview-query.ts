@@ -62,6 +62,11 @@ export type CanonicalOverviewTransaction = Readonly<{
   postingStatus: string;
   effectiveOn: string;
   description: string | null;
+  investment?: Readonly<{
+    action: string;
+    securityName: string;
+    quantity: CanonicalOverviewExactAmount;
+  }>;
 }>;
 
 export type CanonicalOverviewCreditCardStatement = Readonly<{

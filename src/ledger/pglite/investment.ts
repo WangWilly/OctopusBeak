@@ -13,6 +13,7 @@ import type {
   PGliteCanonicalFinancialFactInput,
 } from "./source-admission-validation.ts";
 import type { InvestmentCaptureInput, InvestmentTransactionAction } from "../canonical/investment-financial.ts";
+import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
 import {
   commitPGliteCanonicalLoanCaptureInTransaction,
@@ -196,25 +197,19 @@ function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence
   };
 }
 
-function financialMoney(capture: InvestmentCaptureInput, money: { coefficient: string; scale: number; currency: string }): { coefficient: string; scale: number; currency: string } {
-  // The generic financial spine is denominated in the declared reporting
-  // currency. Extension rows retain the source cash currency unchanged.
-  return money.currency === capture.identity.reportingCurrency
-    ? money
-    : { coefficient: "0", scale: 0, currency: capture.identity.reportingCurrency };
-}
-
 function financialFact(capture: InvestmentCaptureInput, transaction: InvestmentCaptureInput["transactions"][number]): PGliteCanonicalFinancialFactInput {
   const local = `${transaction.effectiveOn}T00:00:00`;
   const epoch = Date.parse(`${local}+08:00`);
   if (!Number.isFinite(epoch)) fail("Investment transaction effective time is invalid.");
-  const money = financialMoney(capture, transaction.cashEffect);
+  // ADR 0006: booked transaction money retains its source denomination even
+  // when the investment account reports its overall value in another currency.
+  const money = transaction.cashEffect;
   return {
     sourceOccurrenceKey: transaction.sourceRecordKey,
     sourceSequence: transaction.sourceRecordKey,
     amount: money,
     currency: money.currency,
-    direction: transaction.action === "buy" || transaction.action === "corporate_action_out" ? "outflow" : "inflow",
+    direction: investmentTransactionDirection(transaction.action),
     postingStatus: "posted",
     postingOrigin: "provider_booked_history",
     postingBasis: "statement-posted-history",
@@ -238,7 +233,7 @@ function marginFact(capture: InvestmentCaptureInput): PGliteCanonicalFinancialFa
   if (capture.margin?.kind !== "embedded") return null;
   const local = `${capture.margin.effectiveOn}T00:00:00`;
   const epoch = Date.parse(`${local}+08:00`);
-  const money = financialMoney(capture, capture.margin.amount);
+  const money = capture.margin.amount;
   return {
     sourceOccurrenceKey: capture.margin.sourceRecordKey,
     sourceSequence: capture.margin.sourceRecordKey,

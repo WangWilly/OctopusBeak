@@ -261,6 +261,26 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
   }
 });
 
+test("financial fact denomination is independent of account reporting currency", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const base = request("capture-cross-currency");
+    const input = {
+      ...base,
+      transactions: [{ ...base.transactions[0]!, currency: "USD" }],
+    };
+    await commitPGliteCanonicalFinancialCapture(store, input);
+    const row = (await store.query<{ amount_coefficient: string; currency: string }>(
+      "SELECT amount_coefficient, currency FROM transaction_revisions",
+    )).rows[0];
+    assert.deepEqual(row, { amount_coefficient: "100", currency: "USD" });
+  } finally {
+    await store.close();
+  }
+});
+
 test("financial admission seeds local attestation and rejects a revoked durable chain", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);

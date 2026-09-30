@@ -37,6 +37,8 @@ Transaction currency is established in this evidence order:
 
 A Financial Account default currency is not transaction evidence and never overrides the booked amount denomination. A Source Record without a usable booked amount, direction, or traceable denomination does not enter the complete Financial Transaction projection.
 
+When an investment event also has a Financial Transaction, its cash effect and the Financial Transaction's booked money must agree in exact amount and denomination. A zero cash effect is valid for an event such as a stock transfer, but a zero in the account's reporting currency must not stand in for nonzero cash in another currency. Missing or conflicting financial facts are data errors.
+
 ### Original amount and conversion evidence
 
 An optional Original Transaction Amount preserves the merchant, counterparty, or source denomination before conversion. It never replaces the amount booked to the Financial Account.
