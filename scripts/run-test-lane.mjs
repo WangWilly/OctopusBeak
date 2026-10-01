@@ -12,6 +12,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/sinopac-login-page.check.ts",
   "src/lib/automation/server/esun-timeline-page.check.ts",
   "src/lib/automation/server/yuanta-report-page.check.ts",
+  "scripts/site-browser.check.mjs",
   "scripts/spending-browser-harness.check.mjs",
   "scripts/spending-chart-alternatives.check.mjs",
   "scripts/spending-ledger-review.check.mjs",
