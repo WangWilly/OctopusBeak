@@ -3,6 +3,13 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../../../electron/pglite-child-rpc.ts";
+import { createPGliteFinancialRegistry } from "../../../electron/pglite-financial-registry.ts";
+import { applyPgliteBaseline } from "../../ledger/pglite/baseline.ts";
+import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../../ledger/pglite/operational.ts";
+import { PGliteStore } from "../../ledger/pglite/transaction.ts";
+import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import type { Page, Response } from "playwright";
 import type { WorkflowContext, WorkflowRunEvent } from "./workflow-executor.ts";
 import { strictSourceText } from "./source-text.ts";
@@ -68,11 +75,13 @@ function createPage(options: {
   signedIn?: boolean;
   signInAfterPolls?: number;
   onPoll?: () => void;
+  precedingEmptyRange?: boolean;
 } = {}): Page {
   const ranges = Array.from({ length: options.expectedRanges ?? 1 }, (_, index) => ({
     firstDateYYYYMMDD: `202608${String(index * 31 + 1).padStart(2, "0")}`,
     lastDateYYYYMMDD: `202608${String((index + 1) * 31).padStart(2, "0")}`,
   }));
+  if (options.precedingEmptyRange) ranges.unshift({ firstDateYYYYMMDD: "20260701", lastDateYYYYMMDD: "20260731" });
   const responses = [
     response(bootstrapResource, {
       code: "0000",
@@ -81,6 +90,9 @@ function createPage(options: {
         dateRanges: ranges,
       },
     }),
+    ...(options.precedingEmptyRange ? [response(detailsResource, {
+      code: "0000", rsData: { detailList: [], nextKey: "" },
+    })] : []),
     options.detailResponse ?? response(detailsResource, {
       code: "0000",
       rsData: {
@@ -107,7 +119,7 @@ function createPage(options: {
     filter() { return this; },
     isVisible: async () => selector.startsWith("form input") || (selector === "#btnHeaderLogout" && signedIn),
     waitFor: async () => undefined,
-    count: async () => selector === "a.nav-link" ? 1 : 0,
+    count: async () => selector === "a.nav-link" ? (options.precedingEmptyRange ? 2 : 1) : 0,
     textContent: async () => "2026/08",
     click: async () => undefined,
     fill: async () => undefined,
@@ -207,6 +219,61 @@ const input = {
     ctbc_password: "synthetic-password",
   },
 };
+
+test("CTBC recaptures transactions after range and row positions change through the real commit port", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  await applyPgliteBaseline(database);
+  await applyPgliteOperationalBaseline(store);
+  const operational = createPgliteOperationalProvider(store);
+  const server = createPGliteChildRpcServer({ provider: {
+    operational, financial: createPGliteFinancialRegistry(store, operational.exchangeRates),
+  } });
+  const previous = { ...process.env };
+  let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
+  const original = {
+    actDtFull: "2026/08/03", trnDtFull: "2026/08/03",
+    actDtTm: "2026-08-03-09.08.07.000000", sortActDtTm: "2026 08 03 09:08:07 000",
+    memo1: "Synthetic salary", dbAmtDisplay: "0", crAmtDisplay: "1,234", balanceAmt: "5,678",
+  };
+  try {
+    await server.ready;
+    Object.assign(process.env, server.env);
+    child = requirePGliteChildRpcClientFromEnv();
+    await child.ready;
+    const commit = createWorkflowFinancialCommitPort(child.workflow);
+    const later = {
+      ...original, actDtFull: "2026/08/04", trnDtFull: "2026/08/04",
+      actDtTm: "2026-08-04-09.08.07.000000", sortActDtTm: "2026 08 04 09:08:07 000",
+      memo1: "Synthetic later transfer", crAmtDisplay: "100", balanceAmt: "5,778",
+    };
+    for (const [index, rows] of [[original], [later, original], [later, original]].entries()) {
+      const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
+        code: "0000", rsData: { detailList: rows, nextKey: "" },
+      }) }) });
+      const result = await runCtbcProviderWorkflow({ ...harness.context, financialCommit: commit }, input, {
+        readCurrentDepositBalances: async () => [currentBalanceRow()],
+      });
+      assert.equal(result.status, "financial-admitted");
+    }
+    const conflicting = createContext({ page: createPage({ detailResponse: response(detailsResource, {
+      code: "0000", rsData: { detailList: [{ ...original, memo1: "Changed provider claim" }], nextKey: "" },
+    }) }) });
+    await assert.rejects(runCtbcProviderWorkflow({ ...conflicting.context, financialCommit: commit }, input, {
+      readCurrentDepositBalances: async () => [currentBalanceRow()],
+    }), /Canonical Financial Commit failed: conflict/u);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions")).rows[0]?.count, 2);
+  } finally {
+    for (const key of Object.keys(server.env)) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    child?.close();
+    await server.close();
+    await store.close();
+  }
+});
 
 test("CTBC typed workflow collects a complete source in memory and uses the injected commit port", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ctbc-typed-workflow-"));

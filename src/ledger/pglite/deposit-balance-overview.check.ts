@@ -524,6 +524,38 @@ test("PGlite deposit command preserves foreign-currency account scope and exact 
   }
 });
 
+test("PGlite deposit identity is independent of collection sequence across captures", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = depositRequest("stable-first");
+    const later = depositRequest("stable-later");
+    const laterRecord = {
+      ...later.capture.records[0]!,
+      amount: { coefficient: "200", scale: 0 },
+      compactJson: JSON.stringify({ amount: { coefficient: "200", scale: 0 }, accountNumber: accountNumber.value, balanceAfter: null }),
+    };
+    await commitPGliteCanonicalDepositCapture(store, first);
+    const shifted = {
+      capture: {
+        ...first.capture,
+        captureId: "stable-recapture",
+        records: [
+          { ...laterRecord, sequenceLexeme: "1" },
+          { ...first.capture.records[0]!, sequenceLexeme: "2" },
+        ],
+        pages: [{ ...first.capture.pages[0]!, rowCount: 2 }],
+      },
+    };
+    await commitPGliteCanonicalDepositCapture(store, shifted);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions")).rows[0]?.count, 2);
+  } finally {
+    await store.close();
+  }
+});
+
 test("PGlite deposit command accepts a provider-built Fubon financial capture", async () => {
   const structural = admitFubonDomesticDepositCaptureEvidence(FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
   assert.equal(structural.status, "admissible");

@@ -1246,8 +1246,6 @@ function hncbFinancialRecord(
       compactJson: JSON.stringify({
         evidenceVersion: HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
         accountDigest: identity.subjectDigest,
-        pageOrdinal,
-        rowOrdinal: row.rowOrdinal,
         accountingDate,
         transactionDate,
         transactionTime,
