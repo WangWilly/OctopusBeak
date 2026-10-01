@@ -60,6 +60,7 @@ export type CanonicalFinancialDepositRecord = {
   /** Human-attested occurrence identity; never a provider key or guarantee. */
   humanAttestedOccurrenceKey?: string;
   contentHash: string;
+  /** Capture-local ordering retained as lineage; occurrenceKey owns financial identity. */
   sequenceLexeme: string;
   compactJson: string;
   amount: FinancialDepositAmount;

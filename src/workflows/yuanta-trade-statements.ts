@@ -1,4 +1,4 @@
-import type { Locator, Page, Response } from "playwright";
+import type { APIRequestContext, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
@@ -35,7 +35,7 @@ import {
 import { emitHumanAssistanceStage, type WorkflowHumanAssistanceStage } from "./human-assistance.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { HumanAssistanceContractInput } from "../lib/automation/human-assistance.ts";
 
 export {
@@ -820,9 +820,17 @@ function responseCharset(headers: Record<string, string>, bytes: Uint8Array): st
   throw new Error("Yuanta Trade source response did not declare a text encoding.");
 }
 
-/** Decode the original report response bytes through the injected strict text port. */
-export async function decodeYuantaTradeReportResponse(
-  response: Response,
+type YuantaReportResponse = Pick<Response, "url" | "status" | "headers" | "body">;
+
+function isUnavailableBrowserResponseBody(error: unknown): boolean {
+  return error instanceof Error &&
+    error.message.includes("Network.getResponseBody") &&
+    error.message.includes("No resource with given identifier found");
+}
+
+async function decodeYuantaReportSource(
+  response: YuantaReportResponse,
+  method: string,
   text: SourceTextPort,
   reportType: string,
 ): Promise<ReportPage> {
@@ -839,7 +847,7 @@ export async function decodeYuantaTradeReportResponse(
   if (
     response.status() < 200 ||
     response.status() >= 300 ||
-    response.request().method().toUpperCase() !== "POST" ||
+    method.toUpperCase() !== "POST" ||
     actualUrl.origin !== expectedUrl.origin ||
     actualUrl.pathname !== expectedUrl.pathname
   ) {
@@ -855,6 +863,25 @@ export async function decodeYuantaTradeReportResponse(
   const html = text.decode(bytes, responseCharset(headers, bytes));
   text.assertIntact(html);
   return parseReportPage(html, response.url(), reportType);
+}
+
+/** Validate and strictly decode the report. If CDP loses a navigation body,
+ * make one fresh, authenticated POST and validate that response independently. */
+export async function decodeYuantaTradeReportResponse(
+  response: Response,
+  text: SourceTextPort,
+  reportType: string,
+  retryRequest?: { request: APIRequestContext; params: Record<string, string | number> },
+): Promise<ReportPage> {
+  try {
+    return await decodeYuantaReportSource(response, response.request().method(), text, reportType);
+  } catch (error) {
+    if (!retryRequest || !isUnavailableBrowserResponseBody(error)) throw error;
+    const reportUrl = new URL(`/NexusWebTrade/AssetReport/${reportType}`, YUANTA_TRADE_LOGIN_URL).href;
+    const form = Object.fromEntries(Object.entries(retryRequest.params).map(([key, value]) => [key, String(value)]));
+    const retried = await retryRequest.request.post(reportUrl, { form, failOnStatusCode: false });
+    return await decodeYuantaReportSource(retried, "POST", text, reportType);
+  }
 }
 
 export async function captureTypedReport(
@@ -898,6 +925,7 @@ export async function captureTypedReport(
     response,
     context.text,
     reportType,
+    { request: page.context().request, params },
   );
   await acceptDisclaimerIfPresent(page);
   await page.locator("#btnLogout").waitFor({ timeout: 60_000 });
@@ -1669,7 +1697,8 @@ export async function runYuantaTradeProviderWorkflow(
       }
     } catch (error) {
       await context.event("collection", "source-collection-failed");
-      await context.event("decoding", "source-decoding-failed");
+      if (error instanceof SourceTextIntegrityError)
+        await context.event("decoding", "source-decoding-failed");
       throw error;
     }
     await context.event("decoding", "source-decoding-completed");

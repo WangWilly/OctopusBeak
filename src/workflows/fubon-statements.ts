@@ -640,7 +640,7 @@ type FubonFinancialCaptureForCounterpartyEvidence = {
   };
   records: readonly {
     occurrenceKey: string;
-    compactJson: string;
+    sequenceLexeme: string;
   }[];
 };
 
@@ -670,24 +670,8 @@ export function buildFubonLoanPaymentAccountEvidence(
 ): TransactionCounterpartyAccountEvidenceInput[] {
   const records = new Map<string, string>();
   for (const record of financialCapture.records) {
-    try {
-      const compact = JSON.parse(record.compactJson) as {
-        pageOrdinal?: unknown;
-        rowOrdinal?: unknown;
-      };
-      if (
-        Number.isSafeInteger(compact.pageOrdinal) &&
-        Number.isSafeInteger(compact.rowOrdinal)
-      ) {
-        records.set(
-          `${compact.pageOrdinal}:${compact.rowOrdinal}`,
-          record.occurrenceKey,
-        );
-      }
-    } catch {
-      // The canonical admission owns compact-record validation. An unrelated
-      // legacy record simply cannot support this provider-specific assertion.
-    }
+    if (/^\d+:\d+$/u.test(record.sequenceLexeme))
+      records.set(record.sequenceLexeme, record.occurrenceKey);
   }
 
   const evidence: TransactionCounterpartyAccountEvidenceInput[] = [];

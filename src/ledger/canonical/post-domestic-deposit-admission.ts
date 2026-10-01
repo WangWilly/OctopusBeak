@@ -548,7 +548,6 @@ function postFinancialRecord(
       compactJson: JSON.stringify({
         evidenceVersion: POST_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
         subjectDigest,
-        rowOrdinal: row.rowOrdinal,
         accountingDate,
         transactionDate,
         transactionTime,

@@ -1045,7 +1045,7 @@ type YuantaFinancialCaptureForEvidence = {
   };
   records: readonly {
     occurrenceKey: string;
-    compactJson: string;
+    sequenceLexeme: string;
   }[];
 };
 
@@ -1062,19 +1062,9 @@ function sourceRecordKeyForYuantaEvidence(
     throw new Error("Yuanta counterparty evidence row ordinal is invalid.");
 
   const candidates = capture.records.filter((record) => {
-    try {
-      const compact = JSON.parse(record.compactJson) as {
-        pageOrdinal?: unknown;
-        rowOrdinal?: unknown;
-      };
-      return (
-        compact.rowOrdinal === evidence.rowOrdinal &&
-        (evidence.pageOrdinal === undefined ||
-          compact.pageOrdinal === evidence.pageOrdinal)
-      );
-    } catch {
-      return false;
-    }
+    const position = /^(\d+):(\d+)$/u.exec(record.sequenceLexeme);
+    return position !== null && Number(position[2]) === evidence.rowOrdinal &&
+      (evidence.pageOrdinal === undefined || Number(position[1]) === evidence.pageOrdinal);
   });
   if (candidates.length !== 1)
     throw new Error(
