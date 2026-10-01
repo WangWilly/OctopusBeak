@@ -113,6 +113,29 @@ async function counts(store: PGliteStore): Promise<Record<string, number>> {
   return Object.fromEntries(rows.rows.map((row) => [row.table_name, Number(row.value)]));
 }
 
+test("PGlite occurrence continuity rejects unsupported stored payloads without recovery", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalFinancialCapture(store, request("capture-original"));
+    const before = await counts(store);
+    // Simulate an unsupported on-disk payload in this isolated test database.
+    // Production append-only protection remains enabled during admission.
+    await database.exec("ALTER TABLE source_records DISABLE TRIGGER USER");
+    await database.query("UPDATE source_records SET payload_json = $1", ["null"]);
+    await database.exec("ALTER TABLE source_records ENABLE TRIGGER USER");
+    await assert.rejects(
+      commitPGliteCanonicalFinancialCapture(store, request("capture-recollection")),
+      (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError &&
+        error.reason === "occurrence-conflict",
+    );
+    assert.deepEqual(await counts(store), before);
+  } finally {
+    await store.close();
+  }
+});
+
 test("mixed raw evidence and derived financial facts commit or roll back together", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
@@ -276,6 +299,61 @@ test("financial fact denomination is independent of account reporting currency",
       "SELECT amount_coefficient, currency FROM transaction_revisions",
     )).rows[0];
     assert.deepEqual(row, { amount_coefficient: "100", currency: "USD" });
+  } finally {
+    await store.close();
+  }
+});
+
+test("a non-MAX capture cannot admit USDT by claiming the MAX posting version", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const base = request("capture-false-max-version");
+    await assert.rejects(commitPGliteCanonicalFinancialCapture(store, {
+      ...base,
+      transactions: [{
+        ...base.transactions[0]!,
+        currency: "USDT",
+        postingRuleVersion: "maicoin/investment/canonical-v1",
+      }],
+    }), /Financial currency is not admitted for this source route/u);
+    assert.deepEqual(await counts(store), {
+      captures: 0, commits: 0, provenance: 0, records: 0, revisions: 0, transactions: 0,
+    });
+  } finally {
+    await store.close();
+  }
+});
+
+test("the registered MAX route admits a USDT booked financial fact", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const base = request("capture-max-usdt");
+    const route = "maicoin/investment/canonical-v1";
+    await commitPGliteCanonicalFinancialCapture(store, {
+      ...base,
+      capture: {
+        ...base.capture,
+        integrationNamespace: "maicoin",
+        stream: "investment",
+        routeKey: route,
+        contractVersion: route,
+        scope: { ...base.capture.scope, ruleVersion: route },
+      },
+      account: { ...base.account, accountType: "investment" },
+      transactions: [{
+        ...base.transactions[0]!,
+        currency: "USDT",
+        postingRuleVersion: route,
+      }],
+    });
+    const row = (await store.query<{ currency: string }>(
+      "SELECT currency FROM transaction_revisions",
+    )).rows[0];
+    assert.equal(row?.currency, "USDT");
   } finally {
     await store.close();
   }

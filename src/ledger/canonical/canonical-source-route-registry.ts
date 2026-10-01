@@ -14,6 +14,8 @@ export type CanonicalSourceRouteRegistration = Readonly<{
    * When omitted, the contract versions are also the completeness versions.
    */
   completenessRuleVersions?: readonly string[];
+  /** Non-ISO booked denominations this registered financial route may admit. */
+  nonIsoFinancialDenominations?: readonly string[];
 }>;
 
 const registrations: readonly CanonicalSourceRouteRegistration[] = [
@@ -350,6 +352,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "maicoin",
     stream: "investment",
     contractVersions: ["maicoin/investment/canonical-v1"],
+    nonIsoFinancialDenominations: ["USDT"],
   },
   {
     routeKey: "yuanta-fund/investment/margin-credit-canonical-v1",

@@ -538,15 +538,11 @@ function financialRecord(
     balanceAfter.coefficient,
     String(balanceAfter.scale),
   );
+  const occurrenceKey = digest("ctbc-observed-composite-occurrence-v1", core, description, note);
   return {
     diagnostics,
     record: {
-      occurrenceKey: digest(
-        "ctbc-observed-composite-occurrence-v1",
-        core,
-        description,
-        note,
-      ),
+      occurrenceKey,
       collisionKey: core,
       providerKey: core,
       contentHash: digest("ctbc-observed-content-v1", ...cells),
@@ -554,8 +550,6 @@ function financialRecord(
       compactJson: JSON.stringify({
         evidenceVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
         subjectDigest,
-        rangeOrdinal: response.rangeOrdinal,
-        rowOrdinal: row.rowOrdinal,
         accountingDate,
         transactionDate,
         transactionTime,

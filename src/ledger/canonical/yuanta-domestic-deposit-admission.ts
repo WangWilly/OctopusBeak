@@ -1088,8 +1088,6 @@ function financialRecord(
       compactJson: JSON.stringify({
         evidenceVersion: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
         accountDigest: identity.subjectDigest,
-        pageOrdinal,
-        rowOrdinal: row.rowOrdinal,
         accountingDate: time.accountingDate,
         transactionDate: time.localDate,
         transactionTime: time.localTime,

@@ -608,7 +608,8 @@ export function financialFactsFromCapture(
       throw new Error(`Deposit record ${record.occurrenceKey} has an unsafe UTC instant.`);
     return {
       sourceOccurrenceKey: record.occurrenceKey,
-      sourceSequence: record.sequenceLexeme,
+      // Capture-local ordering is source lineage, not durable transaction identity.
+      sourceSequence: record.occurrenceKey,
       amount: record.amount,
       // Keep the provider's running balance attached to the typed fact as
       // well as the immutable source-record payload.  The generic baseline

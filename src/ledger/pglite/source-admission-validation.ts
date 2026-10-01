@@ -269,6 +269,7 @@ export function validatePGliteCanonicalSourceEvidence(
 /** Validate the typed financial facts before any transaction starts. */
 export function validatePGliteCanonicalFinancialFact(
   fact: PGliteCanonicalFinancialFactInput,
+  sourceRoute: PGliteCanonicalSourceEvidence["routeKey"],
 ): void {
   if (!fact.amount || typeof fact.amount !== "object")
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial amount is required.");
@@ -296,8 +297,12 @@ export function validatePGliteCanonicalFinancialFact(
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial posting basis is unsupported.");
   if (!isAllowedRuleVersion(fact.postingRuleVersion) || !isAllowedRuleVersion(fact.semanticRuleVersion) || !isAllowedRuleVersion(fact.effectiveTimeRuleVersion))
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial rule version is unsupported.");
-  if (!/^[A-Z]{3}$/u.test(fact.currency))
-    throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial currency must be an ISO-like uppercase code.");
+  // A validated source route owns its controlled non-ISO denomination scheme.
+  const route = canonicalSourceRouteRegistration(sourceRoute);
+  if (!/^[A-Z]{3}$/u.test(fact.currency) &&
+      !(route?.nonIsoFinancialDenominations?.includes(fact.currency) &&
+        route.contractVersions.includes(fact.postingRuleVersion)))
+    throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial currency is not admitted for this source route.");
   requireCanonicalSourceText(fact.effectiveOn, "Financial effective date");
   requireCanonicalSourceText(fact.transactionDateTimeLocal, "Financial local transaction date");
   if (fact.timeZone !== "Asia/Taipei")

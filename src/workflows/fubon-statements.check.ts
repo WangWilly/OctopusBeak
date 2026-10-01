@@ -190,7 +190,7 @@ const relationEvidence = buildFubonLoanPaymentAccountEvidence(
     },
     records: relationEvidenceCapture.pages[0]!.rows.map((row) => ({
       occurrenceKey: `sha256:synthetic-row-${row.rowOrdinal}`,
-      compactJson: JSON.stringify({ pageOrdinal: 0, rowOrdinal: row.rowOrdinal }),
+      sequenceLexeme: `0:${row.rowOrdinal}`,
     })),
   },
 );

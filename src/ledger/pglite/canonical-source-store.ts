@@ -441,37 +441,19 @@ async function assertOccurrenceContinuity(
     }
     const prior = await txQuery<{
       provider_key: string | null;
-      content_hash: string | null;
       payload_json: string;
     }>(
       transaction,
-      `SELECT provider_key, content_hash, payload_json FROM source_records
+      `SELECT provider_key, payload_json FROM source_records
         WHERE source_subject_id = ? AND record_kind = ? AND occurrence_key = ?`,
       [sourceSubjectId, recordKind, record.occurrenceKey],
     );
-    const payloadJson = canonicalSourceRecordJson(record);
-    let comparablePayloadJson = payloadJson;
-    try {
-      const parsed = JSON.parse(payloadJson) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-        comparablePayloadJson = canonicalJson(parsed as Record<string, unknown>);
-    } catch {
-      // Validation guarantees compactJson is valid when supplied. Keep this
-      // fallback for a defensive classification of malformed legacy rows.
-    }
+    const comparablePayloadJson = canonicalOccurrencePayload(canonicalSourceRecordJson(record));
     for (const row of prior.rows) {
-      let priorJson: string | null = null;
-      try {
-        const parsed = JSON.parse(row.payload_json) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-          priorJson = canonicalJson(parsed as Record<string, unknown>);
-      } catch {
-        priorJson = null;
-      }
+      const priorJson = canonicalOccurrencePayload(row.payload_json);
       const providerMatches = row.provider_key === record.providerKey;
-      const hashMatches = row.content_hash === record.contentHash;
       const allowedFubonLoanEvolution = recordKind === "fubon-loan-transaction" && equivalentFubonLoanPayload(row.payload_json, comparablePayloadJson);
-      if (!providerMatches || (!hashMatches && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution) || (priorJson !== null && priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)) {
+      if (!providerMatches || (priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)) {
         throw new PGliteCanonicalSourceAdmissionError(
           "occurrence-conflict",
           "Source occurrence content overwrite is forbidden.",
@@ -479,6 +461,25 @@ async function assertOccurrenceContinuity(
       }
     }
   }
+}
+
+function canonicalOccurrencePayload(payloadJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadJson);
+  } catch (cause) {
+    throw new PGliteCanonicalSourceAdmissionError(
+      "occurrence-conflict",
+      "Source occurrence payload must be valid JSON; compatibility recovery is unsupported.",
+      { cause },
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new PGliteCanonicalSourceAdmissionError(
+      "occurrence-conflict",
+      "Source occurrence payload must be an object.",
+    );
+  return canonicalJson(parsed as Record<string, unknown>);
 }
 
 function canonicalJson(value: Record<string, unknown>): string {
@@ -1404,7 +1405,8 @@ function validateFinancialRequest(
     );
   // A transaction's booked denomination is source evidence; the account
   // currency is a reporting/default value and cannot override it (ADR 0006).
-  for (const fact of request.transactions) validatePGliteCanonicalFinancialFact(fact);
+  for (const fact of request.transactions)
+    validatePGliteCanonicalFinancialFact(fact, request.capture.routeKey);
 }
 
 async function commitFinancialRequestInTransaction(
