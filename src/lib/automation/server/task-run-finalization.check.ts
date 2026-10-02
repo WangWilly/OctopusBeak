@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
+import { hydrateAutomationRuntimeState, recoverInterruptedAutomationRuns } from "./runner.ts";
 import {
   applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
@@ -24,6 +25,31 @@ function result(overrides: Partial<AutomationTaskExecutionResult> = {}): Automat
     externalPrerequisiteIds: [],
     ...overrides,
   };
+}
+
+for (const recovery of ["startup", "shutdown"] as const) {
+  test(`${recovery} interrupts abandoned queued runs before hydrating the runtime`, async () => {
+    const database = await PGlite.create();
+    const store = new PGliteStore(database);
+    try {
+      await applyPgliteOperationalBaseline(store);
+      const provider = createPgliteOperationalProvider(store);
+      const created = await provider.automation.createTaskRun({
+        taskId: "exchange-rates", kind: "sync", status: "queued",
+        attempt: 1, maxAttempts: 1, startedAt: new Date().toISOString(),
+      });
+      if (recovery === "startup") await recoverInterruptedAutomationRuns(provider);
+      else await finalizePersistedActiveRuns(provider, "App closed");
+      const saved = await provider.automation.taskRunById(created.taskRunId);
+      assert.equal(saved?.status, "interrupted");
+      assert.ok(saved?.finishedAt);
+      assert.deepEqual(await provider.automation.activeTaskRuns(), []);
+      const runtime = await hydrateAutomationRuntimeState(provider);
+      assert.equal(runtime.tasks.find((task) => task.taskId === "exchange-rates")?.status, "interrupted");
+    } finally {
+      await store.close();
+    }
+  });
 }
 
 test("provider partial status invalidates once without retaining log output", async () => {

@@ -203,15 +203,13 @@ const fundHistoryProof = {
     endDate: "2026-09-08",
     complete: true as const,
   },
-  occurrenceGroupCoverage: [{
-    scopeKey: deriveSourceConnectionIdentityKey(
-      "yuanta-fund-occurrence-scope",
-      [position.txnType, position.paperNo, position.trustNo],
-    ),
+  accountHistoryQueryCoverage: yuantaFundAccountHistoryQueries,
+  occurrenceGroupCoverage: yuantaFundHistoryInvestmentTypes.map(type => ({
+    scopeKey: yuantaFundAccountHistoryScope(type),
     startDate: "2026-08-01",
     endDate: "2026-09-08",
     contractVersion: "yuanta-fund/investment/canonical-v1",
-  }],
+  })),
 };
 const overview = {
   category: "investment-overview",
@@ -298,7 +296,7 @@ const buyTable = {
       "2026/08/28",
       "SANITIZED FUND",
       "FS00000001",
-      "10000",
+      "台幣 10000",
       "1",
       "10",
       "0",
@@ -371,9 +369,9 @@ assert.throws(
     error instanceof CanonicalInvestmentAdmissionError &&
     error.message.includes("source-effective-time-evidence-incomplete"),
 );
+const partialSource = completeAccountHistoryFixture({ positions: [position], tables: [overview, buyTable] });
 const partialAdmission = evaluateYuantaFundCanonicalAdmission(
-  [overview, buyTable],
-  [position],
+  partialSource.tables, [position], fundHistoryProof,
 );
 assert.deepEqual(partialAdmission, {
   status: "partial",
@@ -478,6 +476,32 @@ const validFundCollector: FundSourceCollector = async () => ({
   positions: [position],
   tables: [overview, basisTable],
 });
+/** Construct a complete synthetic account query inventory before deliberate negative mutations. */
+function completeAccountHistoryFixture(source: Awaited<ReturnType<FundSourceCollector>>): Awaited<ReturnType<FundSourceCollector>> {
+  const historical = source.tables.filter(table => table.category === "historical-transactions");
+  const detailForLabel = new Map<string, string>([
+    ["buy-details", "buy"], ["redemption-details", "sell"], ["redemption-account-details", "sell"],
+    ["conversion-details", "trans"], ["cash-dividend-details", "profit"], ["unit-dividend-details", "devide"],
+  ]);
+  const results = yuantaFundAccountHistoryQueries.flatMap(query => {
+    const matching = historical.filter(table => table.historyQuery
+      ? table.historyQuery.investmentType === query.investmentType && table.historyQuery.detail === query.detail
+      : query.investmentType === "single" && detailForLabel.get(table.tableLabel) === query.detail);
+    if (matching.length) return matching.map(table => ({ ...table,
+      fund: yuantaFundAccountHistoryKey(query.investmentType), historyQuery: query,
+      period: "2026/08/01-2026/09/08",
+    }));
+    return [{ category: "historical-transactions", fund: yuantaFundAccountHistoryKey(query.investmentType),
+      historyQuery: query, period: "2026/08/01-2026/09/08",
+      tableLabel: query.detail === "deduct" && query.investmentType === "type3"
+        ? "variable-deduction-details" : yuantaFundAccountHistoryTableLabels[query.detail],
+      rows: [["查無資料"]],
+    }];
+  });
+  return { ...source, ...fundHistoryProof,
+    tables: [...source.tables.filter(table => table.category !== "historical-transactions"), ...results] };
+}
+
 const fundDependencies = (
   collector: FundSourceCollector,
   deferredCommitItems: PGliteWorkflowRunItem[],
@@ -488,17 +512,7 @@ const fundDependencies = (
   sourceText: strictSourceText,
   signal,
   now: () => "2026-09-09T12:00:00.000Z",
-  collectSourceTables: async (...args) => {
-    const source = await collector(...args);
-    // Synthetic fixtures explicitly own their entire position universe.
-    return { ...source, ...(source.transactionHistory ? {
-      historyPositionInventory: {
-        sourceContract: "yuanta-fund/all-position-history-v1" as const,
-        complete: true as const,
-        positionKeys: source.positions.map(p => `${p.txnType}:${p.paperNo}:${p.trustNo}`),
-      },
-    } : {}) };
-  },
+  collectSourceTables: collector,
 });
 const committedInvestmentCapture = (items: readonly PGliteWorkflowRunItem[]) => {
   const command = items[0]?.command;
@@ -622,6 +636,7 @@ try {
   const eventItems: PGliteWorkflowRunItem[] = [];
   const eventDateLines = conversionDataLines.map(lines => [...lines]);
   eventDateLines[0] = ["2026/08/10", "2026/08/11"];
+  eventDateLines[3] = ["123.45 USD"];
   const history = {
     startDate: "2026-08-01", endDate: "2026-09-08", complete: true as const,
   };
@@ -632,10 +647,8 @@ try {
   };
   await runYuantaFundStatements({} as never, fundHistoryInput,
     { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({
-      positions: [position], transactionHistory: history,
-      occurrenceGroupCoverage: [{ scopeKey: deriveSourceConnectionIdentityKey("yuanta-fund-occurrence-scope", ["S", position.paperNo, position.trustNo]),
-        startDate: history.startDate, endDate: history.endDate, contractVersion: "yuanta-fund/investment/canonical-v1" }],
+    fundDependencies(async () => completeAccountHistoryFixture({
+      positions: [position],
       tables: [overview, basisTable, catalogTable, {
         category: "historical-transactions", fund: "S:FS00000001:YT01", period: "2026/08/01-2026/09/08",
         tableLabel: "conversion-details", rows: [conversionHeaderLines, eventDateLines].map(row => row.map(lines => lines.join(" "))),
@@ -657,33 +670,47 @@ try {
       tableLabel: "conversion-details", rows: [conversionHeaderLines, eventDateLines].map(row => row.map(lines => lines.join(" "))),
       cellLines: [conversionHeaderLines, eventDateLines],
     };
-    return { positions: [position, secondPosition], transactionHistory: history,
-      occurrenceGroupCoverage: [position, secondPosition].map(p => ({
-        scopeKey: deriveSourceConnectionIdentityKey("yuanta-fund-occurrence-scope", ["S", p.paperNo, p.trustNo]),
-        startDate: history.startDate, endDate: history.endDate, contractVersion: "yuanta-fund/investment/canonical-v1",
-      })), tables: [overview, basisTable, catalogTable, conversionTable,
-        { ...conversionTable, fund: "S:FS00000002:YT01" }], };
+    return completeAccountHistoryFixture({ positions: [position, secondPosition],
+      tables: [overview, basisTable, conversionTable, { ...conversionTable }] });
   };
-  const rejectedSource = await eventCollector({} as never, fundHistoryInput, {
-    sourceText: strictSourceText, signal: new AbortController().signal,
-  });
-  const rejectedAdmission = evaluateYuantaFundCanonicalAdmission(rejectedSource.tables, rejectedSource.positions);
-  assert.equal(JSON.stringify(rejectedAdmission).includes("SANITIZED"), false);
-  assert.throws(() => assertYuantaFundCanonicalAdmission(rejectedAdmission), (error: unknown) =>
-    error instanceof Error && error.cause instanceof Error && /overlapping position queries/u.test(error.cause.message));
   await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
     { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
     fundDependencies(eventCollector, overlappingItems, new AbortController().signal)));
   assert.equal(overlappingItems.length, 0, "Overlapping queries cannot double-count a conversion");
+  const crossScopeTable = {
+    category: "historical-transactions", fund: yuantaFundAccountHistoryKey("single"),
+    historyQuery: { investmentType: "single", detail: "trans" } as const,
+    period: "2026/08/01-2026/09/08", tableLabel: "conversion-details",
+    rows: [conversionHeaderLines, eventDateLines].map(row => row.map(lines => lines.join(" "))),
+    cellLines: [conversionHeaderLines, eventDateLines],
+  };
+  const crossScopeSource = completeAccountHistoryFixture({ positions: [position],
+    tables: [overview, basisTable, crossScopeTable, { ...crossScopeTable,
+      fund: yuantaFundAccountHistoryKey("type2"),
+      historyQuery: { investmentType: "type2", detail: "trans" },
+    }],
+  });
+  const crossScopeAdmission = evaluateYuantaFundCanonicalAdmission(crossScopeSource.tables,
+    crossScopeSource.positions, fundHistoryProof);
+  assert.equal(JSON.stringify(crossScopeAdmission).includes("SANITIZED"), false,
+    "Rejected financial source values stay out of the public admission result");
+  assert.throws(() => assertYuantaFundCanonicalAdmission(crossScopeAdmission), (error: unknown) =>
+    error instanceof Error && error.cause instanceof Error && /overlapping account history queries/u.test(error.cause.message));
+  const crossScopeItems: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
+    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+    fundDependencies(async () => crossScopeSource, crossScopeItems, new AbortController().signal)));
+  assert.equal(crossScopeItems.length, 0, "Account scopes cannot double-count an ambiguous conversion");
   const aliasItems: PGliteWorkflowRunItem[] = [];
   await runYuantaFundStatements({} as never, fundHistoryInput,
     { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({ positions: [position], ...fundHistoryProof,
+    fundDependencies(async () => completeAccountHistoryFixture({ positions: [position],
       tables: [overview, basisTable, { ...catalogTable, rows: [["基金代碼", "基金名稱", "計價幣別"], ["YT01", "SANITIZED LONGER CATALOG FUND NAME", "TWD"]] }, buyTable],
     }), aliasItems, new AbortController().signal));
-  assert.equal(committedInvestmentCapture(aliasItems).transactions[0]?.securityKey, "yuanta-fund:YT01");
+  assert.equal(committedInvestmentCapture(aliasItems).transactions[0]?.securityKey, "yuanta-fund:name:SANITIZED FUND",
+    "Catalog display names cannot rename a source-reported Security");
   const eventCapture = committedInvestmentCapture(eventItems);
-  assert.deepEqual(eventCapture.transactions.map(row => [row.securityKey, row.action]), [["yuanta-fund:U001", "sell"], ["yuanta-fund:A001", "buy"], ["yuanta-fund:A001", "dividend"], ["yuanta-fund:A001", "corporate_action_in"]]);
+  assert.deepEqual(eventCapture.transactions.map(row => [row.securityKey, row.action]), [["yuanta-fund:name:SANITIZED OUT FUND", "sell"], ["yuanta-fund:name:SANITIZED IN FUND", "buy"], ["yuanta-fund:name:SANITIZED IN FUND", "dividend"], ["yuanta-fund:name:SANITIZED IN FUND", "corporate_action_in"]]);
   const eventDb = await PGlite.create();
   const eventStore = new PGliteStore(eventDb);
   try {
@@ -704,10 +731,8 @@ try {
   };
   const tradeKeysFor = async (table: typeof buyTable) => {
     const items: PGliteWorkflowRunItem[] = [];
-    const collector: FundSourceCollector = async () => ({
-      positions: [position],
-      tables: [overview, basisTable, table],
-      ...fundHistoryProof,
+    const collector: FundSourceCollector = async () => completeAccountHistoryFixture({
+      positions: [position], tables: [overview, basisTable, table],
     });
     await runYuantaFundStatements(
       {} as never,
@@ -897,26 +922,16 @@ try {
     assert.equal(items.length, 0);
   }
   const firstHistory = await tradeKeysFor(duplicateBuyTable);
-  for (const inventory of [undefined, {
-    sourceContract: "yuanta-fund/all-position-history-v1" as const,
-    complete: true as const,
-    positionKeys: [fundKey, "S:CLOSED-SYNTHETIC-LOT:YT02"],
-  }]) {
-    const incompleteItems: PGliteWorkflowRunItem[] = [];
-    const dependencies: Parameters<typeof runYuantaFundStatements>[3] = {
-      ...fundDependencies(validFundCollector, incompleteItems, new AbortController().signal),
-      collectSourceTables: async () => ({
-        positions: [position], tables: [overview, basisTable, buyTable],
-        ...fundHistoryProof, historyPositionInventory: inventory,
-      }),
-    };
-    await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
-      { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" }, dependencies),
-      /complete position universe including closed positions/u);
-    assert.equal(incompleteItems.length, 0, "Current holdings cannot authorize complete account history");
-  }
+  const missingInventoryItems: PGliteWorkflowRunItem[] = [];
+  await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
+    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+    fundDependencies(async () => ({ positions: [position], tables: [overview, basisTable, buyTable],
+      transactionHistory: fundHistoryProof.transactionHistory,
+      occurrenceGroupCoverage: fundHistoryProof.occurrenceGroupCoverage,
+    }), missingInventoryItems, new AbortController().signal)), /complete account-wide report inventory/u);
+  assert.equal(missingInventoryItems.length, 0, "Current holdings cannot authorize complete account history");
   assert.equal(firstHistory.capture.transactions.length, 2);
-  assert.deepEqual(firstHistory.capture.transactions.map(row => row.securityKey), ["yuanta-fund:YT01", "yuanta-fund:YT01"]);
+  assert.deepEqual(firstHistory.capture.transactions.map(row => row.securityKey), ["yuanta-fund:name:SANITIZED FUND", "yuanta-fund:name:SANITIZED FUND"]);
   assert.deepEqual(
     firstHistory.capture.transactions.map((transaction) => transaction.occurrenceGroup?.ordinal),
     [1, 2],
@@ -927,7 +942,7 @@ try {
     .map((transaction) => transaction.sourceRecordKey)
     .sort();
   const unrelatedTransaction = [
-    "2026/08/27", "SANITIZED FUND", "T98765", "3000", "1", "10", "0", "0", "300",
+    "2026/08/27", "SANITIZED FUND", "T98765", "台幣 3000", "1", "10", "0", "0", "300",
   ];
   const reorderedWithInsertion = {
     ...duplicateBuyTable,
@@ -949,22 +964,13 @@ try {
     [1, 2],
   );
 
-  const explicitEmptyHistory = {
-    category: "historical-transactions",
-    fund: fundKey,
-    period: "2026/08/01-2026/09/08",
-    tableLabel: "transaction-query-summary",
-    rows: [["查詢日期", "查詢基金"], ["查無資料", ""]],
-  };
   const emptyHistoryItems: PGliteWorkflowRunItem[] = [];
   await runYuantaFundStatements(
     {} as never,
     fundHistoryInput,
     { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
-    fundDependencies(async () => ({
-      positions: [position],
-      tables: [overview, basisTable, explicitEmptyHistory],
-      ...fundHistoryProof,
+    fundDependencies(async () => completeAccountHistoryFixture({
+      positions: [position], tables: [overview, basisTable],
     }), emptyHistoryItems, new AbortController().signal),
   );
   const emptyCapture = committedInvestmentCapture(emptyHistoryItems);
@@ -972,10 +978,8 @@ try {
   assert.deepEqual(emptyCapture.occurrenceGroupCoverage, fundHistoryProof.occurrenceGroupCoverage);
 
   const partialItems: PGliteWorkflowRunItem[] = [];
-  const partialCollector: FundSourceCollector = async () => ({
-    positions: [position],
-    tables: [overview, { ...buyTable, period: "2026/08/01-2026/09/08" }],
-    ...fundHistoryProof,
+  const partialCollector: FundSourceCollector = async () => completeAccountHistoryFixture({
+    positions: [position], tables: [overview, buyTable],
   });
   await assert.rejects(
     runYuantaFundStatements(

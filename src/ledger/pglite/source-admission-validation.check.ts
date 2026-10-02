@@ -262,3 +262,24 @@ test("card queried-bucket routes require one unique complete inventory per scope
     /duplicate keys/u,
   );
 });
+
+
+test("ungrouped observations remain admitted but orphan bucket provenance is rejected", () => {
+  const record = {
+    occurrenceKey: token("h"), collisionKey: token("i"), providerKey: token("j"),
+    contentHash: token("k"), compact: { description: "synthetic observation" },
+  };
+  const base = sourceEvidence({
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: {} }],
+    records: [record],
+  });
+  assert.doesNotThrow(() => validatePGliteCanonicalSourceEvidence(base));
+  for (const occurrenceGroupCoverage of [undefined, [{
+    scopeKey: token("d"), startDate: "2026-01-01", endDate: "2026-01-31", contractVersion: "synthetic-v8",
+  }]]) {
+    assert.throws(() => validatePGliteCanonicalSourceEvidence({
+      ...base, occurrenceGroupCoverage,
+      records: [{ ...record, occurrenceGroupBucketKey: "unbilled" }],
+    }), /coverage evidence|Only grouped source records/u);
+  }
+});

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { sumInvestmentExactAmounts } from "../ledger/canonical/investment-exact-amount.ts";
 import type { YuantaCanonicalInvestmentRow } from "../ledger/canonical/yuanta-investment-adapters.ts";
-import { yuantaFundCatalogName } from "./yuanta-fund-catalog.ts";
+import { normalizeYuantaFundName } from "./yuanta-fund-identity.ts";
 
 /** Combine lots only when they describe the same security at the same source basis. */
 export function aggregateYuantaFundHoldingLots(rows: readonly YuantaCanonicalInvestmentRow[]): YuantaCanonicalInvestmentRow[] {
@@ -20,7 +20,7 @@ export function aggregateYuantaFundHoldingLots(rows: readonly YuantaCanonicalInv
       if (!lot.quantity || !lot.valuation || !lot.effectiveTimeEvidence || lot.holdingSourceLots ||
         keys.has(lot.sourceRecordKey) || lot.currency !== first.currency || lot.securityCurrency !== first.securityCurrency ||
         lot.valuation.currency !== first.valuation?.currency || lot.effectiveOn !== first.effectiveOn ||
-        yuantaFundCatalogName(lot.securityName ?? "") !== yuantaFundCatalogName(first.securityName ?? "") ||
+        normalizeYuantaFundName(lot.securityName ?? "") !== normalizeYuantaFundName(first.securityName ?? "") ||
         JSON.stringify(lot.effectiveTimeEvidence) !== JSON.stringify(first.effectiveTimeEvidence)) {
         throw new Error("YuanTa fund holding lots require consistent source valuation evidence.");
       }

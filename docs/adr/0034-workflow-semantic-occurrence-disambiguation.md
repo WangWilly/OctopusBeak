@@ -67,8 +67,9 @@ in ADR 0026 without making its Fubon balance-evolution policy generic.
 ### MaiCoin MAX v3 source audit
 
 MAX v3's [official OpenAPI contract](https://max-api.maicoin.com/api/doc/external/v3)
-requires an int64 `id` for trade rows and a string `sn` for deposit, withdrawal,
-transfer, reward, and convert rows. MaiCoin therefore keeps those provider IDs
+requires an int64 `id` for trade rows, a string `uuid` for reward rows, and a
+string `sn` for deposit, withdrawal, transfer, and convert rows. MaiCoin therefore
+keeps those provider IDs
 as transaction identity and does not assign occurrence ordinals or fall back to
 them when a required ID is missing or invalid. Trade history pages in ascending
 `from_id` order; timestamp-based statement histories use the provider's inclusive
