@@ -67,7 +67,10 @@ export async function finalizeTaskRunTransition(
   if (isTerminalTaskRunStatus(current.status)) {
     return { status: current.status, skipped: true } as const;
   }
-  if (!isActiveTaskRunStatus(current.status) || current.status === "queued") {
+  // Recovery owns abandoned queued runs too: their in-memory queue no longer
+  // exists after shutdown/restart. Other execution outcomes require admission.
+  if (!isActiveTaskRunStatus(current.status)
+    || (current.status === "queued" && intent.status !== "interrupted")) {
     return { status: current.status, skipped: true } as const;
   }
   if (intent.status === "waiting_for_human") {

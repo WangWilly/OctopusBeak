@@ -22,7 +22,7 @@ import { hasAttachedLocator } from "./browser-interaction.js";
 import { StatementComponentAbsentError } from "./run-selected-statements.ts";
 import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
-import { resolveYuantaFundCatalogName, resolveYuantaFundIdentity, yuantaFundCatalogName, type YuantaFundCatalogEntry } from "./yuanta-fund-catalog.ts";
+import { resolveYuantaFundIdentity } from "./yuanta-fund-identity.ts";
 import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
 import { canonicalYuantaFundCurrency, isYuantaFundSourceCurrencyLabel, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
@@ -1555,25 +1555,6 @@ const fundPositionKey = (position: FundPosition): string =>
     .map(encodeURIComponent)
     .join(":");
 
-const fundOccurrenceScopeKey = (position: FundPosition): string =>
-  deriveSourceConnectionIdentityKey(
-    "yuanta-fund-occurrence-scope",
-    [position.txnType, position.paperNo, position.trustNo],
-  );
-
-function parseFundPositionKey(value: string): FundPosition {
-  const parts = value.split(":").map(decodeURIComponent);
-  if (parts.length !== 3 || parts.some((part) => !part)) {
-    throw new Error("YuanTa fund source evidence has no stable position key.");
-  }
-  return {
-    txnType: parts[0]!,
-    paperNo: parts[1]!,
-    trustNo: parts[2]!,
-    label: parts[1]!,
-  };
-}
-
 function canonicalSourceDate(value: string): string {
   const normalized = value.trim().replaceAll("/", "-");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
@@ -1706,39 +1687,8 @@ function fundCurrencyByPositionKey(
   return currencies;
 }
 
-function sourceFundCatalog(tables: readonly ParsedTable[]): YuantaFundCatalogEntry[] {
-  const catalog = tables.filter(table => table.tableLabel === "fund-security-catalog").flatMap(table =>
-    table.rows.slice(1).map(row => {
-      if (row.length !== 3 || !/^[A-Za-z0-9]{4}$/u.test(row[0] ?? "") ||
-        !row[1]?.trim() || !/^[A-Z]{3}$/u.test(row[2] ?? ""))
-        throw new Error("YuanTa fund source catalog has an invalid identity record.");
-      return { fundCode: row[0]!, name: row[1]!, pricingCurrency: row[2]! };
-    }));
-  if (new Set(catalog.map(entry => entry.fundCode)).size !== catalog.length)
-    throw new Error("YuanTa fund source catalog has repeated native codes.");
-  return catalog;
-}
-
-function yuantaFundTransactionRows(
-  tables: readonly ParsedTable[],
-  positions: readonly FundPosition[],
-  currencyByPosition: ReadonlyMap<string, string>,
-): YuantaCanonicalInvestmentRow[] {
+function yuantaFundTransactionRows(tables: readonly ParsedTable[]): YuantaCanonicalInvestmentRow[] {
   const transactions: YuantaCanonicalInvestmentRow[] = [];
-  const catalog = sourceFundCatalog(tables);
-  // A current holding's statement display name is grounded by its exact
-  // transaction-number join to the native code from fundDetail. Retain that
-  // source spelling as an additional exact name, never as a fuzzy alias.
-  for (const table of tables.filter(table => table.category === "investment-overview" && table.tableLabel === "investment-detail")) {
-    for (const row of normalizedColumnRecords(table)) {
-      const position = positionForTransactionNumber(positions, row["交易編號"] ?? "");
-      const entry = catalog.find(entry => entry.fundCode === position?.trustNo);
-      const name = row["基金名稱"] ?? "";
-      if (entry && name.trim() && !catalog.some(candidate => candidate.fundCode === entry.fundCode &&
-        yuantaFundCatalogName(candidate.name) === yuantaFundCatalogName(name)))
-        catalog.push({ ...entry, name });
-    }
-  }
   for (const table of tables) {
     if (
       !table.fund ||
@@ -1747,30 +1697,19 @@ function yuantaFundTransactionRows(
       continue;
     }
     const accountHistoryType = yuantaFundAccountHistoryType(table.fund);
-    const position = accountHistoryType ? undefined : parseFundPositionKey(table.fund);
-    if (
-      position &&
-      !positions.some(
-        (candidate) => fundPositionKey(candidate) === fundPositionKey(position),
-      )
-    ) {
-      throw new Error("fund transaction has no selected provider position");
-    }
-    const occurrenceScope = accountHistoryType ? yuantaFundAccountHistoryScope(accountHistoryType) : fundOccurrenceScopeKey(position!);
+    if (!accountHistoryType)
+      throw new Error("YuanTa fund history requires an account-wide investment-type query.");
+    const occurrenceScope = yuantaFundAccountHistoryScope(accountHistoryType);
     if (![...fundPurchaseTableLabels, ...fundRedemptionTableLabels].includes(table.tableLabel)) {
       for (const row of normalizedColumnRecords(table)) {
-        transactions.push(...yuantaFundAdditionalEventRows(table.tableLabel, row, catalog,
+        transactions.push(...yuantaFundAdditionalEventRows(table.tableLabel, row,
           occurrenceScope, { amount: canonicalExactAmount, date: canonicalSourceDate, currency: canonicalYuantaFundCurrency,
-            ...(accountHistoryType ? { cashCurrency: yuantaFundSourceAmountCurrency, allowNameIdentity: true as const } : {}),
+            cashCurrency: yuantaFundSourceAmountCurrency,
           }));
       }
       continue;
     }
     const action = fundPurchaseTableLabels.includes(table.tableLabel) ? "buy" : "sell";
-    const positionCurrency = position ? currencyByPosition.get(fundPositionKey(position)) : undefined;
-    if (!accountHistoryType && !positionCurrency) {
-      throw new Error("fund transaction has no source security currency");
-    }
     for (const row of normalizedColumnRecords(table)) {
       const effectiveOn = canonicalSourceDate(
         row[action === "buy" ? "投資日期" : "贖回日期"] ?? "",
@@ -1778,9 +1717,8 @@ function yuantaFundTransactionRows(
       const quantityValue =
         row[action === "buy" ? "申購單位數" : "贖回單位數"] ?? "";
       const cashValue = row[action === "buy" ? "投資金額" : "入帳淨額"] ?? "";
-      const currency = accountHistoryType ? yuantaFundSourceAmountCurrency(cashValue) : positionCurrency!;
-      const security = accountHistoryType ? resolveYuantaFundIdentity(row["基金名稱"] ?? "") :
-        catalog.length ? { ...resolveYuantaFundCatalogName(catalog, row["基金名稱"] ?? ""), identityKind: "producer-security-id" as const } : undefined;
+      const currency = yuantaFundSourceAmountCurrency(cashValue);
+      const security = resolveYuantaFundIdentity(row["基金名稱"] ?? "");
       transactions.push({
         sourceRecordKey: deriveSourceConnectionIdentityKey(
           "yuanta-fund-transaction-record",
@@ -1797,7 +1735,7 @@ function yuantaFundTransactionRows(
         occurrenceFingerprintFields: action === "buy"
           ? [
               row["交易編號"] ?? "",
-              security?.name ?? row["基金名稱"] ?? "",
+              security.name,
               row["投資金額"] ?? "",
               row["申購匯率"] ?? "",
               row["申購淨值"] ?? "",
@@ -1808,7 +1746,7 @@ function yuantaFundTransactionRows(
             ]
           : [
               row["交易編號"] ?? "",
-              security?.name ?? row["基金名稱"] ?? "",
+              security.name,
               row["分配日期"] ?? "",
               row["贖回投資金額"] ?? "",
               row["贖回單位數"] ?? "",
@@ -1820,10 +1758,10 @@ function yuantaFundTransactionRows(
               row["入帳淨額"] ?? "",
               row["備註"] ?? "",
             ],
-        producerSecurityId: security?.fundCode ?? position!.trustNo,
-        securityName: (security?.name ?? row["基金名稱"]?.trim()) || undefined,
-        securityCurrency: security ? security.pricingCurrency : currency,
-        ...(security?.identityKind === "source-fund-name" ? { securityIdentityKind: "source-fund-name" as const } : {}),
+        producerSecurityId: security.producerSecurityId,
+        securityName: security.name,
+        securityCurrency: security.pricingCurrency,
+        securityIdentityKind: "source-fund-name",
         currency,
         effectiveOn,
         action,
@@ -1842,7 +1780,7 @@ function yuantaFundTransactionRows(
     const scope = transaction.occurrenceScopeKey!;
     const prior = observedScopes.get(fingerprint);
     if (prior && prior !== scope)
-      throw new Error("YuanTa history has overlapping position queries without cross-query occurrence evidence.");
+      throw new Error("YuanTa history has overlapping account history queries without cross-query occurrence evidence.");
     observedScopes.set(fingerprint, scope);
   }
   return transactions;
@@ -1867,11 +1805,7 @@ export function evaluateYuantaFundCanonicalAdmission(
     .flatMap(normalizedColumnRecords);
   let transactionRows: YuantaCanonicalInvestmentRow[];
   try {
-    transactionRows = yuantaFundTransactionRows(
-      tables,
-      positions,
-      fundCurrencyByPositionKey(holdingRows, positions),
-    );
+    transactionRows = yuantaFundTransactionRows(tables);
   } catch (cause) {
     return failedFundAdmission({
       status: "not-admitted",
@@ -2031,7 +1965,7 @@ function collectYuantaFundCanonicalItems(
     );
     return {
       sourceRecordKey,
-      producerSecurityId: resolveYuantaFundIdentity(row["基金名稱"] ?? "").fundCode,
+      producerSecurityId: resolveYuantaFundIdentity(row["基金名稱"] ?? "").producerSecurityId,
       securityIdentityKind: "source-fund-name" as const,
       securityCurrency: null,
       securityName: resolveYuantaFundIdentity(row["基金名稱"] ?? "").name,
@@ -2066,11 +2000,7 @@ function collectYuantaFundCanonicalItems(
     };
   });
   const holdings = aggregateYuantaFundHoldingLots(holdingLots);
-  const transactionRows = yuantaFundTransactionRows(
-    tables,
-    positions,
-    currencyByPosition,
-  );
+  const transactionRows = yuantaFundTransactionRows(tables);
   if (!historyProof && transactionRows.length > 0)
     throw new Error("Yuanta fund transaction rows cannot be admitted without complete history coverage.");
   const transactions = historyProof
@@ -2196,11 +2126,6 @@ type YuantaFundSourceTables = Readonly<{
     complete: true;
   }>;
   occurrenceGroupCoverage?: readonly CanonicalOccurrenceGroupCoverage[];
-  historyPositionInventory?: Readonly<{
-    sourceContract: "yuanta-fund/all-position-history-v1";
-    complete: true;
-    positionKeys: readonly string[];
-  }>;
   accountHistoryQueryCoverage?: readonly YuantaFundAccountHistoryQuery[];
 }>;
 
@@ -2221,75 +2146,46 @@ function validateYuantaFundHistoryProof(
     (table) => table.category === "historical-transactions",
   );
   if (!input.includeHistoricalTransactions) {
-    if (source.transactionHistory || source.occurrenceGroupCoverage || source.historyPositionInventory || source.accountHistoryQueryCoverage || historicalTables.length > 0)
+    if (source.transactionHistory || source.occurrenceGroupCoverage || source.accountHistoryQueryCoverage || historicalTables.length > 0)
       throw new Error("Yuanta fund transaction rows require a complete history query.");
     return undefined;
   }
 
   const history = source.transactionHistory;
   const coverage = source.occurrenceGroupCoverage;
-  const inventory = source.historyPositionInventory;
-  // Current holdings alone do not enumerate closed positions (ADR 0034).
-  // Only a source contract covering that universe can authorize full history.
-  const positionKeys = source.positions.map(fundPositionKey);
-  if (!source.accountHistoryQueryCoverage && (inventory?.sourceContract !== "yuanta-fund/all-position-history-v1" ||
-    !inventory.complete || inventory.positionKeys.length !== positionKeys.length ||
-    new Set(inventory.positionKeys).size !== inventory.positionKeys.length ||
-    positionKeys.some(key => !inventory.positionKeys.includes(key))))
-    throw new Error("Yuanta fund history does not prove the complete position universe including closed positions.");
+  if (!source.accountHistoryQueryCoverage)
+    throw new Error("Yuanta fund history requires the complete account-wide report inventory.");
   const requestedRange = resolveDateRange(input);
   const startDate = canonicalSourceDate(requestedRange.startDate);
   const endDate = canonicalSourceDate(requestedRange.endDate);
   if (!history?.complete || history.startDate !== startDate || history.endDate !== endDate ||
-      startDate > endDate || !coverage || (!source.accountHistoryQueryCoverage && source.positions.length === 0))
+      startDate > endDate || !coverage)
     throw new Error("Yuanta fund transaction history does not prove the requested full date range.");
 
-  if (source.accountHistoryQueryCoverage) {
-    const queryKey = (query: YuantaFundAccountHistoryQuery) => `${query.investmentType}:${query.detail}`;
-    const expected = new Set(yuantaFundAccountHistoryQueries.map(queryKey));
-    const actual = source.accountHistoryQueryCoverage.map(queryKey);
-    if (actual.length !== expected.size || new Set(actual).size !== expected.size || actual.some(key => !expected.has(key)))
-      throw new Error("Yuanta fund account history is missing or repeating a required investment-type report.");
-    const scopes = new Set(yuantaFundHistoryInvestmentTypes.map(yuantaFundAccountHistoryScope));
-    if (coverage.length !== scopes.size || new Set(coverage.map(entry => entry.scopeKey)).size !== scopes.size ||
-      coverage.some(entry => !scopes.has(entry.scopeKey) || entry.startDate !== startDate || entry.endDate !== endDate ||
-        entry.contractVersion !== YUANTA_FUND_INVESTMENT_CONTRACT_VERSION))
-      throw new Error("Yuanta fund account history coverage does not match its complete report inventory.");
-    for (const query of yuantaFundAccountHistoryQueries) {
-      const queryTables = historicalTables.filter(table => table.historyQuery && queryKey(table.historyQuery) === queryKey(query));
-      const labels: readonly string[] = query.detail === "sell" ? fundRedemptionTableLabels
-        : query.detail === "deduct" ? [query.investmentType === "type3" ? "variable-deduction-details" : "deduction-details"]
-        : [yuantaFundAccountHistoryTableLabels[query.detail]];
-      if (queryTables.filter(table => labels.includes(table.tableLabel)).length !== 1 ||
-        queryTables.some(table => table.fund !== yuantaFundAccountHistoryKey(query.investmentType) ||
-          (fundFinancialHistoryTableLabels.includes(table.tableLabel) && !labels.includes(table.tableLabel))))
-        throw new Error("Yuanta fund account history has no unique result for its requested report.");
-      assertYuantaFundHistoryQueryResult(queryTables, yuantaFundAccountHistoryKey(query.investmentType));
-    }
-    if (historicalTables.some(table => !table.historyQuery || !expected.has(queryKey(table.historyQuery)) ||
-      !yuantaFundAccountHistoryType(table.fund ?? "")))
-      throw new Error("Yuanta fund account history has unqueried evidence.");
-    return { transactionHistory: history, occurrenceGroupCoverage: coverage };
+  const queryKey = (query: YuantaFundAccountHistoryQuery) => `${query.investmentType}:${query.detail}`;
+  const expected = new Set(yuantaFundAccountHistoryQueries.map(queryKey));
+  const actual = source.accountHistoryQueryCoverage.map(queryKey);
+  if (actual.length !== expected.size || new Set(actual).size !== expected.size || actual.some(key => !expected.has(key)))
+    throw new Error("Yuanta fund account history is missing or repeating a required investment-type report.");
+  const scopes = new Set(yuantaFundHistoryInvestmentTypes.map(yuantaFundAccountHistoryScope));
+  if (coverage.length !== scopes.size || new Set(coverage.map(entry => entry.scopeKey)).size !== scopes.size ||
+    coverage.some(entry => !scopes.has(entry.scopeKey) || entry.startDate !== startDate || entry.endDate !== endDate ||
+      entry.contractVersion !== YUANTA_FUND_INVESTMENT_CONTRACT_VERSION))
+    throw new Error("Yuanta fund account history coverage does not match its complete report inventory.");
+  for (const query of yuantaFundAccountHistoryQueries) {
+    const queryTables = historicalTables.filter(table => table.historyQuery && queryKey(table.historyQuery) === queryKey(query));
+    const labels: readonly string[] = query.detail === "sell" ? fundRedemptionTableLabels
+      : query.detail === "deduct" ? [query.investmentType === "type3" ? "variable-deduction-details" : "deduction-details"]
+      : [yuantaFundAccountHistoryTableLabels[query.detail]];
+    if (queryTables.filter(table => labels.includes(table.tableLabel)).length !== 1 ||
+      queryTables.some(table => table.fund !== yuantaFundAccountHistoryKey(query.investmentType) ||
+        (fundFinancialHistoryTableLabels.includes(table.tableLabel) && !labels.includes(table.tableLabel))))
+      throw new Error("Yuanta fund account history has no unique result for its requested report.");
+    assertYuantaFundHistoryQueryResult(queryTables, yuantaFundAccountHistoryKey(query.investmentType));
   }
-
-  const expectedScopes = new Map(
-    source.positions.map((position) => [fundOccurrenceScopeKey(position), position]),
-  );
-  const expectedPositionKeys = new Set(source.positions.map(fundPositionKey));
-  if (expectedScopes.size !== source.positions.length || coverage.length !== expectedScopes.size)
-    throw new Error("Yuanta fund history coverage does not inventory each queried position exactly once.");
-  const seenScopes = new Set<string>();
-  for (const entry of coverage) {
-    if (!expectedScopes.has(entry.scopeKey) || seenScopes.has(entry.scopeKey) ||
-        entry.startDate !== startDate || entry.endDate !== endDate ||
-        entry.contractVersion !== YUANTA_FUND_INVESTMENT_CONTRACT_VERSION)
-      throw new Error("Yuanta fund history coverage is outside the queried position and range.");
-    seenScopes.add(entry.scopeKey);
-    const position = expectedScopes.get(entry.scopeKey)!;
-    assertYuantaFundHistoryQueryResult(historicalTables, position);
-  }
-  if (historicalTables.some((table) => !expectedPositionKeys.has(table.fund ?? "")))
-    throw new Error("Yuanta fund history includes an unqueried position scope.");
+  if (historicalTables.some(table => !table.historyQuery || !expected.has(queryKey(table.historyQuery)) ||
+    !yuantaFundAccountHistoryType(table.fund ?? "")))
+    throw new Error("Yuanta fund account history has unqueried evidence.");
   return { transactionHistory: history, occurrenceGroupCoverage: coverage };
 }
 
