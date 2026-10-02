@@ -1094,6 +1094,18 @@ const MAICOIN_STATEMENT_ENDPOINTS = [
   { endpoint: "/api/v3/converts", rowType: "convert" },
 ] as const satisfies readonly { endpoint: string; rowType: MaicoinStatementRowType }[];
 
+/** The collector and admission require the same complete endpoint/wallet inventory. */
+export function maicoinStatementQuerySpecs(
+  walletTypes: readonly MaicoinWalletType[],
+): Array<Pick<MaicoinStatementBatch, "endpoint" | "walletType" | "rowType">> {
+  return [
+    ...walletTypes.map(walletType => ({
+      endpoint: `/api/v3/wallet/${walletType}/trades`, walletType, rowType: "trade" as const,
+    })),
+    ...MAICOIN_STATEMENT_ENDPOINTS.map(spec => ({ ...spec, walletType: null })),
+  ];
+}
+
 function validCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -1102,14 +1114,8 @@ function validCalendarDate(value: string): boolean {
 
 function validateStatementBatchSet(input: MaicoinInvestmentCaptureBuildInput): void {
   if (input.statementBatches === undefined) return;
-  const expected = new Set<string>([
-    ...input.accountBatches.map((batch) => JSON.stringify([
-      `/api/v3/wallet/${batch.walletType}/trades`, batch.walletType, "trade",
-    ])),
-    ...MAICOIN_STATEMENT_ENDPOINTS.map((spec) => JSON.stringify([
-      spec.endpoint, null, spec.rowType,
-    ])),
-  ]);
+  const expected = new Set(maicoinStatementQuerySpecs(input.accountBatches.map(batch => batch.walletType))
+    .map(spec => JSON.stringify([spec.endpoint, spec.walletType, spec.rowType])));
   const seen = new Set<string>();
   let commonHistory: MaicoinStatementBatch["history"] | undefined;
   for (const batch of input.statementBatches) {

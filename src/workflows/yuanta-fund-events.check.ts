@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { yuantaFundSourceAmountCurrency } from "./yuanta-fund-account-history.ts";
+import { canonicalYuantaFundCurrency, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 const catalog = [
   { fundCode: "U001", name: "SANITIZED FUND U美元", pricingCurrency: "USD" },
@@ -63,3 +63,8 @@ const namedUnits = yuantaFundAdditionalEventRows("unit-dividend-details", {
 }, [], "scope", namedDecode)[0]!;
 assert.equal(namedUnits.securityCurrency, null);
 assert.deepEqual(namedUnits.cashEffect, { coefficient: "0", scale: 0, currency: "XXX" });
+const hkdDividend = yuantaFundAdditionalEventRows("cash-dividend-details", {
+  基金名稱: "SYNTHETIC UNLISTED OUT", 入帳日期: "2026/08/12", 計價幣別: "港幣", 分配金額: "4.2",
+}, [], "scope", { ...namedDecode, amount: decode.amount, currency: canonicalYuantaFundCurrency })[0]!;
+assert.deepEqual(hkdDividend.cashEffect, { coefficient: "42", scale: 1, currency: "HKD" });
+assert.equal(hkdDividend.securityCurrency, null);

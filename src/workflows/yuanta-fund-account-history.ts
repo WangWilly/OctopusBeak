@@ -43,18 +43,3 @@ export const yuantaFundAccountHistoryTableLabels = {
   buy: "buy-details", deduct: "deduction-details", sell: "redemption-account-details",
   trans: "conversion-details", profit: "cash-dividend-details", devide: "unit-dividend-details",
 } as const;
-
-export function yuantaFundSourceAmountCurrency(value: string): string {
-  const aliases: Readonly<Record<string, string>> = {
-    台幣: "TWD", 新臺幣: "TWD", 新台幣: "TWD", 美元: "USD", 美金: "USD", 日圓: "JPY", 歐元: "EUR",
-    港幣: "HKD", 澳幣: "AUD", 人民幣: "CNY", 南非幣: "ZAR", 紐幣: "NZD", 英鎊: "GBP",
-  };
-  const currencyLabel = "新臺幣|新台幣|南非幣|人民幣|台幣|美元|美金|日圓|歐元|港幣|澳幣|紐幣|英鎊|TWD|USD|JPY|EUR|HKD|AUD|CNY|ZAR|NZD|GBP";
-  const decimal = "(?:\\d+|\\d{1,3}(?:,\\d{3})+)(?:\\.\\d+)?";
-  // Source reports place the explicit denomination either before or after
-  // the amount. Never infer settlement currency from the security's pricing.
-  const match = new RegExp(`^(?:(${currencyLabel})\\s*${decimal}|${decimal}\\s*(${currencyLabel}))$`, "u").exec(value.trim());
-  const currency = match?.[1] ?? match?.[2];
-  if (!currency) throw new Error("YuanTa account history cash amount has no explicit source currency.");
-  return aliases[currency] ?? currency;
-}

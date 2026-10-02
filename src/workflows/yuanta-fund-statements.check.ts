@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { canonicalYuantaFundCurrency } from "./yuanta-fund-currency.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryScope,
   yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes } from "./yuanta-fund-account-history.ts";
 import { PGlite } from "@electric-sql/pglite";
@@ -105,6 +106,14 @@ const redemptionAccountResult = yuantaFundModule.normalizedRowsForTable(redempti
 assert.equal(redemptionAccountResult.length, 1);
 assert.equal(redemptionAccountResult[0]?.values[11], "SANITIZED ACCOUNT DESCRIPTION 123456789012");
 assert.equal(redemptionAccountResult[0]?.values[12], "台幣 100");
+const splitHkdRedemptionData = redemptionAccountData.map((lines, column) => column === 5
+  ? [lines[0]!, lines[1]!, "HKD", "100"] : lines);
+const splitHkdRedemption = yuantaFundModule.normalizedRowsForTable({
+  ...redemptionAccountTable,
+  rows: [redemptionAccountHeader, splitHkdRedemptionData.map(lines => lines.join(" "))],
+  cellLines: [redemptionAccountHeader.map(value => value.split(" ")), splitHkdRedemptionData],
+});
+assert.equal(splitHkdRedemption[0]?.values[12], "HKD 100");
 assert.throws(() => yuantaFundModule.normalizedRowsForTable({ ...redemptionAccountTable,
   rows: [...redemptionAccountTable.rows.slice(0, 2), ["合計", "SANITIZED FUND", ...redemptionAccountFooter.slice(2)]],
 }), /aggregate footer/u);
@@ -128,8 +137,6 @@ const isYuantaFundPositionAbsentText: typeof yuantaFundModule.isYuantaFundPositi
   yuantaFundModule.isYuantaFundPositionAbsentText;
 const parseYuantaFundValuationBasis: typeof yuantaFundModule.parseYuantaFundValuationBasis =
   yuantaFundModule.parseYuantaFundValuationBasis;
-const canonicalYuantaFundCurrency: typeof yuantaFundModule.canonicalYuantaFundCurrency =
-  yuantaFundModule.canonicalYuantaFundCurrency;
 const runYuantaFundStatements: typeof yuantaFundModule.runYuantaFundStatements =
   yuantaFundModule.runYuantaFundStatements;
 const yuantaFundHistoryResultIsUnpaged: typeof yuantaFundModule.yuantaFundHistoryResultIsUnpaged =
@@ -774,6 +781,49 @@ try {
   assert.equal(closedOnlyCapture.transactions.length, 7);
   assert.equal(closedOnlyCapture.occurrenceGroupCoverage?.length, 3);
   assert.equal(closedOnlyCapture.holdings.length, 0);
+  const fullyEmptySource = { ...accountSource, positions: [], tables: [
+    { category: "investment-source-evidence", fund: null, period: null, tableLabel: "current-position-absence", rows: [["無基金部位"]] },
+    ...accountTables.map(table => ({ ...table, rows: [["查無資料"]], cellLines: undefined })),
+  ] };
+  const fullyEmptyItems: PGliteWorkflowRunItem[] = [];
+  await runYuantaFundStatements({} as never, fundHistoryInput,
+    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+    fundDependencies(async () => fullyEmptySource, fullyEmptyItems, new AbortController().signal));
+  assert.equal(fullyEmptyItems.length, 1);
+  const fullyEmptyCapture = committedInvestmentCapture(fullyEmptyItems);
+  assert.equal(fullyEmptyCapture.holdings.length, 0);
+  assert.equal(fullyEmptyCapture.transactions.length, 0);
+  assert.equal(fullyEmptyCapture.securities.length, 0);
+  assert.equal(fullyEmptyCapture.scope.effectiveOn, history.endDate);
+  assert.deepEqual(fullyEmptyCapture.scope.transactionHistory, history);
+  assert.deepEqual(fullyEmptyCapture.occurrenceGroupCoverage, accountSource.occurrenceGroupCoverage);
+  const repeatedEmptyItems: PGliteWorkflowRunItem[] = [];
+  await runYuantaFundStatements({} as never, fundHistoryInput,
+    { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+    { ...fundDependencies(async () => fullyEmptySource, repeatedEmptyItems, new AbortController().signal),
+      now: () => "2026-09-10T12:00:00.000Z" });
+  const repeatedEmptyCapture = committedInvestmentCapture(repeatedEmptyItems);
+  assert.notEqual(repeatedEmptyCapture.captureId, fullyEmptyCapture.captureId);
+  const emptyDb = await PGlite.create();
+  try {
+    await applyPgliteBaseline(emptyDb);
+    const emptyStore = new PGliteStore(emptyDb);
+    await commitPGliteCanonicalInvestmentCapture(emptyStore, { capture: fullyEmptyCapture });
+    await commitPGliteCanonicalInvestmentCapture(emptyStore, { capture: repeatedEmptyCapture });
+    const emptyOverview = await createPGliteCanonicalOverviewQuery(emptyStore).current();
+    assert.equal(emptyOverview.projection.transactions.length, 0);
+  } finally { await emptyDb.close(); }
+  for (const invalidSource of [
+    { ...fullyEmptySource, tables: fullyEmptySource.tables.slice(1) },
+    { ...fullyEmptySource, tables: fullyEmptySource.tables.slice(0, -1) },
+    { ...fullyEmptySource, accountHistoryQueryCoverage: yuantaFundAccountHistoryQueries.slice(0, -1) },
+  ]) {
+    const rejectedItems: PGliteWorkflowRunItem[] = [];
+    await assert.rejects(runYuantaFundStatements({} as never, fundHistoryInput,
+      { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },
+      fundDependencies(async () => invalidSource, rejectedItems, new AbortController().signal)));
+    assert.equal(rejectedItems.length, 0, "Empty history still requires explicit absence and every complete report");
+  }
   const repeatAccountItems: PGliteWorkflowRunItem[] = [];
   await runYuantaFundStatements({} as never, fundHistoryInput,
     { yuanta_user_id: "synthetic-login", yuanta_account: "synthetic-account" },

@@ -24,7 +24,8 @@ import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { resolveYuantaFundCatalogName, resolveYuantaFundIdentity, yuantaFundCatalogName, type YuantaFundCatalogEntry } from "./yuanta-fund-catalog.ts";
 import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query.ts";
-import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundSourceAmountCurrency, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
+import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
+import { canonicalYuantaFundCurrency, isYuantaFundSourceCurrencyLabel, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
 import type { YuantaCredentials } from "./yuanta-auth.ts";
 
 const BANK_ORIGIN = "https://ebank.yuantabank.com.tw";
@@ -1452,7 +1453,7 @@ function normalizedRawRowValues(
       const logicalLines: string[] = [];
       for (let line = 0; line < sourceLines[index].length; line += 1) {
         const current = sourceLines[index][line];
-        if (/^(?:台幣|新臺幣|新台幣|美元|美金|日圓|歐元|港幣|澳幣|人民幣|南非幣|紐幣|英鎊|TWD|USD|JPY|EUR)$/u.test(current) &&
+        if (isYuantaFundSourceCurrencyLabel(current) &&
           /^[\d,]+(?:\.\d+)?$/u.test(sourceLines[index][line + 1] ?? "")) {
           logicalLines.push(`${current} ${sourceLines[index][++line]}`);
         } else logicalLines.push(current);
@@ -1581,25 +1582,6 @@ function canonicalSourceDate(value: string): string {
   return normalized;
 }
 
-function canonicalCurrency(value: string): string {
-  const normalized = value.trim().toUpperCase();
-  const aliases: Record<string, string> = {
-    台幣: "TWD",
-    新臺幣: "TWD",
-    新台幣: "TWD",
-    美元: "USD",
-    美金: "USD",
-    日圓: "JPY",
-    歐元: "EUR",
-    人民幣: "CNY",
-  };
-  return aliases[normalized] ?? normalized;
-}
-
-export function canonicalYuantaFundCurrency(value: string): string {
-  return canonicalCurrency(value);
-}
-
 function canonicalExactAmount(value: string): {
   coefficient: string;
   scale: number;
@@ -1712,7 +1694,7 @@ function fundCurrencyByPositionKey(
     if (!position) {
       throw new Error("fund holding has no stable provider position");
     }
-    const currency = canonicalCurrency(row["投資幣別"] ?? "");
+    const currency = canonicalYuantaFundCurrency(row["投資幣別"] ?? "");
     if (!currency) throw new Error("fund holding has no source currency");
     const key = fundPositionKey(position);
     const previous = currencies.get(key);
@@ -1778,7 +1760,7 @@ function yuantaFundTransactionRows(
     if (![...fundPurchaseTableLabels, ...fundRedemptionTableLabels].includes(table.tableLabel)) {
       for (const row of normalizedColumnRecords(table)) {
         transactions.push(...yuantaFundAdditionalEventRows(table.tableLabel, row, catalog,
-          occurrenceScope, { amount: canonicalExactAmount, date: canonicalSourceDate, currency: canonicalCurrency,
+          occurrenceScope, { amount: canonicalExactAmount, date: canonicalSourceDate, currency: canonicalYuantaFundCurrency,
             ...(accountHistoryType ? { cashCurrency: yuantaFundSourceAmountCurrency, allowNameIdentity: true as const } : {}),
           }));
       }
@@ -1874,6 +1856,7 @@ function yuantaFundTransactionRows(
 export function evaluateYuantaFundCanonicalAdmission(
   tables: readonly ParsedTable[],
   positions: readonly FundPosition[] = [],
+  historyProof?: YuantaFundHistoryProof,
 ): YuantaFundCanonicalAdmission {
   const holdingRows = tables
     .filter(
@@ -1900,7 +1883,7 @@ export function evaluateYuantaFundCanonicalAdmission(
     const explicitEmptyHoldings = tables.some(table => table.tableLabel === "current-position-absence" &&
       table.category === "investment-source-evidence" && table.rows.length === 1 &&
       table.rows[0]?.length === 1 && table.rows[0][0] === "無基金部位");
-    if (explicitEmptyHoldings && transactionCount > 0) return {
+    if (explicitEmptyHoldings && (transactionCount > 0 || historyProof)) return {
       status: "admitted", contractVersion: YUANTA_FUND_INVESTMENT_CONTRACT_VERSION,
       holdingCount: 0, transactionCount,
     };
@@ -1999,7 +1982,7 @@ function collectYuantaFundCanonicalItems(
     now(): string;
   }>,
 ): number {
-  const admission = evaluateYuantaFundCanonicalAdmission(tables, positions);
+  const admission = evaluateYuantaFundCanonicalAdmission(tables, positions, historyProof);
   assertYuantaFundCanonicalAdmission(admission);
 
   const overviewRows = tables
@@ -2136,6 +2119,10 @@ function collectYuantaFundCanonicalItems(
     // Splitting by economic date would strip coverage from later captures.
     const effectiveOn = transactions.map(transaction => transaction.effectiveOn).sort().at(-1)!;
     captureGroups.set(effectiveOn, { holdings: [], transactions });
+  } else if (historyProof) {
+    // An explicitly empty account still carries complete dated history evidence.
+    // Its query end is the coverage boundary, not an invented holding valuation date.
+    captureGroups.set(historyProof.transactionHistory.endDate, { holdings: [], transactions: [] });
   }
 
   const captures: InvestmentValidatedCapture[] = [];

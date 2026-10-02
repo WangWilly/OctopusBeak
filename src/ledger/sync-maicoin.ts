@@ -7,6 +7,7 @@ import {
   parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
   readMaicoinStatementNativeIdentity,
+  maicoinStatementQuerySpecs,
   resolveMaicoinTwdQuote,
   type MaicoinAccountRecord,
   type MaicoinPublicMarket,
@@ -89,7 +90,6 @@ type PriceQuote = {
 
 type StatementBatch = MaicoinStatementBatch;
 
-type StatementSpec = Omit<StatementBatch, "rows" | "history">;
 type StatementValueMap = Map<string, number | null>;
 type KLine = [number, number | string, number | string, number | string, number | string, number | string];
 
@@ -761,41 +761,8 @@ async function fetchStatement(
   walletTypes: WalletType[],
   limit: number,
 ) {
-  const specs: StatementSpec[] = [
-    ...walletTypes.map((walletType) => ({
-      endpoint: `/api/v3/wallet/${walletType}/trades`,
-      walletType,
-      rowType: "trade" as const,
-    })),
-    {
-      endpoint: "/api/v3/fund_transactions/deposits",
-      walletType: null,
-      rowType: "deposit" as const,
-    },
-    {
-      endpoint: "/api/v3/fund_transactions/withdrawals",
-      walletType: null,
-      rowType: "withdrawal" as const,
-    },
-    {
-      endpoint: "/api/v3/fund_transactions/transfers",
-      walletType: null,
-      rowType: "transfer" as const,
-    },
-    {
-      endpoint: "/api/v3/rewards",
-      walletType: null,
-      rowType: "reward" as const,
-    },
-    {
-      endpoint: "/api/v3/converts",
-      walletType: null,
-      rowType: "convert" as const,
-    },
-  ];
-
   const batches: StatementBatch[] = [];
-  for (const spec of specs) {
+  for (const spec of maicoinStatementQuerySpecs(walletTypes)) {
     const history = await fetchFullStatementRows(client, spec.endpoint, limit, spec.rowType);
     batches.push({ ...spec, ...history });
   }

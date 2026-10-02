@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryScope,
-  yuantaFundAccountHistoryQueryFields, yuantaFundSourceAmountCurrency } from "./yuanta-fund-account-history.ts";
+  yuantaFundAccountHistoryQueryFields } from "./yuanta-fund-account-history.ts";
+import { yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
 import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query.ts";
 assert.equal(yuantaFundAccountHistoryQueries.length, 15);
 assert.equal(new Set(yuantaFundAccountHistoryQueries.map(q => `${q.investmentType}:${q.detail}`)).size, 15);
