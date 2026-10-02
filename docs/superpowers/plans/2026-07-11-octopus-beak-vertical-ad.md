@@ -29,8 +29,8 @@
 - Create: `outputs/ads/octopus-beak-vertical-ad/references/03-cash-flow.png`
 - Create: `outputs/ads/octopus-beak-vertical-ad/references/04-einvoice-spending.png`
 - Create: `outputs/ads/octopus-beak-vertical-ad/references/05-investment-cta.png`
-- Copy from: `site/assets/ob-dashboard-drilldown.png` to `video/octopus-beak-vertical-ad/assets/product/dashboard.png`
-- Copy from: `site/assets/ob-automation-flow.png` to `video/octopus-beak-vertical-ad/assets/product/automation.png`
+- Copy from: `site/assets/ob-dashboard-drilldown.png` to `video/octopus-beak-vertical-ad/assets/product/dashboard.png` (removed from the site on 2026-10-02; restore with `git show 245151d7:site/assets/ob-dashboard-drilldown.png`)
+- Copy from: `site/assets/ob-automation-flow.png` to `video/octopus-beak-vertical-ad/assets/product/automation.png` (removed from the site on 2026-10-02; restore with `git show 245151d7:site/assets/ob-automation-flow.png`)
 
 **Interfaces:**
 - Produces: five 1080×1920 PNG reference images, named in chronological story order.

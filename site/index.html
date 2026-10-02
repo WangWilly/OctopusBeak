@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OctopusBeak｜銀行、信用卡與投資帳戶，一次看懂</title>
+  <title>OctopusBeak｜銀行、信用卡、投資帳戶，一鍵匯入</title>
   <meta
     name="description"
-    content="為同時管理多個金融帳戶的台灣使用者，自動收集分散的帳務資料，讓資產、負債與交易來源清楚可查。"
+    content="macOS 桌面 App。一鍵匯入 11 家台灣金融機構與電子發票的帳務，整理成每個數字都查得到出處的財務全貌，資料只留在你的 Mac。"
   />
   <meta name="robots" content="index, follow" />
-  <meta name="theme-color" content="#064d3e" />
+  <meta name="theme-color" content="#071f4a" />
   <meta name="application-name" content="OctopusBeak" />
   <meta name="apple-mobile-web-app-title" content="OctopusBeak" />
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
@@ -19,29 +19,28 @@
   <link rel="alternate" hreflang="zh-Hant" href="https://wangwilly.github.io/OctopusBeak/" />
   <link rel="alternate" hreflang="en" href="https://wangwilly.github.io/OctopusBeak/?lang=en" />
   <link rel="alternate" hreflang="x-default" href="https://wangwilly.github.io/OctopusBeak/" />
-  <link rel="stylesheet" href="assets/fonts/fonts.css" />
-  <meta property="og:title" content="OctopusBeak｜銀行、信用卡與投資帳戶，一次看懂" />
+  <meta property="og:title" content="OctopusBeak｜銀行、信用卡、投資帳戶，一鍵匯入" />
   <meta
     property="og:description"
-    content="為同時管理多個金融帳戶的台灣使用者，自動收集分散的帳務資料，讓資產、負債與交易來源清楚可查。"
+    content="macOS 桌面 App。一鍵匯入 11 家台灣金融機構與電子發票的帳務，整理成每個數字都查得到出處的財務全貌，資料只留在你的 Mac。"
   />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://wangwilly.github.io/OctopusBeak/" />
   <meta property="og:site_name" content="OctopusBeak" />
   <meta property="og:locale" content="zh_TW" />
   <meta property="og:locale:alternate" content="en_US" />
-  <meta property="og:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png" />
-  <meta property="og:image:type" content="image/png" />
-  <meta property="og:image:width" content="1672" />
-  <meta property="og:image:height" content="941" />
-  <meta property="og:image:alt" content="OctopusBeak 財務全貌與自動化流程預覽" />
+  <meta property="og:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.jpg" />
+  <meta property="og:image:type" content="image/jpeg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="OctopusBeak：銀行、信用卡、投資帳戶，一鍵匯入。雕版風格的孫中山拿著手機。" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="OctopusBeak｜銀行、信用卡與投資帳戶，一次看懂" />
+  <meta name="twitter:title" content="OctopusBeak｜銀行、信用卡、投資帳戶，一鍵匯入" />
   <meta
     name="twitter:description"
-    content="為同時管理多個金融帳戶的台灣使用者，自動收集分散的帳務資料，讓資產、負債與交易來源清楚可查。"
+    content="macOS 桌面 App。一鍵匯入 11 家台灣金融機構與電子發票的帳務，整理成每個數字都查得到出處的財務全貌，資料只留在你的 Mac。"
   />
-  <meta name="twitter:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png" />
+  <meta name="twitter:image" content="https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.jpg" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -53,293 +52,354 @@
     "softwareVersion": "Beta",
     "downloadUrl": "https://github.com/WangWilly/OctopusBeak/releases/latest",
     "sameAs": "https://github.com/WangWilly/OctopusBeak",
-    "description": "為同時管理多個金融帳戶的台灣使用者，自動收集分散的帳務資料，讓資產、負債與交易來源清楚可查。",
-    "image": "https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.png",
+    "description": "macOS 桌面 App。一鍵匯入 11 家台灣金融機構與電子發票的帳務，整理成每個數字都查得到出處的財務全貌，資料只留在你的 Mac。",
+    "image": "https://wangwilly.github.io/OctopusBeak/assets/ob-social-card.jpg",
     "inLanguage": ["zh-Hant", "en"]
   }
   </script>
   <link rel="stylesheet" href="assets/site.css" />
   <script src="assets/site.js" defer></script>
+  <link rel="preload" as="image" href="assets/illustrations/sun-phone-reading.webp" fetchpriority="high" />
 </head>
 <body>
+  <svg class="defs" aria-hidden="true" focusable="false">
+    <defs>
+      <!-- Gradient maps for the banknote engravings. The red plates carry their tone in the green channel; the salmon plate is full colour, so it maps from luminance. -->
+      <filter id="ink-hero" color-interpolation-filters="sRGB">
+        <feColorMatrix type="matrix" values="0 1 0 0 0  0 1 0 0 0  0 1 0 0 0  0 0 0 1 0" />
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="0.012 0.03 0.07 0.5 0.93" />
+          <feFuncG type="table" tableValues="0.06 0.17 0.5 0.86 0.97" />
+          <feFuncB type="table" tableValues="0.18 0.37 0.62 0.84 0.95" />
+        </feComponentTransfer>
+      </filter>
+      <filter id="ink-mint" color-interpolation-filters="sRGB">
+        <feColorMatrix type="matrix" values="0 1 0 0 0  0 1 0 0 0  0 1 0 0 0  0 0 0 1 0" />
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="0.027 0.094 0.929" />
+          <feFuncG type="table" tableValues="0.122 0.5 0.957" />
+          <feFuncB type="table" tableValues="0.29 0.56 0.945" />
+        </feComponentTransfer>
+      </filter>
+      <filter id="ink-light" color-interpolation-filters="sRGB">
+        <feColorMatrix type="matrix" values="0.4 0.78 0.14 0 -0.15  0.4 0.78 0.14 0 -0.15  0.4 0.78 0.14 0 -0.15  0 0 0 1 0" />
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="0.027 0.04 0.12 0.5 0.93" />
+          <feFuncG type="table" tableValues="0.122 0.22 0.42 0.72 0.96" />
+          <feFuncB type="table" tableValues="0.29 0.4 0.54 0.74 0.95" />
+        </feComponentTransfer>
+      </filter>
+      <!-- banknote-patterns:start -->
+      <symbol id="rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="ro"><path id="ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#ro0" transform="rotate(9)"/><use href="#ro0" transform="rotate(18)"/><use href="#ro0" transform="rotate(27)"/><use href="#ro0" transform="rotate(36)"/><use href="#ro0" transform="rotate(45)"/><use href="#ro0" transform="rotate(54)"/><use href="#ro0" transform="rotate(63)"/><use href="#ro0" transform="rotate(72)"/><use href="#ro0" transform="rotate(81)"/><use href="#ro0" transform="rotate(90)"/><use href="#ro0" transform="rotate(99)"/><use href="#ro0" transform="rotate(108)"/><use href="#ro0" transform="rotate(117)"/><use href="#ro0" transform="rotate(126)"/><use href="#ro0" transform="rotate(135)"/><use href="#ro0" transform="rotate(144)"/><use href="#ro0" transform="rotate(153)"/><use href="#ro0" transform="rotate(162)"/><use href="#ro0" transform="rotate(171)"/><use href="#ro0" transform="rotate(180)"/><use href="#ro0" transform="rotate(189)"/><use href="#ro0" transform="rotate(198)"/><use href="#ro0" transform="rotate(207)"/><use href="#ro0" transform="rotate(216)"/><use href="#ro0" transform="rotate(225)"/><use href="#ro0" transform="rotate(234)"/><use href="#ro0" transform="rotate(243)"/><use href="#ro0" transform="rotate(252)"/><use href="#ro0" transform="rotate(261)"/><use href="#ro0" transform="rotate(270)"/><use href="#ro0" transform="rotate(279)"/><use href="#ro0" transform="rotate(288)"/><use href="#ro0" transform="rotate(297)"/><use href="#ro0" transform="rotate(306)"/><use href="#ro0" transform="rotate(315)"/><use href="#ro0" transform="rotate(324)"/><use href="#ro0" transform="rotate(333)"/><use href="#ro0" transform="rotate(342)"/><use href="#ro0" transform="rotate(351)"/></g><use href="#ro" transform="rotate(1.1)"/><use href="#ro" transform="rotate(2.3)"/><use href="#ro" transform="rotate(3.4)"/><use href="#ro" transform="rotate(4.5)"/><use href="#ro" transform="rotate(5.6)"/><use href="#ro" transform="rotate(6.8)"/><use href="#ro" transform="rotate(7.9)"/><g id="rb"><path id="rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#rb0" transform="rotate(15)"/><use href="#rb0" transform="rotate(30)"/><use href="#rb0" transform="rotate(45)"/><use href="#rb0" transform="rotate(60)"/><use href="#rb0" transform="rotate(75)"/><use href="#rb0" transform="rotate(90)"/><use href="#rb0" transform="rotate(105)"/><use href="#rb0" transform="rotate(120)"/><use href="#rb0" transform="rotate(135)"/><use href="#rb0" transform="rotate(150)"/><use href="#rb0" transform="rotate(165)"/><use href="#rb0" transform="rotate(180)"/><use href="#rb0" transform="rotate(195)"/><use href="#rb0" transform="rotate(210)"/><use href="#rb0" transform="rotate(225)"/><use href="#rb0" transform="rotate(240)"/><use href="#rb0" transform="rotate(255)"/><use href="#rb0" transform="rotate(270)"/><use href="#rb0" transform="rotate(285)"/><use href="#rb0" transform="rotate(300)"/><use href="#rb0" transform="rotate(315)"/><use href="#rb0" transform="rotate(330)"/><use href="#rb0" transform="rotate(345)"/></g><use href="#rb" transform="rotate(1.9)"/><use href="#rb" transform="rotate(3.8)"/><use href="#rb" transform="rotate(5.6)"/><use href="#rb" transform="rotate(7.5)"/><use href="#rb" transform="rotate(9.4)"/><use href="#rb" transform="rotate(11.3)"/><use href="#rb" transform="rotate(13.1)"/><g id="rh"><path id="rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#rh0" transform="rotate(32.7)"/><use href="#rh0" transform="rotate(65.5)"/><use href="#rh0" transform="rotate(98.2)"/><use href="#rh0" transform="rotate(130.9)"/><use href="#rh0" transform="rotate(163.6)"/><use href="#rh0" transform="rotate(196.4)"/><use href="#rh0" transform="rotate(229.1)"/><use href="#rh0" transform="rotate(261.8)"/><use href="#rh0" transform="rotate(294.5)"/><use href="#rh0" transform="rotate(327.3)"/></g><use href="#rh" transform="rotate(5.5)"/><use href="#rh" transform="rotate(10.9)"/><use href="#rh" transform="rotate(16.4)"/><use href="#rh" transform="rotate(21.8)"/><use href="#rh" transform="rotate(27.3)"/><g id="rc"><path id="rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#rc0" transform="rotate(30)"/><use href="#rc0" transform="rotate(60)"/><use href="#rc0" transform="rotate(90)"/><use href="#rc0" transform="rotate(120)"/><use href="#rc0" transform="rotate(150)"/><use href="#rc0" transform="rotate(180)"/><use href="#rc0" transform="rotate(210)"/><use href="#rc0" transform="rotate(240)"/><use href="#rc0" transform="rotate(270)"/><use href="#rc0" transform="rotate(300)"/><use href="#rc0" transform="rotate(330)"/></g><use href="#rc" transform="rotate(3.8)"/><use href="#rc" transform="rotate(7.5)"/><use href="#rc" transform="rotate(11.3)"/><use href="#rc" transform="rotate(15)"/><use href="#rc" transform="rotate(18.8)"/><use href="#rc" transform="rotate(22.5)"/><use href="#rc" transform="rotate(26.3)"/><g id="ri"><path id="ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#ri0" transform="rotate(40)"/><use href="#ri0" transform="rotate(80)"/><use href="#ri0" transform="rotate(120)"/><use href="#ri0" transform="rotate(160)"/><use href="#ri0" transform="rotate(200)"/><use href="#ri0" transform="rotate(240)"/><use href="#ri0" transform="rotate(280)"/><use href="#ri0" transform="rotate(320)"/></g><use href="#ri" transform="rotate(6.7)"/><use href="#ri" transform="rotate(13.3)"/><use href="#ri" transform="rotate(20)"/><use href="#ri" transform="rotate(26.7)"/><use href="#ri" transform="rotate(33.3)"/></symbol>
+      <g id="w" fill="none" stroke="currentColor"><path id="wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#wl" transform="translate(487.5 -28.1)"/><use href="#wl" transform="translate(525 -18.7)"/><use href="#wl" transform="translate(562.5 -9.4)"/><use href="#wl" transform="translate(37.5 9.4)"/><use href="#wl" transform="translate(75 18.8)"/><use href="#wl" transform="translate(112.5 28.1)"/><use href="#wl" transform="translate(150 37.5)"/><use href="#wl" transform="translate(187.5 46.9)"/><use href="#wl" transform="translate(225 56.3)"/><use href="#wl" transform="translate(262.5 65.6)"/><use href="#wl" transform="translate(300 75)"/><use href="#wl" transform="translate(337.5 84.4)"/><use href="#wl" transform="translate(375 93.8)"/><use href="#wl" transform="translate(412.5 103.1)"/><use href="#wl" transform="translate(450 112.5)"/><use href="#wl" transform="translate(487.5 121.9)"/><use href="#wl" transform="translate(525 131.3)"/><use href="#wl" transform="translate(562.5 140.6)"/><use href="#wl" transform="translate(0 150)"/><use href="#wl" transform="translate(37.5 159.4)"/><use href="#wl" transform="translate(75 168.8)"/><use href="#wl" transform="translate(112.5 178.1)"/><use href="#wl" transform="translate(150 187.5)"/><use href="#wl" transform="translate(187.5 196.9)"/><use href="#wl" transform="translate(225 206.3)"/><use href="#wl" transform="translate(262.5 215.6)"/><use href="#wl" transform="translate(300 225)"/><use href="#wl" transform="translate(337.5 234.4)"/><use href="#wl" transform="translate(375 243.8)"/><use href="#wl" transform="translate(412.5 253.1)"/><use href="#wl" transform="translate(450 262.5)"/><use href="#wl" transform="translate(487.5 271.9)"/><use href="#wl" transform="translate(525 281.3)"/><use href="#wl" transform="translate(562.5 290.6)"/><use href="#wl" transform="translate(0 300)"/><use href="#wl" transform="translate(37.5 309.4)"/><use href="#wl" transform="translate(75 318.8)"/></g>
+      <pattern id="waves-teal" class="waves-teal" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#w"/></pattern>
+      <pattern id="waves-ink" class="waves-ink" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#w"/></pattern>
+      <pattern id="microline" class="microline" patternUnits="userSpaceOnUse" width="120" height="14"><g fill="none" stroke="currentColor"><path d="M-20 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-16 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-12 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 M-8 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 M-4 7q5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0 5 -7 10 0 5 7 10 0" stroke-width="0.5"/><path d="M0 0.5H120M0 13.5H120"/><path d="M0 7H120" stroke-dasharray="1 2"/></g></pattern>
+      <!-- banknote-patterns:end -->
+    </defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 3.5v17a.8.8 0 0 0 1.2.7l13.4-8.5a.8.8 0 0 0 0-1.4L7.2 2.8A.8.8 0 0 0 6 3.5Z" /></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+    <symbol id="i-bank" viewBox="0 0 24 24"><path d="M3 22h18M6 18v-7M10 18v-7M14 18v-7M18 18v-7M12 2l8 5H4Z" /></symbol>
+    <symbol id="i-card" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="5" rx="2" /><path d="M2 10h20" /></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-5-5L2 17" /><path d="M16 7h6v6" /></symbol>
+    <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="8" cy="8" r="6" /><path d="M18.09 10.37A6 6 0 1 1 10.34 18M7 6h1v4M16.71 13.88l.7.71-2.82 2.82" /></symbol>
+    <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" /><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8M12 17.5v-11" /></symbol>
+    <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16" /></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6" /></symbol>
+    <symbol id="n-overview" viewBox="0 0 24 24"><path d="M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z" /></symbol>
+    <symbol id="n-assets" viewBox="0 0 24 24"><path d="M21 18v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9Zm-9-2h10V8H12v8Zm4-2.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z" /></symbol>
+    <symbol id="n-liabilities" viewBox="0 0 24 24"><path d="M19 14V6a2 2 0 0 0-2-2H3a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2Zm-9-1a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm13-6v11a2 2 0 0 1-2 2H4v-2h17V7h2Z" /></symbol>
+    <symbol id="n-spending" viewBox="0 0 24 24"><path d="M19.5 3.5 18 2l-1.5 1.5L15 2l-1.5 1.5L12 2l-1.5 1.5L9 2 7.5 3.5 6 2 4.5 3.5 3 2v20l1.5-1.5L6 22l1.5-1.5L9 22l1.5-1.5L12 22l1.5-1.5L15 22l1.5-1.5L18 22l1.5-1.5L21 22V2l-1.5 1.5ZM19 19H5V5h14v14ZM6 15h12v2H6v-2Zm0-4h12v2H6v-2Zm0-4h12v2H6V7Z" /></symbol>
+    <symbol id="n-automation" viewBox="0 0 24 24"><path d="M4 4h16v4H4V4Zm2 2v0h12v0H6Zm-2 5h16v2H4v-2Zm2 4h12v5H6v-5Zm2 2v1h8v-1H8Z" /></symbol>
+    <symbol id="n-issues" viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21Zm3.47-2L12 5.99 19.53 19H4.47ZM11 16h2v2h-2v-2Zm0-6h2v4h-2v-4Z" /></symbol>
+    <symbol id="n-settings" viewBox="0 0 24 24"><path d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.47.41l-.36 2.54a7.4 7.4 0 0 0-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54a7.4 7.4 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z" /></symbol>
+  </svg>
+
   <header class="site-header">
-    <div class="container nav-row">
+    <div class="nav-pill">
       <a class="brand" href="#top" aria-label="OctopusBeak home">
-        <img src="assets/site-icon.png" width="30" height="30" alt="" />
+        <img src="assets/site-icon.webp" width="28" height="28" alt="" />
         <span>OctopusBeak</span>
       </a>
-
       <nav class="nav-links" aria-label="Primary navigation">
         <a href="#how-it-works" data-i18n="nav.how">運作方式</a>
         <a href="#overview" data-i18n="nav.overview">財務全貌</a>
         <a href="#sources" data-i18n="nav.sources">支援來源</a>
         <a href="#faq" data-i18n="nav.faq">常見問題</a>
       </nav>
-
       <div class="nav-actions">
-        <a
-          class="btn btn-primary header-download"
-          href="https://github.com/WangWilly/OctopusBeak/releases/latest" data-i18n="cta.download"
-        >下載 macOS Beta</a>
-        <div class="lang-switch" aria-label="Language">
+        <div class="lang-switch" role="group" aria-label="Language">
           <button type="button" data-lang-button="zh-Hant" aria-pressed="true">繁中</button>
           <button type="button" data-lang-button="en" aria-pressed="false">EN</button>
         </div>
+        <a class="btn btn-ink btn-sm" href="https://github.com/WangWilly/OctopusBeak/releases/latest">
+          <span class="label-full" data-i18n="cta.download">下載 macOS Beta</span>
+          <span class="label-short" data-i18n="footer.download">下載</span>
+        </a>
       </div>
     </div>
   </header>
 
   <main id="top">
-    <section class="hero">
-      <div class="container hero-grid">
+    <section class="hero" data-pose="reading">
+      <div class="hero-art" aria-hidden="true">
+        <svg class="engrave engrave-waves" aria-hidden="true"><rect width="100%" height="100%" fill="url(#waves-teal)" /></svg>
+        <svg class="engrave engrave-rosette" aria-hidden="true"><use href="#rosette" /></svg>
+        <div class="sun">
+          <div class="sun-ink">
+            <img class="pose is-on" data-pose-name="reading" src="assets/illustrations/sun-phone-reading.webp" width="701" height="700" alt="" fetchpriority="high" />
+          </div>
+        </div>
+      </div>
+      <svg class="engrave engrave-rule" aria-hidden="true"><rect width="100%" height="100%" fill="url(#microline)" /></svg>
+      <div class="container hero-inner">
         <div class="hero-copy">
-          <p
-            class="eyebrow" data-i18n="hero.eyebrow"
-          >給同時管理三個以上帳戶的你</p>
-          <h1 data-i18n="hero.title"
-          >銀行、信用卡、
-投資帳戶，
-不必再靠試算表拼湊。</h1>
-          <p
-            class="hero-lead" data-i18n="hero.lead"
-          >OctopusBeak 自動收集分散的帳務資料，整理成可追溯、隨時能核對的財務全貌。</p>
-          <div class="hero-actions">
-            <a
-              class="btn btn-primary"
-              href="https://github.com/WangWilly/OctopusBeak/releases/latest" data-i18n="cta.download"
-            >下載 macOS Beta</a>
-            <a
-              class="btn btn-secondary"
-              href="#demo"
-            >
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              <span data-i18n="hero.demo">觀看完整示範</span>
+          <h1 class="display"><span data-i18n="hero.title">銀行、信用卡、投資帳戶，</span><span data-i18n="hero.title2">一鍵匯入。</span><br /><span data-i18n="hero.titleTone">每個數字都查得到出處。</span></h1>
+          <p class="lead lead-on-dark" data-i18n="hero.lead">OctopusBeak 從 11 家金融機構與電子發票收集帳務，在你的 Mac 上整理成一份能逐筆核對的財務全貌。</p>
+          <div class="actions">
+            <a class="btn btn-mint btn-lg" href="https://github.com/WangWilly/OctopusBeak/releases/latest">
+              <span data-i18n="cta.download">下載 macOS Beta</span>
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
+            </a>
+            <a class="btn btn-glass btn-lg" href="#demo">
+              <svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg>
+              <span data-i18n="hero.demo">觀看示範</span>
             </a>
           </div>
-          <p class="support-line">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9Z" />
-            </svg>
-            <span data-i18n="cta.requirements"
-            >適用 Apple silicon｜目前為測試版本</span>
-          </p>
-        </div>
-
-        <div class="demo-stage" id="demo">
-          <video
-            controls
-            muted
-            loop
-            playsinline
-            preload="none"
-            poster="assets/octopusbeak-demo-poster.jpg"
-            aria-label="OctopusBeak product demonstration"
-          >
-            <source src="assets/octopusbeak-demo.mp4" type="video/mp4" />
-          </video>
+          <ul class="facts">
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check" /></svg><span data-i18n="cta.requirements">適用 Apple silicon｜測試版本</span></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg><span data-i18n="privacy.point1">資料只留在你的 Mac</span></li>
+          </ul>
         </div>
       </div>
     </section>
 
-    <section class="section" id="sources">
+    <section class="section" id="sources" data-reveal>
       <div class="container">
-        <div class="section-heading">
-          <div class="section-title-wrap">
-            <p class="eyebrow" data-i18n="sources.eyebrow">目前支援來源</p>
-            <h2 data-i18n="sources.title"
-            >每一個帳戶，都該回到你的財務全貌裡。</h2>
+        <div class="section-head split">
+          <div class="reveal">
+            <h2 class="headline"><span data-i18n="sources.title">11 家金融機構加上電子發票，</span><span class="tone" data-i18n="sources.titleTone">一次匯進同一份帳。</span></h2>
+            <div class="head-aside sources-aside">
+              <p class="lead" data-i18n="sources.lead">存款、信用卡、貸款、證券、基金、外幣，還有 MaiCoin 的虛擬資產，都放在同一個可以核對的地方。支援的來源會逐步增加。</p>
+              <span class="chip chip-good" data-i18n="sources.badge">Beta 已支援</span>
+            </div>
           </div>
-          <div class="heading-side">
-            <p data-i18n="sources.lead"
-            >從銀行存款、信用卡到投資紀錄，OctopusBeak 正逐步把常用的金融來源整理到同一個可核對的地方。</p>
-            <span class="beta-badge" data-i18n="sources.badge">Beta 目前支援</span>
+          <img class="motif-shoal reveal" src="assets/illustrations/formosan-salmon-2000.webp" width="820" height="392" loading="lazy" decoding="async" alt="" />
+        </div>
+
+        <ul class="source-grid">
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/fubon.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.fubon">台北富邦</strong><small data-i18n="source.fubon.types">存款、信用卡、貸款</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/esun.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.esun">玉山銀行</strong><small data-i18n="source.types.cards">信用卡</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/yuanta-bank.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.yuanta">元大銀行</strong><small data-i18n="source.yuanta.types">存款、外幣、貸款、信用卡、基金</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/yuanta-securities.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.yuantaSec">元大證券</strong><small data-i18n="source.yuantaSec.types">證券投資</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/cathay.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.cathay">國泰世華</strong><small data-i18n="source.cathay.types">台幣存款、外幣存款</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/hncb.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.huanan">華南銀行</strong><small data-i18n="source.types.deposits">存款</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/ctbc.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.ctbc">中國信託</strong><small data-i18n="source.types.deposits">存款</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/post.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.post">中華郵政</strong><small data-i18n="source.types.deposits">存款</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/sinopac.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.sinopac">永豐銀行</strong><small data-i18n="source.types.accounts">帳戶</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/linebank.webp" width="44" height="44" alt="" decoding="async" /><span><strong>LINE Bank</strong><small data-i18n="source.types.accounts">帳戶</small></span></li>
+          <li class="source-card reveal" data-source="institution"><img class="source-logo" src="assets/logos/maicoin.webp" width="44" height="44" alt="" decoding="async" /><span><strong>MaiCoin</strong><small data-i18n="source.maicoin.types">虛擬資產</small></span></li>
+          <li class="source-card reveal" data-source="other"><img class="source-logo" src="assets/logos/einvoice.webp" width="44" height="44" alt="" decoding="async" /><span><strong data-i18n="source.other">其他資料來源</strong><small data-i18n="source.other.types">電子發票</small></span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel panel-soft" id="how-it-works" data-reveal>
+      <svg class="engrave engrave-light" aria-hidden="true"><rect width="100%" height="100%" fill="url(#waves-ink)" /></svg>
+      <div class="container">
+        <div class="section-head">
+          <div class="reveal">
+            <h2 class="headline"><span data-i18n="flow.title">按一次，</span><span class="tone" data-i18n="flow.titleTone">全部匯入。</span></h2>
           </div>
+          <p class="lead reveal" data-i18n="flow.lead">來源設定好之後，按一下匯入，OctopusBeak 會從頭跑到完，把每個帳戶的資料收進財務全貌。</p>
         </div>
 
-        <div class="source-list">
-          <article class="source-item">
-            <h3 data-i18n="source.fubon">台北富邦</h3>
-            <p data-i18n="source.fubon.types">存款、信用卡、貸款</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.esun">玉山銀行</h3>
-            <p data-i18n="source.types.cards">信用卡</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.yuanta">元大銀行</h3>
-            <p data-i18n="source.yuanta.types">存款、外幣、貸款、信用卡、基金</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.yuantaSec">元大證券</h3>
-            <p data-i18n="source.yuantaSec.types">證券投資</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.cathay">國泰世華</h3>
-            <p data-i18n="source.cathay.types">台幣存款、外幣存款</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.huanan">華南銀行</h3>
-            <p data-i18n="source.types.deposits">存款</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.ctbc">中國信託</h3>
-            <p data-i18n="source.types.deposits">存款</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.post">中華郵政</h3>
-            <p data-i18n="source.types.deposits">存款</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.sinopac">永豐銀行</h3>
-            <p data-i18n="source.types.accounts">帳戶</p>
-          </article>
-          <article class="source-item">
-            <h3>LINE Bank</h3>
-            <p data-i18n="source.types.accounts">帳戶</p>
-          </article>
-          <article class="source-item">
-            <h3>MaiCoin</h3>
-            <p data-i18n="source.maicoin.types">虛擬資產</p>
-          </article>
-          <article class="source-item">
-            <h3 data-i18n="source.other">其他資料來源</h3>
-            <p data-i18n="source.other.types">電子發票</p>
-          </article>
+        <ol class="bento">
+          <li class="tile reveal">
+            <a class="tile-link" href="#sources">
+              <span class="tile-head">
+                <span class="tile-no">01</span>
+                <span class="tile-text"><strong data-i18n="flow.1.title">設定來源</strong><small data-i18n="flow.1.body">登入資料以 macOS 安全儲存加密</small></span>
+                <span class="tile-arrow"><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></span>
+              </span>
+              <span class="tile-stage" aria-hidden="true">
+                <span class="frag frag-import">
+                  <span class="card import-card">
+                    <span class="import-title">Start import</span>
+                    <span class="import-icon"><svg class="icon"><use href="#i-bank" /></svg></span>
+                  </span>
+                  <span class="type-row">
+                    <span class="type-dot"><svg class="icon"><use href="#i-bank" /></svg></span>
+                    <span class="type-dot"><svg class="icon"><use href="#i-card" /></svg></span>
+                    <span class="type-dot"><svg class="icon"><use href="#i-chart" /></svg></span>
+                    <span class="type-dot"><svg class="icon"><use href="#i-coin" /></svg></span>
+                    <span class="type-dot"><svg class="icon"><use href="#i-receipt" /></svg></span>
+                  </span>
+                </span>
+              </span>
+            </a>
+          </li>
+
+          <li class="tile tile-collect reveal">
+            <a class="tile-link" href="#demo">
+              <span class="tile-head">
+                <span class="tile-no">02</span>
+                <span class="tile-text"><strong data-i18n="flow.2.title">一鍵匯入</strong><small data-i18n="flow.2.body">所有來源一次收齊</small></span>
+                <span class="tile-arrow"><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></span>
+              </span>
+              <span class="tile-stage" aria-hidden="true">
+                <span class="frag card stage-card">
+                  <span class="stage-head">
+                    <span class="stage-no">1</span>
+                    <span class="stage-title">Collect statements</span>
+                    <span class="btn-app btn-app-ink is-disabled">Sync all</span>
+                    <svg class="icon stage-caret"><use href="#i-chevron" /></svg>
+                  </span>
+                  <span>
+                    <span class="task-row task-th"><span>Task</span><span>Latest (Asia/Taipei)</span><span>Status</span></span>
+                    <span class="task-row"><span class="task-name">Taipei Fubon Bank</span><span class="num">07/27/2026, 16:02:00</span><span class="chip chip-good">Completed</span></span>
+                    <span class="task-row"><span class="task-name">E.SUN Bank</span><span class="num">07/27/2026, 16:02:41</span><span class="chip chip-good">Completed</span></span>
+                    <span class="task-row"><span class="task-name">Yuanta Bank</span><span class="num">07/27/2026, 16:03:05</span><span class="chip chip-good">Completed</span></span>
+                    <span class="task-row"><span class="task-name">Yuanta Securities</span><span class="num">--</span><span class="chip">Queued</span></span>
+                    <span class="task-row"><span class="task-name">Cathay United Bank</span><span class="num">--</span><span class="chip">Queued</span></span>
+                  </span>
+                </span>
+              </span>
+            </a>
+          </li>
+
+          <li class="tile reveal">
+            <a class="tile-link" href="#overview">
+              <span class="tile-head">
+                <span class="tile-no">03</span>
+                <span class="tile-text"><strong data-i18n="flow.3.title">逐筆核對</strong><small data-i18n="flow.3.body">每個數字都連回來源</small></span>
+                <span class="tile-arrow"><svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg></span>
+              </span>
+              <span class="tile-stage" aria-hidden="true">
+                <span class="frag frag-kpi">
+                  <span class="card metric-card metric-back">
+                    <span class="label">Asset value</span>
+                    <span class="metric-amounts"><span class="value money">TWD 1,850,650</span></span>
+                    <span class="breakdown">Bank 2 + Fund 1 + Brokerage 2 + Foreign 4</span>
+                  </span>
+                  <span class="card metric-card">
+                    <span class="label">Net position</span>
+                    <span class="metric-amounts">
+                      <span class="value money">TWD -1,707,350</span>
+                      <span class="currency-list">
+                        <span class="currency-chip money">USD 35,438.00</span>
+                        <span class="currency-chip money">JPY 1,365,000</span>
+                        <span class="currency-chip money">EUR 2,600.00</span>
+                        <span class="currency-chip money">HKD 18,800.00</span>
+                      </span>
+                    </span>
+                    <span class="breakdown">10 asset accounts + 2 debt accounts</span>
+                  </span>
+                </span>
+              </span>
+            </a>
+          </li>
+
+          <li class="tile tile-demo reveal" id="demo">
+            <div class="tile-head">
+              <span class="tile-no tile-no-play"><svg class="icon icon-fill" aria-hidden="true"><use href="#i-play" /></svg></span>
+              <span class="tile-text"><strong data-i18n="hero.demo">觀看示範</strong></span>
+            </div>
+            <div class="demo-frame">
+              <video controls muted loop playsinline preload="none" poster="assets/octopusbeak-demo-poster.webp" aria-label="OctopusBeak product demonstration">
+                <source src="assets/octopusbeak-demo.mp4" type="video/mp4" />
+              </video>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="panel panel-ink" id="overview" data-reveal>
+      <div class="container">
+        <div class="section-head split">
+          <div class="reveal">
+            <h2 class="headline"><span data-i18n="overview.title">看見全貌，</span><span class="tone" data-i18n="overview.titleTone">也點得回每一筆出處。</span></h2>
+          </div>
+          <p class="lead lead-on-dark head-aside reveal" data-i18n="overview.lead">從總資產、總負債，到單一帳戶和每筆交易，每一層都標著來源。要核對時直接點回去，不用再翻檔案和試算表。</p>
+        </div>
+        <div class="shell reveal">
+          <div class="shell-side" aria-hidden="true">
+            <ul class="shell-nav">
+              <li class="is-active"><svg class="icon icon-fill"><use href="#n-overview" /></svg>Overview</li>
+              <li><svg class="icon icon-fill"><use href="#n-assets" /></svg>Assets</li>
+              <li><svg class="icon icon-fill"><use href="#n-liabilities" /></svg>Liabilities</li>
+              <li><svg class="icon icon-fill"><use href="#n-spending" /></svg>Spending</li>
+              <li><svg class="icon icon-fill"><use href="#n-automation" /></svg>Automation</li>
+              <li><svg class="icon icon-fill"><use href="#n-issues" /></svg>Data issues</li>
+              <li><svg class="icon icon-fill"><use href="#n-settings" /></svg>Settings</li>
+            </ul>
+            <div class="side-status side-status-shell">
+              <span class="side-label">Net position</span>
+              <span class="side-value">TWD -1,707,350</span>
+              <span class="side-sub">USD 35,438.00 / JPY 1,365,000 / EUR 2,600.00 / HKD 18,800.00</span>
+            </div>
+          </div>
+          <figure class="shell-canvas">
+            <img src="assets/octopusbeak-overview.webp" width="1280" height="800" loading="lazy" alt="OctopusBeak financial overview showing assets, liabilities, and source-linked details" />
+          </figure>
         </div>
       </div>
     </section>
 
-    <section class="section workflow" id="how-it-works">
-      <div class="container workflow-grid">
-        <div class="content-copy">
-          <p class="eyebrow" data-i18n="flow.eyebrow">完整流程示範</p>
-          <h2 data-i18n="flow.title"
-          >讓自動化處理重複工作，把確認留給你。</h2>
-          <p data-i18n="flow.lead"
-          >選好金融來源後，OctopusBeak 會收集並整理帳務資料；只有遇到驗證碼、OTP 或需要判斷的情況，才會請你接手。</p>
-
-          <ol class="flow-steps">
-            <li class="flow-step">
-              <span class="flow-number">01</span>
-              <span>
-                <strong data-i18n="flow.1.title">選擇來源</strong>
-                <span data-i18n="flow.1.body">決定要整理的金融帳戶</span>
-              </span>
-            </li>
-            <li class="flow-step">
-              <span class="flow-number">02</span>
-              <span>
-                <strong data-i18n="flow.2.title">自動收集</strong>
-                <span data-i18n="flow.2.body">依照工作流程取得帳務資料</span>
-              </span>
-            </li>
-            <li class="flow-step">
-              <span class="flow-number">03</span>
-              <span>
-                <strong data-i18n="flow.3.title">需要時接手</strong>
-                <span data-i18n="flow.3.body">驗證碼、OTP 或判斷交還給你</span>
-              </span>
-            </li>
-            <li class="flow-step">
-              <span class="flow-number">04</span>
-              <span>
-                <strong data-i18n="flow.4.title">整理成全貌</strong>
-                <span data-i18n="flow.4.body">帳戶與交易保留來源、隨時可核對</span>
-              </span>
-            </li>
-          </ol>
-        </div>
-
-        <figure class="product-frame">
-          <img
-            src="assets/octopusbeak-automation.png"
-            width="1280"
-            height="800"
-            alt="OctopusBeak automation screen listing supported statement collection tasks"
-          />
-        </figure>
-      </div>
-    </section>
-
-    <section class="section" id="overview">
-      <div class="container overview-grid">
-        <figure class="product-frame">
-          <img
-            src="assets/octopusbeak-overview.png"
-            width="1280"
-            height="800"
-            alt="OctopusBeak financial overview showing assets, liabilities, and source-linked details"
-          />
-        </figure>
-
-        <div class="content-copy">
-          <p class="eyebrow" data-i18n="overview.eyebrow">從全貌回到細節</p>
-          <h2 data-i18n="overview.title"
-          >看見全貌，也保留每一條回去核對的路。</h2>
-          <p data-i18n="overview.lead"
-          >從整體資產與負債，到帳戶與交易明細，每一層都能找到對應來源；需要確認時，不必回頭翻遍檔案與試算表。</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="section privacy">
-      <div class="container privacy-grid">
+    <section class="panel panel-mint" id="privacy" aria-labelledby="privacy-title" data-reveal>
+      <img class="motif motif-portrait" src="assets/illustrations/sun-portrait-100.webp" width="1100" height="995" loading="lazy" decoding="async" alt="" />
+      <div class="container privacy">
         <div class="privacy-copy">
-          <p class="eyebrow" data-i18n="privacy.eyebrow">便利不必拿隱私交換</p>
-          <h2 data-i18n="privacy.title"
-          >你的財務資料，可以更好整理，也可以只留在自己的電腦。</h2>
-          <p data-i18n="privacy.lead"
-          >帳務資料與設定保存在本機，憑證透過 macOS 安全儲存機制加密；需要你判斷的地方，程式會停下來等你。</p>
-        </div>
-
-        <div class="proof-list">
-          <div class="proof-item" data-i18n="privacy.point1">你的資料，留在你的 Mac</div>
-          <div class="proof-item" data-i18n="privacy.point2">你的憑證，交由 macOS 保護</div>
-          <div class="proof-item" data-i18n="privacy.point3">你的判斷，始終由你掌握</div>
+          <div class="reveal">
+            <h2 class="headline" id="privacy-title"><span data-i18n="privacy.title">在你的 Mac 上整理，</span><span class="tone" data-i18n="privacy.titleTone">也只留在你的 Mac。</span></h2>
+            <p class="lead" data-i18n="privacy.lead">帳務資料和設定都存在本機，登入憑證以 macOS 安全儲存機制加密。</p>
+          </div>
+          <ul class="proof-list">
+            <li class="reveal"><span class="proof-icon"><svg class="icon" aria-hidden="true"><use href="#i-laptop" /></svg></span><span data-i18n="privacy.point1">資料只留在你的 Mac</span></li>
+            <li class="reveal"><span class="proof-icon"><svg class="icon" aria-hidden="true"><use href="#i-lock" /></svg></span><span data-i18n="privacy.point2">憑證由 macOS 加密保護</span></li>
+          </ul>
         </div>
       </div>
     </section>
 
-    <section class="section" id="faq">
-      <div class="container faq-layout">
-        <div>
-          <p class="eyebrow">FAQ</p>
-          <h2 data-i18n="nav.faq">常見問題</h2>
+    <section class="section" id="faq" data-reveal>
+      <div class="container faq">
+        <div class="reveal">
+          <h2 class="headline" data-i18n="nav.faq">常見問題</h2>
         </div>
-
-        <div class="faq-list">
+        <div class="faq-list reveal">
           <details open>
-            <summary data-i18n="faq.storage.q">OctopusBeak 的資料存在哪裡？</summary>
-            <p data-i18n="faq.storage.a"
-            >OctopusBeak 在你的 Mac 上執行。收集的帳務資料、財務帳本與應用程式設定會保存在本機；登入憑證則透過 macOS 的安全儲存機制加密。遇到驗證碼、OTP 或需要判斷的情況時，程式會暫停並交由你處理。</p>
+            <summary><span data-i18n="faq.import.q">匯入時需要我在旁邊操作嗎？</span><svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg></summary>
+            <p data-i18n="faq.import.a">不需要。來源設定好之後，按一下匯入，OctopusBeak 會從頭跑到完，所有來源一次收齊。</p>
           </details>
           <details>
-            <summary data-i18n="faq.mac.q">我的 Mac 可以安裝 OctopusBeak Beta 嗎？</summary>
-            <p data-i18n="faq.mac.a"
-            >目前 Beta 支援搭載 Apple silicon（M 系列晶片）的 macOS。Intel Mac、Windows 與其他平台尚未提供。</p>
+            <summary><span data-i18n="faq.storage.q">OctopusBeak 的資料存在哪裡？</span><svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg></summary>
+            <p data-i18n="faq.storage.a">OctopusBeak 在你的 Mac 上執行。收集到的帳務資料、財務帳本和應用程式設定都存在本機，登入憑證以 macOS 的安全儲存機制加密。</p>
+          </details>
+          <details>
+            <summary><span data-i18n="faq.mac.q">我的 Mac 可以安裝 OctopusBeak Beta 嗎？</span><svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg></summary>
+            <p data-i18n="faq.mac.a">Beta 版支援搭載 Apple silicon（M 系列晶片）的 Mac。Intel Mac、Windows 與其他平台目前還不支援。</p>
           </details>
         </div>
       </div>
     </section>
 
-    <section class="final-wrap">
-      <div class="container">
-        <div class="final-cta">
-          <div>
-            <p class="eyebrow" data-i18n="final.eyebrow">從容掌握</p>
-            <h2 data-i18n="final.title"
-            >少一點整理，多一點真正看懂自己的財務。</h2>
-          </div>
-          <div class="final-actions">
-            <a
-              class="btn"
-              href="https://github.com/WangWilly/OctopusBeak/releases/latest" data-i18n="cta.download"
-            >下載 macOS Beta</a>
-            <small data-i18n="cta.requirements"
-            >適用 Apple silicon｜目前為測試版本</small>
-          </div>
+    <section class="panel panel-night" data-reveal>
+      <svg class="engrave engrave-rosette engrave-cta" aria-hidden="true"><use href="#rosette" /></svg>
+      <div class="container cta">
+        <div class="reveal">
+          <h2 class="headline"><span data-i18n="final.title">少花時間整理帳，</span><span class="tone" data-i18n="final.titleTone">多花時間看懂自己的錢。</span></h2>
+        </div>
+        <div class="cta-actions reveal">
+          <a class="btn btn-mint btn-lg" href="https://github.com/WangWilly/OctopusBeak/releases/latest">
+            <span data-i18n="cta.download">下載 macOS Beta</span>
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg>
+          </a>
+          <small data-i18n="cta.requirements">適用 Apple silicon｜測試版本</small>
         </div>
       </div>
     </section>
@@ -349,22 +409,26 @@
     <div class="container footer-grid">
       <div class="footer-brand">
         <a class="brand" href="#top" aria-label="OctopusBeak home">
-          <img src="assets/site-icon.png" width="30" height="30" alt="" />
+          <img src="assets/site-icon.webp" width="28" height="28" alt="" />
           <span>OctopusBeak</span>
         </a>
-        <p data-i18n="footer.tagline">帳戶分散，全貌依然清楚。</p>
+        <p data-i18n="footer.tagline">帳戶再分散，全貌一樣清楚。</p>
       </div>
-      <div class="footer-meta">
-        <nav class="footer-links" aria-label="Footer navigation">
-          <a href="#how-it-works" data-i18n="nav.how">運作方式</a>
-          <a href="#sources" data-i18n="nav.sources">支援來源</a>
-          <a href="#faq" data-i18n="nav.faq">常見問題</a>
-          <a href="https://github.com/WangWilly/OctopusBeak">GitHub</a>
-        </nav>
-        <span class="copyright">© 2026 OctopusBeak</span>
+      <nav class="footer-col" aria-labelledby="footer-contents">
+        <h2 id="footer-contents" data-i18n="footer.contents">目錄</h2>
+        <a href="#how-it-works" data-i18n="nav.how">運作方式</a>
+        <a href="#overview" data-i18n="nav.overview">財務全貌</a>
+        <a href="#sources" data-i18n="nav.sources">支援來源</a>
+        <a href="#faq" data-i18n="nav.faq">常見問題</a>
+      </nav>
+      <div class="footer-col">
+        <h2 data-i18n="footer.download">下載</h2>
+        <a href="https://github.com/WangWilly/OctopusBeak/releases/latest" data-i18n="cta.download">下載 macOS Beta</a>
+        <a href="https://github.com/WangWilly/OctopusBeak">GitHub</a>
+        <small data-i18n="cta.requirements">適用 Apple silicon｜測試版本</small>
       </div>
+      <p class="copyright">© 2026 OctopusBeak</p>
     </div>
   </footer>
-
 </body>
 </html>
