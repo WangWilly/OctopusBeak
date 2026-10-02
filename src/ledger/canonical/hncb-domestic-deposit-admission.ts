@@ -6,6 +6,7 @@ import {
 } from "./advertised-domestic-deposit-preflight.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -1397,7 +1398,6 @@ function hncbFinancialDiagnosticsFor(
     diagnostics.push("zero-result-authority-unproven");
   const queryStart = hncbRangeDate(input.capture.queryRange.startDate);
   const queryEnd = hncbRangeDate(input.capture.queryRange.endDate);
-  const seen = new Map<string, string>();
   const records: CanonicalFinancialDepositRecord[] = [];
   for (const [pageOrdinal, download] of downloads.entries()) {
     for (const row of download.rows) {
@@ -1410,14 +1410,6 @@ function hncbFinancialDiagnosticsFor(
       const result = hncbFinancialRecord(identity, row, pageOrdinal, semantics);
       diagnostics.push(...result.diagnostics);
       if (!result.record) continue;
-      const prior = seen.get(result.record.collisionKey);
-      if (prior !== undefined) {
-        diagnostics.push("occurrence-ambiguous");
-        if (prior !== result.record.occurrenceKey)
-          diagnostics.push("composite-occurrence-collision");
-        continue;
-      }
-      seen.set(result.record.collisionKey, result.record.occurrenceKey);
       records.push(result.record);
     }
   }
@@ -1434,6 +1426,23 @@ function hncbFinancialDiagnosticsFor(
     input.capture.queryRange.startDate,
     input.capture.queryRange.endDate,
   );
+  const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+    rows: records.map((record) => ({
+      record,
+      partitionDate: record.sourceTime.localDate,
+    })),
+    scopeKey: hncbFinancialOpaque(
+      "hncb-domestic-deposit-occurrence-scope-v1",
+      identity.subjectDigest,
+      HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+      HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    ),
+    startDate: queryStart,
+    endDate: queryEnd,
+    contractVersion: HNCB_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    complete:
+      downloads.length > 0 && downloads.every((download) => download.terminal),
+  });
   const capture = admitCanonicalFinancialDepositCapture({
     captureId: input.captureId.trim(),
     authorityRoute: HNCB_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -1504,7 +1513,8 @@ function hncbFinancialDiagnosticsFor(
         providerGuaranteed: false,
       }),
     })),
-    records,
+    records: occurrenceGroups.records,
+    occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { diagnostics, semantics, capture };
 }

@@ -283,6 +283,20 @@ try {
   } finally {
     await atomicProbe.close();
   }
+
+  await store.query(
+    "UPDATE pglite_baseline_metadata SET baseline_version = $1 WHERE singleton_id = 1",
+    [PGLITE_BASELINE_MANIFEST.baselineVersion - 1],
+  );
+  await assert.rejects(
+    applyPgliteBaseline(database),
+    /baseline metadata does not match its known manifest/u,
+    "an installed older baseline must be rejected without an automatic repair path",
+  );
+  const unsupportedVersion = await store.query<{ baseline_version: number | string }>(
+    "SELECT baseline_version FROM pglite_baseline_metadata WHERE singleton_id = 1",
+  );
+  assert.equal(Number(unsupportedVersion.rows[0]?.baseline_version), PGLITE_BASELINE_MANIFEST.baselineVersion - 1);
 } finally {
   await store.close();
 }

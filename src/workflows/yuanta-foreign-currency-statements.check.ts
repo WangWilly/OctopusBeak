@@ -1207,6 +1207,26 @@ const yuantaMultipleRowsFromOneAccount =
         queryCurrencyValue: "ALL",
         values: [
           "foreign-account-1",
+          "20260823",
+          "20260823",
+          "09:10:00",
+          "USD",
+          "deposit",
+          "0",
+          "10.00",
+          "110.00",
+          "first transaction",
+          "31.50",
+        ],
+        sortTime: null,
+      },
+      {
+        accountLabel: "foreign account",
+        accountValue: "foreign-account-1",
+        queryCurrencyLabel: "all currencies",
+        queryCurrencyValue: "ALL",
+        values: [
+          "foreign-account-1",
           "20260822",
           "20260822",
           "08:20:00",
@@ -1235,10 +1255,17 @@ const yuantaMultipleRowsFromOneAccount =
   );
 const admittedYuantaMultipleRowsFromOneAccount =
   admitForeignCurrencyDepositCapture(yuantaMultipleRowsFromOneAccount);
-assert.equal(admittedYuantaMultipleRowsFromOneAccount.records.length, 2);
+assert.equal(admittedYuantaMultipleRowsFromOneAccount.records.length, 3);
 assert.notEqual(
   admittedYuantaMultipleRowsFromOneAccount.records[0]!.occurrenceKey,
-  admittedYuantaMultipleRowsFromOneAccount.records[1]!.occurrenceKey,
+  admittedYuantaMultipleRowsFromOneAccount.records[2]!.occurrenceKey,
+);
+assert.deepEqual(
+  admittedYuantaMultipleRowsFromOneAccount.records
+    .filter((record) => record.occurrenceGroup?.partitionDate === "2026-08-23")
+    .map((record) => record.occurrenceGroup?.ordinal),
+  [1, 2],
+  "identical Yuanta foreign-currency rows retain two semantic occurrence slots",
 );
 
 const yuantaZeroPaddedInflow = buildYuantaForeignCurrencyCaptureInput(

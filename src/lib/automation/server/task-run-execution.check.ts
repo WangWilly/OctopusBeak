@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import type { WorkerOptions } from "node:worker_threads";
@@ -30,7 +32,7 @@ import { taskById } from "./tasks.ts";
 
 const einvoicePasswordFixtureEnvKey = ["LIBRETTO", "CLOUD", "EINVOICE", "PASSWORD"].join("_");
 
-type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel";
+type WorkerScenario = "human-completion" | "commit-crash" | "commit-cancel" | "validation-failure";
 
 const assistanceContract = {
   stageId: "verification",
@@ -83,6 +85,25 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           requestId: "worker-assistance-request",
           contract: assistanceContract,
         }));
+      } else if (this.scenario === "validation-failure" && frame.eventId === "worker-start-event") {
+        const start = this.workerData as AppWorkflowWorkerStart;
+        setImmediate(() => {
+          this.emit("message", {
+            protocolVersion: 2,
+            kind: "failed",
+            taskRunId: start.taskRunId,
+            errorCode: "source-validation-failed",
+            diagnostic: {
+              chain: [{
+                type: "TypeError",
+                frames: [{ file: "src/workflows/ctbc-statements.ts", line: 321, column: 9 }],
+                message: "private-provider-detail",
+              }],
+              message: "private-provider-detail",
+            },
+          });
+          this.emit("exit", 1);
+        });
       } else if (this.scenario !== "human-completion" && frame.eventId === "worker-commit-started") {
         if (this.scenario === "commit-crash") {
           setImmediate(() => {
@@ -145,6 +166,63 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     return Promise.resolve(1);
   }
 }
+
+test("a supervised source-validation failure writes a correlated diagnostic record when opted in", async () => {
+  const task = taskById("ctbc-statements");
+  assert.ok(task);
+  const directory = await mkdtemp(join(tmpdir(), "octopus-workflow-diagnostics-"));
+  const diagnosticPath = join(directory, "workflow-failures.jsonl");
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    let taskRunId = "";
+    const result = await runAutomationTaskExecution(task, provider.automation, {
+      launchEnv: {
+        LIBRETTO_CLOUD_CTBC_USER_ID: "private-user-id",
+        LIBRETTO_CLOUD_CTBC_ACCOUNT: "private-account-id",
+        LIBRETTO_CLOUD_CTBC_PASSWORD: "private-password",
+        [PGLITE_CHILD_RPC_ENDPOINT_ENV]: "http://127.0.0.1:43121/rpc",
+        [PGLITE_CHILD_RPC_TOKEN_ENV]: "a".repeat(32),
+        OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: diagnosticPath,
+        OCTOPUSBEAK_APP_ROOT: process.cwd(),
+      },
+      workflowBrowserPortFactory: () => ({
+        async withPage(run) { return await run({} as never); },
+      }),
+      appWorkflowBrowserConnectionForRun: (runId) => ({
+        endpoint: "http://127.0.0.1:43121",
+        targetId: `host-page-${runId}`,
+      }),
+      appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(
+        options.workerData,
+        "validation-failure",
+        () => true,
+      ),
+    }, async (id) => { taskRunId = id; });
+
+    assert.equal(result.status, "failed");
+    const run = await provider.automation.taskRunById(taskRunId);
+    assert.equal(run?.appWorkflowOutcome?.errorCode, "source-validation-failed");
+    const diagnosticText = await readFile(diagnosticPath, "utf8");
+    const diagnostic = JSON.parse(diagnosticText.trim()) as Record<string, unknown>;
+    assert.equal(diagnostic.workflowId, "ctbc-statements");
+    assert.equal(diagnostic.taskRunId, taskRunId);
+    assert.equal(diagnostic.errorCode, "source-validation-failed");
+    assert.equal(diagnostic.stage, "preparation");
+    assert.deepEqual(diagnostic.error, {
+      chain: [{
+        type: "TypeError",
+        frames: [{ file: "src/workflows/ctbc-statements.ts", line: 321, column: 9 }],
+      }],
+    });
+    assert.doesNotMatch(diagnosticText, /private-user-id|private-account-id|private-password|private-provider-detail/u);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("command-only tasks are rejected before persistence or execution", async () => {
   const baseTask = taskById("exchange-rates");

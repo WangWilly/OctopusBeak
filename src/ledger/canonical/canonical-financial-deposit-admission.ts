@@ -4,6 +4,13 @@ import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
 } from "./canonical-source-evidence.ts";
+import {
+  assignOccurrenceSlots,
+  canonicalOccurrenceGroupBucketInventory,
+  type CanonicalOccurrenceGroup,
+  type CanonicalOccurrenceGroupCoverage,
+} from "./occurrence-groups.ts";
+import { CANONICAL_SOURCE_ROUTE_REGISTRY } from "./canonical-source-route-registry.ts";
 
 export type FinancialDepositAmount = {
   coefficient: string;
@@ -72,6 +79,10 @@ export type CanonicalFinancialDepositRecord = {
   transactionDateTimeLocal: string;
   description?: string | null;
   conversionEvidence?: CanonicalFinancialDepositConversionEvidence | null;
+  /** Stable group identity for routes without a reliable source transaction ID. */
+  occurrenceGroup?: CanonicalOccurrenceGroup;
+  /** Complete source query bucket that contributed this grouped row. */
+  occurrenceGroupBucketKey?: string;
 };
 
 /** Source evidence that is not a monetary transaction. Holding observations
@@ -152,7 +163,96 @@ export type CanonicalFinancialDepositCapture = {
   pages: readonly CanonicalFinancialDepositPage[];
   records: readonly CanonicalFinancialDepositRecord[];
   nonTransactionRecords?: readonly CanonicalFinancialNonTransactionRecord[];
+  /** Complete date coverage for each independently comparable account/product scope. */
+  occurrenceGroupCoverage?: readonly CanonicalOccurrenceGroupCoverage[];
 };
+
+export type CanonicalFinancialDepositGroupRow = Readonly<{
+  record: CanonicalFinancialDepositRecord;
+  partitionDate: string;
+}>;
+
+export type CanonicalFinancialDepositGroupAssignment = Readonly<{
+  rows: readonly CanonicalFinancialDepositGroupRow[];
+  scopeKey: string;
+  startDate: string;
+  endDate: string;
+  contractVersion: string;
+  complete: boolean;
+}>;
+
+/**
+ * Assign stable slots to transactions whose source contract has no reliable
+ * occurrence identifier. The caller supplies rows only after all terminal
+ * pages and disjoint date partitions have been combined.
+ */
+export function assignCanonicalFinancialDepositOccurrenceGroups(
+  input: CanonicalFinancialDepositGroupAssignment,
+): Readonly<{
+  records: readonly CanonicalFinancialDepositRecord[];
+  coverage: readonly CanonicalOccurrenceGroupCoverage[];
+}> {
+  if (!input.complete)
+    throw new CanonicalFinancialDepositConflictError(
+      "Occurrence groups require complete source coverage.",
+    );
+  const priorByFingerprint = new Map<
+    string,
+    Readonly<{ collisionKey: string; contentHash: string }>
+  >();
+  for (const { record } of input.rows) {
+    const prior = priorByFingerprint.get(record.occurrenceKey);
+    if (
+      prior &&
+      (prior.collisionKey !== record.collisionKey ||
+        prior.contentHash !== record.contentHash)
+    )
+      throw new CanonicalFinancialDepositConflictError(
+        "A semantic occurrence fingerprint has contradictory source evidence.",
+      );
+    priorByFingerprint.set(record.occurrenceKey, {
+      collisionKey: record.collisionKey,
+      contentHash: record.contentHash,
+    });
+  }
+
+  const assigned = assignOccurrenceSlots({
+    rows: input.rows,
+    complete: input.complete,
+    scopeKey: () => input.scopeKey,
+    partitionDate: (row) => row.partitionDate,
+    fingerprint: (row) => row.record.occurrenceKey,
+    collisionKey: (row, ordinal) => {
+      const digest = createHash("sha256")
+        .update(
+          [
+            "canonical-financial-occurrence-collision-v1",
+            input.scopeKey,
+            row.partitionDate,
+            row.record.collisionKey,
+            String(ordinal),
+          ].join("\u0000"),
+        )
+        .digest("base64url");
+      return `sha256:${digest}`;
+    },
+  });
+  const records = assigned.map(({ row, occurrenceKey, collisionKey, group }) => ({
+    ...row.record,
+    occurrenceKey,
+    collisionKey,
+    occurrenceGroup: group,
+  }));
+  const coverage: readonly CanonicalOccurrenceGroupCoverage[] = [
+    {
+      scopeKey: input.scopeKey,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      contractVersion: input.contractVersion,
+    },
+  ];
+  return { records, coverage };
+}
 
 // Admission is intentionally held out-of-band. A copied object, even one
 // carrying every enumerable/non-enumerable key, symbol, and descriptor from
@@ -1120,6 +1220,89 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
         "Non-transaction source records are not supported by this financial route.",
       );
   }
+  const routeRegistration = CANONICAL_SOURCE_ROUTE_REGISTRY.find(
+    (registration) =>
+      registration.routeKey === capture.authorityRoute &&
+      registration.contractVersions.includes(capture.contractVersion),
+  );
+  const routeOccurrenceGroupMode = routeRegistration?.occurrenceGroups;
+  const routeOccurrenceGroupCoverageMode = routeRegistration?.occurrenceGroupCoverage;
+  const requiresOccurrenceGroups = routeOccurrenceGroupMode === "required";
+  const permitsOccurrenceGroups = routeOccurrenceGroupMode !== undefined;
+  if (
+    routeOccurrenceGroupCoverageMode === "queried-buckets" &&
+    (capture.scope.scopeKind !== "bounded-range" ||
+      capture.scope.completeness !== "complete-range")
+  )
+    throw new Error("Queried-bucket occurrence proofs require complete bounded financial history.");
+  const groupCoverage = capture.occurrenceGroupCoverage ?? [];
+  const hasGroupedRecords = capture.records.some(
+    (record) => record.occurrenceGroup !== undefined,
+  );
+  if (
+    !permitsOccurrenceGroups &&
+    (groupCoverage.length > 0 || hasGroupedRecords)
+  )
+    throw new Error(
+      "Occurrence groups are not registered for this source route.",
+    );
+  if (requiresOccurrenceGroups && groupCoverage.length === 0)
+    throw new Error(
+      "Financial capture lacks complete occurrence-group coverage.",
+    );
+  if (
+    (requiresOccurrenceGroups || hasGroupedRecords || groupCoverage.length > 0) &&
+    (capture.pages.at(-1)?.terminal !== true ||
+      groupCoverage.some(
+        (coverage) => coverage.contractVersion !== capture.contractVersion,
+      ))
+  )
+    throw new Error(
+      "Occurrence-group coverage does not match the complete financial capture.",
+    );
+  if (hasGroupedRecords && groupCoverage.length === 0)
+    throw new Error("Grouped financial records require complete coverage evidence.");
+  const sortedCoverage = [...groupCoverage].sort(
+    (left, right) =>
+      left.scopeKey.localeCompare(right.scopeKey) ||
+      left.startDate.localeCompare(right.startDate),
+  );
+  const queriedBucketScopes = new Set<string>();
+  for (const [index, coverage] of sortedCoverage.entries()) {
+    validateOpaque(coverage.scopeKey, "Occurrence-group scope key");
+    validateDate(coverage.startDate, "Occurrence-group coverage start date");
+    validateDate(coverage.endDate, "Occurrence-group coverage end date");
+    if (
+      coverage.startDate > coverage.endDate ||
+      coverage.startDate < capture.scope.startDate ||
+      coverage.endDate > capture.scope.endDate
+    )
+      throw new Error("Occurrence-group coverage falls outside the capture scope.");
+    if (routeOccurrenceGroupCoverageMode === "queried-buckets") {
+      if (queriedBucketScopes.has(coverage.scopeKey))
+        throw new Error("Queried-bucket coverage must contain one complete inventory per scope.");
+      queriedBucketScopes.add(coverage.scopeKey);
+      if (!Array.isArray(coverage.bucketKeys) || coverage.bucketKeys.length === 0)
+        throw new Error("This source route requires complete queried-bucket coverage.");
+      for (const [bucketIndex, bucketKey] of coverage.bucketKeys.entries())
+        validateText(bucketKey, `Occurrence-group bucket ${bucketIndex}`);
+      try {
+        canonicalOccurrenceGroupBucketInventory(coverage.bucketKeys);
+      } catch {
+        throw new Error("Occurrence-group bucket inventory contains duplicate keys.");
+      }
+    } else if (coverage.bucketKeys !== undefined) {
+      throw new Error("Queried-bucket coverage is not registered for this source route.");
+    }
+    const previous = sortedCoverage[index - 1];
+    if (
+      previous?.scopeKey === coverage.scopeKey &&
+      previous.endDate >= coverage.startDate
+    )
+      throw new Error("Occurrence-group coverage contains overlapping ranges.");
+  }
+  const groupOrdinals = new Map<string, Set<number>>();
+  const groupBuckets = new Map<string, string>();
   const occurrences = new Set<string>();
   const collisions = new Set<string>();
   for (const record of capture.records) {
@@ -1150,6 +1333,57 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
         );
     }
     validateOpaque(record.contentHash, "Content hash");
+    const group = record.occurrenceGroup;
+    if (requiresOccurrenceGroups && !group)
+      throw new Error(
+        "Financial record lacks its required semantic occurrence group.",
+      );
+    if (group) {
+      validateOpaque(group.scopeKey, "Occurrence-group scope key");
+      validateOpaque(group.fingerprint, "Occurrence-group fingerprint");
+      validateDate(group.partitionDate, "Occurrence-group partition date");
+      if (!Number.isSafeInteger(group.ordinal) || group.ordinal < 1)
+        throw new Error("Occurrence-group ordinal must be a positive integer.");
+      const groupBucketKey = record.occurrenceGroupBucketKey;
+      const coveringEntries = groupCoverage.filter((coverage) =>
+        coverage.scopeKey === group.scopeKey &&
+        (routeOccurrenceGroupCoverageMode === "queried-buckets"
+          ? typeof groupBucketKey === "string" &&
+            coverage.bucketKeys?.includes(groupBucketKey) === true
+          : group.partitionDate >= coverage.startDate &&
+            group.partitionDate <= coverage.endDate)
+      );
+      if (coveringEntries.length !== 1)
+        throw new Error(
+          "Occurrence group lacks one matching complete source coverage bucket.",
+        );
+      const groupToken = [
+        group.scopeKey,
+        group.partitionDate,
+        group.fingerprint,
+      ].join("\u0000");
+      if (routeOccurrenceGroupCoverageMode === "queried-buckets") {
+        if (typeof groupBucketKey !== "string")
+          throw new Error("Financial record lacks its queried source bucket.");
+        const previousBucket = groupBuckets.get(groupToken);
+        if (previousBucket !== undefined && previousBucket !== groupBucketKey)
+          throw new CanonicalFinancialDepositConflictError(
+            "An indistinguishable occurrence group cannot span source query buckets.",
+          );
+        groupBuckets.set(groupToken, groupBucketKey);
+      } else if (record.occurrenceGroupBucketKey !== undefined) {
+        throw new Error("Financial record has unregistered queried-bucket provenance.");
+      }
+      const ordinals = groupOrdinals.get(groupToken) ?? new Set<number>();
+      if (ordinals.has(group.ordinal))
+        throw new CanonicalFinancialDepositConflictError(
+          "Duplicate semantic occurrence group ordinal in one capture.",
+        );
+      ordinals.add(group.ordinal);
+      groupOrdinals.set(groupToken, ordinals);
+    } else if (record.occurrenceGroupBucketKey !== undefined) {
+      throw new Error("Only grouped financial records may carry bucket provenance.");
+    }
     if (occurrences.has(record.occurrenceKey))
       throw new CanonicalFinancialDepositConflictError(
         "Duplicate source occurrence in one capture.",
@@ -1253,6 +1487,11 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
           "Conversion evidence booked amount must match the canonical transaction.",
       );
     }
+  }
+  for (const ordinals of groupOrdinals.values()) {
+    const ordered = [...ordinals].sort((left, right) => left - right);
+    if (ordered.some((ordinal, index) => ordinal !== index + 1))
+      throw new Error("Occurrence-group ordinals must be contiguous from one.");
   }
   for (const record of nonTransactionRecords) {
     if (

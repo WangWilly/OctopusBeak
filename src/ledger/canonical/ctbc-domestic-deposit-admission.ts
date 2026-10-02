@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -138,6 +139,32 @@ function validDate(value: string): boolean {
     date.getUTCMonth() === m! - 1 &&
     date.getUTCDate() === d
   );
+}
+function nextDate(value: string): string | null {
+  if (!validDate(value)) return null;
+  const [year, month, day] = value.split("/").map(Number);
+  const next = new Date(Date.UTC(year!, month! - 1, day! + 1));
+  return `${String(next.getUTCFullYear()).padStart(4, "0")}/${String(
+    next.getUTCMonth() + 1,
+  ).padStart(2, "0")}/${String(next.getUTCDate()).padStart(2, "0")}`;
+}
+function rangesCoverQueryWithoutOverlap(
+  start: string,
+  end: string,
+  responses: readonly CtbcDomesticDepositCaptureResponse[],
+): boolean {
+  const ranges = [...responses].sort((left, right) =>
+    left.startDate.localeCompare(right.startDate) ||
+    left.endDate.localeCompare(right.endDate),
+  );
+  if (!ranges.length || ranges[0]?.startDate !== start || ranges.at(-1)?.endDate !== end)
+    return false;
+  for (let index = 1; index < ranges.length; index += 1) {
+    const prior = ranges[index - 1]!;
+    const current = ranges[index]!;
+    if (nextDate(prior.endDate) !== current.startDate) return false;
+  }
+  return true;
 }
 function validTime(value: string): boolean {
   if (!LOCAL_SECOND.test(value)) return false;
@@ -299,20 +326,11 @@ export function admitCtbcDomesticDepositCaptureEvidence(
     }
   if (
     Array.isArray(responses) &&
-    responses.length > 0 &&
     typeof start === "string" &&
-    typeof end === "string"
-  ) {
-    const observedStart = [...responses]
-      .map((item) => item.startDate)
-      .sort()[0];
-    const observedEnd = [...responses]
-      .map((item) => item.endDate)
-      .sort()
-      .at(-1);
-    if (observedStart !== start || observedEnd !== end)
-      diagnostics.push("query-range-coverage-unproven");
-  }
+    typeof end === "string" &&
+    !rangesCoverQueryWithoutOverlap(start, end, responses)
+  )
+    diagnostics.push("query-range-coverage-unproven");
   if (
     capture?.provenance?.source !== "ctbc-ebmw-qu002-011-natural-response" ||
     capture?.provenance?.rangeInventorySource !==
@@ -622,20 +640,11 @@ export function admitCtbcDomesticDepositFinancialCapture(
     cell(input.capture.account.accountId),
   );
   const records: CanonicalFinancialDepositRecord[] = [];
-  const seen = new Map<string, string>();
   for (const response of input.capture.responses)
     for (const row of response.rows) {
       const result = financialRecord(subjectDigest, response, row);
       diagnostics.push(...result.diagnostics);
       if (!result.record) continue;
-      const previous = seen.get(result.record.collisionKey);
-      if (previous) {
-        diagnostics.push("occurrence-ambiguous");
-        if (previous !== result.record.occurrenceKey)
-          diagnostics.push("composite-occurrence-collision");
-        continue;
-      }
-      seen.set(result.record.collisionKey, result.record.occurrenceKey);
       records.push(result.record);
     }
   if (!allNoData && records.length === 0)
@@ -650,6 +659,30 @@ export function admitCtbcDomesticDepositFinancialCapture(
     CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
     CTBC_HUMAN_ATTESTED_V1_MANIFEST.provenance.attestationContractFingerprint,
   );
+  let occurrenceGroups;
+  try {
+    occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+      rows: records.map((record) => ({ record, partitionDate: record.effectiveOn })),
+      scopeKey: digest(
+        "ctbc-domestic-deposit-occurrence-scope-v1",
+        subjectDigest,
+        CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+        CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+      ),
+      startDate,
+      endDate,
+      contractVersion: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+      complete,
+    });
+  } catch (error) {
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: [
+        error instanceof Error ? error.message : "occurrence-group-assignment-failed",
+      ],
+    };
+  }
   return {
     status: "admitted",
     diagnostics: [],
@@ -740,7 +773,8 @@ export function admitCtbcDomesticDepositFinancialCapture(
           providerExplicitNoData: response.code === "9201",
         }),
       })),
-      records,
+      records: occurrenceGroups.records,
+      occurrenceGroupCoverage: occurrenceGroups.coverage,
     }),
   };
 }

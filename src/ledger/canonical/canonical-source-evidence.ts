@@ -4,6 +4,13 @@
  * This module defines the provider-facing evidence data contract. Runtime
  * validation, branding, and persistence belong to Source Capture Admission.
  */
+import type {
+  CanonicalOccurrenceGroup,
+  CanonicalOccurrenceGroupCoverage,
+} from "./occurrence-groups.ts";
+
+export type { CanonicalOccurrenceGroupCoverage } from "./occurrence-groups.ts";
+
 export const CANONICAL_SOURCE_STAGE = "durable-source-evidence" as const;
 export const CANONICAL_SOURCE_ADMISSION = "blocked" as const;
 
@@ -43,6 +50,10 @@ export type CanonicalSourcePage = {
 export type CanonicalSourceRecord = {
   occurrenceKey: string;
   collisionKey?: string;
+  /** Group evidence for ID-less occurrences; source-ID records omit this. */
+  occurrenceGroup?: CanonicalOccurrenceGroup;
+  /** Query-bucket lineage; deliberately excluded from occurrence identity. */
+  occurrenceGroupBucketKey?: string;
   providerKey: string;
   contentHash: string;
   compact: Record<string, unknown>;
@@ -67,6 +78,8 @@ export type CanonicalSourceEvidence = {
   contractVersion: string;
   subjectDigest: string;
   observedAt: string;
+  /** Complete, possibly disjoint bucket coverage for occurrence-group proofs. */
+  occurrenceGroupCoverage?: readonly CanonicalOccurrenceGroupCoverage[];
   /** Optional source-supported account number with explicit lineage. */
   accountNumber?: CanonicalSourceAccountNumber | null;
   scope: {

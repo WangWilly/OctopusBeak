@@ -4,6 +4,7 @@ import type {
   CanonicalFinancialDepositRecord,
   CanonicalFinancialDepositValidatedCapture,
 } from "../canonical/canonical-financial-deposit-admission.ts";
+import { assignCanonicalFinancialDepositOccurrenceGroups } from "../canonical/canonical-financial-deposit-admission.ts";
 import type {
   SinopacSourceRow,
   SinopacStatementValidatedCapture,
@@ -289,11 +290,20 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   )
     diagnostics.push("zero-result-authority-unproven");
   const records: CanonicalFinancialDepositRecord[] = [];
+  const groupRows: Array<{
+    record: CanonicalFinancialDepositRecord;
+    partitionDate: string;
+  }> = [];
   for (const [pageOrdinal, download] of input.capture.downloads.entries()) {
     for (const row of download.rows) {
       const converted = sinopacFinancialRecord(input.capture, row, pageOrdinal);
       diagnostics.push(...converted.diagnostics);
-      if (converted.record) records.push(converted.record);
+      if (converted.record) {
+        records.push(converted.record);
+        const partitionDate = canonicalSinopacDate(row.values[0] ?? "");
+        if (partitionDate)
+          groupRows.push({ record: converted.record, partitionDate });
+      }
     }
   }
   if (diagnostics.length > 0)
@@ -315,6 +325,32 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
     queryStart,
     queryEnd,
   );
+  let occurrenceGroups;
+  try {
+    occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+      rows: groupRows,
+      scopeKey: sinopacDigest(
+        "sinopac-domestic-deposit-occurrence-scope-v1",
+        identity.subjectDigest,
+        SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+        SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+      ),
+      startDate: queryStart,
+      endDate: queryEnd,
+      contractVersion: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+      complete:
+        input.capture.downloads.length > 0 &&
+        input.capture.downloads.every((download) => download.terminal),
+    });
+  } catch (error) {
+    return {
+      status: "blocked",
+      capture: null,
+      diagnostics: [
+        error instanceof Error ? error.message : "occurrence-group-assignment-failed",
+      ],
+    };
+  }
   const capture: CanonicalFinancialDepositCapture = {
     captureId: input.captureId.trim(),
     authorityRoute: SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -380,7 +416,8 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
         providerGuaranteed: false,
       }),
     })),
-    records,
+    records: occurrenceGroups.records,
+    occurrenceGroupCoverage: occurrenceGroups.coverage,
   };
   const frozenCapture = deepFreeze(capture) as CanonicalFinancialDepositValidatedCapture;
   return { status: "admitted", capture: frozenCapture, diagnostics: [] };

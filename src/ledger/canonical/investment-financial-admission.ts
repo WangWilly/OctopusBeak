@@ -11,6 +11,11 @@ import {
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
   type YuantaForeignSettlementMarketCode,
 } from "./investment-funding-contract.ts";
+import type {
+  CanonicalOccurrenceGroup,
+  CanonicalOccurrenceGroupCoverage,
+} from "./occurrence-groups.ts";
+import { sumInvestmentExactAmounts, investmentExactAmountsEqual } from "./investment-exact-amount.ts";
 
 export { YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION };
 
@@ -31,6 +36,14 @@ export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
 ] as const;
 export type InvestmentExactAmount = { coefficient: string; scale: number };
 export type InvestmentMoney = InvestmentExactAmount & { currency: string };
+export type InvestmentHoldingSourceLot = Readonly<{
+  sourceRecordKey: string;
+  securityKey: string;
+  quantity: InvestmentExactAmount;
+  valuation: InvestmentMoney;
+  effectiveOn: string;
+  effectiveTimeEvidence: HoldingEffectiveTimeEvidence;
+}>;
 export type InvestmentSecurityType =
   | "equity"
   | "ETF"
@@ -109,7 +122,19 @@ export type InvestmentCaptureInput = {
     accountSubtype?: "crypto_exchange" | "non_custodial_wallet";
     reportingCurrency: string;
   };
-  scope: { effectiveOn: string; complete: true };
+  scope: {
+    /** Point-in-time date for holdings and account state. */
+    effectiveOn: string;
+    complete: true;
+    /** Independently proven date range for transaction history, when captured. */
+    transactionHistory?: Readonly<{
+      startDate: string;
+      endDate: string;
+      complete: true;
+    }>;
+  };
+  /** Complete coverage for ID-less transaction buckets queried in this capture. */
+  occurrenceGroupCoverage?: readonly CanonicalOccurrenceGroupCoverage[];
   securities: Array<{
     securityKey: string;
     producerSecurityId: string;
@@ -118,7 +143,7 @@ export type InvestmentCaptureInput = {
     currency: string;
     securityType?: InvestmentSecurityType;
     nameEvidence?: { contractVersion: string; sourceRecordKey: string };
-    identityEvidence: { kind: "producer-security-id"; contractVersion: string };
+    identityEvidence: { kind: "producer-security-id" | "source-fund-name"; contractVersion: string };
   }>;
   holdings: Array<{
     measurementKey: string;
@@ -140,10 +165,14 @@ export type InvestmentCaptureInput = {
     effectiveOn: string;
     observedAt: string;
     effectiveTimeEvidence: HoldingEffectiveTimeEvidence;
-    lineage: { page: number; row: number; contractVersion: string };
+    lineage: {
+      page: number; row: number; contractVersion: string;
+      sourceLots?: readonly InvestmentHoldingSourceLot[];
+    };
   }>;
   transactions: Array<{
     sourceRecordKey: string;
+    occurrenceGroup?: CanonicalOccurrenceGroup;
     transactionKey: string;
     securityKey: string;
     action: InvestmentTransactionAction;
@@ -184,6 +213,18 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const INTEGER = /^(?:0|[1-9]\d*)$/;
 const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
 const VALIDATED = new WeakSet<object>();
+export function isInvestmentSecurityIdentityValid(
+  capture: Pick<InvestmentCaptureInput, "sourceId" | "contractVersion">,
+  security: InvestmentCaptureInput["securities"][number],
+): boolean {
+  if (!security.producerSecurityId?.trim() || security.securityKey !== `${capture.sourceId}:${security.producerSecurityId}` ||
+      security.identityEvidence?.contractVersion !== capture.contractVersion) return false;
+  if (security.identityEvidence.kind === "producer-security-id") return true;
+  const name = security.name?.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  return capture.sourceId === "yuanta-fund" && security.identityEvidence.kind === "source-fund-name" &&
+    !!name && security.name === name && security.producerSecurityId === `name:${name}` && security.currency === "";
+}
+
 export class CanonicalInvestmentAdmissionError extends Error {
   constructor(message: string) {
     super(message);
@@ -295,6 +336,39 @@ function freeze<T>(value: T): T {
   return value;
 }
 
+/** Revalidate aggregate source proof at admission and the database commit boundary. */
+export function assertInvestmentHoldingSourceLots(
+  sourceId: InvestmentSourceId,
+  holding: InvestmentCaptureInput["holdings"][number],
+): void {
+    const lots = holding.lineage.sourceLots;
+    if (lots) {
+      if (sourceId !== "yuanta-fund" || lots.length < 2 || lots.length > 10000 ||
+        !holding.quantity || !holding.valuation) {
+        throw new CanonicalInvestmentAdmissionError("Holding lot aggregation requires complete fund source evidence.");
+      }
+      const sourceKeys = new Set<string>();
+      const { sourceRecordKey: _groupKey, ...groupTime } = holding.effectiveTimeEvidence;
+      for (const lot of lots) {
+        token(lot.sourceRecordKey, "Holding lot source record key");
+        amount(lot.quantity, "Holding lot quantity");
+        amount(lot.valuation, "Holding lot valuation");
+        const { sourceRecordKey: _lotKey, ...lotTime } = lot.effectiveTimeEvidence;
+        if (sourceKeys.has(lot.sourceRecordKey) || lot.securityKey !== holding.securityKey || lot.effectiveOn !== holding.effectiveOn ||
+          lot.valuation.currency !== holding.valuation.currency ||
+          lot.effectiveTimeEvidence.sourceRecordKey !== lot.sourceRecordKey ||
+          stableJson(lotTime) !== stableJson(groupTime)) {
+          throw new CanonicalInvestmentAdmissionError("Holding lot source evidence is contradictory.");
+        }
+        sourceKeys.add(lot.sourceRecordKey);
+      }
+      if (!investmentExactAmountsEqual(sumInvestmentExactAmounts(lots.map(lot => lot.quantity)), holding.quantity) ||
+        !investmentExactAmountsEqual(sumInvestmentExactAmounts(lots.map(lot => lot.valuation)), holding.valuation)) {
+        throw new CanonicalInvestmentAdmissionError("Holding aggregate does not equal its source lots.");
+      }
+    }
+}
+
 export function admitCanonicalInvestmentCapture(
   capture: InvestmentCaptureInput,
 ): InvestmentValidatedCapture {
@@ -353,6 +427,39 @@ export function admitCanonicalInvestmentCapture(
       "Investment account subtype is unsupported.",
     );
   const effectiveOn = date(capture.scope.effectiveOn, "Scope effective time");
+  if (capture.scope.transactionHistory) {
+    const startDate = date(
+      capture.scope.transactionHistory.startDate,
+      "Transaction history start date",
+    );
+    const endDate = date(
+      capture.scope.transactionHistory.endDate,
+      "Transaction history end date",
+    );
+    if (!capture.scope.transactionHistory.complete || startDate > endDate)
+      throw new CanonicalInvestmentAdmissionError(
+        "Transaction history requires a complete, ordered source date range.",
+      );
+  }
+  if (capture.occurrenceGroupCoverage !== undefined) {
+    if (!capture.scope.transactionHistory)
+      throw new CanonicalInvestmentAdmissionError(
+        "Occurrence groups require an independently proven transaction history range.",
+      );
+    for (const coverage of capture.occurrenceGroupCoverage) {
+      const startDate = date(coverage.startDate, "Occurrence coverage start date");
+      const endDate = date(coverage.endDate, "Occurrence coverage end date");
+      if (
+        coverage.contractVersion !== capture.contractVersion ||
+        startDate > endDate ||
+        startDate < capture.scope.transactionHistory.startDate ||
+        endDate > capture.scope.transactionHistory.endDate
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Occurrence group coverage must fit the proven transaction history range and contract.",
+        );
+    }
+  }
   const securityKeys = new Set<string>();
   for (const security of capture.securities) {
     required(security.producerSecurityId, "Producer security ID");
@@ -374,13 +481,10 @@ export function admitCanonicalInvestmentCapture(
         "Security type is unsupported.",
       );
     if (
-      security.identityEvidence?.kind !== "producer-security-id" ||
-      security.identityEvidence.contractVersion !== capture.contractVersion ||
-      security.securityKey !==
-        `${capture.sourceId}:${security.producerSecurityId}`
+      !isInvestmentSecurityIdentityValid(capture, security)
     )
       throw new CanonicalInvestmentAdmissionError(
-        "Security identity must use the contract-proven producer-scoped key, not name or ticker.",
+        "Security identity must use its contract-proven source key.",
       );
     if (
       security.nameEvidence &&
@@ -420,6 +524,7 @@ export function admitCanonicalInvestmentCapture(
     if (holding.quantity) amount(holding.quantity, "Holding quantity");
     if (holding.valuation) amount(holding.valuation, "Holding valuation");
     if (holding.cost) amount(holding.cost, "Holding cost");
+    assertInvestmentHoldingSourceLots(capture.sourceId, holding);
     if (
       holding.effectiveOn !== effectiveOn ||
       holding.observedAt !== capture.observedAt ||
@@ -492,6 +597,30 @@ export function admitCanonicalInvestmentCapture(
     amount(transaction.quantity, "Transaction quantity");
     amount(transaction.cashEffect, "Transaction cash effect");
     date(transaction.effectiveOn, "Transaction effective time");
+    if (transaction.occurrenceGroup) {
+      const group = transaction.occurrenceGroup;
+      token(group.scopeKey, "Transaction occurrence group scope key");
+      token(group.fingerprint, "Transaction occurrence group fingerprint");
+      const partitionDate = date(
+        group.partitionDate,
+        "Transaction occurrence group date",
+      );
+      if (!Number.isSafeInteger(group.ordinal) || group.ordinal < 1)
+        throw new CanonicalInvestmentAdmissionError(
+          "Transaction occurrence group ordinal must be a positive safe integer.",
+        );
+      if (
+        !capture.occurrenceGroupCoverage?.some((coverage) =>
+          coverage.scopeKey === group.scopeKey &&
+          partitionDate >= coverage.startDate &&
+          partitionDate <= coverage.endDate &&
+          coverage.contractVersion === capture.contractVersion,
+        )
+      )
+        throw new CanonicalInvestmentAdmissionError(
+          "Transaction occurrence group has no matching complete coverage proof.",
+        );
+    }
     if (
       transaction.description !== undefined &&
       transaction.description !== null &&

@@ -545,6 +545,92 @@ test("E.SUN v4 timeline capture commits to a fresh PGlite database", async () =>
     await store.close();
   }
 });
+
+test("E.SUN duplicate slots survive a complete billing move and reject same-capture overlap", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  const duplicateBilled: StatementRow = {
+    ...billedRow,
+    issuerStatementPeriod: "2026-07",
+  };
+  const duplicateUnbilled: StatementRow = {
+    ...billedRow,
+    issuerStatementPeriod: undefined,
+    paymentStatus: "unbilled",
+    sourcePaymentStatus: "未入帳",
+  };
+  const buildDuplicateCommand = (
+    captureId: string,
+    statementRows: readonly StatementRow[],
+    unbilledRows: readonly StatementRow[],
+  ) => {
+    const rows = [...statementRows, ...unbilledRows];
+    const capture = buildEsunCanonicalCreditCardCapture({
+      startDate: "2025/08/26",
+      endDate: "2026/08/26",
+      identity,
+      statementRows,
+      unbilledRows,
+      grid: { ...timelineGrid, capturedRowCount: rows.length },
+      capture: { ...completeCapture, captureId },
+      instrumentFingerprintSecret: managedSecret,
+      settledPeriods,
+    });
+    assert(capture);
+    return creditCardCommandRequestFromCanonicalCapture(
+      esunCanonicalSpineCapture(capture),
+      esunNeutralCreditCardCapture(capture),
+    );
+  };
+  try {
+    await applyPgliteBaseline(database);
+    await commitPGliteCanonicalCreditCardCapture(
+      store,
+      buildDuplicateCommand("esun-duplicates-unbilled", [], [duplicateUnbilled, duplicateUnbilled]),
+    );
+    assert.throws(
+      () => buildDuplicateCommand("esun-duplicates-split", [duplicateBilled], [duplicateUnbilled]),
+      /ambiguous identical economic transaction/u,
+    );
+    assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count), 1);
+    await commitPGliteCanonicalCreditCardCapture(
+      store,
+      buildDuplicateCommand("esun-duplicates-billed", [duplicateBilled, duplicateBilled], []),
+    );
+
+    const counts = await store.query<{ transactions: number; revisions: number }>(`
+      SELECT
+        (SELECT COUNT(*)::int FROM financial_transactions) AS transactions,
+        (SELECT COUNT(*)::int FROM transaction_revisions) AS revisions`);
+    assert.deepEqual(counts.rows[0], { transactions: 2, revisions: 2 });
+    const latest = await store.query<{ billing_status: string; group_ordinal: number | string }>(`
+      SELECT DISTINCT ON (lifecycle.transaction_id)
+        lifecycle.billing_status,
+        source_record.occurrence_group_ordinal AS group_ordinal
+      FROM canonical_credit_card_transaction_lifecycle lifecycle
+      JOIN source_records source_record
+        ON source_record.source_record_id = lifecycle.source_record_id
+      JOIN source_captures source_capture
+        ON source_capture.capture_id = lifecycle.capture_id
+      JOIN canonical_commits commit_row
+        ON commit_row.commit_id = source_capture.commit_id
+      WHERE lifecycle.integration_namespace = 'esun'
+      ORDER BY lifecycle.transaction_id, commit_row.commit_sequence DESC,
+        lifecycle.lifecycle_event_id DESC`);
+    assert.deepEqual(
+      latest.rows.map((row) => ({
+        billingStatus: row.billing_status,
+        ordinal: Number(row.group_ordinal),
+      })).sort((left, right) => left.ordinal - right.ordinal),
+      [
+        { billingStatus: "billed", ordinal: 1 },
+        { billingStatus: "billed", ordinal: 2 },
+      ],
+    );
+  } finally {
+    await store.close();
+  }
+});
 assert.throws(() => buildEsunCanonicalCreditCardCapture({
   startDate: "2025/08/26",
   endDate: "2026/08/26",

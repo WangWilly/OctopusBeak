@@ -7,6 +7,7 @@ import {
   type CanonicalSourceRecord,
 } from "../canonical/canonical-source-evidence.ts";
 import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
+import { canonicalOccurrenceGroupBucketInventory } from "../canonical/occurrence-groups.ts";
 
 export { validateCanonicalSourceAccountNumber };
 
@@ -264,6 +265,165 @@ export function validatePGliteCanonicalSourceEvidence(
       assertCompactSourceValue(parsed, `record[${index}].compactJson`);
     }
   });
+  validateOccurrenceGroupEvidence(
+    evidence,
+    start,
+    end,
+    dateFormat,
+    canonicalSourceRouteRegistration(evidence.routeKey)?.occurrenceGroups,
+    canonicalSourceRouteRegistration(evidence.routeKey)?.occurrenceGroupCoverage,
+  );
+}
+
+function validateOccurrenceGroupEvidence(
+  evidence: PGliteCanonicalSourceEvidence,
+  scopeStart: string,
+  scopeEnd: string,
+  scopeDateFormat: "YYYYMMDD" | "YYYY-MM-DD",
+  groupMode: "required" | "optional" | undefined,
+  coverageMode: "queried-buckets" | undefined,
+): void {
+  const coverage = evidence.occurrenceGroupCoverage;
+  const groupedRecords = evidence.records.filter((record) => record.occurrenceGroup !== undefined);
+  if (groupMode === undefined && (coverage !== undefined || groupedRecords.length > 0))
+    throw new Error("This source route does not admit occurrence group evidence.");
+  const completeBoundedHistory = evidence.scope.kind === "bounded-range" &&
+    evidence.scope.completeness === "complete-range";
+  if (coverageMode === "queried-buckets" && !completeBoundedHistory)
+    throw new Error("Queried-bucket occurrence proofs require complete bounded source history.");
+  if (groupMode === "required" && completeBoundedHistory && coverage === undefined)
+    throw new Error("This source route requires complete occurrence group coverage.");
+  if (coverage === undefined) {
+    if (groupedRecords.length > 0)
+      throw new Error("Occurrence group records require complete coverage evidence.");
+    return;
+  }
+  if (!Array.isArray(coverage) || coverage.length === 0)
+    throw new Error("Occurrence group coverage must contain at least one source bucket.");
+  if (evidence.scope.kind !== "bounded-range" || evidence.scope.completeness !== "complete-range")
+    throw new Error("Occurrence group coverage requires a complete bounded source range.");
+
+  const normalizedScopeStart = normalizeSourceDate(scopeStart, scopeDateFormat);
+  const normalizedScopeEnd = normalizeSourceDate(scopeEnd, scopeDateFormat);
+  const coverageRanges: Array<Readonly<{
+    scopeKey: string;
+    startDate: string;
+    endDate: string;
+    contractVersion: string;
+    bucketKeys?: readonly string[];
+    bucketInventoryJson?: string;
+  }>> = [];
+  const queriedBucketScopes = new Set<string>();
+  for (let index = 0; index < coverage.length; index += 1) {
+    const entry = coverage[index];
+    if (!entry || typeof entry !== "object")
+      throw new Error(`Occurrence group coverage ${index} is invalid.`);
+    requireCanonicalSourceToken(entry.scopeKey, `Occurrence group coverage ${index} scope key`);
+    requireCanonicalSourceText(entry.contractVersion, `Occurrence group coverage ${index} contract version`);
+    if (entry.contractVersion !== evidence.contractVersion)
+      throw new Error("Occurrence group coverage contract version must match the source contract.");
+    const startDate = requireSourceDate(entry.startDate, `Occurrence group coverage ${index} start`, "YYYY-MM-DD");
+    const endDate = requireSourceDate(entry.endDate, `Occurrence group coverage ${index} end`, "YYYY-MM-DD");
+    if (startDate > endDate)
+      throw new Error(`Occurrence group coverage ${index} start must not be after its end.`);
+    if (startDate < normalizedScopeStart || endDate > normalizedScopeEnd)
+      throw new Error(`Occurrence group coverage ${index} must be inside the source scope.`);
+    if (coverageRanges.some((prior) =>
+      prior.scopeKey === entry.scopeKey &&
+      startDate <= prior.endDate && prior.startDate <= endDate
+    ))
+      throw new Error("Occurrence group coverage ranges for one source bucket cannot overlap.");
+    const bucketKeys = entry.bucketKeys;
+    if (coverageMode === "queried-buckets") {
+      if (queriedBucketScopes.has(entry.scopeKey))
+        throw new Error("Queried-bucket coverage must contain one complete inventory per scope.");
+      queriedBucketScopes.add(entry.scopeKey);
+      if (!Array.isArray(bucketKeys) || bucketKeys.length === 0)
+        throw new Error("This source route requires a complete queried-bucket inventory.");
+      for (const [bucketIndex, bucketKey] of bucketKeys.entries())
+        requireCanonicalSourceText(
+          bucketKey,
+          `Occurrence group coverage ${index} bucket ${bucketIndex}`,
+        );
+    } else if (bucketKeys !== undefined) {
+      throw new Error("Queried-bucket coverage is not registered for this source route.");
+    }
+    let bucketInventoryJson: string | undefined;
+    if (bucketKeys !== undefined) {
+      try {
+        bucketInventoryJson = canonicalOccurrenceGroupBucketInventory(bucketKeys);
+      } catch {
+        throw new Error("Occurrence group bucket inventory contains duplicate keys.");
+      }
+    }
+    coverageRanges.push({
+      scopeKey: entry.scopeKey,
+      startDate,
+      endDate,
+      contractVersion: entry.contractVersion,
+      ...(bucketKeys === undefined ? {} : { bucketKeys, bucketInventoryJson }),
+    });
+  }
+
+  const ordinalsByGroup = new Map<string, Set<number>>();
+  const bucketsByGroup = new Map<string, string>();
+  for (const [index, record] of evidence.records.entries()) {
+    const group = record.occurrenceGroup;
+    if (group === undefined) continue;
+    if (!group || typeof group !== "object")
+      throw new Error(`Record ${index} occurrence group is invalid.`);
+    requireCanonicalSourceToken(group.scopeKey, `Record ${index} occurrence group scope key`);
+    requireCanonicalSourceToken(group.fingerprint, `Record ${index} occurrence group fingerprint`);
+    const partitionDate = requireSourceDate(group.partitionDate, `Record ${index} occurrence group date`, "YYYY-MM-DD");
+    if (!Number.isSafeInteger(group.ordinal) || group.ordinal < 1)
+      throw new Error(`Record ${index} occurrence group ordinal must be a positive integer.`);
+    const coveringRanges = coverageRanges.filter((range) =>
+      range.scopeKey === group.scopeKey &&
+      (range.bucketInventoryJson !== undefined
+        ? typeof record.occurrenceGroupBucketKey === "string" &&
+          range.bucketKeys?.includes(record.occurrenceGroupBucketKey) === true
+        : range.startDate <= partitionDate && partitionDate <= range.endDate)
+    );
+    if (coveringRanges.length !== 1)
+      throw new Error(`Record ${index} occurrence group is not covered by exactly one complete source bucket.`);
+    if (coverageMode === "queried-buckets" && typeof record.occurrenceGroupBucketKey !== "string")
+      throw new Error(`Record ${index} must identify its queried source bucket.`);
+    if (coverageMode !== "queried-buckets" && record.occurrenceGroupBucketKey !== undefined)
+      throw new Error(`Record ${index} has unregistered queried-bucket provenance.`);
+    const groupKey = JSON.stringify([group.scopeKey, partitionDate, group.fingerprint]);
+    if (coverageMode === "queried-buckets") {
+      const bucketKey = record.occurrenceGroupBucketKey!;
+      const previousBucket = bucketsByGroup.get(groupKey);
+      if (previousBucket !== undefined && previousBucket !== bucketKey)
+        throw new PGliteCanonicalSourceAdmissionError(
+          "occurrence-conflict",
+          "An indistinguishable occurrence group cannot span source query buckets.",
+        );
+      bucketsByGroup.set(groupKey, bucketKey);
+    }
+    const ordinals = ordinalsByGroup.get(groupKey) ?? new Set<number>();
+    if (ordinals.has(group.ordinal))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "occurrence-conflict",
+        "Occurrence group ordinal is duplicated in one capture.",
+      );
+    ordinals.add(group.ordinal);
+    ordinalsByGroup.set(groupKey, ordinals);
+  }
+  for (const ordinals of ordinalsByGroup.values()) {
+    const sortedOrdinals = [...ordinals].sort((left, right) => left - right);
+    if (sortedOrdinals.some((ordinal, index) => ordinal !== index + 1))
+      throw new PGliteCanonicalSourceAdmissionError(
+        "occurrence-conflict",
+        "Occurrence group ordinals must be contiguous from one.",
+      );
+  }
+}
+
+function normalizeSourceDate(value: string, format: "YYYYMMDD" | "YYYY-MM-DD"): string {
+  return format === "YYYYMMDD"
+    ? `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+    : value;
 }
 
 /** Validate the typed financial facts before any transaction starts. */

@@ -34,12 +34,44 @@ export type MaicoinStatementRowType =
   | "reward"
   | "convert";
 
+export type MaicoinStatementNativeIdentityResult =
+  | { kind: "present"; externalId: string }
+  | { kind: "missing"; field: "id" | "sn" | "uuid" };
+
+const STATEMENT_NATIVE_ID_FIELD: Readonly<
+  Record<MaicoinStatementRowType, "id" | "sn" | "uuid">
+> = {
+  trade: "id",
+  deposit: "sn",
+  withdrawal: "sn",
+  transfer: "sn",
+  reward: "uuid",
+  convert: "sn",
+};
+
+/** Enforce MAX's required native statement ID without using payload fallbacks. */
+export function readMaicoinStatementNativeIdentity(
+  rowType: MaicoinStatementRowType,
+  row: Readonly<Record<string, unknown>>,
+): MaicoinStatementNativeIdentityResult {
+  const field = STATEMENT_NATIVE_ID_FIELD[rowType];
+  const value = row[field];
+  if ((field === "sn" || field === "uuid") && typeof value === "string" && value.trim() !== "")
+    return { kind: "present", externalId: `${field}:${value}` };
+  if (field === "id" && typeof value === "number" && Number.isSafeInteger(value))
+    return { kind: "present", externalId: `${field}:${value}` };
+  if (field === "id" && typeof value === "string" && /^\d+$/u.test(value))
+    return { kind: "present", externalId: `${field}:${value}` };
+  return { kind: "missing", field };
+}
+
 /** A source endpoint batch retained by the sync boundary for canonicalizing events. */
 export type MaicoinStatementBatch = {
   endpoint: string;
   walletType: MaicoinWalletType | null;
   rowType: MaicoinStatementRowType;
   rows: readonly Record<string, unknown>[];
+  history: Readonly<{ startDate: string; endDate: string; complete: true }>;
 };
 
 /**
@@ -537,12 +569,15 @@ function statementEffectiveAt(row: Record<string, unknown>): string | null {
   return Number.isFinite(result.getTime()) ? result.toISOString() : null;
 }
 
-function statementExternalIdentity(row: Record<string, unknown>): string {
-  for (const field of ["id", "sn", "uuid"]) {
-    const value = statementText(row[field]);
-    if (value) return `${field}:${value}`;
-  }
-  return `payload:${stableStatementJson(row)}`;
+function statementExternalIdentity(
+  batch: MaicoinStatementBatch,
+  row: Record<string, unknown>,
+): string {
+  const identity = readMaicoinStatementNativeIdentity(batch.rowType, row);
+  if (identity.kind === "present") return identity.externalId;
+  throw new MaicoinCryptoAdapterError(
+    `MAX ${batch.rowType} history row is missing its contract-required ${identity.field} provider ID.`,
+  );
 }
 
 function statementRecordKey(
@@ -555,7 +590,7 @@ function statementRecordKey(
     batch.endpoint,
     batch.walletType ?? "",
     batch.rowType,
-    statementExternalIdentity(row),
+    statementExternalIdentity(batch, row),
     leg,
   );
 }
@@ -628,6 +663,22 @@ function statementTargetWalletType(
 ): MaicoinWalletType | null {
   const explicit = statementWalletHint(row) ??
     (batch.rowType === "transfer" ? statementTransferWalletHint(row) : null);
+  // Confirmed integration rule: fund-transaction deposits/withdrawals are
+  // spot-wallet events. M-wallet funding is a separate inter-wallet transfer.
+  // Rewards are confirmed spot credits; the provider's MAX Convert FAQ
+  // also restricts converts to spot assets.
+  // Complete account inventories contain overlapping currencies, so their
+  // present holdings cannot identify the wallet of these historical events.
+  const spotWalletContract =
+    (batch.rowType === "deposit" && batch.endpoint === "/api/v3/fund_transactions/deposits") ||
+    (batch.rowType === "withdrawal" && batch.endpoint === "/api/v3/fund_transactions/withdrawals") ||
+    (batch.rowType === "convert" && batch.endpoint === "/api/v3/converts") ||
+    (batch.rowType === "reward" && batch.endpoint === "/api/v3/rewards");
+  if (spotWalletContract) {
+    if ((explicit && explicit !== "spot") || (batch.walletType && batch.walletType !== "spot"))
+      throw new MaicoinCryptoAdapterError("MAX history conflicts with its spot wallet contract.");
+    return "spot";
+  }
   if (explicit) return explicit;
   if (batch.walletType) return batch.walletType;
 
@@ -686,34 +737,102 @@ function statementAction(
 type MaicoinCanonicalStatementTransaction =
   InvestmentCaptureInput["transactions"][number] & { producerSecurityId: string };
 
+type MaicoinStatementLeg = Readonly<{
+  batch: MaicoinStatementBatch;
+  row: Record<string, unknown>;
+  leg: string;
+  producerSecurityId: string;
+  action: InvestmentTransactionAction;
+  quantity: InvestmentExactAmount;
+  cashEffect: InvestmentMoney;
+  effectiveOn: string;
+}>;
+
+function deduplicateNativeStatementRows(
+  batch: MaicoinStatementBatch,
+): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = [];
+  const seen = new Map<string, string>();
+  for (const row of batch.rows) {
+    const identity = statementExternalIdentity(batch, row);
+    const payload = stableStatementJson(row);
+    const previous = seen.get(identity);
+    if (previous !== undefined) {
+      if (previous !== payload)
+        throw new MaicoinCryptoAdapterError(
+          `MAX ${batch.rowType} history contains conflicting payloads for one provider ID.`,
+        );
+      // A stable provider ID proves these identical rows are an overlap or
+      // repeated transport delivery of the same source event.
+      continue;
+    }
+    seen.set(identity, payload);
+    rows.push(row);
+  }
+  return rows;
+}
+
 function statementTransaction(
   accountKey: string,
-  batch: MaicoinStatementBatch,
-  row: Record<string, unknown>,
-  leg: string,
-  producerSecurityId: string,
-  action: InvestmentTransactionAction,
-  quantity: InvestmentExactAmount,
-  cashEffect: InvestmentMoney,
-  effectiveOn: string,
+  leg: MaicoinStatementLeg,
+  sourceRecordKey: string,
 ): MaicoinCanonicalStatementTransaction {
-  const sourceRecordKey = statementRecordKey(batch, row, leg);
   return {
-    producerSecurityId,
+    producerSecurityId: leg.producerSecurityId,
     sourceRecordKey,
     transactionKey: digest(
       "maicoin-investment-transaction-v1",
       accountKey,
       sourceRecordKey,
     ),
-    securityKey: `maicoin:${producerSecurityId}`,
-    action,
-    quantity,
-    cashEffect,
-    effectiveOn,
-    description: statementDescription(row),
+    securityKey: `maicoin:${leg.producerSecurityId}`,
+    action: leg.action,
+    quantity: leg.quantity,
+    cashEffect: leg.cashEffect,
+    effectiveOn: leg.effectiveOn,
+    description: statementDescription(leg.row),
     fundingEvidence: { kind: "unresolved", sourceRecordKey },
   };
+}
+
+type StructuredTransferLeg = Readonly<{
+  walletType: MaicoinWalletType;
+  action: InvestmentTransactionAction;
+  leg: "from" | "to";
+}>;
+
+function structuredTransferLegs(
+  input: MaicoinInvestmentCaptureBuildInput,
+  batch: MaicoinStatementBatch,
+  row: Record<string, unknown>,
+): StructuredTransferLeg[] | null {
+  if (batch.rowType !== "transfer" || batch.endpoint !== "/api/v3/fund_transactions/transfers")
+    return null;
+  const legs: StructuredTransferLeg[] = [];
+  for (const side of ["from", "to"] as const) {
+    const value = row[side];
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new MaicoinCryptoAdapterError("MAX transfer has no structured source account evidence.");
+    const source = value as Record<string, unknown>;
+    const platform = statementText(source.platform)?.toLowerCase();
+    const nativeAccount = statementText(source.sn);
+    if (!platform || !nativeAccount)
+      throw new MaicoinCryptoAdapterError("MAX transfer has incomplete source account evidence.");
+    if (platform !== "max" || nativeAccount !== input.subAccount) continue;
+    const walletType = walletTypeValue(source.wallet_type);
+    if (!walletType)
+      throw new MaicoinCryptoAdapterError("MAX transfer selected account has no supported wallet evidence.");
+    if (!input.accountBatches.some((candidate) => candidate.walletType === walletType))
+      throw new MaicoinCryptoAdapterError("MAX transfer belongs to a wallet outside the complete capture.");
+    if ((batch.walletType && batch.walletType !== walletType) ||
+        (statementWalletHint(row) && statementWalletHint(row) !== walletType))
+      throw new MaicoinCryptoAdapterError("MAX transfer has conflicting wallet evidence.");
+    legs.push({ walletType, leg: side,
+      action: side === "from" ? "corporate_action_out" : "corporate_action_in" });
+  }
+  if (legs.length === 0)
+    throw new MaicoinCryptoAdapterError("MAX transfer does not identify the selected native account.");
+  return legs;
 }
 
 function statementTransactionsForBatch(
@@ -722,13 +841,55 @@ function statementTransactionsForBatch(
   accountKey: string,
   targetWalletType: MaicoinWalletType,
 ): MaicoinCanonicalStatementTransaction[] {
-  const transactions: MaicoinCanonicalStatementTransaction[] = [];
-  for (const row of batch.rows) {
-    if (statementTargetWalletType(input, batch, row) !== targetWalletType)
+  const legs: MaicoinStatementLeg[] = [];
+  for (const row of deduplicateNativeStatementRows(batch)) {
+    const transferLegs = structuredTransferLegs(input, batch, row);
+    if (transferLegs) {
+      const effectiveAt = statementEffectiveAt(row);
+      if (!effectiveAt)
+        throw new MaicoinCryptoAdapterError("MAX transfer has no valid source timestamp.");
+      const effectiveOn = taipeiDate(effectiveAt);
+      if (effectiveOn < batch.history.startDate || effectiveOn > batch.history.endDate)
+        throw new MaicoinCryptoAdapterError("MAX transfer falls outside its complete date range.");
+      const producerSecurityId = currency(row.currency, "MAX transfer currency");
+      const quantity = exact(row.amount, "MAX transfer amount");
+      for (const transferLeg of transferLegs) {
+        if (transferLeg.walletType !== targetWalletType) continue;
+        legs.push({ batch, row, leg: transferLeg.leg, producerSecurityId,
+          action: transferLeg.action, quantity, effectiveOn,
+          cashEffect: { coefficient: "0", scale: 0, currency: "TWD" } });
+      }
+      continue;
+    }
+    const rowWalletType = statementTargetWalletType(input, batch, row);
+    if (!rowWalletType) {
+      // Keep fixed contract categories distinguishable in safe repository
+      // frames without serializing a provider row or exception message.
+      switch (batch.rowType) {
+        case "deposit": throw new MaicoinCryptoAdapterError("MAX deposit history row has an ambiguous wallet scope.");
+        case "withdrawal": throw new MaicoinCryptoAdapterError("MAX withdrawal history row has an ambiguous wallet scope.");
+        case "transfer": throw new MaicoinCryptoAdapterError("MAX transfer history row has an ambiguous wallet scope.");
+        case "reward": throw new MaicoinCryptoAdapterError("MAX reward history row has an ambiguous wallet scope.");
+        case "convert": throw new MaicoinCryptoAdapterError("MAX convert history row has an ambiguous wallet scope.");
+        case "trade": throw new MaicoinCryptoAdapterError("MAX trade history row has an ambiguous wallet scope.");
+      }
+    }
+    if (!input.accountBatches.some((accountBatch) => accountBatch.walletType === rowWalletType))
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} history row belongs to a wallet outside the complete capture.`,
+      );
+    if (rowWalletType !== targetWalletType)
       continue;
     const effectiveAt = statementEffectiveAt(row);
-    if (!effectiveAt) continue;
+    if (!effectiveAt)
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} history row has no valid source timestamp.`,
+      );
     const effectiveOn = taipeiDate(effectiveAt);
+    if (effectiveOn < batch.history.startDate || effectiveOn > batch.history.endDate)
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} history row falls outside its complete date range.`,
+      );
     const action = statementAction(batch, row, targetWalletType);
     if (batch.rowType === "convert") {
       const fromCurrency = (() => {
@@ -745,7 +906,8 @@ function statementTransactionsForBatch(
           return null;
         }
       })();
-      if (!fromCurrency || !toCurrency) continue;
+      if (!fromCurrency || !toCurrency)
+        throw new MaicoinCryptoAdapterError("MAX conversion row has an invalid currency.");
       const fromAmount = exact(row.from_amount, "MAX conversion source amount");
       const toAmount = exact(row.to_amount, "MAX conversion target amount");
       const zeroCashEffect = {
@@ -753,53 +915,28 @@ function statementTransactionsForBatch(
         scale: 0,
         currency: "TWD",
       } as const;
-      transactions.push(
-        statementTransaction(
-          accountKey,
-          batch,
-          row,
-          "from",
-          fromCurrency,
-          "corporate_action_out",
-          fromAmount,
-          zeroCashEffect,
-          effectiveOn,
-        ),
-        statementTransaction(
-          accountKey,
-          batch,
-          row,
-          "to",
-          toCurrency,
-          "corporate_action_in",
-          toAmount,
-          zeroCashEffect,
-          effectiveOn,
-        ),
+      legs.push(
+        { batch, row, leg: "from", producerSecurityId: fromCurrency, action: "corporate_action_out", quantity: fromAmount, cashEffect: zeroCashEffect, effectiveOn },
+        { batch, row, leg: "to", producerSecurityId: toCurrency, action: "corporate_action_in", quantity: toAmount, cashEffect: zeroCashEffect, effectiveOn },
       );
       continue;
     }
-    if (!action) continue;
+    // The v3 trade contract can report `side: self-trade` and also exposes
+    // fee-bearing fields. Its economic legs cannot be derived safely from
+    // the ordinary bid/ask mapping, so this capture must stop rather than
+    // claim complete history while omitting a potentially financial event.
+    if (!action)
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} history row has no supported economic direction.`,
+      );
     if (batch.rowType === "trade") {
       const units = marketUnitsForStatement(row.market);
-      if (!units) continue;
+      if (!units) throw new MaicoinCryptoAdapterError("MAX trade row has an invalid market.");
       const baseCurrency = currency(units.base, "MAX trade base currency");
       const quoteCurrency = currency(units.quote, "MAX trade quote currency");
       const quantity = exact(row.volume, "MAX trade volume");
       const funds = exact(row.funds, "MAX trade funds");
-      transactions.push(
-        statementTransaction(
-          accountKey,
-          batch,
-          row,
-          "transaction",
-          baseCurrency,
-          action,
-          quantity,
-          { ...funds, currency: quoteCurrency },
-          effectiveOn,
-        ),
-      );
+      legs.push({ batch, row, leg: "transaction", producerSecurityId: baseCurrency, action, quantity, cashEffect: { ...funds, currency: quoteCurrency }, effectiveOn });
       continue;
     }
     const securityCurrency = (() => {
@@ -809,28 +946,23 @@ function statementTransactionsForBatch(
         return null;
       }
     })();
-    if (!securityCurrency) continue;
+    if (!securityCurrency)
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} row has an invalid currency.`,
+      );
     const quantity = exact(row.amount, `MAX ${batch.rowType} amount`);
     const zeroCashEffect = {
       coefficient: "0",
       scale: 0,
       currency: "TWD",
     } as const;
-    transactions.push(
-      statementTransaction(
-        accountKey,
-        batch,
-        row,
-        "transaction",
-        securityCurrency,
-        action,
-        quantity,
-        zeroCashEffect,
-        effectiveOn,
-      ),
-    );
+    legs.push({ batch, row, leg: "transaction", producerSecurityId: securityCurrency, action, quantity, cashEffect: zeroCashEffect, effectiveOn });
   }
-  return transactions;
+  return legs.map((leg) => statementTransaction(
+    accountKey,
+    leg,
+    statementRecordKey(batch, leg.row, leg.leg),
+  ));
 }
 
 function securityType(currencyCode: string): "cash" | "cryptocurrency" {
@@ -954,6 +1086,70 @@ function normalizeAccount(
   };
 }
 
+const MAICOIN_STATEMENT_ENDPOINTS = [
+  { endpoint: "/api/v3/fund_transactions/deposits", rowType: "deposit" },
+  { endpoint: "/api/v3/fund_transactions/withdrawals", rowType: "withdrawal" },
+  { endpoint: "/api/v3/fund_transactions/transfers", rowType: "transfer" },
+  { endpoint: "/api/v3/rewards", rowType: "reward" },
+  { endpoint: "/api/v3/converts", rowType: "convert" },
+] as const satisfies readonly { endpoint: string; rowType: MaicoinStatementRowType }[];
+
+function validCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validateStatementBatchSet(input: MaicoinInvestmentCaptureBuildInput): void {
+  if (input.statementBatches === undefined) return;
+  const expected = new Set<string>([
+    ...input.accountBatches.map((batch) => JSON.stringify([
+      `/api/v3/wallet/${batch.walletType}/trades`, batch.walletType, "trade",
+    ])),
+    ...MAICOIN_STATEMENT_ENDPOINTS.map((spec) => JSON.stringify([
+      spec.endpoint, null, spec.rowType,
+    ])),
+  ]);
+  const seen = new Set<string>();
+  let commonHistory: MaicoinStatementBatch["history"] | undefined;
+  for (const batch of input.statementBatches) {
+    const key = JSON.stringify([batch.endpoint, batch.walletType, batch.rowType]);
+    if (!expected.has(key) || seen.has(key))
+      throw new MaicoinCryptoAdapterError(
+        "MAX statement history must contain exactly one complete batch for every queried endpoint and wallet.",
+      );
+    seen.add(key);
+    if (
+      batch.history?.complete !== true ||
+      !validCalendarDate(batch.history.startDate) ||
+      !validCalendarDate(batch.history.endDate) ||
+      batch.history.startDate > batch.history.endDate
+    )
+      throw new MaicoinCryptoAdapterError(
+        `MAX ${batch.rowType} history is missing a valid complete date range.`,
+      );
+    if (commonHistory && (
+      batch.history.startDate !== commonHistory.startDate ||
+      batch.history.endDate !== commonHistory.endDate
+    ))
+      throw new MaicoinCryptoAdapterError(
+        "MAX statement endpoints do not share one comparable complete history range.",
+      );
+    commonHistory ??= batch.history;
+  }
+  if (seen.size !== expected.size)
+    throw new MaicoinCryptoAdapterError(
+      "MAX statement capture omitted a queried endpoint or wallet bucket.",
+    );
+}
+
+function statementHistoryRange(
+  input: MaicoinInvestmentCaptureBuildInput,
+): Readonly<{ startDate: string; endDate: string }> | undefined {
+  const history = input.statementBatches?.[0]?.history;
+  return history ? { startDate: history.startDate, endDate: history.endDate } : undefined;
+}
+
 function captureForBatch(
   input: MaicoinInvestmentCaptureBuildInput,
   batch: MaicoinWalletAccountBatch,
@@ -966,6 +1162,7 @@ function captureForBatch(
   const identityEpochKey = deriveMaicoinIdentityEpochKey(providerEmail, subAccount);
   const accountKey = deriveMaicoinAccountKey(providerEmail, subAccount, batch.walletType);
   const effectiveOn = taipeiDate(providerDate.effectiveAt);
+  const transactionHistory = statementHistoryRange(input);
   const normalized = batch.accounts.map((account, index) =>
     normalizeAccount(account, index, input.valuationQuotes),
   );
@@ -1048,7 +1245,13 @@ function captureForBatch(
       accountSubtype: MAICOIN_ACCOUNT_SUBTYPE,
       reportingCurrency: "TWD",
     },
-    scope: { effectiveOn, complete: true },
+    scope: {
+      effectiveOn,
+      complete: true,
+      ...(transactionHistory
+        ? { transactionHistory: { ...transactionHistory, complete: true as const } }
+        : {}),
+    },
     securities,
     holdings,
     transactions: statementTransactions.map(({ producerSecurityId: _producerSecurityId, ...transaction }) =>
@@ -1064,6 +1267,7 @@ export function buildMaicoinInvestmentCaptures(
     throw new MaicoinCryptoAdapterError("MaiCoin capture ID is required.");
   if (input.accountBatches.length === 0)
     throw new MaicoinCryptoAdapterError("At least one MAX wallet scope is required.");
+  validateStatementBatchSet(input);
   const seenWalletTypes = new Set<MaicoinWalletType>();
   return input.accountBatches.map((batch, index) => {
     if (seenWalletTypes.has(batch.walletType))

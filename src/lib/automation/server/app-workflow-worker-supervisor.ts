@@ -5,6 +5,11 @@ import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcomeSummary, TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import { gmailOtpFallbackReason, type GmailOtpFallbackReason } from "../gmail-otp.ts";
+import {
+  captureSafeWorkflowFailureError,
+  workflowFailureDiagnosticRepoRoot,
+  type SafeWorkflowFailureError,
+} from "./workflow-failure-diagnostics.ts";
 import { createCathayGmailOtpPort } from "./cathay-otp-port.ts";
 import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -28,6 +33,7 @@ export type AppWorkflowWorkerOutcome =
     errorCode: AppWorkflowWorkerFailureCode;
     summary: null;
     failureKind: "worker-start" | "worker-crash" | "workflow" | "unexpected-exit" | "protocol";
+    diagnostic?: SafeWorkflowFailureError;
   }>;
 
 type WorkerDataStream = {
@@ -93,8 +99,15 @@ const CATHAY_OTP_PATTERN = /^[A-Z]{4}-[0-9]{6}$/u;
 function failed(
   errorCode: AppWorkflowWorkerFailureCode,
   failureKind: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>['failureKind'],
+  diagnostic: SafeWorkflowFailureError | null = null,
 ): AppWorkflowWorkerOutcome {
-  return { status: "failed", errorCode, summary: null, failureKind };
+  return {
+    status: "failed",
+    errorCode,
+    summary: null,
+    failureKind,
+    ...(diagnostic ? { diagnostic } : {}),
+  };
 }
 
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -531,15 +544,15 @@ export async function runSupervisedAppWorkflow(
       } else if (frame.taskRunId !== options.runId) {
         protocolFailure();
       } else {
-        terminalOutcome(failed(frame.errorCode as AppWorkflowWorkerFailureCode, "workflow"));
+        terminalOutcome(failed(frame.errorCode as AppWorkflowWorkerFailureCode, "workflow", frame.diagnostic ?? null));
       }
     };
     const onOnline = () => { workerOnline = true; };
-    const onError = (_error: unknown) => {
+    const onError = (error: unknown) => {
       requestStop(
         workerOnline
-          ? failed("workflow-failed", "worker-crash")
-          : failed("worker-start-failed", "worker-start"),
+          ? failed("workflow-failed", "worker-crash", captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot()))
+          : failed("worker-start-failed", "worker-start", captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())),
         true,
       );
     };

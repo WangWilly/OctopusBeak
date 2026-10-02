@@ -1,4 +1,5 @@
 import type { APIRequestContext, Locator, Page, Response } from "playwright";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
@@ -12,6 +13,7 @@ import {
   type InvestmentValidatedCapture,
 } from "../ledger/canonical/investment-financial-admission.ts";
 import {
+  assignYuantaInvestmentTransactionOccurrences,
   buildYuantaInvestmentCapture,
   YUANTA_TRADE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -304,6 +306,8 @@ type CapturedGrid = {
   category: string;
   columns: GridColumn[];
   rows: Record<string, unknown>[];
+  /** True only when the response embeds the complete, non-remote row array. */
+  sourceRowsComplete: boolean;
 };
 
 type AssetSummaryRow = {
@@ -566,11 +570,19 @@ function extractJsonArrayVar(html: string, name: string): unknown[] {
   return parseJsonArrayAt(html, openIndex);
 }
 
-function extractDataArray(gridChunk: string): unknown[] {
+function extractDataArray(gridChunk: string): unknown[] | null {
   const dataMatch = /data\s*:\s*\[/.exec(gridChunk);
-  if (!dataMatch) return [];
+  if (!dataMatch) return null;
   const openIndex = dataMatch.index + dataMatch[0].lastIndexOf("[");
-  return parseJsonArrayAt(gridChunk, openIndex);
+  const closeIndex = findMatchingDelimiter(gridChunk, openIndex, "[", "]");
+  if (closeIndex < 0) return null;
+  const raw = gridChunk.slice(openIndex, closeIndex + 1);
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function extractColumns(gridChunk: string): GridColumn[] {
@@ -646,12 +658,26 @@ function extractGrids(html: string): CapturedGrid[] {
     const gridChunk = html.slice(openIndex + 1, closeIndex);
     const columns = extractColumns(gridChunk);
     const rawRows = extractDataArray(gridChunk);
+    const hasTransport = /\btransport\s*:/u.test(gridChunk);
+    const serverPagingDeclarations = [...gridChunk.matchAll(
+      /\bserverPaging\s*:\s*([^,}\n]+)/gu,
+    )].map((match) => match[1]?.trim());
+    const hasSafePaging = serverPagingDeclarations.every((value) => value === "false");
+    const totalDeclarations = [...gridChunk.matchAll(
+      /\btotal\s*:\s*([^,}\n]+)/gu,
+    )].map((match) => match[1]?.trim());
+    const hasValidTotals = totalDeclarations.every((value) =>
+      /^\d+$/u.test(value ?? "") && Number(value) === rawRows?.length,
+    );
 
     grids.push({
       gridId: match[1],
       category: gridCategory(match[1]),
       columns,
-      rows: normalizeRows(rawRows, columns),
+      rows: normalizeRows(rawRows ?? [], columns),
+      sourceRowsComplete: rawRows !== null &&
+        rawRows.every((row) => typeof row === "object" && row !== null && !Array.isArray(row)) &&
+        !hasTransport && hasSafePaging && hasValidTotals,
     });
   }
 
@@ -1000,7 +1026,8 @@ export function isCompleteTradeCapture(
       page.queryDateType !== "6" ||
       page.startDate !== dateRange.startDate ||
       page.endDate !== dateRange.endDate ||
-      page.grids.length === 0
+      page.grids.length === 0 ||
+      page.grids.some((grid) => !grid.sourceRowsComplete)
     ) return false;
     let routeName = "";
     try {
@@ -1023,8 +1050,13 @@ export function normalizeTradeRows(
     for (const grid of page.grids) {
       for (const row of grid.rows) {
         const tradeDate = rowValue(row, ["交易日期"]);
-        if (!tradeDate) continue;
-
+        if (!tradeDate) {
+          if (Object.values(row).some((value) => String(value ?? "").trim()))
+            throw new Error(
+              "Yuanta Trade returned a non-empty transaction row without a source date.",
+            );
+          continue;
+        }
         rows.push({
           trade_date: tradeDate,
           account_number: rowValue(row, ["交易帳號"]),
@@ -1267,12 +1299,36 @@ export function mapYuantaTradeCanonicalInvestmentRow(
   ).trim();
 
   return {
-    sourceRecordKey: yuantaTradeCanonicalOccurrenceIdentity(
-      accountNumber,
-      rowKind,
-      row,
-      occurrenceOrdinal,
-    ),
+    sourceRecordKey: rowKind === "holding"
+      ? yuantaTradeCanonicalHoldingIdentity(accountNumber, row, occurrenceOrdinal)
+      : yuantaSemanticToken("yuanta-trade-pending-transaction", [
+          accountNumber,
+          row.trade_type ?? "",
+          sourceDate(row.trade_date ?? ""),
+          row.product_code ?? "",
+          row.action ?? "",
+          row.quantity ?? "",
+          row.settlement_amount ?? row.gross_amount ?? "",
+        ]),
+    ...(rowKind === "transaction"
+      ? {
+          occurrenceScopeKey: yuantaTradeOccurrenceScopeKey(accountNumber, row.trade_type ?? ""),
+          occurrenceFingerprintFields: [
+            row.asset_type ?? "",
+            row.trade_type ?? "",
+            row.sub_category ?? "",
+            row.product_name ?? "",
+            row.price ?? "",
+            row.gross_amount ?? "",
+            row.fee ?? "",
+            row.tax ?? "",
+            row.settlement_amount ?? "",
+            row.settlement_currency ?? "",
+            row.market ?? "",
+            row.source_transaction_reference ?? "",
+          ],
+        }
+      : {}),
     producerSecurityId: row.product_code?.trim() ?? "",
     securityName: row.product_name?.trim() || undefined,
     ticker: row.product_code?.trim() || undefined,
@@ -1301,40 +1357,46 @@ export function explicitAction(value: string): InvestmentTransactionAction {
     "Yuanta Trade canonical action is not an explicit supported provider event.",
   );
 }
-export function yuantaTradeCanonicalOccurrenceIdentity(
+export function yuantaTradeCanonicalHoldingIdentity(
   accountNumber: string,
-  rowKind: "holding" | "transaction",
   row: NormalizedRow,
-  _occurrenceOrdinal: number,
+  _rowOrdinal: number,
 ): string {
-  const stableSourceIdentity = row.source_transaction_reference?.trim();
-  // Holdings are point-in-time observations, not buy/sell events. The source
-  // does not provide an action for them, so make that semantic distinction
-  // explicit instead of passing an empty required identity part downstream.
-  const actionIdentity =
-    rowKind === "holding" ? "holding-observation" : row.action ?? "";
-  return deriveSourceConnectionIdentityKey("yuanta-trade-record", [
+  return yuantaSemanticToken("yuanta-trade-record", [
     accountNumber,
-    rowKind,
+    "holding-observation",
     row.product_code ?? "",
-    row.as_of_date ?? row.trade_date ?? "",
-    actionIdentity,
+    row.as_of_date ?? "",
     row.quantity ?? "",
-    row.settlement_amount ?? row.market_value_twd ?? "",
-    stableSourceIdentity || "no-source-reference",
+    row.market_value_original ?? row.market_value_twd ?? "",
   ]);
 }
+
+function yuantaSemanticToken(namespace: string, parts: readonly string[]): string {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify([namespace, ...parts]), "utf8")
+    .digest("base64url")}`;
+}
+
+function yuantaTradeOccurrenceScopeKey(accountNumber: string, tradeType: string): string {
+  if (!tradeType) throw new Error("Yuanta Trade transaction has no requested report type.");
+  return deriveSourceConnectionIdentityKey("yuanta-trade-occurrence-scope", [
+    accountNumber,
+    tradeType,
+  ]);
+}
+
 export function assertYuantaTradeCanonicalOccurrenceIdentities(
   accountNumber: string,
-  rowKind: "holding" | "transaction",
+  rowKind: "holding",
   rows: readonly NormalizedRow[],
 ): string[] {
   const identities = rows.map((row, index) =>
-    yuantaTradeCanonicalOccurrenceIdentity(accountNumber, rowKind, row, index),
+    yuantaTradeCanonicalHoldingIdentity(accountNumber, row, index),
   );
   if (new Set(identities).size !== identities.length)
     throw new Error(
-      "Yuanta Trade canonical capture contains indistinguishable duplicate rows without a provider-stable row identity.",
+      "Yuanta Trade holdings contain indistinguishable duplicate source observations.",
     );
   return identities;
 }
@@ -1342,7 +1404,18 @@ export function buildYuantaTradeCanonicalCaptures(
   credentials: YuantaTradeCredentials,
   holdingRows: NormalizedRow[],
   tradeRows: NormalizedRow[],
+  history: Readonly<{
+    dateRange: Readonly<{ startDate: string; endDate: string }>;
+    requestedTradeTypes: readonly string[];
+  }>,
 ): InvestmentValidatedCapture[] {
+  if (tradeRows.some((row) => !row.account_number?.trim()))
+    throw new Error("Yuanta Trade transaction has no source account scope.");
+  const historyStartDate = sourceDate(history.dateRange.startDate);
+  const historyEndDate = sourceDate(history.dateRange.endDate);
+  if (historyStartDate > historyEndDate || history.requestedTradeTypes.length === 0 ||
+      new Set(history.requestedTradeTypes).size !== history.requestedTradeTypes.length)
+    throw new Error("Yuanta Trade history coverage does not match a complete query range.");
   const accountNumbers = [
     ...new Set(
       [...holdingRows, ...tradeRows]
@@ -1366,11 +1439,6 @@ export function buildYuantaTradeCanonicalCaptures(
       accountNumber!,
       "holding",
       accountHoldings,
-    );
-    assertYuantaTradeCanonicalOccurrenceIdentities(
-      accountNumber!,
-      "transaction",
-      accountTrades,
     );
     const observedAt = new Date().toISOString();
     const effectiveDates = [
@@ -1405,6 +1473,8 @@ export function buildYuantaTradeCanonicalCaptures(
       accountNumber!,
     );
     const transactions = accountTrades.map((row, index) => {
+      if (!history.requestedTradeTypes.includes(row.trade_type ?? ""))
+        throw new Error("Yuanta Trade row belongs to an unqueried report scope.");
       const mapped = mapRow(row, "transaction", index);
       const cashEffect = {
         ...exactAmount(row.settlement_amount || row.gross_amount || ""),
@@ -1426,6 +1496,23 @@ export function buildYuantaTradeCanonicalCaptures(
             : { kind: "unresolved" as const, sourceRecordKey: mapped.sourceRecordKey },
       };
     });
+    const transactionHistory = {
+      startDate: historyStartDate,
+      endDate: historyEndDate,
+      complete: true as const,
+    };
+    const occurrenceGroupCoverage = history.requestedTradeTypes.map((tradeType) => ({
+      scopeKey: yuantaTradeOccurrenceScopeKey(accountNumber!, tradeType),
+      startDate: historyStartDate,
+      endDate: historyEndDate,
+      contractVersion: "yuanta-trade/investment/canonical-v1",
+    }));
+    const groupedTransactions = assignYuantaInvestmentTransactionOccurrences({
+      contractVersion: "yuanta-trade/investment/canonical-v1",
+      transactions,
+      transactionHistory,
+      occurrenceGroupCoverage,
+    });
     const capture = buildYuantaInvestmentCapture({
       sourceId: "yuanta-trade",
       captureId: `yuanta-trade-investment:${deriveSourceConnectionIdentityKey("yuanta-trade-capture", [sourceConnectionKey, accountKey, observedAt])}`,
@@ -1441,8 +1528,10 @@ export function buildYuantaTradeCanonicalCaptures(
       reportingCurrency: "TWD",
       observedAt,
       sourceEffectiveOn: effectiveDates[0]!,
+      transactionHistory,
+      occurrenceGroupCoverage,
       holdings,
-      transactions,
+      transactions: groupedTransactions,
     });
     captures.push(admitCanonicalInvestmentCapture(capture));
   }
@@ -1733,6 +1822,7 @@ export async function runYuantaTradeProviderWorkflow(
         input.credentials,
         holdingRows,
         tradeRows,
+        { dateRange, requestedTradeTypes },
       );
       if (captures.length === 0) {
         throw new Error("YuanTa Trade source contains no account-scoped investment capture.");

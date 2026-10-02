@@ -187,6 +187,7 @@ const relationEvidence = buildFubonLoanPaymentAccountEvidence(
     identity: {
       sourceConnectionKey: "sha256:synthetic-connection",
       identityEpochKey: "sha256:synthetic-deposit-epoch",
+      accountNo: "sha256:synthetic-deposit-account",
     },
     records: relationEvidenceCapture.pages[0]!.rows.map((row) => ({
       occurrenceKey: `sha256:synthetic-row-${row.rowOrdinal}`,
@@ -197,6 +198,7 @@ const relationEvidence = buildFubonLoanPaymentAccountEvidence(
 assert.equal(relationEvidence.length, 1);
 assert.equal(relationEvidence[0]!.accountValue, relationAccount);
 assert.equal(relationEvidence[0]!.sourceRecordKey, "sha256:synthetic-row-0");
+assert.equal(relationEvidence[0]!.accountKey, "sha256:synthetic-deposit-account");
 assert.equal(relationEvidence[0]!.role, "beneficiary");
 assert.equal(relationEvidence[0]!.scope, "loan_contract");
 assert.equal(relationEvidence[0]!.sourceField, "附註");
@@ -275,31 +277,33 @@ await assert.rejects(
 
 const fixture = FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2;
 const selectedAccount = accountOption;
+const statementPages = fixture.pages.map((page) => {
+  const rows = page.rows.map((row) => {
+    const cells = [...row.cells] as [string, string, string, string, string, string, string];
+    if (row.rowOrdinal === 0) {
+      cells[2] = "放款繳款";
+      cells[6] = relationAccount;
+    }
+    return { ...row, cells };
+  });
+  return {
+    ...page,
+    selectedAccount,
+    rows: [
+      ...rows,
+      ...(page.pageOrdinal === 0 && rows[0]
+        ? [{ ...rows[0], rowOrdinal: rows.length }]
+        : []),
+    ],
+  };
+});
 const statement: FubonParsedDepositStatement = {
   account: selectedAccount.label,
   accountId: selectedAccount.value,
   queryPeriod: "synthetic",
   branchName: selectedAccount.branchName,
-  rows: fixture.pages.flatMap((page) => page.rows.map((row) => {
-    const cells = [...row.cells];
-    if (row.rowOrdinal === 0) {
-      cells[2] = "放款繳款";
-      cells[6] = relationAccount;
-    }
-    return cells;
-  })),
-  pages: fixture.pages.map((page) => ({
-    ...page,
-    selectedAccount,
-    rows: page.rows.map((row) => {
-      const cells = [...row.cells] as [string, string, string, string, string, string, string];
-      if (row.rowOrdinal === 0) {
-        cells[2] = "放款繳款";
-        cells[6] = relationAccount;
-      }
-      return { ...row, cells };
-    }),
-  })),
+  rows: statementPages.flatMap((page) => page.rows.map((row) => [...row.cells])),
+  pages: statementPages,
   accountOption: selectedAccount,
 };
 const stableLogin = {
@@ -362,6 +366,18 @@ try {
   assert.equal(deferredItems.length, result.itemCount);
   assert.ok(deferredItems.some((item) => item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND));
   assert.ok(deferredItems.some((item) => item.command.kind === PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND));
+  const depositItem = deferredItems.find((item) =>
+    item.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  );
+  assert.ok(depositItem && depositItem.command.kind === PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND);
+  assert.deepEqual(
+    depositItem.command.request.capture.records.map(
+      (record) => record.occurrenceGroup?.ordinal,
+    ),
+    [1, 2],
+    "identical Fubon rows retain two semantic occurrence slots",
+  );
+  assert.equal(depositItem.command.request.capture.occurrenceGroupCoverage?.length, 1);
   assert.deepEqual(await readdir(typedOutputDir), [], "Fubon collection must not create source, output, or log files");
 
   const malformedStatement: FubonParsedDepositStatement = {

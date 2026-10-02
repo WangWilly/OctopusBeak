@@ -15,13 +15,23 @@ import {
   queryPGliteCurrentLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentSettlementGroups,
 } from "./relations.ts";
+import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
+import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
+import { buildFubonLoanPaymentAccountEvidence, type FubonDepositStatementEvidence } from "../../workflows/fubon-statements.ts";
+import { buildFubonLoanCapture } from "../canonical/fubon-loan-admission.ts";
 
 const token = (value: string): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 
 function loanRequest(captureId: string, amount = "1000", fixtureKey = "primary"): PGliteCanonicalLoanCommitRequest {
-  const sourceRecordKey = token(fixtureKey === "primary" ? "loan-payment" : `${fixtureKey}:loan-payment`);
   const accountKey = token("loan-account");
+  const occurrenceGroup = {
+    scopeKey: canonicalLoanOccurrenceScopeKey("fubon", accountKey),
+    fingerprint: token(fixtureKey === "primary" ? "loan-payment-group" : `${fixtureKey}:loan-payment-group`),
+    partitionDate: "2026-09-21",
+    ordinal: 1,
+  };
+  const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
   const balanceEvidence = {
     kind: "source-reported-balance" as const,
     balanceKind: "loan_outstanding" as const,
@@ -74,9 +84,18 @@ function loanRequest(captureId: string, amount = "1000", fixtureKey = "primary")
         timeZone: "Asia/Taipei",
       },
       pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+      occurrenceGroupCoverage: [{
+        scopeKey: occurrenceGroup.scopeKey,
+        startDate: "2026-09-21",
+        endDate: "2026-09-21",
+        contractVersion: "loan/canonical/v2.fubon",
+      }],
       records: [{
         sourceRecordKey,
         occurrenceIndex: 1,
+        sourceSequenceIndex: 1,
+        occurrenceGroup,
+        occurrenceCollisionKey: token(`${fixtureKey}:loan-collision`),
         effectiveOn: "2026-09-21",
         sourceTime: { localTime: "12:00:00", precision: "second", timeOrigin: "source_reported" },
         postingStatus: "posted",
@@ -114,6 +133,50 @@ function loanRequest(captureId: string, amount = "1000", fixtureKey = "primary")
       }],
       relations: [],
       relationCoverage: "not-asserted",
+    },
+  };
+}
+
+function loanGroupRequest(captureId: string, memberCount: number): PGliteCanonicalLoanCommitRequest {
+  const base = loanRequest(captureId);
+  const firstRecord = base.capture.records[0]!;
+  const records = Array.from({ length: memberCount }, (_, index) => {
+    const ordinal = index + 1;
+    const occurrenceGroup = { ...firstRecord.occurrenceGroup, ordinal };
+    const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
+    return {
+      ...firstRecord,
+      sourceRecordKey,
+      occurrenceIndex: ordinal,
+      sourceSequenceIndex: ordinal,
+      occurrenceGroup,
+      occurrenceCollisionKey: token(`loan-payment-collision:${ordinal}`),
+      eventEvidence: { ...firstRecord.eventEvidence, sourceRecordKey },
+      balanceSourceEvidence: (firstRecord.balanceSourceEvidence ?? []).map((evidence) => ({
+        ...evidence,
+        observationKey: token(`loan-payment-observation:${ordinal}`),
+      })),
+    };
+  });
+  const balanceObservations = records.map((record) => {
+    const baseObservation = base.capture.balanceObservations[0]!;
+    return {
+      ...baseObservation,
+      observationKey: token(`loan-payment-observation:${record.occurrenceIndex}`),
+      sourceRecordKey: record.sourceRecordKey,
+      effectiveTimeEvidence: {
+        ...baseObservation.effectiveTimeEvidence,
+        sourceRecordKey: record.sourceRecordKey,
+      },
+    };
+  });
+  return {
+    ...base,
+    capture: {
+      ...base.capture,
+      pages: base.capture.pages.map((page) => ({ ...page, rowCount: memberCount })),
+      records,
+      balanceObservations,
     },
   };
 }
@@ -189,6 +252,95 @@ test("PGlite loan command rolls back a changed occurrence atomically", async () 
   }
 });
 
+test("Fubon loan slots survive unrelated insertion and reject group shrinkage atomically", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const makeCapture = (observedAt: string, rows: readonly {
+      transactionDate: string;
+      transactionContent: string;
+      transactionAmount: string;
+      balanceAfterTransaction: string;
+    }[]) => ({
+      capture: buildFubonLoanCapture({
+        accountValue: "fubon-group-continuity-account",
+        sourceConnectionScope: "fubon-group-continuity-connection",
+        observedAt,
+        startDate: "2026-09-01",
+        endDate: "2026-09-30",
+        scope: {
+          startDate: "2026-09-01",
+          endDate: "2026-09-30",
+          completeness: "complete-range",
+          completenessBasis: "source-declared-terminal-range",
+          completenessRuleVersion: "loan/canonical/v2.fubon",
+          pageCount: 1,
+          terminal: true,
+        },
+        pages: [{
+          pageOrdinal: 0,
+          responseCode: "200",
+          terminal: true,
+          rowCount: rows.length,
+          proofKind: "source-declared-terminal-range",
+        }],
+        counterpartTransactions: [],
+        relations: [],
+        relationCoverage: "not-asserted",
+        rows,
+      }),
+    });
+    const payment = {
+      transactionDate: "2026/09/10",
+      transactionContent: "LOAN-PAYMENT",
+      transactionAmount: "1000.00",
+      balanceAfterTransaction: "9000.00",
+    };
+    const fee = {
+      transactionDate: "2026/09/01",
+      transactionContent: "LOAN-FEE",
+      transactionAmount: "100.00",
+      balanceAfterTransaction: "10000.00",
+    };
+    const first = makeCapture("2026-10-01T00:00:00.000Z", [payment, payment]);
+    const firstResult = await commitPGliteCanonicalLoanCapture(store, first, { clock: () => 100 });
+    const originalSlots = firstResult.transactions.map((row) => ({
+      key: row.sourceOccurrenceKey,
+      id: row.transactionId,
+      revision: row.revisionId,
+    }));
+    assert.equal(originalSlots.length, 2);
+
+    const grown = makeCapture("2026-10-02T00:00:00.000Z", [fee, payment, payment, payment]);
+    const grownResult = await commitPGliteCanonicalLoanCapture(store, grown, { clock: () => 101 });
+    for (const prior of originalSlots) {
+      const retained = grownResult.transactions.find((row) => row.sourceOccurrenceKey === prior.key);
+      assert.ok(retained);
+      assert.equal(retained.transactionId, prior.id);
+      assert.equal(retained.revisionId, prior.revision);
+      assert.equal(retained.revisionCreated, false);
+    }
+    assert.deepEqual(
+      grown.capture.records.filter((row) => row.effectiveOn === "2026-09-10").map((row) => row.occurrenceIndex),
+      [1, 2, 3],
+    );
+
+    await assert.rejects(
+      commitPGliteCanonicalLoanCapture(store, makeCapture("2026-10-03T00:00:00.000Z", [fee, payment]), { clock: () => 102 }),
+      /occurrence group cannot lose members/iu,
+    );
+    await assert.rejects(
+      commitPGliteCanonicalLoanCapture(store, makeCapture("2026-10-04T00:00:00.000Z", [fee]), { clock: () => 103 }),
+      /occurrence group cannot lose members/iu,
+    );
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 2);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM loan_transaction_facts")).rows[0]?.count, 4);
+  } finally {
+    await store.close();
+  }
+});
+
 test("PGlite relation command admits scoped repayment evidence and deduplicates replay", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
@@ -232,8 +384,8 @@ test("PGlite loan settlement groups keep member history and roll back cancelled 
   const store = new PGliteStore(database);
   try {
     await applyPgliteBaseline(database);
-    const first = loanRequestWithRepaymentDeposit("loan-group-capture-1", "loan-group-first");
-    const second = loanRequest("loan-group-capture-2", "1000", "loan-group-second");
+    const first = loanRequestWithRepaymentDeposit("loan-group-capture-1", "primary");
+    const second = loanGroupRequest("loan-group-capture-2", 2);
     await commitPGliteCanonicalLoanCapture(store, first, { clock: () => 100 });
     await commitPGliteCanonicalLoanCapture(store, second, { clock: () => 101 });
 
@@ -279,7 +431,7 @@ test("PGlite loan settlement groups keep member history and roll back cancelled 
     assert.equal(firstMembers?.length, 3);
     assert.deepEqual(new Set(firstMembers?.map((member) => member.memberKind)), new Set(["deposit_outflow", "loan_payment"]));
 
-    const third = loanRequest("loan-group-capture-3", "1000", "loan-group-third");
+    const third = loanGroupRequest("loan-group-capture-3", 3);
     await commitPGliteCanonicalLoanCapture(store, third, { clock: () => 103 });
     const cancelled = new AbortController();
     await assert.rejects(
@@ -530,6 +682,10 @@ test("PGlite Fubon loan capture permits balance-only evolution as a new observat
         ...next.capture,
         observedAt: "2026-09-23T01:00:00.000Z",
         scope: { ...next.capture.scope, endDate: "2026-09-22" },
+        occurrenceGroupCoverage: next.capture.occurrenceGroupCoverage.map((coverage) => ({
+          ...coverage,
+          endDate: "2026-09-22",
+        })),
         records: [{ ...record, balanceSourceEvidence: [balanceEvidence] }],
         balanceObservations: [{
           ...next.capture.balanceObservations[0]!,
@@ -546,4 +702,50 @@ test("PGlite Fubon loan capture permits balance-only evolution as a new observat
   } finally {
     await store.close();
   }
+});
+
+
+test("Fubon repeated deposit capture resolves repayment evidence through its stable account scope", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = loanRequestWithRepaymentDeposit("fubon-replay-first", "replay");
+    await commitPGliteCanonicalLoanCapture(store, first);
+    const deposit = first.capture.counterpartTransactions[0]!;
+    const repeatedDeposit = { ...deposit, captureId: "fubon-replay-deposit-second" };
+    await commitPGliteCanonicalLoanCapture(store, {
+      capture: { ...first.capture, captureId: "fubon-replay-second", counterpartTransactions: [repeatedDeposit] },
+    });
+    const queryRange = { startDate: "2026/09/21", endDate: "2026/09/21" };
+    const sourceAccount = { value: "synthetic-deposit", label: "SYNTHETIC", branchName: "000" };
+    const source: FubonDepositStatementEvidence = {
+      evidenceVersion: "capture-evidence-v2", source: "fubon",
+      observedAt: first.capture.observedAt, account: sourceAccount, queryRange,
+      pages: [{ pageOrdinal: 0, responseSequence: 1, terminal: true,
+        nextPage: null, pageFieldName: null, queryRange, selectedAccount: sourceAccount,
+        rows: [{ rowOrdinal: 0, cells: [
+          "2026/09/21", "12:00:00", "放款繳款", "1000", "", "100", "01234567890123測試分行",
+        ] }], zeroObservation: "non-empty-page" }],
+      zeroObservation: "non-empty-range",
+      providerRouteEvidence: { endpointPath: "/synthetic", contract: "synthetic", currency: "TWD" },
+      provenance: { source: "fubon-ebank-domestic-deposit-form-postback", responseBodyRetained: false, semantics: "unresolved" },
+    };
+    const evidence = buildFubonLoanPaymentAccountEvidence(source, {
+      captureId: repeatedDeposit.captureId,
+      identity: { sourceConnectionKey: deposit.sourceConnectionKey,
+        identityEpochKey: deposit.identityEpochKey, accountNo: token("display-only-account"),
+        sourceAccountKey: deposit.accountKey },
+      records: [{ occurrenceKey: deposit.sourceRecordKey, sequenceLexeme: "0:0" }],
+    });
+    await resolvePGliteCanonicalLoanRepaymentRelations(store, {
+      sourceConnectionKey: deposit.sourceConnectionKey,
+      observedAt: first.capture.observedAt, counterpartyEvidence: evidence,
+    });
+    const rows = await store.query<{ transaction_id: unknown; account_id: unknown }>(
+      "SELECT transaction_id, account_id FROM transaction_counterparty_account_evidence");
+    assert.equal(rows.rows.length, 1);
+    assert.ok(rows.rows[0]?.transaction_id);
+    assert.equal(rows.rows[0]?.account_id, null);
+  } finally { await store.close(); }
 });

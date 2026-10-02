@@ -13,6 +13,7 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import {
   admitFubonCreditCardCapture,
+  buildFubonCreditCardTransactionSourceKey,
   buildFubonCreditCardStatementEvidenceKey,
   fubonCanonicalSpineCapture,
   FUBON_CREDIT_CARD_CAPTURE_CONTRACT,
@@ -36,6 +37,7 @@ import {
   type CreditCardCurrentBalanceObservationInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
 import {
   activateControlWithoutPointer,
   hasAttachedLocator,
@@ -1640,6 +1642,12 @@ function fubonCanonicalDigest(label: string, value: unknown): string {
     .digest("base64url")}`;
 }
 
+function opaqueFubonOccurrenceToken(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(value))
+    .digest("base64url")}`;
+}
+
 function fubonInstrumentProjectionKey(
   accountNaturalKey: string,
   safeProjection: string,
@@ -1860,6 +1868,11 @@ function canonicalTransactionForRow(
   if (/^[+-]?0(?:\.0+)?$/u.test(booked.signed))
     throw new Error("Fubon zero-value credit-card rows cannot establish direction.");
   const foreignEvidence = fubonForeignEvidenceForRow(row);
+  const queriedPeriod = cleanText(row.statement_period);
+  if (!queriedPeriod) throw new Error("Fubon credit-card row is missing its queried statement period.");
+  const occurrenceGroupBucketKey = queriedPeriod === "unbilled"
+    ? "unbilled"
+    : `statement:${queriedPeriod}`;
   const sourceRecordKey = fubonCanonicalDigest("fubon-credit-row-v2", [
     statementKey,
     sourceScopeKey ?? null,
@@ -1887,6 +1900,7 @@ function canonicalTransactionForRow(
     foreignAmount: foreignEvidence.foreignAmount?.amount ?? null,
     description: cleanText(row.description),
     billingStatus: row.statement_period === "unbilled" ? "unbilled" : "billed",
+    occurrenceGroupBucketKey,
     ...(statementKey ? { statementKey } : {}),
     ...(sourceScopeKey ? { sourceScopeKey } : {}),
   };
@@ -2205,11 +2219,9 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
           ]),
     );
   }
-  // The canonical source-key contract scopes occurrence ordinals by statement
-  // identity. Assign each scope's ordinal only after sorting by issuer
-  // statement identity, so changing tab order cannot move a row to a
-  // different statement membership. The source-record key also carries the
-  // statement identity explicitly for provenance and evidence lineage.
+  // Source identity keeps its established per-statement ordinal. The shared
+  // admission layer separately assigns economic-group evidence across these
+  // complete billed and unbilled grids.
   const periodRanks = new Map(
     orderedSummaries.map((summary, index) => [summary.period, index]),
   );
@@ -2228,16 +2240,14 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
         ? undefined
         : fubonCanonicalDigest("fubon-source-only-period-v2", period);
     const occurrenceScopeKey = statementKey ?? sourceScopeKey ?? "unbilled";
-    const occurrenceGroupKey = JSON.stringify([
-      occurrenceScopeKey,
-      fubonTransactionOccurrenceBaseKey(row, instrumentKey),
-    ]);
+    const occurrenceGroupKey = fubonTransactionOccurrenceBaseKey(row, instrumentKey);
     return {
       row,
       inputIndex,
       instrumentKey,
       statementKey,
       sourceScopeKey,
+      occurrenceScopeKey,
       occurrenceGroupKey,
       sourceIdentityKey: JSON.stringify([occurrenceScopeKey, occurrenceGroupKey]),
     };
@@ -2252,10 +2262,39 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     if (left.sourceIdentityKey > right.sourceIdentityKey) return 1;
     return left.inputIndex - right.inputIndex;
   });
-  const occurrenceCounts = new Map<string, number>();
-  const admittedTransactionDescriptors = orderedTransactionDescriptors.map((descriptor) => {
-    const occurrenceIndex = occurrenceCounts.get(descriptor.occurrenceGroupKey) ?? 0;
-    occurrenceCounts.set(descriptor.occurrenceGroupKey, occurrenceIndex + 1);
+  const occurrenceScopeKey = opaqueFubonOccurrenceToken([
+    "fubon-credit-card-occurrence-scope-v1",
+    resolvedIdentity.accountNaturalKey,
+  ]);
+  const assigned = assignOccurrenceSlots({
+    rows: orderedTransactionDescriptors,
+    complete: true,
+    scopeKey: (descriptor) => opaqueFubonOccurrenceToken([
+      occurrenceScopeKey,
+      descriptor.occurrenceScopeKey,
+    ]),
+    fingerprint: (descriptor) => opaqueFubonOccurrenceToken([
+      "fubon-credit-card-economic-row-v1",
+      descriptor.occurrenceGroupKey,
+    ]),
+    partitionDate: (descriptor) => isoFubonDate(
+      descriptor.row.consume_date ?? "",
+      "consume date",
+    ),
+    key: (descriptor, ordinal) => buildFubonCreditCardTransactionSourceKey(
+      identityInput,
+      canonicalTransactionForRow(
+        descriptor.row,
+        descriptor.instrumentKey,
+        ordinal - 1,
+        descriptor.statementKey,
+        descriptor.sourceScopeKey,
+      ),
+      options.panFingerprintKey ? { panFingerprintKey: options.panFingerprintKey } : {},
+    ),
+  });
+  const admittedTransactionDescriptors = assigned.map(({ row: descriptor, group }) => {
+    const occurrenceIndex = group.ordinal - 1;
     return {
       ...descriptor,
       occurrenceIndex,

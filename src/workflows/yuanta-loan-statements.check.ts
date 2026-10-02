@@ -324,6 +324,63 @@ test("builds and validates a canonical Yuanta loan capture from source rows", ()
   });
 });
 
+test("Yuanta complete loan captures preserve duplicate-group slots and reject changed claims on one source anchor", () => {
+  const build = (rows: Parameters<typeof buildYuantaLoanCapture>[0]["rows"]) =>
+    buildYuantaLoanCapture({
+      accountValue: "yuanta-duplicate-group-account",
+      sourceConnectionScope: "yuanta-duplicate-group-connection",
+      observedAt: "2026-02-01T00:00:00.000Z",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      scope: {
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        completeness: "complete-range",
+        completenessBasis: "source-declared-terminal-range",
+        completenessRuleVersion: "loan/canonical/v1.yuanta",
+        pageCount: 1,
+        terminal: true,
+      },
+      pages: [{
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: rows.length,
+        proofKind: "source-declared-terminal-range",
+      }],
+      counterpartTransactions: [],
+      relations: [],
+      relationCoverage: "not-asserted",
+      rows,
+    });
+  const first = {
+    transactionDate: "2026/01/05",
+    postingDate: "2026/01/06",
+    paymentItem: "LOAN-PAYMENT",
+    transactionAmount: "1000.00",
+    balanceAfterTransaction: "9000.00",
+  };
+  const duplicateCapture = build([first, first]);
+  assert.deepEqual(duplicateCapture.records.map((record) => record.occurrenceIndex), [1, 2]);
+  assert.notEqual(duplicateCapture.records[0]?.sourceRecordKey, duplicateCapture.records[1]?.sourceRecordKey);
+  assert.deepEqual(duplicateCapture.records.map((record) => record.sourceSequenceIndex), [1, 2]);
+  const insertedUnrelatedRow = build([{
+    transactionDate: "2026/01/04",
+    postingDate: "2026/01/04",
+    paymentItem: "LOAN-FEE",
+    transactionAmount: "100.00",
+    balanceAfterTransaction: "9100.00",
+  }, first, first]);
+  assert.deepEqual(
+    insertedUnrelatedRow.records.slice(1).map((record) => record.sourceRecordKey),
+    duplicateCapture.records.map((record) => record.sourceRecordKey),
+  );
+  assert.throws(
+    () => build([first, { ...first, transactionAmount: "1200.00" }]),
+    /contradictory transaction claims/u,
+  );
+});
+
 test("fails closed when a Yuanta result row does not have six source cells", () => {
   assert.throws(
     () =>

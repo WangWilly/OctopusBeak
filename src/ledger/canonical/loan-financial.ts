@@ -20,3 +20,7 @@ export type {
   LoanTransferRelationInput,
   LoanValidatedCapture,
 } from "./loan-financial-contracts.ts";
+export type {
+  CanonicalOccurrenceGroup,
+  CanonicalOccurrenceGroupCoverage,
+} from "./occurrence-groups.ts";

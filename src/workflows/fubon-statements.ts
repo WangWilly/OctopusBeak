@@ -637,6 +637,8 @@ type FubonFinancialCaptureForCounterpartyEvidence = {
   identity: {
     sourceConnectionKey: string;
     identityEpochKey: string;
+    accountNo: string;
+    sourceAccountKey?: string;
   };
   records: readonly {
     occurrenceKey: string;
@@ -692,6 +694,7 @@ export function buildFubonLoanPaymentAccountEvidence(
         sourceRecordKey,
         sourceConnectionKey: financialCapture.identity.sourceConnectionKey,
         identityEpochKey: financialCapture.identity.identityEpochKey,
+        accountKey: financialCapture.identity.sourceAccountKey ?? financialCapture.identity.accountNo,
         accountValue,
         role: "beneficiary",
         purpose: "loan_repayment",

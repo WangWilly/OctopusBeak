@@ -151,14 +151,23 @@ test("unexpected worker errors and exits become a sanitized failure", async () =
   task.worker.emit("error", new Error("account number 12345 secret provider response"));
   task.worker.exit(1);
   const outcome = await task.run;
-  assert.deepEqual(outcome, {
-    status: "failed",
-    errorCode: "workflow-failed",
-    summary: null,
-    failureKind: "worker-crash",
-  });
-  assert.equal(JSON.stringify(outcome).includes("12345"), false);
-  assert.equal(JSON.stringify(outcome).includes("secret provider response"), false);
+  assert.equal(outcome.status, "failed");
+  if (outcome.status !== "failed") return;
+  assert.equal(outcome.errorCode, "workflow-failed");
+  assert.equal(outcome.summary, null);
+  assert.equal(outcome.failureKind, "worker-crash");
+  assert.deepEqual(outcome.diagnostic?.chain.map(({ type }) => type), ["Error"]);
+  const frames = outcome.diagnostic?.chain.flatMap(({ frames: captured }) => captured) ?? [];
+  assert.equal(
+    frames.some(({ file }) => file === "src/lib/automation/server/app-workflow-worker-supervisor.check.ts"),
+    true,
+    "the worker error location survives as a repository-relative frame",
+  );
+  assert.ok(frames.every((frame) => Object.keys(frame).sort().join(",") === "column,file,line"));
+  const serialized = JSON.stringify(outcome);
+  assert.equal(serialized.includes("12345"), false);
+  assert.equal(serialized.includes("secret provider response"), false);
+  assert.equal(serialized.includes("account number"), false);
 });
 
 test("an unexpected exit after startup is classified without leaking worker state", async () => {

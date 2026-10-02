@@ -21,6 +21,10 @@ import type {
   LoanSourceId,
 } from "../canonical/loan-financial.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
+import {
+  canonicalOccurrenceGroupKey,
+} from "../canonical/occurrence-groups.ts";
+import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
 import { PGLITE_CANONICAL_LOAN_COMMIT_COMMAND } from "./workflow-commands.ts";
 
 /** Named worker command for a source-admitted loan statement. */
@@ -136,9 +140,8 @@ async function first<T>(transaction: PGliteTransaction, sql: string, params: rea
 
 function sourceRecord(record: LoanTransactionInput | LoanCounterpartTransactionInput, capture: LoanCaptureInput): CanonicalSourceRecord {
   const compact = "eventEvidence" in record
-    ? {
+      ? {
         sourceRecordKey: record.sourceRecordKey,
-        occurrenceIndex: record.occurrenceIndex,
         effectiveOn: record.effectiveOn,
         sourceTime: record.sourceTime,
         postingStatus: record.postingStatus,
@@ -173,12 +176,19 @@ function sourceRecord(record: LoanTransactionInput | LoanCounterpartTransactionI
   }
   return {
     occurrenceKey: record.sourceRecordKey,
-    collisionKey: digest(`${capture.sourceId}:${capture.identity.accountKey}:${record.sourceRecordKey}`),
+    collisionKey: "eventEvidence" in record
+      ? record.occurrenceCollisionKey
+      : digest(`${capture.sourceId}:${capture.identity.accountKey}:${record.sourceRecordKey}`),
+    ...("eventEvidence" in record
+      ? { occurrenceGroup: record.occurrenceGroup }
+      : {}),
     providerKey: record.sourceRecordKey,
     contentHash: digest(content),
     compact,
     compactJson: stableJson(compact),
-    sequenceLexeme: String(record.occurrenceIndex),
+    sequenceLexeme: String("eventEvidence" in record
+      ? record.sourceSequenceIndex
+      : record.occurrenceIndex),
     description: "description" in record
       ? record.description ?? null
       : (record as LoanTransactionInput).sourceDescription ?? null,
@@ -199,6 +209,7 @@ function captureSource(capture: LoanCaptureInput): CanonicalSourceEvidence {
     contractVersion: capture.contractVersion,
     subjectDigest: requireToken(capture.identity.subjectDigest, "Loan subject digest"),
     observedAt: capture.observedAt,
+    occurrenceGroupCoverage: capture.occurrenceGroupCoverage,
     accountNumber: capture.identity.accountNumber ?? null,
     scope: {
       startDate: capture.scope.startDate,
@@ -368,10 +379,34 @@ function validateLoanCapture(capture: LoanCaptureInput): void {
   if (!capture.pages.length || capture.pages.some((page, index) => page.pageOrdinal !== index || page.responseCode !== "200" || !Number.isSafeInteger(page.rowCount) || page.rowCount < 0 || (index < capture.pages.length - 1 && page.terminal) || (index === capture.pages.length - 1 && !page.terminal)) || capture.pages.reduce((sum, page) => sum + page.rowCount, 0) !== capture.records.length)
     fail("Loan page evidence does not match source records.");
   const records = new Set<string>();
+  if (!Array.isArray(capture.occurrenceGroupCoverage)
+    || capture.occurrenceGroupCoverage.length !== 1) {
+    fail("Loan capture must declare its complete occurrence-group bucket.");
+  }
+  const [groupCoverage] = capture.occurrenceGroupCoverage;
+  if (groupCoverage.scopeKey !== canonicalLoanOccurrenceScopeKey(capture.sourceId, capture.identity.accountKey)
+    || groupCoverage.startDate !== capture.scope.startDate
+    || groupCoverage.endDate !== capture.scope.endDate
+    || groupCoverage.contractVersion !== capture.contractVersion) {
+    fail("Loan occurrence-group coverage does not match the complete capture scope.");
+  }
   for (const record of capture.records) {
     requireToken(record.sourceRecordKey, "Loan source record key");
-    if (records.has(record.sourceRecordKey) || !Number.isSafeInteger(record.occurrenceIndex) || record.occurrenceIndex < 1)
-      fail("Loan source records must have unique positive occurrence indexes.");
+    if (records.has(record.sourceRecordKey)
+      || !Number.isSafeInteger(record.occurrenceIndex)
+      || record.occurrenceIndex < 1
+      || !Number.isSafeInteger(record.sourceSequenceIndex)
+      || record.sourceSequenceIndex < 1
+      || !record.occurrenceGroup
+      || record.occurrenceGroup.scopeKey !== groupCoverage.scopeKey
+      || record.occurrenceGroup.partitionDate !== record.effectiveOn
+      || record.occurrenceGroup.ordinal !== record.occurrenceIndex
+      || record.sourceRecordKey !== canonicalOccurrenceGroupKey(record.occurrenceGroup)) {
+      fail("Loan source records must have valid semantic occurrence-group slots.");
+    }
+    requireToken(record.occurrenceGroup.scopeKey, "Loan occurrence-group scope");
+    requireToken(record.occurrenceGroup.fingerprint, "Loan occurrence-group fingerprint");
+    requireToken(record.occurrenceCollisionKey, "Loan occurrence collision key");
     records.add(record.sourceRecordKey);
     requireDate(record.effectiveOn, "Loan transaction effective date");
     if (!/^\d{2}:\d{2}:\d{2}$/u.test(record.sourceTime.localTime)) fail("Loan source local time is invalid.");

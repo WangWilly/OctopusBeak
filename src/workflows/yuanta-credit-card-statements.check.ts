@@ -1808,6 +1808,15 @@ const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures(captureInput);
 assert.equal(canonicalCaptures.length, 1);
 const canonicalCapture = canonicalCaptures[0]!;
 assert.equal(canonicalCapture.transactions.length, 7);
+assert.throws(
+  () => buildYuantaCanonicalCreditCardCaptures({
+    ...captureInput,
+    capture: { ...fullCaptureMetadata, captureId: "yuanta-identical-billed-unbilled-overlap" },
+    unbilledRows: [{ ...billedRows[0]!, period: null }],
+  }),
+  /ambiguous identical economic transaction/u,
+  "identical rows from billed and unbilled queries remain blocked without a provider boundary ID",
+);
 assert.equal(canonicalCapture.statements.length, 6);
 assert.equal(canonicalCapture.scope.completeness.settledSummaryEvidencePresent, true);
 assert.equal(

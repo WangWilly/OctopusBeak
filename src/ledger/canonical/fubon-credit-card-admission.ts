@@ -13,6 +13,12 @@ import {
   type FubonCreditCardPanFingerprintKey,
   type FubonCreditCardPanIdentityMetadata,
 } from "./fubon-credit-card-pan.ts";
+import {
+  assignOccurrenceSlots,
+  canonicalOccurrenceGroupKey,
+  findOccurrenceGroupCaptureAmbiguity,
+  type CanonicalOccurrenceGroup,
+} from "./occurrence-groups.ts";
 
 export type FubonCreditCardExactAmount = {
   coefficient: string;
@@ -59,6 +65,8 @@ export type FubonCreditCardTransactionInput = {
   billingStatus: "billed" | "unbilled";
   /** Opaque source scope used when billed evidence lacks a settled Statement. */
   sourceScopeKey?: string;
+  /** Source grid that returned this row; provenance only, not transaction identity. */
+  occurrenceGroupBucketKey?: string;
   statementKey?: string;
   paymentStatus?: string;
   correctionKey?: string;
@@ -174,6 +182,7 @@ export type FubonCreditCardAdmittedTransaction = Omit<
   FubonCreditCardTransactionInput,
   "bookedAmount" | "foreignAmount" | "consumeDate" | "postingDate" | "postingStatus" | "sourceKey"
 > & {
+  occurrenceGroup?: CanonicalOccurrenceGroup;
   sourceKey: `sha256:${string}`;
   bookedAmount: FubonCreditCardExactAmount;
   foreignAmount: FubonCreditCardExactAmount | null;
@@ -459,13 +468,7 @@ export function buildFubonCreditCardTransactionSourceKey(
   return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
 }
 
-/**
- * Identify the economic transaction independently of billing lifecycle and
- * issuer statement scope.  This is admission-only identity: statement keys
- * and occurrence ordinals remain part of the persisted source key, while
- * this neutral key prevents one complete capture from asserting the same
- * economic row in both billed and unbilled grids.
- */
+/** Identify the economic transaction independently of billing and statement lifecycle. */
 function buildFubonCreditCardTransactionEconomicIdentityKey(
   identity: FubonCreditCardIdentityInput,
   record: Pick<
@@ -638,6 +641,18 @@ function validateCompleteness(
     fail("Fubon credit-card completeness count drifted from records.");
   if (!completeness.settledSummaryEvidencePresent)
     fail("Fubon credit-card capture is missing settled statement summary evidence.");
+  for (const transaction of transactions) {
+    const bucketKey = text(
+      transaction.occurrenceGroupBucketKey,
+      "Fubon transaction query bucket key",
+    );
+    if (
+      transaction.billingStatus === "billed" &&
+      (!bucketKey.startsWith("statement:") ||
+        !completeness.billedPeriods.includes(bucketKey.slice("statement:".length)))
+    )
+      fail("Fubon transaction query bucket is outside the complete billed-period inventory.");
+  }
 }
 
 function validateInstrument(instrument: FubonCreditCardInstrumentInput): FubonCreditCardInstrumentInput {
@@ -699,6 +714,15 @@ function validateTransaction(
   const description = text(record.description, "Transaction description");
   const statementKey = record.statementKey?.trim() || undefined;
   const sourceScopeKey = record.sourceScopeKey?.trim() || undefined;
+  const occurrenceGroupBucketKey = text(
+    record.occurrenceGroupBucketKey,
+    "Queried source bucket",
+  );
+  if (
+    (record.billingStatus === "unbilled" && occurrenceGroupBucketKey !== "unbilled") ||
+    (record.billingStatus === "billed" && !occurrenceGroupBucketKey.startsWith("statement:"))
+  )
+    fail("Fubon transaction query bucket conflicts with its billing status.");
   if (sourceScopeKey && sourceScopeKey.length > 256)
     fail("Transaction source scope key is too long.");
   if (record.billingStatus === "billed" && !statementKey)
@@ -745,6 +769,7 @@ function validateTransaction(
     fail("Provided transaction source key does not match the contract tuple.");
   return {
     ...normalizedRecord,
+    occurrenceGroupBucketKey,
     sourceRecordKey,
     instrumentKey,
     consumeDate,
@@ -954,8 +979,6 @@ export function admitFubonCreditCardCapture(
   const transactions: FubonCreditCardAdmittedTransaction[] = [];
   const sourceKeys = new Set<string>();
   const sourceRecordKeys = new Set<string>();
-  const occurrenceOrdinals = new Map<string, number>();
-  const billingStatusByEconomicIdentity = new Map<string, "billed" | "unbilled">();
   const transactionsBySourceRecord = new Map<string, FubonCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
     const normalized = validateTransaction(
@@ -964,31 +987,6 @@ export function admitFubonCreditCardCapture(
       record,
       options,
     );
-    const economicIdentity = buildFubonCreditCardTransactionEconomicIdentityKey(
-      capture.identity,
-      normalized,
-      options,
-    );
-    const previousBillingStatus = billingStatusByEconomicIdentity.get(economicIdentity);
-    if (
-      previousBillingStatus !== undefined &&
-      previousBillingStatus !== normalized.billingStatus
-    )
-      fail(
-        "Fubon capture cannot contain the same economic transaction in billed and unbilled grids.",
-      );
-    billingStatusByEconomicIdentity.set(economicIdentity, normalized.billingStatus);
-    const contentIdentity = buildFubonCreditCardTransactionSourceKey(
-      capture.identity,
-      { ...record, occurrenceIndex: 0 },
-      options,
-    );
-    const expectedOccurrenceIndex = occurrenceOrdinals.get(contentIdentity) ?? 0;
-    if (record.occurrenceIndex !== expectedOccurrenceIndex)
-      fail(
-        "Transaction occurrence indexes must be contiguous in complete observed source order.",
-      );
-    occurrenceOrdinals.set(contentIdentity, expectedOccurrenceIndex + 1);
     if (sourceRecordKeys.has(normalized.sourceRecordKey)) fail("Duplicate source record key.");
     if (sourceKeys.has(normalized.sourceKey)) fail("Transaction identity collision within one capture.");
     sourceRecordKeys.add(normalized.sourceRecordKey);
@@ -996,6 +994,20 @@ export function admitFubonCreditCardCapture(
     sourceKeys.add(normalized.sourceKey);
     transactions.push(normalized);
   }
+  const ambiguity = findOccurrenceGroupCaptureAmbiguity({
+    rows: transactions,
+    fingerprint: (transaction) => buildFubonCreditCardTransactionEconomicIdentityKey(
+      capture.identity,
+      transaction,
+      options,
+    ),
+    billingStatus: (transaction) => transaction.billingStatus,
+    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "Fubon transaction query bucket key"),
+  });
+  if (ambiguity.billingStatusConflict)
+    fail("Fubon billed and unbilled grids contain an ambiguous identical economic transaction.");
+  if (ambiguity.queryBucketConflict)
+    fail("Fubon query buckets contain an ambiguous identical economic transaction.");
   for (const instrument of instruments.values()) {
     const evidenceKey = text(
       instrument.evidence?.sourceRecordKey,
@@ -1008,6 +1020,26 @@ export function admitFubonCreditCardCapture(
       );
   }
   validateCompleteness(capture, transactions);
+  const occurrenceScopeKey = opaqueFubonSpineToken(
+    "fubon-credit-card-occurrence-scope-v1",
+    accountNaturalKey,
+  );
+  const slots = assignOccurrenceSlots({
+    rows: transactions,
+    complete: true,
+    scopeKey: () => occurrenceScopeKey,
+    fingerprint: (transaction) => buildFubonCreditCardTransactionEconomicIdentityKey(
+      capture.identity,
+      transaction,
+      options,
+    ),
+    partitionDate: (transaction) => transaction.consumeDate ?? transaction.postingDate,
+  });
+  slots.forEach(({ row, group }, index) => {
+    const grouped = { ...row, occurrenceGroup: group };
+    transactions[index] = grouped;
+    transactionsBySourceRecord.set(grouped.sourceRecordKey, grouped);
+  });
   if (!Array.isArray(capture.statements)) fail("Fubon credit-card statements are required.");
   const statements: FubonCreditCardAdmittedStatement[] = [];
   const statementKeys = new Set<string>();
@@ -1087,35 +1119,25 @@ function opaqueFubonSpineToken(label: string, value: unknown): `sha256:${string}
     .digest("base64url")}`;
 }
 
-type FubonTransactionPersistenceIdentity = Readonly<{
-  occurrenceKey: string;
-  compactJson: string;
-  contentHash: string;
-}>;
-
-type FubonTransactionPersistenceIdentityMap = ReadonlyMap<
-  string,
-  FubonTransactionPersistenceIdentity
->;
-
 export function fubonCanonicalSpineCapture(
   capture: FubonCreditCardValidatedCapture,
-  persistenceIdentities: FubonTransactionPersistenceIdentityMap = new Map(),
 ): CanonicalFinancialDepositValidatedCapture {
   const instrumentsByKey = new Map(
     capture.instruments.map((instrument) => [instrument.instrumentKey, instrument]),
   );
   const records = capture.transactions.map((transaction, sourceOrderOrdinal) => {
+    if (!transaction.occurrenceGroup)
+      throw new FubonCreditCardAdmissionError(
+        "Fubon transaction is missing its admitted occurrence group.",
+      );
     const instrument = instrumentsByKey.get(transaction.instrumentKey);
     if (!instrument)
       throw new FubonCreditCardAdmissionError(
         "Fubon transaction instrument is missing from the validated capture.",
       );
     const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
-    const generatedCompact = JSON.stringify({
-      occurrenceIndex: transaction.occurrenceIndex,
-      sourceScopeKey: transaction.sourceScopeKey ?? null,
-      statementKey: transaction.statementKey ?? null,
+    const occurrenceKey = canonicalOccurrenceGroupKey(transaction.occurrenceGroup);
+    const compact = JSON.stringify({
       instrumentKey: transaction.instrumentKey,
       cardMask: instrument.cardMask ?? null,
       consumeDate: transaction.consumeDate,
@@ -1125,23 +1147,14 @@ export function fubonCanonicalSpineCapture(
       direction: transaction.direction,
       description: transaction.description,
     });
-    const persistenceIdentity = persistenceIdentities.get(
-      transaction.sourceRecordKey,
-    );
-    // Billing/statement lifecycle evidence is persisted by the Fubon
-    // extension below. Keep the shared spine payload immutable across this
-    // lifecycle transition; changing it would turn the same occurrence into
-    // a generic source-content conflict or an unnecessary revision.
-    const compact = persistenceIdentity?.compactJson ?? generatedCompact;
     return {
-      occurrenceKey: persistenceIdentity?.occurrenceKey ?? transaction.sourceKey,
-      collisionKey: persistenceIdentity?.occurrenceKey ?? transaction.sourceKey,
+      occurrenceKey,
+      occurrenceGroup: transaction.occurrenceGroup,
+      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
+      collisionKey: occurrenceKey,
       providerKey: "human-attested:no-provider-key",
-      humanAttestedOccurrenceKey:
-        persistenceIdentity?.occurrenceKey ?? transaction.sourceKey,
-      contentHash:
-        persistenceIdentity?.contentHash ??
-        opaqueFubonSpineToken("fubon-credit-content-v2", compact),
+      humanAttestedOccurrenceKey: occurrenceKey,
+      contentHash: opaqueFubonSpineToken("fubon-credit-content-v3", compact),
       sequenceLexeme: `observed-source-order:${sourceOrderOrdinal}`,
       compactJson: compact,
       amount: transaction.bookedAmount,
@@ -1277,6 +1290,19 @@ export function fubonCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    occurrenceGroupCoverage: [{
+      scopeKey: opaqueFubonSpineToken(
+        "fubon-credit-card-occurrence-scope-v1",
+        capture.identity.accountNaturalKey,
+      ),
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      contractVersion: capture.contractVersion,
+      bucketKeys: [
+        ...capture.scope.completeness.billedPeriods.map((period) => `statement:${period}`),
+        "unbilled",
+      ],
+    }],
     nonTransactionRecords,
   });
 }

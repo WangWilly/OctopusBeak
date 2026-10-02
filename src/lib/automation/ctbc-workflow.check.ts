@@ -220,7 +220,7 @@ const input = {
   },
 };
 
-test("CTBC recaptures transactions after range and row positions change through the real commit port", async () => {
+test("CTBC preserves exact duplicate deposits as stable occurrence-group slots through the real commit port", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   await applyPgliteBaseline(database);
@@ -247,7 +247,11 @@ test("CTBC recaptures transactions after range and row positions change through 
       actDtTm: "2026-08-04-09.08.07.000000", sortActDtTm: "2026 08 04 09:08:07 000",
       memo1: "Synthetic later transfer", crAmtDisplay: "100", balanceAmt: "5,778",
     };
-    for (const [index, rows] of [[original], [later, original], [later, original]].entries()) {
+    for (const [index, rows] of [
+      [original, original],
+      [later, original, original],
+      [later, original, original],
+    ].entries()) {
       const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
         code: "0000", rsData: { detailList: rows, nextKey: "" },
       }) }) });
@@ -262,8 +266,8 @@ test("CTBC recaptures transactions after range and row positions change through 
     await assert.rejects(runCtbcProviderWorkflow({ ...conflicting.context, financialCommit: commit }, input, {
       readCurrentDepositBalances: async () => [currentBalanceRow()],
     }), /Canonical Financial Commit failed: conflict/u);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions")).rows[0]?.count, 2);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 3);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions")).rows[0]?.count, 3);
   } finally {
     for (const key of Object.keys(server.env)) {
       if (previous[key] === undefined) delete process.env[key];

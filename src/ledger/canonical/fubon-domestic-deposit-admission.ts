@@ -5,6 +5,7 @@ import {
 } from "./advertised-domestic-deposit-preflight.ts";
 import { createHash } from "node:crypto";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -786,11 +787,9 @@ function hardSourceOnlyRowDiagnostics(
         String(balanceAfter.scale),
       );
       const priorContentHash = seenFences.get(fence);
-      if (priorContentHash !== undefined) {
-        diagnostic(diagnostics, "occurrence-ambiguous");
-        if (priorContentHash !== contentHash)
-          diagnostic(diagnostics, "composite-occurrence-collision");
-      } else {
+      if (priorContentHash !== undefined && priorContentHash !== contentHash)
+        diagnostic(diagnostics, "composite-occurrence-collision");
+      else if (priorContentHash === undefined) {
         seenFences.set(fence, contentHash);
       }
     }
@@ -1456,7 +1455,6 @@ function normalizeFubonDomesticDepositFinancialCapture(
       "authority-semantics-unproven",
       "completeness-semantics-unproven",
       "occurrence-identity-unproven",
-      "source-occurrence-id-missing",
     );
     return {
       status: "blocked",
@@ -1636,8 +1634,11 @@ function normalizeFubonDomesticDepositFinancialCapture(
   );
   const queryStart = input.capture.queryRange.startDate.replace(/\//g, "-");
   const queryEnd = input.capture.queryRange.endDate.replace(/\//g, "-");
-  const seenFences = new Map<string, string>();
   const records: CanonicalFinancialDepositRecord[] = [];
+  const groupRows: Array<{
+    record: CanonicalFinancialDepositRecord;
+    partitionDate: string;
+  }> = [];
   const allowSourceOnlyRows = input.allowSourceOnlyRows === true;
   for (const { page, row } of rows) {
     const cells = row.cells;
@@ -1693,18 +1694,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       fence,
       contentHash,
     );
-    const priorContentHash = seenFences.get(fence);
-    if (priorContentHash !== undefined) {
-      // Without a provider occurrence identifier, any repeated composite
-      // fence in one capture is ambiguous: equal rows may be distinct
-      // transactions, while different content is also an atomic collision.
-      diagnostics.push("occurrence-ambiguous");
-      if (priorContentHash !== contentHash)
-        diagnostics.push("composite-occurrence-collision");
-      continue;
-    }
-    seenFences.set(fence, contentHash);
-    records.push({
+    const record: CanonicalFinancialDepositRecord = {
       occurrenceKey,
       collisionKey: fence,
       providerKey: fence,
@@ -1730,7 +1720,9 @@ function normalizeFubonDomesticDepositFinancialCapture(
       sourceTime: time,
       effectiveOn: time.localDate,
       transactionDateTimeLocal: `${time.localDate}T${time.localTime}`,
-    });
+    };
+    records.push(record);
+    groupRows.push({ record, partitionDate: time.localDate });
   }
   if (diagnostics.length > 0)
     return {
@@ -1751,6 +1743,24 @@ function normalizeFubonDomesticDepositFinancialCapture(
     input.capture.queryRange.startDate,
     input.capture.queryRange.endDate,
   );
+  const startDate = input.capture.queryRange.startDate.replace(/\//g, "-");
+  const endDate = input.capture.queryRange.endDate.replace(/\//g, "-");
+  const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+    rows: groupRows,
+    scopeKey: opaqueToken(
+      "fubon-domestic-deposit-occurrence-scope-v1",
+      identity.subjectDigest,
+      FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+      FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    ),
+    startDate,
+    endDate,
+    contractVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    complete:
+      input.capture.pages.length > 0 &&
+      input.capture.pages.at(-1)?.terminal === true &&
+      input.capture.pages.every((page) => page.paginationAmbiguous !== true),
+  });
   const financialRowCountByPage = new Map<number, number>();
   if (allowSourceOnlyRows) {
     for (const page of input.capture.pages) {
@@ -1783,8 +1793,8 @@ function normalizeFubonDomesticDepositFinancialCapture(
     },
     observedAt: input.capture.observedAt,
     scope: {
-      startDate: input.capture.queryRange.startDate.replace(/\//g, "-"),
-      endDate: input.capture.queryRange.endDate.replace(/\//g, "-"),
+      startDate,
+      endDate,
       scopeKind: "bounded-range",
       completeness: "complete-range",
       completenessBasis: semantics.completeness.basis,
@@ -1848,7 +1858,8 @@ function normalizeFubonDomesticDepositFinancialCapture(
         providerGuaranteed: false,
       }),
     })),
-    records,
+    records: occurrenceGroups.records,
+    occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { status: "admitted", capture: canonicalCapture, diagnostics: [] };
 }

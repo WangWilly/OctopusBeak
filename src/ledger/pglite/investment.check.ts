@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
+import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
@@ -27,8 +28,13 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
   const contractVersion = "yuanta-fund/investment/canonical-v1";
   const securityKey = "yuanta-fund:ACME";
   const holdingSourceRecordKey = token("holding-source");
-  const transactionSourceRecordKey = token("investment-transaction-source");
-  const marginSourceRecordKey = token("investment-margin-source");
+  const transactionOccurrenceGroup = {
+    scopeKey: token("investment-transaction-scope"),
+    fingerprint: token("investment-transaction-fingerprint"),
+    partitionDate: "2026-09-22",
+    ordinal: 1,
+  };
+  const transactionSourceRecordKey = canonicalOccurrenceGroupKey(transactionOccurrenceGroup);
   return {
     capture: {
       captureId,
@@ -49,7 +55,21 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
         accountType: "investment",
         reportingCurrency: "TWD",
       },
-      scope: { effectiveOn: "2026-09-22", complete: true },
+      scope: {
+        effectiveOn: "2026-09-22",
+        complete: true,
+        transactionHistory: {
+          startDate: "2026-09-22",
+          endDate: "2026-09-22",
+          complete: true,
+        },
+      },
+      occurrenceGroupCoverage: [{
+        scopeKey: transactionOccurrenceGroup.scopeKey,
+        startDate: "2026-09-22",
+        endDate: "2026-09-22",
+        contractVersion,
+      }],
       securities: [{
         securityKey,
         producerSecurityId: "ACME",
@@ -81,6 +101,7 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
       }],
       transactions: [{
         sourceRecordKey: transactionSourceRecordKey,
+        occurrenceGroup: transactionOccurrenceGroup,
         transactionKey: token("investment-transaction"),
         securityKey,
         action: "buy",
@@ -90,12 +111,58 @@ function investmentRequest(captureId: string, valuation = "12500"): PGliteCanoni
         description: "buy ACME",
         fundingEvidence: { kind: "unresolved", sourceRecordKey: transactionSourceRecordKey },
       }],
-      margin: {
-        kind: "embedded",
-        amount: { coefficient: "200", scale: 0, currency: "TWD" },
-        effectiveOn: "2026-09-22",
-        sourceRecordKey: marginSourceRecordKey,
-      },
+    },
+  };
+}
+
+function investmentRequestWithOccurrences(
+  captureId: string,
+  count: number,
+  includeUnrelated = false,
+): PGliteCanonicalInvestmentCommitRequest {
+  const base = investmentRequest(captureId);
+  const template = base.capture.transactions[0]!;
+  const scopeKey = token("investment-transaction-scope");
+  const fingerprint = token("investment-transaction-fingerprint");
+  const transactions = Array.from({ length: count }, (_, index) => {
+    const ordinal = index + 1;
+    const occurrenceGroup = {
+      scopeKey,
+      fingerprint,
+      partitionDate: "2026-09-22",
+      ordinal,
+    };
+    const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
+    return {
+      ...template,
+      sourceRecordKey,
+      occurrenceGroup,
+      transactionKey: token(`investment-transaction-${ordinal}`),
+      fundingEvidence: { kind: "unresolved" as const, sourceRecordKey },
+    };
+  });
+  if (includeUnrelated) {
+    const occurrenceGroup = {
+      scopeKey,
+      fingerprint: token("unrelated-investment-transaction-fingerprint"),
+      partitionDate: "2026-09-22",
+      ordinal: 1,
+    };
+    const sourceRecordKey = canonicalOccurrenceGroupKey(occurrenceGroup);
+    transactions.push({
+      ...template,
+      sourceRecordKey,
+      occurrenceGroup,
+      transactionKey: token("unrelated-investment-transaction"),
+      description: "unrelated transaction",
+      fundingEvidence: { kind: "unresolved", sourceRecordKey },
+    });
+  }
+  return {
+    ...base,
+    capture: {
+      ...base.capture,
+      transactions,
     },
   };
 }
@@ -432,7 +499,7 @@ test("investment funding relation reopens after ambiguity clears and cancellatio
   }
 });
 
-test("PGlite investment command preserves holdings, valuation, cost, transactions, and margin recurrence", async () => {
+test("PGlite investment command preserves holdings, valuation, cost, and grouped transactions", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {
@@ -440,12 +507,12 @@ test("PGlite investment command preserves holdings, valuation, cost, transaction
     const first = await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-1"), { clock: () => 100 });
     assert.equal(first.holdingCount, 1);
     assert.equal(first.investmentTransactionCount, 1);
-    assert.equal(first.marginObservationCount, 1);
+    assert.equal(first.marginObservationCount, 0);
     const repeat = await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-capture-2"), { clock: () => 100 });
     assert.equal(repeat.transactions[0]?.revisionCreated, false);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_holding_observations")).rows[0]?.count, 1);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 1);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_margin_balance_observations")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_margin_balance_observations")).rows[0]?.count, 0);
     assert.deepEqual((await store.query<{ valuation_coefficient: string; cost_coefficient: string; currency: string }>("SELECT valuation_coefficient, cost_coefficient, valuation_currency AS currency FROM investment_holding_observations")).rows, [{ valuation_coefficient: "12500", cost_coefficient: "10000", currency: "TWD" }]);
     const funding = await resolvePGliteCanonicalInvestmentFundingRelations(store, {
       sourceConnectionKey: token("investment-connection"),
@@ -454,6 +521,60 @@ test("PGlite investment command preserves holdings, valuation, cost, transaction
     assert.equal(funding.resolved, 0);
     assert.equal(funding.noAdmission, 1);
     assert.deepEqual(await queryPGliteCurrentInvestmentFundingRelations(store), []);
+  } finally {
+    await store.close();
+  }
+});
+
+test("PGlite investment commit preserves duplicate slots through insertion and growth, then rejects shrink to zero atomically", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteBaseline(database);
+    const first = await commitPGliteCanonicalInvestmentCapture(
+      store,
+      investmentRequestWithOccurrences("investment-group-2", 2),
+      { clock: () => 100 },
+    );
+    assert.equal(first.investmentTransactionCount, 2);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 2);
+
+    const originalSlotKeys = [1, 2].map((ordinal) => canonicalOccurrenceGroupKey({
+      scopeKey: token("investment-transaction-scope"),
+      fingerprint: token("investment-transaction-fingerprint"),
+      partitionDate: "2026-09-22",
+      ordinal,
+    }));
+    const inserted = await commitPGliteCanonicalInvestmentCapture(
+      store,
+      investmentRequestWithOccurrences("investment-group-insertion", 2, true),
+      { clock: () => 101 },
+    );
+    assert.equal(inserted.investmentTransactionCount, 3);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 3);
+    assert.equal((await store.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM investment_transactions investment JOIN source_records record USING (source_record_id) WHERE record.occurrence_key IN ($1, $2)",
+      originalSlotKeys,
+    )).rows[0]?.count, 2);
+
+    const grown = await commitPGliteCanonicalInvestmentCapture(
+      store,
+      investmentRequestWithOccurrences("investment-group-3", 3, true),
+      { clock: () => 102 },
+    );
+    assert.equal(grown.investmentTransactionCount, 4);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 4);
+
+    await assert.rejects(
+      commitPGliteCanonicalInvestmentCapture(
+        store,
+        investmentRequestWithOccurrences("investment-group-0", 0, true),
+        { clock: () => 103 },
+      ),
+      /occurrence|group|reduction|decrease/iu,
+    );
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 3);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 4);
   } finally {
     await store.close();
   }
@@ -476,7 +597,7 @@ test("PGlite investment command rolls back changed source evidence", async () =>
   }
 });
 
-test("PGlite investment command preserves independent margin loan as a loan spine", async () => {
+test("PGlite investment command records independent margin loan as a balance-only source", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {
@@ -504,15 +625,17 @@ test("PGlite investment command preserves independent margin loan as a loan spin
     };
     const result = await commitPGliteCanonicalInvestmentCapture(store, request, { clock: () => 200 });
     assert.equal(result.marginObservationCount, 1);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'loan'")).rows[0]?.count, 1);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM loan_transaction_facts")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'investment-margin' AND account_type = 'loan'")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM loan_transaction_facts")).rows[0]?.count, 0);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions revision JOIN financial_transactions fact USING (transaction_id) JOIN financial_accounts account USING (account_id) WHERE account.stream = 'investment-margin'")).rows[0]?.count, 0);
     assert.deepEqual((await store.query<{ balance_coefficient: string; balance_kind: string }>("SELECT balance_coefficient, balance_kind FROM balance_observation_revisions JOIN balance_observations USING (observation_id) WHERE balance_kind = 'loan_outstanding'")).rows, [{ balance_coefficient: "300", balance_kind: "loan_outstanding" }]);
   } finally {
     await store.close();
   }
 });
 
-test("PGlite investment command preserves independent margin credit as a named source spine", async () => {
+test("PGlite investment command records independent margin credit without transaction facts", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);
   try {
@@ -541,7 +664,9 @@ test("PGlite investment command preserves independent margin credit as a named s
     const result = await commitPGliteCanonicalInvestmentCapture(store, request, { clock: () => 300 });
     assert.equal(result.marginObservationCount, 1);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts WHERE stream = 'investment-margin' AND account_type = 'credit'")).rows[0]?.count, 1);
-    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions WHERE posting_rule_version = 'yuanta-fund/investment/margin-credit-canonical-v1'")).rows[0]?.count, 1);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM transaction_revisions revision JOIN financial_transactions fact USING (transaction_id) JOIN financial_accounts account USING (account_id) WHERE account.stream = 'investment-margin'")).rows[0]?.count, 0);
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM investment_transactions")).rows[0]?.count, 1);
+    assert.deepEqual((await store.query<{ balance_coefficient: string; balance_kind: string }>("SELECT balance_coefficient, balance_kind FROM balance_observation_revisions JOIN balance_observations USING (observation_id) WHERE balance_kind = 'credit_used'")).rows, [{ balance_coefficient: "150", balance_kind: "credit_used" }]);
   } finally {
     await store.close();
   }

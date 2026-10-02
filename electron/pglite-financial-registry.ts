@@ -110,6 +110,14 @@ import type { PGliteStore, PGliteTransaction } from "../src/ledger/pglite/transa
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import {
+  appendWorkflowFailureDiagnostic,
+  captureSafeWorkflowFailureError,
+  type SafeWorkflowFailureError,
+  isWorkflowFailureCorrelation,
+  workflowFailureDiagnosticRepoRoot,
+  WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+} from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
 type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
@@ -174,7 +182,8 @@ function validRequest(value: unknown): value is PGliteFinancialRequest {
     && Number.isSafeInteger(value.id)
     && (value.id as number) >= 0
     && typeof value.operation === "string"
-    && Array.isArray(value.args);
+    && Array.isArray(value.args)
+    && (value.diagnosticContext === undefined || isWorkflowFailureCorrelation(value.diagnosticContext));
 }
 
 function validCancelRequest(value: unknown): value is PGliteFinancialCancelRequest {
@@ -189,6 +198,7 @@ function genericFailure(
   id: number,
   code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled",
   category?: PGliteFinancialFailureCategory,
+  diagnosticError?: SafeWorkflowFailureError,
 ): PGliteFinancialResponse {
   return {
     kind: "pglite-financial-response",
@@ -204,6 +214,7 @@ function genericFailure(
           ? "PGlite financial operation was cancelled."
         : "PGlite financial operation failed.",
     ...(category ? { category } : {}),
+    ...(diagnosticError ? { diagnosticError } : {}),
   };
 }
 
@@ -754,13 +765,32 @@ export function createPGliteFinancialRpcServer(
       (result) => {
         post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });
       },
-      (error) => {
+      async (error) => {
+        // The inner database worker has no workflow correlation. Capture before
+        // wrapping there and let the correlated outer server write the record.
+        const diagnosticError = !controller.signal.aborted
+          && process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV]?.trim()
+          ? captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())
+          : undefined;
+        if (!controller.signal.aborted && value.diagnosticContext) {
+          await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+            workflowId: value.diagnosticContext.workflowId,
+            taskRunId: value.diagnosticContext.taskRunId,
+            source: "financial-rpc",
+            errorCode: "workflow-failed",
+            stage: operation === "financial.source.admit" ? "validation" : "commit",
+            operation,
+            safeError: diagnosticError,
+            error,
+          }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+        }
         post(
           port,
           genericFailure(
             value.id,
             controller.signal.aborted ? "cancelled" : "operation-failed",
             controller.signal.aborted ? undefined : failureCategory(error),
+            diagnosticError,
           ),
         );
       },

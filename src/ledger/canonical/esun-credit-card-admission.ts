@@ -7,6 +7,12 @@ import {
   isEsunCreditCardHumanAttestedAccountKey,
   isEsunCreditCardHumanAttestedV4Active,
 } from "./esun-credit-card-human-attestation-contract.ts";
+import {
+  assignOccurrenceSlots,
+  canonicalOccurrenceGroupKey,
+  findOccurrenceGroupCaptureAmbiguity,
+  type CanonicalOccurrenceGroup,
+} from "./occurrence-groups.ts";
 
 export { ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE } from "./esun-credit-card-human-attestation-contract.ts";
 
@@ -21,8 +27,7 @@ export const ESUN_CREDIT_CARD_CAPTURE_CONTRACT = Object.freeze({
   occurrenceProviderGuaranteed: false,
   postingRule: "credit-card-records-are-posted-billing-status-independent",
   billingRule: "billed-or-unbilled-independent-of-posting",
-  transactionIdentityRule:
-    "normalized-content-tuple-plus-contiguous-deterministic-occurrence-v1",
+  transactionIdentityRule: "complete-semantic-group-ordinal-v2",
   statementRule: "issuer-close-due-total-minimum-with-prior-close-cycle-start",
   relationRule: "explicit-source-linkage-only",
   completenessRule:
@@ -78,6 +83,8 @@ export type EsunCreditCardTransactionInput = {
   billingStatus: "billed" | "unbilled";
   /** Optional issuer-settled billed-period key; it is never a query date. */
   statementPeriod?: string | null;
+  /** Complete queried source grid bucket; provenance only, not identity. */
+  occurrenceGroupBucketKey?: string;
   statementKey?: string;
   sourceKey?: string;
 };
@@ -160,6 +167,7 @@ export type EsunCreditCardAdmittedTransaction = Omit<
   EsunCreditCardTransactionInput,
   "bookedAmount" | "foreignAmount" | "consumeDate" | "postingDate" | "postingStatus" | "sourceKey"
 > & {
+  occurrenceGroup?: CanonicalOccurrenceGroup;
   sourceKey: `sha256:${string}`;
   bookedAmount: EsunCreditCardExactAmount;
   foreignAmount: EsunCreditCardExactAmount | null;
@@ -462,65 +470,6 @@ export function buildEsunCreditCardTransactionSourceKey(
   return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
 }
 
-/**
- * The v1 transaction tuple included billing status. Keep this private legacy
- * codec only for the bounded reconciliation performed while opening an E.SUN
- * writer; new captures always use the v2 tuple above.
- */
-export function buildEsunCreditCardTransactionSourceKeyV1(
-  identity: EsunCreditCardIdentityInput,
-  record: Pick<
-    EsunCreditCardTransactionInput,
-    | "instrumentKey"
-    | "consumeDate"
-    | "postingDate"
-    | "direction"
-    | "bookedAmount"
-    | "bookedCurrency"
-    | "signedAmount"
-    | "foreignCurrency"
-    | "foreignAmount"
-    | "description"
-    | "billingStatus"
-    | "statementKey"
-  > & { occurrenceIndex: number; statementKey?: string | null },
-): `sha256:${string}` {
-  const accountKey = buildEsunCreditCardAccountIdentityKey(identity);
-  const amount = record.signedAmount
-    ? signedAmount(record.signedAmount, "Signed amount").amount
-    : exactAmount(record.bookedAmount, "Booked amount");
-  const foreignCurrency = record.foreignCurrency
-    ? currency(record.foreignCurrency, "Foreign currency")
-    : null;
-  const foreignAmount = record.foreignAmount == null
-    ? null
-    : exactAmount(record.foreignAmount, "Foreign amount");
-  if ((foreignCurrency === null) !== (foreignAmount === null))
-    fail("Foreign currency and foreign amount must be provided together.");
-  validateDirection(record.direction);
-  if (!Number.isSafeInteger(record.occurrenceIndex) || record.occurrenceIndex < 0)
-    fail("Transaction occurrence index must be a non-negative integer.");
-  const tuple = stableTuple([
-    "esun-credit-card-transaction-v1",
-    accountKey,
-    text(record.instrumentKey, "Card instrument key"),
-    record.consumeDate ? sourceDate(record.consumeDate, "Consume date") : null,
-    record.postingDate ? sourceDate(record.postingDate, "Posting date") : null,
-    record.direction,
-    amount.coefficient,
-    amount.scale,
-    currency(record.bookedCurrency, "Booked currency"),
-    foreignCurrency,
-    foreignAmount?.coefficient ?? null,
-    foreignAmount?.scale ?? null,
-    normalizedDescription(text(record.description, "Transaction description")),
-    record.billingStatus,
-    normalizeSourceScope(record.statementKey),
-    record.occurrenceIndex,
-  ]);
-  return `sha256:${createHash("sha256").update(tuple).digest("base64url")}`;
-}
-
 export function buildEsunCreditCardStatementEvidenceKey(
   identity: EsunCreditCardIdentityInput,
   statement: Pick<EsunCreditCardStatementInput, "statementKey" | "cycleStart" | "cycleEnd">,
@@ -629,6 +578,10 @@ function validateTransaction(
   const billingStatus = record.billingStatus;
   if (billingStatus !== "billed" && billingStatus !== "unbilled")
     fail("E.SUN billing status is unsupported.");
+  const occurrenceGroupBucketKey = text(
+    record.occurrenceGroupBucketKey,
+    "Queried source bucket",
+  );
   const normalizedRecord = {
     ...record,
     sourceRecordKey,
@@ -645,6 +598,7 @@ function validateTransaction(
     foreignCurrency,
     foreignAmount,
     billingStatus,
+    occurrenceGroupBucketKey,
     ...(record.statementKey?.trim()
       ? { statementKey: record.statementKey.trim() }
       : {}),
@@ -693,6 +647,13 @@ function validateCompleteness(
   for (const instrument of capture.instruments)
     cardCounts.set(instrument.instrumentKey, 0);
   for (const transaction of transactions) {
+    const bucketKey = text(
+      transaction.occurrenceGroupBucketKey,
+      "E.SUN transaction query bucket key",
+    );
+    if (!esunGridBucketKeys(capture.scope.completeness.grid, capture.scope.startDate, capture.scope.endDate)
+      .includes(bucketKey))
+      fail("E.SUN transaction query bucket is outside the complete queried grid inventory.");
     const instrument = capture.instruments.find(
       (candidate) => candidate.instrumentKey === transaction.instrumentKey,
     );
@@ -861,31 +822,8 @@ export function admitEsunCreditCardCapture(
   const transactions: EsunCreditCardAdmittedTransaction[] = [];
   const sourceKeys = new Set<string>();
   const sourceRecordKeys = new Set<string>();
-  const occurrenceOrdinals = new Map<string, number>();
-  const billingStatusByEconomicIdentity = new Map<string, "billed" | "unbilled">();
   const transactionsBySourceRecord = new Map<string, EsunCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
-    const contentIdentity = buildEsunCreditCardTransactionSourceKey(
-      capture.identity,
-      { ...record, occurrenceIndex: 0 },
-    );
-    const economicIdentity = buildEsunCreditCardTransactionSourceKey(
-      capture.identity,
-      { ...record, statementKey: undefined, occurrenceIndex: 0 },
-    );
-    const previousBillingStatus = billingStatusByEconomicIdentity.get(economicIdentity);
-    if (
-      previousBillingStatus !== undefined &&
-      previousBillingStatus !== record.billingStatus
-    )
-      fail(
-        "E.SUN capture cannot contain the same economic transaction in billed and unbilled grids.",
-      );
-    billingStatusByEconomicIdentity.set(economicIdentity, record.billingStatus);
-    const expected = occurrenceOrdinals.get(contentIdentity) ?? 0;
-    if (record.occurrenceIndex !== expected)
-      fail("Transaction occurrence indexes must be contiguous in complete observed source order.");
-    occurrenceOrdinals.set(contentIdentity, expected + 1);
     const normalized = validateTransaction(capture.identity, instruments, record);
     if (sourceRecordKeys.has(normalized.sourceRecordKey)) fail("Duplicate source record key.");
     if (sourceKeys.has(normalized.sourceKey)) fail("Transaction identity collision within one capture.");
@@ -894,6 +832,19 @@ export function admitEsunCreditCardCapture(
     transactionsBySourceRecord.set(normalized.sourceRecordKey, normalized);
     transactions.push(normalized);
   }
+  const ambiguity = findOccurrenceGroupCaptureAmbiguity({
+    rows: transactions,
+    fingerprint: (transaction) => buildEsunCreditCardTransactionSourceKey(
+      capture.identity,
+      { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
+    ),
+    billingStatus: (transaction) => transaction.billingStatus,
+    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "E.SUN transaction query bucket key"),
+  });
+  if (ambiguity.billingStatusConflict)
+    fail("E.SUN billed and unbilled rows contain an ambiguous identical economic transaction.");
+  if (ambiguity.queryBucketConflict)
+    fail("E.SUN query buckets contain an ambiguous identical economic transaction.");
   for (const instrument of instruments.values()) {
     const evidenceKey = text(
       instrument.evidence.sourceRecordKey,
@@ -904,6 +855,31 @@ export function admitEsunCreditCardCapture(
       fail("Card instrument evidence must reference a transaction for the same instrument.");
   }
   validateCompleteness(capture, transactions);
+  const occurrenceScopeKey = opaqueEsunSpineToken(
+    "esun-credit-card-occurrence-scope-v1",
+    identity.accountNaturalKey,
+  );
+  const slots = assignOccurrenceSlots({
+    rows: transactions,
+    complete: true,
+    scopeKey: () => occurrenceScopeKey,
+    fingerprint: (transaction) => buildEsunCreditCardTransactionSourceKey(
+      capture.identity,
+      { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
+    ),
+    partitionDate: (transaction) => transaction.consumeDate ?? transaction.postingDate,
+    key: (transaction, ordinal) => buildEsunCreditCardTransactionSourceKey(
+      capture.identity,
+      { ...transaction, occurrenceIndex: ordinal - 1 },
+    ),
+  });
+  slots.forEach(({ row, group, occurrenceKey }, index) => {
+    if (row.sourceKey !== occurrenceKey)
+      fail("Transaction occurrence indexes must match complete economic-group slots.");
+    const grouped = { ...row, occurrenceGroup: group };
+    transactions[index] = grouped;
+    transactionsBySourceRecord.set(grouped.sourceRecordKey, grouped);
+  });
   if (!Array.isArray(capture.statements)) fail("E.SUN statements are required.");
   const statements: EsunCreditCardAdmittedStatement[] = [];
   const statementKeys = new Set<string>();
@@ -1033,6 +1009,7 @@ function createSourceRowTransaction(
   row: EsunCreditCardSourceRow,
   instrumentKey: string,
   occurrenceIndex: number,
+  occurrenceGroupBucketKey: string,
 ): EsunCreditCardTransactionInput {
   const signed = sourceRowSignedAmount(row);
   const foreign = sourceRowForeignEvidence(row);
@@ -1069,10 +1046,21 @@ function createSourceRowTransaction(
     foreignAmount: foreign.amount,
     description: text(row.description, "Transaction description"),
     billingStatus,
+    occurrenceGroupBucketKey,
     ...(row.paymentStatus === "已入帳" && row.issuerStatementPeriod?.trim()
       ? { statementPeriod: row.issuerStatementPeriod.trim() }
       : {}),
   };
+}
+
+function esunGridBucketKeys(
+  grid: EsunCreditCardGrid,
+  startDate: string,
+  endDate: string,
+): string[] {
+  if (grid.kind === "past-year-timeline")
+    return grid.months.map((month) => `month:${month}`);
+  return [`history-range:${startDate}:${endDate}`];
 }
 
 function buildSettledStatements(
@@ -1214,6 +1202,9 @@ export function buildEsunCanonicalCreditCardCapture(
       inputIndex,
       cardKey,
       instrumentKey,
+      occurrenceGroupBucketKey: options.grid.kind === "past-year-timeline"
+        ? `month:${normalizeSourceRowDate(row.consumeDate).slice(0, 7).replace("-", "/")}`
+        : `history-range:${sourceDate(options.startDate, "Capture start date")}:${sourceDate(options.endDate, "Capture end date")}`,
       baseIdentity: sourceRowBaseIdentity(options.identity, row, instrumentKey),
     };
   });
@@ -1222,18 +1213,37 @@ export function buildEsunCanonicalCreditCardCapture(
       left.baseIdentity.localeCompare(right.baseIdentity) ||
       left.inputIndex - right.inputIndex,
   );
-  const occurrenceIndexes = new Map<string, number>();
   const transactionsByInputIndex = new Map<number, EsunCreditCardTransactionInput>();
-  for (const descriptor of ordered) {
-    const occurrenceIndex = occurrenceIndexes.get(descriptor.baseIdentity) ?? 0;
-    occurrenceIndexes.set(descriptor.baseIdentity, occurrenceIndex + 1);
+  const occurrenceScopeKey = opaqueEsunSpineToken(
+    "esun-credit-card-occurrence-scope-v1",
+    identity.accountNaturalKey,
+  );
+  const assigned = assignOccurrenceSlots({
+    rows: ordered,
+    complete: true,
+    scopeKey: () => occurrenceScopeKey,
+    fingerprint: (descriptor) => opaqueEsunSpineToken(
+      "esun-credit-card-economic-row-v1",
+      descriptor.baseIdentity,
+    ),
+    partitionDate: (descriptor) => normalizeSourceRowDate(descriptor.row.consumeDate),
+    key: (descriptor, ordinal) => createSourceRowTransaction(
+      options.identity,
+      descriptor.row,
+      descriptor.instrumentKey,
+      ordinal - 1,
+      descriptor.occurrenceGroupBucketKey,
+    ).sourceKey!,
+  });
+  for (const { row: descriptor, group } of assigned) {
     transactionsByInputIndex.set(
       descriptor.inputIndex,
       createSourceRowTransaction(
         options.identity,
         descriptor.row,
         descriptor.instrumentKey,
-        occurrenceIndex,
+        group.ordinal - 1,
+        descriptor.occurrenceGroupBucketKey,
       ),
     );
   }
@@ -1315,9 +1325,8 @@ export const buildEsunCanonicalCreditCardCaptures = (
 
 /**
  * Project an admitted E.SUN capture into the provider-neutral credit-card
- * extension shape.  The generic writer uses a transaction's source key as
- * its occurrence key, so every extension source-record reference is resolved
- * to that same key before persistence.
+ * extension shape. The stable semantic group slot is the financial source
+ * identity; source-row keys remain collection provenance only.
  */
 export function esunNeutralCreditCardCapture(
   capture: EsunCreditCardValidatedCapture,
@@ -1335,7 +1344,9 @@ export function esunNeutralCreditCardCapture(
     const transaction = transactionsBySourceRecordKey.get(value);
     if (!transaction)
       fail("E.SUN neutral credit-card evidence references an unknown source record.");
-    return transaction.sourceKey;
+    if (!transaction.occurrenceGroup)
+      fail("E.SUN transaction is missing its admitted occurrence group.");
+    return canonicalOccurrenceGroupKey(transaction.occurrenceGroup);
   };
 
   return {
@@ -1354,8 +1365,8 @@ export function esunNeutralCreditCardCapture(
       },
     })),
     transactions: capture.transactions.map((transaction) => ({
-      sourceRecordKey: transaction.sourceKey,
-      sourceKey: transaction.sourceKey,
+      sourceRecordKey: spineOccurrenceKey(transaction.sourceRecordKey),
+      sourceKey: spineOccurrenceKey(transaction.sourceRecordKey),
       instrumentKey: transaction.instrumentKey,
       billingStatus: transaction.billingStatus,
       consumeDate: transaction.consumeDate,
@@ -1396,15 +1407,18 @@ export function esunCanonicalSpineCapture(
     capture.instruments.map((instrument) => [instrument.instrumentKey, instrument]),
   );
   const records = capture.transactions.map((transaction, sourceOrderOrdinal) => {
+    if (!transaction.occurrenceGroup)
+      throw new EsunCreditCardAdmissionError(
+        "E.SUN transaction is missing its admitted occurrence group.",
+      );
     const instrument = instrumentsByKey.get(transaction.instrumentKey);
     if (!instrument)
       throw new EsunCreditCardAdmissionError(
         "E.SUN transaction instrument is missing from the validated capture.",
       );
     const effectiveDate = transaction.consumeDate ?? transaction.postingDate;
+    const occurrenceKey = canonicalOccurrenceGroupKey(transaction.occurrenceGroup);
     const compact = JSON.stringify({
-      sourceRecordKey: transaction.sourceRecordKey,
-      occurrenceIndex: transaction.occurrenceIndex,
       instrumentKey: transaction.instrumentKey,
       cardMask: instrument.cardMask,
       consumeDate: transaction.consumeDate,
@@ -1413,15 +1427,15 @@ export function esunCanonicalSpineCapture(
       currency: transaction.bookedCurrency,
       direction: transaction.direction,
       description: transaction.description,
-      billingStatus: transaction.billingStatus,
-      statementPeriod: transaction.statementPeriod ?? null,
     });
     return {
-      occurrenceKey: transaction.sourceKey,
-      collisionKey: transaction.sourceKey,
+      occurrenceKey,
+      occurrenceGroup: transaction.occurrenceGroup,
+      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
+      collisionKey: occurrenceKey,
       providerKey: "human-attested:no-provider-key",
-      humanAttestedOccurrenceKey: transaction.sourceKey,
-      contentHash: opaqueEsunSpineToken("esun-credit-content-v1", compact),
+      humanAttestedOccurrenceKey: occurrenceKey,
+      contentHash: opaqueEsunSpineToken("esun-credit-content-v2", compact),
       sequenceLexeme: `observed-source-order:${sourceOrderOrdinal}`,
       compactJson: compact,
       amount: transaction.bookedAmount,
@@ -1552,6 +1566,20 @@ export function esunCanonicalSpineCapture(
       metadataJson: JSON.stringify(capture.scope.completeness.grid),
     }],
     records,
+    occurrenceGroupCoverage: [{
+      scopeKey: opaqueEsunSpineToken(
+        "esun-credit-card-occurrence-scope-v1",
+        capture.identity.accountNaturalKey,
+      ),
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      contractVersion: capture.contractVersion,
+      bucketKeys: esunGridBucketKeys(
+        capture.scope.completeness.grid,
+        capture.scope.startDate,
+        capture.scope.endDate,
+      ),
+    }],
     nonTransactionRecords,
   });
 }
