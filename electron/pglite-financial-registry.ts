@@ -1,3 +1,4 @@
+import { SpendingPageVersionError, type SpendingPageReadResult } from "../src/lib/spending/page-reader.ts";
 import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
@@ -152,8 +153,8 @@ export type PGliteFinancialPageClient = Readonly<{
   load(page: "assets", options?: { expectedVersion?: number }): Promise<AssetsPageDto>;
   load(page: "liabilities", options?: { expectedVersion?: number }): Promise<LiabilitiesPageDto>;
   load(page: "spending", input?: SpendingLoadInput, options?: { expectedVersion?: number }): Promise<SpendingPageDto>;
-  loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingRecordPageDto>;
-  loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingCandidatePageDto>;
+  loadSpendingRecordPage(request: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
+  loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options?: { signal?: AbortSignal }): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
   applySpendingPageAction(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
   loadBlock(
     page: "overview" | "assets" | "liabilities" | "spending" | "automation",
@@ -606,13 +607,16 @@ export function createPGliteFinancialRegistry(
         __spendingRead?: "record-page" | "candidate-page";
         request?: SpendingRecordPageRequest | SpendingCandidatePageRequest;
       }>;
-      if (tagged.__spendingRead === "record-page") {
-        const result = await spending.recordPage(tagged.request as SpendingRecordPageRequest);
-        return result as unknown as SpendingPageDto;
-      }
-      if (tagged.__spendingRead === "candidate-page") {
-        const result = await spending.candidatePage(tagged.request as SpendingCandidatePageRequest);
-        return result as unknown as SpendingPageDto;
+      if (tagged.__spendingRead) {
+        try {
+          const result = tagged.__spendingRead === "record-page"
+            ? await spending.recordPage(tagged.request as SpendingRecordPageRequest)
+            : await spending.candidatePage(tagged.request as SpendingCandidatePageRequest);
+          return result as unknown as SpendingPageDto;
+        } catch (error) {
+          if (!(error instanceof SpendingPageVersionError)) throw error;
+          return { stale: true, knowledgeAt: error.knowledgeAt } as unknown as SpendingPageDto;
+        }
       }
       return spending.summaryPage(input);
     },
@@ -833,10 +837,10 @@ export function createPGliteFinancialPageClient(
       return rpc.registry.spendingCurrent(inputOrOptions as SpendingLoadInput | undefined);
     },
     loadSpendingRecordPage(request: SpendingRecordPageRequest) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingRecordPageDto>;
+      return rpc.request("financial.spending.current", [{ __spendingRead: "record-page", request }]) as Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
     },
     loadSpendingCandidatePage(request: SpendingCandidatePageRequest, options: { signal?: AbortSignal } = {}) {
-      return rpc.request("financial.spending.current", [{ __spendingRead: "candidate-page", request }], options) as Promise<SpendingCandidatePageDto>;
+      return rpc.request("financial.spending.current", [{ __spendingRead: "candidate-page", request }], options) as Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
     },
     applySpendingPageAction(request: SpendingPageActionRequest) {
       return rpc.request("financial.spending.confirmCandidate", [{ __spendingPageAction: request }]) as Promise<SpendingPageActionResult>;

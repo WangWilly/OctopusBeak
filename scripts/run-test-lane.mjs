@@ -14,6 +14,7 @@ export const BROWSER_CHECK_FILES = Object.freeze([
   "src/lib/automation/server/yuanta-report-page.check.ts",
   "scripts/site-browser.check.mjs",
   "scripts/spending-browser-harness.check.mjs",
+  "scripts/spending-page-recovery.check.mjs",
   "scripts/spending-chart-alternatives.check.mjs",
   "scripts/spending-ledger-review.check.mjs",
   "scripts/spending-pairing-browser.check.mjs",

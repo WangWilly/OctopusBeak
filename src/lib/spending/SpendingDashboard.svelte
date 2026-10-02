@@ -7,6 +7,7 @@
   import { isEmptySpendingPage } from "$lib/shared-shell/progressive-dashboard-data.ts";
 
   export let spending: SpendingPageDto;
+  export let refreshSummary: () => Promise<void> = async () => {};
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
   export let retryBlock: (key: string) => void = () => {};
 </script>
@@ -20,6 +21,7 @@
   />
 {:else if spending.purchaseReport}
   <PurchaseSpendingDashboard
+    {refreshSummary}
     purchaseReport={spending.purchaseReport}
     fallbackCanonical={spending.canonical}
     {blocks}

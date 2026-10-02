@@ -1069,6 +1069,7 @@
   {#if spendingRenderValue}
     <SpendingDashboard
       spending={spendingRenderValue}
+      refreshSummary={() => route === "spending" ? reloadFinancialLive("spending") : Promise.resolve()}
       blocks={activeBlocks}
       retryBlock={(key) => retryRouteBlock("spending", key)}
     />

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { createSpendingPageReader } from "../page-reader.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { exactToNumber } from "$lib/shared-money/exact.ts";
@@ -33,6 +34,9 @@
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
+  export let refreshSummary: () => Promise<void> = async () => {};
+  const pageReader = createSpendingPageReader(() => refreshSummary());
+
   export let retryBlock: (key: string) => void = () => {};
 
   function blockState(key: "summary" | "chart" | "list" | "details"): BlockState<DashboardBlockPayload> {
@@ -58,6 +62,7 @@
   }
 
   let report = purchaseReport;
+  let pendingReport: PurchaseReport | null = null;
   let previousReport: PurchaseReport | undefined;
   let selectedMonth: string | null = null;
   let chartReady = false;
@@ -128,6 +133,8 @@
       cancelAnimationFrame(chartFrame);
       if (recordRefreshTimer !== null) clearTimeout(recordRefreshTimer);
       pendingRecordRefresh = null;
+      monthDataRequestToken += 1;
+      void cancelPendingCandidatePage();
     };
   });
 
@@ -195,27 +202,37 @@
         records: report.records,
         candidates: report.candidates,
       });
+      // An explicit summary reload can retry a failed page even when no new
+      // financial commit was made. The failure itself never resets this key.
+      if (pageError) resetMonthPageState(true);
     } else {
-      report = purchaseReport;
-      resetMonthPageState();
+      const retainSnapshot = Boolean(report.summary && report.records.length > 0 && purchaseReport.summary);
+      pendingReport = retainSnapshot ? purchaseReport : null;
+      if (!retainSnapshot) report = purchaseReport;
+      resetMonthPageState(retainSnapshot);
     }
   }
-  $: if (pairingInvoice?.invoice && pairingDataVersion !== report.knowledgeAt) {
-    const currentInvoice = report.records.find((record) =>
+  $: if (pairingInvoice?.invoice) {
+    const latestVersion = (pendingReport ?? report).knowledgeAt;
+    // The retained list is a display snapshot. Candidate eligibility follows
+    // the latest summary immediately, even while its record page is loading.
+    const currentInvoice = pendingReport ? pairingInvoice : report.records.find((record) =>
       record.basis === "invoice" && record.invoice?.invoiceId === pairingInvoice?.invoice?.invoiceId);
-    if (currentInvoice) {
-      pairingInvoice = currentInvoice;
-      pairingDataVersion = report.knowledgeAt;
-      pairingCandidates = null;
-      validatedSelectedCandidate = null;
-      pairingCandidateTotal = 0;
-      pairingNextOffset = null;
-      paymentVisibleCount = initialPairingCandidateCount;
-      pairingCandidatesLoading = true;
-      void loadPairingCandidates(currentInvoice, ++pairingRequestToken);
-    } else {
+    if (!currentInvoice) {
       closePairing();
       actionError = $t.purchaseSpending.pairingInvoiceUnavailable;
+    } else {
+      if (pairingInvoice !== currentInvoice) pairingInvoice = currentInvoice;
+      if (pairingDataVersion !== latestVersion) {
+        pairingDataVersion = latestVersion;
+        pairingCandidates = null;
+        validatedSelectedCandidate = null;
+        pairingCandidateTotal = 0;
+        pairingNextOffset = null;
+        paymentVisibleCount = initialPairingCandidateCount;
+        pairingCandidatesLoading = true;
+        void loadPairingCandidates(currentInvoice, ++pairingRequestToken);
+      }
     }
   }
   // Candidate preparation stays in the financial worker.  Fire it once for
@@ -228,10 +245,12 @@
   $: reportDerived = reportDerivedFor(report);
   $: months = reportDerived.months;
   $: activeMonth = selectedMonth ?? months.at(-1) ?? null;
-  $: if (report.summary && activeMonth) {
-    const key = `${report.knowledgeAt}:${activeMonth}:${selectedDay ?? ""}`;
+  $: pageReader.observe((pendingReport ?? report).knowledgeAt);
+  $: if ((pendingReport ?? report).summary && activeMonth) {
+    const nextReport = pendingReport ?? report;
+    const key = `${nextReport.knowledgeAt}:${activeMonth}:${selectedDay ?? ""}`;
     if (key !== requestedMonthDataKey && key !== loadedMonthDataKey)
-      void loadMonthData(report.knowledgeAt, activeMonth, key);
+      void loadMonthData(nextReport.knowledgeAt, activeMonth, key);
   }
   $: monthRecords = recordsForMonth(report, activeMonth);
   $: visibleRecords = visibleRecordsFor(report, activeMonth, selectedDay);
@@ -290,7 +309,7 @@
     return Promise.resolve();
   }
 
-  function resetMonthPageState() {
+  function resetMonthPageState(retainSnapshot = false) {
     cancelPendingRecordRefresh();
     monthDataRequestToken += 1;
     void cancelPendingCandidatePage();
@@ -299,8 +318,10 @@
     candidatePageMonthKey = "";
     recordPageLoading = false;
     recordPageNextCursor = null;
-    recordPageRecords = [];
-    candidatePageItems = [];
+    if (!retainSnapshot) {
+      recordPageRecords = [];
+      candidatePageItems = [];
+    }
     candidatePageNextOffset = null;
     monthCandidateCount = null;
     pageError = "";
@@ -343,28 +364,30 @@
     requestedMonthDataKey = key;
     const requestToken = ++monthDataRequestToken;
     const candidateKeyForMonth = `${knowledgeAt}:${month}`;
-    if (candidatePageMonthKey !== candidateKeyForMonth) {
+    const replaceCandidates = candidatePageMonthKey !== candidateKeyForMonth;
+    if (replaceCandidates) {
       await cancelPendingCandidatePage();
       if (requestToken !== monthDataRequestToken) return;
       candidatePageMonthKey = candidateKeyForMonth;
-      candidatePageItems = [];
       candidatePageNextOffset = null;
       monthCandidateCount = null;
-      publishMonthPageRecords();
     }
     recordPageLoading = true;
     pageError = "";
-    recordPageRecords = [];
-    recordPageNextCursor = null;
-    publishMonthPageRecords();
     try {
-      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
         knowledgeAt,
         month,
         day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
         limit: 50,
-      });
-      if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      }));
+      if (!page) return;
+      if (requestToken !== monthDataRequestToken || (pendingReport ?? report).knowledgeAt !== knowledgeAt || activeMonth !== month) return;
+      if (pendingReport) {
+        report = pendingReport;
+        pendingReport = null;
+      }
+      if (replaceCandidates) candidatePageItems = [];
       recordPageRecords = page.records;
       recordPageNextCursor = page.nextCursor;
       loadedMonthDataKey = key;
@@ -373,7 +396,6 @@
     } catch (error) {
       if (requestToken === monthDataRequestToken) {
         pageError = error instanceof Error ? error.message : String(error);
-        requestedMonthDataKey = "";
       }
     } finally {
       if (requestToken === monthDataRequestToken) recordPageLoading = false;
@@ -395,12 +417,13 @@
     candidatePageRequestId = requestId;
     monthCandidateLoading = true;
     try {
-      const page: SpendingCandidatePageDto = await window.octopusBeak.spending.loadCandidatePage({
+      const page: SpendingCandidatePageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadCandidatePage({
         knowledgeAt,
         month,
         offset,
         limit: 50,
-      }, requestId);
+      }, requestId));
+      if (!page) return;
       if (requestToken !== candidatePageRequestToken || pairingInvoice || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
       candidatePageItems = offset === 0 ? page.items : Object.freeze([...candidatePageItems, ...page.items]);
       candidatePageNextOffset = page.nextOffset;
@@ -423,13 +446,14 @@
     const requestToken = monthDataRequestToken;
     recordPageLoading = true;
     try {
-      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
         knowledgeAt,
         month,
         day: selectedDay && selectedDay.startsWith(`${month}-`) ? selectedDay : null,
         cursor: recordPageNextCursor,
         limit: 50,
-      });
+      }));
+      if (!page) return;
       if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
       recordPageRecords = Object.freeze([...recordPageRecords, ...page.records]);
       recordPageNextCursor = page.nextCursor;
@@ -451,6 +475,9 @@
   }
 
   function acceptCompactPageAction(result: SpendingPageActionResult) {
+    // An action may finish after a newer live publication. Preserve that
+    // publication and its in-flight page instead of promoting an older result.
+    if ((pendingReport ?? report).knowledgeAt > result.knowledgeAt) return;
     if (!report.summary) {
       if (report.knowledgeAt >= result.knowledgeAt) return;
       throw new Error("Spending changed while applying the pairing result. Reload the selected month.");
@@ -499,6 +526,7 @@
       loadedMonthDataKey = "";
     }
     pageError = "";
+    pendingReport = null;
     report = nextReport;
     selectedMonth = month;
     fallbackCanonical = Object.freeze({
@@ -564,12 +592,13 @@
     requestToken: number,
   ) {
     try {
-      const page: SpendingRecordPageDto = await window.octopusBeak.spending.loadRecordPage({
+      const page: SpendingRecordPageDto | null = await pageReader.read(knowledgeAt, () => window.octopusBeak.spending.loadRecordPage({
         knowledgeAt,
         month,
         day,
         limit: 50,
-      });
+      }));
+      if (!page) return;
       if (requestToken !== monthDataRequestToken || report.knowledgeAt !== knowledgeAt || activeMonth !== month) return;
       recordPageRecords = page.records;
       recordPageNextCursor = page.nextCursor;
@@ -966,7 +995,7 @@
   async function loadPairingCandidates(record: PurchaseRecord, requestToken: number) {
     const invoiceIdentityId = record.invoice?.invoiceId;
     if (!invoiceIdentityId) return;
-    const expectedDataVersion = report.knowledgeAt;
+    const expectedDataVersion = (pendingReport ?? report).knowledgeAt;
     const selectedAtRequest = selectedPaymentId;
     try {
       const result = await window.octopusBeak.spending.rankPairingCandidates({
@@ -976,7 +1005,7 @@
         limit: initialPairingCandidateCount,
       });
       if (requestToken !== pairingRequestToken || pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId) return;
-      if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt)
+      if (result.dataVersion !== expectedDataVersion || result.dataVersion !== (pendingReport ?? report).knowledgeAt)
         throw new Error($t.purchaseSpending.pairingDataChanged);
       pairingCandidates = result.candidates;
       pairingCandidateTotal = result.totalCandidateCount;
@@ -1004,7 +1033,7 @@
     ) {
       const requestToken = pairingRequestToken;
       const invoiceIdentityId = pairingInvoice.invoice.invoiceId;
-      const expectedDataVersion = report.knowledgeAt;
+      const expectedDataVersion = (pendingReport ?? report).knowledgeAt;
       pairingCandidatesLoading = true;
       try {
         const result = await window.octopusBeak.spending.rankPairingCandidates({
@@ -1017,7 +1046,7 @@
           requestToken !== pairingRequestToken ||
           pairingInvoice?.invoice?.invoiceId !== invoiceIdentityId
         ) return;
-        if (result.dataVersion !== expectedDataVersion || result.dataVersion !== report.knowledgeAt) {
+        if (result.dataVersion !== expectedDataVersion || result.dataVersion !== (pendingReport ?? report).knowledgeAt) {
           pairingCandidates = null;
           pairingCandidateTotal = 0;
           pairingNextOffset = null;
@@ -1040,11 +1069,11 @@
   }
 
   async function confirmDirectPair() {
-    cancelPendingRecordRefresh();
     const invoiceIdentityId = pairingInvoice?.invoice?.invoiceId;
-    if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading) return;
+    if (!invoiceIdentityId || !selectedPayment || pairingCandidatesLoading || pendingReport) return;
+    cancelPendingRecordRefresh();
     busyAction = `direct:${invoiceIdentityId}/${selectedPaymentId}`;
-      actionError = "";
+    actionError = "";
     try {
       if (report.summary) {
         const result = await window.octopusBeak.spending.applyPageAction({
@@ -1151,6 +1180,9 @@
       </span>
     </section>
 
+    {#if recordPageLoading || pendingReport}
+      <p role="status" data-spending-updating>{$t.common.loading}</p>
+    {/if}
     {#if actionError || pageError}
       <section class="card purchase-action-error" role="alert">{actionError || pageError}</section>
     {/if}
@@ -1277,8 +1309,8 @@
                 <span>{transactionRecord ? dateText(transactionRecord.occurrence.value) : "--"} · {transactionRecord ? amountText(transactionRecord.amount) : "--"}</span>
               </div>
               <div class="candidate-actions">
-                <button type="button" class="button primary" disabled={busyAction !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
-                <button type="button" class="button secondary" disabled={busyAction !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
+                <button type="button" class="button primary" disabled={busyAction !== null || pendingReport !== null} data-confirm-candidate onclick={() => void confirmCandidate(candidate.candidateId)}>{$t.purchaseSpending.confirmMatch}</button>
+                <button type="button" class="button secondary" disabled={busyAction !== null || pendingReport !== null} data-deny-candidate onclick={() => void denyCandidate(candidate.candidateId)}>{$t.purchaseSpending.denyCandidate}</button>
               </div>
             </article>
           {/each}
@@ -1331,11 +1363,11 @@
                 </details>
               {/if}
               {#if record.basis === "invoice" && record.invoice}
-                <button type="button" class="button secondary pair-button" disabled={busyAction !== null} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
+                <button type="button" class="button secondary pair-button" disabled={busyAction !== null || pendingReport !== null} data-open-pairing onclick={() => openPairing(record)}>{$t.purchaseSpending.matchPayment}</button>
               {/if}
               {#if record.link}
                 <details class="source-details" data-source-details><summary>{$t.purchaseSpending.sourceAndMatchEvidence}</summary><div>{$t.purchaseSpending.matchEvent}: {record.link.eventId} · {$t.purchaseSpending.knowledge}: {record.link.evidenceKnowledgeSequence} · {$t.purchaseSpending.origin}: {record.link.origin}</div><pre>{JSON.stringify(record.link.evidence)}</pre></details>
-                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
+                <button type="button" class="button secondary revoke-button" disabled={busyAction !== null || pendingReport !== null} data-revoke-link onclick={() => void revokeLink(record)}>{$t.purchaseSpending.revokeMatch}</button>
               {/if}
               {#if record.refund}<span class="refund-note">{$t.purchaseSpending.refundPeriod} · {record.refund.provenanceReference}</span>{/if}
             </div>
@@ -1397,7 +1429,7 @@
           {#if busyAction !== null}
             <span class="panel-meta pairing-loading" role="status" data-pairing-feedback="confirm-busy"><span class="pairing-spinner" aria-hidden="true"></span>{$t.purchaseSpending.savingPair}</span>
           {/if}
-          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
+          <button type="button" class="button primary" disabled={!selectedPayment || pairingCandidatesLoading || busyAction !== null || Boolean(pendingReport)} data-confirm-direct-pair onclick={() => void confirmDirectPair()}>{$t.purchaseSpending.confirmMatch}</button>
         </div>
       </section>
     {/if}
