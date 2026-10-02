@@ -109,7 +109,11 @@ lots. Missing reports or unidentified historical securities reject the whole
 capture. If all current positions are closed, explicit source absence permits
 history collection; the entire dated transaction set and coverage remain in one
 capture. An empty current inventory alone never asserts zero historical
-transactions. Holding and margin-balance observations retain their own source
+transactions. Explicit absence combined with all fifteen explicitly empty
+reports still admits one coverage-only capture. Its effective scope boundary
+is the verified history end date; no holding, zero balance, or valuation date
+is invented. Independent repeated collections retain distinct captures and
+the same empty financial transaction set. Holding and margin-balance observations retain their own source
 identity and do not receive transaction ordinals.
 
 ## Confirmed decision: group growth
