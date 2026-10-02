@@ -1,20 +1,21 @@
 const EN = {
-  "meta.title": "OctopusBeak | See your banks, cards, and investments in one place",
-  "meta.description": "Built for people in Taiwan managing multiple financial accounts. OctopusBeak automatically collects scattered account data, keeping assets, liabilities, transactions, and their sources clear and traceable.",
+  "meta.title": "OctopusBeak | Import your banks, cards, and investments in one click",
+  "meta.description": "A macOS app that imports your accounts from 11 Taiwanese institutions plus e-invoices in one click, and builds one financial overview where every number traces back to its source. Your data stays on your Mac.",
   "nav.how": "How it works",
-  "nav.overview": "Financial overview",
-  "nav.sources": "Supported sources",
+  "nav.overview": "Overview",
+  "nav.sources": "Sources",
   "nav.faq": "FAQ",
   "cta.download": "Download macOS Beta",
-  "hero.eyebrow": "For people in Taiwan managing 3+ financial accounts",
-  "hero.title": "Stop piecing together your banks, cards, and investments in spreadsheets.",
-  "hero.lead": "OctopusBeak automatically collects your scattered account data and organizes it into a traceable financial overview you can verify anytime.",
-  "hero.demo": "Watch the full demo",
-  "cta.requirements": "Requires Apple silicon · Beta release",
-  "sources.eyebrow": "Currently supported",
-  "sources.title": "Every account belongs in your financial picture.",
-  "sources.lead": "From bank deposits and credit cards to investment records, OctopusBeak is gradually bringing the financial sources people use most into one place you can verify.",
-  "sources.badge": "Available in Beta",
+  "hero.title": "Banks, cards, and investments,",
+  "hero.title2": " imported in one click.",
+  "hero.titleTone": " Every number traces to its source.",
+  "hero.lead": "OctopusBeak collects your accounts from 11 Taiwanese institutions plus e-invoices and builds one financial overview on your Mac that you can check line by line.",
+  "hero.demo": "Watch the demo",
+  "cta.requirements": "Requires Apple silicon · Beta",
+  "sources.title": "11 institutions plus e-invoices,",
+  "sources.titleTone": " in a single import.",
+  "sources.lead": "Deposits, credit cards, loans, brokerage, funds, foreign currency, and MaiCoin crypto, side by side in one place you can check. More sources are on the way.",
+  "sources.badge": "Supported in Beta",
   "source.fubon": "Taipei Fubon Bank",
   "source.fubon.types": "Deposits, credit cards, loans",
   "source.esun": "E.SUN Bank",
@@ -34,33 +35,34 @@ const EN = {
   "source.maicoin.types": "Digital assets",
   "source.other": "Other data sources",
   "source.other.types": "E-invoices",
-  "flow.eyebrow": "See the full workflow",
-  "flow.title": "Let automation handle the repetitive work. Keep every important decision in your hands.",
-  "flow.lead": "Choose your financial sources, and OctopusBeak will collect and organize the account data. It only asks you to step in for verification codes, OTPs, or decisions that require your judgment.",
-  "flow.1.title": "Choose sources",
-  "flow.1.body": "Select the accounts you want to organize",
-  "flow.2.title": "Collect automatically",
-  "flow.2.body": "Retrieve account data through repeatable workflows",
-  "flow.3.title": "Step in when needed",
-  "flow.3.body": "Handle verification codes, OTPs, or decisions",
-  "flow.4.title": "See the full picture",
-  "flow.4.body": "Keep every account and transaction traceable",
-  "overview.eyebrow": "From overview to detail",
-  "overview.title": "See the full picture, with a clear path back to every detail.",
-  "overview.lead": "Move from total assets and liabilities down to individual accounts and transactions, with every layer pointing back to its source. When something needs checking, there is no need to dig through files and spreadsheets again.",
-  "privacy.eyebrow": "Convenience without giving up privacy",
-  "privacy.title": "Organize your financial data—and keep it on your own computer.",
-  "privacy.lead": "Your account data and settings stay on your Mac. Credentials are encrypted through macOS secure storage, and whenever something requires judgment, OctopusBeak pauses and waits for you.",
+  "flow.title": "One click",
+  "flow.titleTone": " imports everything.",
+  "flow.lead": "Set up your sources once. Then one click runs the import start to finish and files every account into your overview.",
+  "flow.1.title": "Set up sources",
+  "flow.1.body": "Credentials encrypted in macOS secure storage",
+  "flow.2.title": "Import in one click",
+  "flow.2.body": "Every source collected in one run",
+  "flow.3.title": "Check any number",
+  "flow.3.body": "Every figure links to its source",
+  "overview.title": "See the whole picture,",
+  "overview.titleTone": " and follow any number back to its source.",
+  "overview.lead": "From total assets and liabilities down to single accounts and transactions, every layer shows where it came from. To check a number, follow it back. No more digging through files and spreadsheets.",
+  "privacy.title": "Organized on your Mac,",
+  "privacy.titleTone": " and kept there.",
+  "privacy.lead": "Account data and settings stay on your Mac. Credentials are encrypted with macOS secure storage.",
   "privacy.point1": "Your data stays on your Mac",
-  "privacy.point2": "Your credentials are protected by macOS",
-  "privacy.point3": "Your judgment stays in your hands",
+  "privacy.point2": "Credentials encrypted by macOS",
+  "faq.import.q": "Do I need to stay at my Mac during an import?",
+  "faq.import.a": "No. Once your sources are set up, one click runs the import start to finish and collects every source.",
   "faq.storage.q": "Where does OctopusBeak store my data?",
-  "faq.storage.a": "OctopusBeak runs on your Mac. Collected account data, financial records, and app settings are stored locally, while login credentials are encrypted through macOS secure storage. When a verification code, OTP, or decision is required, the app pauses and hands control back to you.",
+  "faq.storage.a": "OctopusBeak runs on your Mac. Collected account data, financial records, and app settings are stored locally. Login credentials are encrypted with macOS secure storage.",
   "faq.mac.q": "Can my Mac run OctopusBeak Beta?",
-  "faq.mac.a": "The current Beta supports Macs with Apple silicon (M-series chips). Intel Macs, Windows, and other platforms are not supported yet.",
-  "final.eyebrow": "Start organizing",
-  "final.title": "Spend less time organizing. Spend more time understanding your finances.",
-  "footer.tagline": "Scattered accounts. One clear financial picture.",
+  "faq.mac.a": "The Beta runs on Macs with Apple silicon (M-series chips). Intel Macs, Windows, and other platforms are not supported yet.",
+  "final.title": "Spend less time gathering numbers,",
+  "final.titleTone": " more time understanding your money.",
+  "footer.tagline": "Scattered accounts. One clear picture.",
+  "footer.contents": "On this page",
+  "footer.download": "Download",
 };
 
 const LOCALES = { "zh-Hant": "zh_TW", en: "en_US" };
@@ -112,3 +114,136 @@ for (const button of buttons) {
 }
 
 if (new URLSearchParams(window.location.search).get("lang") === "en") setLanguage("en", false);
+
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const finePointer = matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+if (!reducedMotion && "IntersectionObserver" in window) {
+  const groups = [...document.querySelectorAll("[data-reveal]")];
+  const reveal = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      entry.target.classList.add("is-in");
+      reveal.unobserve(entry.target);
+    }
+  }, { rootMargin: "0px 0px -12% 0px" });
+  for (const group of groups) {
+    group.querySelectorAll(".reveal").forEach((element, index) => {
+      element.style.setProperty("--d", `${Math.min(index, 8) * 70}ms`);
+    });
+    // Anything already on screen (or scrolled past, on a deep link) shows at once instead of blinking out.
+    if (group.getBoundingClientRect().top < window.innerHeight) group.classList.add("is-in");
+    else reveal.observe(group);
+  }
+  document.documentElement.classList.add("js-motion");
+}
+
+const header = document.querySelector(".site-header");
+let lastScrollY = window.scrollY;
+let scrollFrame = 0;
+window.addEventListener("scroll", () => {
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    const y = window.scrollY;
+    if (y > lastScrollY + 4 && y > 160 && !header.contains(document.activeElement)) header.classList.add("is-hidden");
+    else if (y < lastScrollY - 4 || y <= 160) header.classList.remove("is-hidden");
+    lastScrollY = y;
+  });
+}, { passive: true });
+header.addEventListener("focusin", () => header.classList.remove("is-hidden"));
+
+// The hero portrait is one character reacting to the visitor: a download CTA in play beats a present pointer beats idle.
+const hero = document.querySelector(".hero");
+const POSE_FILES = { reading: "sun-phone-reading", facing: "sun-phone-facing", thumbs: "sun-phone-thumbs-up" };
+const visitor = { present: false, cta: false };
+const poseFor = ({ present, cta }) => (cta ? "thumbs" : present ? "facing" : "reading");
+
+if (finePointer && !reducedMotion) {
+  const headline = hero.querySelector(".display");
+  const reading = hero.querySelector(".pose");
+  const layers = new Map([["reading", reading]]);
+  const ready = new Set(["reading"]);
+
+  const renderPose = () => {
+    const wanted = poseFor(visitor);
+    const pose = ready.has(wanted) ? wanted : "reading";
+    if (hero.dataset.pose === pose) return;
+    hero.dataset.pose = pose;
+    for (const [name, layer] of layers) layer.classList.toggle("is-on", name === pose);
+  };
+
+  const loadPoses = () => {
+    for (const name of ["facing", "thumbs"]) {
+      const layer = reading.cloneNode();
+      layer.classList.remove("is-on");
+      layer.removeAttribute("fetchpriority");
+      layer.dataset.poseName = name;
+      layer.src = `assets/illustrations/${POSE_FILES[name]}.webp`;
+      reading.after(layer);
+      layers.set(name, layer);
+      layer.decode().then(() => {
+        ready.add(name);
+        renderPose();
+      }, () => {});
+    }
+  };
+  if (document.readyState === "complete") loadPoses();
+  else window.addEventListener("load", loadPoses, { once: true });
+
+  let pointer = null;
+  let pointerFrame = 0;
+  let idleTimer = 0;
+
+  const rest = () => {
+    hero.style.setProperty("--px", "0");
+    hero.style.setProperty("--py", "0");
+  };
+
+  const track = () => {
+    pointerFrame = 0;
+    const box = hero.getBoundingClientRect();
+    const inside = pointer.y >= box.top && pointer.y <= box.bottom;
+    clearTimeout(idleTimer);
+    if (inside) {
+      const text = headline.getBoundingClientRect();
+      headline.style.setProperty("--mx", `${(((pointer.x - text.left) / text.width) * 100).toFixed(1)}%`);
+      headline.style.setProperty("--my", `${(((pointer.y - text.top) / text.height) * 100).toFixed(1)}%`);
+      hero.style.setProperty("--px", (((pointer.x - box.left) / box.width) * 2 - 1).toFixed(3));
+      hero.style.setProperty("--py", (((pointer.y - box.top) / box.height) * 2 - 1).toFixed(3));
+      idleTimer = setTimeout(() => {
+        visitor.present = false;
+        renderPose();
+      }, 3000);
+    } else {
+      rest();
+    }
+    visitor.present = inside;
+    renderPose();
+  };
+
+  document.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "touch") return;
+    pointer = { x: event.clientX, y: event.clientY };
+    if (!pointerFrame) pointerFrame = requestAnimationFrame(track);
+  }, { passive: true });
+
+  document.addEventListener("pointerout", (event) => {
+    if (event.relatedTarget) return;
+    clearTimeout(idleTimer);
+    visitor.present = false;
+    rest();
+    renderPose();
+  });
+
+  const setCta = (engaged) => {
+    visitor.cta = engaged;
+    renderPose();
+  };
+  for (const cta of document.querySelectorAll('a[href$="/releases/latest"]')) {
+    cta.addEventListener("pointerenter", () => setCta(true));
+    cta.addEventListener("pointerleave", () => setCta(false));
+    cta.addEventListener("focus", () => setCta(true));
+    cta.addEventListener("blur", () => setCta(false));
+  }
+}
