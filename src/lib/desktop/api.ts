@@ -1,3 +1,4 @@
+import type { SpendingPageReadResult } from "../spending/page-reader.ts";
 import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type {
   AutomationCredentialGroup,
@@ -257,8 +258,8 @@ export type OctopusBeakApi = {
   };
   spending: {
     load(input?: SpendingLoadInput, options?: DataReadOptions): Promise<SpendingPageDto>;
-    loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingRecordPageDto>;
-    loadCandidatePage(input: SpendingCandidatePageRequest, requestId: string): Promise<SpendingCandidatePageDto>;
+    loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
+    loadCandidatePage(input: SpendingCandidatePageRequest, requestId: string): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
     cancelCandidatePage(requestId: string): Promise<boolean>;
     applyPageAction(input: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;
