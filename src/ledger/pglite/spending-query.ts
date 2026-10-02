@@ -1,3 +1,4 @@
+import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
 import { createHash } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import type {
@@ -2155,7 +2156,7 @@ export async function queryCurrentSpendingRecordPage(
 ): Promise<SpendingRecordPageDto> {
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new Error("Spending record page data version is stale; reload Spending.");
+    throw new SpendingPageVersionError("record", current);
   const month = request.month ?? null;
   const day = request.day ?? null;
   if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending record page month is invalid.");
@@ -2466,7 +2467,7 @@ export async function queryCurrentSpendingCandidatePage(
 ): Promise<SpendingCandidatePageDto> {
   const current = await latest(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new Error("Spending candidate page data version is stale; reload Spending.");
+    throw new SpendingPageVersionError("candidate", current);
   if (!validSpendingMonth(request.month)) throw new TypeError("Spending candidate page month is invalid.");
   const offset = Number.isSafeInteger(request.offset) && (request.offset ?? 0) >= 0 ? request.offset ?? 0 : 0;
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0
@@ -3045,7 +3046,7 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     candidatePage: async (request: SpendingCandidatePageRequest) => store.transaction(async (transaction) => {
       const knowledgeAt = await latest(transaction);
       if (knowledgeAt !== request.knowledgeAt)
-        throw new Error("Spending candidate page data version is stale; reload Spending.");
+        throw new SpendingPageVersionError("candidate", knowledgeAt);
       if (!monthCandidateCache || monthCandidateCache.knowledgeAt !== knowledgeAt || monthCandidateCache.month !== request.month) {
         monthCandidateCache = Object.freeze({
           knowledgeAt,

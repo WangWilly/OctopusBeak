@@ -406,6 +406,12 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
       day: "2026-01-01",
     });
     assert.equal(committedPage.knowledgeAt, spending.purchaseReport.knowledgeAt);
+    const staleRequest = { knowledgeAt: spending.purchaseReport.knowledgeAt - 1, month: "2026-01" };
+    const staleResult = { stale: true, knowledgeAt: spending.purchaseReport.knowledgeAt };
+    assert.deepEqual(await page.loadSpendingRecordPage(staleRequest), staleResult);
+    assert.deepEqual(await page.loadSpendingCandidatePage(staleRequest), staleResult);
+
+    assert.ok(!("stale" in committedPage));
     assert.deepEqual(committedPage.records, [], "the version-bound purchase page must omit this ineligible source fact");
     assert.ok(
       spending.canonical.knowledgePoint >= committed.commitSequence,
@@ -441,11 +447,13 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
       assert.deepEqual(persistedSpending.canonical.transactions, [], "reopened Spending remains a compact summary");
       assert.ok(persistedSpending.purchaseReport.summary, "reopened Spending retains its compact summary");
       assert.equal(persistedSpending.purchaseReport.summary.recordCount, 0);
-      assert.deepEqual((await reopenedPage.loadSpendingRecordPage({
+      const persistedPage = await reopenedPage.loadSpendingRecordPage({
         knowledgeAt: persistedSpending.purchaseReport.knowledgeAt,
         month: "2026-01",
         day: "2026-01-01",
-      })).records, [], "the empty eligible purchase page must survive worker close/reopen");
+      });
+      assert.ok(!("stale" in persistedPage));
+      assert.deepEqual(persistedPage.records, [], "the empty eligible purchase page must survive worker close/reopen");
       assert.ok(
         persistedSpending.canonical.knowledgePoint >= committed.commitSequence,
         "spending knowledge point must survive worker close/reopen",
@@ -485,6 +493,7 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
       month: "2026-01",
       day: "2026-01-01",
     });
+    assert.ok(!("stale" in committedPage));
     assert.deepEqual(committedPage.records, [], "the mixed command's unclassified fact is not a purchase row");
     const invalid = sourceCommitRequest("invalid-rpc");
     await assert.rejects(client.financial.registry.mixedCommit({
@@ -501,6 +510,7 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
       month: "2026-01",
       day: "2026-01-01",
     });
+    assert.ok(!("stale" in afterRollbackPage));
     assert.deepEqual(afterRollbackPage.records, [], "rollback preserves the empty eligible purchase page");
   } finally {
     await client.close();
