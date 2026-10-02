@@ -165,6 +165,79 @@ test("fits phone and desktop widths without horizontal scrolling", async () => {
   }
 });
 
+function hiddenText(page, scope = "main *, header *, footer *") {
+  return page.evaluate((selector) => [...document.querySelectorAll(selector)]
+    .filter((element) => [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.data.trim()))
+    .filter((element) => element.closest("details:not([open])") === null)
+    .filter((element) => {
+      for (let node = element; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (Number(style.opacity) < 0.99 || style.visibility === "hidden") return true;
+      }
+      return false;
+    })
+    .map((element) => element.textContent.trim().slice(0, 40)), scope);
+}
+
+test("never leaves copy invisible when scripts are off", async () => {
+  const page = await browser.newPage({ javaScriptEnabled: false, viewport: { width: 1440, height: 1000 } });
+  await page.goto(`${origin}/`);
+  assert.deepEqual(await hiddenText(page), []);
+  await page.close();
+});
+
+test("honors reduced motion with no looping animation and all copy visible", async () => {
+  const page = await browser.newPage({ reducedMotion: "reduce", viewport: { width: 1440, height: 1000 } });
+  await page.goto(`${origin}/`, { waitUntil: "networkidle" });
+  await page.mouse.move(900, 400);
+  await page.waitForTimeout(300);
+  const looping = await page.evaluate(() => document.getAnimations()
+    .filter((animation) => animation.effect?.getTiming().iterations === Infinity)
+    .map((animation) => animation.animationName ?? animation.constructor.name));
+  assert.deepEqual(looping, []);
+  assert.deepEqual(await hiddenText(page), []);
+  await page.close();
+});
+
+test("reveals every section's copy after scrolling through the page", async () => {
+  const { page, problems } = await openSite();
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  for (let y = 0; y <= height; y += 400) {
+    await page.mouse.wheel(0, 400);
+    await page.waitForTimeout(60);
+  }
+  await page.waitForTimeout(1500);
+  // The nav may tuck away while scrolling down; page content may not.
+  assert.deepEqual(await hiddenText(page, "main *, footer *"), []);
+  assert.deepEqual(problems, []);
+  await page.close();
+});
+
+test("the advertised institution count matches the supported sources, each shown with its logo", async () => {
+  const { page, problems } = await openSite();
+  await page.locator(".source-grid").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => [...document.querySelectorAll("[data-source] img")].every((image) => image.complete));
+  const sources = await page.$$eval("[data-source]", (items) => items.map((item) => ({
+    kind: item.dataset.source,
+    logo: item.querySelector("img")?.naturalWidth ?? 0,
+  })));
+  assert.ok(sources.length > 0);
+  assert.deepEqual(sources.filter((source) => source.logo === 0), [], "every source card shows a loaded logo");
+  const institutions = sources.filter((source) => source.kind === "institution").length;
+
+  const claims = async () => page.evaluate(() => [document.querySelector("main").innerText, document.title,
+    ...[...document.querySelectorAll('meta[name="description"], meta[property^="og:"], meta[name^="twitter:"]')].map((meta) => meta.content),
+    document.querySelector('script[type="application/ld+json"]').textContent].join("\n"));
+  const zh = [...(await claims()).matchAll(/(\d+) 家/gu)].map((match) => Number(match[1]));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.getByRole("button", { name: "EN", exact: true }).click();
+  const en = [...(await claims()).matchAll(/(\d+) (?:Taiwanese )?institutions/gu)].map((match) => Number(match[1]));
+  assert.ok(zh.length > 0 && en.length > 0, "expected the institution count in both languages");
+  for (const count of [...zh, ...en]) assert.equal(count, institutions, "update the copy when sources change");
+  assert.deepEqual(problems, []);
+  await page.close();
+});
+
 test("keeps SEO and structured data intact", async () => {
   const { page } = await openSite();
   const seo = await page.evaluate(() => ({
