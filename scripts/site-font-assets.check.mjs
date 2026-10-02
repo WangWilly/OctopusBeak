@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function siteTextFiles(path) {
@@ -17,6 +17,7 @@ const siteSources = siteTextFiles(resolve("site")).map((path) => ({
   content: readFileSync(path, "utf8"),
 }));
 const index = siteSources.find(({ path }) => path.endsWith("index.html"))?.content ?? "";
+assert.ok(index, "site/index.html is missing");
 for (const { path, content } of siteSources) {
   assert.doesNotMatch(
     content,
@@ -36,13 +37,11 @@ for (const { path, content } of siteSources) {
     );
   }
 }
-assert.match(index, /assets\/fonts\/fonts\.css/);
-
-for (const path of [
-  "site/assets/fonts/fonts.css",
-  "site/assets/fonts/noto-sans-tc.woff2",
-  "site/assets/fonts/noto-serif-tc.woff2",
-  "site/assets/fonts/OFL.txt",
-]) {
-  assert.equal(existsSync(resolve(path)), true, `${path} must be self-hosted`);
+// The page renders with the platform UI font, like the desktop app, so it ships and fetches no font files.
+for (const { path, content } of siteSources) {
+  assert.doesNotMatch(content, /@font-face/, `${path} must not declare web fonts`);
 }
+const remoteFetches = [...index.matchAll(/<link\b[^>]*>/gi)]
+  .map(([tag]) => tag)
+  .filter((tag) => /\brel=["'](?:stylesheet|preload|preconnect|dns-prefetch)["']/i.test(tag) && /\bhref=["']https?:\/\//i.test(tag));
+assert.deepEqual(remoteFetches, [], "index.html must not fetch remote stylesheets or fonts");
