@@ -9,6 +9,11 @@ import {
   isYuantaCreditCardHumanAttestedAccountKey,
   isYuantaCreditCardHumanAttestedV2Active,
 } from "./yuanta-credit-card-human-attestation-contract.ts";
+import {
+  assignOccurrenceSlots,
+  findOccurrenceGroupCaptureAmbiguity,
+  type CanonicalOccurrenceGroup,
+} from "./occurrence-groups.ts";
 
 export type YuantaCreditCardExactAmount = {
   coefficient: string;
@@ -52,6 +57,8 @@ export type YuantaCreditCardTransactionInput = {
   foreignAmount?: string | YuantaCreditCardExactAmount | null;
   description: string;
   billingStatus: "billed" | "unbilled";
+  /** Source query grid that returned this row; provenance only, not identity. */
+  occurrenceGroupBucketKey?: string;
   statementKey?: string;
   sourceKey?: string;
 };
@@ -139,6 +146,7 @@ export type YuantaCreditCardAdmittedTransaction = Omit<
   YuantaCreditCardTransactionInput,
   "bookedAmount" | "foreignAmount" | "sourceKey" | "postingStatus" | "consumeDate"
 > & {
+  occurrenceGroup?: CanonicalOccurrenceGroup;
   sourceKey: `sha256:${string}`;
   bookedAmount: YuantaCreditCardExactAmount;
   foreignAmount: YuantaCreditCardExactAmount | null;
@@ -337,7 +345,7 @@ export function buildYuantaCreditCardAccountIdentityKey(
 
 export function buildYuantaCreditCardTransactionSourceKey(
   identity: YuantaCreditCardIdentityInput,
-  record: YuantaCreditCardTransactionInput,
+  record: Omit<YuantaCreditCardTransactionInput, "sourceRecordKey">,
 ): `sha256:${string}` {
   const accountKey = buildYuantaCreditCardAccountIdentityKey(identity);
   const amount = exactAmount(record.bookedAmount, "Booked amount");
@@ -524,6 +532,22 @@ function validateCompleteness(
     completeness.unbilledRowCount !== unbilledCount
   )
     fail("Yuanta credit-card completeness counts drifted from records.");
+  for (const transaction of transactions) {
+    const bucketKey = text(
+      transaction.occurrenceGroupBucketKey,
+      "Yuanta transaction query bucket key",
+    );
+    if (
+      (transaction.billingStatus === "unbilled" &&
+        bucketKey !== "unbilled") ||
+      (transaction.billingStatus === "billed" &&
+        (!bucketKey.startsWith("statement:") ||
+          !completeness.billedPeriods.includes(
+            bucketKey.slice("statement:".length),
+          )))
+    )
+      fail("Yuanta transaction query bucket is outside the complete grid inventory.");
+  }
   for (const [index, period] of completeness.billedPeriods.entries()) {
     const grid = completeness.grids[index];
     if (
@@ -598,6 +622,15 @@ function validateTransaction(
     fail("Billed Yuanta transaction statement keys must be non-empty when supplied.");
   if (record.billingStatus === "unbilled" && record.statementKey)
     fail("Unbilled Yuanta transactions cannot belong to a Statement.");
+  const occurrenceGroupBucketKey = text(
+    record.occurrenceGroupBucketKey,
+    "Queried source bucket",
+  );
+  if (
+    (record.billingStatus === "unbilled" && occurrenceGroupBucketKey !== "unbilled") ||
+    (record.billingStatus === "billed" && !occurrenceGroupBucketKey.startsWith("statement:"))
+  )
+    fail("Yuanta transaction query bucket conflicts with its billing status.");
   if (record.signedAmount !== undefined) {
     const sign = signedAmount(record.signedAmount);
     if (
@@ -621,6 +654,7 @@ function validateTransaction(
     fail("Foreign currency and foreign amount must be provided together.");
   const normalizedRecord = {
     ...record,
+    occurrenceGroupBucketKey,
     sourceRecordKey,
     instrumentKey,
     consumeDate,
@@ -638,7 +672,7 @@ function validateTransaction(
     normalizedRecord,
   );
   if (record.sourceKey && record.sourceKey !== sourceKey)
-    fail("Provided transaction source key does not match the contract tuple.");
+    fail(`Provided transaction source key does not match the contract tuple (${record.occurrenceIndex}: ${record.sourceKey} != ${sourceKey}).`);
   return {
     ...normalizedRecord,
     sourceKey,
@@ -829,27 +863,8 @@ export function admitYuantaCreditCardCapture(
   const transactions: YuantaCreditCardAdmittedTransaction[] = [];
   const sourceKeys = new Set<string>();
   const sourceRecords = new Set<string>();
-  const occurrenceOrdinals = new Map<string, number>();
-  const billingStatusByContentIdentity = new Map<string, "billed" | "unbilled">();
   const bySourceRecord = new Map<string, YuantaCreditCardAdmittedTransaction>();
   for (const record of capture.transactions) {
-    const base = buildYuantaCreditCardTransactionSourceKey(identity, {
-      ...record,
-      occurrenceIndex: 0,
-    });
-    const previousBillingStatus = billingStatusByContentIdentity.get(base);
-    if (
-      previousBillingStatus !== undefined &&
-      previousBillingStatus !== record.billingStatus
-    )
-      fail(
-        "Yuanta capture cannot contain the same economic transaction in billed and unbilled grids.",
-      );
-    billingStatusByContentIdentity.set(base, record.billingStatus);
-    const expected = occurrenceOrdinals.get(base) ?? 0;
-    if (record.occurrenceIndex !== expected)
-      fail("Yuanta duplicate occurrence indexes must be contiguous in source order.");
-    occurrenceOrdinals.set(base, expected + 1);
     const normalized = validateTransaction(identity, instruments, record);
     if (sourceRecords.has(normalized.sourceRecordKey))
       fail("Duplicate Yuanta source record key.");
@@ -860,6 +875,19 @@ export function admitYuantaCreditCardCapture(
     bySourceRecord.set(normalized.sourceRecordKey, normalized);
     transactions.push(normalized);
   }
+  const ambiguity = findOccurrenceGroupCaptureAmbiguity({
+    rows: transactions,
+    fingerprint: (transaction) => buildYuantaCreditCardTransactionSourceKey(
+      identity,
+      { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
+    ),
+    billingStatus: (transaction) => transaction.billingStatus,
+    bucketKey: (transaction) => text(transaction.occurrenceGroupBucketKey, "Yuanta transaction query bucket key"),
+  });
+  if (ambiguity.billingStatusConflict)
+    fail("Yuanta billed and unbilled rows contain an ambiguous identical economic transaction.");
+  if (ambiguity.queryBucketConflict)
+    fail("Yuanta query buckets contain an ambiguous identical economic transaction.");
   for (const instrument of instruments.values()) {
     const evidenceKey = text(
       instrument.evidence.sourceRecordKey,
@@ -870,6 +898,31 @@ export function admitYuantaCreditCardCapture(
       fail("Instrument role evidence must reference a transaction for the same card.");
   }
   validateCompleteness(capture.scope.completeness, transactions);
+  const occurrenceScopeKey = opaqueYuantaSpineToken(
+    "yuanta-credit-card-occurrence-scope-v1",
+    buildYuantaCreditCardAccountIdentityKey(identity),
+  );
+  const slots = assignOccurrenceSlots({
+    rows: transactions,
+    complete: true,
+    scopeKey: () => occurrenceScopeKey,
+    fingerprint: (transaction) => buildYuantaCreditCardTransactionSourceKey(
+      identity,
+      { ...transaction, statementKey: undefined, occurrenceIndex: 0 },
+    ),
+    partitionDate: (transaction) => transaction.consumeDate ?? transaction.postingDate,
+    key: (transaction, ordinal) => buildYuantaCreditCardTransactionSourceKey(
+      identity,
+      { ...transaction, occurrenceIndex: ordinal - 1 },
+    ),
+  });
+  slots.forEach(({ row, group, occurrenceKey }, index) => {
+    if (row.sourceKey !== occurrenceKey)
+      fail("Yuanta occurrence indexes must match complete economic-group slots.");
+    const grouped = { ...row, occurrenceGroup: group };
+    transactions[index] = grouped;
+    bySourceRecord.set(grouped.sourceRecordKey, grouped);
+  });
   if (!Array.isArray(capture.statements))
     fail("Yuanta credit-card statements are required.");
   const statements: YuantaCreditCardAdmittedStatement[] = [];
@@ -1064,6 +1117,10 @@ export function yuantaCanonicalSpineCapture(
     capture.instruments.map((instrument) => [instrument.instrumentKey, instrument]),
   );
   const records = capture.transactions.map((transaction, sourceOrderOrdinal) => {
+    if (!transaction.occurrenceGroup)
+      throw new YuantaCreditCardAdmissionError(
+        "Yuanta transaction is missing its admitted occurrence group.",
+      );
     const instrument = instrumentsByKey.get(transaction.instrumentKey);
     if (!instrument)
       throw new YuantaCreditCardAdmissionError(
@@ -1093,6 +1150,8 @@ export function yuantaCanonicalSpineCapture(
     });
     return {
       occurrenceKey: transaction.sourceKey,
+      occurrenceGroup: transaction.occurrenceGroup,
+      occurrenceGroupBucketKey: transaction.occurrenceGroupBucketKey,
       collisionKey: transaction.sourceKey,
       providerKey: "human-attested:no-provider-key",
       humanAttestedOccurrenceKey: transaction.sourceKey,
@@ -1231,6 +1290,19 @@ export function yuantaCanonicalSpineCapture(
       metadataJson: JSON.stringify(grid),
     })),
     records,
+    occurrenceGroupCoverage: [{
+      scopeKey: opaqueYuantaSpineToken(
+        "yuanta-credit-card-occurrence-scope-v1",
+        capture.identity.accountNaturalKey,
+      ),
+      startDate: capture.scope.startDate,
+      endDate: capture.scope.endDate,
+      contractVersion: capture.contractVersion,
+      bucketKeys: [
+        ...capture.scope.completeness.billedPeriods.map((period) => `statement:${period}`),
+        "unbilled",
+      ],
+    }],
     nonTransactionRecords,
   });
 }
@@ -1475,6 +1547,9 @@ export function buildYuantaCanonicalCreditCardCapture(
   const descriptors = allRows.map((row, inputIndex) => {
     const instrumentKey = instrumentKeyForRow(row);
     const base = canonicalRowBase(row, instrumentKey);
+    const occurrenceGroupBucketKey = row.period
+      ? `statement:${row.period}`
+      : "unbilled";
     const matchingSummaries = row.period && base.billingStatus === "billed"
       ? [...summaries.values()].filter((summary) =>
           postingDateInCycle(base.postingDate, summary),
@@ -1521,24 +1596,38 @@ export function buildYuantaCanonicalCreditCardCapture(
       instrumentKey,
       base: normalizedBase,
       baseIdentity,
+      occurrenceGroupBucketKey,
     };
   });
   const ordered = descriptors.slice().sort((left, right) =>
     left.baseIdentity.localeCompare(right.baseIdentity) || left.inputIndex - right.inputIndex,
   );
-  const occurrences = new Map<string, number>();
-  const transactions = ordered.map((descriptor) => {
-    const occurrenceIndex = occurrences.get(descriptor.baseIdentity) ?? 0;
-    occurrences.set(descriptor.baseIdentity, occurrenceIndex + 1);
-    return {
-      sourceRecordKey: digest("yuanta-credit-card-source-record-v2", [
-        descriptor.baseIdentity,
-        occurrenceIndex,
-      ]),
-      occurrenceIndex,
-      ...descriptor.base,
-    } satisfies YuantaCreditCardTransactionInput;
+  const occurrenceScopeKey = digest("yuanta-credit-card-occurrence-scope-v1", [
+    buildYuantaCreditCardAccountIdentityKey(options.identity),
+  ]);
+  const assigned = assignOccurrenceSlots({
+    rows: ordered,
+    complete: true,
+    scopeKey: () => occurrenceScopeKey,
+    fingerprint: (descriptor) => digest("yuanta-credit-card-economic-row-v1", [
+      descriptor.baseIdentity,
+    ]),
+    partitionDate: (descriptor) => descriptor.base.consumeDate ?? descriptor.base.postingDate,
+    key: (descriptor, ordinal) => buildYuantaCreditCardTransactionSourceKey(
+      options.identity,
+      { ...descriptor.base, occurrenceIndex: ordinal - 1 },
+    ),
   });
+  const transactions = assigned.map(({ row: descriptor, group, occurrenceKey }) => ({
+    sourceRecordKey: digest("yuanta-credit-card-source-record-v2", [
+      descriptor.baseIdentity,
+      group.ordinal - 1,
+    ]),
+    occurrenceIndex: group.ordinal - 1,
+    ...descriptor.base,
+    occurrenceGroupBucketKey: descriptor.occurrenceGroupBucketKey,
+    sourceKey: occurrenceKey,
+  } satisfies YuantaCreditCardTransactionInput));
   const firstTransactionByInstrument = new Map<string, YuantaCreditCardTransactionInput>();
   for (const transaction of transactions)
     if (!firstTransactionByInstrument.has(transaction.instrumentKey))

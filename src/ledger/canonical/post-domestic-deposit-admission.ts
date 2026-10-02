@@ -6,6 +6,7 @@ import {
 } from "./advertised-domestic-deposit-preflight.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -612,7 +613,6 @@ export function admitPostDomesticDepositFinancialCapture(
     "post-source-connection-v1",
     "personal-session-visible-account-scope",
   );
-  const seen = new Map<string, string>();
   const records: CanonicalFinancialDepositRecord[] = [];
   const rangeStart = input.capture.queryRange.startDate.replaceAll("/", "-");
   const rangeEnd = input.capture.queryRange.endDate.replaceAll("/", "-");
@@ -626,14 +626,6 @@ export function admitPostDomesticDepositFinancialCapture(
     const result = postFinancialRecord(subjectDigest, row);
     diagnostics.push(...result.diagnostics);
     if (!result.record) continue;
-    const previous = seen.get(result.record.collisionKey);
-    if (previous !== undefined) {
-      diagnostics.push("occurrence-ambiguous");
-      if (previous !== result.record.occurrenceKey)
-        diagnostics.push("composite-occurrence-collision");
-      continue;
-    }
-    seen.set(result.record.collisionKey, result.record.occurrenceKey);
     records.push(result.record);
   }
   const uniqueDiagnostics = [...new Set(diagnostics)];
@@ -650,6 +642,25 @@ export function admitPostDomesticDepositFinancialCapture(
     rangeStart,
     rangeEnd,
   );
+  const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+    rows: records.map((record) => ({
+      record,
+      partitionDate: record.sourceTime.localDate,
+    })),
+    scopeKey: postDigest(
+      "post-domestic-deposit-occurrence-scope-v1",
+      subjectDigest,
+      POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+      POST_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    ),
+    startDate: rangeStart,
+    endDate: rangeEnd,
+    contractVersion: POST_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    complete:
+      input.capture.response.httpStatus === 200 &&
+      input.capture.response.terminal === true &&
+      input.capture.response.itemShape !== "absent",
+  });
   const capture = admitCanonicalFinancialDepositCapture({
     captureId: input.captureId.trim(),
     authorityRoute: POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -724,7 +735,8 @@ export function admitPostDomesticDepositFinancialCapture(
         }),
       },
     ],
-    records,
+    records: occurrenceGroups.records,
+    occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { status: "admitted", capture, diagnostics: [] };
 }

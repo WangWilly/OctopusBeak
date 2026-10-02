@@ -6,10 +6,12 @@ import type {
 import {
   parseMaicoinTickerQuote,
   parseMaicoinProviderDate,
+  readMaicoinStatementNativeIdentity,
   resolveMaicoinTwdQuote,
   type MaicoinAccountRecord,
   type MaicoinPublicMarket,
   type MaicoinStatementBatch,
+  type MaicoinStatementRowType,
   type MaicoinTwdQuote,
   type MaicoinWalletAccountBatch,
 } from "./canonical/maicoin-crypto-adapters.ts";
@@ -19,6 +21,7 @@ export const MAICOIN_STATEMENT_LIMIT = 1000;
 const FETCH_TIMEOUT_MS = 30_000;
 const FETCH_RETRY_DELAYS_MS = [500, 1_000, 2_000];
 export const MAICOIN_WALLET_TYPES = ["spot", "m"] as const;
+const MAICOIN_HISTORY_START_TIMESTAMP = 1_512_950_400_000;
 
 export type WalletType = typeof MAICOIN_WALLET_TYPES[number];
 type QueryParams = Record<string, string | number | boolean | readonly string[] | undefined>;
@@ -86,7 +89,7 @@ type PriceQuote = {
 
 type StatementBatch = MaicoinStatementBatch;
 
-type StatementSpec = Omit<StatementBatch, "rows">;
+type StatementSpec = Omit<StatementBatch, "rows" | "history">;
 type StatementValueMap = Map<string, number | null>;
 type KLine = [number, number | string, number | string, number | string, number | string, number | string];
 
@@ -314,6 +317,42 @@ function createdAtMillis(row: Record<string, unknown>) {
   return timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
 }
 
+function requiredCreatedAtMillis(row: Record<string, unknown>, endpoint: string): number {
+  const value = numeric(row.created_at);
+  const milliseconds = value === null
+    ? Number.NaN
+    : value < 10_000_000_000 ? value * 1000 : value;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < MAICOIN_HISTORY_START_TIMESTAMP)
+    throw new Error(`MAX statement response for ${endpoint} contains an invalid created_at timestamp.`);
+  return milliseconds;
+}
+
+function taipeiCalendarDate(timestamp: number): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
+}
+
+function stableStatementValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableStatementValue);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, stableStatementValue(child)]),
+    );
+  return value;
+}
+
+function stableStatementJson(value: unknown): string {
+  return JSON.stringify(stableStatementValue(value));
+}
+
 function hashId(...parts: unknown[]) {
   const hash = createHash("sha256");
   for (const part of parts) {
@@ -323,12 +362,23 @@ function hashId(...parts: unknown[]) {
   return hash.digest("hex");
 }
 
-function statementExternalId(row: Record<string, unknown>) {
-  return String(row.id ?? row.sn ?? row.uuid ?? hashId(row));
+function statementExternalId(
+  rowType: MaicoinStatementRowType,
+  row: Record<string, unknown>,
+): string {
+  const identity = readMaicoinStatementNativeIdentity(rowType, row);
+  if (identity.kind === "present") return identity.externalId;
+  throw new Error(`MAX ${rowType} history row is missing its contract-required ${identity.field} provider ID.`);
 }
 
-function statementIdFor(batch: StatementSpec, row: Record<string, unknown>) {
-  return hashId(batch.endpoint, batch.walletType ?? "", batch.rowType, statementExternalId(row));
+function statementIdFor(batch: StatementBatch, row: Record<string, unknown>) {
+  const externalId = statementExternalId(batch.rowType, row);
+  return hashId(
+    batch.endpoint,
+    batch.walletType ?? "",
+    batch.rowType,
+    externalId,
+  );
 }
 
 function totalQuantity(account: Account) {
@@ -746,34 +796,179 @@ async function fetchStatement(
 
   const batches: StatementBatch[] = [];
   for (const spec of specs) {
-    const rows = await fetchFullStatementRows(client, spec.endpoint, limit);
-    batches.push({ ...spec, rows });
+    const history = await fetchFullStatementRows(client, spec.endpoint, limit, spec.rowType);
+    batches.push({ ...spec, ...history });
   }
   return batches;
 }
 
-async function fetchFullStatementRows(client: MaxClient, endpoint: string, limit: number) {
+type CompleteStatementHistory = Readonly<{
+  rows: Record<string, unknown>[];
+  history: Readonly<{ startDate: string; endDate: string; complete: true }>;
+}>;
+
+function requiredTradeId(row: Record<string, unknown>, endpoint: string): number {
+  const value = row.id;
+  const lexeme = typeof value === "number" && Number.isSafeInteger(value)
+    ? String(value)
+    : typeof value === "string" && /^\d+$/u.test(value)
+      ? value
+      : "";
+  if (!lexeme) throw new Error(`MAX trade response for ${endpoint} contains a missing or unsafe int64 trade ID.`);
+  const parsed = BigInt(lexeme);
+  if (parsed < 1n || parsed > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error(`MAX trade response for ${endpoint} contains a trade ID outside the safe cursor range.`);
+  return Number(parsed);
+}
+
+function requireHistoryPage(
+  value: unknown,
+  endpoint: string,
+): Record<string, unknown>[] {
+  if (!Array.isArray(value))
+    throw new Error(`MAX statement response for ${endpoint} is not an array.`);
+  if (value.some((row) => typeof row !== "object" || row === null || Array.isArray(row)))
+    throw new Error(`MAX statement response for ${endpoint} contains an invalid row.`);
+  return value as Record<string, unknown>[];
+}
+
+function completeHistoryEvidence(
+  providerDate: ReturnType<typeof parseMaicoinProviderDate>,
+): CompleteStatementHistory["history"] {
+  const startDate = taipeiCalendarDate(MAICOIN_HISTORY_START_TIMESTAMP);
+  const endDate = taipeiCalendarDate(Date.parse(providerDate.effectiveAt));
+  if (endDate < startDate)
+    throw new Error("MAX statement history provider date precedes its documented history lower bound.");
+  return { startDate, endDate, complete: true };
+}
+
+function completeHistoryPageEvidence(
+  providerDate: ReturnType<typeof parseMaicoinProviderDate>,
+  previous: CompleteStatementHistory["history"] | undefined,
+  endpoint: string,
+): CompleteStatementHistory["history"] {
+  const current = completeHistoryEvidence(providerDate);
+  if (previous && current.endDate !== previous.endDate)
+    throw new Error(`MAX statement history for ${endpoint} crossed a provider calendar date while pages were collected.`);
+  return current;
+}
+
+export async function fetchFullStatementRows(
+  client: MaxClient,
+  endpoint: string,
+  limit: number,
+  rowType: MaicoinStatementRowType,
+): Promise<CompleteStatementHistory> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+    throw new Error("MAX statement limit must be between 1 and 1000.");
+  return rowType === "trade"
+    ? fetchFullTradeHistory(client, endpoint, limit)
+    : fetchFullTimestampHistory(client, endpoint, limit, rowType);
+}
+
+async function fetchFullTradeHistory(
+  client: MaxClient,
+  endpoint: string,
+  limit: number,
+): Promise<CompleteStatementHistory> {
   const rows: Record<string, unknown>[] = [];
-  let timestamp = 1512950400000;
+  const seen = new Map<number, string>();
+  // Begin at the first positive native ID, retaining ID 1 in ascending history.
+  let fromId = 1;
+  let terminalHistory: CompleteStatementHistory["history"] | undefined;
   while (true) {
-    const page = await client.privateGet<Record<string, unknown>[]>(endpoint, {
+    const response = await client.privateGetWithMetadata<unknown>(endpoint, {
+      order: "asc",
+      limit,
+      from_id: fromId,
+    });
+    terminalHistory = completeHistoryPageEvidence(
+      parseMaicoinProviderDate(response.providerDate),
+      terminalHistory,
+      endpoint,
+    );
+    const page = requireHistoryPage(response.data, endpoint);
+    if (page.length === 0) break;
+
+    const previousCursor = fromId;
+    let pageLastId = previousCursor;
+    let previousPageId = previousCursor;
+    for (const row of page) {
+      const id = requiredTradeId(row, endpoint);
+      if (id < previousCursor || id < previousPageId)
+        throw new Error(`MAX trade pagination for ${endpoint} returned IDs out of ascending order.`);
+      previousPageId = id;
+      pageLastId = Math.max(pageLastId, id);
+      const payload = stableStatementJson(row);
+      const previousPayload = seen.get(id);
+      if (previousPayload !== undefined) {
+        if (previousPayload !== payload)
+          throw new Error(`MAX trade history for ${endpoint} contains conflicting payloads for one provider ID.`);
+        continue;
+      }
+      seen.set(id, payload);
+      rows.push(row);
+    }
+    if (page.length < limit) break;
+    if (pageLastId <= previousCursor)
+      throw new Error(`MAX trade pagination for ${endpoint} did not advance beyond its reliable ID boundary.`);
+    fromId = pageLastId;
+  }
+  if (!terminalHistory) throw new Error(`MAX trade history for ${endpoint} has no terminal response.`);
+  return { rows, history: terminalHistory };
+}
+
+async function fetchFullTimestampHistory(
+  client: MaxClient,
+  endpoint: string,
+  limit: number,
+  rowType: MaicoinStatementRowType,
+): Promise<CompleteStatementHistory> {
+  const rows: Record<string, unknown>[] = [];
+  const seen = new Map<string, string>();
+  let timestamp = MAICOIN_HISTORY_START_TIMESTAMP;
+  let terminalHistory: CompleteStatementHistory["history"] | undefined;
+  while (true) {
+    const response = await client.privateGetWithMetadata<unknown>(endpoint, {
       order: "asc",
       limit,
       timestamp,
     });
-    if (!Array.isArray(page)) throw new Error(`MAX statement response for ${endpoint} is not an array.`);
-    if (page.some((row) => typeof row !== "object" || row === null || Array.isArray(row)))
-      throw new Error(`MAX statement response for ${endpoint} contains an invalid row.`);
+    terminalHistory = completeHistoryPageEvidence(
+      parseMaicoinProviderDate(response.providerDate),
+      terminalHistory,
+      endpoint,
+    );
+    const page = requireHistoryPage(response.data, endpoint);
     if (page.length === 0) break;
 
-    rows.push(...page);
-    const nextTimestamp = Math.max(...page.map((row) => createdAtMillis(row))) + 1;
+    let previousPageTimestamp = timestamp;
+    let pageLastTimestamp = timestamp;
+    for (const row of page) {
+      const createdAt = requiredCreatedAtMillis(row, endpoint);
+      if (createdAt < timestamp || createdAt < previousPageTimestamp)
+        throw new Error(`MAX statement pagination for ${endpoint} returned timestamps outside ascending history order.`);
+      previousPageTimestamp = createdAt;
+      pageLastTimestamp = Math.max(pageLastTimestamp, createdAt);
+
+      const identity = statementExternalId(rowType, row);
+      const payload = stableStatementJson(row);
+      const previousPayload = seen.get(identity);
+      if (previousPayload !== undefined) {
+        if (previousPayload !== payload)
+          throw new Error(`MAX statement history for ${endpoint} contains conflicting payloads for one provider ID.`);
+        continue;
+      }
+      seen.set(identity, payload);
+      rows.push(row);
+    }
     if (page.length < limit) break;
-    if (nextTimestamp <= timestamp)
-      throw new Error(`MAX statement pagination for ${endpoint} did not advance.`);
-    timestamp = nextTimestamp;
+    if (pageLastTimestamp <= timestamp)
+      throw new Error(`MAX statement pagination for ${endpoint} reached a saturated same-timestamp boundary.`);
+    timestamp = pageLastTimestamp;
   }
-  return rows;
+  if (!terminalHistory) throw new Error(`MAX statement history for ${endpoint} has no terminal response.`);
+  return { rows, history: terminalHistory };
 }
 
 function buildSnapshots(
@@ -830,13 +1025,14 @@ export function pgliteStatementRows(
   statementValues: ReadonlyMap<string, number | null>,
 ): PGliteMaicoinStatementRow[] {
   return statement.flatMap((batch) => batch.rows.map((row) => {
+    const externalId = statementExternalId(batch.rowType, row);
     const statementId = statementIdFor(batch, row);
     return {
       statementId, syncRunId, capturedAt,
       endpoint: batch.endpoint,
       walletType: batch.walletType,
       rowType: batch.rowType,
-      externalId: statementExternalId(row),
+      externalId,
       occurredAt: isoFromTimestamp(row.created_at),
       currency: stringValue(row.currency),
       amount: numeric(row.amount ?? row.volume ?? row.funds),

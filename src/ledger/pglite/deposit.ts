@@ -18,6 +18,7 @@ import type {
   CanonicalFinancialDepositRecord,
   CanonicalFinancialNonTransactionRecord,
 } from "../canonical/canonical-financial-deposit-admission.ts";
+import { isNonTransactionRecord } from "../canonical/canonical-financial-deposit-admission.ts";
 import {
   requireCanonicalSourceToken,
   validateCanonicalSourceAccountNumber,
@@ -520,6 +521,9 @@ function asSourceRecord(
     compactJson: record.compactJson,
     sequenceLexeme: record.sequenceLexeme,
     description: record.description ?? null,
+    ...(!isNonTransactionRecord(record) && record.occurrenceGroup
+      ? { occurrenceGroup: record.occurrenceGroup }
+      : {}),
   };
 }
 
@@ -555,6 +559,7 @@ export function financialSourceEvidenceFromCapture(
     recordKind: capture.identity.recordKind,
     routeKey: capture.authorityRoute,
     contractVersion: capture.contractVersion,
+    occurrenceGroupCoverage: capture.occurrenceGroupCoverage,
     subjectDigest: capture.identity.subjectDigest,
     observedAt: capture.observedAt,
     accountNumber: providerAccountNumber(capture),

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
+import {
+  assignOccurrenceSlots,
+  canonicalOccurrenceGroupKey,
+} from "./occurrence-groups.ts";
 import type {
   CanonicalLoanCaptureBuildInput,
   CanonicalLoanIdentityInput,
@@ -10,32 +14,11 @@ import type {
 } from "./loan-financial-contracts.ts";
 
 export const LOAN_CANONICAL_CONTRACT_VERSION = "loan/canonical/v1" as const;
-/**
- * Fubon v1 is retained as historical evidence only. The balance evidence
- * correction changed the compact source payload, so the current contract must
- * use a new route and identity namespace instead of attempting an immutable
- * occurrence overwrite.
- */
-export const FUBON_LOAN_LEGACY_CONTRACT_VERSION =
-  "loan/canonical/v1.fubon" as const;
 export const FUBON_LOAN_CONTRACT_VERSION = "loan/canonical/v2.fubon" as const;
 export const YUANTA_LOAN_CONTRACT_VERSION =
   `${LOAN_CANONICAL_CONTRACT_VERSION}.yuanta` as const;
-/**
- * Yuanta's loan statement has no provider transaction identifier in the
- * retained result-row contract. This versioned rule therefore identifies a
- * source occurrence from normalized account/date/source-event/payment-item
- * fields, never its rendered row position or mutable amount/balance. The v1
- * rule remains addressable through the old source record tokens already
- * committed to canonical storage.
- */
 export const YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION =
-  "yuanta/loan-source-occurrence/v2" as const;
-export const YUANTA_LOAN_LEGACY_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION =
-  "yuanta/loan-source-occurrence/v1" as const;
-
-export const FUBON_LOAN_LEGACY_AUTHORITY_ROUTE =
-  "fubon/loan/canonical-v1" as const;
+  "yuanta/loan-source-occurrence/group-v1" as const;
 export const FUBON_LOAN_AUTHORITY_ROUTE = "fubon/loan/canonical-v2" as const;
 export const YUANTA_LOAN_AUTHORITY_ROUTE = "yuanta/loan/canonical-v1" as const;
 export const FUBON_LOAN_COUNTERPART_AUTHORITY_ROUTE =
@@ -119,6 +102,13 @@ function token(...parts: string[]): `sha256:${string}` {
 /** Build an opaque, deterministic identity or source-record token. */
 export function canonicalLoanToken(...parts: string[]): `sha256:${string}` {
   return token(...parts);
+}
+
+export function canonicalLoanOccurrenceScopeKey(
+  sourceId: LoanSourceId,
+  accountKey: string,
+): `sha256:${string}` {
+  return token("loan-occurrence-group-scope-v1", sourceId, accountKey);
 }
 
 /**
@@ -290,13 +280,10 @@ export function createCanonicalLoanCapture(
   const contractVersion = expectedContract(input.sourceId);
   const records = input.rows.map((row) => ({
     sourceRecordKey: row.sourceRecordKey,
-    ...(row.sourceOccurrenceIdentityRuleVersion === undefined
-      ? {}
-      : {
-          sourceOccurrenceIdentityRuleVersion:
-            row.sourceOccurrenceIdentityRuleVersion,
-        }),
     occurrenceIndex: row.occurrenceIndex,
+    sourceSequenceIndex: row.sourceSequenceIndex,
+    occurrenceGroup: row.occurrenceGroup,
+    occurrenceCollisionKey: row.occurrenceCollisionKey,
     effectiveOn: row.effectiveOn,
     sourceTime: row.sourceTime,
     postingStatus: "posted" as const,
@@ -383,6 +370,12 @@ export function createCanonicalLoanCapture(
       timeZone: "Asia/Taipei",
     },
     pages: input.pages,
+    occurrenceGroupCoverage: [{
+      scopeKey: canonicalLoanOccurrenceScopeKey(input.sourceId, input.identity.accountKey),
+      startDate: input.startDate,
+      endDate: input.endDate,
+      contractVersion,
+    }],
     records,
     counterpartTransactions: input.counterpartTransactions,
     balanceObservations,

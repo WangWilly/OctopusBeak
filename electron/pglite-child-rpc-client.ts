@@ -20,6 +20,7 @@ import {
   type PGliteWorkflowRequestOptions,
   type PGliteWorkflowTransport,
 } from "../src/ledger/pglite/workflow-client.ts";
+import type { WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 export const PGLITE_CHILD_RPC_ENDPOINT_ENV =
   "OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT" as const;
@@ -201,6 +202,7 @@ export type PGliteChildRpcClientOptions = {
   endpoint?: string;
   token?: string;
   environment?: NodeJS.ProcessEnv;
+  diagnosticContext?: WorkflowFailureCorrelation;
 };
 
 function financialOperationForWorkflow(command: PGliteWorkflowCommand): PGliteFinancialOperation {
@@ -254,8 +256,8 @@ export function createPGliteChildRpcClient(
     else rejectReady(safeTransportError(value.code === "invalid-authentication" ? "invalid-authentication" : "connection-failed"));
   };
   port.on("message", authResponse);
-  const operational = createPGliteOperationalRpcClient(port, ready);
-  const financial = createPGliteFinancialRpcClient(port, ready);
+  const operational = createPGliteOperationalRpcClient(port, ready, options.diagnosticContext);
+  const financial = createPGliteFinancialRpcClient(port, ready, options.diagnosticContext);
   const workflowTransport: PGliteWorkflowTransport = {
     execute: <Command extends PGliteWorkflowCommand>(
       command: Command,
@@ -322,6 +324,7 @@ export function createPGliteChildRpcClient(
 /** Fail explicitly when an enabled workflow was launched without its owner. */
 export function requirePGliteChildRpcClientFromEnv(
   environment: NodeJS.ProcessEnv = process.env,
+  diagnosticContext?: WorkflowFailureCorrelation,
 ): PGliteChildRpcClient {
-  return createPGliteChildRpcClient({ environment });
+  return createPGliteChildRpcClient({ environment, diagnosticContext });
 }

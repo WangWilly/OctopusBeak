@@ -1,5 +1,9 @@
 import { PGlite } from "@electric-sql/pglite";
 import { PGLITE_BASELINE_SQL } from "./baseline-sql.ts";
+import {
+  PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS,
+  PGLITE_OCCURRENCE_GROUP_SQL,
+} from "./occurrence-group-sql.ts";
 import { PGLITE_SPENDING_PAIRING_PROJECTION_OBJECTS } from "./pairing-projection-sql.ts";
 import {
   PGLITE_ATTESTATION_TABLES,
@@ -8,7 +12,7 @@ import {
 import type { PGliteStore } from "./transaction.ts";
 
 /** The first PGlite schema is a consolidated, fresh-start baseline. */
-export const PGLITE_BASELINE_VERSION = 1;
+export const PGLITE_BASELINE_VERSION = 2;
 export const CANONICAL_SQLITE_SCHEMA_VERSION = 28;
 
 /**
@@ -20,11 +24,11 @@ export const CANONICAL_SQLITE_SCHEMA_SIGNATURE =
   "faa2f18e00dc585cf6ce078d05141ef9d700de650f40f9bace1e17fffbd827ce";
 
 const EXPECTED_OBJECT_COUNTS = Object.freeze({
-  table: 121,
-  index: 98,
-  trigger: 96,
+  table: 121 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.table,
+  index: 98 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.index,
+  trigger: 96 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.trigger,
   view: 9,
-  foreignKey: 439,
+  foreignKey: 439 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.foreignKey,
 });
 
 export type PGliteBaselineManifest = {
@@ -61,6 +65,25 @@ export async function applyPgliteBaseline(database: PGlite): Promise<void> {
   }
   await database.transaction(async (transaction) => {
     await transaction.exec(PGLITE_BASELINE_SQL);
+    await transaction.exec(PGLITE_OCCURRENCE_GROUP_SQL);
+    await transaction.query(
+      `UPDATE pglite_baseline_metadata
+          SET baseline_version = $1,
+              table_count = $2,
+              index_count = $3,
+              trigger_count = $4,
+              view_count = $5,
+              foreign_key_count = $6
+        WHERE singleton_id = 1`,
+      [
+        PGLITE_BASELINE_VERSION,
+        EXPECTED_OBJECT_COUNTS.table,
+        EXPECTED_OBJECT_COUNTS.index,
+        EXPECTED_OBJECT_COUNTS.trigger,
+        EXPECTED_OBJECT_COUNTS.view,
+        EXPECTED_OBJECT_COUNTS.foreignKey,
+      ],
+    );
   });
   await assertPgliteBaseline(database);
 }

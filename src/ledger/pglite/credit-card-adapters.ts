@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CanonicalFinancialDepositCapture } from "../canonical/canonical-financial-deposit-admission.ts";
 import type { CanonicalCreditCardPersistenceCapture } from "../canonical/canonical-credit-card-contracts.ts";
 import type { FubonCreditCardValidatedCapture } from "../canonical/fubon-credit-card-admission.ts";
+import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 import {
   sourceEvidenceFromCreditCardCurrentBalanceCapture,
   type CreditCardCurrentBalanceValidatedCapture,
@@ -25,7 +26,21 @@ export function creditCardCommandRequestFromCanonicalCapture(
     throw new Error("Credit-card adapter requires an admitted credit-card spine.");
   if (spine.captureId !== extension.captureId)
     throw new Error("Credit-card source and extension captures differ.");
-  const sourceEvidence = financialSourceEvidenceFromCapture(spine);
+  const projectedSourceEvidence = financialSourceEvidenceFromCapture(spine);
+  const bucketsByOccurrence = new Map(spine.records.map((record) => [
+    record.occurrenceKey,
+    record.occurrenceGroupBucketKey,
+  ]));
+  const sourceEvidence = {
+    ...projectedSourceEvidence,
+    records: projectedSourceEvidence.records.map((record) => {
+      if (!record.occurrenceGroup) return record;
+      const bucketKey = bucketsByOccurrence.get(record.occurrenceKey);
+      if (!bucketKey)
+        throw new Error("Grouped credit-card source evidence lacks its query bucket provenance.");
+      return { ...record, occurrenceGroupBucketKey: bucketKey };
+    }),
+  };
   const providerRowCount = sourceEvidence.pages.reduce((sum, page) => sum + page.rowCount, 0);
   const statementEvidenceCount = sourceEvidence.records.length - providerRowCount;
   if (statementEvidenceCount < 0 || statementEvidenceCount !== (spine.nonTransactionRecords?.length ?? 0))
@@ -152,7 +167,10 @@ export function fubonCreditCardCommandRequest(
   spine: CanonicalFinancialDepositCapture,
 ): PGliteCanonicalCreditCardCaptureRequest {
   const sourceKeyByRecord = new Map(capture.transactions.map((transaction) => [
-    transaction.sourceRecordKey, transaction.sourceKey,
+    transaction.sourceRecordKey,
+    transaction.occurrenceGroup
+      ? canonicalOccurrenceGroupKey(transaction.occurrenceGroup)
+      : "",
   ]));
   const sourceKey = (recordKey: string): string => {
     const key = sourceKeyByRecord.get(recordKey);
@@ -174,8 +192,8 @@ export function fubonCreditCardCommandRequest(
       evidence: { sourceRecordKey: sourceKey(instrument.evidence?.sourceRecordKey ?? "") },
     })),
     transactions: capture.transactions.map((transaction) => ({
-      sourceRecordKey: transaction.sourceKey,
-      sourceKey: transaction.sourceKey,
+      sourceRecordKey: sourceKey(transaction.sourceRecordKey),
+      sourceKey: sourceKey(transaction.sourceRecordKey),
       instrumentKey: transaction.instrumentKey,
       billingStatus: transaction.billingStatus,
       consumeDate: transaction.consumeDate,
@@ -211,10 +229,5 @@ export function fubonCreditCardCommandRequest(
   const request = creditCardCommandRequestFromCanonicalCapture(spine, extension);
   return {
     ...request,
-    reconcileLifecycle: "fubon",
-    transactions: request.transactions.map((transaction) => ({
-      ...transaction,
-      sourceSequence: transaction.sourceOccurrenceKey,
-    })),
   };
 }

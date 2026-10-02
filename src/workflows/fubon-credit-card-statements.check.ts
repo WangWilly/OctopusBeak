@@ -911,6 +911,18 @@ assert.equal(allNonDateDueCapture[0]?.transactions.length, 1);
 assert.equal(allNonDateDueCapture[0]?.transactions[0]?.statementKey, undefined);
 const canonicalCaptures = buildFubonCanonicalCreditCardCaptures(canonicalBuildOptions);
 assert.equal(canonicalCaptures.length, 1);
+assert.throws(
+  () => buildFubonCanonicalCreditCardCaptures({
+    ...canonicalBuildOptions,
+    captureId: "capture-identical-billed-unbilled-overlap",
+    unbilledRows: [{ ...canonicalStatementRows[0]!, statement_period: "unbilled" }],
+    gridStates: canonicalGridStates.map((state, index) =>
+      index === 6 ? { ...state, sourceDeclaredRowCount: 1 } : state,
+    ),
+  }),
+  /ambiguous identical economic transaction/u,
+  "identical rows from independently queried billed and unbilled grids remain blocked without a provider boundary ID",
+);
 assert.equal(canonicalCaptures[0]?.instruments.length, 2);
 assert.equal(canonicalCaptures[0]?.statements.length, 5);
 assert.equal(canonicalCaptures[0]?.transactions.length, 3);
@@ -1226,12 +1238,27 @@ const crossPeriodRows = [
     statement_period: "period-2",
     card_number: "1234",
     card_label: "正卡 1234",
+    description: "SYNTHETIC PERIOD TWO",
   },
 ];
 const crossPeriodGridStates = canonicalGridStates.map((state, index) => ({
   ...state,
   sourceDeclaredRowCount: index < 2 ? 1 : 0,
 }));
+assert.throws(
+  () => buildFubonCanonicalCreditCardCaptures({
+    ...canonicalBuildOptions,
+    captureId: "capture-identical-economic-rows-cross-periods",
+    statementRows: [
+      { ...canonicalStatementRows[0]!, statement_period: "period-1", card_number: "1234", card_label: "正卡 1234" },
+      { ...canonicalStatementRows[0]!, statement_period: "period-2", card_number: "1234", card_label: "正卡 1234" },
+    ],
+    unbilledRows: [],
+    gridStates: crossPeriodGridStates,
+  }),
+  /query buckets contain an ambiguous identical economic transaction/u,
+  "identical transactions reported in separate statement queries remain ambiguous without issuer identity evidence",
+);
 const crossPeriodForwardCapture = buildFubonCanonicalCreditCardCaptures({
   ...canonicalBuildOptions,
   captureId: "capture-cross-period-forward",

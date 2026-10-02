@@ -16,6 +16,7 @@ import {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
   PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
 } from "./workflow-commands.ts";
+import { canonicalOccurrenceGroupBucketInventory } from "../canonical/occurrence-groups.ts";
 
 export {
   PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
@@ -91,8 +92,6 @@ export type PGliteCanonicalCreditCardCaptureRequest = Readonly<{
     estimate: PGliteCanonicalCreditCardBalanceEstimate;
   }>;
   requireExistingAccount?: boolean;
-  /** Worker-local lookup reconciles Fubon unbilled-to-billed source identity. */
-  reconcileLifecycle?: "fubon";
 }>;
 
 export type PGliteCanonicalCreditCardBalanceCaptureRequest = Readonly<{
@@ -234,6 +233,10 @@ function validateRequest(request: PGliteCanonicalCreditCardCaptureRequest): void
     requireOccurrence(instrument.evidenceSourceOccurrenceKey, "Credit-card instrument evidence");
   }
   const transactionKeys = new Set<string>();
+  const recordsByOccurrence = new Map(
+    request.capture.records.map((record) => [record.occurrenceKey, record]),
+  );
+  const billingStatusesByEconomicGroup = new Map<string, Set<string>>();
   for (const transaction of request.transactions) {
     requireOccurrence(transaction.sourceOccurrenceKey, "Credit-card transaction source occurrence");
     if (transactionKeys.has(transaction.sourceOccurrenceKey)) fail("invalid-contract", "Credit-card transaction occurrence is duplicated.");
@@ -244,7 +247,16 @@ function validateRequest(request: PGliteCanonicalCreditCardCaptureRequest): void
     if (transaction.postingDate !== undefined && transaction.postingDate !== null) isoDate(transaction.postingDate, "Credit-card posting date");
     if (transaction.effectiveDateBasis !== undefined && transaction.effectiveDateBasis !== "consume-date" && transaction.effectiveDateBasis !== "posting-date-fallback") fail("invalid-contract", "Credit-card effective date basis is unsupported.");
     if (transaction.statementKey !== undefined && transaction.statementKey !== null) valueText(transaction.statementKey, "Credit-card statement key");
+    const group = recordsByOccurrence.get(transaction.sourceOccurrenceKey)?.occurrenceGroup;
+    if (group) {
+      const key = JSON.stringify([group.scopeKey, group.partitionDate, group.fingerprint]);
+      const statuses = billingStatusesByEconomicGroup.get(key) ?? new Set<string>();
+      statuses.add(transaction.billingStatus);
+      billingStatusesByEconomicGroup.set(key, statuses);
+    }
   }
+  if ([...billingStatusesByEconomicGroup.values()].some((statuses) => statuses.size > 1))
+    fail("invalid-contract", "An identical economic transaction cannot appear in billed and unbilled grids in one capture.");
   const statementKeys = new Set<string>();
   for (const statement of request.statements) {
     valueText(statement.statementKey, "Credit-card statement key");
@@ -271,45 +283,37 @@ function validateRequest(request: PGliteCanonicalCreditCardCaptureRequest): void
   if (request.balance) validateBalance(request.balance.observation, request.balance.estimate, occurrenceKeys);
 }
 
-type FubonPriorLifecycle = Readonly<{
-  transaction_id: unknown;
-  source_sequence: string;
-  occurrence_key: string;
-  content_hash: string;
-  payload_json: string;
-  instrument_key: string;
-  billing_status: "billed" | "unbilled";
-  statement_key: string | null;
-  consume_date: string | null;
-  posting_date: string | null;
-  amount_coefficient: string;
-  amount_scale: number | string;
-  currency: string;
-  direction: string;
-  description: string | null;
-  original_amount_coefficient: string | null;
-  original_amount_scale: number | string | null;
-  original_currency: string | null;
-}>;
-
-function fubonCompact(value: string): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-      return parsed as Record<string, unknown>;
-  } catch {
-    // A retained source payload with invalid JSON is an identity conflict.
-  }
-  fail("identity-conflict", "Fubon retained transaction evidence is invalid.");
+function validateBalance(observation: PGliteCanonicalBalanceObservationInput, estimate: PGliteCanonicalCreditCardBalanceEstimate, occurrenceKeys: ReadonlySet<string>): void {
+  if (observation.balanceKind !== "credit_used") fail("invalid-contract", "Credit-card balance must use credit_used.");
+  if (!occurrenceKeys.has(observation.sourceOccurrenceKey)) fail("missing-reference", "Credit-card balance source occurrence is absent.");
+  if (estimate.kind !== "estimate" || !valueText(estimate.formula, "Credit-card estimate formula")) fail("invalid-contract", "Credit-card estimate is invalid.");
+  if (estimate.basis !== "provider-used-credit" && estimate.basis !== "credit-limit-minus-available") fail("invalid-contract", "Credit-card estimate basis is unsupported.");
+  if ((estimate.limit === undefined) !== (estimate.available === undefined)) fail("invalid-contract", "Credit-card estimate components must be paired.");
+  if (estimate.limit) exact(estimate.limit, "Credit-card estimate limit");
+  if (estimate.available) exact(estimate.available, "Credit-card estimate available");
 }
 
-async function reconcileFubonLifecycle(
+type FubonBillingProgressRow = Readonly<{
+  transaction_id: unknown;
+  billing_status: "billed" | "unbilled";
+  group_scope_key: string | null;
+  group_fingerprint: string | null;
+  group_partition_date: string | null;
+  group_ordinal: number | string | null;
+  bucket_inventory_json: string | null;
+}>;
+
+async function assertFubonBillingProgression(
   transaction: PGliteTransaction,
   request: PGliteCanonicalCreditCardCaptureRequest,
-): Promise<PGliteCanonicalCreditCardCaptureRequest> {
-  if (request.reconcileLifecycle !== "fubon") return request;
-  if (request.capture.integrationNamespace !== "fubon")
-    fail("invalid-contract", "Fubon lifecycle reconciliation requires Fubon evidence.");
+): Promise<void> {
+  if (request.capture.integrationNamespace !== "fubon") return;
+  // Current used-credit observations contain no billing-history inventory.
+  // Empty transaction-history captures still require their complete buckets.
+  if (request.capture.routeKey === "fubon/credit-card/current-used-credit-v1"
+    && request.capture.recordKind === "credit-card-current-used-credit"
+    && request.transactions.length === 0) return;
+
   const account = await first<{ account_id: unknown }>(transaction, `
     SELECT account.account_id FROM financial_accounts account
     JOIN source_connections connection_scope
@@ -319,134 +323,115 @@ async function reconcileFubonLifecycle(
       AND connection_scope.source_connection_key = ?
       AND epoch.epoch_key = ? AND account.stream = 'credit-card'
       AND account.source_account_key = ? LIMIT 1`,
-    [request.capture.sourceConnectionKey, request.capture.identityEpoch,
-      request.account.sourceAccountKey]);
-  if (!account?.account_id) return request;
-  const rows = await query<FubonPriorLifecycle>(transaction, `
-    SELECT lifecycle.transaction_id, financial_transaction.source_sequence,
-      source_record.occurrence_key, source_record.content_hash,
-      source_record.payload_json, instrument.instrument_key,
-      lifecycle.billing_status, lifecycle.statement_key,
-      detail.consume_date, detail.posting_date,
-      revision.amount_coefficient, revision.amount_scale, revision.currency,
-      revision.direction, revision.description,
-      conversion.original_amount_coefficient,
-      conversion.original_amount_scale, conversion.original_currency
+  [request.capture.sourceConnectionKey, request.capture.identityEpoch,
+    request.account.sourceAccountKey]);
+  if (!account?.account_id) return;
+
+  const currentInventoryByScope = new Map<string, string>();
+  const coverageEntries = request.capture.occurrenceGroupCoverage;
+  if (!Array.isArray(coverageEntries) || coverageEntries.length === 0)
+    fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
+  for (const coverage of coverageEntries) {
+    if (!Array.isArray(coverage.bucketKeys))
+      fail("invalid-contract", "Fubon credit-card capture requires complete queried-bucket inventory.");
+    currentInventoryByScope.set(
+      coverage.scopeKey,
+      canonicalOccurrenceGroupBucketInventory(coverage.bucketKeys),
+    );
+  }
+
+  const priorRows = await query<FubonBillingProgressRow>(transaction, `
+    SELECT lifecycle.transaction_id, lifecycle.billing_status,
+      source_record.occurrence_group_scope_key AS group_scope_key,
+      source_record.occurrence_group_fingerprint AS group_fingerprint,
+      source_record.occurrence_group_partition_date::text AS group_partition_date,
+      source_record.occurrence_group_ordinal AS group_ordinal,
+      group_coverage.bucket_inventory_json
     FROM canonical_credit_card_transaction_lifecycle lifecycle
-    JOIN financial_transactions financial_transaction
-      ON financial_transaction.transaction_id = lifecycle.transaction_id
-    JOIN canonical_credit_card_transaction_details detail
-      ON detail.revision_id = lifecycle.revision_id
-     AND detail.source_record_id = lifecycle.source_record_id
-    JOIN transaction_revisions revision ON revision.revision_id = lifecycle.revision_id
-    JOIN source_records source_record ON source_record.source_record_id = lifecycle.source_record_id
-    JOIN canonical_credit_card_instruments instrument ON instrument.instrument_id = lifecycle.instrument_id
-    LEFT JOIN transaction_conversion_evidence conversion
-      ON conversion.transaction_id = lifecycle.transaction_id
-     AND conversion.revision_id = lifecycle.revision_id
-    JOIN source_captures source_capture ON source_capture.capture_id = lifecycle.capture_id
-    JOIN canonical_commits commit_row ON commit_row.commit_id = source_capture.commit_id
+    JOIN source_records source_record
+      ON source_record.source_record_id = lifecycle.source_record_id
+    JOIN source_captures source_capture
+      ON source_capture.capture_id = lifecycle.capture_id
+    LEFT JOIN source_occurrence_group_coverages group_coverage
+      ON group_coverage.capture_id = lifecycle.capture_id
+      AND group_coverage.scope_key = source_record.occurrence_group_scope_key
+    JOIN canonical_commits commit_row
+      ON commit_row.commit_id = source_capture.commit_id
     WHERE lifecycle.account_id = ?
     ORDER BY commit_row.commit_sequence DESC, lifecycle.lifecycle_event_id DESC`,
-    [account.account_id]);
-  const latest = new Map<string, FubonPriorLifecycle>();
-  for (const row of rows) {
-    const key = idText(row.transaction_id);
-    if (!latest.has(key)) latest.set(key, row);
-  }
-  const records = new Map(request.capture.records.map((record) => [record.occurrenceKey, record]));
-  const replacements = new Map<string, FubonPriorLifecycle>();
-  const claimed = new Set<string>();
-  for (const incoming of request.transactions) {
-    const source = records.get(incoming.sourceOccurrenceKey);
-    if (!source) fail("missing-reference", "Fubon transaction source evidence is missing.");
-    const occurrenceIndex = source.compact.occurrenceIndex;
-    const foreign = incoming.conversionEvidence;
-    const candidates = [...latest.values()].filter((row) => {
-      const compact = fubonCompact(row.payload_json);
-      return row.instrument_key === incoming.instrumentKey
-        && row.consume_date === (incoming.consumeDate ?? null)
-        && row.posting_date === (incoming.postingDate ?? null)
-        && row.amount_coefficient === incoming.amount.coefficient
-        && Number(row.amount_scale) === incoming.amount.scale
-        && row.currency === incoming.currency
-        && row.direction === incoming.direction
-        && row.description === (incoming.description ?? null)
-        && (row.original_amount_coefficient ?? null) === (foreign?.originalAmount?.coefficient ?? null)
-        && (row.original_amount_scale === null ? null : Number(row.original_amount_scale)) === (foreign?.originalAmount?.scale ?? null)
-        && row.original_currency === (foreign?.originalCurrency ?? null)
-        && compact.occurrenceIndex === occurrenceIndex;
-    });
-    const priorUnbilled = candidates.filter((candidate) => candidate.billing_status === "unbilled"
-      && !candidate.statement_key);
-    const priorBilled = candidates.filter((candidate) => candidate.billing_status === "billed");
-    if (incoming.billingStatus === "unbilled" && priorBilled.length > 0)
-      fail("revision-conflict", "Fubon billing lifecycle cannot regress from billed to unbilled.");
-    if (incoming.billingStatus !== "billed") continue;
-    const incomingScope = source.compact.sourceScopeKey ?? null;
-    const matchingBilled = priorBilled.filter((candidate) => {
-      if (candidate.statement_key !== (incoming.statementKey ?? null)) return false;
-      const scope = fubonCompact(candidate.payload_json).sourceScopeKey ?? null;
-      return scope === incomingScope || (incomingScope !== null && scope === null);
-    });
-    if (priorUnbilled.length > 1 || matchingBilled.length > 1 ||
-      (priorUnbilled.length > 0 && matchingBilled.length > 0))
-      fail("identity-conflict", "Fubon billed transaction matches ambiguous prior occurrences.");
-    const prior = matchingBilled[0] ?? priorUnbilled[0];
-    if (!prior) continue;
-    if (claimed.has(prior.source_sequence))
-      fail("identity-conflict", "Fubon prior transaction was claimed by multiple rows.");
-    claimed.add(prior.source_sequence);
-    replacements.set(incoming.sourceOccurrenceKey, prior);
-  }
-  if (replacements.size === 0) return request;
-  const key = (value: string): string => replacements.get(value)?.occurrence_key ?? value;
-  return {
-    ...request,
-    capture: {
-      ...request.capture,
-      records: request.capture.records.map((record) => {
-        const prior = replacements.get(record.occurrenceKey);
-        return prior ? {
-          ...record,
-          occurrenceKey: prior.occurrence_key,
-          collisionKey: prior.occurrence_key,
-          contentHash: prior.content_hash,
-          compact: fubonCompact(prior.payload_json),
-          compactJson: prior.payload_json,
-        } : record;
-      }),
-    },
-    instruments: request.instruments.map((instrument) => ({
-      ...instrument, evidenceSourceOccurrenceKey: key(instrument.evidenceSourceOccurrenceKey),
-    })),
-    transactions: request.transactions.map((item) => ({
-      ...item,
-      sourceOccurrenceKey: key(item.sourceOccurrenceKey),
-      sourceSequence: replacements.get(item.sourceOccurrenceKey)?.source_sequence ?? item.sourceSequence,
-    })),
-    statements: request.statements.map((statement) => ({
-      ...statement,
-      transactionSourceOccurrenceKeys: statement.transactionSourceOccurrenceKeys.map(key),
-      evidenceSourceOccurrenceKey: key(statement.evidenceSourceOccurrenceKey),
-    })),
-    relations: request.relations?.map((relation) => ({
-      ...relation,
-      fromSourceOccurrenceKey: key(relation.fromSourceOccurrenceKey),
-      toSourceOccurrenceKey: key(relation.toSourceOccurrenceKey),
-      evidenceSourceOccurrenceKey: key(relation.evidenceSourceOccurrenceKey),
-    })),
-  };
-}
+  [account.account_id]);
 
-function validateBalance(observation: PGliteCanonicalBalanceObservationInput, estimate: PGliteCanonicalCreditCardBalanceEstimate, occurrenceKeys: ReadonlySet<string>): void {
-  if (observation.balanceKind !== "credit_used") fail("invalid-contract", "Credit-card balance must use credit_used.");
-  if (!occurrenceKeys.has(observation.sourceOccurrenceKey)) fail("missing-reference", "Credit-card balance source occurrence is absent.");
-  if (estimate.kind !== "estimate" || !valueText(estimate.formula, "Credit-card estimate formula")) fail("invalid-contract", "Credit-card estimate is invalid.");
-  if (estimate.basis !== "provider-used-credit" && estimate.basis !== "credit-limit-minus-available") fail("invalid-contract", "Credit-card estimate basis is unsupported.");
-  if ((estimate.limit === undefined) !== (estimate.available === undefined)) fail("invalid-contract", "Credit-card estimate components must be paired.");
-  if (estimate.limit) exact(estimate.limit, "Credit-card estimate limit");
-  if (estimate.available) exact(estimate.available, "Credit-card estimate available");
+  const latestByTransaction = new Map<string, FubonBillingProgressRow>();
+  for (const row of priorRows) {
+    const transactionId = idText(row.transaction_id);
+    if (!latestByTransaction.has(transactionId))
+      latestByTransaction.set(transactionId, row);
+  }
+
+  const priorBilledCounts = new Map<string, number>();
+  const priorBilledCountsByInventory = new Map<string, number>();
+  for (const row of latestByTransaction.values()) {
+    if (
+      row.group_scope_key === null ||
+      row.group_fingerprint === null ||
+      row.group_partition_date === null
+    ) continue;
+    if (row.bucket_inventory_json === null)
+      fail("revision-conflict", "Fubon prior occurrence group is missing complete queried-bucket proof.");
+    const key = JSON.stringify([
+      row.group_scope_key,
+      row.group_partition_date,
+      row.group_fingerprint,
+    ]);
+    if (row.billing_status === "billed") {
+      priorBilledCounts.set(key, (priorBilledCounts.get(key) ?? 0) + 1);
+      const inventoryGroupKey = JSON.stringify([row.bucket_inventory_json, key]);
+      priorBilledCountsByInventory.set(
+        inventoryGroupKey,
+        (priorBilledCountsByInventory.get(inventoryGroupKey) ?? 0) + 1,
+      );
+    }
+  }
+
+  const recordsByOccurrence = new Map(
+    request.capture.records.map((record) => [record.occurrenceKey, record]),
+  );
+  const currentBilledCounts = new Map<string, number>();
+  const currentUnbilledCounts = new Map<string, number>();
+  for (const fact of request.transactions) {
+    const record = recordsByOccurrence.get(fact.sourceOccurrenceKey);
+    const group = record?.occurrenceGroup;
+    if (!group) continue;
+    const key = JSON.stringify([
+      group.scopeKey,
+      group.partitionDate,
+      group.fingerprint,
+    ]);
+    if (fact.billingStatus === "billed")
+      currentBilledCounts.set(key, (currentBilledCounts.get(key) ?? 0) + 1);
+    else
+      currentUnbilledCounts.set(key, (currentUnbilledCounts.get(key) ?? 0) + 1);
+  }
+
+  for (const [key, billedCount] of priorBilledCounts) {
+    const [scopeKey] = JSON.parse(key) as [string, string, string];
+    const currentInventory = currentInventoryByScope.get(scopeKey);
+    if (currentInventory === undefined)
+      fail("invalid-contract", "Fubon capture is missing an occurrence-group query inventory.");
+    if ((currentUnbilledCounts.get(key) ?? 0) > 0)
+      fail(
+        "revision-conflict",
+        "Fubon complete occurrence groups cannot reduce their billed member count.",
+      );
+    const priorComparableBilledCount = priorBilledCountsByInventory.get(
+      JSON.stringify([currentInventory, key]),
+    ) ?? 0;
+    if ((currentBilledCounts.get(key) ?? 0) < priorComparableBilledCount)
+      fail(
+        "revision-conflict",
+        "Fubon complete occurrence groups cannot reduce their billed member count.",
+      );
+  }
 }
 
 async function query<T>(transaction: PGliteTransaction, sql: string, params: readonly unknown[] = []): Promise<readonly T[]> {
@@ -671,8 +656,8 @@ export async function commitPGliteCanonicalCreditCardCapture(
   const input = structuredClone(request);
   validateRequest(input);
   return store.transaction(async (transaction) => {
-    const snapshot = await reconcileFubonLifecycle(transaction, input);
-    validateRequest(snapshot);
+    const snapshot = input;
+    await assertFubonBillingProgression(transaction, snapshot);
     const generic = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
       capture: snapshot.capture,
       account: snapshot.account,

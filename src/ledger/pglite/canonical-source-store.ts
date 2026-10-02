@@ -4,6 +4,8 @@ import type {
   PGliteCanonicalProjectionHook,
 } from "./projection.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
+import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
+import { canonicalOccurrenceGroupBucketInventory } from "../canonical/occurrence-groups.ts";
 import {
   assertPGliteHumanAttestationActive,
   getPGliteHumanAttestationRoute,
@@ -442,9 +444,17 @@ async function assertOccurrenceContinuity(
     const prior = await txQuery<{
       provider_key: string | null;
       payload_json: string;
+      occurrence_group_scope_key: string | null;
+      occurrence_group_fingerprint: string | null;
+      occurrence_group_partition_date: string | null;
+      occurrence_group_ordinal: number | string | null;
     }>(
       transaction,
-      `SELECT provider_key, payload_json FROM source_records
+      `SELECT provider_key, payload_json,
+              occurrence_group_scope_key, occurrence_group_fingerprint,
+              occurrence_group_partition_date::text AS occurrence_group_partition_date,
+              occurrence_group_ordinal
+         FROM source_records
         WHERE source_subject_id = ? AND record_kind = ? AND occurrence_key = ?`,
       [sourceSubjectId, recordKind, record.occurrenceKey],
     );
@@ -453,14 +463,38 @@ async function assertOccurrenceContinuity(
       const priorJson = canonicalOccurrencePayload(row.payload_json);
       const providerMatches = row.provider_key === record.providerKey;
       const allowedFubonLoanEvolution = recordKind === "fubon-loan-transaction" && equivalentFubonLoanPayload(row.payload_json, comparablePayloadJson);
-      if (!providerMatches || (priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)) {
+      if (
+        !providerMatches ||
+        !samePersistedOccurrenceGroup(row, record.occurrenceGroup) ||
+        (priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)
+      ) {
         throw new PGliteCanonicalSourceAdmissionError(
           "occurrence-conflict",
-          "Source occurrence content overwrite is forbidden.",
+          "Source occurrence content or group identity overwrite is forbidden.",
         );
       }
     }
   }
+}
+
+function samePersistedOccurrenceGroup(
+  prior: Readonly<{
+    occurrence_group_scope_key: string | null;
+    occurrence_group_fingerprint: string | null;
+    occurrence_group_partition_date: string | null;
+    occurrence_group_ordinal: number | string | null;
+  }>,
+  current: PGliteCanonicalSourceEvidence["records"][number]["occurrenceGroup"],
+): boolean {
+  if (current === undefined)
+    return prior.occurrence_group_scope_key === null &&
+      prior.occurrence_group_fingerprint === null &&
+      prior.occurrence_group_partition_date === null &&
+      prior.occurrence_group_ordinal === null;
+  return prior.occurrence_group_scope_key === current.scopeKey &&
+    prior.occurrence_group_fingerprint === current.fingerprint &&
+    prior.occurrence_group_partition_date === current.partitionDate &&
+    integerValue(prior.occurrence_group_ordinal, "Persisted occurrence group ordinal") === current.ordinal;
 }
 
 function canonicalOccurrencePayload(payloadJson: string): string {
@@ -524,6 +558,220 @@ function equivalentFubonLoanPayload(
   }
 }
 
+async function assertOccurrenceGroupContinuity(
+  transaction: PGliteTransaction,
+  evidence: PGliteCanonicalSourceEvidence,
+  sourceSubjectId: Uint8Array,
+): Promise<void> {
+  const coverage = evidence.occurrenceGroupCoverage;
+  // A point-in-time holding/balance snapshot does not claim transaction
+  // history completeness, even when this route also carries transaction
+  // history on other captures. Only a complete bounded history capture can
+  // compare a missing group proof with earlier group counts.
+  if (evidence.scope.kind !== "bounded-range" || evidence.scope.completeness !== "complete-range")
+    return;
+  const dateFormat = evidence.scope.dateFormat ?? "YYYYMMDD";
+  const scopeStart = normalizeSourceScopeDate(evidence.scope.startDate, dateFormat);
+  const scopeEnd = normalizeSourceScopeDate(evidence.scope.endDate, dateFormat);
+  if (coverage === undefined) {
+    const priorCoverage = await first<{ exists: boolean }>(
+      transaction,
+      `SELECT EXISTS (
+         SELECT 1 FROM source_occurrence_group_coverages
+          WHERE source_subject_id = ? AND record_kind = ? AND contract_version = ?
+            AND scope_start <= ?::date AND ?::date <= scope_end
+       ) AS exists`,
+      [sourceSubjectId, evidence.recordKind, evidence.contractVersion, scopeEnd, scopeStart],
+    );
+    if (priorCoverage?.exists)
+      throw new PGliteCanonicalSourceAdmissionError(
+        "occurrence-conflict",
+        "A source with prior occurrence groups must preserve complete group coverage.",
+      );
+    return;
+  }
+
+  const currentCounts = new Map<string, number>();
+  for (const record of evidence.records) {
+    const group = record.occurrenceGroup;
+    if (!group) continue;
+    const key = occurrenceGroupCountKey(group.scopeKey, group.partitionDate, group.fingerprint);
+    currentCounts.set(key, (currentCounts.get(key) ?? 0) + 1);
+  }
+
+  for (const entry of coverage) {
+    const bucketInventoryJson = entry.bucketKeys === undefined
+      ? null
+      : canonicalOccurrenceGroupBucketInventory(entry.bucketKeys);
+    const priorGroups = bucketInventoryJson === null
+      ? await txQuery<{
+      partition_date: string;
+      fingerprint: string;
+      occurrence_count: number | string;
+    }>(
+      transaction,
+      `SELECT group_count.partition_date::text AS partition_date,
+              group_count.fingerprint,
+              MAX(group_count.occurrence_count) AS occurrence_count
+         FROM source_occurrence_group_counts group_count
+         JOIN source_occurrence_group_coverages group_coverage
+           ON group_coverage.coverage_id = group_count.coverage_id
+        WHERE group_coverage.source_subject_id = ?
+          AND group_coverage.record_kind = ?
+          AND group_coverage.scope_key = ?
+          AND group_coverage.contract_version = ?
+          AND group_count.partition_date BETWEEN ?::date AND ?::date
+        GROUP BY group_count.partition_date, group_count.fingerprint`,
+      [
+        sourceSubjectId,
+        evidence.recordKind,
+        entry.scopeKey,
+        entry.contractVersion,
+        entry.startDate,
+        entry.endDate,
+      ],
+    )
+      : await txQuery<{
+          partition_date: string;
+          fingerprint: string;
+          occurrence_count: number | string;
+        }>(
+          transaction,
+          `SELECT prior_group.partition_date,
+                  prior_group.fingerprint,
+                  MAX(prior_group.occurrence_count) AS occurrence_count
+             FROM (
+               SELECT group_coverage.capture_id,
+                      group_count.partition_date::text AS partition_date,
+                      group_count.fingerprint,
+                      SUM(group_count.occurrence_count) AS occurrence_count
+                 FROM source_occurrence_group_counts group_count
+                 JOIN source_occurrence_group_coverages group_coverage
+                   ON group_coverage.coverage_id = group_count.coverage_id
+                WHERE group_coverage.source_subject_id = ?
+                  AND group_coverage.record_kind = ?
+                  AND group_coverage.scope_key = ?
+                  AND group_coverage.contract_version = ?
+                  AND group_coverage.bucket_inventory_json = ?
+                GROUP BY group_coverage.capture_id,
+                         group_count.partition_date,
+                         group_count.fingerprint
+             ) prior_group
+            GROUP BY prior_group.partition_date, prior_group.fingerprint`,
+          [
+            sourceSubjectId,
+            evidence.recordKind,
+            entry.scopeKey,
+            entry.contractVersion,
+            bucketInventoryJson,
+          ],
+        );
+    for (const prior of priorGroups.rows) {
+      const current = currentCounts.get(
+        occurrenceGroupCountKey(entry.scopeKey, prior.partition_date, prior.fingerprint),
+      ) ?? 0;
+      if (current < integerValue(prior.occurrence_count, "Occurrence group count"))
+        throw new PGliteCanonicalSourceAdmissionError(
+          "occurrence-conflict",
+          "A complete occurrence group cannot lose members without correction evidence.",
+        );
+    }
+  }
+}
+
+async function persistOccurrenceGroupCoverage(
+  transaction: PGliteTransaction,
+  evidence: PGliteCanonicalSourceEvidence,
+  sourceSubjectId: Uint8Array,
+  captureId: Uint8Array,
+  commitId: Uint8Array,
+): Promise<void> {
+  const coverage = evidence.occurrenceGroupCoverage;
+  if (coverage === undefined) return;
+
+  const counts = new Map<string, Readonly<{
+    scopeKey: string;
+    partitionDate: string;
+    fingerprint: string;
+    bucketKey: string;
+    count: number;
+  }>>();
+  for (const record of evidence.records) {
+    const group = record.occurrenceGroup;
+    if (!group) continue;
+    const bucketKey = record.occurrenceGroupBucketKey ?? "";
+    const key = JSON.stringify([
+      group.scopeKey,
+      group.partitionDate,
+      group.fingerprint,
+      bucketKey,
+    ]);
+    const prior = counts.get(key);
+    counts.set(key, {
+      scopeKey: group.scopeKey,
+      partitionDate: group.partitionDate,
+      fingerprint: group.fingerprint,
+      bucketKey,
+      count: (prior?.count ?? 0) + 1,
+    });
+  }
+
+  for (const entry of coverage) {
+    const coverageId = uuidBytes();
+    await txQuery(
+      transaction,
+      `INSERT INTO source_occurrence_group_coverages(
+         coverage_id, capture_id, source_subject_id, record_kind, scope_key,
+         scope_start, scope_end, contract_version, bucket_inventory_json, commit_id
+       ) VALUES (?, ?, ?, ?, ?, ?::date, ?::date, ?, ?, ?)`,
+      [
+        coverageId,
+        captureId,
+        sourceSubjectId,
+        evidence.recordKind,
+        entry.scopeKey,
+        entry.startDate,
+        entry.endDate,
+        entry.contractVersion,
+        entry.bucketKeys === undefined
+          ? null
+          : canonicalOccurrenceGroupBucketInventory(entry.bucketKeys),
+        commitId,
+      ],
+    );
+    for (const group of counts.values()) {
+      if (
+        group.scopeKey !== entry.scopeKey ||
+        (entry.bucketKeys === undefined
+          ? group.partitionDate < entry.startDate || group.partitionDate > entry.endDate
+          : !entry.bucketKeys.includes(group.bucketKey))
+      )
+        continue;
+      await txQuery(
+        transaction,
+        `INSERT INTO source_occurrence_group_counts(
+           observation_id, coverage_id, partition_date, fingerprint, bucket_key,
+           occurrence_count
+         ) VALUES (?, ?, ?::date, ?, ?, ?)`,
+        [uuidBytes(), coverageId, group.partitionDate, group.fingerprint, group.bucketKey, group.count],
+      );
+    }
+  }
+}
+
+function occurrenceGroupCountKey(scopeKey: string, date: string, fingerprint: string): string {
+  return JSON.stringify([scopeKey, date, fingerprint]);
+}
+
+function normalizeSourceScopeDate(
+  value: string,
+  format: "YYYYMMDD" | "YYYY-MM-DD",
+): string {
+  return format === "YYYYMMDD"
+    ? `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
+    : value;
+}
+
 async function persistSourceCapture(
   transaction: PGliteTransaction,
   evidence: PGliteCanonicalSourceEvidence,
@@ -569,6 +817,7 @@ async function persistSourceCapture(
   const identity = await ensureSourceIdentity(transaction, evidence, commitId);
   await assertSourceRouteBinding(transaction, evidence, identity.sourceConnectionId);
   await assertOccurrenceContinuity(transaction, evidence, identity.sourceSubjectId);
+  await assertOccurrenceGroupContinuity(transaction, evidence, identity.sourceSubjectId);
   await txQuery(
     transaction,
     `INSERT INTO source_authority_routes(
@@ -675,6 +924,13 @@ async function persistSourceCapture(
       ],
     );
   }
+  await persistOccurrenceGroupCoverage(
+    transaction,
+    evidence,
+    identity.sourceSubjectId,
+    captureId,
+    commitId,
+  );
   const sourceRecordIds: Uint8Array[] = [];
   const sourceRecordIdsByOccurrence = new Map<string, Uint8Array>();
   for (const record of evidence.records) {
@@ -689,8 +945,10 @@ async function persistSourceCapture(
       `INSERT INTO source_records(
          source_record_id, capture_id, source_subject_id, commit_id, record_kind,
          sequence_lexeme, provider_key, content_hash, occurrence_key, collision_key,
-         description, payload_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         description, payload_json, occurrence_group_scope_key,
+         occurrence_group_fingerprint, occurrence_group_partition_date,
+         occurrence_group_ordinal, occurrence_group_bucket_key
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::date, ?, ?)`,
       [
         sourceRecordId,
         captureId,
@@ -704,6 +962,11 @@ async function persistSourceCapture(
         record.collisionKey ?? null,
         record.description ?? null,
         payloadJson,
+        record.occurrenceGroup?.scopeKey ?? null,
+        record.occurrenceGroup?.fingerprint ?? null,
+        record.occurrenceGroup?.partitionDate ?? null,
+        record.occurrenceGroup?.ordinal ?? null,
+        record.occurrenceGroupBucketKey ?? null,
       ],
     );
     await txQuery(
@@ -1377,6 +1640,22 @@ function validateFinancialRequest(
   request: PGliteCanonicalFinancialCommitRequest,
 ): void {
   validatePGliteCanonicalSourceEvidence(request.capture);
+  if (
+    canonicalSourceRouteRegistration(request.capture.routeKey)?.occurrenceGroups === "required"
+  ) {
+    const groupedOccurrences = new Set(
+      request.capture.records
+        .filter((record) => record.occurrenceGroup !== undefined)
+        .map((record) => record.occurrenceKey),
+    );
+    for (const fact of request.transactions) {
+      if (!groupedOccurrences.has(fact.sourceOccurrenceKey))
+        throw new PGliteCanonicalSourceAdmissionError(
+          "invalid-financial-fact",
+          "Financial facts on this source route require occurrence group identity.",
+        );
+    }
+  }
   validatePGliteCanonicalFinancialAccount(request.account, request.capture);
   if (request.accountIdentifier !== undefined && request.accountIdentifier !== null) {
     validateCanonicalSourceAccountNumber(request.accountIdentifier);

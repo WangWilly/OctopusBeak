@@ -10,15 +10,12 @@ import {
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type {
   PGliteCanonicalFinancialAccountInput,
+  PGliteCanonicalBalanceObservationInput,
   PGliteCanonicalFinancialFactInput,
 } from "./source-admission-validation.ts";
 import type { InvestmentCaptureInput, InvestmentTransactionAction } from "../canonical/investment-financial.ts";
-import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
+import { assertInvestmentHoldingSourceLots, investmentTransactionDirection, isInvestmentSecurityIdentityValid } from "../canonical/investment-financial-admission.ts";
 import type { CanonicalSourceEvidence, CanonicalSourceRecord } from "../canonical/canonical-source-evidence.ts";
-import {
-  commitPGliteCanonicalLoanCaptureInTransaction,
-} from "./loan.ts";
-import type { LoanCaptureInput } from "../canonical/loan-financial.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "./workflow-commands.ts";
 
 /** Named worker command for a source-admitted investment snapshot. */
@@ -122,9 +119,10 @@ async function first<T>(transaction: PGliteTransaction, sql: string, params: rea
   return (await query<T>(transaction, sql, params))[0];
 }
 
-function recordEnvelope(capture: InvestmentCaptureInput, record: { sourceRecordKey: string; description?: string | null }, compact: Record<string, unknown>, index: number): CanonicalSourceRecord {
+function recordEnvelope(capture: InvestmentCaptureInput, record: { sourceRecordKey: string; description?: string | null; occurrenceGroup?: InvestmentCaptureInput["transactions"][number]["occurrenceGroup"] }, compact: Record<string, unknown>, index: number): CanonicalSourceRecord {
   return {
     occurrenceKey: record.sourceRecordKey,
+    ...(record.occurrenceGroup ? { occurrenceGroup: record.occurrenceGroup } : {}),
     collisionKey: digest(`${capture.sourceId}:${capture.identity.accountKey}:${record.sourceRecordKey}`),
     providerKey: record.sourceRecordKey,
     contentHash: digest(compact),
@@ -139,7 +137,9 @@ function sourceRecords(capture: InvestmentCaptureInput): CanonicalSourceRecord[]
   const records: CanonicalSourceRecord[] = [];
   for (const [index, holding] of capture.holdings.entries()) {
     const { measurementKey: _measurementKey, observedAt: _observedAt, lineage: _lineage, ...sourceFact } = holding;
-    records.push(recordEnvelope(capture, holding, { ...sourceFact, kind: "holding-measurement" }, index));
+    records.push(recordEnvelope(capture, holding, { ...sourceFact,
+      ...(holding.lineage.sourceLots ? { sourceLots: holding.lineage.sourceLots } : {}),
+      kind: "holding-measurement" }, index));
   }
   for (const [index, transaction] of capture.transactions.entries()) {
     const { transactionKey: _transactionKey, ...sourceFact } = transaction;
@@ -155,6 +155,10 @@ function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence
   const records = sourceRecords(capture);
   const contractFingerprint = digest(`investment-contract:${capture.contractVersion}`);
   const preflightFingerprint = digest(`investment-capture:${capture.captureId}`);
+  const sourceScope = capture.scope.transactionHistory ?? {
+    startDate: capture.scope.effectiveOn,
+    endDate: capture.scope.effectiveOn,
+  };
   return {
     captureId: capture.captureId,
     integrationNamespace: capture.sourceId,
@@ -165,13 +169,16 @@ function captureSource(capture: InvestmentCaptureInput): CanonicalSourceEvidence
     routeKey: capture.authorityRoute,
     contractVersion: capture.contractVersion,
     subjectDigest: digest(`${capture.sourceId}:${capture.identity.sourceConnectionKey}:${capture.identity.identityEpochKey}:${capture.identity.accountKey}`),
+    ...(capture.occurrenceGroupCoverage
+      ? { occurrenceGroupCoverage: capture.occurrenceGroupCoverage }
+      : {}),
     observedAt: capture.observedAt,
     accountNumber: capture.identity.accountNumber ?? null,
     scope: {
-      startDate: capture.scope.effectiveOn,
-      endDate: capture.scope.effectiveOn,
+      startDate: sourceScope.startDate,
+      endDate: sourceScope.endDate,
       dateFormat: "YYYY-MM-DD",
-      kind: "bounded-range",
+      kind: capture.scope.transactionHistory ? "bounded-range" : "point-in-time",
       completeness: "complete-range",
       ruleVersion: capture.contractVersion,
       completenessBasis: "source-reported-complete-investment-snapshot",
@@ -259,105 +266,13 @@ function marginFact(capture: InvestmentCaptureInput): PGliteCanonicalFinancialFa
   };
 }
 
-function independentMarginLoanCapture(capture: InvestmentCaptureInput): LoanCaptureInput | null {
-  const margin = capture.margin;
-  if (margin?.kind !== "independent-account" || margin.accountType !== "loan") return null;
-  if (margin.amount.currency !== "TWD") fail("Independent investment margin loans must be denominated in TWD.");
-  const contractVersion = "loan/canonical/v1.yuanta" as const;
-  const balanceEvidence = {
-    kind: "source-reported-balance" as const,
-    balanceKind: "loan_outstanding" as const,
-    balanceField: "balance-after-transaction" as const,
-    balance: margin.amount,
-    effectiveAtField: "transaction-date" as const,
-    effectiveAt: margin.effectiveOn,
-    effectiveAtPrecision: "date" as const,
-    effectiveAtTimeOrigin: "source_reported" as const,
-    storageAnchor: "effective-at-date-only" as const,
-    contractVersion,
-  };
-  return {
-    captureId: `${capture.captureId}:margin`,
-    sourceId: "yuanta",
-    authorityRoute: "yuanta/loan/canonical-v1",
-    contractVersion,
-    identity: {
-      sourceConnectionKey: capture.identity.sourceConnectionKey,
-      identityEpochKey: capture.identity.identityEpochKey,
-      accountKey: margin.accountKey,
-      subjectDigest: digest(`yuanta-margin-loan:${capture.identity.sourceConnectionKey}:${capture.identity.identityEpochKey}:${margin.accountKey}`),
-      accountType: "loan",
-      accountNo: digest(`yuanta-margin-account-number:${margin.identityEvidence.producerAccountId}`),
-      stream: "loan",
-      recordKind: "yuanta-loan-transaction",
-      currency: "TWD",
-    },
-    observedAt: capture.observedAt,
-    scope: {
-      startDate: margin.effectiveOn,
-      endDate: margin.effectiveOn,
-      completeness: "complete-range",
-      completenessBasis: "source-declared-terminal-range",
-      completenessRuleVersion: contractVersion,
-      pageCount: 1,
-      terminal: true,
-    },
-    semantics: {
-      status: "posted",
-      effectiveTimeBasis: "source-reported",
-      effectiveTimeRuleVersion: contractVersion,
-      timeZone: "Asia/Taipei",
-    },
-    pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
-    records: [{
-      sourceRecordKey: margin.sourceRecordKey,
-      occurrenceIndex: 1,
-      effectiveOn: margin.effectiveOn,
-      sourceTime: { localTime: "00:00:00", precision: "date", timeOrigin: "defaulted_local_midnight" },
-      postingStatus: "posted",
-      eventKind: "disbursement",
-      eventEvidence: { kind: "source-coded-loan-event", sourceRecordKey: margin.sourceRecordKey, sourceCode: margin.sourceEventCode, contractVersion },
-      direction: "outflow",
-      amount: margin.amount,
-      currency: "TWD",
-      balanceSourceEvidence: [balanceEvidence],
-    }],
-    counterpartTransactions: [],
-    balanceObservations: [{
-      observationKey: digest(`yuanta-margin-balance:${margin.sourceRecordKey}:${margin.effectiveOn}`),
-      sourceRecordKey: margin.sourceRecordKey,
-      balanceKind: "loan_outstanding",
-      balance: margin.amount,
-      currency: "TWD",
-      effectiveAt: margin.effectiveOn,
-      effectiveAtPrecision: "date",
-      effectiveAtTimeOrigin: "source_reported",
-      effectiveTimeBasis: "source-reported",
-      effectiveTimeRuleVersion: contractVersion,
-      effectiveTimeEvidence: {
-        kind: "source-reported-balance-effective-time",
-        sourceRecordKey: margin.sourceRecordKey,
-        sourceField: "statement-as-of",
-        sourceFieldRole: "transaction-date",
-        value: margin.effectiveOn,
-        precision: "date",
-        timeOrigin: "source_reported",
-        storageAnchor: "effective-at-date-only",
-        contractVersion,
-      },
-    }],
-    relations: [],
-    relationCoverage: "not-asserted",
-  };
-}
-
-function independentMarginCreditSource(capture: InvestmentCaptureInput): {
+function independentMarginBalanceSource(capture: InvestmentCaptureInput): {
   source: CanonicalSourceEvidence;
   account: PGliteCanonicalFinancialAccountInput;
-  fact: PGliteCanonicalFinancialFactInput;
+  observation: PGliteCanonicalBalanceObservationInput;
 } | null {
   const margin = capture.margin;
-  if (margin?.kind !== "independent-account" || margin.accountType !== "credit") return null;
+  if (margin?.kind !== "independent-account") return null;
   const contractVersion = `${capture.sourceId}/investment/margin-credit-canonical-v1`;
   const sourceRecord: CanonicalSourceRecord = {
     occurrenceKey: margin.sourceRecordKey,
@@ -369,9 +284,6 @@ function independentMarginCreditSource(capture: InvestmentCaptureInput): {
     sequenceLexeme: "1",
     description: null,
   };
-  const local = `${margin.effectiveOn}T00:00:00`;
-  const epoch = Date.parse(`${local}+08:00`);
-  if (!Number.isFinite(epoch)) fail("Independent margin credit effective time is invalid.");
   const contractFingerprint = digest(`investment-margin-credit:${contractVersion}`);
   return {
     source: {
@@ -417,31 +329,22 @@ function independentMarginCreditSource(capture: InvestmentCaptureInput): {
     account: {
       sourceAccountKey: margin.accountKey,
       accountNo: null,
-      accountType: "credit",
+      accountType: margin.accountType,
       currency: margin.amount.currency,
     },
-    fact: {
-      sourceOccurrenceKey: margin.sourceRecordKey,
-      sourceSequence: margin.sourceRecordKey,
-      amount: margin.amount,
+    observation: {
+      observationKey: digest(`${capture.sourceId}:${margin.accountKey}:margin-balance:${margin.accountType}`),
+      balanceKind: margin.accountType === "loan" ? "loan_outstanding" : "credit_used",
+      balance: margin.amount,
       currency: margin.amount.currency,
-      direction: "outflow",
-      postingStatus: "posted",
-      postingOrigin: "provider_booked_history",
-      postingBasis: "statement-posted-history",
-      postingRuleVersion: contractVersion,
-      description: null,
-      economicStatus: "normal",
-      administrativeState: "active",
-      semanticRuleVersion: contractVersion,
-      effectiveOn: margin.effectiveOn,
-      transactionDateTimeLocal: local,
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      timeOrigin: "defaulted_local_midnight",
+      effectiveAt: `${margin.effectiveOn}T00:00:00+08:00`,
       effectiveTimeBasis: "source-reported",
       effectiveTimeRuleVersion: contractVersion,
-      utcInstantUtcUs: epoch * 1_000,
+      evidenceSourceRecordKey: margin.sourceRecordKey,
+      evidenceSourceField: "margin-balance",
+      evidenceSourceValue: stableJson(margin.amount),
+      evidenceContractVersion: contractVersion,
+      sourceOccurrenceKey: margin.sourceRecordKey,
     },
   };
 }
@@ -456,9 +359,29 @@ function validateCapture(capture: InvestmentCaptureInput): void {
     requireToken(value, `Investment ${label}`);
   if (!/^[A-Z]{3}$/u.test(capture.identity.reportingCurrency)) fail("Investment reporting currency is invalid.");
   date(capture.scope.effectiveOn, "Investment effective date");
+  const transactionHistory = capture.scope.transactionHistory;
+  if (transactionHistory) {
+    const startDate = date(transactionHistory.startDate, "Investment history start date");
+    const endDate = date(transactionHistory.endDate, "Investment history end date");
+    if (!transactionHistory.complete || startDate > endDate)
+      fail("Investment transaction history range is incomplete or inverted.");
+  }
+  if (capture.occurrenceGroupCoverage !== undefined && !transactionHistory)
+    fail("Investment occurrence groups require a complete transaction-history range.");
+  for (const coverage of capture.occurrenceGroupCoverage ?? []) {
+    const startDate = date(coverage.startDate, "Investment occurrence coverage start date");
+    const endDate = date(coverage.endDate, "Investment occurrence coverage end date");
+    if (
+      coverage.contractVersion !== capture.contractVersion ||
+      startDate > endDate ||
+      startDate < transactionHistory!.startDate ||
+      endDate > transactionHistory!.endDate
+    )
+      fail("Investment occurrence coverage does not fit its complete history scope.");
+  }
   const securities = new Set<string>();
   for (const security of capture.securities) {
-    if (!security.producerSecurityId.trim() || security.securityKey !== `${capture.sourceId}:${security.producerSecurityId}` || security.identityEvidence.kind !== "producer-security-id" || security.identityEvidence.contractVersion !== capture.contractVersion || securities.has(security.securityKey))
+    if (!isInvestmentSecurityIdentityValid(capture, security) || securities.has(security.securityKey))
       fail("Investment Security identity is outside its source contract.");
     securities.add(security.securityKey);
     if (security.nameEvidence && (security.nameEvidence.contractVersion !== `${capture.sourceId}/security-name/source-reported-v1` || ![...capture.holdings, ...capture.transactions].some((row) => row.securityKey === security.securityKey && row.sourceRecordKey === security.nameEvidence!.sourceRecordKey)))
@@ -503,6 +426,18 @@ function validateCapture(capture: InvestmentCaptureInput): void {
     amount(transaction.quantity, "Investment transaction quantity");
     amount(transaction.cashEffect, "Investment transaction cash effect");
     date(transaction.effectiveOn, "Investment transaction effective date");
+    if (transaction.occurrenceGroup) {
+      requireToken(transaction.occurrenceGroup.scopeKey, "Investment occurrence scope key");
+      requireToken(transaction.occurrenceGroup.fingerprint, "Investment occurrence fingerprint");
+      const partitionDate = date(transaction.occurrenceGroup.partitionDate, "Investment occurrence date");
+      if (!Number.isSafeInteger(transaction.occurrenceGroup.ordinal) || transaction.occurrenceGroup.ordinal < 1)
+        fail("Investment occurrence ordinal must be a positive safe integer.");
+      if (!(capture.occurrenceGroupCoverage ?? []).some((coverage) =>
+        coverage.scopeKey === transaction.occurrenceGroup!.scopeKey &&
+        coverage.contractVersion === capture.contractVersion &&
+        partitionDate >= coverage.startDate && partitionDate <= coverage.endDate,
+      )) fail("Investment occurrence group is missing complete coverage.");
+    }
     if (transaction.fundingEvidence.sourceRecordKey !== transaction.sourceRecordKey) fail("Investment funding evidence must cite its transaction source record.");
     if (transaction.fundingEvidence.kind === "source-linked-account") {
       requireToken(transaction.fundingEvidence.fundingAccountKey, "Investment funding account key");
@@ -624,6 +559,7 @@ export async function commitPGliteCanonicalInvestmentCapture(
 ): Promise<PGliteCanonicalInvestmentCommitResult> {
   const snapshot = structuredClone(request);
   validateCapture(snapshot.capture);
+  for (const holding of snapshot.capture.holdings) assertInvestmentHoldingSourceLots(snapshot.capture.sourceId, holding);
   return store.transaction(async (transaction) => {
     const margin = marginFact(snapshot.capture);
     const result = await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
@@ -650,26 +586,19 @@ export async function commitPGliteCanonicalInvestmentCapture(
     };
     const context = await contextFor(transaction, captureResult);
     await persistExtensions(transaction, context, snapshot.capture, result);
-    const marginLoan = independentMarginLoanCapture(snapshot.capture);
-    if (marginLoan)
-      await commitPGliteCanonicalLoanCaptureInTransaction(
-        transaction,
-        { capture: marginLoan, recordedAtUtcUs: snapshot.recordedAtUtcUs },
-        { ...options, skipProjection: true },
-      );
-    const marginCredit = independentMarginCreditSource(snapshot.capture);
-    if (marginCredit)
+    const marginBalance = independentMarginBalanceSource(snapshot.capture);
+    if (marginBalance)
       await commitPGliteCanonicalFinancialCaptureInTransaction(transaction, {
-        capture: marginCredit.source,
-        account: marginCredit.account,
-        transactions: [marginCredit.fact],
+        capture: marginBalance.source,
+        account: marginBalance.account,
+        transactions: [],
+        balanceObservations: [marginBalance.observation],
         withdrawalPolicy: "never-infer",
         recordedAtUtcUs: snapshot.recordedAtUtcUs ?? options.recordedAtUtcUs,
       }, { ...options, skipProjection: true });
     const captureKeys = [
       snapshot.capture.captureId,
-      ...(marginLoan ? [marginLoan.captureId] : []),
-      ...(marginCredit ? [marginCredit.source.captureId] : []),
+      ...(marginBalance ? [marginBalance.source.captureId] : []),
     ];
     const committedCaptures = await query<{
       capture_id: unknown;

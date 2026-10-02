@@ -16,9 +16,13 @@ export type CanonicalSourceRouteRegistration = Readonly<{
   completenessRuleVersions?: readonly string[];
   /** Non-ISO booked denominations this registered financial route may admit. */
   nonIsoFinancialDenominations?: readonly string[];
+  /** Whether this source route requires or can optionally carry occurrence groups. */
+  occurrenceGroups?: "required" | "optional";
+  /** Query-inventory proof required when a route admits occurrence groups. */
+  occurrenceGroupCoverage?: "queried-buckets";
 }>;
 
-const registrations: readonly CanonicalSourceRouteRegistration[] = [
+const registrations: readonly CanonicalSourceRouteRegistration[] = ([
   // Source Capture contracts.
   {
     routeKey: "fubon/domestic-deposit/capture-evidence-v2",
@@ -79,6 +83,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "fubon/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["fubon/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v1",
@@ -89,6 +94,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "yuanta/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "yuanta/domestic-deposit/human-attested-v2",
@@ -99,6 +105,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "yuanta/domestic-deposit/human-attested-v2",
     ],
     completenessRuleVersions: ["yuanta/domestic-deposit/human-attested-v2"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "hncb/domestic-deposit/human-attested-v1",
@@ -109,6 +116,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "hncb/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["hncb/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "ctbc/domestic-deposit/human-attested-v1",
@@ -119,6 +127,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "ctbc/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["ctbc/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "post/domestic-deposit/human-attested-v1",
@@ -129,6 +138,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "post/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["post/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "sinopac/domestic-deposit/human-attested-v1",
@@ -139,54 +149,71 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
       "sinopac/domestic-deposit/human-attested-v1",
     ],
     completenessRuleVersions: ["sinopac/domestic-deposit/human-attested-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "fubon/credit-card/human-attested-v1",
     integrationNamespace: "fubon",
     stream: "credit-card",
     contractVersions: ["fubon/credit-card/human-attested-v1"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "fubon/credit-card/human-attested-v2",
     integrationNamespace: "fubon",
     stream: "credit-card",
     contractVersions: ["fubon/credit-card/human-attested-v2"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "esun/credit-card/human-attested-v1",
     integrationNamespace: "esun",
     stream: "credit-card",
     contractVersions: ["esun/credit-card/human-attested-v1"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "esun/credit-card/human-attested-v2",
     integrationNamespace: "esun",
     stream: "credit-card",
     contractVersions: ["esun/credit-card/human-attested-v2"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "esun/credit-card/human-attested-v3",
     integrationNamespace: "esun",
     stream: "credit-card",
     contractVersions: ["esun/credit-card/human-attested-v3"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "esun/credit-card/human-attested-v4",
     integrationNamespace: "esun",
     stream: "credit-card",
     contractVersions: ["esun/credit-card/human-attested-v4"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "yuanta/credit-card/human-attested-v1",
     integrationNamespace: "yuanta",
     stream: "credit-card",
     contractVersions: ["yuanta/credit-card/human-attested-v1"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "yuanta/credit-card/human-attested-v2",
     integrationNamespace: "yuanta",
     stream: "credit-card",
     contractVersions: ["yuanta/credit-card/human-attested-v2"],
+    occurrenceGroups: "required",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "yuanta/credit-card/current-used-credit-v1",
@@ -267,6 +294,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "yuanta",
     stream: "foreign-currency-deposit",
     contractVersions: ["foreign-currency/yuanta/human-attested-v2"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "yuanta/domestic-deposit/current-balance-v1",
@@ -321,6 +349,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "sinopac",
     stream: "foreign-currency-deposit",
     contractVersions: ["foreign-currency/sinopac/human-attested-v1"],
+    occurrenceGroups: "required",
   },
 
   // E-Invoice canonical capture.  This route is provider-neutral because the
@@ -340,12 +369,14 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "yuanta-fund",
     stream: "investment",
     contractVersions: ["yuanta-fund/investment/canonical-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "yuanta-trade/investment/canonical-v1",
     integrationNamespace: "yuanta-trade",
     stream: "investment",
     contractVersions: ["yuanta-trade/investment/canonical-v1"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "maicoin/investment/canonical-v1",
@@ -371,18 +402,21 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "fubon",
     stream: "loan",
     contractVersions: ["loan/canonical/v1.fubon"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "fubon/loan/canonical-v2",
     integrationNamespace: "fubon",
     stream: "loan",
     contractVersions: ["loan/canonical/v2.fubon"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "yuanta/loan/canonical-v1",
     integrationNamespace: "yuanta",
     stream: "loan",
     contractVersions: ["loan/canonical/v1.yuanta"],
+    occurrenceGroups: "required",
   },
   {
     routeKey: "fubon/loan/counterpart-deposit-v1",
@@ -403,6 +437,15 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     integrationNamespace: "synthetic",
     stream: "domestic-deposit",
     contractVersions: ["synthetic-v8"],
+    occurrenceGroups: "optional",
+  },
+  {
+    routeKey: "synthetic/domestic-deposit/queried-buckets-v1",
+    integrationNamespace: "synthetic",
+    stream: "domestic-deposit",
+    contractVersions: ["synthetic-queried-buckets-v1"],
+    occurrenceGroups: "optional",
+    occurrenceGroupCoverage: "queried-buckets",
   },
   {
     routeKey: "synthetic-bank/deposit/posted-v1",
@@ -440,11 +483,11 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = [
     stream: "domestic-deposit",
     contractVersions: ["synthetic-v8"],
   },
-].map((registration) =>
+] as const).map((registration) =>
   Object.freeze({
     ...registration,
     contractVersions: Object.freeze([...registration.contractVersions]),
-    ...(registration.completenessRuleVersions
+    ...("completenessRuleVersions" in registration && registration.completenessRuleVersions
       ? {
           completenessRuleVersions: Object.freeze([
             ...registration.completenessRuleVersions,

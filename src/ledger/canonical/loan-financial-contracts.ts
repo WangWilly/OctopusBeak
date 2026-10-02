@@ -1,4 +1,8 @@
 import type { CanonicalSourceAccountNumber } from "./canonical-source-evidence.ts";
+import type {
+  CanonicalOccurrenceGroup,
+  CanonicalOccurrenceGroupCoverage,
+} from "./occurrence-groups.ts";
 
 export type LoanSourceId = "fubon" | "yuanta";
 
@@ -41,13 +45,12 @@ export type LoanBalanceSourceEvidence = {
 
 export type LoanTransactionInput = {
   sourceRecordKey: string;
-  /**
-   * Optional for compatibility with v1 captures.  Yuanta v2 records set this
-   * explicitly so ordinal changes are treated as local evidence rather than
-   * immutable transaction facts.
-   */
-  sourceOccurrenceIdentityRuleVersion?: string;
+  /** Group-local ordinal; never a capture-wide collection position. */
   occurrenceIndex: number;
+  /** Capture position retained as source lineage, not part of durable identity. */
+  sourceSequenceIndex: number;
+  occurrenceGroup: CanonicalOccurrenceGroup;
+  occurrenceCollisionKey: string;
   effectiveOn: string;
   sourceTime: {
     localTime: string;
@@ -191,6 +194,8 @@ export type LoanCaptureInput = {
     timeZone: "Asia/Taipei";
   };
   pages: readonly LoanCapturePage[];
+  /** Exact, source-proven complete inventory of comparable loan group scopes. */
+  occurrenceGroupCoverage: readonly CanonicalOccurrenceGroupCoverage[];
   records: readonly LoanTransactionInput[];
   counterpartTransactions: readonly LoanCounterpartTransactionInput[];
   balanceObservations: readonly LoanBalanceObservationInput[];
@@ -219,8 +224,10 @@ export type LoanSourceCompletenessEvidence = {
 
 export type CanonicalLoanStatementRow = {
   sourceRecordKey: string;
-  sourceOccurrenceIdentityRuleVersion?: string;
   occurrenceIndex: number;
+  sourceSequenceIndex: number;
+  occurrenceGroup: CanonicalOccurrenceGroup;
+  occurrenceCollisionKey: string;
   effectiveOn: string;
   sourceTime: LoanTransactionInput["sourceTime"];
   sourceCode: string;

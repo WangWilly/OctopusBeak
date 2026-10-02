@@ -3,6 +3,10 @@ import type {
   LoanCaptureInput,
 } from "./loan-financial.ts";
 import {
+  assignOccurrenceSlots,
+} from "./occurrence-groups.ts";
+import {
+  canonicalLoanOccurrenceScopeKey,
   CanonicalLoanAdmissionError,
   FUBON_LOAN_CONTRACT_VERSION,
   LOAN_EVENT_CONTRACT_MAPPINGS,
@@ -142,7 +146,7 @@ function canonicalRows(
         amount,
         fingerprint: canonicalLoanToken(
           "fubon",
-          "loan-source-record-v2",
+          "loan-economic-group-v1",
           account,
           effectiveOn,
           sourceCode,
@@ -152,30 +156,22 @@ function canonicalRows(
           "TWD",
         ),
       };
-    })
-    .sort(
-      (left, right) =>
-        left.effectiveOn.localeCompare(right.effectiveOn) ||
-        left.inputIndex - right.inputIndex,
-    );
-  const ordinals = new Map<string, number>();
-  return preparedRows.map(
-    ({ row, sourceCode, mapping, effectiveOn, amount, fingerprint }, index) => {
-      const ordinal = (ordinals.get(fingerprint) ?? 0) + 1;
-      ordinals.set(fingerprint, ordinal);
-      const identityAmount = normalizedAmountForIdentity(amount);
-      const sourceRecordKey = canonicalLoanToken(
-        "fubon",
-        "loan-source-record-v2",
-        account,
-        effectiveOn,
-        sourceCode,
-        mapping.direction,
-        identityAmount.coefficient,
-        String(identityAmount.scale),
-        "TWD",
-        String(ordinal),
-      );
+    });
+  const accountKey = canonicalLoanSourceIdentity(
+    "fubon",
+    input.sourceConnectionScope,
+    input.accountValue,
+  ).accountKey;
+  const scopeKey = canonicalLoanOccurrenceScopeKey("fubon", accountKey);
+  const slots = assignOccurrenceSlots({
+    rows: preparedRows,
+    complete: true,
+    scopeKey: () => scopeKey,
+    fingerprint: (row) => row.fingerprint,
+    partitionDate: (row) => row.effectiveOn,
+  });
+  return slots.map(({ row: prepared, group, occurrenceKey, collisionKey }) => {
+      const { row, inputIndex, sourceCode, mapping, effectiveOn, amount } = prepared;
       const balance = optionalAmount(
         row.balanceAfterTransaction,
         "Fubon loan balance",
@@ -188,10 +184,11 @@ function canonicalRows(
           input.observedAt,
         );
       return {
-        sourceRecordKey,
-        // The sequence remains useful source evidence, but never enters the
-        // semantic occurrence, collision, or provider identity.
-        occurrenceIndex: index + 1,
+        sourceRecordKey: occurrenceKey,
+        occurrenceIndex: group.ordinal,
+        sourceSequenceIndex: inputIndex + 1,
+        occurrenceGroup: group,
+        occurrenceCollisionKey: collisionKey,
         effectiveOn,
         sourceTime: {
           localTime: "00:00:00",
@@ -210,7 +207,7 @@ function canonicalRows(
                 observationKey: canonicalLoanToken(
                   "fubon",
                   "loan-balance-observation-v2",
-                  sourceRecordKey,
+                  occurrenceKey,
                 ),
                 balance,
                 effectiveAt: balanceEffectiveAt,
@@ -221,8 +218,7 @@ function canonicalRows(
             }
           : {}),
       };
-    },
-  );
+    });
 }
 
 export function buildFubonLoanCapture(

@@ -7,6 +7,7 @@ import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
 } from "../canonical/canonical-financial-deposit-admission.ts";
+import { assignCanonicalFinancialDepositOccurrenceGroups } from "../canonical/canonical-financial-deposit-admission.ts";
 
 export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
   "sinopac/domestic-deposit/human-attested-v1" as const;
@@ -952,18 +953,31 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
       throw new Error(
         "SinoPac foreign source row falls outside the complete capture scope.",
       );
-    const duplicateSourceKeys = new Set<string>();
-    for (const record of records) {
-      if (duplicateSourceKeys.has(record.occurrenceKey))
-        throw new Error(
-          "SinoPac foreign human-attested source identity collision.",
-        );
-      duplicateSourceKeys.add(record.occurrenceKey);
-    }
     const contractVersion =
       SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.evidenceVersion;
     const authorityRoute =
       SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1.authorityRoute;
+    const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+      rows: records.map((record) => ({
+        record,
+        partitionDate: record.sourceTime.localDate,
+      })),
+      scopeKey: foreignToken(
+        JSON.stringify([
+          "sinopac-foreign-deposit-occurrence-scope-v1",
+          accountNo,
+          currency,
+          authorityRoute,
+          contractVersion,
+        ]),
+      ),
+      startDate,
+      endDate,
+      contractVersion,
+      complete:
+        capture.downloads.length > 0 &&
+        capture.downloads.every((download) => download.terminal),
+    });
     const captureCurrencyScope = { kind: "currency" as const, currency };
     const scopeFingerprint = foreignToken(
       `${contractVersion}:${accountNo}:${startDate}:${endDate}:${foreignCanonicalJson(captureCurrencyScope)}`,
@@ -1058,7 +1072,8 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
             }),
           },
         ],
-        records,
+        records: occurrenceGroups.records,
+        occurrenceGroupCoverage: occurrenceGroups.coverage,
       },
     };
   } catch (error) {

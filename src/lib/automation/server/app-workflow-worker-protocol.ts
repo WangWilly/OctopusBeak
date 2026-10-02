@@ -7,6 +7,11 @@ import type { WorkflowRunEvent } from "../workflow-executor.ts";
 import type { TypedWorkflowOutcomeSummary } from "./typed-workflow-outcome.ts";
 import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
+import {
+  sanitizeSafeWorkflowFailureError,
+  workflowFailureDiagnosticRepoRoot,
+  type SafeWorkflowFailureError,
+} from "./workflow-failure-diagnostics.ts";
 
 export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 2 as const;
 export const APP_WORKFLOW_WORKER_MAX_FRAME_BYTES = 1_048_576;
@@ -160,6 +165,7 @@ export type AppWorkflowWorkerOutboundFrame =
     kind: "failed";
     taskRunId: string | null;
     errorCode: string;
+    diagnostic?: SafeWorkflowFailureError;
   }>
   | Readonly<{ protocolVersion: 2; kind: "cancelled"; taskRunId: string }>
   | CathayGmailOtpRequestFrame;
@@ -398,7 +404,10 @@ function validSummary(value: unknown): value is TypedWorkflowOutcomeSummary | nu
     && Number(count) <= 1_000_000_000);
 }
 
-export function parseAppWorkflowWorkerOutboundFrame(value: unknown): AppWorkflowWorkerOutboundFrame {
+export function parseAppWorkflowWorkerOutboundFrame(
+  value: unknown,
+  diagnosticRepoRoot = workflowFailureDiagnosticRepoRoot(),
+): AppWorkflowWorkerOutboundFrame {
   if (!isRecord(value) || value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION || !boundedJson(value)) invalid();
   if (value.kind === "exchange-rate-progress" && exactKeys(value, ["protocolVersion", "kind", "eventId", "phaseCode", "completed", "total", "percent"])) {
     if (
@@ -437,13 +446,21 @@ export function parseAppWorkflowWorkerOutboundFrame(value: unknown): AppWorkflow
     if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId) || !validSummary(value.summary)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
-  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"])) {
+  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic"])) {
     if (
       (value.taskRunId !== null && (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)))
       || typeof value.errorCode !== "string"
       || !failureCodes.has(value.errorCode)
     ) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
+    return {
+      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+      kind: "failed",
+      taskRunId: value.taskRunId as string | null,
+      errorCode: value.errorCode,
+      ...(Object.hasOwn(value, "diagnostic")
+        ? { diagnostic: sanitizeSafeWorkflowFailureError(value.diagnostic, diagnosticRepoRoot) }
+        : {}),
+    };
   }
   if (value.kind === "cancelled" && exactKeys(value, ["protocolVersion", "kind", "taskRunId"])) {
     if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)) invalid();
