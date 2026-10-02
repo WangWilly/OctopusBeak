@@ -56,6 +56,7 @@ import type {
   PGliteCanonicalInvestmentRelationResolutionResult,
 } from "../src/ledger/pglite/relations.ts";
 import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import { retainSafeWorkflowFailureError, type SafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 /** Stable named query/command registry identifiers. */
 export const PGLITE_FINANCIAL_OPERATIONS = [
@@ -98,6 +99,7 @@ export type PGliteFinancialRequest = Readonly<{
   id: number;
   operation: PGliteFinancialOperation | string;
   args: readonly unknown[];
+  diagnosticContext?: WorkflowFailureCorrelation;
 }>;
 
 export type PGliteFinancialCancelRequest = Readonly<{
@@ -122,6 +124,7 @@ export type PGliteFinancialResponse =
     code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled";
     /** Safe domain classification; raw worker/database errors never cross IPC. */
     category?: PGliteFinancialFailureCategory;
+    diagnosticError?: SafeWorkflowFailureError;
     message: string;
   }>;
 
@@ -214,7 +217,11 @@ function isFailureCategory(value: unknown): value is PGliteFinancialFailureCateg
     || value === "fatal";
 }
 
-export function createPGliteFinancialRpcClient(port: PGliteFinancialRpcPort, ready?: Promise<void>): PGliteFinancialRpcClient {
+export function createPGliteFinancialRpcClient(
+  port: PGliteFinancialRpcPort,
+  ready?: Promise<void>,
+  diagnosticContext?: WorkflowFailureCorrelation,
+): PGliteFinancialRpcClient {
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let closed = false;
@@ -228,7 +235,9 @@ export function createPGliteFinancialRpcClient(port: PGliteFinancialRpcPort, rea
       const code = value.code === "invalid-request" || value.code === "worker-closed" || value.code === "cancelled"
         ? value.code
         : "operation-failed";
-      request.reject(new PGliteFinancialError(code, isFailureCategory(value.category) ? value.category : undefined));
+      const error = new PGliteFinancialError(code, isFailureCategory(value.category) ? value.category : undefined);
+      if (code === "operation-failed") retainSafeWorkflowFailureError(error, value.diagnosticError);
+      request.reject(error);
     }
   };
   port.on("message", onMessage);
@@ -281,7 +290,14 @@ export function createPGliteFinancialRpcClient(port: PGliteFinancialRpcPort, rea
         options.signal?.addEventListener("abort", abort, { once: true });
         pending.set(id, pendingEntry);
         try {
-          port.postMessage({ kind: "pglite-financial-request", version: 1, id, operation, args } satisfies PGliteFinancialRequest);
+          port.postMessage({
+            kind: "pglite-financial-request",
+            version: 1,
+            id,
+            operation,
+            args,
+            ...(diagnosticContext ? { diagnosticContext } : {}),
+          } satisfies PGliteFinancialRequest);
         } catch (error) {
           pending.delete(id);
           pendingEntry.cleanup();

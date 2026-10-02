@@ -16,6 +16,10 @@ import {
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import {
+  captureSafeWorkflowFailureError,
+  workflowFailureDiagnosticRepoRoot,
+} from "./workflow-failure-diagnostics.ts";
+import {
   AppWorkflowWorkerProtocolError,
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
@@ -301,6 +305,7 @@ export async function runAppWorkflowWorker(
       childRpc = createPGliteChildRpcClient({
         endpoint: start.pgliteRpc.endpoint,
         token: start.pgliteRpc.token,
+        diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
       });
       await abortable(childRpc.ready, controller.signal);
     }
@@ -336,6 +341,7 @@ export async function runAppWorkflowWorker(
         childRpc = createPGliteChildRpcClient({
           endpoint: start.pgliteRpc.endpoint,
           token: start.pgliteRpc.token,
+          diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
         });
         await abortable(childRpc.ready, controller.signal);
       }
@@ -433,6 +439,10 @@ export async function runAppWorkflowWorker(
           kind: "failed",
           taskRunId: start.taskRunId,
           errorCode,
+          diagnostic: captureSafeWorkflowFailureError(
+            protocolFailure ? new AppWorkflowWorkerProtocolError() : error,
+            workflowFailureDiagnosticRepoRoot(),
+          ),
         });
       } catch { /* an unavailable host cannot receive the terminal event */ }
     }

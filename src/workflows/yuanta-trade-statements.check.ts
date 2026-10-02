@@ -11,7 +11,9 @@ import {
   fillTradeLoginForm,
   isYuantaSecurityComponentMissing,
   isCompleteHoldingCapture,
+  isCompleteTradeCapture,
   buildYuantaTradeFundingEvidence,
+  buildYuantaTradeCanonicalCaptures,
   deriveYuantaTradeAccountNumberEvidence,
   mapYuantaTradeCanonicalInvestmentRow,
   normalizeYuantaSettlementMarket,
@@ -22,7 +24,7 @@ import {
   yuantaTradeCaptchaImages,
   yuantaTradeCaptchaModal,
   yuantaTradeCaptchaSubmit,
-  yuantaTradeCanonicalOccurrenceIdentity,
+  yuantaTradeCanonicalHoldingIdentity,
   yuantaTradeAudioAssistanceStage,
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
@@ -262,6 +264,7 @@ const completeHoldingPage = {
       category: "Stock",
       columns: [],
       rows: [],
+      sourceRowsComplete: true,
     },
   ],
 };
@@ -288,6 +291,59 @@ test("rejects a partial YuanTa holdings capture", () => {
     isCompleteHoldingCapture([completeHoldingPage], ["Stock", "Bond"]),
     false,
   );
+});
+
+test("requires inline, fully declared trade-grid rows before admitting query completeness", () => {
+  const dateRange = { startDate: "2026/08/01", endDate: "2026/08/31" };
+  const html = (gridOptions: string) => `
+    <script>
+      var currTradeType = 'StockTrade';
+      var queryDateType = '6';
+      var startDate = '2026/08/01';
+      var endDate = '2026/08/31';
+      $("#gridStock").kendoGrid({ columns: [], ${gridOptions} });
+    </script>`;
+  const complete = parseReportPage(
+    html('schema: { total: 1 }, data: [{ "TradeDate_T2": "2026/08/30" }]'),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([complete], ["StockTrade"], dateRange), true);
+
+  const remotelyPaged = parseReportPage(
+    html("transport: { read: '/trades' }, serverPaging: true, data: []"),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([remotelyPaged], ["StockTrade"], dateRange), false);
+
+  const missingTotalRows = parseReportPage(
+    html('schema: { total: 2 }, data: [{ "TradeDate_T2": "2026/08/30" }]'),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([missingTotalRows], ["StockTrade"], dateRange), false);
+
+  const unprovenTransport = parseReportPage(
+    html("transport: readTrades, data: []"),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([unprovenTransport], ["StockTrade"], dateRange), false);
+
+  const runtimePagingFlag = parseReportPage(
+    html("serverPaging: pagingEnabled, data: []"),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([runtimePagingFlag], ["StockTrade"], dateRange), false);
+
+  const computedTotal = parseReportPage(
+    html('schema: { total: response.total }, data: [{ "TradeDate_T2": "2026/08/30" }]'),
+    "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/StockTrade",
+    "StockTrade",
+  );
+  assert.equal(isCompleteTradeCapture([computedTotal], ["StockTrade"], dateRange), false);
 });
 
 test("leaves YuanTa funding evidence unresolved when the source omits market", () => {
@@ -361,6 +417,7 @@ test("normalizes both affected C-format accounts from source trade rows", () => 
             gridId: "gridStock",
             category: "Stock",
             columns: [],
+            sourceRowsComplete: true,
             rows: [
               {
                 交易日期: "2026/08/29",
@@ -507,6 +564,7 @@ test("does not treat missing or unsupported live MarketNo as US settlement evide
             gridId: "gridOversea",
             category: "Oversea",
             columns,
+            sourceRowsComplete: true,
             rows: normalizeRows(
               [
                 { 交易日期: "2026/08/30", MarketNo: 0 },
@@ -538,76 +596,56 @@ test("does not treat missing or unsupported live MarketNo as US settlement evide
   }
 });
 
-test("canonical occurrence identity is order invariant and rejects indistinguishable duplicates", () => {
+test("complete Yuanta Trade capture preserves duplicate fills and stable group slots", () => {
   const row = {
+    account_number: "984C-0209947",
     trade_date: "2026-08-30",
+    trade_type: "StockTrade",
+    asset_type: "Stock",
+    sub_category: "Stock",
     product_code: "SANITIZED",
+    product_name: "SANITIZED SECURITY",
+    currency: "TWD",
     action: "買進",
     quantity: "1000",
     settlement_amount: "500000",
+    settlement_currency: "TWD",
+    description: "",
   };
-  const first = yuantaTradeCanonicalOccurrenceIdentity(
-    "SANITIZED-ACCOUNT",
-    "transaction",
-    row,
-    0,
-  );
-  const second = yuantaTradeCanonicalOccurrenceIdentity(
-    "SANITIZED-ACCOUNT",
-    "transaction",
-    row,
-    1,
-  );
-  assert.equal(first, second);
-  assert.notEqual(
-    first,
-    yuantaTradeCanonicalOccurrenceIdentity(
-      "SANITIZED-ACCOUNT",
-      "transaction",
-      { ...row, action: "賣出" },
-      0,
-    ),
-  );
-  const referenced = { ...row, source_transaction_reference: "REF-001" };
-  assert.equal(
-    yuantaTradeCanonicalOccurrenceIdentity(
-      "SANITIZED-ACCOUNT",
-      "transaction",
-      referenced,
-      0,
-    ),
-    yuantaTradeCanonicalOccurrenceIdentity(
-      "SANITIZED-ACCOUNT",
-      "transaction",
-      referenced,
-      99,
-    ),
-  );
-  assert.throws(
-    () =>
-      assertYuantaTradeCanonicalOccurrenceIdentities(
-        "SANITIZED-ACCOUNT",
-        "transaction",
-        [row, { ...row }],
-      ),
-    /indistinguishable duplicate rows/,
-  );
+  const history = {
+    dateRange: { startDate: "2026/08/01", endDate: "2026/08/31" },
+    requestedTradeTypes: ["StockTrade", "BondTrade"],
+  };
+  const holding = {
+    account_number: row.account_number,
+    as_of_date: "2026/08/31",
+    product_code: row.product_code,
+    product_name: row.product_name,
+    currency: row.currency,
+    quantity: "2000",
+    market_value_twd: "900000",
+  };
+  const credentials = { yuanta_trade_user_id: "synthetic-login" };
+  const capture = (transactions: typeof row[]) =>
+    buildYuantaTradeCanonicalCaptures(credentials, [holding], transactions, history)[0]!;
+  const first = capture([row, { ...row }]);
+  const firstKeys = first.transactions.map((transaction) => transaction.sourceRecordKey).sort();
+  assert.equal(first.transactions.length, 2);
+  assert.deepEqual(first.transactions.map((transaction) => transaction.occurrenceGroup?.ordinal), [1, 2]);
+  assert.equal(first.scope.transactionHistory?.complete, true);
+  assert.equal(first.occurrenceGroupCoverage?.length, 2);
+  assert.equal(first.occurrenceGroupCoverage?.some((coverage) =>
+    coverage.scopeKey === first.transactions[0]?.occurrenceGroup?.scopeKey), true);
+
+  const unrelated = { ...row, trade_date: "2026-08-29", quantity: "400", settlement_amount: "200000" };
+  const shifted = capture([{ ...row }, unrelated, row]);
   assert.deepEqual(
-    new Set(
-      assertYuantaTradeCanonicalOccurrenceIdentities(
-        "SANITIZED-ACCOUNT",
-        "transaction",
-        [row, { ...row, quantity: "2000" }],
-      ),
-    ),
-    new Set(
-      assertYuantaTradeCanonicalOccurrenceIdentities(
-        "SANITIZED-ACCOUNT",
-        "transaction",
-        [{ ...row, quantity: "2000" }, row],
-      ),
-    ),
+    shifted.transactions.filter((transaction) => transaction.effectiveOn === "2026-08-30")
+      .map((transaction) => transaction.sourceRecordKey).sort(),
+    firstKeys,
   );
+  assert.equal(shifted.transactions.length, 3);
+  assert.equal(shifted.occurrenceGroupCoverage?.length, 2);
 });
 
 test("holding occurrence identity does not require a buy or sell action", () => {
@@ -618,20 +656,10 @@ test("holding occurrence identity does not require a buy or sell action", () => 
     market_value_twd: "500000",
   };
 
-  const first = yuantaTradeCanonicalOccurrenceIdentity(
-    "SANITIZED-ACCOUNT",
-    "holding",
-    holding,
-    0,
-  );
+  const first = yuantaTradeCanonicalHoldingIdentity("SANITIZED-ACCOUNT", holding, 0);
   assert.equal(
     first,
-    yuantaTradeCanonicalOccurrenceIdentity(
-      "SANITIZED-ACCOUNT",
-      "holding",
-      { ...holding, action: "買進" },
-      1,
-    ),
+    yuantaTradeCanonicalHoldingIdentity("SANITIZED-ACCOUNT", { ...holding, action: "買進" }, 1),
   );
 });
 
@@ -664,6 +692,7 @@ test("retains a Yuanta trade memo and leaves an absent memo empty", () => {
     "984C-0209947",
     {
       trade_date: "2026/08/29",
+      trade_type: "StockTrade",
       product_code: "SPY",
       currency: "USD",
       action: "買進",
@@ -678,6 +707,7 @@ test("retains a Yuanta trade memo and leaves an absent memo empty", () => {
     "984C-0209948",
     {
       trade_date: "2026/08/29",
+      trade_type: "StockTrade",
       product_code: "SPY",
       currency: "USD",
       action: "買進",

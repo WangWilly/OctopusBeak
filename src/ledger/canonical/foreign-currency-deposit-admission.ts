@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositConversionEvidence,
@@ -10,6 +11,7 @@ import {
   type FinancialDepositSourceTime,
 } from "./canonical-financial-deposit-admission.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "./foreign-currency-deposit-authorities.ts";
+import { canonicalSourceRouteRegistration } from "./canonical-source-route-registry.ts";
 import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
@@ -592,7 +594,7 @@ export function createForeignCurrencyDepositCapture(
   const startDate = date(input.startDate, "Capture start date");
   const endDate = date(input.endDate, "Capture end date");
   if (startDate > endDate) throw new Error("Capture scope is inverted.");
-  const records = input.records.map((record) => buildRecord(record, contract));
+  let records = input.records.map((record) => buildRecord(record, contract));
   const captureCurrencyScope =
     input.captureCurrencyScope.kind === "currency"
       ? {
@@ -603,6 +605,37 @@ export function createForeignCurrencyDepositCapture(
           ),
         }
       : { kind: "multi-currency" as const };
+  let occurrenceGroupCoverage:
+    | CanonicalFinancialDepositCapture["occurrenceGroupCoverage"]
+    | undefined;
+  const routeRegistration = canonicalSourceRouteRegistration(
+    contract.authorityRoute,
+  );
+  if (routeRegistration?.occurrenceGroups === "required") {
+    const grouped = assignCanonicalFinancialDepositOccurrenceGroups({
+      rows: records.map((record) => ({
+        record,
+        partitionDate: record.sourceTime.localDate,
+      })),
+      scopeKey: token(
+        canonicalJson({
+          source: contract.sourceId,
+          accountNo,
+          currencyScope: captureCurrencyScope,
+          contractVersion: contract.contractVersion,
+        }),
+      ),
+      startDate,
+      endDate,
+      contractVersion: contract.contractVersion,
+      complete:
+        input.completeness === "complete-range" &&
+        (records.length > 0 ||
+          input.zeroResultAuthority === "provider-explicit-no-data"),
+    });
+    records = [...grouped.records];
+    occurrenceGroupCoverage = grouped.coverage;
+  }
   if (
     captureCurrencyScope.kind === "currency" &&
     records.some((record) => record.currency !== captureCurrencyScope.currency)
@@ -702,6 +735,7 @@ export function createForeignCurrencyDepositCapture(
       },
     ],
     records,
+    ...(occurrenceGroupCoverage ? { occurrenceGroupCoverage } : {}),
   };
 }
 

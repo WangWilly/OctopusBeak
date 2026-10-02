@@ -1,6 +1,7 @@
 // Pure Yuanta domestic-deposit source and financial admission contracts.
 import { createHash } from "node:crypto";
 import {
+  assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
@@ -1261,8 +1262,11 @@ function financialDiagnosticsFor(
 
   const queryStart = rangeDate(input.capture.queryRange.startDate);
   const queryEnd = rangeDate(input.capture.queryRange.endDate);
-  const seen = new Map<string, string>();
   const records: CanonicalFinancialDepositRecord[] = [];
+  const groupRows: Array<{
+    record: CanonicalFinancialDepositRecord;
+    partitionDate: string;
+  }> = [];
   for (const [pageOrdinal, download] of downloads.entries()) {
     for (const row of download.rows) {
       const time = sourceTransactionTime(row.values);
@@ -1278,15 +1282,9 @@ function financialDiagnosticsFor(
       const result = financialRecord(identity, row, pageOrdinal, semantics);
       diagnostics.push(...result.diagnostics);
       if (!result.record) continue;
-      const previous = seen.get(result.record.collisionKey);
-      if (previous !== undefined) {
-        diagnostics.push("occurrence-ambiguous");
-        if (previous !== result.record.occurrenceKey)
-          diagnostics.push("composite-occurrence-collision");
-        continue;
-      }
-      seen.set(result.record.collisionKey, result.record.occurrenceKey);
       records.push(result.record);
+      if (time)
+        groupRows.push({ record: result.record, partitionDate: time.accountingDate });
     }
   }
   if (diagnostics.length > 0)
@@ -1303,6 +1301,20 @@ function financialDiagnosticsFor(
     input.capture.queryRange.startDate,
     input.capture.queryRange.endDate,
   );
+  const occurrenceGroups = assignCanonicalFinancialDepositOccurrenceGroups({
+    rows: groupRows,
+    scopeKey: financialOpaque(
+      "yuanta-domestic-deposit-occurrence-scope-v2",
+      identity.subjectDigest,
+      YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
+      YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    ),
+    startDate: queryStart,
+    endDate: queryEnd,
+    contractVersion: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+    complete:
+      downloads.length > 0 && downloads.every((download) => download.terminal),
+  });
   const capture = admitCanonicalFinancialDepositCapture({
     captureId: input.captureId.trim(),
     authorityRoute: YUANTA_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -1374,7 +1386,8 @@ function financialDiagnosticsFor(
         providerGuaranteed: false,
       }),
     })),
-    records,
+    records: occurrenceGroups.records,
+    occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { diagnostics, semantics, capture };
 }

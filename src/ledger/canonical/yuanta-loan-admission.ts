@@ -2,11 +2,13 @@ import type {
   CanonicalLoanStatementRow,
   LoanCaptureInput,
 } from "./loan-financial.ts";
+import { assignOccurrenceSlots } from "./occurrence-groups.ts";
 import {
   CanonicalLoanAdmissionError,
   CanonicalLoanConflictError,
   LOAN_EVENT_CONTRACT_MAPPINGS,
   YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+  canonicalLoanOccurrenceScopeKey,
   canonicalLoanSourceIdentity,
   canonicalLoanToken,
   createCanonicalLoanCapture,
@@ -354,13 +356,12 @@ function logYuantaLoanSourceOccurrenceAmbiguity(
 function canonicalRows(
   input: YuantaLoanCaptureBuildInput,
 ): CanonicalLoanStatementRow[] {
-  const anchors = new Map<string, YuantaLoanAmbiguousSourceRow[]>();
   const account = normalizedSourceLabel(input.accountValue);
   if (!account)
     throw new CanonicalLoanAdmissionError(
       "Yuanta loan account value is required.",
     );
-  const rows: CanonicalLoanStatementRow[] = input.rows.map((row, index) => {
+  const preparedRows = input.rows.map((row, index) => {
     const paymentItem = normalizedSourceLabel(row.paymentItem);
     const sourceCode = sourceCodeFor(paymentItem);
     const mapping = LOAN_EVENT_CONTRACT_MAPPINGS.yuanta[sourceCode]!;
@@ -386,9 +387,9 @@ function canonicalRows(
     const postingDate = postingDateText
       ? parseCanonicalLoanDate(postingDateText, "Yuanta loan posting date")
       : "";
-    const sourceRecordKey = canonicalLoanToken(
+    const anchorKey = canonicalLoanToken(
       "yuanta",
-      YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
+      "loan-source-anchor-v1",
       account,
       transactionDate,
       postingDate,
@@ -413,9 +414,6 @@ function canonicalRows(
       ),
       fieldPresence: sourceRowFieldPresence(row),
     } satisfies YuantaLoanAmbiguousSourceRow;
-    const anchorMembers = anchors.get(sourceRecordKey);
-    if (anchorMembers) anchorMembers.push(sourceRow);
-    else anchors.set(sourceRecordKey, [sourceRow]);
     // Yuanta reports the balance after a transaction. The source only
     // distinguishes the transaction date; retain date precision and do not
     // manufacture an end-of-day timestamp from the posting date.
@@ -430,15 +428,21 @@ function canonicalRows(
         input.observedAt,
       );
     return {
-      sourceRecordKey,
-      sourceOccurrenceIdentityRuleVersion:
+      inputIndex: index,
+      anchorKey,
+      sourceRow,
+      fingerprint: canonicalLoanToken(
+        "yuanta",
         YUANTA_LOAN_SOURCE_OCCURRENCE_IDENTITY_RULE_VERSION,
-      occurrenceIndex: index + 1,
+        anchorKey,
+        amount.coefficient,
+        String(amount.scale),
+      ),
       effectiveOn,
       sourceTime: {
         localTime: "00:00:00",
-        precision: "date",
-        timeOrigin: "defaulted_local_midnight",
+        precision: "date" as const,
+        timeOrigin: "defaulted_local_midnight" as const,
       },
       sourceCode,
       eventKind: mapping.eventKind,
@@ -448,31 +452,85 @@ function canonicalRows(
       ...(balanceIsHistorical
         ? {
             balance: {
-              observationKey: canonicalLoanToken(
-                "yuanta",
-                "loan-balance-observation-v1",
-                sourceRecordKey,
-              ),
               balance,
               effectiveAt: balanceEffectiveAt,
-              effectiveAtPrecision: "date",
-              effectiveAtTimeOrigin: "source_reported",
-              effectiveAtField: "transaction-date",
+              effectiveAtPrecision: "date" as const,
+              effectiveAtTimeOrigin: "source_reported" as const,
+              effectiveAtField: "transaction-date" as const,
             },
           }
         : {}),
     };
   });
-  const duplicateGroups = [...anchors.values()].filter(
-    (members) => members.length > 1,
+  const identity = canonicalLoanSourceIdentity(
+    "yuanta",
+    input.sourceConnectionScope,
+    input.accountValue,
   );
-  if (duplicateGroups.length > 0) {
-    logYuantaLoanSourceOccurrenceAmbiguity(duplicateGroups);
-    throw new CanonicalLoanConflictError(
-      "Yuanta loan source occurrence anchor is ambiguous.",
+  const scopeKey = canonicalLoanOccurrenceScopeKey("yuanta", identity.accountKey);
+  let slots;
+  try {
+    slots = assignOccurrenceSlots({
+      rows: preparedRows,
+      complete: true,
+      scopeKey: () => scopeKey,
+      fingerprint: (row) => row.fingerprint,
+      partitionDate: (row) => row.effectiveOn,
+      collisionKey: (row, ordinal) => canonicalLoanToken(
+        "yuanta",
+        "loan-source-anchor-slot-v1",
+        row.anchorKey,
+        String(ordinal),
+      ),
+    });
+  } catch (error) {
+    const byAnchor = new Map<string, YuantaLoanAmbiguousSourceRow[]>();
+    for (const row of preparedRows) {
+      const group = byAnchor.get(row.anchorKey) ?? [];
+      group.push(row.sourceRow);
+      byAnchor.set(row.anchorKey, group);
+    }
+    const contradictoryGroups = [...byAnchor.values()].filter(
+      (members) => members.length > 1 && changedFieldKinds(members).length > 0,
     );
+    if (contradictoryGroups.length > 0) {
+      logYuantaLoanSourceOccurrenceAmbiguity(contradictoryGroups);
+      throw new CanonicalLoanConflictError(
+        "Yuanta loan source anchor contains contradictory transaction claims.",
+      );
+    }
+    throw error;
   }
-  return rows;
+  return slots.map(({ row, group, occurrenceKey, collisionKey }) => ({
+    sourceRecordKey: occurrenceKey,
+    occurrenceIndex: group.ordinal,
+    sourceSequenceIndex: row.inputIndex + 1,
+    occurrenceGroup: group,
+    occurrenceCollisionKey: collisionKey,
+    effectiveOn: row.effectiveOn,
+    sourceTime: row.sourceTime,
+    sourceCode: row.sourceCode,
+    eventKind: row.eventKind,
+    direction: row.direction,
+    amount: row.amount,
+    description: row.description,
+    ...(row.balance === undefined
+      ? {}
+      : {
+          balance: {
+            observationKey: canonicalLoanToken(
+              "yuanta",
+              "loan-balance-observation-group-v1",
+              occurrenceKey,
+            ),
+            balance: row.balance.balance,
+            effectiveAt: row.balance.effectiveAt,
+            effectiveAtPrecision: row.balance.effectiveAtPrecision,
+            effectiveAtTimeOrigin: row.balance.effectiveAtTimeOrigin,
+            effectiveAtField: row.balance.effectiveAtField,
+          },
+        }),
+  }));
 }
 
 export function buildYuantaLoanCapture(

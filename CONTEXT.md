@@ -459,8 +459,16 @@ A reusable user-owned entity applied independently of Transaction Kind, Personal
 _Avoid_: Personal category, source classification, financial fact, transaction relation
 
 **Transaction occurrence matching**:
-The contract-defined reconciliation of repeated Source Record occurrences to one stable Financial Transaction identity within the same integration namespace, connection, product stream, and identity epoch. The mapping must be unique and versioned; a content hash or occurrence ordinal is evidence rather than a permanent key, and ambiguity cancels the attempted Capture.
+The contract-defined reconciliation of repeated Source Record occurrences to one stable Financial Transaction identity within the same integration namespace, connection, product stream, and identity epoch. The mapping must be unique and versioned; an explicitly established Indistinguishable Occurrence Group may preserve distinct Group Slots without claiming individual historical continuity, while unresolved ambiguity outside that contract cancels the attempted Capture.
 _Avoid_: Cross-source match, content-hash identity, ambiguous merge
+
+**Indistinguishable occurrence group**:
+A source-scoped group of transaction occurrences whose contract-defined distinguishing evidence is identical. Its completeness establishes the number of occurrences, but does not prove which individual occurrence in one capture corresponds to an individual occurrence in another.
+_Avoid_: Duplicate import, one transaction, cross-source group
+
+**Group slot**:
+A distinct occurrence position within an Indistinguishable Occurrence Group that preserves its transaction count without asserting individual historical continuity. It is separate from the position of a row in a page or query result.
+_Avoid_: Provider transaction ID, global row sequence, proven individual identity
 
 **Cross-source transaction separation**:
 Financial Transactions from different integrations or source connections always retain separate identities, even when they appear to describe the same real-world event. Source authority routing prevents double use in projections; the first version performs no cross-source reconciliation, fuzzy deduplication, or user merge.

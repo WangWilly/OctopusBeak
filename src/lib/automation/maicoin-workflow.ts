@@ -23,15 +23,15 @@ export type MaicoinWorkflowInput = Readonly<{
 export class MaicoinWorkflowError extends Error {
   readonly code: string;
 
-  constructor(code: string) {
-    super(`MaiCoin workflow failed: ${code}.`);
+  constructor(code: string, cause?: unknown) {
+    super(`MaiCoin workflow failed: ${code}.`, { cause });
     this.name = "MaicoinWorkflowError";
     this.code = code;
   }
 }
 
-function safeError(code: string): MaicoinWorkflowError {
-  return new MaicoinWorkflowError(code);
+function safeError(code: string, cause?: unknown): MaicoinWorkflowError {
+  return new MaicoinWorkflowError(code, cause);
 }
 
 function validatedCredentials(input: MaicoinWorkflowInput): MaxCredentials {
@@ -103,7 +103,7 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
         } catch (error) {
           if (context.signal.aborted) throw cancellationError();
           await context.event("validation", "source-rejected");
-          throw safeError("source-rejected");
+          throw safeError("source-rejected", error);
         }
 
         stage = "validation";
@@ -131,9 +131,9 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             source.statementBatches,
             source.statementValues,
           ))];
-        } catch {
+        } catch (error) {
           await context.event("validation", "source-rejected");
-          throw safeError("source-rejected");
+          throw safeError("source-rejected", error);
         }
         await context.event("validation", "source-complete", {
           completed: captures.length,
@@ -170,10 +170,10 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
             product: "investment",
             signal: context.signal,
           });
-        } catch {
+        } catch (error) {
           if (context.signal.aborted) throw cancellationError();
           await context.event("commit", "canonical-commit-failed");
-          throw safeError("canonical-commit-failed");
+          throw safeError("canonical-commit-failed", error);
         }
         if (commit.status !== "completed") {
           await context.event("commit", "canonical-commit-failed");
@@ -243,7 +243,7 @@ export function createMaicoinWorkflow(): WorkflowDefinition<MaicoinWorkflowInput
           }).catch(() => undefined);
         }
         if (cancelled) throw cancellationError();
-        throw error instanceof MaicoinWorkflowError ? error : safeError(code);
+        throw error instanceof MaicoinWorkflowError ? error : safeError(code, error);
       }
     },
   };

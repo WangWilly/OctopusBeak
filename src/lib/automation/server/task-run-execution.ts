@@ -23,6 +23,11 @@ import {
   classifyTypedWorkflowFailure,
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
+import {
+  appendWorkflowFailureDiagnostic,
+  workflowFailureDiagnosticRepoRoot,
+  WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+} from "./workflow-failure-diagnostics.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
   appWorkflowBrowserConnectionForSession,
@@ -101,6 +106,34 @@ function requiresSolverRoute(
   const groupId = execution.task.credentialGroupId;
   return groupId !== undefined
     && automationGroupVerificationActors(options.launchVerificationSettings)[groupId] === "solver";
+}
+
+function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEvent["stage"] | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.stage !== "finalization") return events[index]?.stage;
+  }
+  return undefined;
+}
+
+async function recordWorkflowFailure(
+  execution: AutomationTaskRunExecution,
+  options: AutomationTaskExecutionOptions,
+  input: Readonly<{
+    source: "workflow-worker" | "workflow-host";
+    errorCode: string;
+    stage?: WorkflowRunEvent["stage"];
+    error?: unknown;
+    safeError?: unknown;
+  }>,
+): Promise<void> {
+  const workflowId = execution.task.workflowId;
+  if (!workflowId) return;
+  const launchEnv = options.launchEnv ?? automationProcessEnv();
+  await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+    workflowId,
+    taskRunId: execution.run.taskRunId,
+    ...input,
+  }, { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) });
 }
 
 type BrowserRuntimeIdentityRecorder = Readonly<{
@@ -204,7 +237,10 @@ async function executeInlineAppWorkflow(
     const injectedPorts = options.workflowPorts ?? {};
     let financialCommit = injectedPorts.financialCommit;
     if (definition.requiresFinancialCommit && !financialCommit) {
-      childRpc = requirePGliteChildRpcClientFromEnv(launchEnv);
+      childRpc = requirePGliteChildRpcClientFromEnv(launchEnv, {
+        workflowId: execution.task.workflowId,
+        taskRunId: execution.run.taskRunId,
+      });
       await childRpc.ready;
       financialCommit = createWorkflowFinancialCommitPort(childRpc.workflow);
     }
@@ -311,6 +347,14 @@ async function executeInlineAppWorkflow(
       outputPersistenceWarnings: [],
       externalPrerequisiteIds: [],
     };
+    if (!cancelled) {
+      await recordWorkflowFailure(execution, options, {
+        source: "workflow-host",
+        errorCode: result.appWorkflowOutcome?.errorCode ?? "workflow-failed",
+        stage: lastWorkflowStage(events),
+        error,
+      });
+    }
   } finally {
     unregisterHumanAssistance?.();
     clearInterval(cancellationPoll);
@@ -565,6 +609,14 @@ async function executeSupervisedAppWorkflow(
             outcome.status === "cancelled",
           );
       result = sanitizedWorkerResult(outcome, errorCode);
+      if (outcome.status === "failed") {
+        await recordWorkflowFailure(execution, options, {
+          source: "workflow-worker",
+          errorCode,
+          stage: lastWorkflowStage(eventsForExecution),
+          safeError: outcome.diagnostic,
+        });
+      }
     }
   } catch (error) {
     try {
@@ -601,6 +653,14 @@ async function executeSupervisedAppWorkflow(
       },
       errorCode,
     );
+    if (!cancelled) {
+      await recordWorkflowFailure(execution, options, {
+        source: "workflow-host",
+        errorCode,
+        stage: lastWorkflowStage(eventsForExecution),
+        error,
+      });
+    }
   } finally {
     unregisterHumanAssistance?.();
     clearInterval(cancellationPoll);

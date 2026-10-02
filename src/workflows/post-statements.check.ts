@@ -18,6 +18,11 @@ import {
   submitPostLoginAndWait,
 } from "./post-statements.ts";
 import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
+import {
+  admitPostDomesticDepositCaptureEvidence,
+  admitPostDomesticDepositFinancialCapture,
+} from "../ledger/canonical/post-domestic-deposit-admission.ts";
+import { POST_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/post-human-attestation-contract.ts";
 
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 
@@ -434,6 +439,34 @@ assert.deepEqual(builtAccountNumberCapture.account.accountNumber, {
   evidenceVersion: "post/domestic-deposit/account-number-v1",
   sourceField: "request.body._USER_ID",
 });
+const repeatedPostCaptureEvidence = admitPostDomesticDepositCaptureEvidence(
+  buildPostDomesticDepositCapture(
+    {
+      accountId: syntheticPostAccountNumber,
+      queryPeriods: ["2026/02/01~2026/08/24"],
+      queryRange: { startDate: "2026/02/01", endDate: "2026/08/24" },
+      httpStatus: 200,
+      itemShape: "array",
+      rows: [rows[0]!, rows[0]!],
+    },
+    "2026-08-24T10:11:12+08:00",
+  ),
+);
+assert.equal(repeatedPostCaptureEvidence.status, "admissible");
+const repeatedPostFinancialCapture = admitPostDomesticDepositFinancialCapture({
+  capture: repeatedPostCaptureEvidence.capture!,
+  captureId: "post-duplicate-occurrence-check",
+  humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(repeatedPostFinancialCapture.status, "admitted");
+assert.deepEqual(
+  repeatedPostFinancialCapture.capture!.records.map(
+    (record) => record.occurrenceGroup?.ordinal,
+  ),
+  [1, 2],
+  "identical Post rows retain two semantic occurrence slots",
+);
+assert.equal(repeatedPostFinancialCapture.capture!.occurrenceGroupCoverage?.length, 1);
 
 const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
   payload: [

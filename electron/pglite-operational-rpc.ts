@@ -4,6 +4,13 @@ import type {
 } from "../src/lib/automation/server/store.ts";
 import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
 import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
+import {
+  appendWorkflowFailureDiagnostic,
+  isWorkflowFailureCorrelation,
+  workflowFailureDiagnosticRepoRoot,
+  WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+  type WorkflowFailureCorrelation,
+} from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 
 /**
  * The operational worker protocol is deliberately method based.  There is no
@@ -54,6 +61,7 @@ export type PGliteOperationalRequest = {
   readonly id: number;
   readonly operation: PGliteOperationalOperation | string;
   readonly args: readonly unknown[];
+  readonly diagnosticContext?: WorkflowFailureCorrelation;
 };
 
 export type PGliteOperationalResponse =
@@ -117,7 +125,8 @@ function validRequest(value: unknown): value is PGliteOperationalRequest {
     && Number.isSafeInteger(value.id)
     && value.id >= 0
     && typeof value.operation === "string"
-    && Array.isArray(value.args);
+    && Array.isArray(value.args)
+    && (value.diagnosticContext === undefined || isWorkflowFailureCorrelation(value.diagnosticContext));
 }
 
 function operationFailure(
@@ -384,10 +393,19 @@ export function createPGliteOperationalRpcServer(
           ok: true,
           value: result,
         }),
-        (error: unknown) => postResponse(
-          port,
-          operationFailure(value.id, "operation-failed"),
-        ),
+        async (error: unknown) => {
+          if (value.diagnosticContext) {
+            await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+              workflowId: value.diagnosticContext.workflowId,
+              taskRunId: value.diagnosticContext.taskRunId,
+              source: "operational-rpc",
+              errorCode: "workflow-failed",
+              operation,
+              error,
+            }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+          }
+          postResponse(port, operationFailure(value.id, "operation-failed"));
+        },
       )
       .then(() => undefined);
     active.add(work);
@@ -436,6 +454,7 @@ function maicoinOperationName<K extends keyof PGliteMaicoinPersistencePort>(meth
 export function createPGliteOperationalRpcClient(
   port: RpcPort,
   ready?: Promise<void>,
+  diagnosticContext?: WorkflowFailureCorrelation,
 ): PGliteOperationalRpcClient {
   const pending = new Map<number, RpcPending>();
   let nextId = 1;
@@ -483,6 +502,7 @@ export function createPGliteOperationalRpcClient(
             id,
             operation,
             args,
+            ...(diagnosticContext ? { diagnosticContext } : {}),
           } satisfies PGliteOperationalRequest);
         } catch (error) {
           pending.delete(id);

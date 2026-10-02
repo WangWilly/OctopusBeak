@@ -11,6 +11,12 @@ import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-co
 import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
+import {
+  YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+  admitYuantaDomesticDepositCaptureEvidence,
+  admitYuantaDomesticDepositFinancialCapture,
+} from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
+import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
@@ -82,9 +88,24 @@ const workflowNumberedCapture = buildYuantaCapture(
     source: {
       filename: "synthetic-yuanta.csv",
       byteLength: 0,
-      contentDigest: "sha256:synthetic-yuanta" as const,
-      columnNames: [],
-      rows: [],
+      contentDigest: `sha256:${"a".repeat(64)}` as const,
+      columnNames: [...YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES],
+      rows: [
+        {
+          rowOrdinal: 0,
+          values: [
+            "臺幣活期存款", "0012345678901234", "20260821", "20260821",
+            "09:10:00", "薪資", "", "100", "1100", "", "",
+          ],
+        },
+        {
+          rowOrdinal: 1,
+          values: [
+            "臺幣活期存款", "0012345678901234", "20260821", "20260821",
+            "09:10:00", "薪資", "", "100", "1100", "", "",
+          ],
+        },
+      ],
       terminal: true,
     },
   },
@@ -95,6 +116,26 @@ assert.deepEqual(workflowNumberedCapture.account.accountNumber, {
   evidenceVersion: "yuanta/domestic-deposit/account-number-v1",
   sourceField: "#acctno option.value",
 });
+const yuantaDuplicateEvidence = admitYuantaDomesticDepositCaptureEvidence(
+  workflowNumberedCapture,
+);
+assert.equal(yuantaDuplicateEvidence.status, "admissible");
+const yuantaDuplicateFinancial = admitYuantaDomesticDepositFinancialCapture({
+  capture: yuantaDuplicateEvidence.capture!,
+  captureId: "yuanta-domestic-duplicate-occurrence-check",
+  humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+  sourceConnectionScope: stableConnectionScope,
+  sourceConnectionKey: stableConnectionKey,
+});
+assert.equal(yuantaDuplicateFinancial.status, "admitted");
+assert.deepEqual(
+  yuantaDuplicateFinancial.capture!.records.map(
+    (record) => record.occurrenceGroup?.ordinal,
+  ),
+  [1, 2],
+  "identical Yuanta domestic rows retain two semantic occurrence slots",
+);
+assert.equal(yuantaDuplicateFinancial.capture!.occurrenceGroupCoverage?.length, 1);
 
 assert.deepEqual(
   yuantaLoanAccountEvidenceFromTransactionNote("0012345678901234", 7),

@@ -17,6 +17,11 @@ import {
   runHncbStatements,
 } from "./hncb-statements.ts";
 import {
+  admitHncbDomesticDepositCaptureEvidence,
+  admitHncbDomesticDepositFinancialCapture,
+} from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
+import { HNCB_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/hncb-human-attestation-contract.ts";
+import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   parseHncbCurrentDepositOverviewTable,
@@ -120,6 +125,42 @@ assert.deepEqual(workflowCapture.account.accountNumber, {
   evidenceVersion: "hncb/domestic-deposit/account-number-v1",
   sourceField: "select#acct1 option.value + workbook metadata 帳號",
 });
+const duplicateHncbRow = [
+  "2026/08/02", "09:10:00", "2026/08/02", "TWD", "100", "", "900",
+  "SYNTHETIC TRANSFER", "", "", "",
+];
+const duplicateHncbEvidence = admitHncbDomesticDepositCaptureEvidence(
+  buildHncbCapture(
+    { value: accountA, label: `HNCB ${accountA}` },
+    { startDate: "2026/08/01", endDate: "2026/08/31" },
+    "2026-08-31T12:00:00+08:00",
+    {
+      account: `${accountA.slice(0, 6)}-${accountA.slice(6)}`,
+      accountId: accountA,
+      queryPeriod: "2026/08/01-2026/08/31",
+      currency: "TWD",
+      rows: [duplicateHncbRow, duplicateHncbRow],
+      filename: "synthetic-hncb.xls",
+      byteLength: 2,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+    },
+  ),
+);
+assert.equal(duplicateHncbEvidence.status, "admissible");
+const duplicateHncbFinancial = admitHncbDomesticDepositFinancialCapture({
+  capture: duplicateHncbEvidence.capture!,
+  captureId: "hncb-duplicate-occurrence-check",
+  humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST,
+});
+assert.equal(duplicateHncbFinancial.status, "admitted");
+assert.deepEqual(
+  duplicateHncbFinancial.capture!.records.map(
+    (record) => record.occurrenceGroup?.ordinal,
+  ),
+  [1, 2],
+  "identical HNCB rows retain two semantic occurrence slots",
+);
+assert.equal(duplicateHncbFinancial.capture!.occurrenceGroupCoverage?.length, 1);
 const noDataSelectorCapture = buildHncbCapture(
   { value: accountB, label: accountB },
   { startDate: "2026/08/01", endDate: "2026/08/31" },

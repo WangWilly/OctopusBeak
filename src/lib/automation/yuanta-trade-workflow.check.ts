@@ -48,6 +48,7 @@ function report(
       gridId: `grid${assetType}`,
       category: assetType,
       columns: [],
+      sourceRowsComplete: true,
       rows: trade ? [] : [{
         "交易帳號": "984C-0209947",
         "股票代號": "2330",
