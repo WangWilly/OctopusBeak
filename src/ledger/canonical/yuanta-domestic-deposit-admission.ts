@@ -20,9 +20,7 @@ import {
   isYuantaHumanAttestedV2Active,
   isYuantaHumanAttestedV2Manifest,
   yuantaHumanAttestedV2IdentityEpochKey,
-  yuantaHumanAttestedIdentityEpochKey,
   type YuantaHumanAttestedV2Manifest,
-  type YuantaHumanAttestedManifest,
 } from "./yuanta-human-attestation-contract.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "./yuanta-deposit-account-key.ts";
 
@@ -737,27 +735,21 @@ function resolveYuantaSourceConnection(
  */
 export function deriveYuantaDomesticDepositAccountIdentity(
   account: YuantaDomesticDepositCaptureEvidence["account"],
-  manifest: YuantaHumanAttestedManifest = getYuantaHumanAttestedV2Manifest(),
+  manifest: YuantaHumanAttestedV2Manifest = getYuantaHumanAttestedV2Manifest(),
   sourceConnectionKey?: `sha256:${string}`,
 ): YuantaDomesticDepositAccountIdentity {
-  const v2 =
-    manifest.authorityRoute === YUANTA_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V2_ROUTE;
   const subjectDigest = deriveYuantaDomesticDepositAccountKey(account.value);
   return {
     accountNo: subjectDigest,
     sourceConnectionKey:
       sourceConnectionKey ??
       yuantaDigest(
-        v2 ? "yuanta-source-connection-v2" : "yuanta-source-connection-v1",
+        "yuanta-source-connection-v2",
         "yuanta",
         manifest.attestationId,
         manifest.evidenceVersion,
       ),
-    identityEpochKey: v2
-      ? yuantaHumanAttestedV2IdentityEpochKey(
-          manifest as YuantaHumanAttestedV2Manifest,
-        )
-      : yuantaHumanAttestedIdentityEpochKey(manifest),
+    identityEpochKey: yuantaHumanAttestedV2IdentityEpochKey(manifest),
     subjectDigest,
   };
 }

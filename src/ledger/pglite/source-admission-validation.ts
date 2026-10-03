@@ -6,7 +6,11 @@ import {
   type CanonicalSourceEvidence,
   type CanonicalSourceRecord,
 } from "../canonical/canonical-source-evidence.ts";
-import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
+import {
+  canonicalSourceEffectiveTimeRule,
+  canonicalSourceRouteRegistration,
+  canonicalSourceRuleCombination,
+} from "../canonical/canonical-source-route-registry.ts";
 import { assertCanonicalOccurrenceGroupEvidence, CanonicalOccurrenceGroupConflictError } from "../canonical/occurrence-group-evidence.ts";
 
 export { validateCanonicalSourceAccountNumber };
@@ -327,6 +331,7 @@ function normalizeSourceDate(value: string, format: "YYYYMMDD" | "YYYY-MM-DD"): 
 export function validatePGliteCanonicalFinancialFact(
   fact: PGliteCanonicalFinancialFactInput,
   sourceRoute: PGliteCanonicalSourceEvidence["routeKey"],
+  sourceContractVersion: PGliteCanonicalSourceEvidence["contractVersion"],
 ): void {
   if (!fact.amount || typeof fact.amount !== "object")
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial amount is required.");
@@ -352,13 +357,23 @@ export function validatePGliteCanonicalFinancialFact(
     throw new PGliteCanonicalSourceAdmissionError("invalid-origin", "Financial posting origin is not an admitted source origin.");
   if (!isAllowedPostingBasis(fact.postingBasis))
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial posting basis is unsupported.");
-  if (!isAllowedRuleVersion(fact.postingRuleVersion) || !isAllowedRuleVersion(fact.semanticRuleVersion) || !isAllowedRuleVersion(fact.effectiveTimeRuleVersion))
-    throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial rule version is unsupported.");
+  const ruleCombination = canonicalSourceRuleCombination(
+    sourceRoute,
+    sourceContractVersion,
+    fact.postingRuleVersion,
+    fact.semanticRuleVersion,
+    fact.effectiveTimeRuleVersion,
+  );
+  if (!ruleCombination)
+    throw new PGliteCanonicalSourceAdmissionError(
+      "invalid-financial-fact",
+      "Financial rule combination is not admitted by this source contract.",
+    );
   // A validated source route owns its controlled non-ISO denomination scheme.
   const route = canonicalSourceRouteRegistration(sourceRoute);
   if (!/^[A-Z]{3}$/u.test(fact.currency) &&
       !(route?.nonIsoFinancialDenominations?.includes(fact.currency) &&
-        route.contractVersions.includes(fact.postingRuleVersion)))
+        ruleCombination.postingRuleVersion === fact.postingRuleVersion))
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Financial currency is not admitted for this source route.");
   requireCanonicalSourceText(fact.effectiveOn, "Financial effective date");
   requireCanonicalSourceText(fact.transactionDateTimeLocal, "Financial local transaction date");
@@ -552,6 +567,8 @@ export type PGliteCanonicalAccountIdentifierInput = Readonly<{
 
 export function validatePGliteCanonicalBalanceObservation(
   observation: PGliteCanonicalBalanceObservationInput,
+  sourceRoute: PGliteCanonicalSourceEvidence["routeKey"],
+  sourceContractVersion: PGliteCanonicalSourceEvidence["contractVersion"],
 ): void {
   requireCanonicalSourceText(observation.observationKey, "Balance observation key");
   requireCanonicalSourceToken(observation.sourceOccurrenceKey, "Balance source occurrence key");
@@ -567,6 +584,15 @@ export function validatePGliteCanonicalBalanceObservation(
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Balance effective time must be RFC3339.");
   if (!requireCanonicalSourceText(observation.effectiveTimeRuleVersion, "Balance effective-time rule version"))
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Balance effective-time rule version is required.");
+  if (!canonicalSourceEffectiveTimeRule(
+    sourceRoute,
+    sourceContractVersion,
+    observation.effectiveTimeRuleVersion,
+  ))
+    throw new PGliteCanonicalSourceAdmissionError(
+      "invalid-financial-fact",
+      "Balance effective-time rule is not admitted by this source contract.",
+    );
   requireCanonicalSourceText(observation.evidenceSourceRecordKey, "Balance evidence source record key");
   requireCanonicalSourceText(observation.evidenceSourceField, "Balance evidence source field");
   requireCanonicalSourceText(observation.evidenceSourceValue, "Balance evidence source value");
@@ -580,23 +606,11 @@ export function validatePGliteCanonicalBalanceObservation(
 }
 
 function isAllowedPostingOrigin(value: string): boolean {
-  return value === "provider_booked_history" || value === "human_attested_history" || value === "human-attested" || /^synthetic_/u.test(value);
+  return value === "provider_booked_history" || value === "human_attested_history" || value === "human-attested";
 }
 
 function isAllowedPostingBasis(value: string): boolean {
-  return value === "query-status-success-with-accounting-date" || value === "human-attested-formally-posted" || value === "statement-posted-history" || /^synthetic_/u.test(value);
-}
-
-function isAllowedRuleVersion(value: string): boolean {
-  return value.length > 0 && (
-    /^synthetic-/u.test(value) ||
-    /^foreign-currency\//u.test(value) ||
-    /^fubon\/(credit-card|loan)\//u.test(value) ||
-    /^yuanta\/(loan)\//u.test(value) ||
-    /^esun\/credit-card\//u.test(value) ||
-    /\/investment\//u.test(value) ||
-    /^(cathay|linebank|fubon|yuanta|hncb|ctbc|sinopac|post)\//u.test(value)
-  );
+  return value === "query-status-success-with-accounting-date" || value === "human-attested-formally-posted" || value === "statement-posted-history";
 }
 
 export type PGliteCanonicalFinancialAccountInput = Readonly<{

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,22 +26,14 @@ import {
 import { PGliteStore } from "./transaction.ts";
 import { applyPgliteBaseline } from "./baseline.ts";
 import {
-  CATHAY_HUMAN_ATTESTED_V1_MANIFEST,
-} from "../canonical/cathay-human-attestation-contract.ts";
-import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../canonical/ctbc-human-attestation-contract.ts";
 import {
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-  ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   esunCreditCardHumanAttestedManifestFingerprint,
 } from "../canonical/esun-credit-card-human-attestation-contract.ts";
 import {
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-  fubonCreditCardHumanAttestedLegacyV1ManifestFingerprint,
   fubonCreditCardHumanAttestedManifestFingerprint,
 } from "../canonical/fubon-credit-card-human-attestation-contract.ts";
 import {
@@ -58,20 +49,18 @@ import {
   SINOPAC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../canonical/sinopac-human-attestation-contract.ts";
 import {
-  YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
   YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   yuantaCreditCardHumanAttestedV2ManifestFingerprint,
 } from "../canonical/yuanta-credit-card-human-attestation-contract.ts";
 import {
-  YUANTA_HUMAN_ATTESTED_V1_MANIFEST,
   YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
 } from "../canonical/yuanta-human-attestation-contract.ts";
 
 const fubon: PGliteHumanAttestationRouteMetadata = {
   authorityRoute: "fubon/domestic-deposit/human-attested-v1",
 };
-const cathay: PGliteHumanAttestationRouteMetadata = {
-  authorityRoute: "cathay/domestic-deposit/human-attested-v1",
+const ctbc: PGliteHumanAttestationRouteMetadata = {
+  authorityRoute: "ctbc/domestic-deposit/human-attested-v1",
 };
 
 async function fixture(directory?: string): Promise<{
@@ -91,16 +80,15 @@ async function fixture(directory?: string): Promise<{
   return { database, store };
 }
 
-test("PGlite human-attestation registry covers every provider contract and table", () => {
-  assert.equal(PGLITE_HUMAN_ATTESTATION_MANIFESTS.length, 16);
-  assert.equal(Object.keys(PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY).length, 16);
-  assert.equal(PGLITE_ATTESTATION_TABLES.length, 10);
+test("PGlite human-attestation registry covers every active contract and table", () => {
+  assert.equal(PGLITE_HUMAN_ATTESTATION_MANIFESTS.length, 9);
+  assert.equal(Object.keys(PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY).length, 9);
+  assert.equal(PGLITE_ATTESTATION_TABLES.length, 9);
   assert.equal(
     new Set(PGLITE_HUMAN_ATTESTATION_MANIFESTS.map((entry) => entry.tableName)).size,
     PGLITE_ATTESTATION_TABLES.length,
   );
   const currentRoutes = new Set([
-    "cathay/domestic-deposit/human-attested-v1",
     "ctbc/domestic-deposit/human-attested-v1",
     "esun/credit-card/human-attested-v4",
     "fubon/credit-card/human-attested-v2",
@@ -133,7 +121,7 @@ test("PGlite human-attestation registry covers every provider contract and table
   }
 });
 
-test("reviewed PGlite baseline accepts the attestation extension, including its predeclared E.SUN table", async () => {
+test("reviewed PGlite baseline accepts the attestation extension for active E.SUN", async () => {
   const database = await PGlite.create();
   try {
     await applyPgliteBaseline(database);
@@ -146,7 +134,7 @@ test("reviewed PGlite baseline accepts the attestation extension, including its 
       [...PGLITE_ATTESTATION_TABLES].sort(),
     );
     const esun: PGliteHumanAttestationRouteMetadata = {
-      authorityRoute: "esun/credit-card/human-attested-v2",
+      authorityRoute: "esun/credit-card/human-attested-v4",
     };
     const store = new PGliteStore(database);
     await store.transaction((transaction) =>
@@ -193,20 +181,14 @@ test("PGlite worker registry stays aligned with canonical pure contract metadata
     value.provenance.attestationContractFingerprint ??
     "";
   const pairs = [
-    [CATHAY_HUMAN_ATTESTED_V1_MANIFEST, "cathay/domestic-deposit/human-attested-v1", fingerprintFromManifest(CATHAY_HUMAN_ATTESTED_V1_MANIFEST)],
     [CTBC_HUMAN_ATTESTED_V1_MANIFEST, "ctbc/domestic-deposit/human-attested-v1", fingerprintFromManifest(CTBC_HUMAN_ATTESTED_V1_MANIFEST)],
     [FUBON_HUMAN_ATTESTED_V1_MANIFEST, "fubon/domestic-deposit/human-attested-v1", fingerprintFromManifest(FUBON_HUMAN_ATTESTED_V1_MANIFEST)],
     [HNCB_HUMAN_ATTESTED_V1_MANIFEST, "hncb/domestic-deposit/human-attested-v1", fingerprintFromManifest(HNCB_HUMAN_ATTESTED_V1_MANIFEST)],
     [POST_HUMAN_ATTESTED_V1_MANIFEST, "post/domestic-deposit/human-attested-v1", fingerprintFromManifest(POST_HUMAN_ATTESTED_V1_MANIFEST)],
     [SINOPAC_HUMAN_ATTESTED_V1_MANIFEST, "sinopac/domestic-deposit/human-attested-v1", fingerprintFromManifest(SINOPAC_HUMAN_ATTESTED_V1_MANIFEST)],
-    [YUANTA_HUMAN_ATTESTED_V1_MANIFEST, "yuanta/domestic-deposit/human-attested-v1", fingerprintFromManifest(YUANTA_HUMAN_ATTESTED_V1_MANIFEST)],
     [YUANTA_HUMAN_ATTESTED_V2_MANIFEST, "yuanta/domestic-deposit/human-attested-v2", fingerprintFromManifest(YUANTA_HUMAN_ATTESTED_V2_MANIFEST)],
-    [FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST, "fubon/credit-card/human-attested-v1", fubonCreditCardHumanAttestedLegacyV1ManifestFingerprint()],
     [FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "fubon/credit-card/human-attested-v2", fubonCreditCardHumanAttestedManifestFingerprint(FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST)],
-    [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "esun/credit-card/human-attested-v2", "sha256:gY7YH5F676w3tHxCKKor5THe5kZIOGpkUcKGFYLx1Z4"],
-    [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST, "esun/credit-card/human-attested-v3", "sha256:o3LEXGFIyb3TZ3KnkbhIpnZwfHB6DRV-X01GY82EE5c"],
     [ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST, "esun/credit-card/human-attested-v4", esunCreditCardHumanAttestedManifestFingerprint()],
-    [YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST, "yuanta/credit-card/human-attested-v1", YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.provenance.sourceCaptureFingerprint],
     [YUANTA_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST, "yuanta/credit-card/human-attested-v2", yuantaCreditCardHumanAttestedV2ManifestFingerprint()],
   ] as const;
   for (const [canonical, route, fingerprint] of pairs) {
@@ -218,21 +200,6 @@ test("PGlite worker registry stays aligned with canonical pure contract metadata
     assert.equal(worker.attestedBy, canonical.attestedBy);
     assert.equal(worker.manifestFingerprint, fingerprint);
   }
-  // E.SUN's historical v1 chain used the expanded contract fingerprint
-  // algorithm even though the canonical module exposes the current v2 helper.
-  const esunV1 = local("esun/credit-card/human-attested-v1");
-  const esunV1Fingerprint = `sha256:${createHash("sha256")
-    .update(JSON.stringify({
-      attestationId: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.attestationId,
-      evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.evidenceVersion,
-      authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.authorityRoute,
-      sourceCaptureFingerprint: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.provenance.sourceCaptureFingerprint,
-      semantics: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics,
-      providerGuaranteed: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.providerGuaranteed,
-      occurrenceProviderGuaranteed: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.occurrenceProviderGuaranteed,
-    }))
-    .digest("base64url")}`;
-  assert.equal(esunV1.manifestFingerprint, esunV1Fingerprint);
 });
 
 test("PGlite human-attestation admits, revokes, validates, and remains append-only", async () => {
@@ -391,16 +358,16 @@ test("PGlite human-attestation rejects forged metadata and malformed durable cha
     // A separate provider table proves the same chain validator is route
     // aware, rather than relying on one global in-memory status flag.
     await store.transaction((transaction) =>
-      recordInitialPGliteHumanAttestationIfMissing(transaction, cathay, "2026-09-22T10:00:00.000Z"),
+      recordInitialPGliteHumanAttestationIfMissing(transaction, ctbc, "2026-09-22T10:00:00.000Z"),
     );
     assert.equal(
-      (await store.transaction((transaction) => getPGliteHumanAttestationStatus(transaction, cathay))).status,
+      (await store.transaction((transaction) => getPGliteHumanAttestationStatus(transaction, ctbc))).status,
       "active",
     );
     await assert.rejects(
       store.transaction((transaction) =>
         revokePGliteHumanAttestationInTransaction(transaction, {
-          ...cathay,
+          ...ctbc,
           at: "2026-09-22T09:59:59.000Z",
           reason: "late revocation",
         }),
@@ -408,24 +375,24 @@ test("PGlite human-attestation rejects forged metadata and malformed durable cha
       /monotonic/u,
     );
     await store.query(
-      `INSERT INTO cathay_attestation_events(
+      `INSERT INTO ctbc_attestation_events(
         event_id, attestation_id, evidence_version, event_kind, manifest_status,
         event_at, reason, manifest_fingerprint, event_sequence
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [
         Uint8Array.from(new Array(16).fill(7)),
-        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[cathay.authorityRoute]!.attestationId,
-        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[cathay.authorityRoute]!.evidenceVersion,
+        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[ctbc.authorityRoute]!.attestationId,
+        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[ctbc.authorityRoute]!.evidenceVersion,
         "revoked",
         "revoked",
         "2026-09-22T09:00:00.000Z",
         "reordered event",
-        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[cathay.authorityRoute]!.manifestFingerprint,
+        PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY[ctbc.authorityRoute]!.manifestFingerprint,
         2,
       ],
     );
     await assert.rejects(
-      store.transaction((transaction) => readPGliteHumanAttestationChain(transaction, cathay)),
+      store.transaction((transaction) => readPGliteHumanAttestationChain(transaction, ctbc)),
       /monotonic/u,
     );
   } finally {

@@ -11,7 +11,6 @@
  */
 
 export const PGLITE_ATTESTATION_TABLES = Object.freeze([
-  "cathay_attestation_events",
   "ctbc_attestation_events",
   "esun_credit_card_attestation_events",
   "fubon_credit_card_attestation_events",

@@ -6,6 +6,7 @@ import { applyPgliteBaseline } from "./baseline.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   commitPGliteCanonicalDepositCapture,
+  type PGliteCanonicalDepositCommitRequest,
 } from "./deposit.ts";
 import {
   commitPGliteCanonicalCreditCardCapture,
@@ -70,12 +71,114 @@ function fubonCapture(captureId = "pglite-projection-fubon") {
   return financial.capture;
 }
 
+function cathayDepositCapture(
+  captureId: string,
+  includeTransaction = true,
+): PGliteCanonicalDepositCommitRequest {
+  const occurrenceKey = token("projection-cathay-transaction");
+  const records = includeTransaction
+    ? [{
+        occurrenceKey,
+        collisionKey: token("projection-cathay-collision"),
+        providerKey: token("projection-cathay-provider"),
+        contentHash: token("projection-cathay-content"),
+        sequenceLexeme: "1",
+        compactJson: JSON.stringify({ amount: { coefficient: "100", scale: 0 } }),
+        amount: { coefficient: "100", scale: 0 },
+        balanceAfter: null,
+        currency: "TWD",
+        direction: "inflow",
+        sourceTime: {
+          localDate: "2026-09-22",
+          localTime: "12:00:00",
+          timeZone: "Asia/Taipei",
+          epochMilliseconds: Date.parse("2026-09-22T12:00:00+08:00"),
+          precision: "second" as const,
+          timeOrigin: "source_reported" as const,
+        },
+        effectiveOn: "2026-09-22",
+        transactionDateTimeLocal: "2026-09-22T12:00:00",
+        description: "projection-check deposit",
+      }]
+    : [];
+  return {
+    capture: {
+      captureId,
+      authorityRoute: "cathay/domestic-deposit/v1",
+      contractVersion: "v1",
+      identity: {
+        integrationNamespace: "cathay",
+        sourceConnectionKey: token("projection-cathay-connection"),
+        identityEpochKey: token("projection-cathay-epoch"),
+        stream: "domestic-deposit",
+        recordKind: "projection-check-deposit",
+        subjectDigest: token("projection-cathay-subject"),
+        accountNo: "900001",
+        sourceAccountKey: "900001",
+        accountNumber: {
+          value: "900001",
+          kind: "depository-account",
+          evidenceVersion: "synthetic-v1",
+          sourceField: "accountNumber",
+        },
+        accountType: "depository",
+        currency: "TWD",
+      },
+      observedAt: "2026-09-22T13:00:00.000Z",
+      scope: {
+        startDate: "2026-09-22",
+        endDate: "2026-09-22",
+        scopeKind: "bounded-range",
+        completeness: "complete-range",
+        completenessBasis: "projection-check-complete-range",
+        completenessRuleVersion: "cathay/domestic-deposit/v1",
+        absenceAuthority: "comparable-complete-range",
+        contractFingerprint: token("projection-cathay-contract"),
+        preflightFingerprint: token("projection-cathay-preflight"),
+        pageCount: 1,
+        withdrawalPolicy: "allow-inference",
+      },
+      semantics: {
+        postingStatus: "posted",
+        postingOrigin: "provider_booked_history",
+        postingBasis: "query-status-success-with-accounting-date",
+        postingRuleVersion: "cathay/domestic-deposit/v1",
+        economicStatus: "normal",
+        administrativeState: "active",
+        semanticRuleVersion: "cathay/domestic-deposit/v1",
+        effectiveTimeBasis: "accounting",
+        effectiveTimeRuleVersion: "cathay/domestic-deposit/v1",
+        timeZone: "Asia/Taipei",
+        timePrecision: "second",
+        timeOrigin: "source_reported",
+        requireBalance: false,
+      },
+      pages: [{
+        pageOrdinal: 0,
+        responseCode: "200",
+        terminal: true,
+        rowCount: records.length,
+        responseDigest: token(`${captureId}:page`),
+        proofKind: "synthetic",
+        contractFingerprint: token("projection-cathay-contract"),
+        preflightFingerprint: token("projection-cathay-preflight"),
+        metadataJson: JSON.stringify({ fixture: "projection-enrichment-check" }),
+      }],
+      records,
+    },
+  };
+}
+
 function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outflow"): PGliteCanonicalCreditCardCaptureRequest {
   const instrumentOccurrence = token(`${captureId}:instrument`);
   const transactionOccurrence = token(`${captureId}:transaction`);
+  const route = "fubon/credit-card/human-attested-v2";
+  const groupScope = token(`${captureId}:occurrence-scope`);
+  const groupFingerprint = token(`${captureId}:transaction-group`);
+  const statementBucket = "statement:2026/09";
   const records = [
     { occurrenceKey: instrumentOccurrence, providerKey: token(`${captureId}:instrument-provider`), contentHash: token(`${captureId}:instrument-content`), compact: { instrumentKey: "projection-card-instrument" }, description: "Card instrument" },
-    { occurrenceKey: transactionOccurrence, providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { sourceSequence: "card-1", direction }, description: "Card purchase" },
+    { occurrenceKey: transactionOccurrence, occurrenceGroup: { scopeKey: groupScope, fingerprint: groupFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: statementBucket, providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { sourceSequence: "card-1", direction }, description: "Card purchase" },
   ];
   return {
     capture: {
@@ -85,13 +188,20 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
       identityEpoch: token("projection-card-epoch"),
       stream: "credit-card",
       recordKind: "credit-card-capture",
-      routeKey: "fubon/credit-card/human-attested-v1",
-      contractVersion: "fubon/credit-card/human-attested-v1",
+      routeKey: route,
+      contractVersion: route,
       subjectDigest: token("projection-card-subject"),
       observedAt: "2026-09-22T01:00:00.000Z",
-      scope: { startDate: "2026-09-22", endDate: "2026-09-22", dateFormat: "YYYY-MM-DD", kind: "bounded-range", completeness: "complete-range", ruleVersion: "fubon/credit-card/human-attested-v1", completenessBasis: "projection-check", sourceAccountKey: "projection-card-account", absenceAuthority: "comparable-complete-range" },
+      scope: { startDate: "2026-09-22", endDate: "2026-09-22", dateFormat: "YYYY-MM-DD", kind: "bounded-range", completeness: "complete-range", ruleVersion: route, completenessBasis: "projection-check", sourceAccountKey: "projection-card-account", absenceAuthority: "comparable-complete-range" },
       pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: records.length, terminal: true, metadata: { fixture: "projection-check" } }],
       records,
+      occurrenceGroupCoverage: [{
+        scopeKey: groupScope,
+        startDate: "2026-09-22",
+        endDate: "2026-09-22",
+        contractVersion: route,
+        bucketKeys: [statementBucket],
+      }],
     },
     account: { sourceAccountKey: "projection-card-account", accountType: "credit", currency: "TWD" },
     identity: { accountNaturalKey: token("projection-card-identity"), identityMethod: "opaque-provider-account" },
@@ -105,18 +215,18 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
       postingStatus: "posted",
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      postingRuleVersion: "fubon/credit-card/human-attested-v1",
+      postingRuleVersion: route,
       description: "Card purchase",
       economicStatus: "normal",
       administrativeState: "active",
-      semanticRuleVersion: "fubon/credit-card/human-attested-v1",
+      semanticRuleVersion: route,
       effectiveOn: "2026-09-22",
       transactionDateTimeLocal: "2026-09-22T10:00:00",
       timeZone: "Asia/Taipei",
       timePrecision: "minute",
       timeOrigin: "source_reported",
       effectiveTimeBasis: "source-reported",
-      effectiveTimeRuleVersion: "fubon/credit-card/human-attested-v1",
+      effectiveTimeRuleVersion: route,
       utcInstantUtcUs: Date.parse("2026-09-22T02:00:00Z") * 1000,
       instrumentKey: "projection-card-instrument",
       billingStatus: "billed",
@@ -221,14 +331,15 @@ test("PGlite source revision recurrence and complete-range withdrawal update cur
   const store = new PGliteStore(database);
   try {
     await applyPgliteBaseline(database);
-    const first = createForeignCurrencyDepositCapture(YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1);
-    const recurrent = createForeignCurrencyDepositCapture({ ...YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1, captureOccurrenceId: "projection-recurrent", captureId: "projection-recurrent" });
+    const first = cathayDepositCapture("projection-first");
+    const recurrent = cathayDepositCapture("projection-recurrent");
     await commitPGliteCanonicalDepositCapture(store, first);
     await commitPGliteCanonicalDepositCapture(store, recurrent);
     assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 1);
-    const empty = createForeignCurrencyDepositCapture({ ...YUANTA_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1, captureOccurrenceId: "projection-empty", captureId: "projection-empty", records: [], zeroResultAuthority: "provider-explicit-no-data" });
+    const empty = cathayDepositCapture("projection-empty", false);
     await commitPGliteCanonicalDepositCapture(store, empty);
-    assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 1);
+    assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 0);
+    assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_records")).rows[0]?.count), 2);
   } finally {
     await store.close();
   }

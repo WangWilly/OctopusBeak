@@ -11,46 +11,6 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   return Object.freeze(value);
 };
 
-export const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
-  attestationId: "fubon-credit-card-human-attested-v1",
-  evidenceVersion: "fubon/credit-card/human-attested-v1",
-  authorityRoute: "fubon/credit-card/human-attested-v1",
-  status: "active",
-  attestedAt: "2026-08-25T00:00:00.000Z",
-  attestedBy: "human-confirmed-independent-primary-card-billing-accounts",
-  provenance: {
-    kind: "human-attestation",
-    sourceCaptureFingerprint:
-      "sha256:fubon-credit-card-live-repeat-evidence-v1",
-    source: "Fubon redacted repeated billed-and-unbilled grid evidence",
-  },
-  authority: "human-attested-independent-primary-card-billing-account",
-  accountType: "credit",
-  accountSubtype: "credit_card",
-  stream: "credit-card",
-  currency: "TWD",
-  providerGuaranteed: false,
-  occurrenceProviderGuaranteed: false,
-  semantics: {
-    accountIdentity:
-      "fubon-source-connection-identity-epoch-credit-human-attested-account-key",
-    cards: "card-instruments-under-attested-account",
-    posting: "posting-date-present-means-posted",
-    billing: "billed-or-unbilled-independent-of-posting",
-    transactionIdentity:
-      "immutable-normalized-content-tuple-plus-contiguous-observed-occurrence-index",
-    occurrenceOrdering:
-      "complete-capture-observed-source-order-human-attested-not-provider-guaranteed",
-    statements: "issuer-settled-cycle-summary-only",
-    relations: "explicit-source-linkage-only",
-    completeness:
-      "six-billed-periods-plus-unbilled-unfiltered-terminal-grid-counts",
-    withdrawal: "never-infer-from-missing-card-or-row",
-  },
-  revokedAt: null,
-  revocationReason: null,
-} as const);
-
 /** Current portfolio attestation contract.  Its authority route, attestation
  * identity, and evidence version advance together with the portfolio/
  * occurrence semantics. */
@@ -94,22 +54,6 @@ export const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
   revocationReason: null,
 } as const);
 
-/** The named legacy alias is intentionally the exact original v1 contract. */
-export const FUBON_CREDIT_CARD_HUMAN_ATTESTED_LEGACY_V1_MANIFEST =
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST;
-// Also expose the version-first spelling for migration callers.
-export const FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_LEGACY_MANIFEST =
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_LEGACY_V1_MANIFEST;
-
-export type FubonCreditCardHumanAttestedV1Manifest = Omit<
-  typeof FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
-
 export type FubonCreditCardHumanAttestedV2Manifest = Omit<
   typeof FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   "status" | "revokedAt" | "revocationReason"
@@ -118,10 +62,6 @@ export type FubonCreditCardHumanAttestedV2Manifest = Omit<
   revokedAt: string | null;
   revocationReason: string | null;
 };
-
-type FubonCreditCardHumanAttestedManifest =
-  | FubonCreditCardHumanAttestedV1Manifest
-  | FubonCreditCardHumanAttestedV2Manifest;
 
 export type FubonCreditCardHumanAttestationEvent = {
   attestationId: string;
@@ -152,12 +92,10 @@ type ManifestFingerprintInput = {
 
 /**
  * Compute the immutable contract fingerprint without including runtime
- * status.  The compact option is the original v1 algorithm; v2 uses the
- * expanded semantic shape.
+ * status.  The current contract includes its complete identity semantics.
  */
 export function fubonCreditCardHumanAttestedManifestFingerprint(
   manifest: ManifestFingerprintInput,
-  options: { includeExpandedSemantics?: boolean } = {},
 ): `sha256:${string}` {
   const fingerprintInput = {
     attestationId: manifest.attestationId,
@@ -166,13 +104,9 @@ export function fubonCreditCardHumanAttestedManifestFingerprint(
     sourceCaptureFingerprint: manifest.provenance.sourceCaptureFingerprint,
     transactionIdentity: manifest.semantics.transactionIdentity,
     occurrenceOrdering: manifest.semantics.occurrenceOrdering,
-    ...(options.includeExpandedSemantics === false
-      ? {}
-      : {
-          accountIdentity: manifest.semantics.accountIdentity,
-          cards: manifest.semantics.cards,
-          statements: manifest.semantics.statements,
-        }),
+    accountIdentity: manifest.semantics.accountIdentity,
+    cards: manifest.semantics.cards,
+    statements: manifest.semantics.statements,
     providerGuaranteed: manifest.providerGuaranteed,
     occurrenceProviderGuaranteed: manifest.occurrenceProviderGuaranteed,
   };
@@ -181,32 +115,18 @@ export function fubonCreditCardHumanAttestedManifestFingerprint(
     .digest("base64url")}`;
 }
 
-/** Fingerprint used by the original v1 event chain during migration. */
-export const fubonCreditCardHumanAttestedLegacyV1ManifestFingerprint = () =>
-  fubonCreditCardHumanAttestedManifestFingerprint(
-    FUBON_CREDIT_CARD_HUMAN_ATTESTED_LEGACY_V1_MANIFEST,
-    { includeExpandedSemantics: false },
-  );
-
 export const manifestFingerprint = (): `sha256:${string}` =>
   fubonCreditCardHumanAttestedManifestFingerprint(
     FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
   );
 
-const VALIDATED_V1_MANIFESTS = new WeakSet<object>();
 const VALIDATED_V2_MANIFESTS = new WeakSet<object>();
-// V1 remains a read-only compatibility view for the capture contract.  The
-// durable event chain has its own v2 identity and is the source of truth for
-// current admission/read status.
-export let currentV1Manifest: FubonCreditCardHumanAttestedV1Manifest =
-  FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST;
 export let currentV2Manifest: FubonCreditCardHumanAttestedV2Manifest =
   FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
-VALIDATED_V1_MANIFESTS.add(currentV1Manifest);
 VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
 
 function validateManifest(
-  manifest: FubonCreditCardHumanAttestedManifest,
+  manifest: FubonCreditCardHumanAttestedV2Manifest,
   contract: ManifestFingerprintInput,
 ): void {
   if (
@@ -243,23 +163,8 @@ export function assertCurrentManifest(
   validateManifest(manifest, FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST);
 }
 
-export function getFubonCreditCardHumanAttestedV1Manifest(): FubonCreditCardHumanAttestedV1Manifest {
-  return currentV1Manifest;
-}
-
 export function getFubonCreditCardHumanAttestedV2Manifest(): FubonCreditCardHumanAttestedV2Manifest {
   return currentV2Manifest;
-}
-
-export function isFubonCreditCardHumanAttestedV1Manifest(
-  value: unknown,
-): value is FubonCreditCardHumanAttestedV1Manifest {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    VALIDATED_V1_MANIFESTS.has(value) &&
-    value === currentV1Manifest
-  );
 }
 
 export function isFubonCreditCardHumanAttestedV2Manifest(
@@ -271,13 +176,6 @@ export function isFubonCreditCardHumanAttestedV2Manifest(
     VALIDATED_V2_MANIFESTS.has(value) &&
     value === currentV2Manifest
   );
-}
-
-export function isFubonCreditCardHumanAttestedV1Active(): boolean {
-  // Existing capture admission imports the v1-named predicate.  Delegate it
-  // to the current v2 state so that compatibility callers cannot accidentally
-  // bypass the new attestation chain.
-  return isFubonCreditCardHumanAttestedV2Active();
 }
 
 export function isFubonCreditCardHumanAttestedV2Active(): boolean {
@@ -311,7 +209,6 @@ export function setCurrentManifestStatus(
 ): void {
   if (status === "active") {
     currentV2Manifest = FUBON_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST;
-    currentV1Manifest = FUBON_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST;
   } else {
     currentV2Manifest = deepFreeze({
       ...currentV2Manifest,
@@ -319,13 +216,6 @@ export function setCurrentManifestStatus(
       revokedAt: at,
       revocationReason: reason,
     });
-    currentV1Manifest = deepFreeze({
-      ...currentV1Manifest,
-      status: "revoked" as const,
-      revokedAt: at,
-      revocationReason: reason,
-    });
   }
   VALIDATED_V2_MANIFESTS.add(currentV2Manifest);
-  VALIDATED_V1_MANIFESTS.add(currentV1Manifest);
 }

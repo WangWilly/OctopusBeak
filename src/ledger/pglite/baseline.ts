@@ -9,26 +9,32 @@ import {
   PGLITE_ATTESTATION_TABLES,
   PGLITE_ATTESTATION_TRIGGER_NAMES,
 } from "./attestation-sql.ts";
+import {
+  assertTrustedSourceContractCatalog,
+  installTrustedSourceContractCatalog,
+  PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL,
+} from "./source-contract-catalog.ts";
 import type { PGliteStore } from "./transaction.ts";
 
 /** The first PGlite schema is a consolidated, fresh-start baseline. */
-export const PGLITE_BASELINE_VERSION = 2;
+export const PGLITE_BASELINE_VERSION = 3;
 export const CANONICAL_SQLITE_SCHEMA_VERSION = 28;
 
 /**
- * The generator checks this digest against the reviewed canonical schema
- * before producing baseline-sql.ts. Runtime initialization only executes the
- * committed PostgreSQL baseline and never opens a SQLite source database.
+ * Records the reviewed canonical SQLite schema that originally informed this
+ * fresh-start PGlite baseline. PGlite-owned catalog and guard DDL is maintained
+ * independently; runtime initialization executes committed PostgreSQL SQL and
+ * never opens a SQLite source database.
  */
 export const CANONICAL_SQLITE_SCHEMA_SIGNATURE =
   "faa2f18e00dc585cf6ce078d05141ef9d700de650f40f9bace1e17fffbd827ce";
 
 const EXPECTED_OBJECT_COUNTS = Object.freeze({
-  table: 121 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.table,
-  index: 98 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.index,
-  trigger: 96 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.trigger,
+  table: 123 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.table,
+  index: 100 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.index,
+  trigger: 104 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.trigger,
   view: 9,
-  foreignKey: 439 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.foreignKey,
+  foreignKey: 440 + PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS.foreignKey,
 });
 
 export type PGliteBaselineManifest = {
@@ -66,6 +72,8 @@ export async function applyPgliteBaseline(database: PGlite): Promise<void> {
   await database.transaction(async (transaction) => {
     await transaction.exec(PGLITE_BASELINE_SQL);
     await transaction.exec(PGLITE_OCCURRENCE_GROUP_SQL);
+    await installTrustedSourceContractCatalog(transaction);
+    await transaction.exec(PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL);
     await transaction.query(
       `UPDATE pglite_baseline_metadata
           SET baseline_version = $1,
@@ -118,6 +126,7 @@ export async function assertPgliteBaseline(
   ) {
     throw new Error("PGlite baseline metadata does not match its known manifest.");
   }
+  await assertTrustedSourceContractCatalog(database);
   const [tables, indexes, triggers, views, foreignKeys] = await Promise.all([
     database.query<{ count: number | string }>(
       "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'",

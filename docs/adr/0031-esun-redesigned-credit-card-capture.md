@@ -79,3 +79,14 @@ occurrences acquired new financial revision IDs under the v4 semantic contract.
 The statement revision key now includes the capture contract version, issuer
 summary values, and member evidence. A changed financial revision can therefore
 create a new immutable statement revision while preserving the prior revision.
+
+## Source-contract catalog decision
+
+The historical route-retention statements above describe the E.SUN integration
+when those decisions were made. Under [ADR 0035](./0035-source-contract-catalog-and-rule-admission.md),
+an E.SUN contract version remains installed only while a current collection
+workflow uses it; historical captures alone do not require retaining an old
+reader. Unused versions and their unused rule implementations are removed from
+the codebase and clean baseline. This cleanup does not change the evidence,
+completeness, or fingerprint semantics of a version still used by a current
+workflow, and it adds no migration or compatibility reader for old databases.

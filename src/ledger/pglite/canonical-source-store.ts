@@ -1675,7 +1675,11 @@ function validateFinancialRequest(
     typeof request.sourceSyncCursor !== "string")
     throw new PGliteCanonicalSourceAdmissionError("invalid-financial-fact", "Source synchronization cursor must be text or null.");
   for (const observation of request.balanceObservations ?? [])
-    validatePGliteCanonicalBalanceObservation(observation);
+    validatePGliteCanonicalBalanceObservation(
+      observation,
+      request.capture.routeKey,
+      request.capture.contractVersion,
+    );
   if (request.recordedAtUtcUs !== undefined &&
     (!Number.isSafeInteger(request.recordedAtUtcUs) || request.recordedAtUtcUs < 0))
     throw new PGliteCanonicalSourceAdmissionError(
@@ -1685,7 +1689,11 @@ function validateFinancialRequest(
   // A transaction's booked denomination is source evidence; the account
   // currency is a reporting/default value and cannot override it (ADR 0006).
   for (const fact of request.transactions)
-    validatePGliteCanonicalFinancialFact(fact, request.capture.routeKey);
+    validatePGliteCanonicalFinancialFact(
+      fact,
+      request.capture.routeKey,
+      request.capture.contractVersion,
+    );
 }
 
 async function commitFinancialRequestInTransaction(

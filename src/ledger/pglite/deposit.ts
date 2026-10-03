@@ -24,7 +24,7 @@ import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber as SourceAccountNumber,
 } from "../canonical/canonical-source-evidence.ts";
-import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
+import { canonicalSourceRouteRegistration, canonicalSourceRuleCombination } from "../canonical/canonical-source-route-registry.ts";
 import { FOREIGN_CURRENCY_DEPOSIT_AUTHORITY_METADATA } from "../canonical/foreign-currency-deposit-authorities.ts";
 import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "./workflow-commands.ts";
 
@@ -163,7 +163,6 @@ function sourceTime(
 type DepositRouteProfile = Readonly<{
   postingOrigin: string;
   postingBasis: string;
-  ruleVersion: string;
   effectiveTimeBasis: string;
   currency?: string;
   postingStatus?: string;
@@ -187,46 +186,21 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
   "cathay/domestic-deposit/v1": {
     postingOrigin: "provider_booked_history",
     postingBasis: "query-status-success-with-accounting-date",
-    ruleVersion: "cathay/domestic-deposit/v1",
     effectiveTimeBasis: "accounting",
   },
   "linebank/domestic-deposit/human-attested-v13": {
     postingOrigin: "human_attested_history",
     postingBasis: "human-attested-formally-posted",
-    ruleVersion: "linebank/domestic-deposit/human-attested-v13",
     effectiveTimeBasis: "transaction-time",
   },
   "fubon/domestic-deposit/human-attested-v1": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "fubon/domestic-deposit/human-attested-v1",
     effectiveTimeBasis: "transaction-time",
-  },
-  "yuanta/domestic-deposit/human-attested-v1": {
-    postingOrigin: "human-attested",
-    postingBasis: "statement-posted-history",
-    ruleVersion: "yuanta/domestic-deposit/human-attested-v1",
-    effectiveTimeBasis: "transaction-time",
-    currency: "TWD",
-    postingStatus: "posted",
-    timeZone: "Asia/Taipei",
-    timePrecision: "second",
-    completeness: "complete-range",
-    completenessBasis: "exact-ui-range-terminal-download",
-    completenessRuleVersion: "yuanta/domestic-deposit/human-attested-v1",
-    absenceAuthority: "provider-explicit-no-data",
-    withdrawalPolicy: "never-infer",
-    integrationNamespace: "yuanta",
-    stream: "domestic-deposit",
-    recordKind: "yuanta-domestic-deposit",
-    accountType: "depository",
-    contractVersion: "human-attested-v1",
-    requireProviderGuaranteedFalse: true,
   },
   "yuanta/domestic-deposit/human-attested-v2": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "yuanta/domestic-deposit/human-attested-v2",
     effectiveTimeBasis: "transaction-time",
     currency: "TWD",
     postingStatus: "posted",
@@ -247,7 +221,6 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
   "hncb/domestic-deposit/human-attested-v1": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "hncb/domestic-deposit/human-attested-v1",
     effectiveTimeBasis: "transaction-time",
     currency: "TWD",
     postingStatus: "posted",
@@ -268,7 +241,6 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
   "ctbc/domestic-deposit/human-attested-v1": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "ctbc/domestic-deposit/human-attested-v1",
     effectiveTimeBasis: "accounting",
     currency: "TWD",
     postingStatus: "posted",
@@ -290,7 +262,6 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
   "sinopac/domestic-deposit/human-attested-v1": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "sinopac/domestic-deposit/human-attested-v1",
     effectiveTimeBasis: "transaction-time",
     currency: "TWD",
     postingStatus: "posted",
@@ -312,7 +283,6 @@ const DOMESTIC_DEPOSIT_ROUTE_PROFILES: Readonly<Record<string, DepositRouteProfi
   "post/domestic-deposit/human-attested-v1": {
     postingOrigin: "human-attested",
     postingBasis: "statement-posted-history",
-    ruleVersion: "post/domestic-deposit/human-attested-v1",
     effectiveTimeBasis: "accounting",
     currency: "TWD",
     postingStatus: "posted",
@@ -341,7 +311,6 @@ function financialRouteProfile(routeKey: string): DepositRouteProfile | undefine
   return {
     postingOrigin: foreign.postingOrigin,
     postingBasis: "statement-posted-history",
-    ruleVersion: foreign.contractVersion,
     effectiveTimeBasis: "transaction-time",
     postingStatus: "posted",
     timeZone: "Asia/Taipei",
@@ -362,16 +331,19 @@ function financialRouteProfile(routeKey: string): DepositRouteProfile | undefine
 function validateFinancialRouteSemantics(
   capture: CanonicalFinancialDepositCapture,
 ): void {
-  if (capture.authorityRoute.startsWith("synthetic/") || capture.authorityRoute.startsWith("synthetic-")) return;
   const profile = financialRouteProfile(capture.authorityRoute);
   if (!profile) invalidCapture("Authority route is not a supported financial deposit route.");
   const mismatches: string[] = [];
+  if (!canonicalSourceRuleCombination(
+    capture.authorityRoute,
+    capture.contractVersion,
+    capture.semantics.postingRuleVersion,
+    capture.semantics.semanticRuleVersion,
+    capture.semantics.effectiveTimeRuleVersion,
+  )) mismatches.push("financial rule combination");
   if (capture.semantics.postingOrigin !== profile.postingOrigin) mismatches.push("posting origin");
   if (capture.semantics.postingBasis !== profile.postingBasis) mismatches.push("posting basis");
-  if (capture.semantics.postingRuleVersion !== profile.ruleVersion) mismatches.push("posting rule version");
-  if (capture.semantics.semanticRuleVersion !== profile.ruleVersion) mismatches.push("semantic rule version");
   if (capture.semantics.effectiveTimeBasis !== profile.effectiveTimeBasis) mismatches.push("effective time basis");
-  if (capture.semantics.effectiveTimeRuleVersion !== profile.ruleVersion) mismatches.push("effective time rule version");
   if (profile.currency !== undefined && capture.identity.currency !== profile.currency) mismatches.push("currency");
   if (profile.postingStatus !== undefined && capture.semantics.postingStatus !== profile.postingStatus) mismatches.push("posting status");
   if (profile.timeZone !== undefined && capture.semantics.timeZone !== profile.timeZone) mismatches.push("time zone");

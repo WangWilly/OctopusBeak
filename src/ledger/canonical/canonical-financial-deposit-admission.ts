@@ -10,7 +10,10 @@ import {
   type CanonicalOccurrenceGroupCoverage,
 } from "./occurrence-groups.ts";
 import { assertCanonicalOccurrenceGroupEvidence, CanonicalOccurrenceGroupConflictError } from "./occurrence-group-evidence.ts";
-import { CANONICAL_SOURCE_ROUTE_REGISTRY } from "./canonical-source-route-registry.ts";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  canonicalSourceRuleCombination,
+} from "./canonical-source-route-registry.ts";
 
 export type FinancialDepositAmount = {
   coefficient: string;
@@ -408,15 +411,10 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
   const isForeignCurrencyCapture =
     capture.authorityRoute.includes("/foreign-currency/");
   const isFubonCreditCardCapture =
-    capture.authorityRoute === "fubon/credit-card/human-attested-v1" ||
     capture.authorityRoute === "fubon/credit-card/human-attested-v2";
   const isEsunCreditCardCapture =
-    capture.authorityRoute === "esun/credit-card/human-attested-v1" ||
-    capture.authorityRoute === "esun/credit-card/human-attested-v2" ||
-    capture.authorityRoute === "esun/credit-card/human-attested-v3" ||
     capture.authorityRoute === "esun/credit-card/human-attested-v4";
   const isYuantaCreditCardCapture =
-    capture.authorityRoute === "yuanta/credit-card/human-attested-v1" ||
     capture.authorityRoute === "yuanta/credit-card/human-attested-v2";
   const isHumanAttestedCreditCardCapture =
     isFubonCreditCardCapture ||
@@ -474,7 +472,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     {
       postingOrigin: string;
       postingBasis: string;
-      ruleVersion: string;
       effectiveTimeBasis: string;
       currency?: string;
       postingStatus?: string;
@@ -497,7 +494,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta-fund/investment/canonical-v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta-fund/investment/canonical-v1",
       effectiveTimeBasis: "source-reported",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -517,7 +513,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta-trade/investment/canonical-v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta-trade/investment/canonical-v1",
       effectiveTimeBasis: "source-reported",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -537,7 +532,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "maicoin/investment/canonical-v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      ruleVersion: "maicoin/investment/canonical-v1",
       effectiveTimeBasis: "source-reported",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -557,7 +551,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta-fund/investment/margin-credit-canonical-v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta-fund/investment/margin-credit-canonical-v1",
       effectiveTimeBasis: "source-reported",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -578,7 +571,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta-trade/investment/margin-credit-canonical-v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta-trade/investment/margin-credit-canonical-v1",
       effectiveTimeBasis: "source-reported",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -599,44 +591,21 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "cathay/domestic-deposit/v1": {
       postingOrigin: "provider_booked_history",
       postingBasis: "query-status-success-with-accounting-date",
-      ruleVersion: "cathay/domestic-deposit/v1",
       effectiveTimeBasis: "accounting",
     },
     "linebank/domestic-deposit/human-attested-v13": {
       postingOrigin: "human_attested_history",
       postingBasis: "human-attested-formally-posted",
-      ruleVersion: "linebank/domestic-deposit/human-attested-v13",
       effectiveTimeBasis: "transaction-time",
     },
     "fubon/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
-    },
-    "fubon/loan/canonical-v1": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/loan/canonical-v1",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      completeness: "complete-range",
-      completenessBasis: "source-declared-terminal-range",
-      completenessRuleVersion: "loan/canonical/v1.fubon",
-      absenceAuthority: null,
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "fubon",
-      stream: "loan",
-      recordKind: "fubon-loan-transaction",
-      accountType: "loan",
-      contractVersion: "loan/canonical/v1.fubon",
-      requireProviderGuaranteedFalse: true,
     },
     "fubon/loan/canonical-v2": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/loan/canonical-v2",
       effectiveTimeBasis: "source-reported",
       currency: "TWD",
       postingStatus: "posted",
@@ -655,7 +624,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "fubon/loan/counterpart-deposit-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/loan/counterpart-deposit-v1",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -671,30 +639,9 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       contractVersion: "loan/counterpart/v1.fubon",
       requireProviderGuaranteedFalse: true,
     },
-    "fubon/credit-card/human-attested-v1": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/credit-card/human-attested-v1",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      completeness: "complete-range",
-      completenessBasis: "six-billed-periods-plus-unbilled-terminal-grids",
-      completenessRuleVersion: "fubon/credit-card/human-attested-v1",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "fubon",
-      stream: "credit-card",
-      recordKind: "fubon-credit-card-transaction",
-      accountType: "credit",
-      contractVersion: "fubon/credit-card/human-attested-v1",
-      requireProviderGuaranteedFalse: true,
-    },
     "fubon/credit-card/human-attested-v2": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "fubon/credit-card/human-attested-v2",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -711,76 +658,9 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       contractVersion: "fubon/credit-card/human-attested-v2",
       requireProviderGuaranteedFalse: true,
     },
-    "esun/credit-card/human-attested-v1": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "esun/credit-card/human-attested-v1",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      completeness: "complete-range",
-      completenessBasis:
-        "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
-      completenessRuleVersion: "esun/credit-card/human-attested-v1",
-      absenceAuthority: null,
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "esun",
-      stream: "credit-card",
-      recordKind: "esun-credit-card-transaction",
-      accountType: "credit",
-      contractVersion: "esun/credit-card/human-attested-v1",
-      requireProviderGuaranteedFalse: true,
-    },
-    "esun/credit-card/human-attested-v2": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "esun/credit-card/human-attested-v2",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      completeness: "complete-range",
-      completenessBasis:
-        "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
-      completenessRuleVersion: "esun/credit-card/human-attested-v2",
-      absenceAuthority: null,
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "esun",
-      stream: "credit-card",
-      recordKind: "esun-credit-card-transaction",
-      accountType: "credit",
-      contractVersion: "esun/credit-card/human-attested-v2",
-      requireProviderGuaranteedFalse: true,
-    },
-    "esun/credit-card/human-attested-v3": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "esun/credit-card/human-attested-v3",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      completeness: "complete-range",
-      completenessBasis:
-        "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
-      completenessRuleVersion: "esun/credit-card/human-attested-v3",
-      absenceAuthority: null,
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "esun",
-      stream: "credit-card",
-      recordKind: "esun-credit-card-transaction",
-      accountType: "credit",
-      contractVersion: "esun/credit-card/human-attested-v3",
-      requireProviderGuaranteedFalse: true,
-    },
     "esun/credit-card/human-attested-v4": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "esun/credit-card/human-attested-v4",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -799,31 +679,9 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       contractVersion: "esun/credit-card/human-attested-v4",
       requireProviderGuaranteedFalse: true,
     },
-    "yuanta/credit-card/human-attested-v1": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/credit-card/human-attested-v1",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "date",
-      completeness: "complete-range",
-      completenessBasis: "six-billed-months-plus-unbilled-terminal-no-pager",
-      completenessRuleVersion: "yuanta/credit-card/human-attested-v1",
-      absenceAuthority: null,
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "yuanta",
-      stream: "credit-card",
-      recordKind: "yuanta-credit-card-transaction",
-      accountType: "credit",
-      contractVersion: "yuanta/credit-card/human-attested-v1",
-      requireProviderGuaranteedFalse: true,
-    },
     "yuanta/credit-card/human-attested-v2": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/credit-card/human-attested-v2",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -842,29 +700,9 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       contractVersion: "yuanta/credit-card/human-attested-v2",
       requireProviderGuaranteedFalse: true,
     },
-    "yuanta/domestic-deposit/human-attested-v1": {
-      postingOrigin: "human-attested",
-      postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/domestic-deposit/human-attested-v1",
-      effectiveTimeBasis: "transaction-time",
-      currency: "TWD",
-      postingStatus: "posted",
-      timeZone: "Asia/Taipei",
-      timePrecision: "second",
-      completeness: "complete-range",
-      completenessBasis: "exact-ui-range-terminal-download",
-      absenceAuthority: "provider-explicit-no-data",
-      withdrawalPolicy: "never-infer",
-      integrationNamespace: "yuanta",
-      stream: "domestic-deposit",
-      recordKind: "yuanta-domestic-deposit",
-      contractVersion: "human-attested-v1",
-      requireProviderGuaranteedFalse: true,
-    },
     "yuanta/loan/canonical-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/loan/canonical-v1",
       effectiveTimeBasis: "source-reported",
       currency: "TWD",
       postingStatus: "posted",
@@ -883,7 +721,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta/loan/counterpart-deposit-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/loan/counterpart-deposit-v1",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -902,7 +739,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "yuanta/domestic-deposit/human-attested-v2": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "yuanta/domestic-deposit/human-attested-v2",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -921,7 +757,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "hncb/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "hncb/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -940,7 +775,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "ctbc/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "ctbc/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "accounting",
       currency: "TWD",
       postingStatus: "posted",
@@ -960,7 +794,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "sinopac/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "sinopac/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "transaction-time",
       currency: "TWD",
       postingStatus: "posted",
@@ -980,7 +813,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     "post/domestic-deposit/human-attested-v1": {
       postingOrigin: "human-attested",
       postingBasis: "statement-posted-history",
-      ruleVersion: "post/domestic-deposit/human-attested-v1",
       effectiveTimeBasis: "accounting",
       currency: "TWD",
       postingStatus: "posted",
@@ -1002,7 +834,6 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
     routeRules[metadata.authorityRoute] = {
       postingOrigin: metadata.postingOrigin,
       postingBasis: "statement-posted-history",
-      ruleVersion: metadata.contractVersion,
       effectiveTimeBasis: "transaction-time",
       postingStatus: "posted",
       timeZone: "Asia/Taipei",
@@ -1017,20 +848,20 @@ export function validateCanonicalFinancialDepositCapture(capture: CanonicalFinan
       requireProviderGuaranteedFalse: true,
     };
   const routeRule = routeRules[capture.authorityRoute];
-  if (
-    !routeRule &&
-    !capture.authorityRoute.startsWith("synthetic-") &&
-    !capture.authorityRoute.startsWith("synthetic/")
-  )
+  if (!routeRule)
     throw new Error("Unknown canonical financial authority route.");
+  if (!canonicalSourceRuleCombination(
+    capture.authorityRoute,
+    capture.contractVersion,
+    capture.semantics.postingRuleVersion,
+    capture.semantics.semanticRuleVersion,
+    capture.semantics.effectiveTimeRuleVersion,
+  ))
+    throw new Error("Financial rule combination is not admitted by the source contract.");
   if (
-    routeRule &&
-    (capture.semantics.postingOrigin !== routeRule.postingOrigin ||
-      capture.semantics.postingBasis !== routeRule.postingBasis ||
-      capture.semantics.postingRuleVersion !== routeRule.ruleVersion ||
-      capture.semantics.semanticRuleVersion !== routeRule.ruleVersion ||
-      capture.semantics.effectiveTimeBasis !== routeRule.effectiveTimeBasis ||
-      capture.semantics.effectiveTimeRuleVersion !== routeRule.ruleVersion)
+    capture.semantics.postingOrigin !== routeRule.postingOrigin ||
+    capture.semantics.postingBasis !== routeRule.postingBasis ||
+    capture.semantics.effectiveTimeBasis !== routeRule.effectiveTimeBasis
   )
     throw new Error("Financial semantics do not match the authority route.");
   if (

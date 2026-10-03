@@ -17,35 +17,24 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   return Object.freeze(value);
 };
 
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE =
-  "esun/credit-card/human-attested-v1" as const;
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_VERSION =
-  "esun/credit-card/human-attested-v1" as const;
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE =
-  "esun/credit-card/human-attested-v2" as const;
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION =
-  "esun/credit-card/human-attested-v2" as const;
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE =
-  "esun/credit-card/human-attested-v3" as const;
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_VERSION =
-  "esun/credit-card/human-attested-v3" as const;
 export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE =
   "esun/credit-card/human-attested-v4" as const;
 export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_VERSION =
   "esun/credit-card/human-attested-v4" as const;
 
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
-  attestationId: "esun-credit-card-human-attested-v1",
-  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_VERSION,
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_ROUTE,
+/** Live review found the bank's bounded timeline can contain 12 or 13 months. */
+export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST = deepFreeze({
+  attestationId: "esun-credit-card-human-attested-v4",
+  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_VERSION,
+  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
   status: "active",
-  attestedAt: "2026-08-26T00:00:00.000Z",
-  attestedBy: "user-confirmed-esun-credit-card-primary-cardholder-portfolio",
+  attestedAt: "2026-09-30T00:00:00.000Z",
+  attestedBy: "user-confirmed-esun-terminal-twelve-or-thirteen-month-timeline",
   provenance: {
     kind: "human-attestation",
     sourceCaptureFingerprint:
-      "sha256:esun-credit-card-live-complete-grid-repeat-evidence-v1",
-    source: "E.SUN redacted complete billed-and-unbilled grid evidence",
+      "sha256:esun-credit-card-terminal-cursor-four-twelve-or-thirteen-month-timeline-v4",
+    source: "E.SUN paginated timeline and issuer bill summaries observed on September 24 and 30",
   },
   authority: "human-attested-primary-cardholder-portfolio",
   accountType: "credit",
@@ -57,112 +46,24 @@ export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST = deepFreeze({
   semantics: {
     accountIdentity:
       "esun-source-connection-identity-epoch-credit-human-attested-portfolio-key",
-    cards: "card-instruments-under-attested-portfolio-by-last-four-key",
+    cards:
+      "card-instruments-by-managed-secret-hmac-of-masked-first-four-plus-last-four-projection",
     posting: "source-credit-card-records-are-posted;billing-status-is-independent",
     billing: "billed-or-unbilled-independent-of-posting",
     transactionIdentity:
       "immutable-normalized-content-tuple-plus-contiguous-deterministic-occurrence-index",
     occurrenceOrdering:
       "complete-one-year-grid-deterministic-source-identity-order-input-index-tie-break",
-    statements: "explicit-settled-billed-period-evidence-only",
+    statements:
+      "issuer-settled-cycle-close-due-total-minimum-with-prior-close-derived-cycle-start",
     relations: "explicit-source-linkage-only",
     completeness:
-      "default-one-year-combined-grid-page-one-maximum-page-size-card-counts",
+      "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
     withdrawal: "never-infer-from-missing-card-or-row",
   },
   revokedAt: null,
   revocationReason: null,
 } as const);
-
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST = deepFreeze({
-  ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  attestationId: "esun-credit-card-human-attested-v2",
-  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_VERSION,
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_ROUTE,
-  attestedAt: "2026-08-27T00:00:00.000Z",
-  provenance: {
-    kind: "human-attestation",
-    sourceCaptureFingerprint:
-      "sha256:esun-credit-card-live-masked-projection-and-statement-evidence-v2",
-    source: "E.SUN redacted masked-card and issuer-settled statement evidence",
-  },
-  semantics: {
-    ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST.semantics,
-    cards:
-      "card-instruments-by-managed-secret-hmac-of-masked-first-four-plus-last-four-projection",
-    statements:
-      "issuer-settled-cycle-close-due-total-minimum-with-prior-close-derived-cycle-start",
-  },
-} as const);
-
-/** The redesigned site supplies a paginated, contiguous month timeline. */
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST = deepFreeze({
-  ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-  attestationId: "esun-credit-card-human-attested-v3",
-  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_VERSION,
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_ROUTE,
-  attestedAt: "2026-09-24T00:00:00.000Z",
-  attestedBy: "user-confirmed-esun-redesign-timeline-and-bill-evidence",
-  provenance: {
-    kind: "human-attestation",
-    sourceCaptureFingerprint:
-      "sha256:esun-credit-card-paginated-month-timeline-and-bill-summary-v3",
-    source: "E.SUN redesigned card transaction and bill summary response structure",
-  },
-  semantics: {
-    ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST.semantics,
-    completeness:
-      "default-one-year-complete-combined-grid-or-contiguous-thirteen-month-timeline-card-counts",
-  },
-} as const);
-
-/** Live review found the bank's bounded timeline can contain 12 or 13 months. */
-export const ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST = deepFreeze({
-  ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
-  attestationId: "esun-credit-card-human-attested-v4",
-  evidenceVersion: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_VERSION,
-  authorityRoute: ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
-  attestedAt: "2026-09-30T00:00:00.000Z",
-  attestedBy: "user-confirmed-esun-terminal-twelve-or-thirteen-month-timeline",
-  provenance: {
-    kind: "human-attestation",
-    sourceCaptureFingerprint:
-      "sha256:esun-credit-card-terminal-cursor-four-twelve-or-thirteen-month-timeline-v4",
-    source: "E.SUN paginated timeline and issuer bill summaries observed on September 24 and 30",
-  },
-  semantics: {
-    ...ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST.semantics,
-    completeness:
-      "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
-  },
-} as const);
-
-export type EsunCreditCardHumanAttestedV1Manifest = Omit<
-  typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V1_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
-
-export type EsunCreditCardHumanAttestedV2Manifest = Omit<
-  typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V2_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
-
-export type EsunCreditCardHumanAttestedV3Manifest = Omit<
-  typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V3_MANIFEST,
-  "status" | "revokedAt" | "revocationReason"
-> & {
-  status: "active" | "revoked";
-  revokedAt: string | null;
-  revocationReason: string | null;
-};
 
 export type EsunCreditCardHumanAttestedV4Manifest = Omit<
   typeof ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
@@ -185,7 +86,7 @@ export type EsunCreditCardHumanAttestationEvent = {
 };
 
 const VALIDATED_MANIFESTS = new WeakSet<object>();
-let currentManifest: EsunCreditCardHumanAttestedV4Manifest =
+const currentManifest: EsunCreditCardHumanAttestedV4Manifest =
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST;
 VALIDATED_MANIFESTS.add(currentManifest);
 
@@ -207,8 +108,10 @@ function manifestFingerprint(
     .digest("base64url")}`;
 }
 
-export function esunCreditCardHumanAttestedManifestFingerprint(): `sha256:${string}` {
-  return manifestFingerprint();
+export function esunCreditCardHumanAttestedManifestFingerprint(
+  manifest: EsunCreditCardHumanAttestedV4Manifest = currentManifest,
+): `sha256:${string}` {
+  return manifestFingerprint(manifest);
 }
 
 function assertCurrentManifest(
@@ -284,52 +187,3 @@ export function esunCreditCardHumanAttestedIdentityEpochKey(
     )
     .digest("base64url")}`;
 }
-
-function validEventAt(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
-}
-
-/** Mutate the shared in-memory manifest; the legacy wrapper optionally records the durable event. */
-export function revokeEsunCreditCardHumanAttestedV4InMemory(
-  at: string,
-  reason: string,
-): EsunCreditCardHumanAttestedV4Manifest {
-  if (!validEventAt(at) || !reason.trim())
-    throw new Error("E.SUN credit-card attestation revocation requires time and reason.");
-  if (currentManifest.status === "revoked") return currentManifest;
-  const revoked = deepFreeze({
-    ...currentManifest,
-    status: "revoked" as const,
-    revokedAt: at,
-    revocationReason: reason.trim(),
-  });
-  currentManifest = revoked;
-  VALIDATED_MANIFESTS.add(revoked);
-  return currentManifest;
-}
-
-/** Mutate the shared in-memory manifest; the legacy wrapper optionally records the durable event. */
-export function restoreEsunCreditCardHumanAttestedV4InMemory(
-  at: string,
-  reason: string,
-): EsunCreditCardHumanAttestedV4Manifest {
-  if (!validEventAt(at) || !reason.trim())
-    throw new Error("E.SUN credit-card attestation restoration requires time and reason.");
-  if (currentManifest.status === "active") return currentManifest;
-  const restored = deepFreeze({
-    ...currentManifest,
-    status: "active" as const,
-    revokedAt: null,
-    revocationReason: null,
-  });
-  currentManifest = restored;
-  VALIDATED_MANIFESTS.add(restored);
-  return currentManifest;
-}
-
-// Internal live bindings let the SQLite wrapper read and mutate this same state.
-export {
-  currentManifest as currentEsunManifestForStorage,
-  assertCurrentManifest as assertEsunManifestForStorage,
-  manifestFingerprint as fingerprintEsunManifestForStorage,
-};

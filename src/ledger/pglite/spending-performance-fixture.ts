@@ -1,6 +1,12 @@
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { PGliteStore } from "./transaction.ts";
+import {
+  E_INVOICE_COMPLETENESS_RULE_VERSION,
+  E_INVOICE_CONTRACT_VERSION,
+} from "../canonical/einvoice-contract.ts";
+
+const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
 
 export type PGlitePairingPerformanceShape = Readonly<{
   transactions: number;
@@ -81,9 +87,10 @@ export async function createPGlitePairingPerformanceFixture(options: Readonly<{
     await applyPgliteBaseline(database);
     await store.exec(`
       INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind)
-        VALUES (decode(repeat('01', 16), 'hex'), 1, 1, 'benchmark/source/v1', 'source_capture');
+        VALUES (decode(repeat('01', 16), 'hex'), 1, 1, '${BANK_ROUTE}', 'source_capture');
       INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id)
-        VALUES ('benchmark/source/v1', 'benchmark', 'personal-invoices', 'v1', decode(repeat('01', 16), 'hex'));
+        VALUES ('${BANK_ROUTE}', 'fubon', 'credit-card', '${BANK_ROUTE}', decode(repeat('01', 16), 'hex')),
+               ('${E_INVOICE_CONTRACT_VERSION}', 'einvoice', 'personal-invoices', '${E_INVOICE_CONTRACT_VERSION}', decode(repeat('01', 16), 'hex'));
       INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id)
         VALUES (decode(repeat('02', 16), 'hex'), 'benchmark', 'benchmark-connection', decode(repeat('01', 16), 'hex'));
       INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id)
@@ -91,12 +98,12 @@ export async function createPGlitePairingPerformanceFixture(options: Readonly<{
       INSERT INTO source_subjects(source_subject_id, source_connection_id, identity_epoch_id, stream, record_kind, subject_digest, created_commit_id)
         VALUES (decode(repeat('04', 16), 'hex'), decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'personal-invoices', 'personal-invoice', 'benchmark-subject', decode(repeat('01', 16), 'hex'));
       INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id)
-        VALUES (decode(repeat('05', 16), 'hex'), 'benchmark-bank', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'benchmark/source/v1', 'deposit', 'benchmark-bank', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', 'benchmark/v1', decode(repeat('01', 16), 'hex')),
-               (decode(repeat('06', 16), 'hex'), 'benchmark-invoice', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'benchmark/source/v1', 'personal-invoices', 'personal-invoice', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', 'benchmark/v1', decode(repeat('01', 16), 'hex'));
+        VALUES (decode(repeat('05', 16), 'hex'), 'benchmark-bank', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), '${BANK_ROUTE}', 'credit-card', 'benchmark-bank', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', '${BANK_ROUTE}', decode(repeat('01', 16), 'hex')),
+               (decode(repeat('06', 16), 'hex'), 'benchmark-invoice', decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), '${E_INVOICE_CONTRACT_VERSION}', 'personal-invoices', 'personal-invoice', NULL, '2026-01-01', '2026-01-01', '2026-12-31', 'complete-range', 'benchmark', '${E_INVOICE_COMPLETENESS_RULE_VERSION}', decode(repeat('01', 16), 'hex'));
       INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id)
         VALUES (decode(repeat('07', 16), 'hex'), decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), 'credit-card', 'benchmark-account', '****0000', 'credit', 'TWD', decode(repeat('01', 16), 'hex'));
       INSERT INTO canonical_credit_card_instruments(instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle)
-        VALUES (decode(repeat('09', 16), 'hex'), 'benchmark', decode(repeat('07', 16), 'hex'), 'benchmark-card', '****0000', 'primary', 'active');
+        VALUES (decode(repeat('09', 16), 'hex'), 'fubon', decode(repeat('07', 16), 'hex'), 'benchmark-card', '****0000', 'primary', 'active');
     `);
     const route = (await store.query<{
       route_id: string;
@@ -113,10 +120,10 @@ export async function createPGlitePairingPerformanceFixture(options: Readonly<{
         SELECT ${encodeId(ID_NAMESPACES.transaction, "g")}, decode(repeat('07', 16), 'hex'), 'tx-' || g, decode(repeat('01', 16), 'hex')
           FROM generate_series(0, ${shape.transactions - 1}) AS series(g);
       INSERT INTO transaction_revisions(revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency, direction, posting_status, posting_origin, posting_basis, posting_rule_version, description, economic_status, administrative_state, semantic_rule_version, effective_on, transaction_date_time_local, time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us)
-        SELECT ${encodeId(ID_NAMESPACES.transactionRevision, "g")}, ${encodeId(ID_NAMESPACES.transaction, "g")}, ${encodeId(ID_NAMESPACES.sourceRecord, "g")}, decode(repeat('05', 16), 'hex'), decode(repeat('01', 16), 'hex'), 1, (1000 + (g % ${shape.invoices}))::text, 0, 'TWD', 'outflow', 'posted', 'synthetic_benchmark', 'synthetic_benchmark', 'synthetic-benchmark-v1', 'Benchmark purchase ' || g, 'normal', 'active', 'synthetic-benchmark-v1', (date '2026-01-01' + (g % 365)), (date '2026-01-01' + (g % 365))::text || 'T00:00:00', 'Asia/Taipei', 'date', 'defaulted_local_midnight', 'accounting', 'synthetic-benchmark-v1', g
+        SELECT ${encodeId(ID_NAMESPACES.transactionRevision, "g")}, ${encodeId(ID_NAMESPACES.transaction, "g")}, ${encodeId(ID_NAMESPACES.sourceRecord, "g")}, decode(repeat('05', 16), 'hex'), decode(repeat('01', 16), 'hex'), 1, (1000 + (g % ${shape.invoices}))::text, 0, 'TWD', 'outflow', 'posted', 'human-attested', 'statement-posted-history', '${BANK_ROUTE}', 'Benchmark purchase ' || g, 'normal', 'active', '${BANK_ROUTE}', (date '2026-01-01' + (g % 365)), (date '2026-01-01' + (g % 365))::text || 'T00:00:00', 'Asia/Taipei', 'date', 'defaulted_local_midnight', 'accounting', '${BANK_ROUTE}', g
           FROM generate_series(0, ${shape.transactions - 1}) AS series(g);
       INSERT INTO canonical_credit_card_transaction_details(integration_namespace, account_id, transaction_id, revision_id, source_record_id, capture_id, instrument_id, billing_status, consume_date, posting_date, effective_date_basis, statement_key)
-        SELECT 'benchmark', decode(repeat('07', 16), 'hex'), ${encodeId(ID_NAMESPACES.transaction, "g")}, ${encodeId(ID_NAMESPACES.transactionRevision, "g")}, ${encodeId(ID_NAMESPACES.sourceRecord, "g")}, decode(repeat('05', 16), 'hex'), decode(repeat('09', 16), 'hex'), 'billed',
+        SELECT 'fubon', decode(repeat('07', 16), 'hex'), ${encodeId(ID_NAMESPACES.transaction, "g")}, ${encodeId(ID_NAMESPACES.transactionRevision, "g")}, ${encodeId(ID_NAMESPACES.sourceRecord, "g")}, decode(repeat('05', 16), 'hex'), decode(repeat('09', 16), 'hex'), 'billed',
                (date '2026-01-01' + (g % 365) - (g % 3))::text,
                (date '2026-01-01' + (g % 365))::text,
                'consume-date', NULL
@@ -137,7 +144,7 @@ export async function createPGlitePairingPerformanceFixture(options: Readonly<{
         SELECT ${encodeId(ID_NAMESPACES.invoice, "g")}, decode(repeat('02', 16), 'hex'), decode(repeat('03', 16), 'hex'), decode(repeat('04', 16), 'hex'), 'invoice-' || g, decode(repeat('01', 16), 'hex')
           FROM generate_series(0, ${shape.invoices - 1}) AS series(g);
       INSERT INTO einvoice_invoice_revisions(revision_id, invoice_id, source_record_id, capture_id, commit_id, source_revision_key, revision_number, revision_kind, state, invoice_number, random_number, seller_tax_id, seller_name, amount_coefficient, amount_scale, currency, currency_authority, occurrence_value, occurrence_precision, occurrence_time_zone, occurrence_origin, authority_route, contract_version, provenance_kind, provenance_reference, provenance_source_field, revocation_reason, fact_fingerprint)
-        SELECT ${encodeId(ID_NAMESPACES.invoiceRevision, "g")}, ${encodeId(ID_NAMESPACES.invoice, "g")}, ${encodeId(ID_NAMESPACES.invoiceSourceRecord, "g")}, decode(repeat('06', 16), 'hex'), decode(repeat('01', 16), 'hex'), 'invoice-' || g || '-v1', 1, 'issued', 'active', 'BM' || lpad(g::text, 8, '0'), NULL, '12345678', 'Benchmark shop ' || g, (1000 + g)::text, 0, 'TWD', 'taiwan/e-invoice/twd/v1', (date '2026-01-01' + (g % 365)), 'date', 'Asia/Taipei', 'source-reported', 'benchmark/source/v1', 'taiwan/e-invoice/personal/v1', 'fixture', 'benchmark:invoice-' || g, NULL, NULL, 'benchmark-invoice-' || g
+        SELECT ${encodeId(ID_NAMESPACES.invoiceRevision, "g")}, ${encodeId(ID_NAMESPACES.invoice, "g")}, ${encodeId(ID_NAMESPACES.invoiceSourceRecord, "g")}, decode(repeat('06', 16), 'hex'), decode(repeat('01', 16), 'hex'), 'invoice-' || g || '-v1', 1, 'issued', 'active', 'BM' || lpad(g::text, 8, '0'), NULL, '12345678', 'Benchmark shop ' || g, (1000 + g)::text, 0, 'TWD', 'taiwan/e-invoice/twd/v1', (date '2026-01-01' + (g % 365)), 'date', 'Asia/Taipei', 'source-reported', '${E_INVOICE_CONTRACT_VERSION}', '${E_INVOICE_CONTRACT_VERSION}', 'fixture', 'benchmark:invoice-' || g, NULL, NULL, 'benchmark-invoice-' || g
           FROM generate_series(0, ${shape.invoices - 1}) AS series(g);
     `);
     await store.exec(`

@@ -24,6 +24,7 @@ import {
 } from "./spending-command.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
+  E_INVOICE_COMPLETENESS_RULE_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
 } from "../canonical/einvoice-contract.ts";
 import { applySpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
@@ -33,6 +34,7 @@ import {
 } from "../../lib/spending/model.ts";
 
 const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
+const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
 
 function textId(value: Uint8Array): string {
   const hex = Buffer.from(value).toString("hex");
@@ -105,12 +107,14 @@ async function setupFixture(options: Readonly<{
   const kindAssertionTwo = id(25);
 
   await store.query(
-    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, 'fixture/source/v1', 'source_capture')",
-    [sourceCommit],
+    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, $2, 'source_capture')",
+    [sourceCommit, BANK_ROUTE],
   );
   await store.query(
-    "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES ('fixture/source/v1', 'fixture', 'personal-invoices', 'v1', $1)",
-    [sourceCommit],
+    `INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id)
+     VALUES ($1, 'fubon', 'credit-card', $1, $3),
+            ($2, 'einvoice', 'personal-invoices', $2, $3)`,
+    [BANK_ROUTE, E_INVOICE_CONTRACT_VERSION, sourceCommit],
   );
   await store.query(
     "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES ($1, 'fixture', 'fixture-connection', $2)",
@@ -134,12 +138,12 @@ async function setupFixture(options: Readonly<{
     authority_route, stream, record_kind, source_account_key, observed_at,
     scope_start, scope_end, completeness, completeness_basis,
     completeness_rule_version, commit_id
-  ) VALUES ($1, $2, $3, $4, 'fixture/source/v1', $5, $6, NULL,
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL,
             '2026-09-01', '2026-09-01', '2026-11-01', 'complete-range',
-            'fixture', 'fixture/source/v1', $7)`;
-  await store.query(captureSql, [bankCapture, "fixture-bank", sourceConnection, epoch, "deposit", "bank-transaction", sourceCommit]);
-  await store.query(captureSql, [invoiceCaptureOne, "fixture-invoice-1", sourceConnection, epoch, "personal-invoices", "personal-invoice", sourceCommit]);
-  await store.query(captureSql, [invoiceCaptureTwo, "fixture-invoice-2", sourceConnection, epoch, "personal-invoices", "personal-invoice", sourceCommit]);
+            $8, $9, $10)`;
+  await store.query(captureSql, [bankCapture, "fixture-bank", sourceConnection, epoch, BANK_ROUTE, "credit-card", "bank-transaction", BANK_ROUTE, BANK_ROUTE, sourceCommit]);
+  await store.query(captureSql, [invoiceCaptureOne, "fixture-invoice-1", sourceConnection, epoch, E_INVOICE_CONTRACT_VERSION, "personal-invoices", "personal-invoice", "fixture", E_INVOICE_COMPLETENESS_RULE_VERSION, sourceCommit]);
+  await store.query(captureSql, [invoiceCaptureTwo, "fixture-invoice-2", sourceConnection, epoch, E_INVOICE_CONTRACT_VERSION, "personal-invoices", "personal-invoice", "fixture", E_INVOICE_COMPLETENESS_RULE_VERSION, sourceCommit]);
   await store.query(
     `INSERT INTO source_records(
        source_record_id, capture_id, source_subject_id, commit_id,
@@ -171,22 +175,22 @@ async function setupFixture(options: Readonly<{
     effective_on, transaction_date_time_local, time_zone, time_precision,
     time_origin, effective_time_basis, effective_time_rule_version,
     utc_instant_utc_us
-  ) VALUES ($1, $2, $3, $4, $5, 1, $6, $11, 'TWD', 'outflow', 'posted',
-            'synthetic-test', 'synthetic-test', 'synthetic-test', $7, 'normal',
-            'active', 'synthetic-test', $9, $10,
+  ) VALUES ($1, $2, $3, $4, $5, 1, $7, $12, 'TWD', 'outflow', 'posted',
+            'human-attested', 'statement-posted-history', $6, $8, 'normal',
+            'active', $6, $10, $11,
             'Asia/Taipei', 'second', 'source_reported', 'accounting',
-            'synthetic-test', $8)`;
+            $6, $9)`;
   const transactionOneDate = options.transactionOneDate ?? "2026-09-01";
-  await store.query(revisionSql, [transactionRevisionOne, transactionOne, bankRecordOne, bankCapture, sourceCommit, "1234", "Seed purchase 1", 0, transactionOneDate, `${transactionOneDate}T12:00:00`, options.transactionOneScale ?? 2]);
-  await store.query(revisionSql, [transactionRevisionTwo, transactionTwo, bankRecordTwo, bankCapture, sourceCommit, "2345", "Seed purchase 2", 1, "2026-09-01", "2026-09-01T12:00:00", 2]);
+  await store.query(revisionSql, [transactionRevisionOne, transactionOne, bankRecordOne, bankCapture, sourceCommit, BANK_ROUTE, "1234", "Seed purchase 1", 0, transactionOneDate, `${transactionOneDate}T12:00:00`, options.transactionOneScale ?? 2]);
+  await store.query(revisionSql, [transactionRevisionTwo, transactionTwo, bankRecordTwo, bankCapture, sourceCommit, BANK_ROUTE, "2345", "Seed purchase 2", 1, "2026-09-01", "2026-09-01T12:00:00", 2]);
   await store.query(
     `INSERT INTO assertions(
        assertion_id, transaction_id, field_name, target_kind, origin,
        producer_id, rule_lineage, revision_id, value_text, created_commit_id
      ) VALUES ($1, $2, 'transaction_revision', 'transaction', 'source',
-               'fixture/source', 'fixture/source/v1', $3, NULL, $4),
+               'fubon-credit-card', 'fubon/credit-card/human-attested-v2', $3, NULL, $4),
               ($5, $6, 'transaction_revision', 'transaction', 'source',
-               'fixture/source', 'fixture/source/v1', $7, NULL, $4),
+               'fubon-credit-card', 'fubon/credit-card/human-attested-v2', $7, NULL, $4),
               ($8, $2, 'kind', 'transaction', 'derived', 'fixture/kind',
                'fixture/kind/v1', NULL, 'purchase', $4),
               ($9, $6, 'kind', 'transaction', 'derived', 'fixture/kind',
@@ -234,11 +238,11 @@ async function setupFixture(options: Readonly<{
     revocation_reason, fact_fingerprint
   ) VALUES ($1, $2, $3, $4, $5, $6, 1, 'issued', 'active', $7, NULL,
             '12345678', $8, $9, $15, 'TWD', $10, '2026-09-01', 'date',
-            'Asia/Taipei', 'source-reported', 'fixture/source/v1', $11,
+            'Asia/Taipei', 'source-reported', $16, $11,
             'fixture', $12, NULL, NULL, $13)`;
   const datedInvoiceRevisionSql = invoiceRevisionSql.replace("'2026-09-01', 'date'", "$14, 'date'");
-  await store.query(datedInvoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", options.invoiceOneAmount ?? "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1", options.invoiceOneDate ?? "2026-09-01", options.invoiceOneScale ?? 2]);
-  await store.query(datedInvoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2", "2026-09-01", 2]);
+  await store.query(datedInvoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", options.invoiceOneAmount ?? "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1", options.invoiceOneDate ?? "2026-09-01", options.invoiceOneScale ?? 2, E_INVOICE_CONTRACT_VERSION]);
+  await store.query(datedInvoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2", "2026-09-01", 2, E_INVOICE_CONTRACT_VERSION]);
 
   return {
     database,
@@ -501,7 +505,7 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
       revisionKind: "asserted",
       amount: { coefficient: "-100", scale: 2, currency: "TWD" },
       occurrence: { value: "2026-09-02", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
-      authorityRoute: "fixture/source/v1",
+      authorityRoute: BANK_ROUTE,
       provenanceReference: "fixture/refund/1",
       evidence: { sourceProvesRefund: true },
     }));
