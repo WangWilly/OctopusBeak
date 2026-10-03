@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import {
@@ -9,9 +12,11 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
   automationResumeHumanAssistance,
+  automationSaveCredentials,
   automationSetupGuideLink,
   loadAutomationDesktopModel,
 } from "./desktop-api.ts";
+import { readAutomationSettings } from "./settings.ts";
 
 test("desktop automation model and history are read from the provider", async () => {
   const database = await PGlite.create();
@@ -137,6 +142,48 @@ test("automation setup links remain stable without loading the ledger", () => {
     "https://campaign.maicoin.com/en/api",
   );
   assert.equal(automationSetupGuideLink("maicoin", "missing", "en"), null);
+});
+
+test("Fubon statement subset round-trips through settings and desktop model", async () => {
+  const root = await mkdtemp(join(tmpdir(), "automation-statement-selection-"));
+  const previousDirectory = process.cwd();
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    process.chdir(root);
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const saved = automationSaveCredentials({
+      LIBRETTO_CLOUD_FUBON_ENABLED: "true",
+      LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "loan,deposit,loan",
+    });
+    assert.equal(saved.saved, true);
+    assert.equal(
+      readAutomationSettings().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
+      "deposit,loan",
+    );
+
+    const model = await loadAutomationDesktopModel(provider);
+    const fubon = model.credentialGroups.find((group) => group.id === "fubon");
+    assert.deepEqual(fubon?.selectedStatementTypeIds, ["deposit", "loan"]);
+    assert.equal(fubon?.statementSetupRequired, false);
+
+    assert.throws(
+      () => automationSaveCredentials({
+        LIBRETTO_CLOUD_FUBON_ENABLED: "true",
+        LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
+      }),
+      /Unknown Fubon statement type: unknown/u,
+    );
+    assert.equal(
+      readAutomationSettings().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
+      "deposit,loan",
+      "rejected selection leaves the persisted choice unchanged",
+    );
+  } finally {
+    process.chdir(previousDirectory);
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("non-typed task runs cannot be resumed as App workflow assistance", async () => {

@@ -4,11 +4,11 @@ import { z } from "zod";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
-import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import {
-  BANK_STATEMENT_CAPABILITIES,
-  allSupportedStatementTypeIds,
-} from "../lib/automation/statement-selection.js";
+  collectSelectedProducts,
+  ProductCollectionFatalError,
+  type CollectionProductOutcome,
+} from "../lib/automation/product-collection.ts";
 import {
   activateControlWithoutPointer,
 } from "./browser-interaction.ts";
@@ -28,8 +28,7 @@ import {
   runFubonStatements,
   type FubonDepositWorkflowCollection,
 } from "./fubon-statements.ts";
-import { StatementComponentAbsentError } from "./run-selected-statements.ts";
-import { completeFubonHumanLoginWithAssistance, openFubonLoginForm } from "./fubon-auth.ts";
+import { completeFubonHumanLoginWithAssistance, hasFubonDuplicateLoginTerminal, openFubonLoginForm } from "./fubon-auth.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
@@ -39,6 +38,7 @@ export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
 const appInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
+  statementTypes: z.array(z.enum(["deposit", "credit_card", "loan"])).min(1),
   credentials: z.object({
     fubon_user_id: z.string().trim().min(1),
     fubon_account: z.string().trim().min(1),
@@ -150,8 +150,10 @@ export type FubonAllWorkflowOutput = Readonly<{
   sourceCaptureCount: number;
   rowCount: number;
   itemCount: number;
+  committedCount: number;
   skippedProductCount: number;
-  status: "financial-admitted" | "source-only" | "no-data";
+  products: readonly CollectionProductOutcome[];
+  status: "financial-admitted" | "source-only" | "no-data" | "partial" | "failed";
 }>;
 
 export type FubonWorkflowIdentity = Readonly<{
@@ -166,6 +168,7 @@ export type FubonWorkflowCollectionSummary = Readonly<{
   rowCount: number;
   itemCount: number;
   financialAdmissionCount?: number;
+  noDataEvidence?: boolean;
 }>;
 
 export type FubonAllWorkflowDependencies = Readonly<{
@@ -193,7 +196,26 @@ export type FubonAllWorkflowDependencies = Readonly<{
   ) => Promise<FubonLoanWorkflowCollection>;
   signOut?: (page: Page) => Promise<void>;
   startSessionKeepAlive?: (page: Page) => () => void;
+  assertSession?: (page: Page) => Promise<void>;
 }>;
+
+async function assertFubonSession(page: Page): Promise<void> {
+  if (page.isClosed() || hasFubonDuplicateLoginTerminal(page))
+    throw new ProductCollectionFatalError("authentication-failed");
+  const headerFrame = page.frame({ name: "frame1" });
+  if (!headerFrame) throw new ProductCollectionFatalError("authentication-failed");
+  const loggedIn = await headerFrame.evaluate(() => {
+    const bankWindow = globalThis as typeof globalThis & { loggedIn?: unknown };
+    return bankWindow.loggedIn === true;
+  }).catch(() => false);
+  const logoutVisible = await headerFrame
+    .locator("#header_form\\:header_logout")
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (!loggedIn && !logoutVisible)
+    throw new ProductCollectionFatalError("authentication-failed");
+}
 
 function fubonCredentialValues(credentials: FubonCredentials) {
   const userId = credentials.fubon_user_id?.trim();
@@ -271,7 +293,7 @@ async function collectFubonLoanForApp(
   });
 }
 
-/** App-owned combined provider flow: all selected sources are collected and validated before Canonical Financial Commit. */
+/** Collect selected Fubon products independently and commit each complete product. */
 export async function runFubonAllStatementsWorkflow(
   context: WorkflowContext,
   rawInput: unknown,
@@ -284,10 +306,8 @@ export async function runFubonAllStatementsWorkflow(
   if (!financialCommit)
     throw new Error("Canonical Financial Commit port is unavailable.");
 
-  const selectedIds = allSupportedStatementTypeIds(BANK_STATEMENT_CAPABILITIES.fubon);
-  const supportedIds = new Set(["deposit", "credit_card", "loan"]);
-  if (selectedIds.length !== supportedIds.size || selectedIds.some((id) => !supportedIds.has(id)))
-    throw new Error("Fubon has a selected product without a typed App collector.");
+  const productIds = ["deposit", "credit_card", "loan"] as const;
+  const selectedIds = parsed.data.statementTypes as readonly (typeof productIds)[number][];
   const sourceConnectionScope = fubonStableLoginScope(parsed.data.credentials);
   const sourceConnectionKey = deriveFubonSourceConnectionKey(parsed.data.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)
@@ -306,6 +326,7 @@ export async function runFubonAllStatementsWorkflow(
   const collectLoan = overrides.collectLoan ?? collectFubonLoanForApp;
   const stopKeepAlive = overrides.startSessionKeepAlive ?? startFubonSessionKeepAlive;
   const signOut = overrides.signOut ?? signOutFubon;
+  const assertSession = overrides.assertSession ?? assertFubonSession;
 
   context.signal.throwIfAborted();
   await context.event("preparation", "input-validated");
@@ -319,108 +340,61 @@ export async function runFubonAllStatementsWorkflow(
     context.signal.throwIfAborted();
     await context.event("authentication", "authentication-completed");
     const stop = stopKeepAlive(page);
-    const items: PGliteWorkflowRunItem[] = [];
-    let sourceCaptureCount = 0;
-    let rowCount = 0;
-    let skippedProductCount = 0;
-
-    const collect = async <T extends FubonWorkflowCollectionSummary>(
-      product: "deposit" | "credit_card" | "loan",
-      run: () => Promise<T>,
-    ) => {
-      context.signal.throwIfAborted();
-      await context.event("collection", `${product.replaceAll("_", "-")}-collection-started`);
-      const itemCountBefore = items.length;
-      try {
-        const summary = await run();
-        context.signal.throwIfAborted();
-        if (!Number.isInteger(summary.sourceCount) || summary.sourceCount < 0 ||
-          !Number.isInteger(summary.rowCount) || summary.rowCount < 0 ||
-          items.length - itemCountBefore !== summary.itemCount)
-          throw new Error("Fubon source collection returned inconsistent counts.");
-        sourceCaptureCount += summary.sourceCount;
-        rowCount += summary.rowCount;
-        await context.event("decoding", `${product.replaceAll("_", "-")}-source-decoding-completed`, {
-          completed: summary.sourceCount,
-          total: summary.sourceCount,
-        });
-        await context.event("validation", `${product.replaceAll("_", "-")}-source-validation-completed`, {
-          completed: summary.itemCount,
-          total: summary.itemCount,
-        });
-      } catch (error) {
-        if (error instanceof StatementComponentAbsentError) {
-          skippedProductCount += 1;
-          await context.event("collection", `${product.replaceAll("_", "-")}-component-absent`);
-          return;
-        }
-        if (error instanceof SourceTextIntegrityError)
-          await context.event("decoding", "source-decoding-failed");
-        await context.event("validation", `${product.replaceAll("_", "-")}-source-validation-rejected`);
-        throw error;
-      }
-    };
-
     try {
       await context.event("decoding", "source-decoding-started");
-      await collect("deposit", () => collectDeposit(page, parsed.data.statements, context, identity, items));
-      await collect("credit_card", () => collectCreditCard(page, parsed.data.creditCards, context, identity, items));
-      await collect("loan", () => collectLoan(page, parsed.data.loans, context, identity, items));
-      context.signal.throwIfAborted();
-      try {
-        for (const item of items) {
-          if (item.provider !== "fubon" || !item.itemKey || !item.command)
-            throw new Error("Fubon source produced an invalid Canonical Financial Commit item.");
-          context.text.assertIntact(JSON.stringify(item.command));
-        }
-      } catch (error) {
-        if (error instanceof SourceTextIntegrityError)
-          await context.event("decoding", "source-decoding-failed");
-        await context.event("validation", "source-validation-rejected");
-        throw error;
-      }
-      await context.event("validation", "source-validation-completed", {
-        completed: sourceCaptureCount,
-        total: sourceCaptureCount,
-      });
-      if (items.length === 0) {
-        return {
-          sourceCaptureCount,
-          rowCount,
-          itemCount: 0,
-          skippedProductCount,
-          status: "no-data",
-        };
-      }
-
-      await context.event("commit", "canonical-commit-started", { completed: 0, total: items.length });
-      const committed = await financialCommit.execute(items, {
-        provider: "fubon",
-        product: "financial",
+      const attemptedItems: PGliteWorkflowRunItem[] = [];
+      const summary = await collectSelectedProducts({
+        productIds,
+        selectedIds,
         signal: context.signal,
+        assertSession: () => assertSession(page),
+        collect: async (typeId, stagedItems) => {
+          const result = typeId === "deposit"
+            ? await collectDeposit(page, parsed.data.statements, context, identity, stagedItems)
+            : typeId === "credit_card"
+              ? await collectCreditCard(page, parsed.data.creditCards, context, identity, stagedItems)
+              : await collectLoan(page, parsed.data.loans, context, identity, stagedItems);
+          for (const item of stagedItems) {
+            if (item.provider !== "fubon" || !item.itemKey || !item.command)
+              throw new ProductCollectionFatalError("workflow-failed");
+            context.text.assertIntact(JSON.stringify(item.command));
+          }
+          return {
+            sourceCaptureCount: result.sourceCount,
+            rowCount: result.rowCount,
+            itemCount: result.itemCount,
+            ...(result.noDataEvidence === undefined ? {} : { noDataEvidence: result.noDataEvidence }),
+          };
+        },
+        commit: (typeId, stagedItems) => {
+          attemptedItems.push(...stagedItems);
+          return financialCommit.execute(stagedItems, {
+            provider: "fubon",
+            product: typeId,
+            signal: context.signal,
+          });
+        },
+        event: (stage, code, counts) => context.event(stage, code, counts),
       });
-      if (committed.status !== "completed" ||
-        committed.committedCount !== items.length ||
-        committed.items.length !== items.length ||
-        committed.items.some((item) => item.status !== "committed")) {
-        await context.event("commit", context.signal.aborted ? "canonical-commit-cancelled" : "canonical-commit-failed", {
-          completed: committed.committedCount,
-          total: items.length,
-        });
-        const codes = committed.diagnostics.map((diagnostic) => diagnostic.errorCode).join(", ");
-        throw new Error(`Fubon Canonical Financial Commit failed: ${codes || committed.status}.`);
-      }
-      await context.event("commit", "canonical-commit-completed", {
-        completed: committed.committedCount,
-        total: items.length,
+      await context.event("validation", "source-validation-completed", {
+        completed: summary.sourceCaptureCount,
+        total: summary.sourceCaptureCount,
       });
-      const sourceOnly = items.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
+      const sourceOnly = attemptedItems.length > 0
+        && attemptedItems.every((item) => item.command.kind === PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND);
+      const status = summary.status !== "completed"
+        ? summary.status
+        : summary.itemCount === 0
+          ? "no-data"
+          : sourceOnly ? "source-only" : "financial-admitted";
       return {
-        sourceCaptureCount,
-        rowCount,
-        itemCount: items.length,
-        skippedProductCount,
-        status: sourceOnly ? "source-only" : "financial-admitted",
+        sourceCaptureCount: summary.sourceCaptureCount,
+        rowCount: summary.rowCount,
+        itemCount: summary.itemCount,
+        committedCount: summary.committedCount,
+        skippedProductCount: summary.products.filter((product) => product.status === "skipped").length,
+        products: summary.products,
+        status,
       };
     } finally {
       stop();

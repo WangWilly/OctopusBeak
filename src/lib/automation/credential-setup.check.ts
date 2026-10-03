@@ -55,9 +55,27 @@ test("credential setup builds normalized updates and single-source policy", () =
         FUBON_ENABLED: "true",
         FUBON_TYPES: "deposit,card",
         ESUN_ENABLED: "false",
+        ESUN_TYPES: "",
         USER: "demo-user",
       },
       selectedCredentialGroupId: "fubon",
+    },
+  );
+  assert.deepEqual(
+    buildCredentialSetupPlan({
+      groups,
+      enabled: { fubon: false, esun: false },
+      statementSelections: { fubon: [], esun: [] },
+      credentialDrafts: {},
+      selectedCredentialGroupId: "",
+      onboardingSingleSource: false,
+      collectionGroupIds: new Set(),
+    }).updates,
+    {
+      FUBON_ENABLED: "false",
+      FUBON_TYPES: "",
+      ESUN_ENABLED: "false",
+      ESUN_TYPES: "",
     },
   );
   assert.deepEqual(

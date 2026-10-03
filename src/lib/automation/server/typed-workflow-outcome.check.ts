@@ -6,11 +6,14 @@ import { SourceAccessChallengeError, SourceUnavailableError } from "../source-ac
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import {
   classifyTypedWorkflowFailure,
+  isTypedWorkflowOutcomeSummary,
   sanitizeTypedWorkflowOutcome,
+  summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import { workflowFailureExplanation } from "../workflow-failures.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
+import { ProductCollectionInterruptedError } from "../product-collection.ts";
 
 test("typed workflow summary keeps only bounded status and aggregate counts", () => {
   const privateAccountNumber = ["12345", "67890"].join("");
@@ -43,6 +46,56 @@ test("typed workflow summary ignores unsupported and invalid count fields", () =
     credentialCount: 10,
   }), null);
   assert.equal(summarizeTypedWorkflowOutput("raw provider output"), null);
+});
+
+test("product outcomes survive typed sanitization and persisted outcome round-trip", () => {
+  const products = [
+    { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
+    { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 1, errorCode: "canonical-commit-failed" },
+  ] as const;
+  const summary = summarizeTypedWorkflowOutput({
+    status: "partial",
+    itemCount: 3,
+    committedCount: 3,
+    products,
+    providerMessage: "private provider response",
+  });
+  assert.deepEqual(summary, {
+    status: "partial",
+    counts: { itemCount: 3, committedCount: 3 },
+    products,
+  });
+  assert.equal(isTypedWorkflowOutcomeSummary(summary), true);
+  assert.deepEqual(sanitizeTypedWorkflowOutcome({ errorCode: "cancelled", summary }), {
+    errorCode: "cancelled",
+    summary,
+  });
+  assert.equal(JSON.stringify(summary).includes("private provider response"), false);
+
+  const interrupted = summarizeInterruptedProductCollection(new ProductCollectionInterruptedError("cancelled", {
+    status: "partial",
+    sourceCaptureCount: 2,
+    rowCount: 5,
+    itemCount: 3,
+    committedCount: 3,
+    products,
+  }));
+  assert.deepEqual(interrupted?.products, products);
+  assert.deepEqual(interrupted?.counts, {
+    sourceCaptureCount: 2,
+    rowCount: 5,
+    itemCount: 3,
+    committedCount: 3,
+  });
+
+  assert.equal(summarizeTypedWorkflowOutput({
+    status: "partial",
+    products: [{ ...products[0], extra: "rejected" }],
+  }), null);
+  assert.equal(summarizeTypedWorkflowOutput({
+    status: "partial",
+    products: [products[0], products[0]],
+  }), null);
 });
 
 test("typed failures use stable privacy-safe categories", () => {

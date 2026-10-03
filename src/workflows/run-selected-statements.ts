@@ -2,6 +2,9 @@ import {
   statementRunSummaryLine,
   type StatementComponentResult,
 } from "../lib/automation/statement-run-summary.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+
+export { StatementComponentAbsentError };
 
 type StatementComponent = {
   typeId: string;
@@ -9,19 +12,6 @@ type StatementComponent = {
   run: () => Promise<unknown>;
   fileCount?: (output: unknown) => number;
 };
-
-/**
- * Thrown only when a component has an explicit provider/DOM absence signal.
- * Navigation, timeout, authentication and parser errors must remain failures.
- */
-export class StatementComponentAbsentError extends Error {
-  readonly skipReason = "absent" as const;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "StatementComponentAbsentError";
-  }
-}
 
 const executionPartialStatus = ["partially", "completed"].join("-");
 

@@ -147,6 +147,46 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
   );
 });
 
+test("worker terminal frame round-trips bounded product outcomes and rejects malformed products", () => {
+  const products = [
+    { typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 },
+    { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 0, errorCode: "source-collection-failed" },
+    { typeId: "loan", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
+  ];
+  const summary = {
+    status: "partial",
+    counts: { itemCount: 3, committedCount: 2, sourceCaptureCount: 2 },
+    products,
+  } as const;
+  const frame = parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "failed",
+    taskRunId: "product-outcome-run",
+    errorCode: "source-collection-failed",
+    summary,
+  });
+  assert.equal(frame.kind, "failed");
+  if (frame.kind !== "failed") return;
+  assert.deepEqual(frame.summary, summary);
+  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "failed",
+    taskRunId: "product-outcome-run",
+    errorCode: "source-collection-failed",
+    summary: {
+      ...summary,
+      products: [...products, { typeId: "fund", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed", providerMessage: "private" }],
+    },
+  }), /protocol rejected/u, "unapproved fields are rejected by the worker protocol");
+  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "failed",
+    taskRunId: "product-outcome-run",
+    errorCode: "source-collection-failed",
+    summary: { ...summary, products: [products[0], products[0]] },
+  }), /protocol rejected/u, "duplicate product IDs are rejected");
+});
+
 test("nonbrowser exchange-rate worker derives its request through authenticated typed RPC", async () => {
   let readCalls = 0;
   const server = createPGliteChildRpcServer({

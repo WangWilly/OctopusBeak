@@ -292,8 +292,12 @@ export async function startAutomationTask(
         (candidate) => candidate.id === task.credentialGroupId,
       )
     : null;
-  if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
-    selectStatementTypes(group, readAutomationSettings(), "strict");
+  if (group && isStatementSelectionGroup(group)) {
+    selectStatementTypes(
+      group,
+      { ...readAutomationSettings(), [group.enabledKey]: true },
+      "strict",
+    );
   }
   const current = activeTaskRunIds.get(taskId);
   if (current && current !== "pending") {
@@ -413,9 +417,13 @@ export async function startAutomationTasks(
     const group = task.credentialGroupId
       ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
       : null;
-    if (group && isStatementSelectionGroup(group) && group.id !== "fubon" && group.id !== "sinopac") {
+    if (group && isStatementSelectionGroup(group)) {
       settings ??= readAutomationSettings();
-      selectStatementTypes(group, settings, "strict");
+      selectStatementTypes(
+        group,
+        { ...settings, [group.enabledKey]: true },
+        "strict",
+      );
     }
   }
   return Promise.all(uniqueTaskIds.map((taskId) => startAutomationTask(taskId, provider)));

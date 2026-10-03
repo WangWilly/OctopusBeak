@@ -145,6 +145,35 @@ test("abort sends cancel and force-terminates a worker after the grace period", 
   assert.deepEqual(outcome, { status: "cancelled", errorCode: "cancelled", summary: null });
 });
 
+test("worker cancellation summary preserves receipts after host cancellation was requested", async () => {
+  const controller = new AbortController();
+  const task = harness({ signal: controller.signal, cancelGraceMs: 50 });
+  task.worker.online();
+  controller.abort();
+  await tick();
+  assert.equal(task.worker.sent.some((frame) => frame.kind === "cancel"), true);
+  task.worker.send({
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "cancelled",
+    taskRunId: base.runId,
+    summary: {
+      status: "completed",
+      counts: { itemCount: 1, committedCount: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+    },
+  });
+  task.worker.exit(0);
+  assert.deepEqual(await task.run, {
+    status: "cancelled",
+    errorCode: "cancelled",
+    summary: {
+      status: "completed",
+      counts: { itemCount: 1, committedCount: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+    },
+  });
+});
+
 test("unexpected worker errors and exits become a sanitized failure", async () => {
   const task = harness();
   task.worker.online();

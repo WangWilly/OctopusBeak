@@ -3,7 +3,16 @@ import { SourceTextIntegrityError } from "../source-text.ts";
 import { SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
-import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
+import {
+  ProductCollectionFatalError,
+  ProductCollectionInterruptedError,
+  sanitizeCollectionProductOutcomes,
+  type CollectionProductOutcome,
+} from "../product-collection.ts";
+import {
+  TYPED_WORKFLOW_ERROR_CODES,
+  type TypedWorkflowErrorCode,
+} from "../workflow-failures.ts";
 
 export type { TypedWorkflowErrorCode } from "../workflow-failures.ts";
 
@@ -15,11 +24,13 @@ export type TypedWorkflowOutcome = Readonly<{
 export type TypedWorkflowOutcomeSummary = Readonly<{
   status?: "financial-admitted" | "source-only" | "no-data" | "completed" | "partial" | "failed";
   counts: Readonly<Partial<Record<TypedWorkflowCountName, number>>>;
+  products?: readonly CollectionProductOutcome[];
 }>;
 
 type TypedWorkflowCountName =
   | "accountCount"
   | "canonicalCaptureCount"
+  | "committedCount"
   | "count"
   | "financialItemCount"
   | "holdingGridCount"
@@ -47,6 +58,7 @@ const SAFE_STATUSES = new Set<TypedWorkflowOutcomeSummary["status"]>([
 const SAFE_COUNT_NAMES = [
   "accountCount",
   "canonicalCaptureCount",
+  "committedCount",
   "count",
   "financialItemCount",
   "holdingGridCount",
@@ -64,7 +76,7 @@ const SAFE_COUNT_NAMES = [
   "tradeRowCount",
 ] as const satisfies readonly TypedWorkflowCountName[];
 const MAX_COUNT = 1_000_000_000;
-const MAX_SUMMARY_BYTES = 512;
+const MAX_SUMMARY_BYTES = 4_096;
 const ERROR_CODES = new Set<TypedWorkflowErrorCode>(TYPED_WORKFLOW_ERROR_CODES);
 
 /** Keep only known aggregate fields; provider output may contain financial data. */
@@ -85,13 +97,36 @@ export function summarizeTypedWorkflowOutput(
     }
     counts[name] = value;
   }
-  if (status === undefined && Object.keys(counts).length === 0) return null;
+  let products: readonly CollectionProductOutcome[] | undefined;
+  if (candidate.products !== undefined) {
+    const sanitized = sanitizeCollectionProductOutcomes(candidate.products);
+    if (!sanitized) return null;
+    products = sanitized;
+  }
+  if (status === undefined && Object.keys(counts).length === 0 && products === undefined) return null;
   const summary: TypedWorkflowOutcomeSummary = {
     ...(status === undefined ? {} : { status }),
     counts,
+    ...(products === undefined ? {} : { products }),
   };
   if (Buffer.byteLength(JSON.stringify(summary), "utf8") > MAX_SUMMARY_BYTES) return null;
   return summary;
+}
+
+/** Keep committed product outcomes when a fatal stop interrupts the workflow. */
+export function summarizeInterruptedProductCollection(
+  error: unknown,
+): TypedWorkflowOutcomeSummary | null {
+  if (!(error instanceof ProductCollectionInterruptedError)) return null;
+  const { summary } = error;
+  return summarizeTypedWorkflowOutput({
+    status: summary.status,
+    sourceCaptureCount: summary.sourceCaptureCount,
+    rowCount: summary.rowCount,
+    itemCount: summary.itemCount,
+    committedCount: summary.committedCount,
+    products: summary.products,
+  });
 }
 
 /** Normalize persisted outcome metadata to the same strict allow-list. */
@@ -112,9 +147,38 @@ export function sanitizeTypedWorkflowOutcome(value: unknown): TypedWorkflowOutco
     summary = summarizeTypedWorkflowOutput({
       ...counts,
       ...(source.status === undefined ? {} : { status: source.status }),
+      ...(source.products === undefined ? {} : { products: source.products }),
     });
   }
   return { errorCode, summary };
+}
+
+/** Validate a summary received across the supervised worker boundary. */
+export function isTypedWorkflowOutcomeSummary(value: unknown): value is TypedWorkflowOutcomeSummary | null {
+  if (value === null) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (Object.keys(candidate).some((key) => !["status", "counts", "products"].includes(key))) return false;
+  if (!candidate.counts || typeof candidate.counts !== "object" || Array.isArray(candidate.counts)) return false;
+  const counts = candidate.counts as Record<string, unknown>;
+  if (Object.keys(counts).some((key) => !(SAFE_COUNT_NAMES as readonly string[]).includes(key))) return false;
+  for (const count of Object.values(counts)) {
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > MAX_COUNT) return false;
+  }
+  if (candidate.status !== undefined
+    && (typeof candidate.status !== "string" || !SAFE_STATUSES.has(candidate.status as TypedWorkflowOutcomeSummary["status"]))) return false;
+  let products: readonly CollectionProductOutcome[] | undefined;
+  if (candidate.products !== undefined) {
+    const sanitized = sanitizeCollectionProductOutcomes(candidate.products);
+    if (!sanitized) return false;
+    products = sanitized;
+  }
+  const summary: TypedWorkflowOutcomeSummary = {
+    ...(candidate.status === undefined ? {} : { status: candidate.status as NonNullable<TypedWorkflowOutcomeSummary["status"]> }),
+    counts: counts as Partial<Record<TypedWorkflowCountName, number>>,
+    ...(products === undefined ? {} : { products }),
+  };
+  return Buffer.byteLength(JSON.stringify(summary), "utf8") <= MAX_SUMMARY_BYTES;
 }
 
 /** Classify from typed failure evidence only; never persist the thrown message. */
@@ -123,6 +187,9 @@ export function classifyTypedWorkflowFailure(
   events: readonly WorkflowRunEvent[],
   signalAborted = false,
 ): TypedWorkflowErrorCode {
+  if (error instanceof ProductCollectionInterruptedError || error instanceof ProductCollectionFatalError) {
+    if (ERROR_CODES.has(error.errorCode)) return error.errorCode;
+  }
   if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
   if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
   if (error instanceof SourceAccessChallengeError) return "source-access-challenged";

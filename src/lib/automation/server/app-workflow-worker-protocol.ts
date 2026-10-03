@@ -4,7 +4,10 @@ import {
   type HumanAssistanceContractInput,
 } from "../human-assistance.ts";
 import type { WorkflowRunEvent } from "../workflow-executor.ts";
-import type { TypedWorkflowOutcomeSummary } from "./typed-workflow-outcome.ts";
+import {
+  isTypedWorkflowOutcomeSummary,
+  type TypedWorkflowOutcomeSummary,
+} from "./typed-workflow-outcome.ts";
 import type { GmailOtpFallbackReason } from "../gmail-otp.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import {
@@ -166,8 +169,14 @@ export type AppWorkflowWorkerOutboundFrame =
     taskRunId: string | null;
     errorCode: string;
     diagnostic?: SafeWorkflowFailureError;
+    summary?: TypedWorkflowOutcomeSummary | null;
   }>
-  | Readonly<{ protocolVersion: 2; kind: "cancelled"; taskRunId: string }>
+  | Readonly<{
+    protocolVersion: 2;
+    kind: "cancelled";
+    taskRunId: string;
+    summary?: TypedWorkflowOutcomeSummary | null;
+  }>
   | CathayGmailOtpRequestFrame;
 
 export class AppWorkflowWorkerProtocolError extends Error {
@@ -388,20 +397,7 @@ function validEvent(value: unknown): value is WorkflowRunEvent {
 }
 
 function validSummary(value: unknown): value is TypedWorkflowOutcomeSummary | null {
-  if (value === null) return true;
-  if (!isRecord(value) || !exactKeys(value, ["counts"], ["status"]) || !isRecord(value.counts)) return false;
-  const statuses = new Set(["financial-admitted", "source-only", "no-data", "completed", "partial", "failed"]);
-  const countNames = new Set([
-    "accountCount", "canonicalCaptureCount", "count", "financialItemCount", "holdingGridCount",
-    "holdingPageCount", "holdingRowCount", "invoiceCount", "itemCount", "rowCount",
-    "skippedAccountCount", "skippedProductCount", "sourceCaptureCount", "statementRowCount",
-    "tradeGridCount", "tradePageCount", "tradeRowCount",
-  ]);
-  if (value.status !== undefined && (typeof value.status !== "string" || !statuses.has(value.status))) return false;
-  return Object.entries(value.counts).every(([key, count]) => countNames.has(key)
-    && Number.isSafeInteger(count)
-    && Number(count) >= 0
-    && Number(count) <= 1_000_000_000);
+  return isTypedWorkflowOutcomeSummary(value);
 }
 
 export function parseAppWorkflowWorkerOutboundFrame(
@@ -446,24 +442,27 @@ export function parseAppWorkflowWorkerOutboundFrame(
     if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId) || !validSummary(value.summary)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
-  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic"])) {
+  if (value.kind === "failed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "errorCode"], ["diagnostic", "summary"])) {
     if (
       (value.taskRunId !== null && (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)))
       || typeof value.errorCode !== "string"
       || !failureCodes.has(value.errorCode)
+      || (Object.hasOwn(value, "summary") && !validSummary(value.summary))
     ) invalid();
     return {
       protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
       kind: "failed",
       taskRunId: value.taskRunId as string | null,
       errorCode: value.errorCode,
+      ...(Object.hasOwn(value, "summary") ? { summary: value.summary as TypedWorkflowOutcomeSummary | null } : {}),
       ...(Object.hasOwn(value, "diagnostic")
         ? { diagnostic: sanitizeSafeWorkflowFailureError(value.diagnostic, diagnosticRepoRoot) }
         : {}),
     };
   }
-  if (value.kind === "cancelled" && exactKeys(value, ["protocolVersion", "kind", "taskRunId"])) {
-    if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)) invalid();
+  if (value.kind === "cancelled" && exactKeys(value, ["protocolVersion", "kind", "taskRunId"], ["summary"])) {
+    if (typeof value.taskRunId !== "string" || !SAFE_ID.test(value.taskRunId)
+      || (Object.hasOwn(value, "summary") && !validSummary(value.summary))) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
   invalid();

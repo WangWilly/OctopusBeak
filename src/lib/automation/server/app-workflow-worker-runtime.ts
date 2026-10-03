@@ -13,6 +13,7 @@ import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
 import {
   classifyTypedWorkflowFailure,
+  summarizeInterruptedProductCollection,
   summarizeTypedWorkflowOutput,
 } from "./typed-workflow-outcome.ts";
 import {
@@ -421,24 +422,27 @@ export async function runAppWorkflowWorker(
     }
   } catch (error) {
     terminal = true;
-    if (controller.signal.aborted && !protocolFailure) {
+    const summary = summarizeInterruptedProductCollection(error);
+    const errorCode = protocolFailure
+      ? "protocol-invalid"
+      : classifyTypedWorkflowFailure(error, events, controller.signal.aborted);
+    if (errorCode === "cancelled" && controller.signal.aborted && !protocolFailure) {
       try {
         send({
           protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
           kind: "cancelled",
           taskRunId: start.taskRunId,
+          ...(summary ? { summary } : {}),
         });
       } catch { /* an unavailable host cannot receive the terminal event */ }
     } else {
-      const errorCode = protocolFailure
-        ? "protocol-invalid"
-        : classifyTypedWorkflowFailure(error, events, controller.signal.aborted);
       try {
         send({
           protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
           kind: "failed",
           taskRunId: start.taskRunId,
           errorCode,
+          ...(summary ? { summary } : {}),
           diagnostic: captureSafeWorkflowFailureError(
             protocolFailure ? new AppWorkflowWorkerProtocolError() : error,
             workflowFailureDiagnosticRepoRoot(),
