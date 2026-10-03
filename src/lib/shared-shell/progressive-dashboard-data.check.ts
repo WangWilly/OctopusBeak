@@ -179,11 +179,19 @@ test("settled spending and automation blocks provide their own content without r
   } as unknown as AutomationPageModel;
 
   assert.equal(
-    resolveAutomationBlock(fallbackAutomation, { automation: listAutomation, credentialGroups: [] }).tasks[0]?.id,
+    resolveAutomationBlock(fallbackAutomation, {
+      automation: listAutomation,
+      verificationActorsByCredentialGroup: {},
+      credentialGroups: [],
+    }).tasks[0]?.id,
     "list-task",
   );
   assert.equal(
-    resolveAutomationBlock(fallbackAutomation, { automation: detailsAutomation, credentialGroups: [] }).tasks[0]?.id,
+    resolveAutomationBlock(fallbackAutomation, {
+      automation: detailsAutomation,
+      verificationActorsByCredentialGroup: {},
+      credentialGroups: [],
+    }).tasks[0]?.id,
     "details-task",
   );
   assert.equal(resolveAutomationBlock(fallbackAutomation)?.tasks[0]?.id, "fallback-task");

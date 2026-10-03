@@ -103,6 +103,38 @@ try {
       },
     },
   ]);
+
+removeDesktopCdpFixture(root);
+await seedDesktopCdpFixture(
+  root,
+  new Date("2026-09-14T04:00:00.000Z"),
+  { includeCathayVerificationFailure: true },
+);
+const verificationSettings = JSON.parse(await readFile(join(root, "settings.json"), "utf8"));
+assert.equal(verificationSettings.LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR, "human");
+assert.equal(verificationSettings.LIBRETTO_CLOUD_CATHAY_ENABLED, true);
+const verificationDb = await PGlite.create({ dataDir: join(root, "data", "pglite") });
+const cathayFixture = (await verificationDb.query(`
+  SELECT status, record_json
+  FROM automation_task_runs
+  WHERE task_id = 'cathay-all-statements'
+`)).rows[0];
+const cathayRecord = JSON.parse(cathayFixture.record_json);
+assert.equal(cathayFixture.status, "failed");
+assert.deepEqual(cathayRecord.appWorkflowOutcome, {
+  errorCode: "verification-configuration-failed",
+  summary: { status: "failed", counts: {} },
+});
+assert.deepEqual(cathayRecord.events.map(({ stage, code, occurredAt }) => ({ stage, code, occurredAt })), [
+  {
+    stage: "authentication",
+    code: "cathay-email-otp-gmail-needs-authorization",
+    occurredAt: "2026-09-14T10:01:00.000Z",
+  },
+]);
+assert.equal(JSON.stringify(cathayRecord).includes("otp"), true);
+assert.equal(JSON.stringify(cathayRecord).includes("fixture-cdp-"), false);
+await verificationDb.close();
 } finally {
   removeDesktopCdpFixture(root);
 }

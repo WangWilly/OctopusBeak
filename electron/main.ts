@@ -1,4 +1,6 @@
 import path from "node:path";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog } from "electron";
 import {
@@ -10,6 +12,7 @@ import {
   abortActiveAppWorkflowExecutions,
 } from "../src/lib/automation/server/runner.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { configureHostVerificationActorPolicy } from "../src/lib/automation/verification-config.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
@@ -34,6 +37,7 @@ import {
   packagedBrowserFixtureEnabled,
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
 import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
+import { createHumanAssistanceContract } from "../src/lib/automation/human-assistance.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -93,6 +97,13 @@ function handleAutomationRuntimeFatal(details: {
 }
 
 app.setName("OctopusBeak");
+// Capture only the process environment inherited at launch. `buildDesktopEnv`
+// later merges development files into process.env, but those persisted values
+// must never select a manual verification actor.
+configureHostVerificationActorPolicy({
+  isPackaged: app.isPackaged,
+  env: Object.freeze({ ...process.env }),
+});
 app.setPath("userData", process.env.OCTOPUSBEAK_USER_DATA || path.join(app.getPath("appData"), "OctopusBeak"));
 process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
   projectRoot(),
@@ -217,10 +228,34 @@ function showStartupError(error: unknown) {
   app.quit();
 }
 
+function assertDisposableVerificationFixtureRoot(userData: string) {
+  let root: string;
+  try {
+    root = realpathSync(userData);
+  } catch {
+    throw new Error("Verification fixture user-data must already exist in a temporary directory.");
+  }
+  const temporaryRoots = [tmpdir(), "/tmp"].map((directory) => realpathSync(directory));
+  const isBelowTemporaryRoot = temporaryRoots.some((temporaryRoot) => {
+    const relative = path.relative(temporaryRoot, root);
+    return relative.length > 0
+      && relative !== ".."
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative);
+  });
+  if (!isBelowTemporaryRoot) {
+    throw new Error("Verification fixture user-data must be inside a disposable temporary directory.");
+  }
+}
+
 async function start() {
   const userData = app.getPath("userData");
   const appRoot = projectRoot();
   const cdpFixture = process.env.OCTOPUSBEAK_CDP_FIXTURE === "171";
+  const cdpVerificationFixture = !app.isPackaged
+    && cdpFixture
+    && process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1";
+  if (cdpVerificationFixture) assertDisposableVerificationFixtureRoot(userData);
   ensureDataRoot(userData);
   stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
@@ -246,7 +281,42 @@ async function start() {
     setImmediate(() => {
       recoverInterruptedAutomationRuns(operationalRuntime.provider)
         .then(() => hydrateAutomationRuntimeState(operationalRuntime.provider))
-        .then(() => {
+        .then(async () => {
+          if (cdpVerificationFixture) {
+            const contract = createHumanAssistanceContract({
+              stageId: "esun-credit-card-login-captcha",
+              title: "Complete the E.SUN verification challenge",
+              targets: [{
+                id: "captcha-input",
+                label: "Verification code",
+                semanticId: "esun.login.captcha-input",
+                modes: ["type"],
+                rect: { x: 220, y: 280, width: 220, height: 42 },
+              }],
+              contextRegions: [],
+              challengeKind: "text-captcha",
+              charset: "digits",
+              expectedAnswerLength: 6,
+              challengeImageRegion: {
+                id: "captcha-image",
+                label: "Verification image",
+                semanticId: "esun.login.captcha-image",
+                rect: { x: 220, y: 210, width: 220, height: 54 },
+              },
+              completion: { mode: "inline", targetIds: ["captcha-input"] },
+              focus: { targetId: "captcha-input", contextRegionIds: [] },
+            }, 1);
+            await operationalRuntime.provider.automation.createTaskRun({
+              taskId: "esun-credit-card-statements",
+              kind: "crawler",
+              status: "waiting_for_human",
+              attempt: 1,
+              maxAttempts: 1,
+              startedAt: new Date().toISOString(),
+              humanAssistanceContract: contract,
+            });
+            await hydrateAutomationRuntimeState(operationalRuntime.provider);
+          }
           // This is an isolated Electron regression seam. It is only active
           // for the disposable CDP fixture and lets the fatal invariant be
           // exercised without seeding or touching a user's ledger.

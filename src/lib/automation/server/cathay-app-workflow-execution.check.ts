@@ -12,6 +12,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { CathayGmailOtpPort } from "../../../workflows/cathay-statements.ts";
+import { configureHostVerificationActorPolicy } from "../verification-config.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -71,7 +72,18 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       cathay_password: "synthetic-password",
     },
     statementTypes: ["domestic", "foreign_currency"],
+    verificationActor: "solver",
   });
+  assert.equal((workflowInputForTask(task.workflowId, {
+    ...syntheticEnvironment(),
+    LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR: "human",
+  }) as { verificationActor: string }).verificationActor, "solver", "workflow-supplied environment cannot authorize manual operation");
+  configureHostVerificationActorPolicy({
+    isPackaged: false,
+    env: { LIBRETTO_CLOUD_CATHAY_VERIFICATION_ACTOR: "human" },
+  });
+  assert.equal((workflowInputForTask(task.workflowId, syntheticEnvironment()) as { verificationActor: string }).verificationActor, "human");
+  configureHostVerificationActorPolicy({ isPackaged: true, env: {} });
   assert.throws(
     () => workflowInputForTask(task.workflowId, {
       ...syntheticEnvironment(),

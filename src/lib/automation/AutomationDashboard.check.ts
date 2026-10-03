@@ -92,7 +92,8 @@ assert.match(
 );
 assert.match(source, /\{#each task\.events as event, index/);
 assert.match(source, /\$t\.automation\.workflowStages\[event\.stage\]/);
-assert.match(source, /\{event\.code\}/);
+assert.match(source, /workflowEventFailureLabel\(event\)/);
+assert.match(source, /<code>\{event\.code\}<\/code>/);
 assert.match(source, /formatTime\(event\.occurredAt\)/);
 assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
 assert.match(source, /task\.appWorkflowOutcome\?\.errorCode/);
@@ -140,7 +141,7 @@ assert.match(
   /onpointerenter=\{\(event\) => showTaskTooltip\(task, event\)\}/,
 );
 assert.match(source, /onpointerleave=\{hideTaskTooltip\}/);
-assert.match(source, /\$t\.automation\.statusLabels\[hoveredTask\.status\]/);
+assert.match(source, /taskStatusLabel\(hoveredTask, \$t\)/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
 const resumeHumanViewerSource = source.slice(
@@ -524,11 +525,11 @@ assert.match(saveCredentialsSource, /credentialDrafts,/);
 assert.doesNotMatch(saveCredentialsSource, /credentialInputValue/);
 
 assert.match(source, /id="cathay-gmail-otp-title"/);
-assert.match(source, /\$t\.automation\.cathayGmailOtpToggle/);
+assert.match(source, /\$t\.automation\.cathayGmailOtpAlwaysAutomatic/);
 assert.match(source, /window\.octopusBeak\.automation\.enableCathayGmailOtp\(\)/);
-assert.match(source, /window\.octopusBeak\.automation\.setCathayGmailOtpEnabled\(false\)/);
+assert.doesNotMatch(source, /setCathayGmailOtpEnabled/);
 assert.match(source, /window\.octopusBeak\.automation\.disconnectCathayGmailOtp\(\)/);
-assert.match(source, /aria-pressed=\{cathayGmailOtpStatus\.enabled\}/);
+assert.doesNotMatch(source, /aria-pressed=\{cathayGmailOtpStatus\.enabled\}/);
 assert.match(source, /cathayGmailOtpStatus\.connectedEmail/);
 assert.match(source, /cathayGmailOtpStatus\.needsAuthorization/);
 assert.match(source, /cathayGmailOtpConnectionErrorMessage/);

@@ -102,11 +102,10 @@ export type AutomationTaskExecutionOptions = {
 
 function requiresSolverRoute(
   execution: AutomationTaskRunExecution,
-  options: AutomationTaskExecutionOptions,
+  _options: AutomationTaskExecutionOptions,
 ) {
   const groupId = execution.task.credentialGroupId;
-  return groupId !== undefined
-    && automationGroupVerificationActors(options.launchVerificationSettings)[groupId] === "solver";
+  return automationGroupVerificationActors()[groupId ?? ""] !== "human";
 }
 
 function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEvent["stage"] | undefined {

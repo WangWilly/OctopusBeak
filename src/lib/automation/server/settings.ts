@@ -10,7 +10,7 @@ import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 import { automationFlagEnabled } from "../statement-selection.ts";
 import {
   type VerificationActor,
-  verificationActorForSource,
+  hostVerificationActorForSourceKey,
 } from "../verification-config.ts";
 import { systemSettings } from "../../settings/system-settings.ts";
 
@@ -47,12 +47,12 @@ export function automationGroupEnabledStatus(
 }
 
 export function automationGroupVerificationActors(
-  settings: AutomationSettingsFile = readAutomationSettings(),
+  _settings?: AutomationSettingsFile,
 ): Record<string, VerificationActor> {
   return Object.fromEntries(
     AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
       group.id,
-      verificationActorForSource(group.verificationActorKey, settings),
+      hostVerificationActorForSourceKey(group.verificationActorKey),
     ]),
   );
 }

@@ -50,9 +50,14 @@ export const desktopCdpFixtureCredentials = Object.fromEntries(
   }),
 ) as Record<string, string>;
 
+export type DesktopCdpFixtureOptions = Readonly<{
+  includeCathayVerificationFailure?: boolean;
+}>;
+
 /**
- * Keep the fixture small: one completed bank source, one failed bank source,
- * and one credential-group sync source for the onboarding path.
+ * Keep the base fixture small: one partially completed bank source, one
+ * failed provider row, and one credential-group sync source for onboarding.
+ * The opt-in verification fixture adds a safe Cathay Gmail setup reason.
  */
 export const desktopCdpFixtureSettings = {
   AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
@@ -89,10 +94,19 @@ function assertDisposableFixtureRoot(userData: string) {
 export async function seedDesktopCdpFixture(
   userData: string,
   referenceDate = new Date(),
+  options: DesktopCdpFixtureOptions = {},
 ) {
   const root = assertDisposableFixtureRoot(userData);
   mkdirSync(root, { recursive: true });
-  writeAutomationSettingsFile(join(root, "settings.json"), desktopCdpFixtureSettings);
+  const fixtureSettings = options.includeCathayVerificationFailure
+    ? {
+      ...desktopCdpFixtureSettings,
+      // A persisted preference must not grant access to a paused browser.
+      LIBRETTO_CLOUD_ESUN_VERIFICATION_ACTOR: "human",
+      LIBRETTO_CLOUD_CATHAY_ENABLED: true,
+    }
+    : desktopCdpFixtureSettings;
+  writeAutomationSettingsFile(join(root, "settings.json"), fixtureSettings);
   writeAutomationCredentialsFile(
     join(root, "credentials.json"),
     desktopCdpFixtureCredentials,
@@ -160,6 +174,31 @@ export async function seedDesktopCdpFixture(
         summary: { status: "failed", counts: {} },
       },
     });
+    if (options.includeCathayVerificationFailure) {
+      const cathayRun = await automation.createTaskRun({
+        taskId: "cathay-all-statements",
+        kind: "crawler",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 2,
+        startedAt: `${day}T10:00:00.000Z`,
+      });
+      await automation.appendRunEvent({
+        runId: cathayRun.taskRunId,
+        stage: "authentication",
+        code: "cathay-email-otp-gmail-needs-authorization",
+        occurredAt: `${day}T10:01:00.000Z`,
+      });
+      await automation.transitionTaskRunToTerminal(cathayRun.taskRunId, {
+        status: "failed",
+        finishedAt: `${day}T10:02:00.000Z`,
+        exitCode: 1,
+        appWorkflowOutcome: {
+          errorCode: "verification-configuration-failed",
+          summary: { status: "failed", counts: {} },
+        },
+      });
+    }
   } finally {
     await database.close();
   }
@@ -180,7 +219,9 @@ async function main() {
   const userData = process.argv[2];
   if (!userData) throw new Error("Usage: seed-desktop-cdp-fixture <user-data-root>");
   removeDesktopCdpFixture(userData);
-  console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData)}`);
+  console.log(`Desktop CDP fixture written to ${await seedDesktopCdpFixture(userData, new Date(), {
+    includeCathayVerificationFailure: process.env.OCTOPUSBEAK_CDP_VERIFICATION_FIXTURE === "1",
+  })}`);
 }
 
 const isCliEntry = process.argv[1] !== undefined

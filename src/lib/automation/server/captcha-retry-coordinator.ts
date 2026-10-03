@@ -130,6 +130,7 @@ async function finalizeCaptchaRetryExecution(
   taskRunId: string,
   result: CaptchaRetryExecutionResult,
   message?: string,
+  typedFailureCode?: "verification-failed",
 ) {
   const run = await provider.automation.taskRunById(taskRunId);
   if (!run) return { status: "failed" as const };
@@ -144,6 +145,17 @@ async function finalizeCaptchaRetryExecution(
   };
   const cancelled = message === "Automation task cancelled."
     || result.status === "cancelled";
+  const executionResult: AutomationTaskExecutionResult = {
+    ...(processResult ?? fallback),
+    ...(typedFailureCode
+      ? {
+        appWorkflowOutcome: {
+          errorCode: typedFailureCode,
+          summary: processResult?.appWorkflowOutcome?.summary ?? null,
+        },
+      }
+      : {}),
+  };
   return finalizeAutomationTaskRun(
     {
       provider,
@@ -152,7 +164,7 @@ async function finalizeCaptchaRetryExecution(
       taskRunId,
     },
     {
-      ...(processResult ?? fallback),
+      ...executionResult,
       ...(message
         ? {
           exitCode: cancelled ? null : 1,
@@ -468,11 +480,18 @@ export async function runCaptchaRetryCampaign(
       }
       if (!isCaptchaRetryCampaignReady(campaign)) {
         if (campaign.status === "exhausted") {
+          await provider.automation.appendRunEvent({
+            runId: taskRunId,
+            stage: "authentication",
+            code: "verification-solver-exhausted",
+            occurredAt: new Date().toISOString(),
+          });
           await finalizeCaptchaRetryExecution(
             provider,
             taskRunId,
             execution,
             `CAPTCHA retry campaign exhausted after ${MAX_CAPTCHA_RETRY_ROUNDS} rounds.`,
+            "verification-failed",
           );
           return { status: "failed" as const };
         }

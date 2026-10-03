@@ -31,6 +31,7 @@ import type {
   SpendingLoadInput,
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
+import type { VerificationActor } from "$lib/automation/verification-config.ts";
 import type {
   HumanAssistanceContract,
   VerificationInteractionMode,
@@ -121,6 +122,7 @@ export type AutomationCredentialGroupCoreDto = Omit<
 
 export type AutomationCoreSnapshot = AutomationRuntimeBlockVersion & {
   automation: AutomationPageModel;
+  verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>>;
   /** Group metadata only; credential-derived fields are empty until details. */
   credentialGroups: CredentialGroupDto[];
 };
@@ -141,6 +143,7 @@ export type AutomationCredentialSaveResult =
 
 export type AutomationDesktopModel = {
   automation: AutomationPageModel;
+  verificationActorsByCredentialGroup: Readonly<Record<string, VerificationActor>>;
   credentialGroups: CredentialGroupDto[];
   runtimeSessionId?: string;
   runtimeRevision?: number;
