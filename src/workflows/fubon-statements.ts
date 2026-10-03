@@ -250,6 +250,7 @@ export type FubonDepositWorkflowCollection = Readonly<{
   rowCount: number;
   itemCount: number;
   financialAdmissionCount: number;
+  noDataEvidence?: boolean;
 }>;
 
 type ExistingFubonFinancialCapture = Readonly<{

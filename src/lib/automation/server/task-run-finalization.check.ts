@@ -90,6 +90,86 @@ test("provider partial status invalidates once without retaining log output", as
   }
 });
 
+test("cancelled typed outcome retains product receipts and invalidates fresh data", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const invalidations = createDataVersionStore();
+    const summary = {
+      status: "completed" as const,
+      counts: { itemCount: 1, committedCount: 1 },
+      products: [{ typeId: "deposit", status: "success" as const, itemCount: 1, committedCount: 1 }],
+    } as const;
+    assert.deepEqual(await finalizeAutomationTaskRun({
+      provider,
+      taskId: "fubon-all-statements",
+      taskKind: "crawler",
+      taskRunId: created.taskRunId,
+      forceTerminated: true,
+      dataVersionStore: invalidations,
+    }, result({
+      exitCode: null,
+      signal: "SIGTERM",
+      appWorkflowOutcome: { errorCode: "cancelled", summary },
+    })), { status: "cancelled" });
+    const saved = await provider.automation.taskRunById(created.taskRunId);
+    assert.deepEqual(saved?.appWorkflowOutcome, { errorCode: "cancelled", summary });
+    assert.equal(invalidations.snapshot().version, 1, "a verified earlier product commit makes data stale after forced stop");
+  } finally {
+    await store.close();
+  }
+});
+
+test("persisted product commit event invalidates freshness when a later worker crash has no summary", async () => {
+  const database = await PGlite.create();
+  const store = new PGliteStore(database);
+  try {
+    await applyPgliteOperationalBaseline(store);
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "yuanta-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    await provider.automation.appendRunEvent({
+      runId: created.taskRunId,
+      stage: "commit",
+      code: "deposit-canonical-commit-completed",
+      occurredAt: new Date().toISOString(),
+      completed: 1,
+      total: 1,
+    });
+    const invalidations = createDataVersionStore();
+    assert.deepEqual(await finalizeAutomationTaskRun({
+      provider,
+      taskId: "yuanta-all-statements",
+      taskKind: "crawler",
+      taskRunId: created.taskRunId,
+      dataVersionStore: invalidations,
+    }, result({
+      exitCode: 1,
+      error: new Error("worker crashed after product commit"),
+      appWorkflowOutcome: { errorCode: "workflow-failed", summary: null },
+    })), { status: "failed" });
+    assert.equal(invalidations.snapshot().version, 1, "only a persisted commit-completed event proves earlier progress");
+  } finally {
+    await store.close();
+  }
+});
+
 test("typed App outcome is retained in run metadata without using log tail", async () => {
   const database = await PGlite.create();
   const store = new PGliteStore(database);

@@ -58,6 +58,7 @@ export const desktopCdpFixtureSettings = {
   AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
   EXCHANGE_RATE_UPDATE_TIME: "23:59",
   LIBRETTO_CLOUD_FUBON_ENABLED: true,
+  LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
   LIBRETTO_CLOUD_ESUN_ENABLED: true,
   LIBRETTO_CLOUD_YUANTA_ENABLED: false,
   LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: false,
@@ -114,12 +115,32 @@ export async function seedDesktopCdpFixture(
       startedAt: `${day}T08:00:00.000Z`,
     });
     await automation.transitionTaskRunToTerminal(fubonRun.taskRunId, {
-      status: "completed",
+      status: "partial",
       finishedAt: `${day}T08:02:00.000Z`,
       exitCode: 0,
       appWorkflowOutcome: {
         errorCode: null,
-        summary: { status: "completed", counts: { rowCount: 1 } },
+        summary: {
+          status: "partial",
+          counts: { rowCount: 1 },
+          products: [
+            { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+            {
+              typeId: "credit_card",
+              status: "failed",
+              itemCount: 2,
+              committedCount: 1,
+              errorCode: "canonical-commit-failed",
+            },
+            {
+              typeId: "loan",
+              status: "skipped",
+              itemCount: 0,
+              committedCount: 0,
+              skipReason: "not_selected",
+            },
+          ],
+        },
       },
     });
     const esunRun = await automation.createTaskRun({

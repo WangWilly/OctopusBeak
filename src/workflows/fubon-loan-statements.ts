@@ -120,6 +120,7 @@ export type FubonLoanWorkflowCollection = Readonly<{
   sourceCount: number;
   rowCount: number;
   itemCount: number;
+  noDataEvidence?: boolean;
 }>;
 
 type LoanPeriod =

@@ -643,6 +643,7 @@ async function findCreditCardBillsScope(
       if (isCreditCardProductAbsentText(bodyText)) {
         throw new StatementComponentAbsentError(
           "No YuanTa credit-card product is available for this login.",
+          "not_held",
         );
       }
     }
@@ -2098,6 +2099,7 @@ async function findStatementScope(page: Page): Promise<BrowserScope | null> {
       if (isCreditCardProductAbsentText(noRecordText)) {
         throw new StatementComponentAbsentError(
           "No YuanTa credit-card product is available for this login.",
+          "not_held",
         );
       }
     }
@@ -5191,6 +5193,7 @@ async function collectYuantaCreditCardStatements(
   if (isCreditCardProductAbsentText(currentMonthHtml)) {
     throw new StatementComponentAbsentError(
       "No YuanTa credit-card product is available for this login.",
+      "not_held",
     );
   }
   log("yuanta-credit-card-page-ready-complete", {

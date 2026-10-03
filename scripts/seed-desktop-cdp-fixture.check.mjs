@@ -76,10 +76,30 @@ try {
     },
     {
       task_id: "fubon-all-statements",
-      status: "completed",
+      status: "partial",
       app_workflow_outcome: {
         errorCode: null,
-        summary: { status: "completed", counts: { rowCount: 1 } },
+        summary: {
+          status: "partial",
+          counts: { rowCount: 1 },
+          products: [
+            { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
+            {
+              typeId: "credit_card",
+              status: "failed",
+              itemCount: 2,
+              committedCount: 1,
+              errorCode: "canonical-commit-failed",
+            },
+            {
+              typeId: "loan",
+              status: "skipped",
+              itemCount: 0,
+              committedCount: 0,
+              skipReason: "not_selected",
+            },
+          ],
+        },
       },
     },
   ]);

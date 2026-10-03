@@ -1,9 +1,12 @@
 import { z } from "zod";
 import type { Page, Response } from "playwright";
 import {
-  BANK_STATEMENT_CAPABILITIES,
-  selectStatementTypes,
-} from "../lib/automation/statement-selection.js";
+  collectSelectedProducts,
+  type CollectionProductTypeId,
+  ProductCollectionFatalError,
+  type ProductCollectionRunSummary,
+  type ProductCollectionSummary,
+} from "../lib/automation/product-collection.js";
 import {
   type CathayGmailOtpPort,
   type CathayStrictSourceOptions,
@@ -64,7 +67,7 @@ const typedCathayInputSchema = z.object({
     cathay_account: z.string().trim().min(1),
     cathay_password: z.string().trim().min(1),
   }),
-  statementTypes: z.array(statementTypeSchema).min(1).optional(),
+  statementTypes: z.array(statementTypeSchema).min(1),
   dateRange: dateRangeSchema.default("one_year"),
   accountFilters: z.array(z.string()).default([]),
   domesticAccountFilters: z.array(z.string()).optional(),
@@ -81,7 +84,14 @@ export type CathayAllProviderWorkflowOutput = Readonly<{
   count: number;
   rowCount: number;
   sourceCaptureCount: number;
-  status: "source-only" | "financial-admitted";
+  committedCount: number;
+  products: ProductCollectionRunSummary["products"];
+  status:
+    | "source-only"
+    | "financial-admitted"
+    | "no-data"
+    | "partial"
+    | "failed";
 }>;
 
 export type CathayAllProviderWorkflowDependencies = Readonly<{
@@ -256,19 +266,11 @@ export async function runCathayAllProviderWorkflow(
   await context.event("preparation", "input-validated");
 
   const input = parsed.data;
-  const requestedIds = new Set(
-    input.statementTypes ??
-      selectStatementTypes(
-        BANK_STATEMENT_CAPABILITIES.cathay,
-        process.env,
-        "strict",
-      ).selectedIds,
-  );
-  const selectedIds = BANK_STATEMENT_CAPABILITIES.cathay.statementTypes
-    .map((type) => type.id)
-    .filter((typeId) => requestedIds.has(typeId));
-  if (selectedIds.length === 0)
-    throw new Error("Select at least one Cathay statement type.");
+  const selectedIds = input.statementTypes;
+  const productIds = [
+    "domestic",
+    "foreign_currency",
+  ] as const satisfies readonly CollectionProductTypeId[];
 
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
@@ -295,124 +297,30 @@ export async function runCathayAllProviderWorkflow(
       dependencies.createSession ??
       ((target, sourceOptions) =>
         new CathayApiClient(target, sourceOptions).createSession());
-    const session = await withCathayAbort(
+    let session = await withCathayAbort(
       createSession(page, source),
       context.signal,
     );
-    let domestic: CathayDomesticFinancialCollection | undefined;
-    let foreign: CathayForeignFinancialCollection | undefined;
     const observedAt = context.now();
+    let statementCaptureCount = 0;
     await context.event("collection", "statement-collection-started", {
       total: selectedIds.length,
     });
-    if (selectedIds.includes("domestic")) {
-      await context.event("collection", "domestic-collection-started");
-      domestic = await withCathayAbort(
-        (
-          dependencies.collectDomestic ??
-          ((target, selection, token, sourceOptions, captureTime) =>
-            collectCathayDomesticFinancialRequests(
-              target,
-              selection.dateRange,
-              selection.domesticAccountFilters ?? selection.accountFilters,
-              token,
-              { source: sourceOptions, observedAt: captureTime },
-            ))
-        )(page, input, session, source, observedAt),
-        context.signal,
+    const readCurrent =
+      dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
+    const collectCurrentBalanceItems = async (
+      typeId: "domestic" | "foreign_currency",
+      domestic: CathayDomesticFinancialCollection | undefined,
+      foreign: CathayForeignFinancialCollection | undefined,
+    ): Promise<readonly PGliteWorkflowRunItem[]> => {
+      const label = typeId === "foreign_currency" ? "foreign" : "domestic";
+      await context.event(
+        "collection",
+        `${label}-current-balance-started`,
       );
-      if (
-        domestic.captureCount === 0 ||
-        domestic.requests.length !== domestic.captureCount
-      ) {
-        throw new Error("Cathay domestic selected source set is incomplete.");
-      }
-      await context.event("collection", "domestic-collection-completed", {
-        completed: domestic.captureCount,
-        total: domestic.captureCount,
-      });
-    }
-    if (selectedIds.includes("foreign_currency")) {
-      await context.event("collection", "foreign-collection-started");
-      foreign = await withCathayAbort(
-        (
-          dependencies.collectForeign ??
-          ((target, selection, token, sourceOptions, captureTime) =>
-            collectCathayForeignFinancialCaptures(
-              target,
-              selection.dateRange as CathayForeignDateRange,
-              selection.foreignAccountFilters ?? selection.accountFilters,
-              selection.currencyFilters,
-              token,
-              { source: sourceOptions, observedAt: captureTime },
-            ))
-        )(page, input, session, source, () => context.now()),
-        context.signal,
-      );
-      if (
-        foreign.selectedStatementCount === 0 ||
-        foreign.captures.length !== foreign.selectedStatementCount
-      ) {
-        throw new Error("Cathay foreign selected source set is incomplete.");
-      }
-      await context.event("collection", "foreign-collection-completed", {
-        completed: foreign.selectedStatementCount,
-        total: foreign.selectedStatementCount,
-      });
-    }
-    context.signal.throwIfAborted();
-    await context.event("collection", "statement-collection-completed", {
-      completed: selectedIds.length,
-      total: selectedIds.length,
-    });
-
-    const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
-    if (domestic) {
-      await context.event("validation", "domestic-admission-started", {
-        total: domestic.requests.length,
-      });
-      for (const request of domestic.requests) {
-        context.signal.throwIfAborted();
-        statementSteps.push({ kind: "financial", request });
-      }
-      await context.event("validation", "domestic-admission-completed", {
-        completed: domestic.requests.length,
-        total: domestic.requests.length,
-      });
-    }
-    if (foreign) {
-      await context.event("validation", "foreign-admission-started", {
-        total: foreign.captures.length,
-      });
-      for (const capture of foreign.captures) {
-        context.signal.throwIfAborted();
-        statementSteps.push({
-          kind: "deposit",
-          request: { capture: admitForeignCurrencyDepositCapture(capture) },
-        });
-      }
-      await context.event("validation", "foreign-admission-completed", {
-        completed: foreign.captures.length,
-        total: foreign.captures.length,
-      });
-    }
-    if (statementSteps.length === 0)
-      throw new Error("Cathay selected statement set has no admitted source.");
-
-    const commitItems: PGliteWorkflowRunItem[] = [
-      {
-        provider: "cathay",
-        product: "selected-statements",
-        itemKey: `statements:${context.runId}`,
-        command: {
-          kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-          request: { steps: statementSteps },
-        },
-      },
-    ];
-    if (dependencies.collectCurrentBalanceItems) {
-      commitItems.push(
-        ...(await withCathayAbort(
+      let items: readonly PGliteWorkflowRunItem[];
+      if (dependencies.collectCurrentBalanceItems) {
+        items = await withCathayAbort(
           dependencies.collectCurrentBalanceItems(
             page,
             domestic,
@@ -420,13 +328,8 @@ export async function runCathayAllProviderWorkflow(
             context,
           ),
           context.signal,
-        )),
-      );
-    } else {
-      const readCurrent =
-        dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
-      if (domestic) {
-        await context.event("collection", "domestic-current-balance-started");
+        );
+      } else if (typeId === "domestic" && domestic) {
         const rows = await withCathayAbort(
           readCurrent(page, "domestic", context),
           context.signal,
@@ -461,20 +364,11 @@ export async function runCathayAllProviderWorkflow(
             scopeDate: selectedRows[0]!.observedAt.slice(0, 10),
           },
         );
-        commitItems.push(
-          ...currentBalanceItems(balanceCaptures, "domestic-current-balance"),
+        items = currentBalanceItems(
+          balanceCaptures,
+          "domestic-current-balance",
         );
-        await context.event(
-          "collection",
-          "domestic-current-balance-completed",
-          {
-            completed: selectedRows.length,
-            total: selectedRows.length,
-          },
-        );
-      }
-      if (foreign) {
-        await context.event("collection", "foreign-current-balance-started");
+      } else if (typeId === "foreign_currency" && foreign) {
         const rows = await withCathayAbort(
           readCurrent(page, "foreign", context),
           context.signal,
@@ -493,62 +387,223 @@ export async function runCathayAllProviderWorkflow(
           throw new Error(
             "Cathay foreign current balance source is incomplete.",
           );
-        commitItems.push(
-          ...currentBalanceItems(captures, "foreign-current-balance"),
-        );
-        await context.event("collection", "foreign-current-balance-completed", {
-          completed: captures.length,
-          total: captures.length,
-        });
+        items = currentBalanceItems(captures, "foreign-current-balance");
+      } else {
+        throw new Error("Cathay current balance collection lacks its statement source.");
       }
-    }
+      await context.event(
+        "collection",
+        `${label}-current-balance-completed`,
+        { completed: items.length, total: items.length },
+      );
+      return items;
+    };
 
-    context.signal.throwIfAborted();
-    await context.event("validation", "all-source-admission-completed", {
-      completed: commitItems.length,
-      total: commitItems.length,
-    });
-    await context.event("commit", "canonical-commit-started", {
-      completed: 0,
-      total: commitItems.length,
-    });
-    const committed = await context.financialCommit!.execute(commitItems, {
-      provider: "cathay",
-      product: "selected-statements-and-balances",
+    const summary = await collectSelectedProducts({
+      productIds,
+      selectedIds,
       signal: context.signal,
+      assertSession: async () => {
+        // Cathay's GetJWT request is the authenticated session health check.
+        // A source failure must not be mistaken for an independent product
+        // failure when the browser session itself has expired.
+        let checkedSession: CathaySession;
+        try {
+          checkedSession = await withCathayAbort(
+            createSession(page, source),
+            context.signal,
+          );
+        } catch (error) {
+          if (context.signal.aborted) throw error;
+          throw new ProductCollectionFatalError("authentication-failed");
+        }
+        if (
+          checkedSession.customerId !== session.customerId ||
+          checkedSession.idType !== session.idType
+        ) {
+          throw new ProductCollectionFatalError("authentication-failed");
+        }
+        session = checkedSession;
+      },
+      event: (stage, code, counts) => context.event(stage, code, counts),
+      collect: async (typeId, stagedItems): Promise<ProductCollectionSummary> => {
+        if (typeId === "domestic") {
+          const domestic = await withCathayAbort(
+            (
+              dependencies.collectDomestic ??
+              ((target, selection, token, sourceOptions, captureTime) =>
+                collectCathayDomesticFinancialRequests(
+                  target,
+                  selection.dateRange,
+                  selection.domesticAccountFilters ?? selection.accountFilters,
+                  token,
+                  { source: sourceOptions, observedAt: captureTime },
+                ))
+            )(page, input, session, source, observedAt),
+            context.signal,
+          );
+          if (
+            domestic.captureCount === 0 ||
+            domestic.requests.length !== domestic.captureCount
+          ) {
+            throw new Error("Cathay domestic selected source set is incomplete.");
+          }
+          await context.event("collection", "domestic-collection-completed", {
+            completed: domestic.captureCount,
+            total: domestic.captureCount,
+          });
+          await context.event("validation", "domestic-admission-started", {
+            total: domestic.requests.length,
+          });
+          const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
+          for (const request of domestic.requests) {
+            context.signal.throwIfAborted();
+            statementSteps.push({ kind: "financial", request });
+          }
+          stagedItems.push({
+            provider: "cathay",
+            product: "domestic-statements",
+            itemKey: `statements:${context.runId}:domestic`,
+            command: {
+              kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+              request: { steps: statementSteps },
+            },
+          });
+          await context.event("validation", "domestic-admission-completed", {
+            completed: domestic.requests.length,
+            total: domestic.requests.length,
+          });
+          const balances = await collectCurrentBalanceItems(
+            "domestic",
+            domestic,
+            undefined,
+          );
+          stagedItems.push(...balances);
+          statementCaptureCount += domestic.captureCount;
+          return {
+            // Keep this legacy field scoped to statement-source captures;
+            // balance command items are reflected by itemCount instead.
+            sourceCaptureCount: domestic.captureCount,
+            rowCount: domestic.rowCount,
+            itemCount: stagedItems.length,
+          };
+        }
+
+        const foreign = await withCathayAbort(
+          (
+            dependencies.collectForeign ??
+            ((target, selection, token, sourceOptions, captureTime) =>
+              collectCathayForeignFinancialCaptures(
+                target,
+                selection.dateRange as CathayForeignDateRange,
+                selection.foreignAccountFilters ?? selection.accountFilters,
+                selection.currencyFilters,
+                token,
+                { source: sourceOptions, observedAt: captureTime },
+              ))
+          )(page, input, session, source, () => context.now()),
+          context.signal,
+        );
+        if (
+          foreign.selectedStatementCount === 0 ||
+          foreign.captures.length !== foreign.selectedStatementCount
+        ) {
+          throw new Error("Cathay foreign selected source set is incomplete.");
+        }
+        await context.event("collection", "foreign-collection-completed", {
+          completed: foreign.selectedStatementCount,
+          total: foreign.selectedStatementCount,
+        });
+        await context.event("validation", "foreign-admission-started", {
+          total: foreign.captures.length,
+        });
+        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
+        for (const capture of foreign.captures) {
+          context.signal.throwIfAborted();
+          statementSteps.push({
+            kind: "deposit",
+            request: { capture: admitForeignCurrencyDepositCapture(capture) },
+          });
+        }
+        stagedItems.push({
+          provider: "cathay",
+          product: "foreign-currency-statements",
+          itemKey: `statements:${context.runId}:foreign-currency`,
+          command: {
+            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+            request: { steps: statementSteps },
+          },
+        });
+        await context.event("validation", "foreign-admission-completed", {
+          completed: foreign.captures.length,
+          total: foreign.captures.length,
+        });
+        const balances = await collectCurrentBalanceItems(
+          "foreign_currency",
+          undefined,
+          foreign,
+        );
+        stagedItems.push(...balances);
+        statementCaptureCount += foreign.captures.length;
+        return {
+          sourceCaptureCount: foreign.captures.length,
+          rowCount: foreign.rowCount,
+          itemCount: stagedItems.length,
+        };
+      },
+      commit: async (typeId, stagedItems) =>
+        context.financialCommit!.execute(stagedItems, {
+          provider: "cathay",
+          product: typeId,
+          signal: context.signal,
+        }),
+    });
+
+    const completedProducts = summary.products.filter(
+      (product) =>
+        product.status === "success" ||
+        product.status === "no_data" ||
+        product.status === "not_held",
+    ).length;
+    await context.event("collection", "statement-collection-completed", {
+      completed: completedProducts,
+      total: selectedIds.length,
     });
     if (
-      committed.status !== "completed" ||
-      committed.items.length !== commitItems.length ||
-      committed.items.some((item) => item.status !== "committed")
+      summary.products
+        .filter((product) => product.status !== "skipped")
+        .every((product) => product.status !== "failed")
     ) {
-      const codes = committed.diagnostics
-        .map((item) => item.errorCode)
-        .join(", ");
-      await context.event(
-        "commit",
-        context.signal.aborted
-          ? "canonical-commit-cancelled"
-          : "canonical-commit-failed",
-      );
-      throw new Error(
-        `Cathay Canonical Financial Commit failed: ${codes || committed.status}.`,
-      );
+      await context.event("validation", "all-source-admission-completed", {
+        completed: summary.itemCount,
+        total: summary.itemCount,
+      });
     }
-    await context.event("commit", "canonical-commit-completed", {
-      completed: commitItems.length,
-      total: commitItems.length,
-    });
+    if (summary.status === "completed" && summary.committedCount > 0) {
+      await context.event("commit", "canonical-commit-completed", {
+        completed: summary.committedCount,
+        total: summary.itemCount,
+      });
+    }
+
+    const hasSuccessfulProduct = summary.products.some(
+      (product) => product.status === "success",
+    );
     return {
       statementTypes: selectedIds.map((typeId) =>
         typeId === "foreign_currency" ? "foreign" : "domestic",
       ),
-      count:
-        (domestic?.captureCount ?? 0) + (foreign?.selectedStatementCount ?? 0),
-      rowCount: (domestic?.rowCount ?? 0) + (foreign?.rowCount ?? 0),
-      sourceCaptureCount:
-        (domestic?.captureCount ?? 0) + (foreign?.captures.length ?? 0),
-      status: "financial-admitted",
+      count: statementCaptureCount,
+      rowCount: summary.rowCount,
+      sourceCaptureCount: summary.sourceCaptureCount,
+      committedCount: summary.committedCount,
+      products: summary.products,
+      status:
+        summary.status === "completed"
+          ? hasSuccessfulProduct
+            ? "financial-admitted"
+            : "no-data"
+          : summary.status,
     };
   });
 }
