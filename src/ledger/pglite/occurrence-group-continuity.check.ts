@@ -37,11 +37,9 @@ function request(
 ): PGliteCanonicalFinancialCommitRequest {
   const scopeKey = options.scopeKey ?? token("checking-source-bucket");
   const routeKey = options.queriedBuckets
-    ? "synthetic/domestic-deposit/queried-buckets-v1"
-    : "synthetic/domestic-deposit/v8";
-  const contractVersion = options.queriedBuckets
-    ? "synthetic-queried-buckets-v1"
-    : "synthetic-v8";
+    ? "fubon/credit-card/human-attested-v2"
+    : "fubon/domestic-deposit/human-attested-v1";
+  const contractVersion = options.queriedBuckets ? routeKey : "human-attested-v1";
   const slots = assignOccurrenceSlots({
     rows,
     complete: true,
@@ -61,18 +59,20 @@ function request(
   }));
   const capture: PGliteCanonicalFinancialCommitRequest["capture"] = {
     captureId,
-    integrationNamespace: "synthetic",
+    integrationNamespace: "fubon",
     sourceConnectionKey: token("source-connection"),
     identityEpoch: token("identity-epoch"),
-    stream: "domestic-deposit",
-    recordKind: options.recordKind ?? "source-record",
+    stream: options.queriedBuckets ? "credit-card" : "domestic-deposit",
+    recordKind: options.recordKind ?? (options.queriedBuckets
+      ? "fubon-credit-card-transaction"
+      : "fubon-domestic-deposit"),
     routeKey,
     contractVersion,
     subjectDigest: options.subjectDigest ?? token("source-subject"),
     observedAt: "2026-09-30T00:00:00.000Z",
     accountNumber: {
       value: "123456",
-      kind: "depository-account",
+      kind: options.queriedBuckets ? "credit-portfolio-account" : "depository-account",
       evidenceVersion: "synthetic-v1",
       sourceField: "accountNumber",
     },
@@ -83,7 +83,7 @@ function request(
       kind: "bounded-range",
       completeness: "complete-range",
       completenessBasis: "full-bounded-range",
-      ruleVersion: "synthetic-completeness-v1",
+      ruleVersion: routeKey,
       sourceAccountKey: "checking-account",
     },
     pages: [{
@@ -109,7 +109,7 @@ function request(
     account: {
       sourceAccountKey: "checking-account",
       accountNo: "123456",
-      accountType: "depository",
+      accountType: options.queriedBuckets ? "credit" : "depository",
       currency: "TWD",
     },
     transactions: slots.map(({ row, occurrenceKey, group }) => ({
@@ -119,20 +119,20 @@ function request(
       currency: "TWD",
       direction: "inflow" as const,
       postingStatus: "posted" as const,
-      postingOrigin: "synthetic_origin",
-      postingBasis: "synthetic_basis",
-      postingRuleVersion: "synthetic-v1",
+      postingOrigin: "human-attested",
+      postingBasis: "statement-posted-history",
+      postingRuleVersion: routeKey,
       description: "grouped source record",
       economicStatus: "normal" as const,
       administrativeState: "active" as const,
-      semanticRuleVersion: "synthetic-v1",
+      semanticRuleVersion: routeKey,
       effectiveOn: row.date,
       transactionDateTimeLocal: `${row.date}T00:00:00+08:00`,
       timeZone: "Asia/Taipei" as const,
       timePrecision: "second" as const,
       timeOrigin: "source_reported" as const,
-      effectiveTimeBasis: "accounting" as const,
-      effectiveTimeRuleVersion: "synthetic-v1",
+      effectiveTimeBasis: "transaction-time" as const,
+      effectiveTimeRuleVersion: routeKey,
       utcInstantUtcUs: Date.parse(`${row.date}T00:00:00.000+08:00`) * 1000,
     })),
   };

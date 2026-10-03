@@ -67,10 +67,10 @@ function depositRequest(
   return {
     capture: {
       captureId,
-      authorityRoute: "synthetic/domestic-deposit/v8",
-      contractVersion: "synthetic-v8",
+      authorityRoute: "cathay/domestic-deposit/v1",
+      contractVersion: "v1",
       identity: {
-        integrationNamespace: "synthetic",
+        integrationNamespace: "cathay",
         sourceConnectionKey: token("connection"),
         identityEpochKey: token("epoch"),
         stream: "domestic-deposit",
@@ -89,7 +89,7 @@ function depositRequest(
         scopeKind: "bounded-range",
         completeness: "complete-range",
         completenessBasis: "synthetic-complete-range",
-        completenessRuleVersion: "synthetic-v8",
+        completenessRuleVersion: "cathay/domestic-deposit/v1",
         absenceAuthority: "comparable-complete-range",
         contractFingerprint: token("contract"),
         preflightFingerprint: token("preflight"),
@@ -98,14 +98,14 @@ function depositRequest(
       },
       semantics: {
         postingStatus: "posted",
-        postingOrigin: "synthetic_origin",
-        postingBasis: "synthetic_basis",
-        postingRuleVersion: "synthetic-v8",
+        postingOrigin: "provider_booked_history",
+        postingBasis: "query-status-success-with-accounting-date",
+        postingRuleVersion: "cathay/domestic-deposit/v1",
         economicStatus: "normal",
         administrativeState: "active",
-        semanticRuleVersion: "synthetic-v8",
+        semanticRuleVersion: "cathay/domestic-deposit/v1",
         effectiveTimeBasis: "accounting",
-        effectiveTimeRuleVersion: "synthetic-v8",
+        effectiveTimeRuleVersion: "cathay/domestic-deposit/v1",
         timeZone: "Asia/Taipei",
         timePrecision: "second",
         timeOrigin: "source_reported",
@@ -199,13 +199,13 @@ function balanceRequest(
   return {
     capture: {
       captureId,
-      integrationNamespace: "synthetic",
+      integrationNamespace: "cathay",
       sourceConnectionKey: token("connection"),
       identityEpoch: token("epoch"),
       stream: "domestic-deposit",
       recordKind: "synthetic-balance",
-      routeKey: "synthetic/domestic-deposit/v8",
-      contractVersion: "synthetic-v8",
+      routeKey: "cathay/domestic-deposit/current-balance-v1",
+      contractVersion: "cathay/current-deposit-balance-v1",
       subjectDigest: token(`${captureId}:subject`),
       observedAt: "2026-09-22T00:01:00.000Z",
       accountNumber: null,
@@ -215,7 +215,7 @@ function balanceRequest(
         dateFormat: "YYYY-MM-DD",
         kind: "point-in-time",
         completeness: "single-page",
-        ruleVersion: "synthetic-v8",
+        ruleVersion: "cathay/current-deposit-balance-v1",
         sourceAccountKey,
         accountNo,
       },
@@ -246,11 +246,11 @@ function balanceRequest(
       currency,
       effectiveAt,
       effectiveTimeBasis: "provider-system-time",
-      effectiveTimeRuleVersion: "synthetic-v8",
+      effectiveTimeRuleVersion: "cathay/current-deposit-balance-v1",
       evidenceSourceRecordKey: occurrenceKey,
       evidenceSourceField: "balance",
       evidenceSourceValue: coefficient,
-      evidenceContractVersion: "synthetic-v8",
+      evidenceContractVersion: "cathay/current-deposit-balance-v1",
       sourceOccurrenceKey: occurrenceKey,
     }],
   };
@@ -269,11 +269,11 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
   const transactionRecordId = id(49);
   const marginRecordId = id(50);
   await store.query(
-    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, 'fixture/investment/v1', 'source_capture')",
+    "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, 1, 1, 'yuanta-trade/investment/canonical-v1', 'source_capture')",
     [commitId],
   );
   await store.query(
-    "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES ($1, 'fixture-broker', 'fixture-broker-connection', $2)",
+    "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES ($1, 'yuanta-trade', 'fixture-broker-connection', $2)",
     [connectionId, commitId],
   );
   await store.query(
@@ -281,23 +281,23 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
     [epochId, connectionId, commitId],
   );
   await store.query(
-    "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES ('fixture/investment/v1', 'fixture-broker', 'brokerage', 'fixture-investment-v1', $1)",
+    "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES ('yuanta-trade/investment/canonical-v1', 'yuanta-trade', 'investment', 'yuanta-trade/investment/canonical-v1', $1)",
     [commitId],
   );
   await store.query(
-    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES ($1, $2, $3, 'brokerage', 'brokerage-1', 'BR-001', 'investment', 'TWD', $4)",
+    "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES ($1, $2, $3, 'investment', 'brokerage-1', 'BR-001', 'investment', 'TWD', $4)",
     [accountId, connectionId, epochId, commitId],
   );
   await store.query(
-    "INSERT INTO investment_accounts(account_id, source_connection_id, identity_epoch_id, source_id, account_key, account_type, account_subtype) VALUES ($1, $2, $3, 'fixture-broker', 'brokerage-1', 'investment', NULL)",
+    "INSERT INTO investment_accounts(account_id, source_connection_id, identity_epoch_id, source_id, account_key, account_type, account_subtype) VALUES ($1, $2, $3, 'yuanta-trade', 'brokerage-1', 'investment', NULL)",
     [accountId, connectionId, epochId],
   );
   await store.query(
-    "INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES ($1, 'fixture-investment-capture', $2, $3, 'fixture/investment/v1', 'brokerage', 'investment', 'brokerage-1', '2026-09-22T01:00:00.000Z', '2026-09-22', '2026-09-22', 'single-page', 'fixture', 'fixture-investment-v1', $4)",
+    "INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES ($1, 'fixture-investment-capture', $2, $3, 'yuanta-trade/investment/canonical-v1', 'investment', 'investment', 'brokerage-1', '2026-09-22T01:00:00.000Z', '2026-09-22', '2026-09-22', 'single-page', 'fixture', 'yuanta-trade/investment/canonical-v1', $4)",
     [captureId, connectionId, epochId, commitId],
   );
   await store.query(
-    "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'fixture-broker', 'fixture-investment-v1')",
+    "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'yuanta-trade', 'yuanta-trade/investment/canonical-v1')",
     [captureId, commitId],
   );
   await store.query(
@@ -313,7 +313,7 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
     [marginRecordId, captureId, commitId],
   );
   await store.query(
-    "INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type) VALUES ($1, 'fixture-broker', 'acme-equity', 'ACME', 'Acme Equity', 'ACME', 'TWD', 'equity')",
+    "INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type) VALUES ($1, 'yuanta-trade', 'acme-equity', 'ACME', 'Acme Equity', 'ACME', 'TWD', 'equity')",
     [securityId],
   );
   await store.query(
@@ -323,6 +323,22 @@ async function seedInvestmentOverviewFixture(store: PGliteStore): Promise<void> 
   await store.query(
     "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, 'transaction-1', $3)",
     [transactionId, accountId, commitId],
+  );
+  await store.query(
+    `INSERT INTO transaction_revisions(
+       revision_id, transaction_id, source_record_id, capture_id, commit_id,
+       revision_number, amount_coefficient, amount_scale, currency, direction,
+       posting_status, posting_origin, posting_basis, posting_rule_version,
+       description, economic_status, administrative_state, semantic_rule_version,
+       effective_on, transaction_date_time_local, time_zone, time_precision,
+       time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us
+     ) VALUES ($1, $2, $3, $4, $5, 1, '10000', 0, 'TWD', 'outflow', 'posted',
+               'provider_booked_history', 'query-status-success-with-accounting-date',
+               'yuanta-trade/investment/canonical-v1', 'Acme buy', 'normal', 'active',
+               'yuanta-trade/investment/canonical-v1', '2026-09-22', '2026-09-22T00:00:00',
+               'Asia/Taipei', 'date', 'source_reported', 'accounting',
+               'yuanta-trade/investment/canonical-v1', 0)`,
+    [id(53), transactionId, transactionRecordId, captureId, commitId],
   );
   await store.query(
     "INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action, quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json) VALUES ($1, $2, $3, $4, $5, $6, 'buy', '5', 0, '10000', 0, 'TWD', '2026-09-22', '{\"description\":\"Acme buy\"}')",

@@ -131,7 +131,6 @@ VALUES ('automatic_routes_package_no_delete', 'trigger', 'automatic_enrichment_a
       ('user_tag_status_revisions_no_update', 'trigger', 'user_tag_status_revisions', 'postgres-trigger'),
       ('user_tags_no_delete', 'trigger', 'user_tags', 'postgres-trigger'),
       ('user_tags_no_update', 'trigger', 'user_tags', 'postgres-trigger'),
-      ('trg_cathay_attestation_events_append_only', 'trigger', 'cathay_attestation_events', 'postgres-trigger'),
       ('trg_ctbc_attestation_events_append_only', 'trigger', 'ctbc_attestation_events', 'postgres-trigger'),
       ('trg_esun_credit_card_attestation_events_append_only', 'trigger', 'esun_credit_card_attestation_events', 'postgres-trigger'),
       ('trg_fubon_credit_card_attestation_events_append_only', 'trigger', 'fubon_credit_card_attestation_events', 'postgres-trigger'),
@@ -278,6 +277,25 @@ CREATE TABLE source_authority_routes (
   stream TEXT NOT NULL,
   contract_version TEXT NOT NULL,
   created_commit_id BYTEA NOT NULL
+);
+CREATE TABLE source_contract_catalog (
+  authority_route TEXT NOT NULL,
+  integration_namespace TEXT NOT NULL CHECK(length(btrim(integration_namespace)) > 0),
+  stream TEXT NOT NULL CHECK(length(btrim(stream)) > 0),
+  contract_version TEXT NOT NULL CHECK(length(btrim(contract_version)) > 0),
+  PRIMARY KEY(authority_route, contract_version)
+);
+CREATE TABLE source_contract_rule_tuples (
+  authority_route TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  rule_ordinal BIGINT NOT NULL CHECK(rule_ordinal > 0),
+  posting_rule_version TEXT,
+  semantic_rule_version TEXT,
+  effective_time_rule_version TEXT NOT NULL CHECK(length(btrim(effective_time_rule_version)) > 0),
+  CHECK((posting_rule_version IS NULL) = (semantic_rule_version IS NULL)),
+  PRIMARY KEY(authority_route, contract_version, rule_ordinal),
+  FOREIGN KEY(authority_route, contract_version)
+    REFERENCES source_contract_catalog(authority_route, contract_version)
 );
 CREATE TABLE source_connections (
   source_connection_id BYTEA PRIMARY KEY CHECK(length(source_connection_id) = 16),
@@ -1176,20 +1194,20 @@ CREATE TABLE "transaction_revisions" (
   currency TEXT NOT NULL,
   direction TEXT NOT NULL CHECK(direction IN ('inflow','outflow')),
   posting_status TEXT NOT NULL CHECK(posting_status IN ('pending','posted')),
-  posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested') OR posting_origin LIKE 'synthetic_%'),
-  posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history') OR posting_basis LIKE 'synthetic_%'),
-  posting_rule_version TEXT NOT NULL CHECK(posting_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR posting_rule_version LIKE 'synthetic-%' OR posting_rule_version LIKE 'foreign-currency/%' OR posting_rule_version LIKE 'fubon/credit-card/%' OR posting_rule_version LIKE 'fubon/loan/%' OR posting_rule_version LIKE 'yuanta/loan/%' OR posting_rule_version LIKE 'esun/credit-card/%' OR posting_rule_version LIKE '%/investment/%'),
+  posting_origin TEXT NOT NULL CHECK(posting_origin IN ('provider_booked_history','human_attested_history','human-attested')),
+  posting_basis TEXT NOT NULL CHECK(posting_basis IN ('query-status-success-with-accounting-date','human-attested-formally-posted','statement-posted-history')),
+  posting_rule_version TEXT NOT NULL CHECK(length(btrim(posting_rule_version)) > 0),
   description TEXT,
   economic_status TEXT NOT NULL CHECK(economic_status IN ('normal','canceled','refund','reversal')),
   administrative_state TEXT NOT NULL CHECK(administrative_state IN ('active','deleted','purged')),
-  semantic_rule_version TEXT NOT NULL CHECK(semantic_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR semantic_rule_version LIKE 'synthetic-%' OR semantic_rule_version LIKE 'foreign-currency/%' OR semantic_rule_version LIKE 'fubon/credit-card/%' OR semantic_rule_version LIKE 'fubon/loan/%' OR semantic_rule_version LIKE 'yuanta/loan/%' OR semantic_rule_version LIKE 'esun/credit-card/%' OR semantic_rule_version LIKE '%/investment/%'),
+  semantic_rule_version TEXT NOT NULL CHECK(length(btrim(semantic_rule_version)) > 0),
   effective_on TEXT NOT NULL,
   transaction_date_time_local TEXT NOT NULL,
   time_zone TEXT NOT NULL,
   time_precision TEXT NOT NULL CHECK(time_precision IN ('date','minute','second')),
   time_origin TEXT NOT NULL CHECK(time_origin IN ('source_reported','defaulted_local_midnight')),
   effective_time_basis TEXT NOT NULL CHECK(effective_time_basis IN ('accounting','transaction-time','source-reported')),
-  effective_time_rule_version TEXT NOT NULL CHECK(effective_time_rule_version IN ('cathay/domestic-deposit/v1','linebank/domestic-deposit/human-attested-v13','fubon/domestic-deposit/human-attested-v1','esun/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v1','yuanta/credit-card/human-attested-v2','yuanta/domestic-deposit/human-attested-v1','yuanta/domestic-deposit/human-attested-v2','hncb/domestic-deposit/human-attested-v1','ctbc/domestic-deposit/human-attested-v1','sinopac/domestic-deposit/human-attested-v1','post/domestic-deposit/human-attested-v1') OR effective_time_rule_version LIKE 'synthetic-%' OR effective_time_rule_version LIKE 'foreign-currency/%' OR effective_time_rule_version LIKE 'fubon/credit-card/%' OR effective_time_rule_version LIKE 'fubon/loan/%' OR effective_time_rule_version LIKE 'yuanta/loan/%' OR effective_time_rule_version LIKE 'esun/credit-card/%' OR effective_time_rule_version LIKE '%/investment/%'),
+  effective_time_rule_version TEXT NOT NULL CHECK(length(btrim(effective_time_rule_version)) > 0),
   utc_instant_utc_us BIGINT NOT NULL,
   UNIQUE(transaction_id, revision_number)
 );
@@ -4896,30 +4914,6 @@ BEGIN
   RAISE EXCEPTION 'Human-attestation event spines are append-only.';
 END;
 $pglite_attestation_guard$;
-
-CREATE TABLE IF NOT EXISTS cathay_attestation_events (
-  event_id BYTEA PRIMARY KEY CHECK(length(event_id) = 16),
-  attestation_id TEXT NOT NULL CHECK(length(btrim(attestation_id)) > 0),
-  evidence_version TEXT NOT NULL CHECK(length(btrim(evidence_version)) > 0),
-  event_kind TEXT NOT NULL CHECK(event_kind IN ('attested','revoked','restored')),
-  manifest_status TEXT NOT NULL CHECK(manifest_status IN ('active','revoked')),
-  event_at TEXT NOT NULL CHECK(length(btrim(event_at)) > 0),
-  reason TEXT,
-  manifest_fingerprint TEXT NOT NULL CHECK(manifest_fingerprint LIKE 'sha256:%'),
-  event_sequence BIGINT NOT NULL CHECK(event_sequence > 0),
-  CHECK(
-    (event_kind = 'attested' AND manifest_status = 'active') OR
-    (event_kind = 'revoked' AND manifest_status = 'revoked' AND reason IS NOT NULL AND length(btrim(reason)) > 0) OR
-    (event_kind = 'restored' AND manifest_status = 'active' AND reason IS NOT NULL AND length(btrim(reason)) > 0)
-  ),
-  UNIQUE(attestation_id, event_sequence)
-);
-CREATE INDEX IF NOT EXISTS idx_cathay_attestation_events_latest
-  ON cathay_attestation_events(attestation_id, event_sequence, event_at, event_id);
-DROP TRIGGER IF EXISTS trg_cathay_attestation_events_append_only ON cathay_attestation_events;
-CREATE TRIGGER trg_cathay_attestation_events_append_only
-  BEFORE UPDATE OR DELETE ON cathay_attestation_events
-  FOR EACH ROW EXECUTE FUNCTION pglite_attestation_append_only_guard();
 
 CREATE TABLE IF NOT EXISTS ctbc_attestation_events (
   event_id BYTEA PRIMARY KEY CHECK(length(event_id) = 16),

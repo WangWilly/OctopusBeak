@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  type CanonicalSourceHumanAttestation,
+  type CanonicalSourceRouteRegistration,
+} from "../canonical/canonical-source-route-registry.ts";
 import type { PGliteTransaction } from "./transaction.ts";
 import {
   PGLITE_ATTESTATION_TABLES,
@@ -8,7 +13,6 @@ import {
 export type PGliteAttestationFingerprint = `sha256:${string}`;
 
 export type PGliteHumanAttestationProvider =
-  | "cathay"
   | "ctbc"
   | "esun"
   | "fubon"
@@ -156,246 +160,89 @@ function manifest(
   });
 }
 
-/**
- * The local authority registry is intentionally duplicated from the pure
- * contract metadata in canonical/*.  Importing the SQLite modules here would
- * pull a synchronous database engine into the worker bundle.
- */
-export const PGLITE_HUMAN_ATTESTATION_MANIFESTS = Object.freeze([
-  manifest({
-    provider: "cathay",
-    stream: "domestic-deposit",
-    authorityRoute: "cathay/domestic-deposit/human-attested-v1",
-    attestationId: "cathay-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-22",
-    attestedBy: "user-confirmed-cathay-observed-human-attested",
-    manifestFingerprint:
-      "sha256:4f443b3c1b6d58ee57c4ac84a1e09e41b40a98f1c7d0d8b7bf5d8f5e3a0b6c21",
-    tableName: "cathay_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "ctbc",
-    stream: "domestic-deposit",
-    authorityRoute: "ctbc/domestic-deposit/human-attested-v1",
-    attestationId: "ctbc-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-24",
-    attestedBy: "user-confirmed-ctbc-observed-human-attested-2026-08-24",
-    manifestFingerprint:
-      "sha256:111ba05815bc0ac82156617c96e3538f81226c54fdbbe4f5b2325230690e9778",
-    tableName: "ctbc_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "esun",
-    stream: "credit-card",
-    authorityRoute: "esun/credit-card/human-attested-v1",
-    attestationId: "esun-credit-card-human-attested-v1",
-    evidenceVersion: "esun/credit-card/human-attested-v1",
-    attestedAt: "2026-08-26T00:00:00.000Z",
-    attestedBy: "user-confirmed-esun-credit-card-primary-cardholder-portfolio",
-    manifestFingerprint:
-      "sha256:-_DQC8HqYl6kXBD9AeWFHRxQVNhaT0T0sIpIRyaGTR4",
-    tableName: "esun_credit_card_attestation_events",
-    current: false,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "esun",
-    stream: "credit-card",
-    authorityRoute: "esun/credit-card/human-attested-v2",
-    attestationId: "esun-credit-card-human-attested-v2",
-    evidenceVersion: "esun/credit-card/human-attested-v2",
-    attestedAt: "2026-08-27T00:00:00.000Z",
-    attestedBy: "user-confirmed-esun-credit-card-primary-cardholder-portfolio",
-    manifestFingerprint:
-      "sha256:gY7YH5F676w3tHxCKKor5THe5kZIOGpkUcKGFYLx1Z4",
-    tableName: "esun_credit_card_attestation_events",
-    current: false,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "esun",
-    stream: "credit-card",
-    authorityRoute: "esun/credit-card/human-attested-v3",
-    attestationId: "esun-credit-card-human-attested-v3",
-    evidenceVersion: "esun/credit-card/human-attested-v3",
-    attestedAt: "2026-09-24T00:00:00.000Z",
-    attestedBy: "user-confirmed-esun-redesign-timeline-and-bill-evidence",
-    manifestFingerprint: "sha256:o3LEXGFIyb3TZ3KnkbhIpnZwfHB6DRV-X01GY82EE5c",
-    tableName: "esun_credit_card_attestation_events",
-    current: false,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "esun",
-    stream: "credit-card",
-    authorityRoute: "esun/credit-card/human-attested-v4",
-    attestationId: "esun-credit-card-human-attested-v4",
-    evidenceVersion: "esun/credit-card/human-attested-v4",
-    attestedAt: "2026-09-30T00:00:00.000Z",
-    attestedBy: "user-confirmed-esun-terminal-twelve-or-thirteen-month-timeline",
-    manifestFingerprint: "sha256:AbiW-1RVxf7evKj-WB9Xng9bWlFFNcGgsoBBuhVBdEo",
-    tableName: "esun_credit_card_attestation_events",
-    current: true,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "fubon",
-    stream: "credit-card",
-    authorityRoute: "fubon/credit-card/human-attested-v1",
-    attestationId: "fubon-credit-card-human-attested-v1",
-    evidenceVersion: "fubon/credit-card/human-attested-v1",
-    attestedAt: "2026-08-25T00:00:00.000Z",
-    attestedBy: "human-confirmed-independent-primary-card-billing-accounts",
-    manifestFingerprint:
-      "sha256:XqhyMo4ijyxMcjTnM8vgcBHDG-Pzn_omnM7DVWp5lLc",
-    tableName: "fubon_credit_card_attestation_events",
-    current: false,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "fubon",
-    stream: "credit-card",
-    authorityRoute: "fubon/credit-card/human-attested-v2",
-    attestationId: "fubon-credit-card-human-attested-v2",
-    evidenceVersion: "fubon/credit-card/human-attested-v2",
-    attestedAt: "2026-08-25T00:00:00.000Z",
-    attestedBy: "human-confirmed-primary-cardholder-portfolio",
-    manifestFingerprint:
-      "sha256:ieTzCkwR2SP6gNT4ZNlF8gahKrpc8kYFKtwSTP-_PLY",
-    tableName: "fubon_credit_card_attestation_events",
-    current: true,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "fubon",
-    stream: "domestic-deposit",
-    authorityRoute: "fubon/domestic-deposit/human-attested-v1",
-    attestationId: "fubon-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-21",
-    attestedBy: "user-confirmed-1A-2A-3A",
-    manifestFingerprint:
-      "sha256:1758d3b97375cf82f7d6619482d57b5e16bb4f236d44834043b606bd28af26b8",
-    tableName: "fubon_attestation_events",
-    current: true,
-    restoreEventKind: null,
-  }),
-  manifest({
-    provider: "hncb",
-    stream: "domestic-deposit",
-    authorityRoute: "hncb/domestic-deposit/human-attested-v1",
-    attestationId: "hncb-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-23",
-    attestedBy: "user-confirmed-hncb-observed-human-attested-2026-08-23",
-    manifestFingerprint:
-      "sha256:7a4fd7a0f22f4c5d933d5f3b5b5bf9ac52f1dd0e9d6b4d4d0d9ad4a1fcb5e3b1",
-    tableName: "hncb_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "post",
-    stream: "domestic-deposit",
-    authorityRoute: "post/domestic-deposit/human-attested-v1",
-    attestationId: "post-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-24",
-    attestedBy: "user-confirmed-post-observed-human-attested-2026-08-24",
-    manifestFingerprint:
-      "sha256:5b2698c998f1335476ff1d0bc9009294afdbd18576fa728c20a0563fcdb30bf4",
-    tableName: "post_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "sinopac",
-    stream: "domestic-deposit",
-    authorityRoute: "sinopac/domestic-deposit/human-attested-v1",
-    attestationId: "sinopac-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-23",
-    attestedBy: "user-confirmed-sinopac-observed-human-attested-2026-08-23",
-    manifestFingerprint:
-      "sha256:ec011375014d525e074d9928cb78ed72355048652a655548904ff9ae3c4d90a1",
-    tableName: "sinopac_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "yuanta",
-    stream: "credit-card",
-    authorityRoute: "yuanta/credit-card/human-attested-v1",
-    attestationId: "yuanta-credit-card-human-attested-v1",
-    evidenceVersion: "yuanta/credit-card/human-attested-v1",
-    attestedAt: "2026-08-26T00:00:00.000+08:00",
-    attestedBy: "user-confirmed-yuanta-credit-card-portfolio",
-    manifestFingerprint:
-      "sha256:K7W0Lh8wT8mM3FqkKx8tR4zD4e5p7vJ2nB1sC6aQ9xE",
-    tableName: "yuanta_credit_card_attestation_events",
-    current: false,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "yuanta",
-    stream: "credit-card",
-    authorityRoute: "yuanta/credit-card/human-attested-v2",
-    attestationId: "yuanta-credit-card-human-attested-v2",
-    evidenceVersion: "yuanta/credit-card/human-attested-v2",
-    attestedAt: "2026-08-27T00:00:00.000+08:00",
-    attestedBy: "user-confirmed-yuanta-credit-card-portfolio",
-    manifestFingerprint:
-      "sha256:hDf7LDFMLfJMUHk5uGhA8rCscjhOLggZVAs6OzYf-YE",
-    tableName: "yuanta_credit_card_attestation_events",
-    current: true,
-    occurrenceProviderGuaranteed: false,
-    restoreEventKind: "restored",
-  }),
-  manifest({
-    provider: "yuanta",
-    stream: "domestic-deposit",
-    authorityRoute: "yuanta/domestic-deposit/human-attested-v1",
-    attestationId: "yuanta-domestic-deposit-human-attested-v1",
-    evidenceVersion: "human-attested-v1",
-    attestedAt: "2026-08-21",
-    attestedBy: "user-confirmed-yuanta-observed-human-attested-2026-08-21",
-    manifestFingerprint:
-      "sha256:e3615c1a8f886ca9edeb057b8005131c8ccdbcf0d757c6fce9ae90f5bd95ef86",
-    tableName: "yuanta_attestation_events",
-    current: false,
-    restoreEventKind: "attested",
-  }),
-  manifest({
-    provider: "yuanta",
-    stream: "domestic-deposit",
-    authorityRoute: "yuanta/domestic-deposit/human-attested-v2",
-    attestationId: "yuanta-domestic-deposit-human-attested-v3",
-    evidenceVersion: "human-attested-v2",
-    attestedAt: "2026-08-21",
-    attestedBy: "user-confirmed-yuanta-observed-human-attested-2026-08-21",
-    manifestFingerprint:
-      "sha256:23b68bf37380e5a9c284abb34ca76d713f5748efcb207dce54c62f2261a407de",
-    tableName: "yuanta_attestation_events",
-    current: true,
-    restoreEventKind: "attested",
-  }),
-] as const);
+/** Storage-only table names are paired with immutable pure source contracts. */
+const ATTESTATION_TABLE_BY_PROVIDER_STREAM = Object.freeze({
+  "ctbc/domestic-deposit": "ctbc_attestation_events",
+  "esun/credit-card": "esun_credit_card_attestation_events",
+  "fubon/credit-card": "fubon_credit_card_attestation_events",
+  "fubon/domestic-deposit": "fubon_attestation_events",
+  "hncb/domestic-deposit": "hncb_attestation_events",
+  "post/domestic-deposit": "post_attestation_events",
+  "sinopac/domestic-deposit": "sinopac_attestation_events",
+  "yuanta/credit-card": "yuanta_credit_card_attestation_events",
+  "yuanta/domestic-deposit": "yuanta_attestation_events",
+} satisfies Partial<Record<
+  `${PGliteHumanAttestationProvider}/${PGliteHumanAttestationStream}`,
+  PGliteAttestationTableName
+>>);
 
-export type PGliteHumanAttestationRouteKey =
-  (typeof PGLITE_HUMAN_ATTESTATION_MANIFESTS)[number]["authorityRoute"];
+function providerFor(namespace: string): PGliteHumanAttestationProvider {
+  switch (namespace) {
+    case "ctbc":
+    case "esun":
+    case "fubon":
+    case "hncb":
+    case "post":
+    case "sinopac":
+    case "yuanta":
+      return namespace;
+    default:
+      throw new Error(`PGlite attestation provider ${namespace} is not configured.`);
+  }
+}
+
+function streamFor(stream: string): PGliteHumanAttestationStream {
+  if (stream === "domestic-deposit" || stream === "credit-card") return stream;
+  throw new Error(`PGlite attestation stream ${stream} is not configured.`);
+}
+
+function hasHumanAttestation(
+  registration: CanonicalSourceRouteRegistration,
+): registration is CanonicalSourceRouteRegistration & {
+  humanAttestation: CanonicalSourceHumanAttestation;
+} {
+  return registration.humanAttestation !== undefined;
+}
+
+function pgliteManifestFromSourceContract(
+  registration: CanonicalSourceRouteRegistration & {
+    humanAttestation: CanonicalSourceHumanAttestation;
+  },
+): PGliteHumanAttestationManifest {
+  const provider = providerFor(registration.integrationNamespace);
+  const stream = streamFor(registration.stream);
+  const tableName = (
+    ATTESTATION_TABLE_BY_PROVIDER_STREAM as Readonly<
+      Record<string, PGliteAttestationTableName | undefined>
+    >
+  )[`${provider}/${stream}`];
+  if (!tableName)
+    throw new Error(`PGlite attestation table is not configured for ${provider}/${stream}.`);
+  const attestation = registration.humanAttestation;
+  return manifest({
+    provider,
+    stream,
+    authorityRoute: attestation.authorityRoute,
+    attestationId: attestation.attestationId,
+    evidenceVersion: attestation.evidenceVersion,
+    attestedAt: attestation.attestedAt,
+    attestedBy: attestation.attestedBy,
+    manifestFingerprint: attestation.manifestFingerprint,
+    tableName,
+    ...(attestation.occurrenceProviderGuaranteed === false
+      ? { occurrenceProviderGuaranteed: false }
+      : {}),
+    current: attestation.current,
+    restoreEventKind: attestation.restoreEventKind,
+  });
+}
+
+/** Immutable worker attestations derive from the source contract registry. */
+export const PGLITE_HUMAN_ATTESTATION_MANIFESTS = Object.freeze(
+  CANONICAL_SOURCE_ROUTE_REGISTRY.filter(hasHumanAttestation).map(
+    pgliteManifestFromSourceContract,
+  ),
+);
 
 export const PGLITE_HUMAN_ATTESTATION_ROUTE_REGISTRY: Readonly<
   Record<string, PGliteHumanAttestationManifest>

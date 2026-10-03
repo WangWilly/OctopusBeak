@@ -11,7 +11,7 @@ import {
 import { PGliteStore } from "./transaction.ts";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 
-const route = "esun/credit-card/human-attested-v1";
+const route = "esun/credit-card/human-attested-v4";
 const connection = "sha256:pglite-credit-card-check-connection";
 const epoch = "sha256:pglite-credit-card-check-epoch";
 const subject = "sha256:pglite-credit-card-check-subject";
@@ -525,9 +525,17 @@ test("Fubon current balance capture succeeds after grouped billed history withou
     const history = fubonLifecycleCapture("fubon-before-current-balance", ["billed"]);
     await commitPGliteCanonicalCreditCardCapture(store, history);
     const template = capture("fubon-current-balance-template");
-    const balance = template.balance!;
-    const record = template.capture.records.find((row) => row.occurrenceKey === balance.observation.sourceOccurrenceKey)!;
+    const balanceTemplate = template.balance!;
     const route = "fubon/credit-card/current-used-credit-v1";
+    const balance = {
+      ...balanceTemplate,
+      observation: {
+        ...balanceTemplate.observation,
+        effectiveTimeRuleVersion: route,
+        evidenceContractVersion: route,
+      },
+    };
+    const record = template.capture.records.find((row) => row.occurrenceKey === balance.observation.sourceOccurrenceKey)!;
     const result = await commitPGliteCanonicalCreditCardBalanceCapture(store, {
       capture: {
         ...history.capture,

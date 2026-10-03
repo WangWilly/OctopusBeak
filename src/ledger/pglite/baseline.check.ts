@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
+import { CANONICAL_SOURCE_ROUTE_REGISTRY } from "../canonical/canonical-source-route-registry.ts";
 import { applyPgliteBaseline, PGLITE_BASELINE_MANIFEST } from "./baseline.ts";
 import { PGliteStore } from "./transaction.ts";
 
@@ -149,13 +150,26 @@ try {
   const revisionId = id(17);
   const assertionId = id(18);
   const sourceCommitId = id(1);
+  const baselineSourceRegistration = CANONICAL_SOURCE_ROUTE_REGISTRY.find(
+    (registration) => registration.routeKey === "cathay/domestic-deposit/v1",
+  );
+  assert.ok(baselineSourceRegistration);
+  const baselineContractVersion = baselineSourceRegistration.contractVersions[0];
+  assert.ok(baselineContractVersion);
+  const baselineFinancialRules = baselineSourceRegistration.ruleCombinations?.find(
+    (combination) =>
+      combination.contractVersion === baselineContractVersion &&
+      combination.postingRuleVersion !== null &&
+      combination.semanticRuleVersion !== null,
+  );
+  assert.ok(baselineFinancialRules);
   await store.query(
     "INSERT INTO source_authority_routes(authority_route, integration_namespace, stream, contract_version, created_commit_id) VALUES ($1, $2, $3, $4, $5)",
-    ["test/source/v1", "test", "deposit", "v1", sourceCommitId],
+    [baselineSourceRegistration.routeKey, baselineSourceRegistration.integrationNamespace, baselineSourceRegistration.stream, baselineContractVersion, sourceCommitId],
   );
   await store.query(
     "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES ($1, $2, $3, $4)",
-    [sourceConnectionId, "test", "connection", sourceCommitId],
+    [sourceConnectionId, baselineSourceRegistration.integrationNamespace, "connection", sourceCommitId],
   );
   await store.query(
     "INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES ($1, $2, $3, $4)",
@@ -163,7 +177,7 @@ try {
   );
   await store.query(
     "INSERT INTO source_captures(capture_id, capture_key, source_connection_id, identity_epoch_id, authority_route, stream, record_kind, source_account_key, observed_at, scope_start, scope_end, completeness, completeness_basis, completeness_rule_version, commit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
-    [captureId, "capture-1", sourceConnectionId, identityEpochId, "test/source/v1", "deposit", "test", "account", "2026-09-22", "2026-09-22", "2026-09-22", "complete-range", "test", "test/source/v1", sourceCommitId],
+    [captureId, "capture-1", sourceConnectionId, identityEpochId, baselineSourceRegistration.routeKey, baselineSourceRegistration.stream, "test", "account", "2026-09-22", "2026-09-22", "2026-09-22", "complete-range", "test", baselineSourceRegistration.completenessRuleVersions?.[0] ?? baselineContractVersion, sourceCommitId],
   );
   await store.query(
     "INSERT INTO source_records(source_record_id, capture_id, commit_id, record_kind, sequence_lexeme, payload_json) VALUES ($1, $2, $3, $4, $5, $6)",
@@ -171,19 +185,19 @@ try {
   );
   await store.query(
     "INSERT INTO financial_accounts(account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, created_commit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    [accountId, sourceConnectionId, identityEpochId, "deposit", "account", null, "depository", "TWD", sourceCommitId],
+    [accountId, sourceConnectionId, identityEpochId, baselineSourceRegistration.stream, "account", null, "depository", "TWD", sourceCommitId],
   );
   await store.query(
     "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, $3, $4)",
     [transactionId, accountId, "1", sourceCommitId],
   );
   await store.query(
-    "INSERT INTO transaction_revisions(revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency, direction, posting_status, posting_origin, posting_basis, posting_rule_version, economic_status, administrative_state, semantic_rule_version, effective_on, transaction_date_time_local, time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us) VALUES ($1, $2, $3, $4, $5, 1, '1', 0, 'TWD', 'outflow', 'posted', 'synthetic-test', 'synthetic-test', 'synthetic-test', 'normal', 'active', 'synthetic-test', '2026-09-22', '2026-09-22T00:00:00', 'Asia/Taipei', 'date', 'source_reported', 'accounting', 'synthetic-test', 0)",
-    [revisionId, transactionId, sourceRecordId, captureId, sourceCommitId],
+    "INSERT INTO transaction_revisions(revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number, amount_coefficient, amount_scale, currency, direction, posting_status, posting_origin, posting_basis, posting_rule_version, economic_status, administrative_state, semantic_rule_version, effective_on, transaction_date_time_local, time_zone, time_precision, time_origin, effective_time_basis, effective_time_rule_version, utc_instant_utc_us) VALUES ($1, $2, $3, $4, $5, 1, '1', 0, 'TWD', 'outflow', 'posted', 'provider_booked_history', 'query-status-success-with-accounting-date', $6, 'normal', 'active', $7, '2026-09-22', '2026-09-22T00:00:00', 'Asia/Taipei', 'date', 'source_reported', 'accounting', $8, 0)",
+    [revisionId, transactionId, sourceRecordId, captureId, sourceCommitId, baselineFinancialRules.postingRuleVersion, baselineFinancialRules.semanticRuleVersion, baselineFinancialRules.effectiveTimeRuleVersion],
   );
   await store.query(
-    "INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES ($1, $2, 'transaction_revision', 'transaction', 'source', 'test/source', 'test/source/v1', $3, NULL, $4)",
-    [assertionId, transactionId, revisionId, sourceCommitId],
+    "INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id) VALUES ($1, $2, 'transaction_revision', 'transaction', 'source', 'test/source', $3, $4, NULL, $5)",
+    [assertionId, transactionId, baselineSourceRegistration.routeKey, revisionId, sourceCommitId],
   );
   await store.query(
     "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES ($1, $2, NULL, NULL, NULL, $3)",
